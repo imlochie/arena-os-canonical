@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { generate, type ChatMsg } from "@/lib/ai";
 import { getModel } from "@/lib/models";
 import { isLocalOnlyBody } from "@/lib/privacy";
@@ -16,7 +17,7 @@ export async function POST(req: Request) {
     const keys = body.keys as { openrouter?: string; groq?: string; gemini?: string } | undefined;
 
     if (!Array.isArray(messages) || messages.length === 0) {
-      return Response.json({ error: "messages[] is required" }, { status: 400 });
+      return standardApiError("INVALID_REQUEST", "Messages[] is required.", 400);
     }
     // Validate model exists
     getModel(modelId);
@@ -33,6 +34,6 @@ export async function POST(req: Request) {
     return Response.json({ ...result, modelId, localOnly });
   } catch (e) {
     console.error("chat error");
-    return Response.json({ error: "generation failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Generation failed.", 500);
   }
 }

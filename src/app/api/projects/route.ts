@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { artifacts, battles, collabs, councilRuns, projectMemory, projects } from "@/db/schema";
 import { desc, eq, sql } from "drizzle-orm";
@@ -39,13 +40,13 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const name = (body.name ?? "").toString().trim().slice(0, 80);
-    if (!name) return Response.json({ error: "name required" }, { status: 400 });
+    if (!name) return standardApiError("INVALID_REQUEST", "Name required.", 400);
     const description = (body.description ?? "").toString().slice(0, 500);
     const emoji = (body.emoji ?? "📁").toString().slice(0, 8);
     const [row] = await db.insert(projects).values({ name, description, emoji }).returning();
     return Response.json({ project: row }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "create failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Create failed.", 500);
   }
 }

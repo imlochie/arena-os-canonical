@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "@/lib/apiErrorClient";
+
 import { useCallback, useEffect, useState } from "react";
 import PrivacyControls from "@/components/PrivacyControls";
 
@@ -43,7 +45,7 @@ export default function PrivacyPage() {
         { method: "DELETE" }
       );
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "wipe failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "wipe failed"));
       setMsg(`✅ Erased: ${Object.entries(j.deleted).map(([k, v]) => `${k} ×${v}`).join(", ") || "nothing stored"}`);
       setConfirm("");
       refresh();

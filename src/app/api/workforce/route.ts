@@ -1,7 +1,8 @@
 import { db } from "@/db";
 import { modelCategoryRatings, models } from "@/db/schema";
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { WORKFORCE_ROLES } from "@/lib/workforce";
+import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +39,15 @@ export async function GET() {
         basis: leader && r.preferredModels.includes(leader) ? `category leader (${r.eloCategory})` : "role shortlist",
       };
     });
-    return Response.json({ roles, overallBest, models: all.map((m) => ({ id: m.id, name: m.name, elo: m.elo })) });
+    return Response.json({ roles, overallBest, models: all.map((m) => ({
+      id: m.id,
+      name: m.name,
+      provider: m.provider,
+      elo: m.elo,
+      availability: m.availability,
+      supportsStructuredOutput: m.supportsStructuredOutput,
+      capabilities: parseCapabilities(m.capabilities),
+    })) });
   } catch (e) {
     console.error(e);
     return Response.json({
@@ -51,5 +60,40 @@ export async function GET() {
       overallBest: "openai",
       models: [],
     });
+  }
+}
+
+// Explicit runtime health input. Monitoring/polling remains deliberately out of scope.
+export async function PATCH(req: Request) {
+  try {
+    const body = await req.json();
+    const modelId = String(body.modelId ?? "");
+    const availability = String(body.availability ?? "");
+    if (!modelId || !["available", "unavailable", "unknown"].includes(availability)) {
+      return validationError("INVALID_WORKER_AVAILABILITY", "modelId and a valid availability are required.");
+    }
+    const [worker] = await db.update(models).set({ availability, updatedAt: new Date() })
+      .where(eq(models.id, modelId)).returning();
+    if (!worker) {
+      return validationError("WORKER_NOT_FOUND", "Worker not found.", 404, "selection");
+    }
+    return Response.json({ worker });
+  } catch (error) {
+    console.error("workforce availability PATCH error", error);
+    return apiErrorResponse(error, {
+      code: "WORKER_AVAILABILITY_UPDATE_FAILED",
+      message: "Unable to update worker availability.",
+      stage: "persistence",
+      retryable: true,
+    });
+  }
+}
+
+function parseCapabilities(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed : [];
+  } catch {
+    return [];
   }
 }

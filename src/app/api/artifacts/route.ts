@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { artifacts } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
@@ -29,7 +30,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     const title = (body.title ?? "Untitled artifact").toString().slice(0, 160);
     const artifactBody = (body.body ?? "").toString().slice(0, 20000);
-    if (!artifactBody.trim()) return Response.json({ error: "body required" }, { status: 400 });
+    if (!artifactBody.trim()) return standardApiError("INVALID_REQUEST", "Body required.", 400);
     const kind = (body.kind ?? "brief").toString().slice(0, 20);
     const projectId = body.projectId ? String(body.projectId) : null;
     const sourceType = (body.sourceType ?? "manual").toString().slice(0, 20);
@@ -41,7 +42,7 @@ export async function POST(req: Request) {
     return Response.json({ artifact: row }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "create failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Create failed.", 500);
   }
 }
 
@@ -49,11 +50,11 @@ export async function DELETE(req: Request) {
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
-    if (!id) return Response.json({ error: "id required" }, { status: 400 });
+    if (!id) return standardApiError("INVALID_REQUEST", "Id required.", 400);
     await db.delete(artifacts).where(eq(artifacts.id, id));
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "delete failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Delete failed.", 500);
   }
 }

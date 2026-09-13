@@ -1,23 +1,56 @@
 "use client";
 
 import { useState } from "react";
-import { handoffUrl, type HandoffTarget } from "@/lib/handoffs";
+import { handoffDestination, type HandoffTarget } from "@/lib/handoffs";
 
 // Send work around the loop: Think → Challenge → Synthesize → Create → Test → Learn.
 export default function HandoffButtons({
   text,
   projectId,
   source,
+  sourceSessionId,
+  sourceArtifactId,
   exclude = [],
   compact = false,
 }: {
   text: string;
   projectId?: string | null;
   source?: string;
+  sourceSessionId?: string | null;
+  sourceArtifactId?: string | null;
   exclude?: HandoffTarget[];
   compact?: boolean;
 }) {
   const [saved, setSaved] = useState<string | null>(null);
+  const [sending, setSending] = useState<HandoffTarget | null>(null);
+
+  async function createHandoff(target: HandoffTarget) {
+    if (!text.trim() || sending) return;
+    setSending(target);
+    try {
+      const r = await fetch("/api/handoffs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSessionId: sourceSessionId || undefined,
+          sourceArtifactId: sourceArtifactId || undefined,
+          sourceProjectId: projectId || undefined,
+          sourceRef: source,
+          targetMode: target,
+          targetProjectId: projectId || undefined,
+          type: "continue",
+          intent: `Continue this work in ${target}`,
+          context: { kind: "inherited_output", content: text.slice(0, 8000) },
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error?.message ?? "handoff failed");
+      window.location.assign(handoffDestination(target, data.handoff.id, data.targetSession.id));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Unable to create handoff.");
+      setSending(null);
+    }
+  }
 
   async function saveArtifact(kind: string) {
     if (!text.trim()) return;
@@ -81,14 +114,15 @@ export default function HandoffButtons({
         Send to →
       </span>
       {targets.map((t) => (
-        <a
+        <button
           key={t.id}
-          href={handoffUrl(t.id, { text, projectId: projectId ?? undefined, source })}
+          onClick={() => createHandoff(t.id)}
+          disabled={sending !== null}
           title={t.title}
-          className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-white/10"
+          className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-white/10 disabled:opacity-50"
         >
-          {t.label}
-        </a>
+          {sending === t.id ? "Creating handoff…" : t.label}
+        </button>
       ))}
       <span className="mx-0.5 h-4 w-px bg-white/10" />
       <button

@@ -1,8 +1,14 @@
 import { db } from "@/db";
-import { battles, battleMessages } from "@/db/schema";
+import { battles, battleMessages, projects } from "@/db/schema";
+import { prepareExecutionSession } from "@/lib/executionSession";
+import { advanceSessionStage, transitionSession, transitionSessionInTransaction } from "@/lib/sessionLifecycle";
+import { allocateArenaWorkforce, persistSessionWorkforceAssignments } from "@/lib/workforceRuntime";
+import { requiresLocalExecution, resolveExecutionMode } from "@/lib/executionPolicy";
 import { eq } from "drizzle-orm";
 import { assignSides, resolveFighters } from "@/lib/battleSetup";
-import { generateStream } from "@/lib/stream";
+import { executeWorkerStream } from "@/lib/workerExecutor";
+import type { WorkforceAssignment } from "@/lib/workforceResolver";
+import { apiErrorResponse, serializeApiError, validationError } from "@/lib/apiErrors";
 import { ensureSeeded } from "@/lib/seed";
 
 export const dynamic = "force-dynamic";
@@ -18,40 +24,82 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return Response.json({ error: "invalid json" }, { status: 400 });
+    return validationError("INVALID_REQUEST", "Request body must be valid JSON.");
   }
   const prompt: string = (body.prompt ?? "").toString().trim();
   const keys = body.keys;
-  const localOnly = body.localOnly === true || process.env.FORCE_LOCAL_MODE === "1";
+  let executionMode;
+  try {
+    executionMode = resolveExecutionMode(body);
+  } catch (error) {
+    return apiErrorResponse(error, {
+      code: "POLICY_VIOLATION", message: "Invalid execution policy.", stage: "policy", status: 422,
+    });
+  }
+  const localOnly = requiresLocalExecution(executionMode);
   const genKeys = localOnly ? undefined : keys;
-  if (!prompt) return Response.json({ error: "prompt required" }, { status: 400 });
-  if (prompt.length > 4000) return Response.json({ error: "prompt too long" }, { status: 400 });
+  if (!prompt) return validationError("INVALID_REQUEST", "Prompt is required.");
+  if (prompt.length > 4000) return validationError("INVALID_REQUEST", "Prompt must be 4,000 characters or fewer.");
 
   let setup;
+  let workforce: WorkforceAssignment[] = [];
+  let isImage = false;
+  let sessionId: string | null = null;
+  const projectId = body.projectId ? String(body.projectId) : null;
   try {
-    setup = await resolveFighters(body);
+    const explicit = body.fighterA?.id || body.fighterB?.id || body.modelAId || body.modelBId;
+    isImage = body.category === "image";
+    const outputCapability = isImage ? "image_generation" : "text_generation";
+    const initialWorkforce = !explicit ? await allocateArenaWorkforce({}, executionMode, outputCapability) : null;
+    setup = await resolveFighters(initialWorkforce ? {
+      ...body, modelAId: initialWorkforce[0].modelId, modelBId: initialWorkforce[1].modelId, workforceAllocated: true,
+    } : body);
+    workforce = initialWorkforce ?? await allocateArenaWorkforce(
+      { a: setup.a.modelId, b: setup.b.modelId }, executionMode, outputCapability
+    );
+    if (workforce.length) {
+      setup.a.sys += `\n\n${workforce[0].promptFragment}`;
+      setup.b.sys += `\n\n${workforce[1].promptFragment}`;
+    }
+    sessionId = await prepareExecutionSession({
+      sessionId: body.sessionId ? String(body.sessionId) : undefined, mode: "arena", executionMode, projectId,
+      title: `⚔️ Arena — ${prompt.slice(0, 80)}`, intent: "Compare competing responses", content: prompt,
+      metadata: { category: setup.category, executionMode },
+    });
+    if (workforce.length) await persistSessionWorkforceAssignments(sessionId, workforce);
+    await advanceSessionStage(sessionId, "generating_responses", { expectedPreviousStage: null });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "setup failed" }, { status: 500 });
+    if (sessionId) await transitionSession(sessionId, "failed", { errorCode: "ARENA_SETUP_FAILED", errorMessage: "Arena setup failed." }).catch(() => {});
+    return apiErrorResponse(e, {
+      code: "ARENA_SETUP_FAILED", message: "Arena setup failed.", stage: "selection", sessionId,
+    });
   }
-  const { left, right } = assignSides(setup);
+  const { left, right, swapped } = assignSides(setup);
+  const leftAssignment = workforce[swapped ? 1 : 0];
+  const rightAssignment = workforce[swapped ? 0 : 1];
 
-  const [battle] = await db
-    .insert(battles)
-    .values({
-      prompt,
-      category: setup.category,
-      modelAId: left.modelId,
-      modelBId: right.modelId,
-      assistantAId: left.assistantId ?? null,
-      assistantBId: right.assistantId ?? null,
-      responseA: "",
-      responseB: "",
-      latencyA: 0,
-      latencyB: 0,
-    })
-    .returning();
-  await db.insert(battleMessages).values({ battleId: battle.id, role: "user", content: prompt });
+  let battle;
+  try {
+    battle = await db.transaction(async (tx) => {
+      const [row] = await tx.insert(battles).values({
+        prompt, category: setup.category, modelAId: left.modelId, modelBId: right.modelId,
+        assistantAId: left.assistantId ?? null, assistantBId: right.assistantId ?? null,
+        responseA: "", responseB: "", latencyA: 0, latencyB: 0, projectId, sessionId,
+      }).returning();
+      await tx.insert(battleMessages).values({ battleId: row.id, role: "user", content: prompt });
+      return row;
+    });
+  } catch (error) {
+    console.error("battle persistence error", error);
+    await transitionSession(sessionId, "failed", {
+      errorCode: "ARENA_PERSISTENCE_FAILED", errorMessage: "Arena execution could not be persisted."
+    }).catch(() => {});
+    return apiErrorResponse(error, {
+      code: "ARENA_PERSISTENCE_FAILED", message: "Arena execution could not be persisted.",
+      stage: "persistence", retryable: true, sessionId,
+    });
+  }
 
   const started = Date.now();
   const stream = new ReadableStream<Uint8Array>({
@@ -64,24 +112,25 @@ export async function POST(req: Request) {
           /* closed */
         }
       };
-      send({ type: "meta", battleId: battle.id, sampling: setup.sampling, positionRandomized: true });
+      send({ type: "meta", battleId: battle.id, sessionId, sampling: setup.sampling, positionRandomized: true });
       let fullA = "";
       let fullB = "";
       try {
         const runSide = async (
           side: "a" | "b",
-          modelId: string,
+          assignment: WorkforceAssignment,
           sys: string,
           acc: { t: string }
         ) => {
           const t0 = Date.now();
-          for await (const chunk of generateStream({
-            modelId,
+          const execution = await executeWorkerStream({
+            sessionId, assignment,
             messages: [{ role: "user", content: prompt }],
             system: sys,
             keys: genKeys,
-            localOnly,
-          })) {
+            outputContract: isImage ? "image" : "text",
+          });
+          for await (const chunk of execution.stream) {
             acc.t += chunk;
             send({ type: "delta", side, delta: chunk });
           }
@@ -90,25 +139,29 @@ export async function POST(req: Request) {
         const accA = { t: "" };
         const accB = { t: "" };
         await Promise.all([
-          runSide("a", left.modelId, left.sys, accA),
-          runSide("b", right.modelId, right.sys, accB),
+          runSide("a", leftAssignment, left.sys, accA),
+          runSide("b", rightAssignment, right.sys, accB),
         ]);
         fullA = accA.t;
         fullB = accB.t;
         const totalMs = Date.now() - started;
-        await db
-          .update(battles)
-          .set({ responseA: fullA, responseB: fullB, latencyA: totalMs, latencyB: totalMs })
-          .where(eq(battles.id, battle.id));
-        await db.insert(battleMessages).values([
-          { battleId: battle.id, role: "a", content: fullA },
-          { battleId: battle.id, role: "b", content: fullB },
-        ]);
-        const [final] = await db.select().from(battles).where(eq(battles.id, battle.id)).limit(1);
+        const final = await db.transaction(async (tx) => {
+          const [row] = await tx.update(battles)
+            .set({ responseA: fullA, responseB: fullB, latencyA: totalMs, latencyB: totalMs })
+            .where(eq(battles.id, battle.id)).returning();
+          await tx.insert(battleMessages).values([
+            { battleId: battle.id, role: "a", content: fullA },
+            { battleId: battle.id, role: "b", content: fullB },
+          ]);
+          if (projectId) await tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId));
+          await transitionSessionInTransaction(tx, sessionId!, "completed", { payload: { battleId: battle.id } });
+          return row;
+        });
         send({
           type: "battle",
           battle: {
             id: final.id,
+            sessionId: final.sessionId,
             prompt: final.prompt,
             category: final.category,
             responseA: fullA,
@@ -132,7 +185,15 @@ export async function POST(req: Request) {
             })
             .where(eq(battles.id, battle.id));
         } catch {}
-        send({ type: "error", error: "stream failed" });
+        const failure = serializeApiError(e, {
+          code: "ARENA_STREAM_FAILED", message: "Arena stream failed.", stage: "execution",
+          retryable: true, sessionId,
+        });
+        await transitionSession(sessionId!, "failed", {
+          errorCode: failure.code, errorMessage: failure.message,
+          payload: { retryable: failure.retryable, executionId: failure.executionId }
+        }).catch(() => {});
+        send({ type: "error", error: failure });
       } finally {
         try {
           controller.close();

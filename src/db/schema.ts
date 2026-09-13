@@ -7,6 +7,8 @@ import {
   timestamp,
   uuid,
   primaryKey,
+  index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 // ---- Model registry (ELO tracked) ----
@@ -21,6 +23,9 @@ export const models = pgTable("models", {
   wins: integer("wins").notNull().default(0),
   ties: integer("ties").notNull().default(0),
   avgLatencyMs: integer("avg_latency_ms").notNull().default(0),
+  availability: text("availability").notNull().default("unknown"), // available|unavailable|unknown
+  supportsStructuredOutput: boolean("supports_structured_output").notNull().default(false),
+  capabilities: text("capabilities").notNull().default("[]"), // declared worker capability ids, JSON string[]
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
@@ -67,6 +72,7 @@ export const battles = pgTable("battles", {
   winner: text("winner"), // 'a' | 'b' | 'tie' | 'both-bad'
   judgeResult: text("judge_result"), // JSON: {suggestion, reasoning, raw, at}
   projectId: uuid("project_id"),
+  sessionId: uuid("session_id").references(() => cognitiveSessions.id).unique(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -101,6 +107,7 @@ export const collabs = pgTable("collabs", {
   rounds: integer("rounds").notNull().default(1),
   bestContributor: integer("best_contributor"), // index into collaborators
   projectId: uuid("project_id"),
+  sessionId: uuid("session_id").references(() => cognitiveSessions.id).unique(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -132,9 +139,11 @@ export const councilRuns = pgTable("council_runs", {
   perspectiveB: text("perspective_b").notNull().default(""),
   critiqueA: text("critique_a").notNull().default(""), // A critiques B
   critiqueB: text("critique_b").notNull().default(""), // B critiques A
-  synthesis: text("synthesis").notNull().default(""),
+  synthesis: text("synthesis").notNull().default(""), // rendered structured synthesis
+  structuredSynthesis: text("structured_synthesis"), // validated CouncilSynthesis JSON
   latencyMs: integer("latency_ms").notNull().default(0),
   projectId: uuid("project_id"),
+  sessionId: uuid("session_id"), // mode execution points to generic session root
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -153,18 +162,114 @@ export const councilArtifacts = pgTable("council_artifacts", {
 export const cognitiveSessions = pgTable("cognitive_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   projectId: uuid("project_id"),
-  councilRunId: uuid("council_run_id"),
+  mode: text("mode").notNull(), // council|arena|collab
+  executionMode: text("execution_mode").notNull().default("online"), // online|offline|local_only
+  maxExecutionAttempts: integer("max_execution_attempts").notNull().default(2),
+  fallbackPolicy: text("fallback_policy").notNull().default("none"),
+  intent: text("intent"),
   title: text("title").notNull().default("Untitled cognitive session"),
-  jobId: text("job_id").notNull().default("second_brain"),
-  material: text("material").notNull(),
-  modelAId: text("model_a_id").notNull(),
-  modelBId: text("model_b_id").notNull(),
-  synthesisModel: text("synthesis_model").notNull(),
-  roleALabel: text("role_a_label").notNull().default(""),
-  roleBLabel: text("role_b_label").notNull().default(""),
-  status: text("status").notNull().default("completed"), // running|completed|failed|archived
+  status: text("status").notNull().default("created"), // created|running|completed|failed
+  currentStage: text("current_stage"), // mode-owned stage; never a generic status
+  nextEventSequence: integer("next_event_sequence").notNull().default(1),
+  metadata: text("metadata").notNull().default("{}"), // bounded mode metadata, JSON
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
   createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  failedAt: timestamp("failed_at"),
 });
+
+export const cognitiveSessionInputs = pgTable("cognitive_session_inputs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull().references(() => cognitiveSessions.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull().default("primary"),
+  content: text("content").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (t) => [
+  index("cognitive_session_inputs_session_id_idx").on(t.sessionId),
+]);
+
+// Append-only operational history for every cognitive session mode. Generated
+// content remains on mode/output records; event payloads contain metadata only.
+export const cognitiveSessionAssignments = pgTable("cognitive_session_assignments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull().references(() => cognitiveSessions.id, { onDelete: "cascade" }),
+  slot: text("slot").notNull(), // perspective_a|perspective_b|synthesis
+  requestedRole: text("requested_role").notNull(),
+  workforceRoleId: text("workforce_role_id").notNull(),
+  workerId: text("worker_id").notNull(),
+  provider: text("provider").notNull(),
+  modelId: text("model_id").notNull(),
+  executionMode: text("execution_mode").notNull().default("online"),
+  eligibilityDecision: text("eligibility_decision").notNull().default("eligible under default online policy"),
+  workerAvailability: text("worker_availability").notNull().default("unknown"),
+  capabilitiesConsidered: text("capabilities_considered").notNull().default("[]"), // JSON string[]
+  nextExecutionAttempt: integer("next_execution_attempt").notNull().default(1),
+  selectionReason: text("selection_reason").notNull(),
+  capabilityMatch: text("capability_match").notNull().default("[]"), // JSON string[]
+  createdAt: timestamp("created_at").defaultNow(),
+}, (t) => [
+  uniqueIndex("cognitive_session_assignments_session_slot_unique").on(t.sessionId, t.slot),
+  index("cognitive_session_assignments_session_id_idx").on(t.sessionId),
+]);
+
+export const workerExecutions = pgTable("worker_executions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull().references(() => cognitiveSessions.id, { onDelete: "cascade" }),
+  assignmentId: uuid("assignment_id").notNull().references(() => cognitiveSessionAssignments.id, { onDelete: "cascade" }),
+  attemptNumber: integer("attempt_number").notNull().default(1),
+  previousExecutionId: uuid("previous_execution_id"),
+  retryReason: text("retry_reason"),
+  fallbackSourceAssignmentId: uuid("fallback_source_assignment_id"),
+  fallbackPolicy: text("fallback_policy").notNull().default("none"),
+  status: text("status").notNull().default("running"), // running|completed|failed
+  selectedProvider: text("selected_provider").notNull(),
+  selectedModelId: text("selected_model_id").notNull(),
+  actualProvider: text("actual_provider"),
+  actualModelId: text("actual_model_id"),
+  route: text("route"),
+  outputContract: text("output_contract").notNull().default("text"),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  metadata: text("metadata").notNull().default("{}"),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+}, (t) => [
+  index("worker_executions_session_id_idx").on(t.sessionId, t.startedAt),
+  index("worker_executions_assignment_id_idx").on(t.assignmentId, t.startedAt),
+  uniqueIndex("worker_executions_assignment_attempt_unique").on(t.assignmentId, t.attemptNumber),
+]);
+
+export const handoffs = pgTable("handoffs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sourceSessionId: uuid("source_session_id").references(() => cognitiveSessions.id, { onDelete: "set null" }),
+  targetSessionId: uuid("target_session_id").notNull().references(() => cognitiveSessions.id, { onDelete: "cascade" }),
+  sourceArtifactId: uuid("source_artifact_id"),
+  sourceProjectId: uuid("source_project_id"),
+  targetProjectId: uuid("target_project_id"),
+  type: text("type").notNull().default("continue"),
+  intent: text("intent"),
+  payload: text("payload").notNull().default("{}"), // references + digest, never transcript content
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (t) => [
+  index("handoffs_source_session_id_idx").on(t.sourceSessionId),
+  index("handoffs_target_session_id_idx").on(t.targetSessionId),
+]);
+
+export const cognitiveSessionEvents = pgTable("cognitive_session_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull().references(() => cognitiveSessions.id, { onDelete: "cascade" }),
+  type: text("type").notNull(),
+  sequence: integer("sequence").notNull(),
+  payload: text("payload").notNull().default("{}"), // structured JSON metadata
+  createdAt: timestamp("created_at").defaultNow(),
+}, (t) => [
+  uniqueIndex("cognitive_session_events_session_sequence_unique").on(t.sessionId, t.sequence),
+  index("cognitive_session_events_session_id_idx").on(t.sessionId, t.sequence),
+]);
 
 // ---- Canonical Work OS: Projects + Artifacts + Memory ----
 // Projects are the first-class object above battles / collabs / council runs.
@@ -250,6 +355,9 @@ export type PrivacyEventRow = typeof privacyEvents.$inferSelect;
 export type CouncilRunRow = typeof councilRuns.$inferSelect;
 export type CouncilArtifactRow = typeof councilArtifacts.$inferSelect;
 export type CognitiveSessionRow = typeof cognitiveSessions.$inferSelect;
+export type CognitiveSessionInputRow = typeof cognitiveSessionInputs.$inferSelect;
+export type CognitiveSessionAssignmentRow = typeof cognitiveSessionAssignments.$inferSelect;
+export type HandoffRow = typeof handoffs.$inferSelect;
 export type ProjectRow = typeof projects.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type ProjectMemoryRow = typeof projectMemory.$inferSelect;

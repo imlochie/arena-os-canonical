@@ -22,10 +22,12 @@ export default function CouncilLab() {
   const [material, setMaterial] = useState("");
   const [modelA, setModelA] = useState("random");
   const [modelB, setModelB] = useState("random");
-  const [synthModel, setSynthModel] = useState("openai");
+  const [synthModel, setSynthModel] = useState("auto");
 
   const [running, setRunning] = useState(false);
-  const [stage, setStage] = useState(0);
+  const [lifecycle, setLifecycle] = useState("created");
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionStatus, setSessionStatus] = useState<string | null>(null);
   const [run, setRun] = useState<any | null>(null);
   const [artifact, setArtifact] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +45,7 @@ export default function CouncilLab() {
   const textModels = models.filter((m) => m.kind === "text");
   const job = getCognitiveJob(jobId);
   const isEph = !!run?.ephemeral;
+  const stage = ["perspectives", "cross_critique", "synthesis", "artifact_generation"].indexOf(lifecycle);
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -55,6 +58,26 @@ export default function CouncilLab() {
       const j = await r.json();
       setArtifacts(j.artifacts ?? []);
     } catch {}
+  }, []);
+
+  const loadSession = useCallback(async (id: string) => {
+    const r = await fetch(`/api/cognitive-sessions/${id}`, { cache: "no-store" });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error?.message ?? "session lookup failed");
+    setLifecycle(data.session.lifecycleState ?? data.session.status);
+    setSessionId(id);
+    setSessionStatus(data.session.status);
+    if (typeof data.session.metadata?.jobId === "string") setJobId(data.session.metadata.jobId);
+    const primaryInput = data.inputs?.find((input: any) => input.kind === "primary") ?? data.inputs?.[0];
+    if (primaryInput?.content) setMaterial(primaryInput.content);
+    if (data.session.projectId) setProjectId(data.session.projectId);
+    setRunning(data.session.status !== "created" && !data.terminal);
+    if (data.run) setRun(data.run);
+    if (data.artifact) setArtifact(data.artifact);
+    if (data.session.status === "failed") {
+      setError(data.session.errorMessage ?? "Council execution failed.");
+    }
+    return data;
   }, []);
 
   useEffect(() => {
@@ -71,41 +94,86 @@ export default function CouncilLab() {
       if (jb && COGNITIVE_JOBS.some((j) => j.id === jb)) setJobId(jb);
       const src = q.get("source");
       if (src) setHandoffSource(src);
+      const sid = q.get("sessionId");
+      if (sid) {
+        loadSession(sid).catch(() => {});
+        const poll = window.setInterval(async () => {
+          try {
+            const data = await loadSession(sid);
+            if (data.terminal) window.clearInterval(poll);
+          } catch {}
+        }, 1000);
+        return () => window.clearInterval(poll);
+      }
     } catch {}
-  }, [fetchHistory]);
+  }, [fetchHistory, loadSession]);
 
   async function start(m?: string, j?: string) {
     const mat = (m ?? material).trim();
     if (!mat || running) return;
     const jobPick = j ?? jobId;
+    const inheritedSessionId = sessionStatus === "created" ? sessionId : null;
     setMaterial(mat);
     setJobId(jobPick);
     setRunning(true);
-    setStage(0);
+    setLifecycle("created");
+    if (!inheritedSessionId) setSessionId(null);
     setError(null);
     setNotice(null);
     setRun(null);
     setArtifact(null);
-    const timers = [
-      setTimeout(() => setStage(1), 20000),
-      setTimeout(() => setStage(2), 45000),
-      setTimeout(() => setStage(3), 70000),
-    ];
+    let poll: number | null = null;
+    let activeSessionId: string | null = null;
     try {
-      const payload: any = { material: mat, jobId: jobPick, keys: loadKeys(), ...privacyFlags() };
+      const flags = privacyFlags();
+      const payload: any = { material: mat, jobId: jobPick, keys: loadKeys(), ...flags };
       if (modelA !== "random") payload.modelAId = modelA;
       if (modelB !== "random") payload.modelBId = modelB;
-      payload.synthesisModel = synthModel;
+      if (synthModel !== "auto") payload.synthesisModel = synthModel;
       if (projectId) payload.projectId = projectId;
+
+      // Ephemeral mode intentionally creates no durable record. Every persisted
+      // Council creates its session first, then executes in a second request.
+      if (!flags.ephemeral) {
+        let createdSessionId = inheritedSessionId;
+        if (!createdSessionId) {
+          const createdResponse = await fetch("/api/cognitive-sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: "council", material: mat, jobId: jobPick, projectId: projectId || undefined }),
+          });
+          const created = await createdResponse.json();
+          if (!createdResponse.ok) throw new Error(created.error?.message ?? "session creation failed");
+          createdSessionId = String(created.session.id);
+        }
+        activeSessionId = createdSessionId;
+        payload.sessionId = createdSessionId;
+        setSessionId(createdSessionId);
+        const url = new URL(window.location.href);
+        url.searchParams.set("sessionId", createdSessionId);
+        window.history.replaceState({}, "", url);
+        poll = window.setInterval(async () => {
+          try {
+            const state = await loadSession(createdSessionId);
+            if (state.terminal && poll !== null) window.clearInterval(poll);
+          } catch {}
+        }, 1000);
+      } else {
+        setLifecycle("perspectives");
+      }
+
       const r = await fetch("/api/council", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       const data = await r.json();
-      if (!r.ok) throw new Error(data.error ?? "council run failed");
+      if (!r.ok) throw new Error(data.error?.message ?? data.error ?? "council run failed");
       setRun(data.run);
       setArtifact(data.artifact ?? null);
+      setLifecycle("completed");
+      if (activeSessionId) await loadSession(activeSessionId);
+      if (poll !== null) window.clearInterval(poll);
       if (!data.run?.ephemeral) fetchHistory();
       const secs = data.ms ? (data.ms / 1000).toFixed(0) : "?";
       setNotice(
@@ -113,11 +181,14 @@ export default function CouncilLab() {
           (data.localOnly ? " 🔒 Fully on-device." : "")
       );
     } catch (e: any) {
+      const state = activeSessionId ? await loadSession(activeSessionId).catch(() => null) : null;
+      if (!state || state.terminal) {
+        if (poll !== null) window.clearInterval(poll);
+        setRunning(false);
+      }
       setError(e.message ?? "run failed");
     } finally {
-      timers.forEach(clearTimeout);
-      setRunning(false);
-      setStage(0);
+      if (!activeSessionId) setRunning(false);
     }
   }
 
@@ -257,7 +328,7 @@ export default function CouncilLab() {
                 onChange={(e) => setModelA(e.target.value)}
                 className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs font-semibold text-white focus:border-cyan-500 focus:outline-none"
               >
-                <option value="random">🎲 Random mind</option>
+                <option value="random">🧑‍💼 Workforce auto-assign</option>
                 {textModels.map((m) => (
                   <option key={m.id} value={m.id}>{m.emoji} {m.name}</option>
                 ))}
@@ -272,7 +343,7 @@ export default function CouncilLab() {
                 onChange={(e) => setModelB(e.target.value)}
                 className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs font-semibold text-white focus:border-cyan-500 focus:outline-none"
               >
-                <option value="random">🎲 Random mind</option>
+                <option value="random">🧑‍💼 Workforce auto-assign</option>
                 {textModels.map((m) => (
                   <option key={m.id} value={m.id}>{m.emoji} {m.name}</option>
                 ))}
@@ -287,6 +358,7 @@ export default function CouncilLab() {
                 onChange={(e) => setSynthModel(e.target.value)}
                 className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs font-semibold text-white focus:border-cyan-500 focus:outline-none"
               >
+                <option value="auto">🧑‍💼 Workforce auto-assign</option>
                 {textModels.map((m) => (
                   <option key={m.id} value={m.id}>{m.emoji} {m.name}</option>
                 ))}
@@ -329,7 +401,9 @@ export default function CouncilLab() {
                 ))}
               </div>
               <p className="mt-1.5 text-center text-xs text-slate-400">
-                {COUNCIL_STAGES[stage]?.desc} — disagreement in progress…
+                {COUNCIL_STAGES[stage]?.desc ?? "Creating the durable session and assembling the Council…"}
+                {stage >= 0 ? " — disagreement in progress…" : ""}
+                {sessionId ? <span className="ml-1 font-mono text-[10px] text-slate-600">{sessionId.slice(0, 8)}</span> : null}
               </p>
             </div>
           )}
@@ -420,7 +494,7 @@ export default function CouncilLab() {
               </div>
               {!run.ephemeral && (
                 <div className="border-t border-cyan-400/20 p-3">
-                  <HandoffButtons text={run.synthesis} projectId={projectId || run.projectId} source={`council:${run.id}`} exclude={["council"]} />
+                  <HandoffButtons text={run.synthesis} projectId={projectId || run.projectId} sourceSessionId={run.sessionId} source={`council:${run.id}`} exclude={["council"]} />
                 </div>
               )}
             </div>
@@ -451,7 +525,7 @@ export default function CouncilLab() {
                 </div>
                 {!run.ephemeral && (
                   <div className="border-t border-amber-400/20 p-3">
-                    <HandoffButtons text={artifact.body} projectId={projectId || run.projectId} source={`council:${run.id}`} exclude={["council"]} />
+                    <HandoffButtons text={artifact.body} projectId={projectId || run.projectId} sourceSessionId={run.sessionId} source={`council:${run.id}`} exclude={["council"]} />
                   </div>
                 )}
               </div>

@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import {
   arcadeGames,
@@ -20,7 +21,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   try {
     const { id } = await params;
     const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
-    if (!project) return Response.json({ error: "not found" }, { status: 404 });
+    if (!project) return standardApiError("RESOURCE_NOT_FOUND", "Not found.", 404);
 
     const [b, c, r, ch, a, mem, arts, carts] = await Promise.all([
       db.select().from(battles).where(eq(battles.projectId, id)).orderBy(desc(battles.createdAt)).limit(10),
@@ -50,7 +51,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Failed.", 500);
   }
 }
 
@@ -64,11 +65,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (body.emoji !== undefined) patch.emoji = String(body.emoji).slice(0, 8);
     if (body.status !== undefined) patch.status = String(body.status).slice(0, 20);
     const [row] = await db.update(projects).set(patch).where(eq(projects.id, id)).returning();
-    if (!row) return Response.json({ error: "not found" }, { status: 404 });
+    if (!row) return standardApiError("RESOURCE_NOT_FOUND", "Not found.", 404);
     return Response.json({ project: row });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "update failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Update failed.", 500);
   }
 }
 
@@ -88,6 +89,6 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "delete failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Delete failed.", 500);
   }
 }

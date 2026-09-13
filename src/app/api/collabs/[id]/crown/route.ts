@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import { collabs, models, modelCategoryRatings } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
+import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
 
@@ -11,16 +12,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const body = await req.json();
     const index = Number(body.index);
     if (!Number.isInteger(index) || index < 0) {
-      return Response.json({ error: "index required" }, { status: 400 });
+      return validationError("INVALID_REQUEST", "Contributor index is required.");
     }
     const [collab] = await db.select().from(collabs).where(eq(collabs.id, id)).limit(1);
-    if (!collab) return Response.json({ error: "not found" }, { status: 404 });
+    if (!collab) return validationError("SESSION_NOT_FOUND", "Requested execution was not found.", 404, "session");
     if (collab.bestContributor !== null && collab.bestContributor !== undefined) {
-      return Response.json({ error: "already crowned", bestContributor: collab.bestContributor }, { status: 400 });
+      return validationError("INVALID_SESSION_STATE", "A contributor has already been crowned.", 409, "session");
     }
     const stored: any[] = JSON.parse(collab.collaborators || "[]");
     const winner = stored[index];
-    if (!winner) return Response.json({ error: "bad index" }, { status: 400 });
+    if (!winner) return validationError("INVALID_REQUEST", "Contributor index is invalid.");
 
     await db.update(collabs).set({ bestContributor: index }).where(eq(collabs.id, id));
 
@@ -56,6 +57,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ ok: true, bestContributor: index, modelId, eloBonus: 5 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "crown failed" }, { status: 500 });
+    return apiErrorResponse(e, { code: "CROWN_PERSISTENCE_FAILED", message: "Unable to crown contributor.", stage: "persistence", retryable: true });
   }
 }

@@ -77,7 +77,7 @@ export async function resolveFighters(body: any): Promise<ResolvedSetup> {
   let a = await resolveSide(body.fighterA, isImage, body.modelAId);
   let b = await resolveSide(body.fighterB, isImage, body.modelBId);
 
-  if (!a || !b || (a.modelId === b.modelId && a.assistantId === b.assistantId)) {
+  if (!a || !b || (!body.workforceAllocated && a.modelId === b.modelId && a.assistantId === b.assistantId)) {
     const [m1, m2] = isImage ? randomImagePair() : randomPair();
     a = {
       modelId: m1.id,

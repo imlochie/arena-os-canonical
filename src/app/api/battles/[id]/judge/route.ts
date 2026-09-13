@@ -1,9 +1,10 @@
 import { db } from "@/db";
-import { battles, battleMessages } from "@/db/schema";
-import { asc, eq } from "drizzle-orm";
-import { generate } from "@/lib/ai";
-import { localJudge } from "@/lib/localEngine";
-import { isLocalOnlyBody } from "@/lib/privacy";
+import { battles, battleMessages, cognitiveSessionAssignments, cognitiveSessions } from "@/db/schema";
+import { and, asc, eq } from "drizzle-orm";
+import { executeWorker } from "@/lib/workerExecutor";
+import { resolveExecutionMode, storedExecutionMode } from "@/lib/executionPolicy";
+import { allocateWorkforce, persistSessionWorkforceAssignments } from "@/lib/workforceRuntime";
+import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 90;
@@ -26,22 +27,26 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const keys = body.keys;
 
     const [battle] = await db.select().from(battles).where(eq(battles.id, id)).limit(1);
-    if (!battle) return Response.json({ error: "not found" }, { status: 404 });
+    if (!battle) return validationError("SESSION_NOT_FOUND", "Arena execution not found.", 404, "session");
+    const [session] = battle.sessionId
+      ? await db.select().from(cognitiveSessions).where(eq(cognitiveSessions.id, battle.sessionId)).limit(1)
+      : [];
+    const executionMode = storedExecutionMode(session?.executionMode, session?.metadata) ?? resolveExecutionMode(body);
 
-    // Local Mode: transparent on-device heuristic rubric, zero egress.
-    if (isLocalOnlyBody(body)) {
-      const j = localJudge(battle.prompt, battle.responseA ?? "", battle.responseB ?? "");
-      const localResult = {
-        suggestion: j.suggestion,
-        scoreA: j.scoreA,
-        scoreB: j.scoreB,
-        reasoning: j.reasoning,
-        raw: j.reasoning,
-        via: "local:heuristic",
-        at: new Date().toISOString(),
-      };
-      await db.update(battles).set({ judgeResult: JSON.stringify(localResult) }).where(eq(battles.id, id));
-      return Response.json({ judge: localResult });
+    if (!battle.sessionId || !session) {
+      return validationError("INVALID_SESSION_STATE", "Arena session is unavailable.", 409, "session");
+    }
+    let [judgeAssignment] = await db.select().from(cognitiveSessionAssignments).where(and(
+      eq(cognitiveSessionAssignments.sessionId, battle.sessionId),
+      eq(cognitiveSessionAssignments.slot, "judge")
+    )).limit(1);
+    if (!judgeAssignment) {
+      const [allocated] = await allocateWorkforce([{
+        slot: "judge", requestedRole: "Arena Impartial Judge", workforceRoleId: "critic",
+        requiredCapabilities: ["text_generation"],
+      }], executionMode);
+      const persisted = await persistSessionWorkforceAssignments(battle.sessionId, [allocated]);
+      judgeAssignment = persisted.assignments[0];
     }
 
     const msgs = await db
@@ -63,8 +68,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       }
     }
 
-    const result = await generate({
-      modelId: "deepseek",
+    const result = await executeWorker({
+      sessionId: battle.sessionId, assignment: judgeAssignment,
       messages: [{ role: "user", content: transcript.slice(0, 12000) }],
       system: JUDGE_SYSTEM,
       temperature: 0.2,
@@ -97,6 +102,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ judge: judgeResult });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "judge failed" }, { status: 500 });
+    return apiErrorResponse(e, { code: "ARENA_JUDGE_FAILED", message: "Arena judge execution failed.", stage: "execution", retryable: true });
   }
 }

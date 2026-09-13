@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { projectMemory, projects } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
@@ -26,17 +27,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     const { id } = await params;
     const [p] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
-    if (!p) return Response.json({ error: "project not found" }, { status: 404 });
+    if (!p) return standardApiError("RESOURCE_NOT_FOUND", "Project not found.", 404);
     const body = await req.json();
     const kind = KINDS.includes(String(body.kind)) ? String(body.kind) : "fact";
     const content = (body.content ?? "").toString().trim().slice(0, 2000);
-    if (!content) return Response.json({ error: "content required" }, { status: 400 });
+    if (!content) return standardApiError("INVALID_REQUEST", "Content required.", 400);
     const [row] = await db.insert(projectMemory).values({ projectId: id, kind, content }).returning();
     await db.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, id));
     return Response.json({ memory: row }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "create failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Create failed.", 500);
   }
 }
 
@@ -45,12 +46,12 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     const { id } = await params;
     const url = new URL(req.url);
     const memId = url.searchParams.get("id");
-    if (!memId) return Response.json({ error: "id required" }, { status: 400 });
+    if (!memId) return standardApiError("INVALID_REQUEST", "Id required.", 400);
     await db.delete(projectMemory).where(eq(projectMemory.id, memId));
     await db.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, id));
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "delete failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Delete failed.", 500);
   }
 }

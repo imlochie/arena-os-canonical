@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { battles, battleMessages, assistants, models } from "@/db/schema";
 import { asc, eq, inArray } from "drizzle-orm";
 import { logPrivacyEvent } from "@/lib/privacy";
+import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +11,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   try {
     const { id } = await params;
     const [battle] = await db.select().from(battles).where(eq(battles.id, id)).limit(1);
-    if (!battle) return Response.json({ error: "not found" }, { status: 404 });
+    if (!battle) return validationError("SESSION_NOT_FOUND", "Requested execution was not found.", 404, "session");
 
     const msgs = await db
       .select()
@@ -59,7 +60,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "failed" }, { status: 500 });
+    return apiErrorResponse(e, { code: "READ_FAILED", message: "Unable to load execution.", stage: "persistence" });
   }
 }
 
@@ -73,6 +74,6 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "delete failed" }, { status: 500 });
+    return apiErrorResponse(e, { code: "DELETE_FAILED", message: "Unable to delete execution.", stage: "persistence" });
   }
 }

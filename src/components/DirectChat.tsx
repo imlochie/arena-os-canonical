@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "@/lib/apiErrorClient";
+
 import { useEffect, useRef, useState } from "react";
 import Markdown from "./Markdown";
 import { loadKeys } from "./KeysBar";
@@ -102,7 +104,7 @@ export default function DirectChat() {
         body: JSON.stringify(payload),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "failed"));
       if (j.chat) {
         setChatId(j.chat.id);
         refreshChats();

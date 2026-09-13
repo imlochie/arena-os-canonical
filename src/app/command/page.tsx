@@ -127,11 +127,16 @@ export default function CommandPage() {
               ))}
             </div>
             <div className="mt-3 space-y-1.5">
-              {sessions.slice(0, 4).map((s: any) => (
-                <a key={s.id} href={`/council?material=${encodeURIComponent(s.material.slice(0, 2500))}&projectId=${encodeURIComponent(s.projectId ?? "")}&jobId=${encodeURIComponent(s.jobId)}`} className="block truncate rounded-lg bg-white/[0.03] px-3 py-2 text-xs text-slate-300 ring-1 ring-white/5 hover:ring-cyan-500/40">
-                  🧠 <span className="font-bold text-white">{s.title}</span> <span className="text-slate-500">· {s.jobId}</span>
-                </a>
-              ))}
+              {sessions.slice(0, 4).map((s: any) => {
+                const destination = s.mode === "council"
+                  ? `/council?sessionId=${encodeURIComponent(s.id)}`
+                  : s.mode === "collab" ? "/collab" : "/";
+                return (
+                  <a key={s.id} href={destination} className="block truncate rounded-lg bg-white/[0.03] px-3 py-2 text-xs text-slate-300 ring-1 ring-white/5 hover:ring-cyan-500/40">
+                    🧠 <span className="font-bold text-white">{s.title}</span> <span className="text-slate-500">· {s.mode} · {s.status}</span>
+                  </a>
+                );
+              })}
               {(data?.recent?.artifacts ?? []).slice(0, 4).map((a: any) => (
                 <a key={a.id} href="/artifacts" className="block truncate rounded-lg bg-white/[0.03] px-3 py-2 text-xs text-slate-300 ring-1 ring-white/5 hover:ring-violet-500/40">
                   📦 <span className="font-bold text-white">{a.title}</span> <span className="text-slate-500">· {a.kind}</span>

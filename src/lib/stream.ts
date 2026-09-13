@@ -80,8 +80,10 @@ export async function* generateStream(opts: GenerateOpts): AsyncGenerator<string
     }
     clearTimeout(timer);
     if (!yielded) throw new Error("empty stream");
-  } catch {
-    // Fallback: full cascade (BYOK → keyless → GET → offline), one chunk
+  } catch (error) {
+    if (opts.strictRoute) throw error;
+    // Legacy callers retain the compatibility cascade. Assigned-worker calls
+    // fail explicitly so a fallback can only happen through a new assignment.
     const r = await generate(opts);
     yield r.text;
   }

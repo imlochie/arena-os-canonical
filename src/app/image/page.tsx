@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "@/lib/apiErrorClient";
+
 import { useEffect, useState } from "react";
 import { loadKeys } from "@/components/KeysBar";
 import PrivacyControls from "@/components/PrivacyControls";
@@ -88,7 +90,7 @@ export default function ImageArenaPage() {
         body: JSON.stringify(body),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "battle failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "battle failed"));
       setBattle(j.battle);
       setPrompt(q);
     } catch (e: any) {

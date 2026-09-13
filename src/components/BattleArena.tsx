@@ -6,9 +6,11 @@ import { loadKeys } from "./KeysBar";
 import PrivacyControls from "./PrivacyControls";
 import ProjectPicker from "./ProjectPicker";
 import HandoffButtons from "./HandoffButtons";
+import { fetchHandoffContext } from "@/lib/handoffs";
 import { privacyFlags, usePrivacySettings } from "@/lib/privacyClient";
 import { localJudge } from "@/lib/localEngine";
 import { CATEGORIES } from "@/lib/models";
+import { apiErrorMessage } from "@/lib/apiErrorClient";
 
 interface ModelInfo {
   id: string;
@@ -84,6 +86,7 @@ export default function BattleArena() {
   const [isLocal, setIsLocal] = useState(false);
   const [projectId, setProjectId] = useState("");
   const [handoffSource, setHandoffSource] = useState<string | null>(null);
+  const [handoffSessionId, setHandoffSessionId] = useState<string | null>(null);
   const privacy = usePrivacySettings();
   const abortRef = useRef<AbortController | null>(null);
 
@@ -117,6 +120,13 @@ export default function BattleArena() {
       if (pj) setProjectId(pj);
       const src = q.get("source");
       if (src) setHandoffSource(src);
+      const handoffId = q.get("handoffId");
+      if (handoffId) fetchHandoffContext(handoffId).then(({ handoff, targetSession, input }) => {
+        if (input?.content) setPrompt(input.content.slice(0, 4000));
+        if (targetSession?.projectId) setProjectId(targetSession.projectId);
+        if (targetSession?.id) setHandoffSessionId(targetSession.id);
+        setHandoffSource(`handoff:${handoff.id}`);
+      }).catch(() => {});
     } catch {}
   }, [fetchModels, fetchHistory]);
 
@@ -172,6 +182,7 @@ export default function BattleArena() {
     setIsLocal(flags.localOnly);
     const body: any = { prompt: q, category, keys: loadKeys(), ...flags };
     if (projectId) body.projectId = projectId;
+    if (!flags.ephemeral && handoffSessionId) body.sessionId = handoffSessionId;
     if (mode === "pick") {
       body.fighterA = parseFighter(fighterA);
       body.fighterB = parseFighter(fighterB);
@@ -185,7 +196,7 @@ export default function BattleArena() {
         body: JSON.stringify(body),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "battle failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "battle failed"));
       setBattleId(j.battle.id);
       if (j.battle.ephemeral) setEphToken(j.battle.revealToken ?? null);
       setTurns([{ prompt: q, a: j.battle.responseA, b: j.battle.responseB }]);
@@ -204,14 +215,11 @@ export default function BattleArena() {
         setStreaming(false);
         return;
       }
-      try {
-        await runClassic();
-      } catch (e2: any) {
-        setError(e2.message ?? "Something went wrong");
-        setTurns([]);
-      } finally {
-        setStreaming(false);
-      }
+      // Once a durable stream has been accepted it owns its Cognitive Session.
+      // Retrying through the classic route would create a second execution.
+      setError(e.message ?? "Something went wrong");
+      setTurns([]);
+      setStreaming(false);
       return;
     }
     setStreaming(false);
@@ -257,7 +265,7 @@ export default function BattleArena() {
           accA = evt.battle.responseA;
           accB = evt.battle.responseB;
           apply();
-        } else if (evt.type === "error") throw new Error(evt.error ?? "stream failed");
+        } else if (evt.type === "error") throw new Error(apiErrorMessage(evt.error, "stream failed"));
       }
     }
   }
@@ -276,7 +284,7 @@ export default function BattleArena() {
         body: JSON.stringify({ message: msg, keys: loadKeys(), ...privacyFlags() }),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "followup failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "followup failed"));
       setTurns((t) => {
         const next = [...t];
         next[next.length - 1] = { prompt: msg, a: j.responseA, b: j.responseB };
@@ -308,7 +316,7 @@ export default function BattleArena() {
         body: JSON.stringify({ keys: loadKeys(), ...privacyFlags() }),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "judge failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "judge failed"));
       setJudge(j.judge);
     } catch (e: any) {
       setError(e.message ?? "judge failed");
@@ -329,7 +337,7 @@ export default function BattleArena() {
           body: JSON.stringify({ revealToken: ephToken, winner }),
         });
         const j = await r.json();
-        if (!r.ok) throw new Error(j.error ?? "reveal failed");
+        if (!r.ok) throw new Error(apiErrorMessage(j.error, "reveal failed"));
         setRevealed({
           modelAId: j.modelAId,
           modelBId: j.modelBId,
@@ -347,7 +355,7 @@ export default function BattleArena() {
         body: JSON.stringify({ winner }),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "vote failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "vote failed"));
       const b = j.battle;
       const aA = assistantLabel(b.assistantAId);
       const aB = assistantLabel(b.assistantBId);

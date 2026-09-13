@@ -1,5 +1,7 @@
 "use client";
 
+import { apiErrorMessage } from "@/lib/apiErrorClient";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import PrivacyControls from "./PrivacyControls";
 import { privacyFlags, usePrivacySettings } from "@/lib/privacyClient";
@@ -122,7 +124,7 @@ export default function ArcadeForge() {
       body: JSON.stringify({ ...payload, ...privacyFlags() }),
     }).then(async (r) => {
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "save failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "save failed"));
       return j.game;
     });
   }

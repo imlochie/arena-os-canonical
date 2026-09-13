@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { assistants, models } from "@/db/schema";
 import { inArray } from "drizzle-orm";
 import { logPrivacyEvent, openReveal } from "@/lib/privacy";
+import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
 
@@ -13,16 +14,16 @@ export async function POST(req: Request) {
     const body = await req.json();
     const token: string = (body.revealToken ?? "").toString();
     const winner: string = (body.winner ?? "").toString();
-    if (!token) return Response.json({ error: "revealToken required" }, { status: 400 });
+    if (!token) return validationError("INVALID_REQUEST", "Reveal token is required.");
     if (!["a", "b", "tie", "both-bad"].includes(winner)) {
-      return Response.json({ error: "invalid winner" }, { status: 400 });
+      return validationError("INVALID_REQUEST", "Winner is invalid.");
     }
     const seal = openReveal(token);
     if (!seal || !seal.a || !seal.b) {
-      return Response.json({ error: "invalid or expired reveal token" }, { status: 400 });
+      return validationError("INVALID_REQUEST", "Reveal token is invalid or expired.");
     }
     if (seal.exp && Date.now() > seal.exp) {
-      return Response.json({ error: "reveal token expired" }, { status: 400 });
+      return validationError("INVALID_REQUEST", "Reveal token has expired.");
     }
 
     const modelRows = await db.select().from(models).where(inArray(models.id, [seal.a, seal.b]));
@@ -57,6 +58,6 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "reveal failed" }, { status: 500 });
+    return apiErrorResponse(e, { code: "REVEAL_FAILED", message: "Unable to reveal battle.", stage: "execution" });
   }
 }

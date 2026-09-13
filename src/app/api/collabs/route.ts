@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { collabs, collabContributions } from "@/db/schema";
 import { desc } from "drizzle-orm";
-import { generate } from "@/lib/ai";
+import { executeWorker } from "@/lib/workerExecutor";
 import {
   getStrategy,
   randomCollaborators,
@@ -9,13 +9,18 @@ import {
   type Collaborator,
   type CollaboratorInput,
 } from "@/lib/collab";
-import { localCollabDraft, localSynthesis } from "@/lib/localEngine";
 import { getModel } from "@/lib/models";
-import { isEphemeralBody, isLocalOnlyBody, logPrivacyEvent } from "@/lib/privacy";
+import { isEphemeralBody, logPrivacyEvent } from "@/lib/privacy";
+import { requiresLocalExecution, resolveExecutionMode } from "@/lib/executionPolicy";
 import { getProjectContext, withProjectContext } from "@/lib/projectContext";
 import { ensureSeeded } from "@/lib/seed";
 import { projects } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { prepareExecutionSession } from "@/lib/executionSession";
+import { advanceSessionStage, transitionSession, transitionSessionInTransaction } from "@/lib/sessionLifecycle";
+import { allocateCollabWorkforce, persistSessionWorkforceAssignments } from "@/lib/workforceRuntime";
+import { apiErrorResponse, serializeApiError, validationError } from "@/lib/apiErrors";
+import { runtimeError } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -33,34 +38,37 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  let sessionId: string | null = null;
   try {
     await ensureSeeded();
     const body = await req.json();
     const challenge: string = (body.challenge ?? "").toString().trim();
     const category: string = (body.category ?? "general").toString();
     const strategyId: string = (body.strategy ?? "council").toString();
-    const synthesisModelRaw: string = (body.synthesisModel ?? "openai").toString();
+    const synthesisModelRaw: string = (body.synthesisModel ?? "auto").toString();
     const keys = body.keys;
-    const localOnly = isLocalOnlyBody(body);
+    const executionMode = resolveExecutionMode(body);
+    const localOnly = requiresLocalExecution(executionMode);
     const ephemeral = isEphemeralBody(body);
     const genKeys = localOnly ? undefined : keys;
 
-    if (!challenge) return Response.json({ error: "challenge required" }, { status: 400 });
-    if (challenge.length > 6000) return Response.json({ error: "challenge too long" }, { status: 400 });
+    if (!challenge) return validationError("INVALID_REQUEST", "Challenge is required.");
+    if (challenge.length > 6000) return validationError("INVALID_REQUEST", "Challenge must be 6,000 characters or fewer.");
 
     const strategy = getStrategy(strategyId);
-    const synthesisModel = (() => {
-      try {
-        const m = getModel(synthesisModelRaw);
-        return m.kind === "text" ? m.id : "openai";
-      } catch {
-        return "openai";
-      }
+    const synthesisConstraint = synthesisModelRaw === "auto" ? undefined : (() => {
+      const model = getModel(synthesisModelRaw);
+      return model.kind === "text" ? model.id : undefined;
     })();
 
     // Resolve 2–4 collaborators
     let inputs: CollaboratorInput[] = Array.isArray(body.collaborators) ? body.collaborators : [];
-    if (inputs.length < 2) inputs = randomCollaborators(3);
+    if (inputs.length < 2) {
+      const defaults = await allocateCollabWorkforce(
+        strategy.id, strategy.roles.slice(0, 3), [undefined, undefined, undefined], synthesisConstraint, executionMode
+      );
+      inputs = defaults.filter((a) => a.slot.startsWith("collaborator_")).map((a) => ({ type: "model", id: a.modelId }));
+    }
     inputs = inputs.slice(0, 4);
     const resolved: Collaborator[] = [];
     for (let i = 0; i < inputs.length; i++) {
@@ -77,102 +85,84 @@ export async function POST(req: Request) {
         if (c) resolved.push(c);
       }
     }
-    if (resolved.length < 2) return Response.json({ error: "could not resolve collaborators" }, { status: 400 });
+    if (resolved.length < 2) return validationError("NO_ELIGIBLE_WORKER", "Could not resolve enough collaborators.", 422, "selection");
+
+    const workforce = await allocateCollabWorkforce(
+      strategy.id, resolved.map((c) => c.role), resolved.map((c) => c.modelId), synthesisConstraint, executionMode
+    );
+    const synthesisModel = workforce.find((assignment) => assignment.slot === "synthesis")!.modelId;
 
     const projectId = body.projectId ? String(body.projectId) : null;
     const ctx = await getProjectContext(projectId);
     const effectiveChallenge = withProjectContext(challenge, ctx);
     const started = Date.now();
-
-    // ---- Round 1: parallel drafts (local or cloud) ----
-    const drafts = localOnly
-      ? resolved.map((c) => ({
-          text: localCollabDraft(`${c.emoji} ${c.label}`, c.role, effectiveChallenge, strategy.id),
-          via: "local:collab",
-          ms: 1,
-        }))
-      : await Promise.all(
-          resolved.map((c) =>
-            generate({
-              modelId: c.modelId,
-              messages: [{ role: "user", content: effectiveChallenge }],
-              system: `${c.sys}\n\nSTRATEGY: ${strategy.name}. ${strategy.contributorInstruction}`,
-              keys: genKeys,
-              localOnly,
-            })
-          )
-        );
-
-    let critiques: { text: string; via: string; ms: number }[] = [];
-    if (strategy.rounds === 2) {
-      if (localOnly) {
-        critiques = resolved.map((c) => ({
-          text: `**${c.emoji} ${c.label} — local critique**\n\n- Strongest rival point: the smallest-testable-step framing (kept).\n- Weakness spotted: drafts under-specify “done” — sharpened below.\n- My sharpened position: ${c.role} says ship the minimal version for the top key term first, measure one outcome, then systematize. No cloud was used; all reasoning stayed on-device.`,
-          via: "local:critique",
-          ms: 1,
-        }));
-      } else {
-        // ---- Round 2 (debate): each collaborator critiques all drafts + sharpens ----
-        const digest = resolved
-          .map((c, i) => `--- ${c.emoji} ${c.label} (${c.role}) ---\n${drafts[i].text.slice(0, 1800)}`)
-          .join("\n\n");
-        critiques = await Promise.all(
-          resolved.map((c, i) =>
-            generate({
-              modelId: c.modelId,
-              messages: [
-                {
-                  role: "user",
-                  content: `ORIGINAL CHALLENGE:\n${challenge.slice(0, 2500)}\n\nALL ROUND-1 DRAFTS:\n${digest.slice(0, 8000)}\n\nYou are ${c.label} (${c.role}). Critique the OTHER drafts honestly (what's weak, wrong, or missing), steelman the strongest rival point, then sharpen YOUR position in 3-6 sentences. Markdown.`,
-                },
-              ],
-              system: c.sys,
-              temperature: 0.7,
-              keys: genKeys,
-              localOnly,
-            })
-          )
-        );
-      }
+    if (!ephemeral) {
+      sessionId = await prepareExecutionSession({
+        sessionId: body.sessionId ? String(body.sessionId) : undefined,
+        mode: "collab", executionMode, projectId, title: `🧠 Collab — ${challenge.slice(0, 80)}`,
+        intent: strategy.name, content: challenge, metadata: { category, strategy: strategy.id, executionMode },
+      });
+      await persistSessionWorkforceAssignments(sessionId, workforce);
+      await advanceSessionStage(sessionId, "drafting", { expectedPreviousStage: null });
     }
 
-    // ---- Synthesis: merge everything into one best result ----
-    const synth = localOnly
-      ? {
-          text: localSynthesis(
-            strategy.id,
-            challenge,
-            resolved.map((c, i) => ({ label: `${c.emoji} ${c.label}`, text: drafts[i].text }))
-          ),
-          via: "local:synthesis",
-          ms: 1,
-        }
-      : await (async () => {
-          const material =
-            strategy.rounds === 2
-              ? resolved
-                  .map(
-                    (c, i) =>
-                      `--- ${c.emoji} ${c.label} (${c.role}) — DRAFT ---\n${drafts[i].text.slice(0, 2200)}\n\n--- ${c.label} — CRITIQUE ---\n${critiques[i].text.slice(0, 1400)}`
-                  )
-                  .join("\n\n")
-              : resolved
-                  .map((c, i) => `--- ${c.emoji} ${c.label} (${c.role}) ---\n${drafts[i].text.slice(0, 2600)}`)
-                  .join("\n\n");
-          return generate({
-            modelId: synthesisModel,
-            messages: [
-              {
-                role: "user",
-                content: `CHALLENGE (${strategy.name}):\n${challenge.slice(0, 3000)}\n\nCOLLABORATOR MATERIAL:\n${material.slice(0, 11000)}`,
-              },
-            ],
-            system: strategy.synthesisInstruction,
-            temperature: 0.5,
-            keys: genKeys,
-            localOnly,
-          });
-        })();
+    // ---- Round 1: parallel assigned-worker drafts ----
+    const contributorAssignments = resolved.map((_, index) =>
+      workforce.find((assignment) => assignment.slot === `collaborator_${index + 1}`)!
+    );
+    const synthesisAssignment = workforce.find((assignment) => assignment.slot === "synthesis")!;
+    const drafts = await Promise.all(
+      resolved.map((c, index) => executeWorker({
+        sessionId,
+        assignment: contributorAssignments[index],
+        messages: [{ role: "user", content: effectiveChallenge }],
+        system: `${c.sys}\n\nSTRATEGY: ${strategy.name}. ${strategy.contributorInstruction}`,
+        keys: genKeys,
+      }))
+    );
+
+    let critiques: typeof drafts = [];
+    if (strategy.rounds === 2) {
+      if (sessionId) await advanceSessionStage(sessionId, "critiquing", { expectedPreviousStage: "drafting" });
+      const digest = resolved
+        .map((c, i) => `--- ${c.emoji} ${c.label} (${c.role}) ---\n${drafts[i].text.slice(0, 1800)}`)
+        .join("\n\n");
+      critiques = await Promise.all(
+        resolved.map((c, index) => executeWorker({
+          sessionId,
+          assignment: contributorAssignments[index],
+          messages: [{
+            role: "user",
+            content: `ORIGINAL CHALLENGE:\n${challenge.slice(0, 2500)}\n\nALL ROUND-1 DRAFTS:\n${digest.slice(0, 8000)}\n\nYou are ${c.label} (${c.role}). Critique the OTHER drafts honestly, steelman the strongest rival point, then sharpen YOUR position in 3-6 sentences. Markdown.`,
+          }],
+          system: c.sys,
+          temperature: 0.7,
+          keys: genKeys,
+        }))
+      );
+    }
+
+    if (sessionId) await advanceSessionStage(sessionId, "synthesizing", {
+      expectedPreviousStage: strategy.rounds === 2 ? "critiquing" : "drafting"
+    });
+    const material = strategy.rounds === 2
+      ? resolved.map((c, i) =>
+          `--- ${c.emoji} ${c.label} (${c.role}) — DRAFT ---\n${drafts[i].text.slice(0, 2200)}\n\n--- ${c.label} — CRITIQUE ---\n${critiques[i].text.slice(0, 1400)}`
+        ).join("\n\n")
+      : resolved.map((c, i) =>
+          `--- ${c.emoji} ${c.label} (${c.role}) ---\n${drafts[i].text.slice(0, 2600)}`
+        ).join("\n\n");
+    const synth = await executeWorker({
+      sessionId,
+      assignment: synthesisAssignment,
+      messages: [{
+        role: "user",
+        content: `CHALLENGE (${strategy.name}):\n${challenge.slice(0, 3000)}\n\nCOLLABORATOR MATERIAL:\n${material.slice(0, 11000)}`,
+      }],
+      system: strategy.synthesisInstruction,
+      temperature: 0.5,
+      keys: genKeys,
+    });
 
     const collabMeta = {
       challenge,
@@ -193,6 +183,7 @@ export async function POST(req: Request) {
       synthesis: synth.text,
       rounds: strategy.rounds,
       projectId,
+      sessionId,
     };
 
     const contribsBase = (collabId: string) => {
@@ -247,12 +238,28 @@ export async function POST(req: Request) {
       });
     }
 
-    const [row] = await db.insert(collabs).values(collabMeta).returning();
-    const contribs = contribsBase(row.id);
-    await db.insert(collabContributions).values(contribs);
-    if (projectId) {
-      await db.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId));
+    if (!sessionId) throw new Error("Collab session missing");
+    let persisted;
+    try {
+      persisted = await db.transaction(async (tx) => {
+        const [row] = await tx.insert(collabs).values(collabMeta).returning();
+      const contribs = contribsBase(row.id);
+      await tx.insert(collabContributions).values(contribs);
+      if (projectId) await tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId));
+      await transitionSessionInTransaction(tx, sessionId!, "completed", { payload: { collabId: row.id } });
+        return { row, contribs };
+      });
+    } catch (error) {
+      throw runtimeError({
+        code: "PERSISTENCE_FAILED",
+        message: "Collab completed, but its execution could not be persisted.",
+        stage: "persistence",
+        retryable: true,
+        sessionId,
+        cause: error,
+      });
     }
+    const { row, contribs } = persisted;
 
     return Response.json({
       collab: { ...row, localOnly },
@@ -262,6 +269,19 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     console.error("collab error", e);
-    return Response.json({ error: "collaboration failed" }, { status: 500 });
+    const fallback = {
+      code: "COLLAB_EXECUTION_FAILED",
+      message: "Collab execution failed.",
+      stage: "execution" as const,
+      retryable: true,
+      sessionId,
+    };
+    const failure = serializeApiError(e, fallback);
+    if (sessionId) await transitionSession(sessionId, "failed", {
+      errorCode: failure.code,
+      errorMessage: failure.message,
+      payload: { retryable: failure.retryable, executionId: failure.executionId },
+    }).catch(() => {});
+    return apiErrorResponse(e, fallback);
   }
 }

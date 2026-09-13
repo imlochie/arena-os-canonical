@@ -17,6 +17,8 @@ export interface GenerateOpts {
   // Privacy: localOnly forces the on-device engine (zero network egress).
   // No request content leaves the machine when true.
   localOnly?: boolean;
+  // Assigned-worker execution disables the legacy provider/fallback cascade.
+  strictRoute?: boolean;
   // Optional user-supplied keys (BYOK) — sent from client, never stored
   keys?: {
     openrouter?: string;
@@ -198,6 +200,13 @@ export async function generate(opts: GenerateOpts): Promise<{ text: string; via:
   }
 
   const lastUser = [...fullMessages].reverse().find((m) => m.role === "user")?.content ?? "Hello";
+
+  // Assigned workers execute exactly one route. Any failure is surfaced to the
+  // worker executor; switching provider/model requires a new explicit assignment.
+  if (opts.strictRoute) {
+    const text = await tryPollinationsOpenAI(model.pollinationsId, fullMessages, temperature);
+    return { text, via: `pollinations:${model.pollinationsId}`, ms: Date.now() - started };
+  }
 
   // 1) BYOK providers first (better quality if user pasted a free key).
   // NOTE: third-party free tiers may log for abuse-prevention; Local Mode avoids them entirely.

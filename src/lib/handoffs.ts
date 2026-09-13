@@ -1,37 +1,28 @@
 // Client-safe: the Think → Challenge → Synthesize → Create → Test → Learn loop.
-// Helpers to pass work between Arena / Collab / Council with project +
-// source lineage preserved in the URL.
+// Client helpers for persisted handoffs. URLs carry identity only; inherited
+// context and provenance are loaded from the durable handoff record.
 
 export type HandoffTarget = "arena" | "collab" | "council";
 
-export interface Handoff {
-  text: string;
-  projectId?: string;
-  source?: string; // e.g. "artifact:uuid" | "battle:uuid" | "council:uuid" | "collab:uuid"
-  jobId?: string; // council only
-  strategy?: string; // collab only
+export function handoffDestination(target: HandoffTarget, handoffId: string, targetSessionId: string): string {
+  const params = new URLSearchParams({ handoffId, sessionId: targetSessionId });
+  if (target === "arena") return `/?${params.toString()}`;
+  return `/${target}?${params.toString()}`;
 }
 
-export function handoffUrl(target: HandoffTarget, h: Handoff): string {
-  const params = new URLSearchParams();
-  if (target === "arena") {
-    params.set("prompt", h.text.slice(0, 4000));
-    if (h.source) params.set("source", h.source);
-    if (h.projectId) params.set("projectId", h.projectId);
-    return `/?${params.toString()}`;
-  }
-  if (target === "collab") {
-    params.set("challenge", h.text.slice(0, 6000));
-    if (h.strategy) params.set("strategy", h.strategy);
-    if (h.source) params.set("source", h.source);
-    if (h.projectId) params.set("projectId", h.projectId);
-    return `/collab?${params.toString()}`;
-  }
-  params.set("material", h.text.slice(0, 8000));
-  if (h.jobId) params.set("jobId", h.jobId);
-  if (h.source) params.set("source", h.source);
-  if (h.projectId) params.set("projectId", h.projectId);
-  return `/council?${params.toString()}`;
+export async function fetchHandoffContext(handoffId: string): Promise<{
+  handoff: any;
+  targetSession: any;
+  input: any;
+}> {
+  const response = await fetch(`/api/handoffs/${encodeURIComponent(handoffId)}`, { cache: "no-store" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message ?? "Unable to load handoff.");
+  return {
+    handoff: data.handoff,
+    targetSession: data.targetSession,
+    input: (data.inputs ?? []).find((item: any) => item.id === data.handoff.payload?.inputId) ?? data.inputs?.[0],
+  };
 }
 
 export function parseSource(source?: string | null): { type: string; id: string } | null {

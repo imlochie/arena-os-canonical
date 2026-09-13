@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { battles, models, modelCategoryRatings } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { newElos, type BattleOutcome } from "@/lib/elo";
+import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
 
@@ -11,11 +12,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const body = await req.json();
     const winner = body.winner as BattleOutcome;
     if (!["a", "b", "tie", "both-bad"].includes(winner)) {
-      return Response.json({ error: "invalid winner" }, { status: 400 });
+      return validationError("INVALID_REQUEST", "Winner is invalid.");
     }
     const rows = await db.select().from(battles).where(eq(battles.id, id)).limit(1);
     const battle = rows[0];
-    if (!battle) return Response.json({ error: "not found" }, { status: 404 });
+    if (!battle) return validationError("SESSION_NOT_FOUND", "Requested execution was not found.", 404, "session");
     if (battle.winner) {
       // already voted — just reveal (one vote per battle, LMArena rule)
       return Response.json({ battle, alreadyVoted: true });
@@ -109,6 +110,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ battle: updated, elo: { [battle.modelAId]: next.a, [battle.modelBId]: next.b } });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "vote failed" }, { status: 500 });
+    return apiErrorResponse(e, { code: "VOTE_PERSISTENCE_FAILED", message: "Unable to persist vote.", stage: "persistence", retryable: true });
   }
 }

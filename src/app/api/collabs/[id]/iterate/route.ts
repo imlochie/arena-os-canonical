@@ -1,8 +1,10 @@
 import { db } from "@/db";
-import { collabs, collabContributions } from "@/db/schema";
+import { collabs, collabContributions, cognitiveSessionAssignments, cognitiveSessions } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { generate } from "@/lib/ai";
+import { executeWorker } from "@/lib/workerExecutor";
 import { getStrategy, resolveCollaborator } from "@/lib/collab";
+import { requiresLocalExecution, resolveExecutionMode, storedExecutionMode } from "@/lib/executionPolicy";
+import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -14,13 +16,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const body = await req.json();
     const instruction: string = (body.instruction ?? "").toString().trim();
     const keys = body.keys;
-    if (!instruction) return Response.json({ error: "instruction required" }, { status: 400 });
-    if (instruction.length > 4000) return Response.json({ error: "too long" }, { status: 400 });
+    if (!instruction) return validationError("INVALID_REQUEST", "Iteration instruction is required.");
+    if (instruction.length > 4000) return validationError("INVALID_REQUEST", "Iteration instruction must be 4,000 characters or fewer.");
 
     const [collab] = await db.select().from(collabs).where(eq(collabs.id, id)).limit(1);
-    if (!collab) return Response.json({ error: "not found" }, { status: 404 });
+    if (!collab) return validationError("SESSION_NOT_FOUND", "Collab execution not found.", 404, "session");
+    const [session] = collab.sessionId
+      ? await db.select().from(cognitiveSessions).where(eq(cognitiveSessions.id, collab.sessionId)).limit(1)
+      : [];
+    const executionMode = storedExecutionMode(session?.executionMode, session?.metadata) ?? resolveExecutionMode(body);
+    const localOnly = requiresLocalExecution(executionMode);
+    const genKeys = localOnly ? undefined : keys;
     if ((collab.rounds ?? 1) >= 6) {
-      return Response.json({ error: "pass limit reached (6) — start a fresh challenge" }, { status: 400 });
+      return validationError("INVALID_SESSION_STATE", "Pass limit reached; start a fresh challenge.", 409, "session");
     }
 
     const strategy = getStrategy(collab.strategy);
@@ -30,14 +38,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const c = await resolveCollaborator({ type: s.type, id: s.type === "assistant" ? s.assistantId ?? s.id : s.modelId ?? s.id }, s.role);
       if (c) resolved.push(c);
     }
-    if (resolved.length < 2) return Response.json({ error: "collaborators unavailable" }, { status: 400 });
+    if (resolved.length < 2) return validationError("NO_ELIGIBLE_WORKER", "Collaborators are unavailable.", 422, "selection");
+    if (!collab.sessionId) return validationError("INVALID_SESSION_STATE", "Collab session assignment is missing.", 409, "session");
+    const assignments = await db.select().from(cognitiveSessionAssignments)
+      .where(eq(cognitiveSessionAssignments.sessionId, collab.sessionId));
+    const contributorAssignments = resolved.map((_, index) =>
+      assignments.find((assignment) => assignment.slot === `collaborator_${index + 1}`)!
+    );
+    const synthesisAssignment = assignments.find((assignment) => assignment.slot === "synthesis");
+    if (contributorAssignments.some((assignment) => !assignment) || !synthesisAssignment) {
+      return validationError("INVALID_SESSION_STATE", "Collab worker assignments are unavailable.", 409, "session");
+    }
 
     const nextRound = (collab.rounds ?? 1) + 1;
 
     const takes = await Promise.all(
-      resolved.map((c) =>
-        generate({
-          modelId: c.modelId,
+      resolved.map((c, index) =>
+        executeWorker({
+          sessionId: collab.sessionId, assignment: contributorAssignments[index],
           messages: [
             {
               role: "user",
@@ -45,8 +63,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             },
           ],
           system: c.sys,
-          keys,
-          localOnly: body.localOnly === true,
+          keys: genKeys,
         })
       )
     );
@@ -54,8 +71,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const material = resolved
       .map((c, i) => `--- ${c.emoji} ${c.label} (${c.role}) ---\n${takes[i].text.slice(0, 2400)}`)
       .join("\n\n");
-    const synth = await generate({
-      modelId: collab.synthesisModel,
+    const synth = await executeWorker({
+      sessionId: collab.sessionId, assignment: synthesisAssignment,
       messages: [
         {
           role: "user",
@@ -64,8 +81,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       ],
       system: `${strategy.synthesisInstruction}\n\nThis is iteration pass ${nextRound}: preserve what the human liked, apply their direction decisively, and output the new single best result.`,
       temperature: 0.5,
-      keys,
-      localOnly: body.localOnly === true,
+      keys: genKeys,
     });
 
     await db.update(collabs).set({ synthesis: synth.text, rounds: nextRound }).where(eq(collabs.id, id));
@@ -104,6 +120,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ round: nextRound, synthesis: synth.text });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "iterate failed" }, { status: 500 });
+    return apiErrorResponse(e, { code: "COLLAB_ITERATION_FAILED", message: "Collab iteration failed.", stage: "execution", retryable: true });
   }
 }

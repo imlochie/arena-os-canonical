@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { arcadeGames } from "@/db/schema";
 import { desc } from "drizzle-orm";
@@ -48,16 +49,16 @@ export async function POST(req: Request) {
     const parentId: string | undefined = body.parentId;
 
     if (!prompt && !body.clientCode) {
-      return Response.json({ error: "prompt required" }, { status: 400 });
+      return standardApiError("INVALID_REQUEST", "Prompt required.", 400);
     }
-    if (prompt.length > 2000) return Response.json({ error: "prompt too long" }, { status: 400 });
+    if (prompt.length > 2000) return standardApiError("PROMPT_TOO_LONG", "Prompt too long.", 400);
 
     // Path 1: client ran on-device AI in-browser → validate + persist code.
     if (body.clientCode) {
       const code = String(body.clientCode);
       const v = validateGameCode(code);
       if (!v.ok) {
-        return Response.json({ error: "generated code failed validation", issues: v.issues }, { status: 400 });
+        return standardApiError("INVALID_OUTPUT", `Generated code failed validation: ${v.issues.join(", ")}`, 422);
       }
       const gameType = (body.gameType as GameType) ?? detectGameType(prompt || "ai game");
       if (ephemeral) {
@@ -109,6 +110,6 @@ export async function POST(req: Request) {
     return Response.json({ game: row, validation: v, ms: g.ms }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "arcade generation failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Arcade generation failed.", 500);
   }
 }

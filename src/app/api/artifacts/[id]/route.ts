@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { artifacts } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -8,11 +9,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   try {
     const { id } = await params;
     const [row] = await db.select().from(artifacts).where(eq(artifacts.id, id)).limit(1);
-    if (!row) return Response.json({ error: "not found" }, { status: 404 });
+    if (!row) return standardApiError("RESOURCE_NOT_FOUND", "Not found.", 404);
     return Response.json({ artifact: row });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Failed.", 500);
   }
 }
 
@@ -26,11 +27,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (body.kind !== undefined) patch.kind = String(body.kind).slice(0, 20);
     if (body.projectId !== undefined) patch.projectId = body.projectId ? String(body.projectId) : null;
     const [row] = await db.update(artifacts).set(patch).where(eq(artifacts.id, id)).returning();
-    if (!row) return Response.json({ error: "not found" }, { status: 404 });
+    if (!row) return standardApiError("RESOURCE_NOT_FOUND", "Not found.", 404);
     return Response.json({ artifact: row });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "update failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Update failed.", 500);
   }
 }
 
@@ -41,6 +42,6 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "delete failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Delete failed.", 500);
   }
 }

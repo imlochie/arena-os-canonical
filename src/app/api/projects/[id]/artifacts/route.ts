@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { artifacts, projects } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
@@ -26,12 +27,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     const { id } = await params;
     const [p] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
-    if (!p) return Response.json({ error: "project not found" }, { status: 404 });
+    if (!p) return standardApiError("RESOURCE_NOT_FOUND", "Project not found.", 404);
     const body = await req.json();
     const kind = KINDS.includes(String(body.kind)) ? String(body.kind) : "brief";
     const title = (body.title ?? "Untitled artifact").toString().slice(0, 160);
     const artifactBody = (body.body ?? "").toString().slice(0, 20000);
-    if (!artifactBody.trim()) return Response.json({ error: "body required" }, { status: 400 });
+    if (!artifactBody.trim()) return standardApiError("INVALID_REQUEST", "Body required.", 400);
     const sourceType = (body.sourceType ?? "manual").toString().slice(0, 20);
     const sourceId = body.sourceId ? String(body.sourceId).slice(0, 80) : null;
     const [row] = await db
@@ -42,6 +43,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json({ artifact: row }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "create failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Create failed.", 500);
   }
 }

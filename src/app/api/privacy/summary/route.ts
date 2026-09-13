@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import {
   arcadeGames,
@@ -72,6 +73,6 @@ export async function GET() {
     });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "summary failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Summary failed.", 500);
   }
 }

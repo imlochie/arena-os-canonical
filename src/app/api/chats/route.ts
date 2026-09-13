@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { chats, chatMessages, assistants } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
@@ -32,7 +33,7 @@ export async function POST(req: Request) {
       const history: ChatMsg[] = Array.isArray(body.history) ? body.history : [];
       const message: string = (body.message ?? "").toString().trim();
       if (!message && history.length === 0) {
-        return Response.json({ error: "message required" }, { status: 400 });
+        return standardApiError("INVALID_REQUEST", "Message required.", 400);
       }
       const modelId = (body.modelId ?? "openai").toString();
       getModel(modelId);
@@ -66,7 +67,7 @@ export async function POST(req: Request) {
       const modelId = (body.modelId ?? "openai").toString();
       const assistantId: string | undefined = body.assistantId;
       const message: string = (body.message ?? "").toString().trim();
-      if (!message) return Response.json({ error: "message required" }, { status: 400 });
+      if (!message) return standardApiError("INVALID_REQUEST", "Message required.", 400);
       getModel(modelId);
 
       let system: string | undefined;
@@ -97,10 +98,10 @@ export async function POST(req: Request) {
     // mode === 'message'
     const chatId: string = body.chatId;
     const message: string = (body.message ?? "").toString().trim();
-    if (!chatId || !message) return Response.json({ error: "chatId + message required" }, { status: 400 });
+    if (!chatId || !message) return standardApiError("INVALID_REQUEST", "ChatId + message required.", 400);
 
     const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
-    if (!chat) return Response.json({ error: "chat not found" }, { status: 404 });
+    if (!chat) return standardApiError("RESOURCE_NOT_FOUND", "Chat not found.", 404);
 
     let system: string | undefined;
     if (chat.assistantId) {
@@ -128,6 +129,6 @@ export async function POST(req: Request) {
     return Response.json({ reply: result.text, via: result.via, ms: result.ms, localOnly });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "chat failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Chat failed.", 500);
   }
 }

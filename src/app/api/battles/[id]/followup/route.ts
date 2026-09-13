@@ -1,8 +1,11 @@
 import { db } from "@/db";
-import { battles, battleMessages, assistants } from "@/db/schema";
+import { battles, battleMessages, assistants, cognitiveSessionAssignments, cognitiveSessions } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
-import { generate, type ChatMsg } from "@/lib/ai";
+import { type ChatMsg } from "@/lib/ai";
+import { executeWorker } from "@/lib/workerExecutor";
 import { getModel } from "@/lib/models";
+import { requiresLocalExecution, resolveExecutionMode, storedExecutionMode } from "@/lib/executionPolicy";
+import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 90;
@@ -16,13 +19,29 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const body = await req.json();
     const message: string = (body.message ?? "").toString().trim();
     const keys = body.keys;
-    if (!message) return Response.json({ error: "message required" }, { status: 400 });
-    if (message.length > 4000) return Response.json({ error: "message too long" }, { status: 400 });
+    if (!message) return validationError("INVALID_REQUEST", "Follow-up message is required.");
+    if (message.length > 4000) return validationError("INVALID_REQUEST", "Follow-up message must be 4,000 characters or fewer.");
 
     const [battle] = await db.select().from(battles).where(eq(battles.id, id)).limit(1);
-    if (!battle) return Response.json({ error: "not found" }, { status: 404 });
+    if (!battle) return validationError("SESSION_NOT_FOUND", "Arena execution not found.", 404, "session");
     if (battle.category === "image") {
-      return Response.json({ error: "image battles are single-turn" }, { status: 400 });
+      return validationError("INVALID_REQUEST", "Image battles are single-turn.");
+    }
+    const [session] = battle.sessionId
+      ? await db.select().from(cognitiveSessions).where(eq(cognitiveSessions.id, battle.sessionId)).limit(1)
+      : [];
+    const executionMode = storedExecutionMode(session?.executionMode, session?.metadata) ?? resolveExecutionMode(body);
+    const localOnly = requiresLocalExecution(executionMode);
+    const genKeys = localOnly ? undefined : keys;
+    if (!battle.sessionId) return validationError("INVALID_SESSION_STATE", "Arena session assignment is missing.", 409, "session");
+    const assignments = await db.select().from(cognitiveSessionAssignments)
+      .where(eq(cognitiveSessionAssignments.sessionId, battle.sessionId));
+    const assignmentA = assignments.find((assignment) => assignment.modelId === battle.modelAId) ?? assignments[0];
+    const assignmentB = assignments.find((assignment) =>
+      assignment.modelId === battle.modelBId && assignment.slot !== assignmentA?.slot
+    ) ?? assignments.find((assignment) => assignment.slot !== assignmentA?.slot);
+    if (!assignmentA || !assignmentB) {
+      return validationError("INVALID_SESSION_STATE", "Arena worker assignments are unavailable.", 409, "session");
     }
 
     const prior = await db
@@ -33,7 +52,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       .limit(100);
     const userTurns = prior.filter((m) => m.role === "user").length;
     if (userTurns >= MAX_TURNS) {
-      return Response.json({ error: `turn limit reached (${MAX_TURNS}) — cast your vote!` }, { status: 400 });
+      return validationError("INVALID_SESSION_STATE", `Turn limit reached (${MAX_TURNS}); cast your vote.`, 409, "session");
     }
 
     // Resolve per-side system prompts (assistant personas persist across turns)
@@ -59,8 +78,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     };
 
     const [rA, rB] = await Promise.all([
-      generate({ modelId: battle.modelAId, messages: buildHistory("a"), system: sysA, keys, localOnly: body.localOnly === true }),
-      generate({ modelId: battle.modelBId, messages: buildHistory("b"), system: sysB, keys, localOnly: body.localOnly === true }),
+      executeWorker({ sessionId: battle.sessionId, assignment: assignmentA, messages: buildHistory("a"), system: sysA, keys: genKeys }),
+      executeWorker({ sessionId: battle.sessionId, assignment: assignmentB, messages: buildHistory("b"), system: sysB, keys: genKeys }),
     ]);
 
     await db.insert(battleMessages).values([
@@ -85,6 +104,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "followup failed" }, { status: 500 });
+    return apiErrorResponse(e, { code: "ARENA_FOLLOWUP_FAILED", message: "Arena follow-up failed.", stage: "execution", retryable: true });
   }
 }

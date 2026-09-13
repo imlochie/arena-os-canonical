@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { assistants } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -21,11 +22,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       patch.temperature = Math.min(2, Math.max(0, Number(body.temperature)));
     if (body.avatar !== undefined) patch.avatar = String(body.avatar).slice(0, 8);
     const updated = await db.update(assistants).set(patch).where(eq(assistants.id, id)).returning();
-    if (!updated[0]) return Response.json({ error: "not found" }, { status: 404 });
+    if (!updated[0]) return standardApiError("RESOURCE_NOT_FOUND", "Not found.", 404);
     return Response.json({ assistant: updated[0] });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "update failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Update failed.", 500);
   }
 }
 
@@ -36,6 +37,6 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "delete failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Delete failed.", 500);
   }
 }

@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { arcadeGames } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -9,11 +10,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   try {
     const { id } = await params;
     const [row] = await db.select().from(arcadeGames).where(eq(arcadeGames.id, id)).limit(1);
-    if (!row) return Response.json({ error: "not found" }, { status: 404 });
+    if (!row) return standardApiError("RESOURCE_NOT_FOUND", "Not found.", 404);
     return Response.json({ game: row });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Failed.", 500);
   }
 }
 
@@ -25,6 +26,6 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "delete failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Delete failed.", 500);
   }
 }

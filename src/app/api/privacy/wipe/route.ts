@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import {
   arcadeGames,
@@ -28,7 +29,7 @@ export async function DELETE(req: Request) {
     const scope = url.searchParams.get("scope") ?? "all";
     const resetElo = url.searchParams.get("resetElo") === "1";
     if (url.searchParams.get("confirm") !== "yes") {
-      return Response.json({ error: "add confirm=yes to wipe" }, { status: 400 });
+      return standardApiError("ADD_CONFIRM_YES_TO_WIPE", "Add confirm=yes to wipe.", 400);
     }
     const deleted: Record<string, number> = {};
     const wipeTable = async (name: string, table: any) => {
@@ -75,6 +76,6 @@ export async function DELETE(req: Request) {
     return Response.json({ ok: true, scope, resetElo, deleted });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "wipe failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Wipe failed.", 500);
   }
 }

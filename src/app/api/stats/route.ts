@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { battles } from "@/db/schema";
 import { FREE_MODELS } from "@/lib/models";
@@ -123,6 +124,6 @@ export async function GET(req: Request) {
     });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "stats failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Stats failed.", 500);
   }
 }

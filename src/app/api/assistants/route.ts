@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { assistants } from "@/db/schema";
 import { desc } from "drizzle-orm";
@@ -60,7 +61,7 @@ export async function POST(req: Request) {
     const avatar = (body.avatar ?? "🤖").toString().slice(0, 8);
 
     if (!name || !systemPrompt) {
-      return Response.json({ error: "name and systemPrompt required" }, { status: 400 });
+      return standardApiError("INVALID_REQUEST", "Name and systemPrompt required.", 400);
     }
     getModel(baseModel);
     const inserted = await db
@@ -70,6 +71,6 @@ export async function POST(req: Request) {
     return Response.json({ assistant: inserted[0] }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "create failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Create failed.", 500);
   }
 }

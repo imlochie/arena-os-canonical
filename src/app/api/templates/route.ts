@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { promptTemplates } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
@@ -37,12 +38,12 @@ export async function POST(req: Request) {
     const title = (body.title ?? "").toString().trim().slice(0, 80);
     const prompt = (body.prompt ?? "").toString().trim().slice(0, 2000);
     const category = (body.category ?? "general").toString().slice(0, 32);
-    if (!title || !prompt) return Response.json({ error: "title + prompt required" }, { status: 400 });
+    if (!title || !prompt) return standardApiError("INVALID_REQUEST", "Title + prompt required.", 400);
     const [row] = await db.insert(promptTemplates).values({ title, prompt, category }).returning();
     return Response.json({ template: row }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "create failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Create failed.", 500);
   }
 }
 
@@ -50,11 +51,11 @@ export async function DELETE(req: Request) {
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
-    if (!id) return Response.json({ error: "id required" }, { status: 400 });
+    if (!id) return standardApiError("INVALID_REQUEST", "Id required.", 400);
     await db.delete(promptTemplates).where(eq(promptTemplates.id, id));
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "delete failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Delete failed.", 500);
   }
 }

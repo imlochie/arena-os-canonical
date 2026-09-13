@@ -6,9 +6,11 @@ import { loadKeys } from "./KeysBar";
 import PrivacyControls from "./PrivacyControls";
 import ProjectPicker from "./ProjectPicker";
 import HandoffButtons from "./HandoffButtons";
+import { fetchHandoffContext } from "@/lib/handoffs";
 import { privacyFlags, usePrivacySettings } from "@/lib/privacyClient";
 import { CATEGORIES } from "@/lib/models";
 import { STRATEGIES } from "@/lib/strategies";
+import { apiErrorMessage } from "@/lib/apiErrorClient";
 
 interface ModelInfo {
   id: string;
@@ -68,7 +70,7 @@ export default function CollabLab() {
   const [count, setCount] = useState(3);
   const [pickMode, setPickMode] = useState<"random" | "pick">("random");
   const [picks, setPicks] = useState<string[]>(["model:openai", "model:deepseek", "model:claude", "model:gemini"]);
-  const [synthModel, setSynthModel] = useState("openai");
+  const [synthModel, setSynthModel] = useState("auto");
 
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState("");
@@ -84,6 +86,7 @@ export default function CollabLab() {
   const [copied, setCopied] = useState<string | null>(null);
   const [projectId, setProjectId] = useState("");
   const [handoffSource, setHandoffSource] = useState<string | null>(null);
+  const [handoffSessionId, setHandoffSessionId] = useState<string | null>(null);
   const privacy = usePrivacySettings();
   const isEph = !!collab?.ephemeral;
   const isLocal = !!collab?.localOnly;
@@ -113,6 +116,13 @@ export default function CollabLab() {
       if (st && STRATEGIES.some((s) => s.id === st)) setStrategyId(st);
       const src = q.get("source");
       if (src) setHandoffSource(src);
+      const handoffId = q.get("handoffId");
+      if (handoffId) fetchHandoffContext(handoffId).then(({ handoff, targetSession, input }) => {
+        if (input?.content) setChallenge(input.content.slice(0, 6000));
+        if (targetSession?.projectId) setProjectId(targetSession.projectId);
+        if (targetSession?.id) setHandoffSessionId(targetSession.id);
+        setHandoffSource(`handoff:${handoff.id}`);
+      }).catch(() => {});
     } catch {}
   }, [fetchHistory]);
 
@@ -149,13 +159,18 @@ export default function CollabLab() {
         setTimeout(() => setPhase((p) => (p.startsWith("Round 1") ? "Round 2/2: critiques + sharpening…" : p)), 25000);
       }
       setTimeout(() => setPhase("💎 Synthesizing best result…"), 45000);
+      const flags = privacyFlags();
       const r = await fetch("/api/collabs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ challenge: ch, category, strategy: strat, synthesisModel: synthModel, collaborators, keys: loadKeys(), ...privacyFlags(), ...(projectId ? { projectId } : {}) }),
+        body: JSON.stringify({
+          challenge: ch, category, strategy: strat, synthesisModel: synthModel, collaborators,
+          keys: loadKeys(), ...flags, ...(projectId ? { projectId } : {}),
+          ...(!flags.ephemeral && handoffSessionId ? { sessionId: handoffSessionId } : {}),
+        }),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "collaboration failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "collaboration failed"));
       setCollab(j.collab);
       setContribs(j.contributions ?? []);
       if (!j.collab?.ephemeral) fetchHistory();
@@ -184,7 +199,7 @@ export default function CollabLab() {
         body: JSON.stringify({ instruction: ins, keys: loadKeys(), ...privacyFlags() }),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "iterate failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "iterate failed"));
       // Refresh full thread
       const d = await fetch(`/api/collabs/${collab.id}`).then((x) => x.json());
       setCollab(d.collab);
@@ -210,7 +225,7 @@ export default function CollabLab() {
         body: JSON.stringify({ index }),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "crown failed");
+      if (!r.ok) throw new Error(apiErrorMessage(j.error, "crown failed"));
       setCrowned(index);
     } catch (e: any) {
       setError(e.message ?? "crown failed");
@@ -374,6 +389,7 @@ export default function CollabLab() {
                     onChange={(e) => setSynthModel(e.target.value)}
                     className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs font-semibold text-white focus:border-violet-500 focus:outline-none"
                   >
+                    <option value="auto">✨ Auto · Execution Policy + Workforce</option>
                     {textModels.map((m) => (
                       <option key={m.id} value={m.id}>💎 {m.emoji} {m.name}</option>
                     ))}
@@ -389,6 +405,7 @@ export default function CollabLab() {
                   onChange={(e) => setSynthModel(e.target.value)}
                   className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs font-semibold text-white focus:border-violet-500 focus:outline-none sm:max-w-xs"
                 >
+                  <option value="auto">✨ Auto · Execution Policy + Workforce</option>
                   {textModels.map((m) => (
                     <option key={m.id} value={m.id}>💎 {m.emoji} {m.name}</option>
                   ))}

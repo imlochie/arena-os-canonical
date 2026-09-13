@@ -1,3 +1,4 @@
+import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
 import { battles } from "@/db/schema";
 import { desc } from "drizzle-orm";
@@ -51,6 +52,6 @@ export async function GET(req: Request) {
     });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "export failed" }, { status: 500 });
+    return standardApiError("API_OPERATION_FAILED", "Export failed.", 500);
   }
 }
