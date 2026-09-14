@@ -221,6 +221,15 @@ export const cognitiveSessionAssignments = pgTable("cognitive_session_assignment
   index("cognitive_session_assignments_supersedes_id_idx").on(t.supersedesAssignmentId),
 ]);
 
+export const toolEffects = pgTable("tool_effects", {
+  id: uuid("id").primaryKey().defaultRandom(), sessionId: uuid("session_id").notNull().references(() => cognitiveSessions.id, { onDelete: "cascade" }),
+  actorId: text("actor_id").notNull(), grantId: text("grant_id").notNull(), resourceId: text("resource_id").notNull(), capability: text("capability").notNull(),
+  canonicalScope: text("canonical_scope").notNull(), targetPath: text("target_path").notNull(), effectClass: text("effect_class").notNull().default("write_local"),
+  proposedOperation: text("proposed_operation").notNull(), operationDigest: text("operation_digest").notNull(), status: text("status").notNull().default("proposed"),
+  approvedBy: text("approved_by"), approvedDigest: text("approved_digest"), preimageDigest: text("preimage_digest"), preimage: text("preimage"),
+  errorCode: text("error_code"), errorMessage: text("error_message"), createdAt: timestamp("created_at").defaultNow().notNull(), approvedAt: timestamp("approved_at"), appliedAt: timestamp("applied_at"),
+}, (t) => [index("tool_effects_session_idx").on(t.sessionId, t.createdAt)]);
+
 export const workerExecutionOperations = pgTable("worker_execution_operations", {
   id: uuid("id").primaryKey().defaultRandom(),
   sessionId: uuid("session_id").notNull().references(() => cognitiveSessions.id, { onDelete: "cascade" }),
