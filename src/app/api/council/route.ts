@@ -55,7 +55,8 @@ export async function POST(req: Request) {
     const material: string = (body.material ?? "").toString().trim();
     const jobId: string = (body.jobId ?? "second_brain").toString();
     const keys = body.keys;
-    const executionMode = parseExecutionConfig(body).mode;
+    const executionConfig = parseExecutionConfig(body);
+    const executionMode = executionConfig.mode;
     const localOnly = requiresLocalExecution(executionMode);
     const ephemeral = isEphemeralBody(body);
     sessionId = !ephemeral && body.sessionId ? String(body.sessionId) : null;
@@ -104,6 +105,8 @@ export async function POST(req: Request) {
         await db.update(cognitiveSessions).set({
           projectId,
           executionMode,
+          maxExecutionAttempts: executionConfig.maxExecutionAttempts,
+          fallbackPolicy: executionConfig.fallbackPolicy,
           title: `${job.emoji} ${job.name}`,
           metadata: JSON.stringify({ ...parseMetadata(existing.metadata), jobId: job.id, executionMode }),
           updatedAt: new Date(),
@@ -114,6 +117,8 @@ export async function POST(req: Request) {
             projectId,
             mode: "council",
             executionMode,
+            maxExecutionAttempts: executionConfig.maxExecutionAttempts,
+            fallbackPolicy: executionConfig.fallbackPolicy,
             title: `${job.emoji} ${job.name}`,
             metadata: JSON.stringify({ jobId: job.id, executionMode }),
             status: "created",

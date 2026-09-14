@@ -49,7 +49,8 @@ export async function POST(req: Request) {
     const prompt: string = (body.prompt ?? "").toString().trim();
     const keys = body.keys;
     const imageSize: string | undefined = body.imageSize;
-    const executionMode = parseExecutionConfig(body).mode;
+    const executionConfig = parseExecutionConfig(body);
+    const executionMode = executionConfig.mode;
     const localOnly = requiresLocalExecution(executionMode);
     const ephemeral = isEphemeralBody(body);
 
@@ -83,6 +84,8 @@ export async function POST(req: Request) {
         sessionId: body.sessionId ? String(body.sessionId) : undefined,
         mode: "arena",
         executionMode,
+        maxExecutionAttempts: executionConfig.maxExecutionAttempts,
+        fallbackPolicy: executionConfig.fallbackPolicy,
         projectId,
         title: `⚔️ Arena — ${prompt.slice(0, 80)}`,
         intent: "Compare competing responses",

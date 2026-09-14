@@ -31,7 +31,8 @@ export async function POST(req: Request) {
   const keys = body.keys;
   let executionMode;
   try {
-    executionMode = parseExecutionConfig(body).mode;
+    const executionConfig = parseExecutionConfig(body);
+    executionMode = executionConfig.mode;
   } catch (error) {
     return apiErrorResponse(error, {
       code: "POLICY_VIOLATION", message: "Invalid execution policy.", stage: "policy", status: 422,

@@ -48,7 +48,8 @@ export async function POST(req: Request) {
     const strategyId: string = (body.strategy ?? "council").toString();
     const synthesisModelRaw: string = (body.synthesisModel ?? "auto").toString();
     const keys = body.keys;
-    const executionMode = parseExecutionConfig(body).mode;
+    const executionConfig = parseExecutionConfig(body);
+    const executionMode = executionConfig.mode;
     const localOnly = requiresLocalExecution(executionMode);
     const ephemeral = isEphemeralBody(body);
     const genKeys = localOnly ? undefined : keys;
