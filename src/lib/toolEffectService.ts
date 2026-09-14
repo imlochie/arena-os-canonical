@@ -4,6 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { appendSessionEvent } from "./sessionEvents";
 import { applyFileEffect, approveToolEffect, type ToolEffect } from "./toolEffects";
 import type { ToolGrant } from "./toolRuntime";
+import { authorize, type AuthenticatedIdentity } from "./authorization";
 
 type Database = typeof db;
 
@@ -13,6 +14,12 @@ export async function persistEffect(effect: ToolEffect, database: Database = db)
     await appendSessionEvent(tx, effect.sessionId, "tool_effect_proposed", preview(row));
     return preview(row);
   });
+}
+
+export async function approveEffectWithIdentity(input:{effectId:string;sessionId:string;expectedDigest:string;grant:ToolGrant;identity:AuthenticatedIdentity},database:Database=db){
+ return database.transaction(async tx=>{const [effect]=await tx.select().from(toolEffects).where(and(eq(toolEffects.id,input.effectId),eq(toolEffects.sessionId,input.sessionId))).limit(1);if(!effect)throw new Error("TOOL_EFFECT_NOT_FOUND");
+ const decision=await authorize({identity:input.identity,capability:"tool_effect.approve",resource:effect.resourceId,scope:effect.canonicalScope,effectClass:effect.effectClass,requiresFreshAuthentication:true},tx as never);if(!decision.allowed)throw new Error(decision.code);validateGrant(effect,input.grant);if(effect.operationDigest!==input.expectedDigest)throw new Error("TOOL_DIGEST_MISMATCH");approveToolEffect(fromRow(effect),input.identity.ownerId);
+ const [claimed]=await tx.update(toolEffects).set({status:"approved",approvedBy:input.identity.ownerId,approvedDigest:effect.operationDigest,approvedAt:new Date()}).where(and(eq(toolEffects.id,effect.id),eq(toolEffects.status,"proposed"),eq(toolEffects.operationDigest,input.expectedDigest))).returning();if(!claimed)throw new Error("TOOL_EFFECT_STATE");await appendSessionEvent(tx,effect.sessionId,"tool_effect_approved",{effectId:effect.id,approverId:input.identity.ownerId,deviceId:input.identity.deviceId,authenticatedSessionId:input.identity.sessionId});return preview(claimed)})
 }
 
 /** Internal authority boundary. Callers must authenticate the owner before invoking this. */
