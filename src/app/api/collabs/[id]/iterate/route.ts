@@ -1,9 +1,10 @@
+import { parseExecutionConfig } from "@/lib/executionConfig";
 import { db } from "@/db";
 import { collabs, collabContributions, cognitiveSessionAssignments, cognitiveSessions } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { executeWorker } from "@/lib/workerExecutor";
 import { getStrategy, resolveCollaborator } from "@/lib/collab";
-import { requiresLocalExecution, resolveExecutionMode, storedExecutionMode } from "@/lib/executionPolicy";
+import { requiresLocalExecution, storedExecutionMode } from "@/lib/executionPolicy";
 import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +25,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const [session] = collab.sessionId
       ? await db.select().from(cognitiveSessions).where(eq(cognitiveSessions.id, collab.sessionId)).limit(1)
       : [];
-    const executionMode = storedExecutionMode(session?.executionMode, session?.metadata) ?? resolveExecutionMode(body);
+    const executionMode = storedExecutionMode(session?.executionMode, session?.metadata) ?? parseExecutionConfig(body).mode;
     const localOnly = requiresLocalExecution(executionMode);
     const genKeys = localOnly ? undefined : keys;
     if ((collab.rounds ?? 1) >= 6) {

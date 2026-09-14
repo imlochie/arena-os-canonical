@@ -108,14 +108,8 @@ export default function CollabLab() {
     fetchHistory();
     try {
       const q = new URLSearchParams(window.location.search);
-      const ch = q.get("challenge");
-      if (ch) setChallenge(ch.slice(0, 6000));
-      const pj = q.get("projectId");
-      if (pj) setProjectId(pj);
       const st = q.get("strategy");
       if (st && STRATEGIES.some((s) => s.id === st)) setStrategyId(st);
-      const src = q.get("source");
-      if (src) setHandoffSource(src);
       const handoffId = q.get("handoffId");
       if (handoffId) fetchHandoffContext(handoffId).then(({ handoff, targetSession, input }) => {
         if (input?.content) setChallenge(input.content.slice(0, 6000));

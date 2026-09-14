@@ -5,7 +5,7 @@ import { appendSessionEvent } from "./sessionEvents";
 
 export const SESSION_STATUSES = ["created", "running", "completed", "failed"] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
-export type SessionMode = "council" | "arena" | "collab";
+export type SessionMode = "council" | "arena" | "collab" | "chat";
 export const TERMINAL_SESSION_STATES: readonly SessionStatus[] = ["completed", "failed"];
 
 const PREVIOUS_STATES: Record<SessionStatus, SessionStatus[]> = {

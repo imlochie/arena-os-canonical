@@ -1,3 +1,4 @@
+import { parseExecutionConfig } from "@/lib/executionConfig";
 import { db } from "@/db";
 import { collabs, collabContributions } from "@/db/schema";
 import { desc } from "drizzle-orm";
@@ -11,7 +12,7 @@ import {
 } from "@/lib/collab";
 import { getModel } from "@/lib/models";
 import { isEphemeralBody, logPrivacyEvent } from "@/lib/privacy";
-import { requiresLocalExecution, resolveExecutionMode } from "@/lib/executionPolicy";
+import { requiresLocalExecution } from "@/lib/executionPolicy";
 import { getProjectContext, withProjectContext } from "@/lib/projectContext";
 import { ensureSeeded } from "@/lib/seed";
 import { projects } from "@/db/schema";
@@ -47,7 +48,7 @@ export async function POST(req: Request) {
     const strategyId: string = (body.strategy ?? "council").toString();
     const synthesisModelRaw: string = (body.synthesisModel ?? "auto").toString();
     const keys = body.keys;
-    const executionMode = resolveExecutionMode(body);
+    const executionMode = parseExecutionConfig(body).mode;
     const localOnly = requiresLocalExecution(executionMode);
     const ephemeral = isEphemeralBody(body);
     const genKeys = localOnly ? undefined : keys;

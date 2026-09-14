@@ -65,6 +65,28 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
         ...execution,
         metadata: safelyParsePayload(execution.metadata),
       })),
+      executionSummary: assignmentRows.map((initial) => {
+        if (initial.assignmentSequence !== 1) return null;
+        const chain = assignmentRows.filter((item) => item.slot === initial.slot)
+          .sort((a, b) => a.assignmentSequence - b.assignmentSequence);
+        const active = chain.find((item) => item.status === "active") ?? chain[chain.length - 1];
+        const completed = [...executionRows].reverse().find((item) =>
+          item.status === "completed" && chain.some((assignment) => assignment.id === item.assignmentId)
+        );
+        return {
+          slot: initial.slot,
+          initialWorker: { assignmentId: initial.id, workerId: initial.workerId, modelId: initial.modelId },
+          selectedWorker: { assignmentId: active.id, workerId: active.workerId, modelId: active.modelId },
+          actualSuccessfulWorker: completed ? {
+            assignmentId: completed.assignmentId,
+            provider: completed.actualProvider,
+            modelId: completed.actualModelId,
+            executionId: completed.id,
+          } : null,
+          attemptHistory: executionRows.filter((item) => chain.some((assignment) => assignment.id === item.assignmentId))
+            .map((item) => item.id),
+        };
+      }).filter(Boolean),
       handoffs: handoffRows.map((handoff) => ({
         ...handoff,
         direction: handoff.sourceSessionId === id ? "outgoing" : "incoming",

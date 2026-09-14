@@ -1,8 +1,9 @@
+import { parseExecutionConfig } from "@/lib/executionConfig";
 import { db } from "@/db";
 import { battles, battleMessages, cognitiveSessionAssignments, cognitiveSessions } from "@/db/schema";
 import { and, asc, eq } from "drizzle-orm";
 import { executeWorker } from "@/lib/workerExecutor";
-import { resolveExecutionMode, storedExecutionMode } from "@/lib/executionPolicy";
+import { storedExecutionMode } from "@/lib/executionPolicy";
 import { allocateWorkforce, persistSessionWorkforceAssignments } from "@/lib/workforceRuntime";
 import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
@@ -31,7 +32,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const [session] = battle.sessionId
       ? await db.select().from(cognitiveSessions).where(eq(cognitiveSessions.id, battle.sessionId)).limit(1)
       : [];
-    const executionMode = storedExecutionMode(session?.executionMode, session?.metadata) ?? resolveExecutionMode(body);
+    const executionMode = storedExecutionMode(session?.executionMode, session?.metadata) ?? parseExecutionConfig(body).mode;
 
     if (!battle.sessionId || !session) {
       return validationError("INVALID_SESSION_STATE", "Arena session is unavailable.", 409, "session");

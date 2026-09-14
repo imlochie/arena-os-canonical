@@ -114,12 +114,6 @@ export default function BattleArena() {
     fetch("/api/templates").then((r) => r.json()).then((j) => setTemplates(j.templates ?? [])).catch(() => {});
     try {
       const q = new URLSearchParams(window.location.search);
-      const pr = q.get("prompt");
-      if (pr) setPrompt(pr.slice(0, 4000));
-      const pj = q.get("projectId");
-      if (pj) setProjectId(pj);
-      const src = q.get("source");
-      if (src) setHandoffSource(src);
       const handoffId = q.get("handoffId");
       if (handoffId) fetchHandoffContext(handoffId).then(({ handoff, targetSession, input }) => {
         if (input?.content) setPrompt(input.content.slice(0, 4000));

@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { cognitiveSessionAssignments, cognitiveSessions, workerExecutions } from "@/db/schema";
+import { cognitiveSessionAssignments, cognitiveSessions, workerExecutionOperations, workerExecutions } from "@/db/schema";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { generate, type ChatMsg, type GenerateOpts } from "./ai";
 import { generateStream } from "./stream";
@@ -193,6 +193,7 @@ interface ExecutionContext {
   generateOptions: GenerateOpts;
   assignmentId: string | null;
   persistedAssignment: typeof cognitiveSessionAssignments.$inferSelect | null;
+  operationId: string | null;
   maxAttempts: number;
   fallbackPolicy: FallbackPolicy;
 }
@@ -203,7 +204,7 @@ async function prepareExecution(request: ExecuteWorkerRequest, database: Executo
     if (!executionMode) throw invalidState(request, "Assigned worker has an invalid execution mode.");
     return {
       request, database, generateOptions: generateOptionsFor(request, executionMode),
-      assignmentId: null, persistedAssignment: null, maxAttempts: 1, fallbackPolicy: "none",
+      assignmentId: null, persistedAssignment: null, operationId: null, maxAttempts: 1, fallbackPolicy: "none",
     };
   }
 
@@ -230,12 +231,17 @@ async function prepareExecution(request: ExecuteWorkerRequest, database: Executo
       executionMode: assignment.executionMode,
     },
   };
+  const [operation] = await database.insert(workerExecutionOperations).values({
+    sessionId: request.sessionId,
+    assignmentId: assignment.id,
+  }).returning();
   return {
     request: effectiveRequest,
     database,
     generateOptions: generateOptionsFor(effectiveRequest, executionMode),
     assignmentId: assignment.id,
     persistedAssignment: assignment,
+    operationId: operation.id,
     maxAttempts: normalizeMaxAttempts(session.maxExecutionAttempts),
     fallbackPolicy: normalizeFallbackPolicy(session.fallbackPolicy),
   };
@@ -348,15 +354,16 @@ async function startAttempt(
   const assignmentId = context.assignmentId;
   const sessionId = context.request.sessionId;
   return context.database.transaction(async (tx) => {
-    const [reservation] = await tx.update(cognitiveSessionAssignments).set({
-      nextExecutionAttempt: sql`${cognitiveSessionAssignments.nextExecutionAttempt} + 1`,
-    }).where(eq(cognitiveSessionAssignments.id, assignmentId)).returning({
-      attemptNumber: sql<number>`${cognitiveSessionAssignments.nextExecutionAttempt} - 1`,
+    const [reservation] = await tx.update(workerExecutionOperations).set({
+      nextAttemptNumber: sql`${workerExecutionOperations.nextAttemptNumber} + 1`,
+    }).where(eq(workerExecutionOperations.id, context.operationId!)).returning({
+      attemptNumber: sql<number>`${workerExecutionOperations.nextAttemptNumber} - 1`,
     });
     if (!reservation) throw invalidState(context.request, "Worker assignment disappeared before execution.");
     const [execution] = await tx.insert(workerExecutions).values({
       sessionId,
       assignmentId,
+      operationId: context.operationId,
       attemptNumber: reservation.attemptNumber,
       previousExecutionId,
       retryReason,
@@ -396,6 +403,8 @@ async function completeAttempt(
       actualModelId: context.request.assignment.modelId,
       completedAt: new Date(),
     }).where(eq(workerExecutions.id, attempt.executionId!));
+    if (context.operationId) await tx.update(workerExecutionOperations).set({ status: "completed", completedAt: new Date() })
+      .where(eq(workerExecutionOperations.id, context.operationId));
     await appendSessionEvent(tx, context.request.sessionId!, "worker_execution_completed", {
       executionId: attempt.executionId,
       assignmentId: context.assignmentId,
@@ -423,6 +432,8 @@ async function failAttempt(
       errorMessage: failure.message.slice(0, 1000),
       completedAt: new Date(),
     }).where(eq(workerExecutions.id, attempt.executionId!));
+    if (!retryScheduled && context.operationId) await tx.update(workerExecutionOperations).set({ status: "failed", completedAt: new Date() })
+      .where(eq(workerExecutionOperations.id, context.operationId));
     await appendSessionEvent(tx, context.request.sessionId!, "worker_execution_failed", {
       executionId: attempt.executionId,
       assignmentId: context.assignmentId,

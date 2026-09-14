@@ -1,8 +1,12 @@
 import { standardApiError } from "@/lib/apiErrors";
 import { db } from "@/db";
-import { chats, chatMessages, assistants } from "@/db/schema";
-import { desc, eq } from "drizzle-orm";
-import { generate, type ChatMsg } from "@/lib/ai";
+import { chats, chatMessages, assistants, cognitiveSessionAssignments } from "@/db/schema";
+import { and, desc, eq } from "drizzle-orm";
+import type { ChatMsg } from "@/lib/ai";
+import { parseExecutionConfig } from "@/lib/executionConfig";
+import { prepareExecutionSession } from "@/lib/executionSession";
+import { allocateWorkforce, persistSessionWorkforceAssignments } from "@/lib/workforceRuntime";
+import { executeWorker } from "@/lib/workerExecutor";
 import { getModel } from "@/lib/models";
 import { isEphemeralBody, isLocalOnlyBody, logPrivacyEvent } from "@/lib/privacy";
 
@@ -24,7 +28,8 @@ export async function POST(req: Request) {
     const body = await req.json();
     const mode = body.mode as "create" | "message";
     const keys = body.keys;
-    const localOnly = isLocalOnlyBody(body);
+    const config = parseExecutionConfig(body);
+    const localOnly = config.localOnly;
     const ephemeral = isEphemeralBody(body);
     const genKeys = localOnly ? undefined : keys;
 
@@ -51,13 +56,13 @@ export async function POST(req: Request) {
         }
       }
       const full: ChatMsg[] = [...history.slice(-20), ...(message ? [{ role: "user" as const, content: message }] : [])];
-      const result = await generate({
-        modelId: effectiveModel,
-        messages: full,
-        system,
-        temperature: body.temperature ?? 0.7,
-        keys: genKeys,
-        localOnly,
+      const [assignment] = await allocateWorkforce([{
+        slot: "assistant", requestedRole: "Personal Assistant", workforceRoleId: "strategist",
+        pinnedModelId: body.assistantId || body.modelId ? effectiveModel : undefined,
+        requiredCapabilities: ["text_generation"],
+      }], config.mode);
+      const result = await executeWorker({
+        assignment, messages: full, system, temperature: body.temperature ?? 0.7, keys: genKeys,
       });
       await logPrivacyEvent("ephemeral_chat", `localOnly=${localOnly}`);
       return Response.json({ ephemeral: true, reply: result.text, via: result.via, ms: result.ms, localOnly }, { status: 201 });
@@ -81,15 +86,26 @@ export async function POST(req: Request) {
       }
 
       const title = message.length > 60 ? message.slice(0, 60) + "…" : message;
+      const projectId = body.projectId ? String(body.projectId) : null;
+      const sessionId = await prepareExecutionSession({
+        mode: "chat", executionMode: config.mode, maxExecutionAttempts: config.maxExecutionAttempts,
+        fallbackPolicy: config.fallbackPolicy, projectId, title, content: message,
+      });
+      const [assignment] = await allocateWorkforce([{
+        slot: "assistant", requestedRole: "Personal Assistant", workforceRoleId: "strategist",
+        pinnedModelId: assistantId || body.modelId ? effectiveModel : undefined,
+        requiredCapabilities: ["text_generation"],
+      }], config.mode);
+      await persistSessionWorkforceAssignments(sessionId, [assignment]);
       const [chat] = await db
         .insert(chats)
-        .values({ title, modelId: effectiveModel, assistantId: assistantId ?? null, projectId: body.projectId ? String(body.projectId) : null })
+        .values({ title, modelId: assignment.modelId, assistantId: assistantId ?? null, projectId, sessionId })
         .returning();
       await db.insert(chatMessages).values({ chatId: chat.id, role: "user", content: message });
 
       const history: ChatMsg[] = [{ role: "user", content: message }];
       const temp = body.temperature ?? 0.7;
-      const result = await generate({ modelId: effectiveModel, messages: history, system, temperature: temp, keys: genKeys, localOnly });
+      const result = await executeWorker({ sessionId, assignment, messages: history, system, temperature: temp, keys: genKeys });
       await db.insert(chatMessages).values({ chatId: chat.id, role: "assistant", content: result.text });
 
       return Response.json({ chat, reply: result.text, via: result.via, ms: result.ms, localOnly }, { status: 201 });
@@ -117,13 +133,20 @@ export async function POST(req: Request) {
       .slice(-20)
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
-    const result = await generate({
-      modelId: chat.modelId,
+    if (!chat.sessionId) return standardApiError("CHAT_SESSION_REQUIRED", "Legacy chat must be migrated before it can continue.", 409);
+    const [assignment] = await db.select().from(cognitiveSessionAssignments).where(and(
+      eq(cognitiveSessionAssignments.sessionId, chat.sessionId),
+      eq(cognitiveSessionAssignments.slot, "assistant"),
+      eq(cognitiveSessionAssignments.status, "active")
+    )).limit(1);
+    if (!assignment) return standardApiError("CHAT_ASSIGNMENT_REQUIRED", "Chat has no active Workforce assignment.", 409);
+    const result = await executeWorker({
+      sessionId: chat.sessionId,
+      assignment,
       messages: history,
       system,
       temperature: body.temperature ?? 0.7,
       keys: genKeys,
-      localOnly,
     });
     await db.insert(chatMessages).values({ chatId, role: "assistant", content: result.text });
     return Response.json({ reply: result.text, via: result.via, ms: result.ms, localOnly });

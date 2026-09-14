@@ -83,17 +83,10 @@ export default function CouncilLab() {
   useEffect(() => {
     fetch("/api/models").then((r) => r.json()).then((j) => setModels(j.models ?? [])).catch(() => {});
     fetchHistory();
-    // Handoff intake: ?material= &projectId= &jobId= &source=
     try {
       const q = new URLSearchParams(window.location.search);
-      const mat = q.get("material");
-      if (mat) setMaterial(mat.slice(0, 8000));
-      const pj = q.get("projectId");
-      if (pj) setProjectId(pj);
       const jb = q.get("jobId");
       if (jb && COGNITIVE_JOBS.some((j) => j.id === jb)) setJobId(jb);
-      const src = q.get("source");
-      if (src) setHandoffSource(src);
       const sid = q.get("sessionId");
       if (sid) {
         loadSession(sid).catch(() => {});

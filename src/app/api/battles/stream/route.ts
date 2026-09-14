@@ -1,9 +1,10 @@
+import { parseExecutionConfig } from "@/lib/executionConfig";
 import { db } from "@/db";
 import { battles, battleMessages, projects } from "@/db/schema";
 import { prepareExecutionSession } from "@/lib/executionSession";
 import { advanceSessionStage, transitionSession, transitionSessionInTransaction } from "@/lib/sessionLifecycle";
 import { allocateArenaWorkforce, persistSessionWorkforceAssignments } from "@/lib/workforceRuntime";
-import { requiresLocalExecution, resolveExecutionMode } from "@/lib/executionPolicy";
+import { requiresLocalExecution } from "@/lib/executionPolicy";
 import { eq } from "drizzle-orm";
 import { assignSides, resolveFighters } from "@/lib/battleSetup";
 import { executeWorkerStream } from "@/lib/workerExecutor";
@@ -30,7 +31,7 @@ export async function POST(req: Request) {
   const keys = body.keys;
   let executionMode;
   try {
-    executionMode = resolveExecutionMode(body);
+    executionMode = parseExecutionConfig(body).mode;
   } catch (error) {
     return apiErrorResponse(error, {
       code: "POLICY_VIOLATION", message: "Invalid execution policy.", stage: "policy", status: 422,

@@ -1,3 +1,4 @@
+import { parseExecutionConfig } from "@/lib/executionConfig";
 import { db } from "@/db";
 import { battles, battleMessages } from "@/db/schema";
 import { prepareExecutionSession } from "@/lib/executionSession";
@@ -7,7 +8,7 @@ import { desc } from "drizzle-orm";
 import { executeWorker } from "@/lib/workerExecutor";
 import { assignSides, resolveFighters } from "@/lib/battleSetup";
 import { isEphemeralBody, logPrivacyEvent, sealReveal } from "@/lib/privacy";
-import { requiresLocalExecution, resolveExecutionMode } from "@/lib/executionPolicy";
+import { requiresLocalExecution } from "@/lib/executionPolicy";
 import { getProjectContext, withProjectContext } from "@/lib/projectContext";
 import { ensureSeeded } from "@/lib/seed";
 import { projects } from "@/db/schema";
@@ -48,7 +49,7 @@ export async function POST(req: Request) {
     const prompt: string = (body.prompt ?? "").toString().trim();
     const keys = body.keys;
     const imageSize: string | undefined = body.imageSize;
-    const executionMode = resolveExecutionMode(body);
+    const executionMode = parseExecutionConfig(body).mode;
     const localOnly = requiresLocalExecution(executionMode);
     const ephemeral = isEphemeralBody(body);
 

@@ -221,10 +221,21 @@ export const cognitiveSessionAssignments = pgTable("cognitive_session_assignment
   index("cognitive_session_assignments_supersedes_id_idx").on(t.supersedesAssignmentId),
 ]);
 
+export const workerExecutionOperations = pgTable("worker_execution_operations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull().references(() => cognitiveSessions.id, { onDelete: "cascade" }),
+  assignmentId: uuid("assignment_id").notNull().references(() => cognitiveSessionAssignments.id, { onDelete: "cascade" }),
+  nextAttemptNumber: integer("next_attempt_number").notNull().default(1),
+  status: text("status").notNull().default("running"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  completedAt: timestamp("completed_at"),
+}, (t) => [index("worker_execution_operations_assignment_idx").on(t.assignmentId, t.createdAt)]);
+
 export const workerExecutions = pgTable("worker_executions", {
   id: uuid("id").primaryKey().defaultRandom(),
   sessionId: uuid("session_id").notNull().references(() => cognitiveSessions.id, { onDelete: "cascade" }),
   assignmentId: uuid("assignment_id").notNull().references(() => cognitiveSessionAssignments.id, { onDelete: "cascade" }),
+  operationId: uuid("operation_id").references(() => workerExecutionOperations.id, { onDelete: "cascade" }),
   attemptNumber: integer("attempt_number").notNull().default(1),
   previousExecutionId: uuid("previous_execution_id"),
   retryReason: text("retry_reason"),
@@ -245,7 +256,7 @@ export const workerExecutions = pgTable("worker_executions", {
 }, (t) => [
   index("worker_executions_session_id_idx").on(t.sessionId, t.startedAt),
   index("worker_executions_assignment_id_idx").on(t.assignmentId, t.startedAt),
-  uniqueIndex("worker_executions_assignment_attempt_unique").on(t.assignmentId, t.attemptNumber),
+  uniqueIndex("worker_executions_operation_attempt_unique").on(t.operationId, t.attemptNumber),
 ]);
 
 export const handoffs = pgTable("handoffs", {
@@ -337,6 +348,7 @@ export const chats = pgTable("chats", {
   modelId: text("model_id").notNull().default("openai"),
   assistantId: uuid("assistant_id"),
   projectId: uuid("project_id"),
+  sessionId: uuid("session_id").references(() => cognitiveSessions.id, { onDelete: "cascade" }).unique(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

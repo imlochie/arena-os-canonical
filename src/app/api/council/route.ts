@@ -1,3 +1,4 @@
+import { parseExecutionConfig } from "@/lib/executionConfig";
 import { db } from "@/db";
 import { cognitiveSessionInputs, cognitiveSessions, councilRuns } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
@@ -15,7 +16,7 @@ import {
 } from "@/lib/councilSynthesis";
 import { allocateCouncilWorkforce, persistWorkforceAssignments } from "@/lib/workforceRuntime";
 import { isEphemeralBody, logPrivacyEvent } from "@/lib/privacy";
-import { requiresLocalExecution, resolveExecutionMode } from "@/lib/executionPolicy";
+import { requiresLocalExecution } from "@/lib/executionPolicy";
 import { apiErrorResponse, serializeApiError, validationError } from "@/lib/apiErrors";
 import { getProjectContext, withProjectContext } from "@/lib/projectContext";
 import { ensureSeeded } from "@/lib/seed";
@@ -54,7 +55,7 @@ export async function POST(req: Request) {
     const material: string = (body.material ?? "").toString().trim();
     const jobId: string = (body.jobId ?? "second_brain").toString();
     const keys = body.keys;
-    const executionMode = resolveExecutionMode(body);
+    const executionMode = parseExecutionConfig(body).mode;
     const localOnly = requiresLocalExecution(executionMode);
     const ephemeral = isEphemeralBody(body);
     sessionId = !ephemeral && body.sessionId ? String(body.sessionId) : null;

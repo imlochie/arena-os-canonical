@@ -1,10 +1,11 @@
+import { parseExecutionConfig } from "@/lib/executionConfig";
 import { db } from "@/db";
 import { battles, battleMessages, assistants, cognitiveSessionAssignments, cognitiveSessions } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
 import { type ChatMsg } from "@/lib/ai";
 import { executeWorker } from "@/lib/workerExecutor";
 import { getModel } from "@/lib/models";
-import { requiresLocalExecution, resolveExecutionMode, storedExecutionMode } from "@/lib/executionPolicy";
+import { requiresLocalExecution, storedExecutionMode } from "@/lib/executionPolicy";
 import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +31,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const [session] = battle.sessionId
       ? await db.select().from(cognitiveSessions).where(eq(cognitiveSessions.id, battle.sessionId)).limit(1)
       : [];
-    const executionMode = storedExecutionMode(session?.executionMode, session?.metadata) ?? resolveExecutionMode(body);
+    const executionMode = storedExecutionMode(session?.executionMode, session?.metadata) ?? parseExecutionConfig(body).mode;
     const localOnly = requiresLocalExecution(executionMode);
     const genKeys = localOnly ? undefined : keys;
     if (!battle.sessionId) return validationError("INVALID_SESSION_STATE", "Arena session assignment is missing.", 409, "session");

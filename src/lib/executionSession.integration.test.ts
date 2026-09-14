@@ -3,7 +3,7 @@ import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { eq } from "drizzle-orm";
-import { cognitiveSessionAssignments, cognitiveSessionEvents, cognitiveSessionInputs, cognitiveSessions, workerExecutions } from "@/db/schema";
+import { cognitiveSessionAssignments, cognitiveSessionEvents, cognitiveSessionInputs, cognitiveSessions, workerExecutionOperations, workerExecutions } from "@/db/schema";
 import { prepareExecutionSession } from "./executionSession";
 import { executeWorker } from "./workerExecutor";
 import { persistSessionWorkforceAssignments } from "./workforceRuntime";
@@ -50,15 +50,22 @@ async function fixture() {
       selection_reason text not null, capability_match text not null default '[]',
       created_at timestamp default now(), unique(session_id, slot, assignment_sequence)
     );
+    create table worker_execution_operations (
+      id uuid primary key default gen_random_uuid(), session_id uuid not null references cognitive_sessions(id) on delete cascade,
+      assignment_id uuid not null references cognitive_session_assignments(id) on delete cascade,
+      next_attempt_number integer not null default 1, status text not null default 'running',
+      created_at timestamp not null default now(), completed_at timestamp
+    );
     create table worker_executions (
       id uuid primary key default gen_random_uuid(), session_id uuid not null references cognitive_sessions(id) on delete cascade,
       assignment_id uuid not null references cognitive_session_assignments(id) on delete cascade,
+      operation_id uuid not null references worker_execution_operations(id) on delete cascade,
       attempt_number integer not null default 1, previous_execution_id uuid, retry_reason text,
       fallback_source_assignment_id uuid, fallback_policy text not null default 'none', status text not null default 'running',
       selected_provider text not null, selected_model_id text not null, actual_provider text, actual_model_id text,
       route text, output_contract text not null default 'text', error_code text, error_message text,
       metadata text not null default '{}', started_at timestamp not null default now(), completed_at timestamp,
-      unique(assignment_id, attempt_number)
+      unique(operation_id, attempt_number)
     );
   `);
   return { client, database: drizzle(client) };
@@ -167,6 +174,27 @@ test("retryable failure creates distinct attempts on one assignment without term
     "worker_execution_started", "worker_execution_failed", "worker_retry_scheduled",
     "worker_execution_started", "worker_execution_completed",
   ]);
+
+  calls = 0;
+  const secondOperation = await executeWorker({
+    sessionId: session.id,
+    assignment: { slot: "fighter_a", requestedRole: "Strategist", provider: "pollinations", modelId: "openai", executionMode: "online" },
+    messages: [{ role: "user", content: "second logical operation" }],
+  }, {
+    database: database as never,
+    generate: async () => {
+      calls += 1;
+      if (calls === 1) throw new DOMException("timed out", "AbortError");
+      return { text: "done again", via: "pollinations:openai", ms: 1 };
+    },
+  });
+  const operations = await database.select().from(workerExecutionOperations).orderBy(workerExecutionOperations.createdAt);
+  const allAttempts = await database.select().from(workerExecutions).orderBy(workerExecutions.startedAt);
+  assert.equal(secondOperation.attemptNumber, 2);
+  assert.equal(operations.length, 2);
+  assert.deepEqual(operations.map((operation) =>
+    allAttempts.filter((attempt) => attempt.operationId === operation.id).map((attempt) => attempt.attemptNumber)
+  ), [[1, 2], [1, 2]]);
   await client.close();
 });
 
