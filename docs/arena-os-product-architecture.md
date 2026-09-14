@@ -231,6 +231,20 @@ Classification belongs to data/context, not only to a session toggle. Effective 
 
 Infrastructure must preserve domain invariants rather than invent parallel lifecycle concepts.
 
+## 5.1 Tool Runtime
+
+The Tool Runtime is a first-class capability parallel to Workforce. Workers reason; tools perform bounded actions. Cognitive Sessions coordinate both through shared policy, provenance, privacy classification, and task context.
+
+```text
+Cognitive Session
+ ├── Workforce → AI workers
+ └── Tool Runtime → repositories, files, web, knowledge, creative and media tools
+```
+
+Tools are registered once and reused by Council, Arena, Collab, Jarvis/Direct Chat, and future Missions. Tool access is capability-based, grant-scoped, schema-validated, and auditable. Credentials never enter model context. Write, destructive, and external effects require stronger policy and approval than ordinary model execution.
+
+The canonical design and bounded delivery sequence are defined in `docs/tool-runtime-architecture.md`.
+
 ## 6. Long-running collaboration
 
 Long-running autonomous collaboration is the major product capability not yet supplied by the execution substrate.
