@@ -1,6 +1,7 @@
 export const DEFAULT_MAX_EXECUTION_ATTEMPTS = 2;
 export const MAX_EXECUTION_ATTEMPTS_LIMIT = 3;
-export type FallbackPolicy = "none" | "same_provider" | "eligible_worker";
+export const FALLBACK_POLICIES = ["none", "same_provider", "eligible_worker"] as const;
+export type FallbackPolicy = (typeof FALLBACK_POLICIES)[number];
 
 export interface RetryDecisionInput {
   attemptNumber: number;

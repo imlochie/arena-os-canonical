@@ -5,6 +5,7 @@ import { appendSessionEvent } from "@/lib/sessionEvents";
 import { resolveExecutionMode } from "@/lib/executionPolicy";
 import { apiErrorResponse, validationError } from "@/lib/apiErrors";
 import { desc, eq, inArray } from "drizzle-orm";
+import { FALLBACK_POLICIES, normalizeMaxAttempts } from "@/lib/retryPolicy";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +51,11 @@ export async function POST(req: Request) {
     if (content.length > 8000) return validationError("SESSION_INPUT_TOO_LONG", "Session input must be 8,000 characters or fewer.");
 
     const executionMode = resolveExecutionMode(body);
+    const fallbackPolicy = body.fallbackPolicy ?? "none";
+    if (!FALLBACK_POLICIES.includes(fallbackPolicy)) {
+      return validationError("INVALID_FALLBACK_POLICY", "Fallback policy must be none, same_provider, or eligible_worker.");
+    }
+    const maxExecutionAttempts = normalizeMaxAttempts(body.maxExecutionAttempts);
     const jobId = String(body.jobId ?? body.metadata?.jobId ?? "second_brain");
     const job = mode === "council" ? getCognitiveJob(jobId) : null;
     const metadata = {
@@ -64,6 +70,8 @@ export async function POST(req: Request) {
         projectId: body.projectId ? String(body.projectId) : null,
         mode,
         executionMode,
+        maxExecutionAttempts,
+        fallbackPolicy,
         intent: body.intent ? String(body.intent).slice(0, 160) : null,
         title: String(body.title ?? (job ? `${job.emoji} ${job.name}` : `Untitled ${mode} session`)).slice(0, 180),
         metadata: encodedMetadata,

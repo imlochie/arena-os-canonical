@@ -12,6 +12,17 @@ import { appendSessionEvent } from "./sessionEvents";
 async function fixture() {
   const client = new PGlite();
   await client.exec(`
+    create table models (
+      id text primary key, name text not null, provider text not null default 'pollinations', description text not null default '',
+      is_free boolean not null default true, elo integer not null default 1200, battles integer not null default 0,
+      wins integer not null default 0, ties integer not null default 0, avg_latency_ms integer not null default 0,
+      availability text not null default 'unknown', supports_structured_output boolean not null default false,
+      capabilities text not null default '[]', updated_at timestamp default now()
+    );
+    create table model_category_ratings (
+      model_id text not null, category text not null, elo integer not null default 1200, battles integer not null default 0,
+      wins integer not null default 0, ties integer not null default 0, updated_at timestamp default now(), primary key(model_id, category)
+    );
     create table cognitive_sessions (
       id uuid primary key default gen_random_uuid(), project_id uuid, mode text not null,
       execution_mode text not null default 'online', title text not null, intent text, metadata text not null default '{}', status text not null default 'created',
@@ -34,9 +45,10 @@ async function fixture() {
       provider text not null, model_id text not null, execution_mode text not null default 'online',
       eligibility_decision text not null default 'eligible under default online policy',
       worker_availability text not null default 'unknown', capabilities_considered text not null default '[]',
-      next_execution_attempt integer not null default 1,
+      pinned_model_id text, assignment_sequence integer not null default 1, supersedes_assignment_id uuid,
+      reassignment_reason text, status text not null default 'active', next_execution_attempt integer not null default 1,
       selection_reason text not null, capability_match text not null default '[]',
-      created_at timestamp default now(), unique(session_id, slot)
+      created_at timestamp default now(), unique(session_id, slot, assignment_sequence)
     );
     create table worker_executions (
       id uuid primary key default gen_random_uuid(), session_id uuid not null references cognitive_sessions(id) on delete cascade,
@@ -153,6 +165,53 @@ test("retryable failure creates distinct attempts on one assignment without term
   assert.equal(unchangedSession.status, "running");
   assert.deepEqual(events.map((event) => event.type), [
     "worker_execution_started", "worker_execution_failed", "worker_retry_scheduled",
+    "worker_execution_started", "worker_execution_completed",
+  ]);
+  await client.close();
+});
+
+test("eligible-worker fallback creates a linked assignment through policy and Workforce", async () => {
+  const { client, database } = await fixture();
+  await client.exec(`
+    insert into models (id, name, provider, availability, capabilities) values
+      ('openai', 'OpenAI', 'pollinations', 'available', '["text_generation"]'),
+      ('mistral', 'Mistral', 'pollinations', 'available', '["text_generation"]');
+  `);
+  const [session] = await database.insert(cognitiveSessions).values({
+    mode: "arena", title: "fallback", status: "running", maxExecutionAttempts: 1,
+    fallbackPolicy: "eligible_worker",
+  }).returning();
+  const [original] = await database.insert(cognitiveSessionAssignments).values({
+    sessionId: session.id, slot: "fighter_a", requestedRole: "Strategist", workforceRoleId: "strategist",
+    workerId: "model:openai", provider: "pollinations", modelId: "openai", executionMode: "online",
+    capabilitiesConsidered: '["text_generation"]', selectionReason: "test",
+  }).returning();
+  const modelsSeen: string[] = [];
+  const result = await executeWorker({
+    sessionId: session.id,
+    assignment: { slot: "fighter_a", requestedRole: "Strategist", provider: "pollinations", modelId: "openai", executionMode: "online" },
+    messages: [{ role: "user", content: "work" }],
+  }, {
+    database: database as never,
+    generate: async (options) => {
+      modelsSeen.push(options.modelId);
+      if (options.modelId === "openai") throw new Error("provider route failed");
+      return { text: "fallback complete", via: `pollinations:${options.modelId}`, ms: 1 };
+    },
+  });
+  const assignments = await database.select().from(cognitiveSessionAssignments)
+    .orderBy(cognitiveSessionAssignments.assignmentSequence);
+  const attempts = await database.select().from(workerExecutions).orderBy(workerExecutions.startedAt);
+  const events = await database.select().from(cognitiveSessionEvents).orderBy(cognitiveSessionEvents.sequence);
+  assert.deepEqual(modelsSeen, ["openai", "mistral"]);
+  assert.equal(result.actualModelId, "mistral");
+  assert.equal(assignments.length, 2);
+  assert.equal(assignments[0].status, "superseded");
+  assert.equal(assignments[1].supersedesAssignmentId, original.id);
+  assert.equal(assignments[1].status, "active");
+  assert.equal(attempts[1].fallbackSourceAssignmentId, original.id);
+  assert.deepEqual(events.map((event) => event.type), [
+    "worker_execution_started", "worker_execution_failed", "fallback_triggered", "workforce_reassigned",
     "worker_execution_started", "worker_execution_completed",
   ]);
   await client.close();

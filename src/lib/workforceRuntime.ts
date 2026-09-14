@@ -117,6 +117,32 @@ export async function allocateCollabWorkforce(
   return allocateWorkforce(requests, executionMode);
 }
 
+export async function selectFallbackWorkforceAssignment(input: {
+  failedModelId: string;
+  failedProvider: string;
+  policy: "same_provider" | "eligible_worker";
+  request: WorkforceRequest;
+  executionMode: ExecutionMode;
+}, database: typeof db = db): Promise<WorkforceAssignment> {
+  if (input.request.pinnedModelId) {
+    throw new Error("Explicitly pinned assignments cannot fall back to another worker.");
+  }
+  const workers = await availableWorkers(database);
+  const policy = enforceExecutionPolicy(workers, input.executionMode);
+  const candidates = policy.eligibleWorkers.filter((worker) =>
+    worker.modelId !== input.failedModelId &&
+    (input.policy !== "same_provider" || worker.provider === input.failedProvider)
+  );
+  if (!candidates.length) throw new Error(`No fallback worker satisfies ${input.policy} policy.`);
+  const suitability = enforceWorkerSuitability(candidates, [input.request]);
+  return resolveWorkforceAssignments([input.request], candidates, {
+    executionMode: input.executionMode,
+    eligibilityReasons: policy.eligibilityReasons,
+    eligibleWorkersBySlot: suitability.eligibleWorkersBySlot,
+    suitabilityReasons: suitability.suitabilityReasons,
+  })[0];
+}
+
 export async function persistSessionWorkforceAssignments(
   sessionId: string,
   assignments: WorkforceAssignment[],
@@ -136,6 +162,7 @@ export async function persistSessionWorkforceAssignments(
         eligibilityDecision: assignment.eligibilityDecision,
         workerAvailability: assignment.workerAvailability,
         capabilitiesConsidered: JSON.stringify(assignment.capabilitiesConsidered),
+        pinnedModelId: assignment.pinnedModelId,
         selectionReason: assignment.selectionReason,
         capabilityMatch: JSON.stringify(assignment.capabilityMatch),
       }))
@@ -166,10 +193,10 @@ export async function persistWorkforceAssignments(
   return persistSessionWorkforceAssignments(sessionId, assignments);
 }
 
-async function availableWorkers(): Promise<AvailableWorker[]> {
+export async function availableWorkers(database: typeof db = db): Promise<AvailableWorker[]> {
   const [registry, ratings] = await Promise.all([
-    db.select().from(models),
-    db.select().from(modelCategoryRatings),
+    database.select().from(models),
+    database.select().from(modelCategoryRatings),
   ]);
   const ratingsByModel = new Map<string, Record<string, number>>();
   for (const rating of ratings) {

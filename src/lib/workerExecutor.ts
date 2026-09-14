@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { cognitiveSessionAssignments, cognitiveSessions, workerExecutions } from "@/db/schema";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { generate, type ChatMsg, type GenerateOpts } from "./ai";
 import { generateStream } from "./stream";
 import { requiresLocalExecution, storedExecutionMode } from "./executionPolicy";
@@ -8,7 +8,8 @@ import type { WorkforceAssignment } from "./workforceResolver";
 import { getModel } from "./models";
 import { ArenaRuntimeError } from "./errors";
 import { appendSessionEvent } from "./sessionEvents";
-import { decideExecutionRetry, normalizeFallbackPolicy, normalizeMaxAttempts } from "./retryPolicy";
+import { decideExecutionRetry, normalizeFallbackPolicy, normalizeMaxAttempts, type FallbackPolicy } from "./retryPolicy";
+import { selectFallbackWorkforceAssignment } from "./workforceRuntime";
 
 export type WorkerOutputContract = "text" | "structured_json" | "image";
 type ExecutorDatabase = typeof db;
@@ -71,6 +72,14 @@ export async function executeWorker(
   request: ExecuteWorkerRequest,
   dependencies: WorkerExecutorDependencies = {}
 ): Promise<WorkerExecutionResult> {
+  return executeWorkerChain(request, dependencies, true);
+}
+
+async function executeWorkerChain(
+  request: ExecuteWorkerRequest,
+  dependencies: WorkerExecutorDependencies,
+  fallbackAllowed: boolean
+): Promise<WorkerExecutionResult> {
   const context = await prepareExecution(request, dependencies.database ?? db);
   const generateImpl = dependencies.generate ?? generate;
   let previousExecutionId: string | null = null;
@@ -78,7 +87,7 @@ export async function executeWorker(
 
   for (;;) {
     const attempt = await startAttempt(context, previousExecutionId, retryReason);
-    const route = predictedRoute(request.assignment.modelId, context.generateOptions.localOnly === true);
+    const route = predictedRoute(context.request.assignment.modelId, context.generateOptions.localOnly === true);
     try {
       const result = await generateImpl(context.generateOptions);
       const actualProvider = providerFromRoute(result.via);
@@ -87,7 +96,7 @@ export async function executeWorker(
         ...result,
         executionId: attempt.executionId,
         actualProvider,
-        actualModelId: request.assignment.modelId,
+        actualModelId: context.request.assignment.modelId,
         attemptNumber: attempt.attemptNumber,
       };
     } catch (error) {
@@ -103,7 +112,17 @@ export async function executeWorker(
         retryReason = failure.code;
         continue;
       }
-      throw executionError(request, attempt.executionId, failure, error);
+      if (fallbackAllowed && failure.retryable && context.fallbackPolicy !== "none" && !context.persistedAssignment?.pinnedModelId) {
+        let fallback: ExecuteWorkerRequest["assignment"];
+        try {
+          fallback = await createFallbackAssignment(context, attempt.executionId, failure.code);
+        } catch (fallbackError) {
+          await recordFallbackRejected(context, attempt.executionId, fallbackError);
+          throw executionError(context.request, attempt.executionId, failure, fallbackError);
+        }
+        return executeWorkerChain({ ...request, assignment: fallback }, dependencies, false);
+      }
+      throw executionError(context.request, attempt.executionId, failure, error);
     }
   }
 }
@@ -112,12 +131,20 @@ export async function executeWorkerStream(
   request: ExecuteWorkerRequest,
   dependencies: WorkerExecutorDependencies = {}
 ) {
+  return executeWorkerStreamChain(request, dependencies, true);
+}
+
+async function executeWorkerStreamChain(
+  request: ExecuteWorkerRequest,
+  dependencies: WorkerExecutorDependencies,
+  fallbackAllowed: boolean
+): Promise<{ stream: AsyncGenerator<string>; executionId: string | null }> {
   const context = await prepareExecution(request, dependencies.database ?? db);
   const generateStreamImpl = dependencies.generateStream ?? generateStream;
   const firstAttempt = await startAttempt(context, null, null);
-  const route = predictedStreamRoute(request.assignment.modelId, context.generateOptions.localOnly === true);
+  const route = predictedStreamRoute(context.request.assignment.modelId, context.generateOptions.localOnly === true);
 
-  const stream = (async function* () {
+  const stream: AsyncGenerator<string> = (async function* (): AsyncGenerator<string> {
     let attempt = firstAttempt;
     for (;;) {
       let outputStarted = false;
@@ -141,7 +168,19 @@ export async function executeWorkerStream(
           attempt = await startAttempt(context, attempt.executionId, failure.code);
           continue;
         }
-        throw executionError(request, attempt.executionId, failure, error);
+        if (fallbackAllowed && failure.retryable && !outputStarted && context.fallbackPolicy !== "none" && !context.persistedAssignment?.pinnedModelId) {
+          let fallback: ExecuteWorkerRequest["assignment"];
+          try {
+            fallback = await createFallbackAssignment(context, attempt.executionId, failure.code);
+          } catch (fallbackError) {
+            await recordFallbackRejected(context, attempt.executionId, fallbackError);
+            throw executionError(context.request, attempt.executionId, failure, fallbackError);
+          }
+          const next = await executeWorkerStreamChain({ ...request, assignment: fallback }, dependencies, false);
+          for await (const chunk of next.stream) yield chunk;
+          return;
+        }
+        throw executionError(context.request, attempt.executionId, failure, error);
       }
     }
   })();
@@ -153,14 +192,57 @@ interface ExecutionContext {
   database: ExecutorDatabase;
   generateOptions: GenerateOpts;
   assignmentId: string | null;
+  persistedAssignment: typeof cognitiveSessionAssignments.$inferSelect | null;
   maxAttempts: number;
-  fallbackPolicy: string;
+  fallbackPolicy: FallbackPolicy;
 }
 
 async function prepareExecution(request: ExecuteWorkerRequest, database: ExecutorDatabase): Promise<ExecutionContext> {
-  const executionMode = storedExecutionMode(request.assignment.executionMode);
-  if (!executionMode) throw invalidState(request, "Assigned worker has an invalid execution mode.");
-  const generateOptions: GenerateOpts = {
+  if (!request.sessionId) {
+    const executionMode = storedExecutionMode(request.assignment.executionMode);
+    if (!executionMode) throw invalidState(request, "Assigned worker has an invalid execution mode.");
+    return {
+      request, database, generateOptions: generateOptionsFor(request, executionMode),
+      assignmentId: null, persistedAssignment: null, maxAttempts: 1, fallbackPolicy: "none",
+    };
+  }
+
+  const [[assignment], [session]] = await Promise.all([
+    database.select().from(cognitiveSessionAssignments).where(and(
+      eq(cognitiveSessionAssignments.sessionId, request.sessionId),
+      eq(cognitiveSessionAssignments.slot, request.assignment.slot),
+      eq(cognitiveSessionAssignments.status, "active")
+    )).orderBy(desc(cognitiveSessionAssignments.assignmentSequence)).limit(1),
+    database.select().from(cognitiveSessions).where(eq(cognitiveSessions.id, request.sessionId)).limit(1),
+  ]);
+  if (!session || !assignment || (assignment.assignmentSequence === 1 && assignment.modelId !== request.assignment.modelId)) {
+    throw invalidState(request, "Persisted assignment does not match the requested worker execution.");
+  }
+  const executionMode = storedExecutionMode(assignment.executionMode);
+  if (!executionMode) throw invalidState(request, "Persisted assignment has an invalid execution mode.");
+  const effectiveRequest: ExecuteWorkerRequest = {
+    ...request,
+    assignment: {
+      slot: assignment.slot,
+      requestedRole: assignment.requestedRole,
+      provider: assignment.provider,
+      modelId: assignment.modelId,
+      executionMode: assignment.executionMode,
+    },
+  };
+  return {
+    request: effectiveRequest,
+    database,
+    generateOptions: generateOptionsFor(effectiveRequest, executionMode),
+    assignmentId: assignment.id,
+    persistedAssignment: assignment,
+    maxAttempts: normalizeMaxAttempts(session.maxExecutionAttempts),
+    fallbackPolicy: normalizeFallbackPolicy(session.fallbackPolicy),
+  };
+}
+
+function generateOptionsFor(request: ExecuteWorkerRequest, executionMode: "online" | "offline" | "local_only"): GenerateOpts {
+  return {
     modelId: request.assignment.modelId,
     messages: request.messages,
     system: request.system,
@@ -171,28 +253,88 @@ async function prepareExecution(request: ExecuteWorkerRequest, database: Executo
     localOnly: requiresLocalExecution(executionMode),
     strictRoute: true,
   };
-  if (!request.sessionId) {
-    return { request, database, generateOptions, assignmentId: null, maxAttempts: 1, fallbackPolicy: "none" };
-  }
+}
 
-  const [[assignment], [session]] = await Promise.all([
-    database.select().from(cognitiveSessionAssignments).where(and(
-      eq(cognitiveSessionAssignments.sessionId, request.sessionId),
-      eq(cognitiveSessionAssignments.slot, request.assignment.slot)
-    )).limit(1),
-    database.select().from(cognitiveSessions).where(eq(cognitiveSessions.id, request.sessionId)).limit(1),
-  ]);
-  if (!session || !assignment || assignment.modelId !== request.assignment.modelId) {
-    throw invalidState(request, "Persisted assignment does not match the requested worker execution.");
+async function recordFallbackRejected(
+  context: ExecutionContext,
+  failedExecutionId: string | null,
+  error: unknown
+) {
+  if (!context.request.sessionId) return;
+  await context.database.transaction((tx) => appendSessionEvent(tx, context.request.sessionId!, "fallback_rejected", {
+    policy: context.fallbackPolicy,
+    failedAssignmentId: context.assignmentId,
+    failedExecutionId,
+    reason: error instanceof Error ? error.message.slice(0, 500) : "fallback selection failed",
+  }));
+}
+
+async function createFallbackAssignment(
+  context: ExecutionContext,
+  failedExecutionId: string | null,
+  reason: string
+) {
+  const failed = context.persistedAssignment;
+  const sessionId = context.request.sessionId;
+  const executionMode = storedExecutionMode(failed?.executionMode);
+  if (!failed || !sessionId || !executionMode || failed.pinnedModelId) {
+    throw invalidState(context.request, failed?.pinnedModelId
+      ? "Explicitly pinned worker exhausted retries; fallback is not permitted."
+      : "Fallback requires a durable unpinned assignment.");
   }
-  return {
-    request,
-    database,
-    generateOptions,
-    assignmentId: assignment.id,
-    maxAttempts: normalizeMaxAttempts(session.maxExecutionAttempts),
-    fallbackPolicy: normalizeFallbackPolicy(session.fallbackPolicy),
-  };
+  const policy = context.fallbackPolicy;
+  if (policy === "none") throw invalidState(context.request, "Fallback policy is disabled.");
+  const selected = await selectFallbackWorkforceAssignment({
+    failedModelId: failed.modelId,
+    failedProvider: failed.provider,
+    policy,
+    executionMode,
+    request: {
+      slot: failed.slot,
+      requestedRole: failed.requestedRole,
+      workforceRoleId: failed.workforceRoleId,
+      requiredCapabilities: safelyParseStringArray(failed.capabilitiesConsidered),
+    },
+  }, context.database);
+
+  return context.database.transaction(async (tx) => {
+    const [superseded] = await tx.update(cognitiveSessionAssignments).set({ status: "superseded" })
+      .where(and(eq(cognitiveSessionAssignments.id, failed.id), eq(cognitiveSessionAssignments.status, "active")))
+      .returning();
+    if (!superseded) throw invalidState(context.request, "Fallback assignment was already superseded.");
+    const [replacement] = await tx.insert(cognitiveSessionAssignments).values({
+      sessionId,
+      slot: selected.slot,
+      requestedRole: selected.requestedRole,
+      workforceRoleId: selected.workforceRoleId,
+      workerId: selected.workerId,
+      provider: selected.provider,
+      modelId: selected.modelId,
+      executionMode: selected.executionMode,
+      eligibilityDecision: selected.eligibilityDecision,
+      workerAvailability: selected.workerAvailability,
+      capabilitiesConsidered: JSON.stringify(selected.capabilitiesConsidered),
+      assignmentSequence: failed.assignmentSequence + 1,
+      supersedesAssignmentId: failed.id,
+      reassignmentReason: reason,
+      selectionReason: `controlled ${policy} fallback: ${selected.selectionReason}`,
+      capabilityMatch: JSON.stringify(selected.capabilityMatch),
+    }).returning();
+    await appendSessionEvent(tx, sessionId, "fallback_triggered", {
+      policy, failedAssignmentId: failed.id, failedExecutionId, reason,
+    });
+    await appendSessionEvent(tx, sessionId, "workforce_reassigned", {
+      policy, failedAssignmentId: failed.id, assignmentId: replacement.id,
+      slot: replacement.slot, workerId: replacement.workerId, modelId: replacement.modelId,
+    });
+    return {
+      slot: replacement.slot,
+      requestedRole: replacement.requestedRole,
+      provider: replacement.provider,
+      modelId: replacement.modelId,
+      executionMode: replacement.executionMode,
+    };
+  });
 }
 
 async function startAttempt(
@@ -219,6 +361,7 @@ async function startAttempt(
       previousExecutionId,
       retryReason,
       fallbackPolicy: context.fallbackPolicy,
+      fallbackSourceAssignmentId: context.persistedAssignment?.supersedesAssignmentId ?? null,
       selectedProvider: context.request.assignment.provider,
       selectedModelId: context.request.assignment.modelId,
       outputContract: context.request.outputContract ?? "text",
@@ -333,6 +476,15 @@ function invalidState(request: ExecuteWorkerRequest, message: string) {
     sessionId: request.sessionId ?? null,
     retryable: false,
   });
+}
+
+function safelyParseStringArray(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function providerFromRoute(route: string): string {

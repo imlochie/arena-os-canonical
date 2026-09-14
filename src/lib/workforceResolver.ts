@@ -37,6 +37,7 @@ export interface WorkforceAssignment {
   eligibilityDecision: string;
   workerAvailability: "available" | "unavailable" | "unknown";
   capabilitiesConsidered: string[];
+  pinnedModelId?: string;
   selectionReason: string;
   capabilityMatch: string[];
   promptFragment: string;
@@ -113,6 +114,7 @@ function resolveAssignment(
     ].filter(Boolean).join("; "),
     workerAvailability: worker.availability,
     capabilitiesConsidered: request.requiredCapabilities ?? [],
+    pinnedModelId: request.pinnedModelId,
     selectionReason,
     capabilityMatch: [
       `role:${role.id}`,

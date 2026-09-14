@@ -206,13 +206,19 @@ export const cognitiveSessionAssignments = pgTable("cognitive_session_assignment
   eligibilityDecision: text("eligibility_decision").notNull().default("eligible under default online policy"),
   workerAvailability: text("worker_availability").notNull().default("unknown"),
   capabilitiesConsidered: text("capabilities_considered").notNull().default("[]"), // JSON string[]
+  pinnedModelId: text("pinned_model_id"),
+  assignmentSequence: integer("assignment_sequence").notNull().default(1),
+  supersedesAssignmentId: uuid("supersedes_assignment_id"),
+  reassignmentReason: text("reassignment_reason"),
+  status: text("status").notNull().default("active"), // active|superseded
   nextExecutionAttempt: integer("next_execution_attempt").notNull().default(1),
   selectionReason: text("selection_reason").notNull(),
   capabilityMatch: text("capability_match").notNull().default("[]"), // JSON string[]
   createdAt: timestamp("created_at").defaultNow(),
 }, (t) => [
-  uniqueIndex("cognitive_session_assignments_session_slot_unique").on(t.sessionId, t.slot),
+  uniqueIndex("cognitive_session_assignments_session_slot_sequence_unique").on(t.sessionId, t.slot, t.assignmentSequence),
   index("cognitive_session_assignments_session_id_idx").on(t.sessionId),
+  index("cognitive_session_assignments_supersedes_id_idx").on(t.supersedesAssignmentId),
 ]);
 
 export const workerExecutions = pgTable("worker_executions", {

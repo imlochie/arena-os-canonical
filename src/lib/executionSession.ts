@@ -6,11 +6,14 @@ import type { SessionMode } from "./sessionLifecycle";
 import { appendSessionEvent } from "./sessionEvents";
 import type { ExecutionMode } from "./executionPolicy";
 import { runtimeError } from "./errors";
+import type { FallbackPolicy } from "./retryPolicy";
 
 export async function prepareExecutionSession(input: {
   sessionId?: string;
   mode: SessionMode;
   executionMode?: ExecutionMode;
+  maxExecutionAttempts?: number;
+  fallbackPolicy?: FallbackPolicy;
   projectId: string | null;
   title: string;
   intent?: string;
@@ -35,6 +38,8 @@ export async function prepareExecutionSession(input: {
     await database.update(cognitiveSessions).set({
       projectId: input.projectId ?? session.projectId,
       executionMode: input.executionMode ?? session.executionMode,
+      maxExecutionAttempts: input.maxExecutionAttempts ?? session.maxExecutionAttempts,
+      fallbackPolicy: input.fallbackPolicy ?? session.fallbackPolicy,
       title: input.title,
       intent: input.intent ?? session.intent,
       metadata: JSON.stringify({ ...safelyParseMetadata(session.metadata), ...(input.metadata ?? {}) }),
@@ -45,6 +50,8 @@ export async function prepareExecutionSession(input: {
       const [session] = await tx.insert(cognitiveSessions).values({
         mode: input.mode,
         executionMode: input.executionMode ?? "online",
+        maxExecutionAttempts: input.maxExecutionAttempts,
+        fallbackPolicy: input.fallbackPolicy ?? "none",
         projectId: input.projectId,
         title: input.title,
         intent: input.intent,
