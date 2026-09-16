@@ -270,6 +270,44 @@ export const cutProjects = pgTable("cut_projects", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// ---- Congress: timed multi-seat deliberation with durable records ----
+// A congress "sits" for a set amount of time: seats (role + model) speak in
+// round-robin until the clock runs out, then the Clerk drafts the Act — a
+// durable resolution document. Sessions can be adjourned/resumed and
+// reconvened (new sitting seeded with the previous Act).
+export const congressSessions = pgTable("congress_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled congress"),
+  topic: text("topic").notNull(),
+  projectId: uuid("project_id"),
+  status: text("status").notNull().default("sitting"), // sitting | adjourned | closed
+  seats: text("seats").notNull().default("[]"), // JSON: [{label,role,modelId,emoji}]
+  synthesisModel: text("synthesis_model").notNull().default("openai"),
+  durationMs: integer("duration_ms").notNull().default(600000),
+  remainingMs: integer("remaining_ms"), // set when adjourned
+  endsAt: timestamp("ends_at"), // set while sitting
+  turnCount: integer("turn_count").notNull().default(0),
+  nextSeat: integer("next_seat").notNull().default(0),
+  maxTurns: integer("max_turns").notNull().default(50),
+  act: text("act"), // final document (Clerk output)
+  parentSessionId: uuid("parent_session_id"),
+  sitting: integer("sitting").notNull().default(1),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const congressTurns = pgTable("congress_turns", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  seatIndex: integer("seat_index").notNull().default(-1), // -1 = system/clerk
+  role: text("role").notNull().default(""),
+  label: text("label").notNull().default(""),
+  modelId: text("model_id").notNull().default(""),
+  content: text("content").notNull(),
+  kind: text("kind").notNull().default("speech"), // speech | system | act
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export type ModelCategoryRatingRow = typeof modelCategoryRatings.$inferSelect;
 export type ModelRow = typeof models.$inferSelect;
 export type AssistantRow = typeof assistants.$inferSelect;
@@ -289,3 +327,6 @@ export type ProjectMemoryRow = typeof projectMemory.$inferSelect;
 export type ChatRow = typeof chats.$inferSelect;
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
 export type StudioJobRow = typeof studioJobs.$inferSelect;
+export type CutProjectRow = typeof cutProjects.$inferSelect;
+export type CongressSessionRow = typeof congressSessions.$inferSelect;
+export type CongressTurnRow = typeof congressTurns.$inferSelect;

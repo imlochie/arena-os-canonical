@@ -39,6 +39,7 @@ drizzle/          SQL migrations (studio_jobs & cut_projects also auto-create at
 bridges/          wangp_bridge.py — stdlib-only HTTP bridge over WanGP's shared/api.py
 STUDIO.md         Studio architecture, backend setup, settings mapping
 CUT.md            Cut Lab (browser-native video editor) guide
+CONGRESS.md       Congress (timed multi-seat deliberation) guide
 REFERENCES.md     open-source resource map (upstreams, licenses, agent patterns)
 ```
 
