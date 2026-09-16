@@ -29,16 +29,41 @@ human time per cycle in exchange for zero ban risk.
 
 ### Templates
 
+Templates follow one test before they earn a slot: would a human spend 10+
+minutes doing this, does it happen at least weekly, and is it a predictable
+input → process → **validate** → output pipeline? The validate stage is
+explicit — money-work templates flag what they couldn't verify (`[MISSING]`,
+`[CONFIRM PRICE]`, mismatch reports) instead of silently inventing it.
+
+**Audience & content**
+
 | Template | Cadence | What it drafts |
 | --- | --- | --- |
 | 📺 YouTube co-pilot | 60 min | Comment drafts for your recent videos; you post them |
-| 🧲 Lead sweeper | 120 min | Outreach message drafts from your lead list |
-| 🏷️ Listing writer | 6 h | Product listing copy iterations (title/bullets/desc) |
-| 🦅 Watchlist digest | 6 h | Change notes on the tickers/feeds in your briefcase |
-| 🗓️ Content drip | 24 h | Next post draft from your content calendar |
+| ✍️ Content drip | 24 h | Next post draft from your content calendar |
+| 🎙️ Content repurposer | 24 h | One transcript in → clip picks, posts, newsletter, description |
+
+**Revenue**
+
+| Template | Cadence | What it drafts |
+| --- | --- | --- |
+| 💼 Lead sweeper | 2 h | Fit verdicts + tailored proposal drafts from gig listings |
+| 🧾 Quote drafter | 2 h | Customer enquiries → draft quotes with line items + open questions |
+| ⭐ Review responder | 4 h | Personal replies to Google/business reviews (crit. handled safely) |
+| 🛒 Listing writer | 6 h | Product listing copy iterations (title/bullets/tags) |
+
+**Operations**
+
+| Template | Cadence | What it drafts |
+| --- | --- | --- |
+| 🧹 Reply drafter | 2 h | Reply drafts for messages you paste in |
+| 📄 Doc data extractor | 60 min | Invoices/receipts/forms → validated pipe-table rows |
+| 📊 Data cleaner | 4 h | Messy pasted lists → normalized, deduped, categorized |
+| 📦 Stock reconciler | 24 h | Stock vs orders vs inbound mismatch report |
+| 📈 Watchlist digest | 6 h | Change notes on the tickers/feeds in your briefcase |
 | 🔬 Research digest | 24 h | Summaries of the topics you're tracking |
-| 📥 Inbox triage | 120 min | Reply drafts for mail you paste in |
-| ✨ Custom | any | Your prompt, your cadence |
+
+**Custom** — ✨ blank space: your prompt, your cadence.
 
 All templates are starting points — the prompt, model, interval, and briefcase
 are editable on any space.

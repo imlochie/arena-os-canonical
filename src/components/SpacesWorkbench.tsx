@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "@/components/Markdown";
 import { loadKeys } from "@/components/KeysBar";
 import { privacyFlags } from "@/lib/privacyClient";
-import { SPACE_TEMPLATES, getSpaceTemplate } from "@/lib/spaceTemplates";
+import { SPACE_TEMPLATES, SPACE_TEMPLATE_GROUPS, getSpaceTemplate } from "@/lib/spaceTemplates";
 
 interface SpaceState {
   id: string;
@@ -264,20 +264,27 @@ export default function SpacesWorkbench() {
         {/* ---- left: new space ---- */}
         <div className="glass h-fit rounded-2xl p-4">
           <h2 className="text-sm font-extrabold text-white">➕ New space</h2>
-          <div className="mt-3 grid grid-cols-2 gap-1.5">
-            {SPACE_TEMPLATES.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => applyTemplate(t.id)}
-                title={t.tagline}
-                className={`rounded-xl px-2.5 py-2 text-left text-[11px] font-bold ring-1 transition ${
-                  templateId === t.id
-                    ? "bg-cyan-400/15 text-cyan-100 ring-cyan-400/40"
-                    : "bg-white/5 text-slate-300 ring-white/10 hover:bg-white/10"
-                }`}
-              >
-                {t.emoji} {t.name}
-              </button>
+          <div className="mt-3 space-y-2.5">
+            {SPACE_TEMPLATE_GROUPS.map((g) => (
+              <div key={g.id}>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{g.label}</div>
+                <div className="mt-1 grid grid-cols-2 gap-1.5">
+                  {SPACE_TEMPLATES.filter((t) => t.group === g.id).map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => applyTemplate(t.id)}
+                      title={t.tagline}
+                      className={`rounded-xl px-2.5 py-2 text-left text-[11px] font-bold ring-1 transition ${
+                        templateId === t.id
+                          ? "bg-cyan-400/15 text-cyan-100 ring-cyan-400/40"
+                          : "bg-white/5 text-slate-300 ring-white/10 hover:bg-white/10"
+                      }`}
+                    >
+                      {t.emoji} {t.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
           <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
