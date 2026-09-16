@@ -308,6 +308,39 @@ export const congressTurns = pgTable("congress_turns", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// ---- Spaces: multi-window workbench of small recurring agent tasks ----
+// Each space is one repetitive task (prompt + model + interval + a persistent
+// "briefcase" of carry-forward notes). Ticks are client-driven (bounded work
+// per request — pop-out windows keep their agents ticking while open).
+export const spaces = pgTable("spaces", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled space"),
+  emoji: text("emoji").notNull().default("🤖"),
+  prompt: text("prompt").notNull(), // the recurring task instruction
+  modelId: text("model_id").notNull().default("openai"),
+  intervalMinutes: integer("interval_minutes").notNull().default(60),
+  status: text("status").notNull().default("running"), // running | paused
+  briefcase: text("briefcase").notNull().default(""), // persistent working notes
+  lastOutput: text("last_output"),
+  lastRunAt: timestamp("last_run_at"),
+  nextRunAt: timestamp("next_run_at"),
+  runCount: integer("run_count").notNull().default(0),
+  okCount: integer("ok_count").notNull().default(0),
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const spaceRuns = pgTable("space_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  spaceId: uuid("space_id").notNull(),
+  status: text("status").notNull().default("ok"), // ok | error
+  output: text("output").notNull().default(""),
+  via: text("via").notNull().default(""),
+  ms: integer("ms").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export type ModelCategoryRatingRow = typeof modelCategoryRatings.$inferSelect;
 export type ModelRow = typeof models.$inferSelect;
 export type AssistantRow = typeof assistants.$inferSelect;
@@ -330,3 +363,5 @@ export type StudioJobRow = typeof studioJobs.$inferSelect;
 export type CutProjectRow = typeof cutProjects.$inferSelect;
 export type CongressSessionRow = typeof congressSessions.$inferSelect;
 export type CongressTurnRow = typeof congressTurns.$inferSelect;
+export type SpaceRow = typeof spaces.$inferSelect;
+export type SpaceRunRow = typeof spaceRuns.$inferSelect;

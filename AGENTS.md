@@ -40,6 +40,7 @@ bridges/          wangp_bridge.py — stdlib-only HTTP bridge over WanGP's share
 STUDIO.md         Studio architecture, backend setup, settings mapping
 CUT.md            Cut Lab (browser-native video editor) guide
 CONGRESS.md       Congress (timed multi-seat deliberation) guide
+SPACES.md         Spaces (multi-window recurring agent workbench) guide
 REFERENCES.md     open-source resource map (upstreams, licenses, agent patterns)
 ```
 
