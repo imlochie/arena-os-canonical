@@ -237,6 +237,128 @@ export const chatMessages = pgTable("chat_messages", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ---- Studio: multimodal generation jobs (WanGP bridge / ComfyUI / hosted / demo) ----
+export const studioJobs = pgTable("studio_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  backend: text("backend").notNull(), // wangp | comfyui | dashscope | demo
+  externalId: text("external_id"), // bridge job id / ComfyUI prompt_id / DashScope task_id
+  modelType: text("model_type").notNull(),
+  modelName: text("model_name").notNull().default(""),
+  modality: text("modality").notNull().default("video"), // video | image | audio
+  prompt: text("prompt").notNull(),
+  negativePrompt: text("negative_prompt").notNull().default(""),
+  settings: text("settings").notNull().default("{}"), // JSON — full generation settings
+  status: text("status").notNull().default("queued"), // queued | running | completed | failed | cancelled
+  phase: text("phase").notNull().default(""),
+  progress: real("progress").notNull().default(0),
+  files: text("files").notNull().default("[]"), // JSON: [{name, mediaType, kind, size, backendUrl, subfolder}]
+  preview: text("preview"), // data URI progress preview (when available)
+  error: text("error"),
+  seed: integer("seed"),
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ---- Cut Lab: saved editing projects (browser-side editing, server-side metadata) ----
+export const cutProjects = pgTable("cut_projects", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled cut"),
+  aspect: text("aspect").notNull().default("16:9"), // 16:9 | 9:16 | 1:1
+  clips: text("clips").notNull().default("[]"), // JSON: [{id,name,kind,src,seed,duration,trimStart,trimEnd,volume,unlinked}]
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ---- Congress: timed multi-seat deliberation with durable records ----
+// A congress "sits" for a set amount of time: seats (role + model) speak in
+// round-robin until the clock runs out, then the Clerk drafts the Act — a
+// durable resolution document. Sessions can be adjourned/resumed and
+// reconvened (new sitting seeded with the previous Act).
+export const congressSessions = pgTable("congress_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled congress"),
+  topic: text("topic").notNull(),
+  projectId: uuid("project_id"),
+  status: text("status").notNull().default("sitting"), // sitting | adjourned | closed
+  seats: text("seats").notNull().default("[]"), // JSON: [{label,role,modelId,emoji}]
+  synthesisModel: text("synthesis_model").notNull().default("openai"),
+  durationMs: integer("duration_ms").notNull().default(600000),
+  remainingMs: integer("remaining_ms"), // set when adjourned
+  endsAt: timestamp("ends_at"), // set while sitting
+  turnCount: integer("turn_count").notNull().default(0),
+  nextSeat: integer("next_seat").notNull().default(0),
+  maxTurns: integer("max_turns").notNull().default(50),
+  act: text("act"), // final document (Clerk output)
+  parentSessionId: uuid("parent_session_id"),
+  sitting: integer("sitting").notNull().default(1),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const congressTurns = pgTable("congress_turns", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  seatIndex: integer("seat_index").notNull().default(-1), // -1 = system/clerk
+  role: text("role").notNull().default(""),
+  label: text("label").notNull().default(""),
+  modelId: text("model_id").notNull().default(""),
+  content: text("content").notNull(),
+  kind: text("kind").notNull().default("speech"), // speech | system | act
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ---- Spaces: multi-window workbench of small recurring agent tasks ----
+// Each space is one repetitive task (prompt + model + interval + a persistent
+// "briefcase" of carry-forward notes). Ticks are client-driven (bounded work
+// per request — pop-out windows keep their agents ticking while open).
+export const spaces = pgTable("spaces", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled space"),
+  emoji: text("emoji").notNull().default("🤖"),
+  prompt: text("prompt").notNull(), // the recurring task instruction
+  modelId: text("model_id").notNull().default("openai"),
+  intervalMinutes: integer("interval_minutes").notNull().default(60),
+  status: text("status").notNull().default("running"), // running | paused
+  briefcase: text("briefcase").notNull().default(""), // persistent working notes
+  lastOutput: text("last_output"),
+  lastRunAt: timestamp("last_run_at"),
+  nextRunAt: timestamp("next_run_at"),
+  runCount: integer("run_count").notNull().default(0),
+  okCount: integer("ok_count").notNull().default(0),
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const spaceRuns = pgTable("space_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  spaceId: uuid("space_id").notNull(),
+  status: text("status").notNull().default("ok"), // ok | error
+  output: text("output").notNull().default(""),
+  via: text("via").notNull().default(""),
+  ms: integer("ms").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const archiveItems = pgTable("archive_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  path: text("path"), // where the file lives on disk (the index references, never moves files)
+  kind: text("kind").notNull().default("other"), // video | image | audio | doc | data | other
+  sizeBytes: integer("size_bytes"),
+  contentHash: text("content_hash").notNull().default(""), // exact-dedupe key
+  status: text("status").notNull().default("inbox"), // inbox | indexed | duplicate
+  description: text("description").notNull().default(""), // AI description (scan)
+  tags: text("tags").notNull().default(""), // comma-separated
+  collection: text("collection").notNull().default(""),
+  possibleDupOf: uuid("possible_dup_of"), // near-dupe flag (name similarity)
+  source: text("source").notNull().default("manual"), // manual | assistant
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export type ModelCategoryRatingRow = typeof modelCategoryRatings.$inferSelect;
 export type ModelRow = typeof models.$inferSelect;
 export type AssistantRow = typeof assistants.$inferSelect;
@@ -255,3 +377,101 @@ export type ArtifactRow = typeof artifacts.$inferSelect;
 export type ProjectMemoryRow = typeof projectMemory.$inferSelect;
 export type ChatRow = typeof chats.$inferSelect;
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
+export type StudioJobRow = typeof studioJobs.$inferSelect;
+export type CutProjectRow = typeof cutProjects.$inferSelect;
+export type CongressSessionRow = typeof congressSessions.$inferSelect;
+export type CongressTurnRow = typeof congressTurns.$inferSelect;
+export type SpaceRow = typeof spaces.$inferSelect;
+export type SpaceRunRow = typeof spaceRuns.$inferSelect;
+export type ArchiveItemRow = typeof archiveItems.$inferSelect;
+
+export const collaborations = pgTable("collaborations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled collaboration"),
+  goal: text("goal").notNull(), // what the collaboration is for
+  context: text("context").notNull().default(""), // shared context notes
+  status: text("status").notNull().default("running"), // running | blocked | closed
+  autoRoute: integer("auto_route").notNull().default(0), // conductor proposes next relays
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const collaborationParticipants = pgTable("collaboration_participants", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  collaborationId: uuid("collaboration_id").notNull(),
+  key: text("key").notNull(), // short slug, e.g. "architect"
+  name: text("name").notNull(),
+  emoji: text("emoji").notNull().default("🤖"),
+  kind: text("kind").notNull().default("model"), // model | human | external
+  modelId: text("model_id"), // kind=model: arena fan-out model
+  adapterUrl: text("adapter_url"), // kind=external: OpenAI-compatible endpoint
+  adapterModel: text("adapter_model"), // kind=external: model name
+  capabilities: text("capabilities").notNull().default(""), // comma list
+  trust: text("trust").notNull().default("internal"), // internal | external
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const collaborationRelays = pgTable("collaboration_relays", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  collaborationId: uuid("collaboration_id").notNull(),
+  seq: integer("seq").notNull().default(1),
+  sourceKey: text("source_key").notNull().default("owner"),
+  targetKey: text("target_key").notNull(),
+  purpose: text("purpose").notNull().default("contribute"),
+  request: text("request").notNull(),
+  contextRefs: text("context_refs").notNull().default(""), // comma-separated artifact ids
+  classification: text("classification").notNull().default("internal"), // public | internal | private
+  responseContract: text("response_contract").notNull().default("markdown text"),
+  status: text("status").notNull().default("pending"), // pending | responded | cancelled | failed
+  response: text("response"),
+  via: text("via").notNull().default(""),
+  note: text("note").notNull().default(""), // blocked/failed reason
+  toolUse: integer("tool_use").notNull().default(0), // relay may invoke read-only tools
+  steps: text("steps").notNull().default("[]"), // JSON trace of tool calls made during dispatch
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export type CollaborationRow = typeof collaborations.$inferSelect;
+export type CollaborationParticipantRow = typeof collaborationParticipants.$inferSelect;
+export type CollaborationRelayRow = typeof collaborationRelays.$inferSelect;
+
+export const ownerPreferences = pgTable("owner_preferences", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  content: text("content").notNull(),
+  kind: text("kind").notNull().default("preference"), // preference | boundary | goal
+  classification: text("classification").notNull().default("internal"), // public | internal | private
+  source: text("source").notNull().default("owner"), // owner | assistant
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type OwnerPreferenceRow = typeof ownerPreferences.$inferSelect;
+
+export const classOccurrences = pgTable("class_occurrences", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  date: text("date").notNull(), // YYYY-MM-DD, local — one class per timetable day
+  classroomKey: text("classroom_key").notNull(), // reset | explore | adulting | create | kickoff | adventure | soul
+  weekNumber: integer("week_number").notNull(),
+  phase: text("phase").notNull().default("waiting"), // waiting|orientation|lesson|practice|discussion|check|reflection|record|complete
+  status: text("status").notNull().default("waiting"), // waiting | in_session | complete
+  collaborationId: uuid("collaboration_id"),
+  openedAt: timestamp("opened_at"),
+  closedAt: timestamp("closed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const eduMemory = pgTable("edu_memory", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  classroomKey: text("classroom_key").notNull(),
+  weekNumber: integer("week_number"),
+  kind: text("kind").notNull().default("observation"), // lesson|reflection|record|observation|review_point
+  content: text("content").notNull(),
+  sourceOccurrenceId: uuid("source_occurrence_id"),
+  collaborationId: uuid("collaboration_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type ClassOccurrenceRow = typeof classOccurrences.$inferSelect;
+export type EduMemoryRow = typeof eduMemory.$inferSelect;

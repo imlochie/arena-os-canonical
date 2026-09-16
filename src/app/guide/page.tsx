@@ -83,6 +83,7 @@ export default function GuidePage() {
                 ["Battle engine", "/api/battles → 2× parallel LLM calls, identities hidden until vote", "$0"],
                 ["LLM (default)", "Pollinations free tier — keyless, no signup", "$0"],
                 ["LLM (boost)", "Optional BYOK: Groq / OpenRouter free models", "$0"],
+                ["LLM (local turbo)", "TurboAgent (MIT) — Qwen2.5-32B at 65k context on one 24GB GPU via its OpenAI-compatible server (🔑 URL)", "$0"],
                 ["LLM (fallback)", "Built-in Offline Sage — app never hard-fails", "$0"],
                 ["Ratings", "ELO K=32 in Postgres (models + battles tables)", "$0"],
                 ["Personas", "assistants table: system prompt + temp + brain", "$0"],
@@ -100,6 +101,27 @@ export default function GuidePage() {
       </div>
 
       {/* Free providers */}
+      <div id="local-turbo" className="glass mt-5 scroll-mt-24 rounded-2xl p-5">
+        <h2 className="text-base font-extrabold text-white">⚡ Local turbo: run a frontier-size model on your own GPU</h2>
+        <p className="mt-2 text-sm leading-relaxed text-slate-300">
+          <a href="https://github.com/TurboAgentAI/turboagent" target="_blank" rel="noreferrer" className="font-bold text-amber-300 hover:underline">
+            TurboAgent
+          </a>{" "}
+          (MIT) combines NF4 4-bit weights with TurboQuant KV-cache compression — Qwen2.5-32B runs at{" "}
+          <strong className="text-slate-100">65k-token context on a single 24GB GPU</strong>, fully offline. This app
+          speaks to its OpenAI-compatible server directly:
+        </p>
+        <div className="mt-3">
+          <Code title="run your own turbo backend">{`pip install "turboagent-ai[server,torch]"
+turboagent serve --model Qwen/Qwen2.5-32B-Instruct --port 8000
+# then paste http://127.0.0.1:8000 in the 🔑 keys bar (Test button probes it)`}</Code>
+        </div>
+        <p className="mt-2 text-xs text-slate-400">
+          The arena then gains ⚡ TurboAgent 32B / 7B models (local, private, ELO-tracked like everything else). No
+          server running? Those models fall back to Offline Sage with a setup hint — nothing ever hard-fails.
+        </p>
+      </div>
+
       <div id="free-keys" className="glass mt-5 scroll-mt-24 rounded-2xl p-5">
         <h2 className="text-base font-extrabold text-white">🆓 Free provider menu — quality ranked</h2>
         <p className="mt-1 text-xs text-slate-400">

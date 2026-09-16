@@ -13,7 +13,9 @@ export async function POST(req: Request) {
     const temperature: number | undefined = body.temperature;
     const system: string | undefined = body.system;
     const localOnly = isLocalOnlyBody(body);
-    const keys = body.keys as { openrouter?: string; groq?: string; gemini?: string } | undefined;
+    const keys = body.keys as
+      | { openrouter?: string; groq?: string; gemini?: string; turboagent?: string }
+      | undefined;
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return Response.json({ error: "messages[] is required" }, { status: 400 });

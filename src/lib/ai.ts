@@ -22,7 +22,44 @@ export interface GenerateOpts {
     openrouter?: string;
     groq?: string;
     gemini?: string;
+    // TurboAgent local server URL (OpenAI-compatible) — http://127.0.0.1:8000
+    turboagent?: string;
   };
+}
+
+// Local TurboAgent server (https://github.com/TurboAgentAI/turboagent, MIT):
+// OpenAI-compatible FastAPI server started with `turboagent serve --model …`.
+async function tryTurboAgent(
+  url: string,
+  modelId: string,
+  messages: ChatMsg[],
+  temperature: number,
+  timeoutMs = 60000
+): Promise<string> {
+  const base = url.replace(/\/$/, "");
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...NO_TRAIN_HEADERS },
+      body: JSON.stringify({
+        model: modelId,
+        messages,
+        temperature,
+        max_tokens: 2048,
+        stream: false,
+      }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`turboagent ${res.status}`);
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content;
+    if (!text || !String(text).trim()) throw new Error("turboagent empty");
+    return String(text);
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 async function tryPollinationsOpenAI(
@@ -193,6 +230,32 @@ export async function generate(opts: GenerateOpts): Promise<{ text: string; via:
     return {
       text: localTextReply(opts.modelId, fullMessages, system, opts.category ?? "general"),
       via: "offline",
+      ms: Date.now() - started,
+    };
+  }
+
+  // TurboAgent local server (GPU-poor long context: NF4 + TurboQuant KV).
+  // No server configured / unreachable → offline fallback with a setup hint,
+  // so battles and chat never hard-fail.
+  if (model.pollinationsId.startsWith("__turboagent__")) {
+    const hfId = decodeURIComponent(model.pollinationsId.split(":")[1] || "Qwen/Qwen2.5-32B-Instruct");
+    const url = opts.keys?.turboagent?.trim() || process.env.TURBOAGENT_URL || "";
+    if (url) {
+      try {
+        const text = await tryTurboAgent(url, hfId, fullMessages, temperature);
+        return { text, via: `turboagent:${hfId}`, ms: Date.now() - started };
+      } catch {
+        /* fall through to local reply */
+      }
+      return {
+        text: `${localTextReply(opts.modelId, fullMessages, system, opts.category ?? "general")}\n\n> ⚡ TurboAgent server at \`${url}\` didn't answer — is \`turboagent serve\` still running?`,
+        via: "turboagent:unreachable",
+        ms: Date.now() - started,
+      };
+    }
+    return {
+      text: `${localTextReply(opts.modelId, fullMessages, system, opts.category ?? "general")}\n\n> ⚡ This model runs on your own GPU through a local **TurboAgent** server — start one with \`turboagent serve --model ${hfId}\` and paste its URL in the 🔑 keys bar (e.g. http://127.0.0.1:8000).`,
+      via: "turboagent:not-configured",
       ms: Date.now() - started,
     };
   }

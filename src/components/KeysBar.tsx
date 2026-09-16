@@ -3,12 +3,15 @@
 import { useEffect, useState } from "react";
 
 // Optional BYOK bar — free keys boost quality. Stored in localStorage only.
+// The TurboAgent field is a *URL* to the user's own local server (MIT,
+// https://github.com/TurboAgentAI/turboagent — OpenAI-compatible API).
 export function loadKeys() {
   if (typeof window === "undefined") return {};
   try {
     return {
       openrouter: localStorage.getItem("af_key_openrouter") || undefined,
       groq: localStorage.getItem("af_key_groq") || undefined,
+      turboagent: localStorage.getItem("af_key_turboagent") || undefined,
     };
   } catch {
     return {};
@@ -19,12 +22,15 @@ export default function KeysBar() {
   const [open, setOpen] = useState(false);
   const [orKey, setOrKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
+  const [taUrl, setTaUrl] = useState("");
   const [saved, setSaved] = useState(false);
+  const [probe, setProbe] = useState<string | null>(null);
 
   useEffect(() => {
     try {
       setOrKey(localStorage.getItem("af_key_openrouter") ?? "");
       setGroqKey(localStorage.getItem("af_key_groq") ?? "");
+      setTaUrl(localStorage.getItem("af_key_turboagent") ?? "");
     } catch {}
   }, []);
 
@@ -34,12 +40,33 @@ export default function KeysBar() {
       else localStorage.removeItem("af_key_openrouter");
       if (groqKey.trim()) localStorage.setItem("af_key_groq", groqKey.trim());
       else localStorage.removeItem("af_key_groq");
+      if (taUrl.trim()) localStorage.setItem("af_key_turboagent", taUrl.trim());
+      else localStorage.removeItem("af_key_turboagent");
       setSaved(true);
+      setProbe(null);
       setTimeout(() => setSaved(false), 2000);
     } catch {}
   };
 
-  const hasKeys = orKey.trim() !== "" || groqKey.trim() !== "";
+  const testTurboAgent = async () => {
+    setProbe("probing…");
+    try {
+      const q = taUrl.trim() ? `?url=${encodeURIComponent(taUrl.trim())}` : "";
+      const res = await fetch(`/api/turboagent/health${q}`);
+      const data = await res.json();
+      setProbe(
+        data.online
+          ? `✅ online${data.detail && data.detail !== "not loaded" ? ` · ${data.detail}` : ""}${
+              data.kvMode ? ` · kv: ${data.kvMode}` : ""
+            }`
+          : `❌ ${data.detail || "offline"}`
+      );
+    } catch {
+      setProbe("❌ probe failed");
+    }
+  };
+
+  const hasKeys = orKey.trim() !== "" || groqKey.trim() !== "" || taUrl.trim() !== "";
 
   return (
     <div className="glass rounded-2xl p-4">
@@ -59,9 +86,9 @@ export default function KeysBar() {
         <span className="text-slate-400">{open ? "▲" : "▼"}</span>
       </button>
       <p className="mt-1 text-xs text-slate-400">
-        Works with <strong className="text-slate-200">$0 and no keys</strong>. Paste free-tier keys to add extra
-        quality headroom — stored only in your browser. In 🔒 Local Mode keys are ignored (zero egress wins).
-        Free third-party tiers may log for abuse prevention — Local Mode skips them entirely.
+        Works with <strong className="text-slate-200">$0 and no keys</strong>. Paste free-tier keys — or point at a{" "}
+        <strong className="text-slate-200">local TurboAgent server</strong> for GPU-poor long-context models — stored
+        only in your browser. In 🔒 Local Mode keys are ignored (zero egress wins).
       </p>
       {open && (
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -89,6 +116,30 @@ export default function KeysBar() {
               className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:border-violet-500 focus:outline-none"
             />
           </label>
+          <label className="block sm:col-span-2">
+            <span className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              ⚡ TurboAgent server URL (local, optional)
+            </span>
+            <div className="flex gap-2">
+              <input
+                value={taUrl}
+                onChange={(e) => setTaUrl(e.target.value)}
+                placeholder="http://127.0.0.1:8000"
+                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-sm text-white placeholder:text-slate-600 focus:border-amber-500 focus:outline-none"
+              />
+              <button
+                onClick={() => void testTurboAgent()}
+                className="shrink-0 rounded-lg bg-amber-500/15 px-3 py-2 text-xs font-bold text-amber-200 ring-1 ring-amber-400/30 hover:bg-amber-500/25"
+              >
+                Test
+              </button>
+            </div>
+            <span className="mt-1 block text-[11px] text-slate-500">
+              Run your own: <code className="rounded bg-black/50 px-1 py-0.5 text-cyan-200">pip install &quot;turboagent-ai[server,torch]&quot;</code>{" "}
+              → <code className="rounded bg-black/50 px-1 py-0.5 text-cyan-200">turboagent serve --model Qwen/Qwen2.5-32B-Instruct</code>
+            </span>
+            {probe && <span className="mt-1 block text-[11px] font-bold text-slate-300">{probe}</span>}
+          </label>
           <div className="flex items-center gap-2 sm:col-span-2">
             <button
               onClick={save}
@@ -96,10 +147,7 @@ export default function KeysBar() {
             >
               {saved ? "✓ Saved" : "Save keys"}
             </button>
-            <a
-              href="/guide#free-keys"
-              className="text-xs font-semibold text-cyan-300 hover:underline"
-            >
+            <a href="/guide#free-keys" className="text-xs font-semibold text-cyan-300 hover:underline">
               Where do I get free keys? →
             </a>
           </div>
