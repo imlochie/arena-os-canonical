@@ -41,6 +41,7 @@ STUDIO.md         Studio architecture, backend setup, settings mapping
 CUT.md            Cut Lab (browser-native video editor) guide
 CONGRESS.md       Congress (timed multi-seat deliberation) guide
 SPACES.md         Spaces (multi-window recurring agent workbench) guide
+ARCHIVE.md        Archive Assistant (chat agent with tools + archive index) guide
 REFERENCES.md     open-source resource map (upstreams, licenses, agent patterns)
 ```
 

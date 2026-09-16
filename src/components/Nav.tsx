@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/council", label: "Council", emoji: "🧠" },
   { href: "/congress", label: "Congress", emoji: "🏛️" },
   { href: "/spaces", label: "Spaces", emoji: "🪟" },
+  { href: "/archive", label: "Archive", emoji: "🗂️" },
   { href: "/collab", label: "Collab", emoji: "🤝" },
   { href: "/projects", label: "Projects", emoji: "📁" },
   { href: "/artifacts", label: "Artifacts", emoji: "📦" },

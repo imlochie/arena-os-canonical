@@ -341,6 +341,24 @@ export const spaceRuns = pgTable("space_runs", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const archiveItems = pgTable("archive_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  path: text("path"), // where the file lives on disk (the index references, never moves files)
+  kind: text("kind").notNull().default("other"), // video | image | audio | doc | data | other
+  sizeBytes: integer("size_bytes"),
+  contentHash: text("content_hash").notNull().default(""), // exact-dedupe key
+  status: text("status").notNull().default("inbox"), // inbox | indexed | duplicate
+  description: text("description").notNull().default(""), // AI description (scan)
+  tags: text("tags").notNull().default(""), // comma-separated
+  collection: text("collection").notNull().default(""),
+  possibleDupOf: uuid("possible_dup_of"), // near-dupe flag (name similarity)
+  source: text("source").notNull().default("manual"), // manual | assistant
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export type ModelCategoryRatingRow = typeof modelCategoryRatings.$inferSelect;
 export type ModelRow = typeof models.$inferSelect;
 export type AssistantRow = typeof assistants.$inferSelect;
@@ -365,3 +383,4 @@ export type CongressSessionRow = typeof congressSessions.$inferSelect;
 export type CongressTurnRow = typeof congressTurns.$inferSelect;
 export type SpaceRow = typeof spaces.$inferSelect;
 export type SpaceRunRow = typeof spaceRuns.$inferSelect;
+export type ArchiveItemRow = typeof archiveItems.$inferSelect;
