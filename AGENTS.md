@@ -43,6 +43,7 @@ CONGRESS.md       Congress (timed multi-seat deliberation) guide
 SPACES.md         Spaces (multi-window recurring agent workbench) guide
 ARCHIVE.md        Archive Assistant (chat agent with tools + archive index) guide
 ORCHESTRATOR.md   Collaboration Orchestrator (multi-participant AI collaboration) guide
+CLASSROOM.md       Lochie Life College (institutional state, resolver, occurrences, faculty) guide
 REFERENCES.md     open-source resource map (upstreams, licenses, agent patterns)
 ```
 
