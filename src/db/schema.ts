@@ -427,6 +427,8 @@ export const collaborationRelays = pgTable("collaboration_relays", {
   response: text("response"),
   via: text("via").notNull().default(""),
   note: text("note").notNull().default(""), // blocked/failed reason
+  toolUse: integer("tool_use").notNull().default(0), // relay may invoke read-only tools
+  steps: text("steps").notNull().default("[]"), // JSON trace of tool calls made during dispatch
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -434,3 +436,14 @@ export const collaborationRelays = pgTable("collaboration_relays", {
 export type CollaborationRow = typeof collaborations.$inferSelect;
 export type CollaborationParticipantRow = typeof collaborationParticipants.$inferSelect;
 export type CollaborationRelayRow = typeof collaborationRelays.$inferSelect;
+
+export const ownerPreferences = pgTable("owner_preferences", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  content: text("content").notNull(),
+  kind: text("kind").notNull().default("preference"), // preference | boundary | goal
+  classification: text("classification").notNull().default("internal"), // public | internal | private
+  source: text("source").notNull().default("owner"), // owner | assistant
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type OwnerPreferenceRow = typeof ownerPreferences.$inferSelect;

@@ -32,7 +32,8 @@ artifact (sourceType `orchestrator`).
 | `human` | You — the decision-maker | checkpoint (session blocks until you answer) |
 
 Participants declare `capabilities` and a `trust` level (`internal` /
-`external`).
+`external`). A participant that declares the **`tool_use`** capability may be
+sent **tool-capable relays** (see below).
 
 **Relay** — the unit of work, an explicit instruction from one participant to
 another:
@@ -65,6 +66,65 @@ envelope itself = goal + shared context + referenced artifact bodies + the
 recent transcript + the request + the response contract, capped at 9,000
 chars.
 
+## Owner preferences & boundaries (standing memory)
+
+Every AI surface draws on a shared preferences store — *"maintaining memory
+when told so, and constantly referring back to those preferences."*
+
+- **Kinds**: `preference` (how you want things done) · `boundary` (hard
+  limit — never overstep) · `goal` (what you're optimizing for).
+- **Told, not guessed**: stored when you say so — "remember that…" to the
+  Archive Assistant (works offline via its local router, and via the
+  `remember_preference` tool in the agent loop), or the 🧠 panel at
+  `/orchestrator`.
+- **Referred back to, constantly**: preferences are injected into every
+  relay envelope and the Archive Assistant's system prompt — each formatted
+  as `OWNER PREFERENCES & BOUNDARIES`, boundaries listed first.
+- **Classification-aware**: `public` prefs may be told to external-trust
+  participants, `internal` to internal-trust only, `private` never leaves
+  the owner. A pref a participant isn't cleared for simply isn't in their
+  envelope.
+- Dispatch prompts make the stance explicit: participants assume their
+  assigned **perspective**, deliberate **in the owner's best interest**, and
+  treat boundaries as hard limits.
+
+## Deliberation rounds
+
+The **🎯 Perspectives preset** creates the roster the directive describes:
+Visionary (expansion) · Pragmatist (feasibility) · Skeptic (risk) ·
+**Steward** (the owner's best interest + boundaries, holds `tool_use`) ·
+Owner (human, decisions). The **🎯 Round** button (or
+`POST /api/orchestrator/[id]/deliberate`) queues one deliberation round: a
+perspective relay to every non-human participant, then a synthesis relay
+that weighs them all into a single recommendation with trade-offs and a next
+step. Relays execute in sequence order, so synthesis always runs last.
+
+## Tool-capable participants (15E.2)
+
+A relay may declare `toolUse: true`, letting the recipient **inspect the
+workspace through read-only tools** during its turn instead of only
+reasoning over text:
+
+```
+Participant → relay (toolUse) → bounded tool loop → validated result
+           → relay response (with a tool-call trace) → shared context
+```
+
+Boundaries, made concrete:
+
+- Only **internal-trust `model` participants that declared `tool_use`** may
+  receive tool relays — never external AIs, never by default.
+- The tool surface is **read/report only** (`list_modules`, `list_projects`,
+  `list_artifacts`, `list_spaces`, `list_congress_sessions`,
+  `archive_search`, `archive_item`, `archive_stats`) — the same registry the
+  Archive Assistant uses, filtered to remove every mutating tool. The
+  Orchestrator never calls tools itself; the *participant* requests
+  capabilities through the loop.
+- Max 3 tool calls per relay; every call is recorded on the relay as a step
+  (tool, ok, ms, truncated summary) and rendered as 🔧 chips.
+- Tool results feed the participant's context as bounded summaries — no
+  transcript landfill.
+
 ## Execution model
 
 House pattern: **no background workers**. `POST /api/orchestrator/[id]/advance`
@@ -93,7 +153,11 @@ contract either way.
 | `DELETE /api/orchestrator/[id]` | — | removes the session |
 | `POST /api/orchestrator/[id]/advance` | `{keys?, localOnly?}` | one step → `{ran, note, collaboration}` |
 | `POST /api/orchestrator/[id]/relays` | `{target, source?, purpose?, request, contextRefs?, classification?, responseContract?}` | manual routing |
+| `POST /api/orchestrator/[id]/deliberate` | — | queue a deliberation round (perspectives + synthesis) |
 | `POST /api/orchestrator/relays/[relayId]` | `{response?, rejected?}` | answer a human checkpoint |
+| `GET /api/preferences` | — | `{preferences[]}` — the owner's standing guidance |
+| `POST /api/preferences` | `{content, kind?, classification?}` | remember a preference/boundary/goal |
+| `DELETE /api/preferences/[id]` | — | forget one |
 
 `ran` values: `relay` (dispatched + responded) · `checkpoint` (waiting for
 you) · `blocked-relay` (egress policy or dispatch failure) · `autoroute`
@@ -123,12 +187,13 @@ through the standard fan-out.
 
 ## Roadmap position
 
-This is the 15E core: collaboration protocol + shared context (E.1),
-external-AI participants (E.2), conductor auto-routing (E.3), and
-checkpoints (E.4) — on one explicit-relay foundation. Natural next steps:
-tool-capable participants (relays that invoke the Archive Assistant tool
-registry), scheduled collaborations (Spaces driving advance), and egress
-policy per artifact rather than per relay.
+Position: 15E.1 (collaboration core) + 15E.2 (tool-capable participants,
+read-only surface) + 15E.3 (conductor) + 15E.4 (checkpoints) are in, along
+with the owner-preferences memory that all surfaces share. Natural next
+steps: Spaces-driven scheduling (a Space advancing a collaboration on a
+timetable — the "constant Classroom" as the first persistent Space), egress
+policy per artifact rather than per relay, and per-participant memory
+scopes.
 
 ## Files
 

@@ -27,6 +27,8 @@ import { artifacts, collaborationParticipants, collaborationRelays, collaboratio
 import { asc, desc, eq, sql } from "drizzle-orm";
 import { generate } from "@/lib/ai";
 import { getModel } from "@/lib/models";
+import { preferencesBriefFor } from "@/lib/preferences";
+import { getTool } from "@/lib/assistantTools";
 
 // ---------------- types ----------------
 
@@ -58,6 +60,13 @@ export interface Participant {
   trust: TrustLevel;
 }
 
+export interface RelayToolStep {
+  tool: string;
+  ok: boolean;
+  ms: number;
+  summary: string;
+}
+
 export interface Relay {
   id: string;
   collaborationId: string;
@@ -73,6 +82,8 @@ export interface Relay {
   response: string | null;
   via: string;
   note: string;
+  toolUse: boolean;
+  steps: RelayToolStep[];
   createdAt: string;
 }
 
@@ -110,6 +121,7 @@ export interface RelayInput {
   contextRefs?: string[];
   classification?: string;
   responseContract?: string;
+  toolUse?: boolean;
 }
 
 export interface CreateCollaborationInput {
@@ -273,8 +285,28 @@ function relayFromRow(r: typeof collaborationRelays.$inferSelect): Relay {
     response: r.response ?? null,
     via: r.via ?? "",
     note: r.note ?? "",
+    toolUse: Boolean(r.toolUse),
+    steps: parseSteps(r.steps),
     createdAt: new Date(r.createdAt ?? new Date()).toISOString(),
   };
+}
+
+function parseSteps(raw: string | null | undefined): RelayToolStep[] {
+  try {
+    const parsed = JSON.parse(String(raw ?? "[]"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((e): e is Record<string, unknown> => Boolean(e) && typeof e === "object")
+      .slice(0, 8)
+      .map((e) => ({
+        tool: String(e.tool ?? "unknown"),
+        ok: Boolean(e.ok),
+        ms: Number(e.ms ?? 0),
+        summary: String(e.summary ?? "").slice(0, 400),
+      }));
+  } catch {
+    return [];
+  }
 }
 
 // ---------------- read ----------------
@@ -438,6 +470,16 @@ export async function addRelay(collaborationId: string, input: RelayInput): Prom
   // egress policy is enforced at creation AND dispatch — fail early, honestly
   assertEgress(classification, target);
 
+  // tool-capable relays are bounded: internal-trust model participants that
+  // explicitly declared the tool_use capability, read/report tools only
+  if (input.toolUse) {
+    if (target.kind !== "model" || target.trust !== "internal" || !target.capabilities.includes("tool_use")) {
+      throw new Error(
+        `tool-capable relays require an internal-trust model participant with the "tool_use" capability (target "${target.key}" is ${target.kind}/${target.trust})`
+      );
+    }
+  }
+
   const seq = collab.relays.reduce((max, r) => Math.max(max, r.seq), 0) + 1;
   const relay: Relay = {
     id: newId(),
@@ -454,6 +496,8 @@ export async function addRelay(collaborationId: string, input: RelayInput): Prom
     response: null,
     via: "",
     note: "",
+    toolUse: Boolean(input.toolUse),
+    steps: [],
     createdAt: new Date().toISOString(),
   };
 
@@ -466,6 +510,7 @@ export async function addRelay(collaborationId: string, input: RelayInput): Prom
           collaborationId, seq, sourceKey: relay.sourceKey, targetKey: relay.targetKey, purpose: relay.purpose,
           request: relay.request, contextRefs: relay.contextRefs.join(","), classification: relay.classification,
           responseContract: relay.responseContract, status: "pending",
+          toolUse: relay.toolUse ? 1 : 0, steps: "[]",
         })
         .returning();
       if (row) relay.id = row.id;
@@ -529,6 +574,7 @@ async function updateRelay(relayId: string, patch: Partial<Relay>): Promise<void
           ...(patch.response !== undefined ? { response: patch.response } : {}),
           ...(patch.via !== undefined ? { via: patch.via } : {}),
           ...(patch.note !== undefined ? { note: patch.note } : {}),
+          ...(patch.steps !== undefined ? { steps: JSON.stringify(patch.steps) } : {}),
           updatedAt: new Date(),
         })
         .where(eq(collaborationRelays.id, relayId));
@@ -576,6 +622,12 @@ async function buildEnvelope(collab: Collaboration, relay: Relay, target: Partic
     )
     .join("\n");
   if (transcript) sections.push(`TRANSCRIPT SO FAR:\n${transcript}`);
+  const prefs = await preferencesBriefFor(target);
+  if (prefs) {
+    sections.push(
+      `OWNER PREFERENCES & BOUNDARIES (standing guidance from the owner — honor these; boundaries are hard limits, never overstep them):\n${prefs}`
+    );
+  }
   sections.push(
     `YOU ARE: ${target.name} (${target.key})${target.capabilities.length ? ` — capabilities: ${target.capabilities.join(", ")}` : ""}`
   );
@@ -627,6 +679,174 @@ async function callExternalAdapter(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ---------------- dispatch prompts + bounded tool loop ----------------
+
+function dispatchSystemPrompt(target: Participant): string {
+  return (
+    "You are one participant in a structured multi-participant collaboration that always serves the OWNER's best interest. " +
+    `Assume your assigned perspective (${target.name}) and deliberate toward the most optimal result for the owner — weigh trade-offs honestly, ` +
+    "state your recommendation clearly, and disagree with other participants when the evidence warrants it. " +
+    "Honor the owner's preferences and boundaries included in the envelope; boundaries are hard limits — never overstep them. " +
+    "Be concise and useful in markdown. " +
+    "Never claim to have taken real-world actions (posting, sending, buying, deploying) — you produce work product, the owner acts."
+  );
+}
+
+// Read/report tools only — collaboration participants may inspect the
+// workspace, never mutate it. That is the "without overstepping boundaries"
+// rule made concrete.
+const ORCHESTRATOR_TOOLS = [
+  "list_modules",
+  "list_projects",
+  "list_artifacts",
+  "list_spaces",
+  "list_congress_sessions",
+  "archive_search",
+  "archive_item",
+  "archive_stats",
+];
+
+function orchestratorToolManifest(): string {
+  return ORCHESTRATOR_TOOLS.map((name) => {
+    const tool = getTool(name);
+    if (!tool) return "";
+    const params = Object.entries(tool.parameters)
+      .map(([k, v]) => `${k}${v.required ? "*" : ""}:${v.type}`)
+      .join(", ");
+    return `- ${name}(${params}): ${tool.description}`;
+  })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function parseRelayToolCall(text: string): { tool: string; args: Record<string, unknown> } | null {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const candidates: string[] = [];
+  if (fenced) candidates.push(fenced[1].trim());
+  if (text.trim().startsWith("{")) candidates.push(text.trim());
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as { tool?: unknown; args?: unknown };
+      if (parsed && typeof parsed.tool === "string") {
+        const args =
+          parsed.args && typeof parsed.args === "object" && !Array.isArray(parsed.args)
+            ? (parsed.args as Record<string, unknown>)
+            : {};
+        return { tool: parsed.tool, args };
+      }
+    } catch {
+      /* not JSON */
+    }
+  }
+  return null;
+}
+
+async function dispatchWithTools(
+  target: Participant,
+  envelope: string,
+  opts: { keys?: OrchestratorKeys; localOnly?: boolean }
+): Promise<{ text: string; via: string; steps: RelayToolStep[] }> {
+  const system =
+    dispatchSystemPrompt(target) +
+    "\n\nTOOL PROTOCOL — you may inspect the workspace through read-only tools. To call one, reply with ONLY a fenced JSON block:\n" +
+    '```json\n{"tool": "<name>", "args": { … }}\n```\n' +
+    "After each call you receive a TOOL RESULT message; keep calling tools (max 3) until you can answer, then reply with plain text as your final response.\n\n" +
+    `AVAILABLE TOOLS:\n${orchestratorToolManifest()}`;
+  const convo: { role: "user" | "assistant"; content: string }[] = [{ role: "user", content: envelope }];
+  const steps: RelayToolStep[] = [];
+  let via = "";
+  for (let i = 0; i < 5; i++) {
+    const gen = await generate({
+      modelId: target.modelId ?? "openai",
+      messages: convo,
+      system,
+      temperature: 0.4,
+      keys: opts.localOnly ? undefined : opts.keys,
+      localOnly: opts.localOnly,
+    });
+    via = gen.via;
+    const text = gen.text.trim();
+    const call = parseRelayToolCall(text);
+    if (!call) return { text, via, steps };
+    if (isOfflineVia(via)) return { text, via, steps };
+    if (steps.length >= 3) {
+      convo.push({ role: "assistant", content: text });
+      convo.push({ role: "user", content: "Tool budget exhausted — answer now with what you have (plain text, no JSON)." });
+      continue;
+    }
+    const tool = ORCHESTRATOR_TOOLS.includes(call.tool) ? getTool(call.tool) : undefined;
+    if (!tool) {
+      convo.push({ role: "assistant", content: text });
+      convo.push({
+        role: "user",
+        content: `TOOL RESULT ${call.tool}: error — unknown or disallowed tool. Allowed: ${ORCHESTRATOR_TOOLS.join(", ")}`,
+      });
+      continue;
+    }
+    const started = Date.now();
+    let ok = true;
+    let result: unknown;
+    try {
+      result = await tool.run(call.args, {});
+    } catch (error) {
+      ok = false;
+      result = { error: error instanceof Error ? error.message : "tool failed" };
+    }
+    const summary = (() => {
+      try {
+        const json = JSON.stringify(result) ?? "null";
+        return json.length <= 600 ? json : `${json.slice(0, 600)}…`;
+      } catch {
+        return "(unserializable tool result)";
+      }
+    })();
+    steps.push({ tool: tool.name, ok, ms: Date.now() - started, summary });
+    convo.push({ role: "assistant", content: text });
+    convo.push({ role: "user", content: `TOOL RESULT ${tool.name}:\n${summary}` });
+  }
+  return { text: "The tool loop exceeded its step budget.", via, steps };
+}
+
+// ---------------- deliberation rounds ----------------
+
+/**
+ * Queue one deliberation round: a perspective relay to every non-human
+ * participant, then a synthesis relay (executes last — relays run in seq
+ * order) that weighs them all toward the owner's best interest.
+ */
+export async function startDeliberationRound(id: string): Promise<Collaboration> {
+  const collab = await getCollaboration(id);
+  if (!collab) throw new Error("collaboration not found");
+  if (collab.status === "closed") throw new Error("this collaboration is closed");
+  const thinkers = collab.participants.filter((p) => p.kind !== "human");
+  if (!thinkers.length) throw new Error("a deliberation round needs at least one non-human participant");
+  for (const p of thinkers) {
+    await addRelay(id, {
+      source: "conductor",
+      target: p.key,
+      purpose: "perspective",
+      request:
+        `From your perspective as ${p.name}, weigh in on the goal${collab.relays.length ? " and the transcript so far" : ""}. ` +
+        "State your strongest recommendation for the owner and your single biggest concern.",
+      classification: p.trust === "external" ? "public" : "internal",
+    });
+  }
+  const synthesist =
+    collab.participants.find((p) => p.capabilities.includes("synthesis")) ??
+    collab.participants.find((p) => p.kind === "model" && p.trust === "internal") ??
+    thinkers[0];
+  await addRelay(id, {
+    source: "conductor",
+    target: synthesist.key,
+    purpose: "synthesis",
+    request:
+      "Weigh every perspective above and produce the single most optimal recommendation for the owner: " +
+      "the decision, the trade-offs accepted, and the next step. Flag anything that would overstep the owner's boundaries.",
+    classification: synthesist.trust === "external" ? "public" : "internal",
+  });
+  return (await getCollaboration(id))!;
 }
 
 // ---------------- advance (one step per request) ----------------
@@ -695,14 +915,12 @@ export async function advanceCollaboration(
     };
   }
 
-  const system =
-    "You are one participant in a structured multi-agent collaboration. Stay in your assigned role, " +
-    "address exactly what the relay asks, and honor the response contract. Be concise and useful in markdown. " +
-    "Never claim to have taken real-world actions (posting, sending, buying, deploying) — you produce work product, the owner acts.";
+  const system = dispatchSystemPrompt(target);
   const envelope = await buildEnvelope(collab, pending, target);
 
   try {
     let result: { text: string; via: string };
+    let steps: RelayToolStep[] = [];
     if (target.kind === "external") {
       if (!target.adapterUrl) throw new Error("external participant has no adapter URL configured");
       result = await callExternalAdapter(
@@ -712,6 +930,10 @@ export async function advanceCollaboration(
         system,
         envelope
       );
+    } else if (pending.toolUse) {
+      const loop = await dispatchWithTools(target, envelope, opts);
+      result = { text: loop.text, via: loop.via };
+      steps = loop.steps;
     } else {
       const gen = await generate({
         modelId: target.modelId ?? "openai",
@@ -723,12 +945,17 @@ export async function advanceCollaboration(
       });
       result = { text: gen.text, via: gen.via };
     }
-    await updateRelay(pending.id, { status: "responded", response: result.text.slice(0, 12000), via: result.via });
+    await updateRelay(pending.id, {
+      status: "responded",
+      response: result.text.slice(0, 12000),
+      via: result.via,
+      ...(steps.length ? { steps } : {}),
+    });
     await touch(id, "running");
     const refreshed = (await getCollaboration(id))!;
     return {
       ran: "relay",
-      note: `Relay #${pending.seq} → ${target.name} responded (via ${result.via}).`,
+      note: `Relay #${pending.seq} → ${target.name} responded (via ${result.via}${steps.length ? `, ${steps.length} tool call${steps.length === 1 ? "" : "s"}` : ""}).`,
       collaboration: refreshed,
     };
   } catch (error) {
@@ -809,8 +1036,8 @@ async function conductorRoute(
     "transcript so far, decide the single next move. Reply ONLY with fenced JSON, one of:\n" +
     '```json\n{"action":"relay","target":"<participant key>","purpose":"<short>","request":"<bounded prompt>","responseContract":"<expected output>","classification":"public|internal|private"}\n```\n' +
     '```json\n{"action":"close","summary":"<what was achieved>"}\n```\n' +
-    "Rules: route to the participant best suited for what is still missing; use classification \"public\" for " +
-    "external-trust participants; close when the goal is met or stalled. Never invent participant keys.";
+    "Rules: route in the owner's best interest, respecting their boundaries; use the participant best suited for what is still missing; use classification \"public\" for " +
+    "external-trust participants; close when the goal is met or stalled. Never invent participant keys."
   const user = `GOAL: ${collab.goal}\n\nPARTICIPANTS:\n${roster}\n\nTRANSCRIPT:\n${transcript || "(nothing yet)"}`;
 
   let via = "";

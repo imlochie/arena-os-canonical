@@ -33,6 +33,25 @@ interface ParticipantDraft {
   trust: "internal" | "external";
 }
 
+interface PreferenceView {
+  id: string;
+  content: string;
+  kind: string;
+  classification: string;
+  source: string;
+}
+
+// The perspectives roster: every participant assumes a different lens, all
+// deliberating in the owner's best interest. The Steward guards boundaries
+// and holds tool access.
+const DELIBERATION_PRESET: ParticipantDraft[] = [
+  { name: "Visionary", kind: "model", modelId: "openai", adapterUrl: "", adapterModel: "", capabilities: "expansion, possibilities, bold directions", trust: "internal" },
+  { name: "Pragmatist", kind: "model", modelId: "openai", adapterUrl: "", adapterModel: "", capabilities: "feasibility, execution, cost", trust: "internal" },
+  { name: "Skeptic", kind: "model", modelId: "openai", adapterUrl: "", adapterModel: "", capabilities: "risk, adversarial review", trust: "internal" },
+  { name: "Steward", kind: "model", modelId: "openai", adapterUrl: "", adapterModel: "", capabilities: "owner interest, boundaries, tool_use", trust: "internal" },
+  { name: "Owner", kind: "human", modelId: "openai", adapterUrl: "", adapterModel: "", capabilities: "decisions, approvals", trust: "internal" },
+];
+
 const KIND_EMOJI: Record<string, string> = { model: "🤖", human: "🧑", external: "🛰️" };
 const CLASSIFICATION_STYLE: Record<string, string> = {
   public: "bg-emerald-400/10 text-emerald-200 ring-emerald-400/20",
@@ -86,6 +105,18 @@ export default function OrchestratorWorkbench() {
   // ---- checkpoint ----
   const [checkpointText, setCheckpointText] = useState("");
 
+  // ---- preferences ----
+  const [prefs, setPrefs] = useState<PreferenceView[]>([]);
+  const [prefText, setPrefText] = useState("");
+  const [prefKind, setPrefKind] = useState("preference");
+  const [prefClass, setPrefClass] = useState("internal");
+
+  // ---- deliberation preset ----
+  const [preset, setPreset] = useState<"deliberation" | "custom">("deliberation");
+
+  // ---- tool relay ----
+  const [nextToolUse, setNextToolUse] = useState(false);
+
   const textModels = models.filter((m) => m.kind === "text");
 
   const refreshList = useCallback(async () => {
@@ -123,6 +154,13 @@ export default function OrchestratorWorkbench() {
       } catch {
         /* offline */
       }
+      try {
+        const res = await fetch("/api/preferences");
+        const data = await res.json();
+        if (Array.isArray(data.preferences)) setPrefs(data.preferences);
+      } catch {
+        /* offline */
+      }
     })();
   }, [refreshList]);
 
@@ -136,6 +174,64 @@ export default function OrchestratorWorkbench() {
 
   function updateParticipant(index: number, patch: Partial<ParticipantDraft>) {
     setParticipants((current) => current.map((p, i) => (i === index ? { ...p, ...patch } : p)));
+  }
+
+  function applyPreset(next: "deliberation" | "custom") {
+    setPreset(next);
+    if (next === "deliberation") {
+      setParticipants(DELIBERATION_PRESET.map((p) => ({ ...p })));
+      setRelayTarget("visionary");
+    }
+  }
+
+  async function savePreference() {
+    if (!prefText.trim() || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: prefText.trim(), kind: prefKind, classification: prefClass }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPrefText("");
+        const listed = await fetch("/api/preferences").then((r) => r.json());
+        if (Array.isArray(listed.preferences)) setPrefs(listed.preferences);
+        setNotice(`Remembered (${prefKind}).`);
+      } else setNotice(data.error ?? "failed to save preference");
+    } catch {
+      setNotice("network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function forgetPreference(id: string) {
+    try {
+      await fetch(`/api/preferences/${id}`, { method: "DELETE" });
+      setPrefs((current) => current.filter((p) => p.id !== id));
+    } catch {
+      /* offline */
+    }
+  }
+
+  async function deliberateRound() {
+    if (!detail || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/orchestrator/${detail.id}/deliberate`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setDetail(data.collaboration);
+        setNotice("Deliberation round queued — Advance to run it.");
+      } else setNotice(data.error ?? "failed to queue deliberation");
+      void refreshList();
+    } catch {
+      setNotice("network error");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function create() {
@@ -246,6 +342,7 @@ export default function OrchestratorWorkbench() {
           purpose: nextPurpose.trim() || "contribute",
           request: nextRequest.trim(),
           classification: nextClassification,
+          toolUse: nextToolUse,
         }),
       });
       const data = await res.json();
@@ -303,6 +400,22 @@ export default function OrchestratorWorkbench() {
         <div className="space-y-5">
           <div className="glass rounded-2xl p-4">
             <h2 className="text-sm font-extrabold text-white">➕ New collaboration</h2>
+
+            <div className="mt-3 flex gap-1.5">
+              {(["deliberation", "custom"] as const).map((presetId) => (
+                <button
+                  key={presetId}
+                  onClick={() => applyPreset(presetId)}
+                  className={`flex-1 rounded-xl px-2.5 py-1.5 text-[11px] font-bold ring-1 transition ${
+                    preset === presetId
+                      ? "bg-violet-400/15 text-violet-100 ring-violet-400/40"
+                      : "bg-white/5 text-slate-300 ring-white/10 hover:bg-white/10"
+                  }`}
+                >
+                  {presetId === "deliberation" ? "🎯 Perspectives preset" : "🧩 Custom roster"}
+                </button>
+              ))}
+            </div>
 
             <label className="mt-3 block">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Goal</span>
@@ -501,6 +614,87 @@ export default function OrchestratorWorkbench() {
               ))}
             </div>
           </div>
+
+          {/* preferences & boundaries */}
+          <div className="glass rounded-2xl p-4">
+            <h2 className="text-sm font-extrabold text-white">🧠 Preferences & boundaries</h2>
+            <p className="mt-1 text-[10px] leading-4 text-slate-500">
+              Standing guidance every AI participant refers back to. Boundaries are hard limits — relays and tools never overstep them.
+            </p>
+            <div className="mt-2 space-y-1.5">
+              {prefs.length === 0 && (
+                <p className="px-1 py-2 text-[11px] text-slate-500">
+                  Nothing stored yet. Tell the Archive Assistant “remember that…”, or add one below.
+                </p>
+              )}
+              {prefs.map((pref) => (
+                <div key={pref.id} className="rounded-xl bg-white/5 px-2.5 py-2 ring-1 ring-white/10">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="line-clamp-2 text-[11px] leading-4 text-slate-300">{pref.content}</p>
+                    <button
+                      onClick={() => void forgetPreference(pref.id)}
+                      className="shrink-0 rounded bg-rose-500/15 px-1.5 py-0.5 text-[9px] font-black text-rose-200 hover:bg-rose-500/25"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="mt-1 flex gap-1 text-[8px] font-black uppercase">
+                    <span
+                      className={`rounded px-1 py-0.5 ${
+                        pref.kind === "boundary"
+                          ? "bg-rose-400/10 text-rose-200"
+                          : pref.kind === "goal"
+                            ? "bg-emerald-400/10 text-emerald-200"
+                            : "bg-cyan-400/10 text-cyan-200"
+                      }`}
+                    >
+                      {pref.kind}
+                    </span>
+                    <span className="rounded bg-white/5 px-1 py-0.5 text-slate-400">{pref.classification}</span>
+                    {pref.source === "assistant" && (
+                      <span className="rounded bg-violet-400/10 px-1 py-0.5 text-violet-200">via assistant</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-2.5 rounded-xl bg-black/30 p-2.5">
+              <textarea
+                value={prefText}
+                onChange={(e) => setPrefText(e.target.value)}
+                rows={2}
+                placeholder="e.g. never auto-post anything; prefer concise answers"
+                className="w-full rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 text-[11px] text-white outline-none focus:border-cyan-400/60"
+              />
+              <div className="mt-1.5 flex gap-1.5">
+                <select
+                  value={prefKind}
+                  onChange={(e) => setPrefKind(e.target.value)}
+                  className="rounded-lg border border-white/10 bg-black/40 px-1.5 py-1 text-[10px] text-white outline-none"
+                >
+                  <option value="preference">preference</option>
+                  <option value="boundary">boundary</option>
+                  <option value="goal">goal</option>
+                </select>
+                <select
+                  value={prefClass}
+                  onChange={(e) => setPrefClass(e.target.value)}
+                  className="rounded-lg border border-white/10 bg-black/40 px-1.5 py-1 text-[10px] text-white outline-none"
+                >
+                  <option value="public">public</option>
+                  <option value="internal">internal</option>
+                  <option value="private">private</option>
+                </select>
+                <button
+                  onClick={() => void savePreference()}
+                  disabled={busy || !prefText.trim()}
+                  className="ml-auto rounded-lg bg-cyan-500 px-2.5 py-1 text-[10px] font-black text-black hover:bg-cyan-400 disabled:opacity-40"
+                >
+                  Remember
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* ---- right: session detail ---- */}
@@ -536,6 +730,14 @@ export default function OrchestratorWorkbench() {
                     className="rounded-xl bg-cyan-500 px-4 py-2 text-xs font-black text-black transition hover:bg-cyan-400 disabled:opacity-40"
                   >
                     {busy ? "…" : "▶ Advance"}
+                  </button>
+                  <button
+                    onClick={() => void deliberateRound()}
+                    disabled={busy || detail.status === "closed"}
+                    title="Queue a perspective relay to every participant, then a synthesis relay"
+                    className="rounded-xl bg-violet-500/20 px-3 py-2 text-xs font-black text-violet-100 ring-1 ring-violet-400/30 transition hover:bg-violet-500/30 disabled:opacity-40"
+                  >
+                    🎯 Round
                   </button>
                   <button
                     onClick={() => void close()}
@@ -609,6 +811,23 @@ export default function OrchestratorWorkbench() {
                           <Markdown text={r.response.slice(0, 4000)} />
                         </div>
                       )}
+                      {r.steps.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {r.steps.map((step, i) => (
+                            <span
+                              key={i}
+                              title={step.summary}
+                              className={`rounded-full px-1.5 py-0.5 font-mono text-[9px] font-bold ring-1 ${
+                                step.ok
+                                  ? "bg-cyan-400/10 text-cyan-200 ring-cyan-400/20"
+                                  : "bg-rose-400/10 text-rose-200 ring-rose-400/20"
+                              }`}
+                            >
+                              🔧 {step.tool} {step.ok ? "✓" : "✗"} {step.ms}ms
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       {r.note && <div className="mt-2 text-[11px] italic text-rose-300">{r.note}</div>}
                       {isCheckpoint && (
                         <div className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-200">
@@ -652,6 +871,15 @@ export default function OrchestratorWorkbench() {
                       <option value="internal">internal</option>
                       <option value="private">private</option>
                     </select>
+                    <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={nextToolUse}
+                        onChange={(e) => setNextToolUse(e.target.checked)}
+                        className="h-3 w-3 accent-cyan-400"
+                      />
+                      🔧 tool-use (target needs tool_use)
+                    </label>
                   </div>
                   <textarea
                     value={nextRequest}

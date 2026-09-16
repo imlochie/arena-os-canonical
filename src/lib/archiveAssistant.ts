@@ -13,6 +13,7 @@
 
 import { generate } from "@/lib/ai";
 import { ASSISTANT_TOOLS, getTool, toolManifest, PLATFORM_MODULES, PLATFORM_DOCS, ToolCtx } from "@/lib/assistantTools";
+import { preferencesBriefAll } from "@/lib/preferences";
 
 export interface AssistantMessage {
   role: "user" | "assistant";
@@ -41,7 +42,7 @@ export interface RunAssistantOpts extends ToolCtx {
 const MAX_TOOL_CALLS = 4;
 const MAX_STEPS = 6;
 
-function systemPrompt(): string {
+function systemPrompt(prefs: string): string {
   return [
     "You are the Archive Assistant — the operator's agent living inside their personal workspace platform (\"arena-os\").",
     "You understand the platform by browsing it, and you act by calling tools. You manage a searchable media archive index and can drive the platform's other modules (Spaces, Congress, artifacts, projects).",
@@ -58,6 +59,14 @@ function systemPrompt(): string {
     "- Use tools to get real state — never guess at the user's spaces, projects or archive contents.",
     "- Answers are concise and in markdown. When listing things, use compact bullets.",
     "- If asked to do something you lack a tool for, say what you DO have (list_modules) and suggest the closest path.",
+    "",
+    ...(prefs
+      ? [
+          "",
+          "OWNER PREFERENCES & BOUNDARIES (standing guidance — honor these; boundaries are hard limits, never overstep):",
+          prefs,
+        ]
+      : []),
     "",
     "AVAILABLE TOOLS:",
     toolManifest(),
@@ -92,6 +101,7 @@ function summarize(result: unknown): string {
 export async function runAssistant(opts: RunAssistantOpts): Promise<AssistantResult> {
   const modelId = opts.modelId ?? "openai";
   const steps: AssistantStep[] = [];
+  const prefs = await preferencesBriefAll().catch(() => "");
   const convo: { role: "system" | "user" | "assistant"; content: string }[] = [
     ...opts.messages.slice(-14).map((m) => ({ role: m.role, content: m.content })),
   ];
@@ -101,7 +111,7 @@ export async function runAssistant(opts: RunAssistantOpts): Promise<AssistantRes
     const res = await generate({
       modelId,
       messages: convo,
-      system: systemPrompt(),
+      system: systemPrompt(prefs),
       temperature: 0.4,
       keys: opts.localOnly ? undefined : opts.keys,
       localOnly: opts.localOnly,
@@ -228,6 +238,27 @@ export async function localRoute(msg: string, ctx: ToolCtx): Promise<RouteResult
       ? `**Congress sessions (${sessions.length}):**\n` + sessions.map((c) => `- ${c.topic.slice(0, 80)} — ${c.status}, ${c.turns} turns`).join("\n")
       : "No congress sessions yet.";
     return { reply, via: "congress", steps: [step] };
+  }
+  const rememberMatch = m.match(/^(?:remember|note|always|never)(?: that)?[:,\s]+(.+)/);
+  if (rememberMatch) {
+    const kind = m.startsWith("never") ? "boundary" : "preference";
+    const content = rememberMatch[1].trim();
+    const { step } = await runLocal("remember_preference", { content, kind }, ctxKeys);
+    return {
+      reply:
+        `Noted — stored as a standing **${kind}**. Every AI surface in the workspace now sees it:\n\n> ${content}\n\n` +
+        "I'll keep referring back to this (and you can manage these in the 🎼 Orchestrator's preferences panel).",
+      via: "remember",
+      steps: [step],
+    };
+  }
+  if (/(list|show|what are|check).*(preferences|boundaries)/.test(m)) {
+    const { step, result } = await runLocal("list_preferences", {}, ctxKeys);
+    const r = result as { n: number; preferences: { kind: string; content: string }[] };
+    const reply = r.n
+      ? `**Your standing guidance (${r.n}):**\n` + r.preferences.map((p) => `- **${p.kind}** — ${p.content}`).join("\n")
+      : "No stored preferences yet. Tell me \"remember that…\" and I'll keep it.";
+    return { reply, via: "preferences", steps: [step] };
   }
   if (/archive stats|stats/.test(m)) {
     const { step, result } = await runLocal("archive_stats", {}, ctxKeys);

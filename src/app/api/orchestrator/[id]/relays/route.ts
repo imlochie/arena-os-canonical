@@ -22,6 +22,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       contextRefs: Array.isArray(body.contextRefs) ? body.contextRefs.map(String) : [],
       classification: body.classification,
       responseContract: body.responseContract,
+      toolUse: Boolean(body.toolUse),
     });
     return Response.json({ relay }, { status: 201 });
   } catch (e) {

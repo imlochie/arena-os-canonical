@@ -21,6 +21,7 @@ import { getSpaceTemplate } from "@/lib/spaceTemplates";
 import {
   addArchiveItems, archiveStats, getArchiveItem, listArchiveItems, scanInbox, updateArchiveItem,
 } from "@/lib/archive";
+import { addPreference, listPreferences } from "@/lib/preferences";
 
 export interface ToolCtx {
   keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string };
@@ -329,6 +330,42 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     description: "Archive index totals: items by status and kind, collections.",
     parameters: {},
     run: async () => archiveStats(),
+  },
+
+  // -- owner memory --
+  {
+    name: "remember_preference",
+    description:
+      "Store a standing owner preference, boundary, or goal so every AI surface in the workspace honors it going forward. Use whenever the user says 'remember…', 'always…', 'never…', 'I prefer…', 'from now on…'.",
+    parameters: {
+      content: { type: "string", description: "the preference/boundary/goal, stated plainly", required: true },
+      kind: { type: "string", description: "preference | boundary | goal (default preference)" },
+      classification: { type: "string", description: "public | internal | private — who may be told this (default internal)" },
+    },
+    run: async (args) => {
+      const content = str(args.content, 2000);
+      if (!content.trim()) return { ok: false, error: "content is required" };
+      const preference = await addPreference({
+        content,
+        kind: typeof args.kind === "string" ? args.kind : undefined,
+        classification: typeof args.classification === "string" ? args.classification : undefined,
+        source: "assistant",
+      });
+      return { ok: true, id: preference.id, kind: preference.kind, classification: preference.classification, remembered: true };
+    },
+  },
+  {
+    name: "list_preferences",
+    description:
+      "List the owner's standing preferences, boundaries, and goals that all AI surfaces honor. Consult these before recommending anything.",
+    parameters: {},
+    run: async () => {
+      const preferences = await listPreferences();
+      return {
+        n: preferences.length,
+        preferences: preferences.map((p) => ({ kind: p.kind, content: p.content, classification: p.classification, source: p.source })),
+      };
+    },
   },
 
   // -- write back --
