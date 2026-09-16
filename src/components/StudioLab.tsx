@@ -963,6 +963,15 @@ function JobCard({
               >
                 ⬇️
               </a>
+              {(job.modality === "video" || job.modality === "image") && job.files[0] && (
+                <a
+                  href={`/cut?import=${job.id}&f=${encodeURIComponent(job.files[0].name)}`}
+                  title="Edit in Cut Lab"
+                  className="rounded-lg bg-fuchsia-500/15 px-2 py-1 text-xs text-fuchsia-200 ring-1 ring-fuchsia-400/30 hover:bg-fuchsia-500/25"
+                >
+                  ✂️
+                </a>
+              )}
               <button
                 onClick={() => onSave(job)}
                 disabled={saved}

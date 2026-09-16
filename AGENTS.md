@@ -30,13 +30,15 @@ Stack: Next.js (App Router) + TypeScript + Tailwind v4 + Drizzle ORM + PostgreSQ
 
 ```
 src/app/          pages + /api routes (route.ts files are thin; logic lives in src/lib)
-src/components/   client components (BattleArena, StudioLab, CouncilLab, …)
+src/components/   client components (BattleArena, StudioLab, CutLab, CouncilLab, …)
 src/lib/          all business logic (ai.ts provider fan-out, elo.ts, collab.ts, …)
 src/lib/studio/   multimodal generation: types, catalog, wangp, comfyui, hosted, demo, jobs
+src/lib/cut/      browser video editor: types, render, exporter, projects (see CUT.md)
 src/db/           drizzle client + schema.ts (source of truth for tables)
-drizzle/          SQL migrations (also: studio_jobs auto-creates itself at runtime)
+drizzle/          SQL migrations (studio_jobs & cut_projects also auto-create at runtime)
 bridges/          wangp_bridge.py — stdlib-only HTTP bridge over WanGP's shared/api.py
 STUDIO.md         Studio architecture, backend setup, settings mapping
+CUT.md            Cut Lab (browser-native video editor) guide
 REFERENCES.md     open-source resource map (upstreams, licenses, agent patterns)
 ```
 

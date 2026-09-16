@@ -173,3 +173,6 @@ Browser ── /api/studio/* (Next.js server) ──► WanGP bridge ──► W
 Studio — upstream model repos (Wan, LTX-2, HunyuanVideo, Qwen-Image, HiDream, Flux…),
 audio/music engines, low-VRAM acceleration libraries, arena/ELO tooling, model hubs,
 agent-skill patterns, and a licensing quick sheet for what can be used commercially.
+
+Trim and export your generations in the **Cut Lab** (`/cut`) — a browser-native,
+OpenCut-inspired editor. See [`CUT.md`](./CUT.md).

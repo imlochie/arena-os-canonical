@@ -16,6 +16,7 @@ const LINKS = [
   { href: "/chat", label: "Chat", emoji: "💬" },
   { href: "/image", label: "Image", emoji: "🖼️" },
   { href: "/studio", label: "Studio", emoji: "🎬" },
+  { href: "/cut", label: "Cut", emoji: "✂️" },
   { href: "/assistants", label: "Assistants", emoji: "🧬" },
   { href: "/leaderboard", label: "Board", emoji: "🏆" },
   { href: "/guide", label: "Guide", emoji: "📦" },

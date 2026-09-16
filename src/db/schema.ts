@@ -260,6 +260,16 @@ export const studioJobs = pgTable("studio_jobs", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// ---- Cut Lab: saved editing projects (browser-side editing, server-side metadata) ----
+export const cutProjects = pgTable("cut_projects", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled cut"),
+  aspect: text("aspect").notNull().default("16:9"), // 16:9 | 9:16 | 1:1
+  clips: text("clips").notNull().default("[]"), // JSON: [{id,name,kind,src,seed,duration,trimStart,trimEnd,volume,unlinked}]
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export type ModelCategoryRatingRow = typeof modelCategoryRatings.$inferSelect;
 export type ModelRow = typeof models.$inferSelect;
 export type AssistantRow = typeof assistants.$inferSelect;

@@ -46,6 +46,20 @@ All reachable through WanGP or ComfyUI; listed for catalog curation and future b
 | [jianzhnie/awesome-text-to-video](https://github.com/jianzhnie/awesome-text-to-video) | Actively-maintained survey of the whole T2V landscape (Wan 2.2, HunyuanVideo 1.5, LTX-2.3, SkyReels, MAGI-1, …) | CC (awesome list) |
 | [comfyanonymous/ComfyUI_examples](https://comfyanonymous.github.io/ComfyUI_examples/) + [comfy.org workflows](https://comfy.org/workflows) | Ready-made API-format workflows for Wan 2.1/2.2, VACE, FLF2V, LTX… — paste straight into our custom-workflow box | Docs |
 
+## 2b. Video editing (Cut Lab + OpenCut)
+
+The app ships an OpenCut-inspired **Cut Lab** (`/cut`, see [`CUT.md`](./CUT.md)):
+canvas-compositor editing + MediaRecorder export, fully in-browser. These are the
+references around it.
+
+| Resource | Notes | License |
+| --- | --- | --- |
+| [OpenCut-app/OpenCut](https://github.com/OpenCut-app/OpenCut) | The open-source CapCut alternative (60k+ ⭐). Main branch = ground-up rewrite: plugin-first architecture, shared Rust core, planned **MCP server for AI agents**, headless/batch rendering, Editor API, scripting tab | MIT |
+| [OpenCut-app/OpenCut-Classic](https://github.com/OpenCut-app/OpenCut-Classic) | The production editor that powers opencut.app today — Next.js + TS, browser timeline, masks/keyframes/effects, WASM compositor, IndexedDB/OPFS storage. The reference to read when improving Cut Lab | MIT |
+| [Vanilagy/mediabunny](https://github.com/Vanilagy/mediabunny) | Pure-TS media toolkit (mux/demux/transcode, WebCodecs-accelerated, zero deps, tree-shakable). Successor of webm-muxer/mp4-muxer; OpenCut uses it for export. Our v1 uses MediaRecorder — this is the upgrade path for frame-accurate, faster-than-realtime export | MIT |
+| [ffmpegwasm/ffmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm) | FFmpeg compiled to WASM — transcode/filters in the browser when raw FFmpeg power is needed (heavy: ~30MB) | MIT (LGPL build) |
+| [WebCodecs API](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API) | Browser-native encode/decode — the foundation under MediaBunny and modern browser editors | Web standard |
+
 ## 3. Image generation
 
 | Resource | Notes | License |
