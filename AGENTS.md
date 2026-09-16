@@ -56,7 +56,10 @@ REFERENCES.md     open-source resource map (upstreams, licenses, agent patterns)
   must disclose "powered by WanGP (Wan2GP) by DeepBeepMeep".
 - **Model registry**: `FREE_MODELS` in `src/lib/models.ts` is the static catalog, synced
   into the `models` table by `ensureSeeded()` (best-effort). Studio models live in
-  `src/lib/studio/catalog.ts` (offline fallback) or come live from the bridge.
+  `src/lib/studio/catalog.ts` (offline fallback) or come live from the bridge. Special
+  `pollinationsId` prefixes: `__offline__` (local generator), `__image__:` (URL image gen),
+  `__turboagent__:<hf-id>` (local TurboAgent server via `keys.turboagent` URL or
+  `TURBOAGENT_URL`; probe at `/api/turboagent/health`).
 - **Ratings**: simple online Elo (K=32) in `src/lib/elo.ts`; per-category table
   `model_category_ratings`. (REFERENCES.md §7 lists upgrade paths.)
 - **Client components** hydrate localStorage in `useEffect` — the codebase accepts the

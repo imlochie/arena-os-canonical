@@ -120,6 +120,7 @@ What the app's text arena (Pollinations default, BYOK boosts) can grow into.
 
 | Resource | Notes | License |
 | --- | --- | --- |
+| [TurboAgentAI/turboagent](https://github.com/TurboAgentAI/turboagent) | **Integrated.** TurboQuant-powered agentic AI for long-context LLMs on consumer hardware — NF4 weights + streaming compressed KV cache (Qwen2.5-32B @ 65k ctx on one 24GB GPU, 65/65 NIAH). Ships an OpenAI-compatible FastAPI server (`turboagent serve`) which this app's arena/chat/council drive directly via the 🔑 keys bar (`__turboagent__:` model ids; `/api/turboagent/health` probe). Swarms + RAG in its Python API | MIT (core) |
 | [Pollinations](https://pollinations.ai) | Keyless free text+image API — this app's default provider | Free API |
 | [ollama/ollama](https://github.com/ollama/ollama) | De-facto local runner, OpenAI-compatible server | MIT |
 | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) | The engine under everything; `llama-server` speaks OpenAI API | MIT |
