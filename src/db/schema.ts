@@ -447,3 +447,31 @@ export const ownerPreferences = pgTable("owner_preferences", {
 });
 
 export type OwnerPreferenceRow = typeof ownerPreferences.$inferSelect;
+
+export const classOccurrences = pgTable("class_occurrences", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  date: text("date").notNull(), // YYYY-MM-DD, local — one class per timetable day
+  classroomKey: text("classroom_key").notNull(), // reset | explore | adulting | create | kickoff | adventure | soul
+  weekNumber: integer("week_number").notNull(),
+  phase: text("phase").notNull().default("waiting"), // waiting|orientation|lesson|practice|discussion|check|reflection|record|complete
+  status: text("status").notNull().default("waiting"), // waiting | in_session | complete
+  collaborationId: uuid("collaboration_id"),
+  openedAt: timestamp("opened_at"),
+  closedAt: timestamp("closed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const eduMemory = pgTable("edu_memory", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  classroomKey: text("classroom_key").notNull(),
+  weekNumber: integer("week_number"),
+  kind: text("kind").notNull().default("observation"), // lesson|reflection|record|observation|review_point
+  content: text("content").notNull(),
+  sourceOccurrenceId: uuid("source_occurrence_id"),
+  collaborationId: uuid("collaboration_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type ClassOccurrenceRow = typeof classOccurrences.$inferSelect;
+export type EduMemoryRow = typeof eduMemory.$inferSelect;
