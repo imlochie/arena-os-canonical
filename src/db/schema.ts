@@ -384,3 +384,53 @@ export type CongressTurnRow = typeof congressTurns.$inferSelect;
 export type SpaceRow = typeof spaces.$inferSelect;
 export type SpaceRunRow = typeof spaceRuns.$inferSelect;
 export type ArchiveItemRow = typeof archiveItems.$inferSelect;
+
+export const collaborations = pgTable("collaborations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled collaboration"),
+  goal: text("goal").notNull(), // what the collaboration is for
+  context: text("context").notNull().default(""), // shared context notes
+  status: text("status").notNull().default("running"), // running | blocked | closed
+  autoRoute: integer("auto_route").notNull().default(0), // conductor proposes next relays
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const collaborationParticipants = pgTable("collaboration_participants", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  collaborationId: uuid("collaboration_id").notNull(),
+  key: text("key").notNull(), // short slug, e.g. "architect"
+  name: text("name").notNull(),
+  emoji: text("emoji").notNull().default("🤖"),
+  kind: text("kind").notNull().default("model"), // model | human | external
+  modelId: text("model_id"), // kind=model: arena fan-out model
+  adapterUrl: text("adapter_url"), // kind=external: OpenAI-compatible endpoint
+  adapterModel: text("adapter_model"), // kind=external: model name
+  capabilities: text("capabilities").notNull().default(""), // comma list
+  trust: text("trust").notNull().default("internal"), // internal | external
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const collaborationRelays = pgTable("collaboration_relays", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  collaborationId: uuid("collaboration_id").notNull(),
+  seq: integer("seq").notNull().default(1),
+  sourceKey: text("source_key").notNull().default("owner"),
+  targetKey: text("target_key").notNull(),
+  purpose: text("purpose").notNull().default("contribute"),
+  request: text("request").notNull(),
+  contextRefs: text("context_refs").notNull().default(""), // comma-separated artifact ids
+  classification: text("classification").notNull().default("internal"), // public | internal | private
+  responseContract: text("response_contract").notNull().default("markdown text"),
+  status: text("status").notNull().default("pending"), // pending | responded | cancelled | failed
+  response: text("response"),
+  via: text("via").notNull().default(""),
+  note: text("note").notNull().default(""), // blocked/failed reason
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export type CollaborationRow = typeof collaborations.$inferSelect;
+export type CollaborationParticipantRow = typeof collaborationParticipants.$inferSelect;
+export type CollaborationRelayRow = typeof collaborationRelays.$inferSelect;

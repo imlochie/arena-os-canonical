@@ -10,6 +10,7 @@ const LINKS = [
   { href: "/", label: "Arena", emoji: "⚔️" },
   { href: "/council", label: "Council", emoji: "🧠" },
   { href: "/congress", label: "Congress", emoji: "🏛️" },
+  { href: "/orchestrator", label: "Orchestrator", emoji: "🎼" },
   { href: "/spaces", label: "Spaces", emoji: "🪟" },
   { href: "/archive", label: "Archive", emoji: "🗂️" },
   { href: "/collab", label: "Collab", emoji: "🤝" },
