@@ -237,6 +237,29 @@ export const chatMessages = pgTable("chat_messages", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ---- Studio: multimodal generation jobs (WanGP bridge / ComfyUI / hosted / demo) ----
+export const studioJobs = pgTable("studio_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  backend: text("backend").notNull(), // wangp | comfyui | dashscope | demo
+  externalId: text("external_id"), // bridge job id / ComfyUI prompt_id / DashScope task_id
+  modelType: text("model_type").notNull(),
+  modelName: text("model_name").notNull().default(""),
+  modality: text("modality").notNull().default("video"), // video | image | audio
+  prompt: text("prompt").notNull(),
+  negativePrompt: text("negative_prompt").notNull().default(""),
+  settings: text("settings").notNull().default("{}"), // JSON — full generation settings
+  status: text("status").notNull().default("queued"), // queued | running | completed | failed | cancelled
+  phase: text("phase").notNull().default(""),
+  progress: real("progress").notNull().default(0),
+  files: text("files").notNull().default("[]"), // JSON: [{name, mediaType, kind, size, backendUrl, subfolder}]
+  preview: text("preview"), // data URI progress preview (when available)
+  error: text("error"),
+  seed: integer("seed"),
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 export type ModelCategoryRatingRow = typeof modelCategoryRatings.$inferSelect;
 export type ModelRow = typeof models.$inferSelect;
 export type AssistantRow = typeof assistants.$inferSelect;
@@ -255,3 +278,4 @@ export type ArtifactRow = typeof artifacts.$inferSelect;
 export type ProjectMemoryRow = typeof projectMemory.$inferSelect;
 export type ChatRow = typeof chats.$inferSelect;
 export type ChatMessageRow = typeof chatMessages.$inferSelect;
+export type StudioJobRow = typeof studioJobs.$inferSelect;

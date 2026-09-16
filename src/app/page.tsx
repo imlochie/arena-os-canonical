@@ -36,6 +36,9 @@ export default function HomePage() {
           <a href="/arcade" className="rounded-full bg-fuchsia-500/20 px-3.5 py-1.5 text-fuchsia-200 ring-1 ring-fuchsia-400/40 hover:bg-fuchsia-500/30">
             🎮 New: Arcade Forge — Pac-Man & Invaders, 100% offline →
           </a>
+          <a href="/studio" className="rounded-full bg-cyan-500/20 px-3.5 py-1.5 text-cyan-200 ring-1 ring-cyan-400/40 hover:bg-cyan-500/30">
+            🎬 New: Studio — WanGP video/image/audio generation →
+          </a>
           {["🎭 Blind battles", "🏆 Personal ELO", "🧬 Custom assistants", "$0 forever"].map((t) => (
             <span key={t} className="rounded-full bg-white/5 px-3 py-1.5 text-slate-300 ring-1 ring-white/10">
               {t}

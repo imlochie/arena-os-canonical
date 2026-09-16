@@ -5,3 +5,8 @@ node_modules/
 .env.local
 .env.*.local
 *.log
+
+# studio bridge mock artifacts
+__pycache__/
+mock_outputs/
+*.tsbuildinfo
