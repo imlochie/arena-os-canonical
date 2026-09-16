@@ -166,3 +166,10 @@ Browser ── /api/studio/* (Next.js server) ──► WanGP bridge ──► W
 | `src/lib/studio/jobs.ts` | orchestrator: submit, refresh, persist, media serving |
 | `src/app/api/studio/*` | API routes |
 | `src/components/StudioLab.tsx` | Studio UI |
+
+## 6. Further resources
+
+[`REFERENCES.md`](./REFERENCES.md) maps the whole open-source landscape around the
+Studio — upstream model repos (Wan, LTX-2, HunyuanVideo, Qwen-Image, HiDream, Flux…),
+audio/music engines, low-VRAM acceleration libraries, arena/ELO tooling, model hubs,
+agent-skill patterns, and a licensing quick sheet for what can be used commercially.
