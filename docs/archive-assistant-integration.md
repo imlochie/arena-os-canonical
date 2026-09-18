@@ -306,12 +306,44 @@ npm run generate:archive-contract # regenerate generated/* from upstream OpenAPI
 npm run check:archive-contract    # fail if committed generated output is stale
 ```
 
+## End-to-end smoke ("what is happening in my archive?")
+
+Two scripts exercise the bridge against a live upstream — the real client,
+real generated-contract validators, real normalizers, real routes:
+
+```bash
+# 1. (optional) local development fixture standing in for Archive Assistant
+node --import ./scripts/register-src-loader.mjs scripts/mock-archive-assistant.mjs 4017
+
+# 2. configure the bridge
+export ARCHIVE_ASSISTANT_API_URL=http://127.0.0.1:4017/api   # or the real deployment
+export ARCHIVE_ASSISTANT_BEARER_TOKEN=<user-token>           # bearer mode
+#   or: ARCHIVE_ASSISTANT_AUTH_MODE=local ARCHIVE_ASSISTANT_OWNER_ID=__local__
+
+# 3. run the smoke digest
+npm run smoke:archive -- --history --lineage 42
+```
+
+The smoke prints the same owner-facing digest Arena reasons over (overview
+health, workload counts, reconciliation totals, per-provider refresh
+readings with authority vs. attempt divergence, and the cited fact list),
+and exits non-zero on configuration (`2`) or upstream/auth/contract (`3`)
+failures. Against a real Archive Assistant it is the manual check for
+whether the six read capabilities carry enough context to answer useful
+questions without any additional privileged surface.
+
+`mock-archive-assistant.mjs` is a development fixture only: it serves
+fixture data on loopback with no auth enforcement. It is not Archive
+Assistant and never stands in for one in production.
+
 ## File map
 
 ```
 scripts/
   generate-archive-assistant-contract.mjs   contract generator (dependency-free)
-  register-test-alias.mjs / test-alias-hooks.mjs   node --test @/ alias support
+  archive-context-smoke.ts                  live-bridge smoke digest
+  mock-archive-assistant.mjs                loopback dev fixture (not AA!)
+  register-src-loader.mjs / src-loader-hooks.mjs   direct Node TS execution support
 src/lib/archive-assistant/
   generated/contract.ts                     AUTO-GENERATED operation table + schemas
   generated/types.ts                        AUTO-GENERATED TypeScript types

@@ -171,11 +171,12 @@ export function buildWorkloadFacts(workload: ArchiveContext["workload"]): {
     const prior = item.changeContext
       ? ` The prior observation ${item.changeContext.previousObservationId} was superseded.`
       : "";
+    const step = /[.!?]$/.test(item.nextStep.trim()) ? item.nextStep.trim() : `${item.nextStep.trim()}.`;
     return {
       source: "workload",
       subjectId: item.id,
       ...(item.findingClassification != null ? { classification: item.findingClassification } : {}),
-      statement: `[${item.state}] ${item.title}: ${item.summary} Next step: ${item.nextStep}.${prior}`,
+      statement: `[${item.state}] ${item.title}: ${item.summary} Next step: ${step}${prior}`,
       evidence,
     };
   });

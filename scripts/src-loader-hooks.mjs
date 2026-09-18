@@ -1,7 +1,7 @@
 /**
- * Resolve hook (off-thread) backing scripts/register-test-alias.mjs.
+ * Resolve hook (off-thread) backing scripts/register-src-loader.mjs.
  *
- * Two conveniences, test-only:
+ * Two conveniences for direct Node execution (not used by Next):
  *  1. `@/x/y`            → <repo>/src/x/y.{ts,tsx,js,mjs} (or index files)
  *  2. extensionless relative imports (legal under the repo's "bundler"
  *     moduleResolution) gain their real extension so Node's native
@@ -30,7 +30,7 @@ export async function resolve(specifier, context, nextResolve) {
   if (specifier.startsWith("@/")) {
     const found = withExtension(join(SRC, specifier.slice(2)));
     if (found) return { url: pathToFileURL(found).href, shortCircuit: true };
-    throw new Error(`test alias loader: cannot resolve ${specifier}`);
+    throw new Error(`src loader: cannot resolve ${specifier}`);
   }
 
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
