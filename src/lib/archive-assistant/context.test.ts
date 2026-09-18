@@ -101,7 +101,10 @@ test("refresh semantics: synced attempt pinned as authority states it plainly", 
   const semantics = summarizeRefresh(state);
   assert.equal(semantics.lastAttempt, "complete");
   assert.equal(semantics.authorityRefreshId, "plex-r17");
-  assert.match(semantics.interpretation, /Plex refresh plex-r17 is authoritative and complete\./);
+  assert.match(
+    semantics.interpretation,
+    /Plex refresh plex-r17 is authoritative and complete \(1,234 items observed\)\./,
+  );
 });
 
 test("refresh facts: attempt divergence is a separately citable fact", () => {

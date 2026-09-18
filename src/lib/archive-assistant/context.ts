@@ -67,22 +67,31 @@ export function summarizeRefresh(state: ProviderRefreshState): RefreshSemantics 
         ? `A ${label} refresh is currently running; authority remains refresh ${authorityId} until it completes.`
         : `A ${label} refresh is currently running; no authoritative ${label} snapshot exists yet.`;
       break;
-    case "complete":
+    case "complete": {
+      const items =
+        authoritativeComplete && authority?.itemCount != null
+          ? ` (${authority.itemCount.toLocaleString("en-US")} items observed)`
+          : "";
       interpretation =
         authoritativeComplete && authorityId === state.lastAttemptedRefresh?.refreshId
-          ? `${capitalize(label)} refresh ${authorityId} is authoritative and complete.`
+          ? `${capitalize(label)} refresh ${authorityId} is authoritative and complete${items}.`
           : `The latest ${label} refresh completed, but authority remains refresh ${authorityId ?? "unset"}.`;
       break;
-    case "incomplete":
+    }
+    case "incomplete": {
+      const authorityItems = authority?.itemCount != null ? ` (${authority.itemCount.toLocaleString("en-US")} items observed)` : "";
       interpretation = authorityId
-        ? `The latest ${label} refresh attempt ended with a partial snapshot; the ${label} view is incomplete, not empty. Authority remains refresh ${authorityId}.`
+        ? `The latest ${label} refresh attempt ended with a partial snapshot; the ${label} view is incomplete, not empty. Authority remains refresh ${authorityId}${authorityItems}.`
         : `The latest ${label} refresh attempt ended with a partial snapshot; the ${label} view is incomplete, not empty.`;
       break;
-    case "failed":
+    }
+    case "failed": {
+      const authorityItems = authority?.itemCount != null ? ` (${authority.itemCount.toLocaleString("en-US")} items observed)` : "";
       interpretation = authorityId
-        ? `The latest ${label} refresh attempt failed; ${label} contents are unknown, not absent. Authority remains refresh ${authorityId}.`
+        ? `The latest ${label} refresh attempt failed; ${label} contents are unknown, not absent. Authority remains refresh ${authorityId}${authorityItems}.`
         : `The latest ${label} refresh attempt failed; ${label} contents are unknown, not absent.`;
       break;
+    }
   }
 
   return {

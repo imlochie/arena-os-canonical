@@ -22,7 +22,9 @@ export const ARCHIVE_CONTEXT_SAFETY_RULES = [
   "A sync_error with a partial snapshot means the observation is incomplete — never report the provider item set as empty or absent because of it.",
   "A sync_error with unknown completeness means the observation failed — provider contents are then unknown, not absent.",
   "Only the currentAuthoritativeRefresh snapshot is authoritative; a failed or partial newer attempt does not move authority.",
+  "Absence of an item from an incomplete or non-authoritative snapshot is not evidence that the item is absent from the archive. Explain the observation gap before entertaining any disappearance theory.",
   "If evidence is missing, say so explicitly instead of guessing.",
+  "Do not issue action directives (\"delete X\", \"approve this operation\", \"rename this file\"). Judgment about what to do belongs to the owner through Archive Assistant's review and approval flow; you explain, they decide.",
 ] as const;
 
 export const ARCHIVE_CONTEXT_UNAVAILABLE_NOTE =

@@ -275,7 +275,12 @@ Prompt safety rules (src/lib/archive-assistant/prompt.ts, asserted by tests):
    empty/absent because of it.
 7. `sync_error` + `unknown` ⇒ failed — provider contents are unknown, not absent.
 8. Only `currentAuthoritativeRefresh` is authoritative.
-9. Missing evidence is stated, not guessed.
+9. Absence from an incomplete or non-authoritative snapshot is not evidence
+   the item is absent from the archive; explain the observation gap first.
+10. Missing evidence is stated, not guessed.
+11. No action directives ("delete X", "approve this operation"): Arena
+    explains, the owner decides through Archive Assistant's review/approval
+    flow.
 
 ## Compatibility tests
 
@@ -294,6 +299,10 @@ spec's compatibility matrix:
 - error mapping (404/401/contract/timeout) and route status codes;
 - prompt rules, citation rendering, path redaction, bounded prompts;
 - chat wiring (opt-in only, Local Mode zero-egress, fail-soft reasons);
+- the disappearance-trap reasoning contract (r18 partial over authoritative
+  r17: authority chain, item counts, citations, zero disappearance language,
+  action directives forbidden) — see docs/archive-reasoning-evaluation.md for
+  the full interrogation runbook;
 - internal service authentication (503/401/allowed truth table, identical
   bodies for missing vs wrong secrets, near-miss rejection, internal
   credential never forwarded to Archive Assistant).
@@ -361,4 +370,5 @@ src/app/api/chat/route.ts                   browser leg (opt-in archiveContext)
 src/app/api/internal/chat/route.ts          authenticated internal service leg
 src/lib/chatRunner.ts                       shared reasoning core (both legs)
 src/lib/internal-auth.ts                    ARENA_INTERNAL_API_KEY verification
+docs/archive-reasoning-evaluation.md        interrogation runbook (matrix + killer test)
 ```
