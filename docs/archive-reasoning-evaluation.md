@@ -100,6 +100,9 @@ make changes to it observable.
 **Lab instance:** docs/archive-reasoning-lab-001.md runs this trap *and* its
 ordinary-state contrast (Run A / Run B) through the live bridge with
 verbatim delivered-prompt captures, grading keys, and parked watch items.
+The sharpened v2 grading criterion (absence-from-snapshot vs disappearance)
+and the owner bench protocol — raw-transcript recording, seven-field
+scorecard, deterministic failure attribution — live there.
 
 ## 3. How to run
 

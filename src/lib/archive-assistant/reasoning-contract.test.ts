@@ -196,3 +196,38 @@ test("ordinary: no disappearance language is asserted here either — evidence i
     assert.doesNotMatch(factLines(ordinaryPrompt()), claim);
   }
 });
+
+/* The v2 grading criterion (lab-001): a complete authoritative snapshot
+ * licenses "absence from this snapshot" but a DISAPPEARANCE of item X
+ * requires presence-then plus authoritative-absence-now. Run-B evidence is
+ * deliberately snapshot-level: it must establish trust in r19 while
+ * establishing NO item's disappearance. Locking that here makes bench
+ * failure attribution deterministic — if the real model names a specific
+ * vanished item, the evidence block is provably not where it came from. */
+test("attribution: ordinary evidence is snapshot-level — it licenses trust in r19, not any item's disappearance", () => {
+  const lines = factLines(ordinaryPrompt()).split("\n");
+
+  // Every mention of the current authority lives in exactly one aggregate
+  // fact about the snapshot itself (count + completeness + authority).
+  const r19Lines = lines.filter((l) => l.includes("plex-r19"));
+  assert.equal(r19Lines.length, 1, "r19 appears in exactly the aggregate authority fact");
+  assert.match(
+    r19Lines[0],
+    /Plex refresh plex-r19 is authoritative and complete \(35,802 items observed\)/,
+  );
+
+  // No per-item absence statement about any refresh exists anywhere in the
+  // delivered evidence.
+  const PER_ITEM_ABSENCE = [
+    /absent from/i,
+    /missing from/i,
+    /not present in/i,
+    /no longer in/i,
+    /removed from/i,
+  ];
+  for (const line of lines) {
+    for (const claim of PER_ITEM_ABSENCE) {
+      assert.doesNotMatch(line, claim, `evidence must establish no per-item absence: ${line}`);
+    }
+  }
+});
