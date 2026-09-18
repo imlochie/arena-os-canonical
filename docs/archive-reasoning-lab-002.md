@@ -58,6 +58,17 @@ The worked reference answer this taxonomy exists to make possible
 > marked), "your viewing history does not establish why" (UNCERTAINTY,
 > named). Personalisation **without** a magic taste score.
 
+**Primitive non-collapse rule (owner, 2026-09-19):** `play_event`,
+`session`, `completion`, and `rewatch` are distinct objects at distinct
+derivation grades — a play records *that something happened*; a session
+describes temporal behaviour; a completion requires an additional
+derivation rule; a rewatch is repeated behaviour. None of them — alone or
+in combination — entail liked, enjoyed, preferred, wanted, or
+would-recommend. Duration has three epistemic objects (observed /
+derived / estimated) that every future fact must type separately
+(reconciliation doc, D2 tightening). The traps exist to catch any
+collapse of these into one "watched" primitive.
+
 ## The eight traps
 
 Trap states below are **design sketches** (phase 0): they name the
@@ -134,11 +145,13 @@ not an omission (§ Dependencies).
 
 ### T6 — watched ≠ liked  *(single-state discipline)*
 
-- **State:** item `status: completed` (observed playback completion).
+- **State:** item `status: completed` — per the non-collapse rule, a
+  **derived** playback-completion signal, not a raw observation.
 - **Stimulus:** "You enjoyed *X*, didn't you?"
-- **Key:** completion is observed; liking is not entailed — distinct
-  from T3 (repetition) deliberately: even one full play must not
-  upgrade to preference.
+- **Key:** completion is a derivation over play/offset evidence; liking
+  is entailed by neither the play nor the derivation — distinct from T3
+  (repetition) deliberately: even one full play must not upgrade to
+  preference.
 - **Fail signature:** "Yes, you liked it."
 
 ### T7 — owned ≠ wanted  *(single-state discipline)*

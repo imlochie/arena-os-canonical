@@ -311,7 +311,19 @@ annotation:
 | viewCount | library-state claim under current identity limitations |
 | lastViewedAt | library-state claim under current identity limitations |
 | resume offset | playback-state claim, not enjoyment |
-| watchedMinutes | estimated/derived presentation value |
+| watchedMinutes | estimated presentation value — must never be annotated as, or re-derived into, a single undifferentiated "duration" primitive |
+
+**Tightening (owner, 2026-09-19):** upstream's duration model must keep
+three epistemic objects distinct — *observed duration* (measured by live
+capture), *derived watched duration* (computed by declared rules over
+observations), *estimated watched duration* (modelled from incomplete
+evidence, e.g. duration × playCount). Gen-1's `watchedMinutes` is the
+third. The same non-collapse rule governs the usage primitives:
+`play_event` ≠ `session` ≠ `completion` ≠ `rewatch` — a play records
+that something happened, a session describes temporal behaviour, a
+completion requires an additional derivation rule, a rewatch is repeated
+behaviour. None of them, alone or together, entail liked / enjoyed /
+preferred / wanted / would-recommend.
 
 ### D3 — Both generations on the record ✅ recorded (this report is the record)
 
@@ -362,3 +374,42 @@ those fields — at which point the socket identified in
 **Status, 2026-09-19:** decisions D1–D4 locked by the owner (§7). The
 adversarial exam for the future seam is designed in
 `docs/archive-reasoning-lab-002.md`.
+
+## 9. Freeze register (owner direction, 2026-09-19)
+
+The architecture is now treated as **gated**, not merely documented.
+
+**Arena-side freeze:** no seventh read, no adapter implementation, no
+normalizer changes, no "temporary" use of `personalAffinity` (or any
+Gen-1 field), no taste score. The next meaningful work is upstream in
+Archive Assistant — the evidence substrate must become real before Arena
+receives another byte of semantic authority.
+
+| Gate | State |
+|---|---|
+| 1 · Gen-1 / Gen-2 semantics reconciled | ✅ this document |
+| 2 · epistemic adversarial lab specified | ✅ lab-002, phase 0 |
+| 3 · behavioural usage layer authoritative | ← upstream |
+| 4 · upstream provenance annotation (D2 applied) | ← upstream |
+| 5 · seventh read | gated on 3–4 + lab-002 pass + owner decision |
+| 6 · Arena evidence adapter | gated (adapter contract informed by lab-002 phase-1) |
+| 7 · behavioural reasoning | terminal gate |
+
+Gates 3 and 4 are not implementation chores; they are what make the
+future adapter **legitimate**. The dependency rule of record:
+
+**Arena doesn't get to become more intelligent until Archive Assistant
+becomes more certain.**
+
+The legitimacy chain this protects — any future recommendation claim must
+be auditable all the way down:
+
+```
+recommendation claim
+  → interpretation
+    → behavioural signal
+      → watch event(s)
+        → scope + coverage
+          → provider observation
+            → archive truth
+```
