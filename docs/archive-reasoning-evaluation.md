@@ -104,6 +104,14 @@ The sharpened v2 grading criterion (absence-from-snapshot vs disappearance)
 and the owner bench protocol — raw-transcript recording, seven-field
 scorecard, deterministic failure attribution — live there.
 
+**Lab 002:** docs/archive-reasoning-lab-002.md designs the
+personalisation/taste trap exam (played state ≠ observed watch; watched ≠
+liked; rewatch ≠ reason; UNKNOWN ≠ FALSE; ownership vs wanting; briefing
+rank ≠ taste). Phase 0 (trap design + grading keys + claim-class
+taxonomy) is complete; the executable phase waits on the seventh-read
+seam per the locked decision chain in
+docs/personalisation-vocabulary-provenance-reconciliation.md §7.
+
 ## 3. How to run
 
 ### Fact level (deterministic, no model)

@@ -279,30 +279,70 @@ their unseen content.
 | scope | ✗ | ✓ immutable `scope_id` |
 | observed vs derived vs interpretation class | ✗ (labels are interpretations presented bare) | ✓ observed/derived distinction (media-profile.ts does have `kind: observed|derived` locally — but not at the boundary) |
 
-## 7. Decisions this creates (owner's call — recorded, none made here)
+## 7. Decisions — locked by the owner, 2026-09-19
 
-1. **Codify Arena's current drop as deliberate.** The normalizer ignoring
-   overview personalisation fields is today the *correct* behaviour; it
-   should be written into the integration doc as a decision with this
-   report as rationale, so nobody "fixes the gap" casually.
-2. **Upstream: declare the provenance class of the overview personal
-   fields** (interpretation-over-played-state), ideally in the OpenAPI
-   descriptions — cheap honesty that survives any consumer.
-3. **Upstream: reconcile the two generations on the record.** The
-   direction doc was authored where gen-1 is not visible. Either gen-1
-   merges and is re-derived over the usage layer when it lands, or it's
-   explicitly scoped as a legacy presentation heuristic. Both are
-   defensible; silence is not.
-4. **Arena's contract pin.** The bridge generates from
-   `arena/01a0a0d9`'s spec. If the assistant surface's long-term home
-   changes (merge to main, or not), the generator pin needs to track
-   that decision.
-5. **Sequencing (owner's own rule, preserved):** reconcile → decide the
-   seventh read → lab-002 taste traps. This report completes step one.
-   Lab-002's traps are now better aimed: *played state ≠ observed watch*;
-   *`not_available` ≠ nothing to recommend*; *high playCount ≠ enjoyed*;
-   *briefing rank is acquisition ordering, not taste ranking*; *UNKNOWN
-   ≠ FALSE*.
+Proposed in this report's original §7 ("recorded, none made"), these are
+now **locked** — recording-only, not implemented, each with its
+implementation point named.
+
+### D1 — Codify the drop ✅ recorded
+
+Arena's normalizer intentionally does not normalize the overview's
+personalisation fields. Recorded as a decision section in
+`docs/archive-assistant-integration.md` ("Personalisation fields:
+intentionally not normalized"), so no future developer mistakes the
+omission for an unused-field oversight and "just adds it." Lifting it is
+gated: provenance class declared upstream (or re-derivation over the
+usage layer) → lab-002 pass → explicit owner decision.
+
+### D2 — Annotate Gen-1's provenance class upstream 🔒 locked (application point: upstream OpenAPI descriptions on the assistant branch)
+
+The goal is not to delete Gen-1; it is to **stop it masquerading as
+behavioural evidence**. Classification table locked for upstream
+annotation:
+
+| Field | Classification |
+|---|---|
+| personalAffinity | heuristic presentation signal |
+| personalRelevance | heuristic presentation signal |
+| suggestedForYou | presentation/discovery output |
+| personalizedBriefing | presentation composition |
+| personalizedBriefing.rank | acquisition/presentation ordering |
+| viewCount | library-state claim under current identity limitations |
+| lastViewedAt | library-state claim under current identity limitations |
+| resume offset | playback-state claim, not enjoyment |
+| watchedMinutes | estimated/derived presentation value |
+
+### D3 — Both generations on the record ✅ recorded (this report is the record)
+
+The lineage answer to "why don't we just use the existing
+personalAffinity?":
+
+```
+Gen-1  heuristic personalisation  ── legacy / presentation substrate
+           │   (semantic incompatibility, not continuity)
+           ▼
+Gen-2  behavioural evidence architecture
+           ├── observed behaviour
+           ├── explicit preference
+           ├── collection relationship
+           ├── temporal coverage
+           └── provenance
+           ▼
+    Arena personalisation reasoning
+```
+
+Gen-1 does not represent the same thing. D1 and D2 make this record
+load-bearing in both repos.
+
+### D4 — Contract-generation branch stays pinned until the seam reconciles ✅ recorded in the integration doc's generator section
+
+The bridge generates from `arena/01a0a0d9` (Gen-1 + Arena contract
+surface); the accepted direction lives on `arena/01a0b5d9` off `main`.
+Before any seventh read, the contract source and the Gen-2 direction must
+converge deliberately — otherwise a generated contract marries Gen-2
+semantics to legacy Gen-1 assumptions and bakes in months of "why does
+this type exist?" archaeology.
 
 ## 8. One-paragraph history-safe summary
 
@@ -318,3 +358,7 @@ the presentation layer and deliberately does not reason over it. No
 seventh read should exist until upstream assigns a provenance class to
 those fields — at which point the socket identified in
 `docs/recommendation-architecture-audit.md` §12 is the integration path.
+
+**Status, 2026-09-19:** decisions D1–D4 locked by the owner (§7). The
+adversarial exam for the future seam is designed in
+`docs/archive-reasoning-lab-002.md`.

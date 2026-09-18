@@ -98,6 +98,13 @@ src/lib/archive-assistant/generated/types.ts      ← TypeScript types
   pending merge to `main`. The committed snapshot records this ref; once the
   boundary merges, plain `npm run generate:archive-contract` against `main`
   reproduces it.
+- **Pin decision (2026-09-19, locked):** generation stays pinned to that
+  assistant-boundary branch ref until the contract source and the
+  accepted usage-layer direction (`arena/01a0b5d9` off `main`) converge
+  deliberately. Re-pointing generation at a spec that marries Gen-2
+  semantics to legacy Gen-1 assumptions by accident is exactly the type-
+  archaeology this pin prevents. (Locked decision D4 in
+  `docs/personalisation-vocabulary-provenance-reconciliation.md` §7.)
 - If the contract is later published as a shared package (spec "Option A",
   e.g. `@workspace/archive-assistant-contract`), only
   `generated/` + the validator wiring changes; the public types in
@@ -213,6 +220,43 @@ POST /api/chat
 - Fail-soft: if the bridge is unconfigured/unreachable, chat still answers —
   explicitly instructed not to invent archive facts — and the response
   carries `archiveContext: { included: false, reason: … }`.
+
+## Personalisation fields: intentionally not normalized (decision, 2026-09-19)
+
+`/assistant/overview` carries personalisation-adjacent fields —
+`personalAffinity` on attention/recommendations, `personalRelevance` on
+discovery items, the `suggestedForYou` section, `personalizedBriefing`,
+and `mediaExperience` watch state / viewing momentum. The bridge
+**validates them on ingress and carries them** in
+`ArchiveContext.overview` — and the fact layer **deliberately does not
+normalize them**: the only fact builders are workload, reconciliation
+summary, provider refresh, and finding lineage
+(`src/lib/archive-assistant/context.ts`). These fields never enter
+prompts, UI, or reasoning.
+
+```
+Gen-1 personalisation fields
+    → contract-valid transport
+    → Arena ingress
+    → INTENTIONALLY NOT NORMALIZED
+```
+
+This omission is a decision, not a gap. Per
+`docs/personalisation-vocabulary-provenance-reconciliation.md`: upstream,
+those fields are heuristic presentation labels computed from item-level
+played-state metadata (`viewCount` / `lastViewedAt` / resume offsets —
+library-state claims under the owner token, **not observed viewing**),
+matched by title string, carrying prose-only reasons with no observation
+handles, scope, or coverage. The accepted upstream usage-layer direction
+(`SomeSafePortablesoftware@arena/01a0b5d9`) assigns exactly that substrate
+a weaker evidence class than Arena's fact rule requires.
+
+Do not "fix" this casually. Consuming these fields is gated, in order:
+(1) upstream declares a provenance class for them (or re-derives them
+over the usage layer); (2) lab-002
+(`docs/archive-reasoning-lab-002.md`) passes against the resulting
+evidence pack; (3) explicit owner decision. Until then, dropping them is
+the correct behaviour.
 
 ## Internal service authentication
 
