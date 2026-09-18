@@ -170,3 +170,29 @@ Still not to be built: operation endpoints, approval endpoints, `/agent/*`
 bridges, any "Arena can now fix things" layer. Arena's verb set is:
 reason, investigate, explain, propose. Decide stays with the owner through
 Archive Assistant.
+
+## Appendix — horizon: provenance-bearing personal media analytics (recorded, not planned)
+
+Nothing in this section is built, scheduled, or being proposed. It is
+recorded so the reasoning survives for later evaluation — the lab-001
+bench results decide the next actual engineering input.
+
+The disappearance lab exposed a claim typology that generalizes past
+refreshes. If a future evidence model ever grows beyond
+refresh/observation/finding/workload (e.g. viewing events → sessions →
+aggregates, library state, health checks — all landing in facts for
+Arena), the same epistemic ladder applies per claim class:
+
+| Claim class | Example | Operand requirement |
+|---|---|---|
+| Direct inventory fact | "Your library contains 4,200 TV episodes." | one authoritative observation |
+| Aggregate behavioral claim | "You watch more TV on weekends." | enough underlying observations to license the aggregate, vs merely a few anecdotes |
+| Derived temporal claim | "Your viewing shifted toward TV this year." | multiple comparable observation periods, cited |
+
+Each class has its own missing-operand trap, exactly like the Run B
+`absence_now` case: an aggregate claim asserted from insufficient
+observations is the same violation as a disappearance asserted without an
+absence observation. The lab-001 pattern — fixed question, controlled
+states, bench-authored keys, raw transcripts as regression artifacts — is
+the evaluation template any such analytics claim would be interrogated
+with before Arena is allowed to say it.
