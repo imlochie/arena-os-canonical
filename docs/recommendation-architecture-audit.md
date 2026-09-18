@@ -573,3 +573,12 @@ architecture taste — the same discipline that made lab-001 decide watch
 items instead of guessing them. Implementation of the seventh read is
 the slice *after*, and only if lab-002's traps show the socket pattern
 insufficient.
+
+> **Sequencing update (owner direction, 2026-09-19):** before lab-002, the
+> upstream vocabulary question had to be answered first — see
+> `docs/personalisation-vocabulary-provenance-reconciliation.md`, which
+> established that Arena-facing personalisation vocabulary and the newer
+> usage-layer direction are two systems (different substrate, different
+> epistemic standard), neither on upstream main. Lab-002 now inherits
+> better-aimed traps; the seventh read additionally waits on upstream
+> assigning a provenance class to the overview personal fields.
