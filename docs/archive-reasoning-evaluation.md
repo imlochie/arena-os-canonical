@@ -97,6 +97,10 @@ then tells you whether a given LLM *consumes* that contract correctly;
 architecturally, the prompt is the only lever for that, and these tests
 make changes to it observable.
 
+**Lab instance:** docs/archive-reasoning-lab-001.md runs this trap *and* its
+ordinary-state contrast (Run A / Run B) through the live bridge with
+verbatim delivered-prompt captures, grading keys, and parked watch items.
+
 ## 3. How to run
 
 ### Fact level (deterministic, no model)

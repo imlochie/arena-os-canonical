@@ -26,10 +26,26 @@ import {
   LINEAGE,
   OVERVIEW,
   PLEX_HISTORY,
+  PLEX_HISTORY_ORDINARY,
+  PLEX_STATE_ORDINARY_AUTHORITY,
   PLEX_STATE_PARTIAL_FAILURE,
   RECONCILIATION_REPORT,
   WORKLOAD,
 } from "../src/lib/archive-assistant/fixtures.ts";
+
+/** Scenario toggle for the reasoning lab (docs/archive-reasoning-lab-001.md):
+ *    trap     (default) r18 partial non-authoritative over authoritative r17
+ *             — the disappearance trap (Run A);
+ *    ordinary           complete authoritative r19 observing fewer items than
+ *             the previous authority — authoritative contrast (Run B).
+ *  Only plex refresh state/history varies; everything else stays fixed. */
+const scenario = (process.env.AA_SCENARIO ?? "trap").trim().toLowerCase();
+if (scenario !== "trap" && scenario !== "ordinary") {
+  console.error(`AA_SCENARIO must be "trap" or "ordinary" (got "${scenario}").`);
+  process.exit(2);
+}
+const plexState = scenario === "ordinary" ? PLEX_STATE_ORDINARY_AUTHORITY : PLEX_STATE_PARTIAL_FAILURE;
+const plexHistory = scenario === "ordinary" ? PLEX_HISTORY_ORDINARY : PLEX_HISTORY;
 
 const port = Number(process.argv[2] ?? 4017);
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -58,13 +74,13 @@ const server = createServer((req, res) => {
 
   if (path.endsWith("/provider/refresh/history")) {
     const provider = url.searchParams.get("provider");
-    if (provider === "plex") return send(200, PLEX_HISTORY);
+    if (provider === "plex") return send(200, plexHistory);
     if (provider === "jellyfin") return send(200, JELLYFIN_HISTORY);
     return send(400, { error: "Provider must be plex or jellyfin." });
   }
   if (path.endsWith("/provider/refresh")) {
     const provider = url.searchParams.get("provider");
-    if (provider === "plex") return send(200, PLEX_STATE_PARTIAL_FAILURE);
+    if (provider === "plex") return send(200, plexState);
     if (provider === "jellyfin") return send(200, JELLYFIN_STATE_FAILED_UNKNOWN);
     return send(400, { error: "Provider must be plex or jellyfin." });
   }
@@ -74,5 +90,9 @@ const server = createServer((req, res) => {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`mock archive assistant (DEV FIXTURE — fixture data, no auth) listening on http://127.0.0.1:${port}/api`);
-  console.log("scenario: plex authority r17 with failed partial attempt r18; jellyfin authority jf-r08 with failed unknown attempt jf-r09; finding lineage at reviewItemId 42.");
+  console.log(
+    scenario === "ordinary"
+      ? "scenario=ordinary: plex authority r19 (complete, 35,802 items) after r17 (35,890); jellyfin authority jf-r08 with failed unknown attempt jf-r09; finding lineage at reviewItemId 42."
+      : "scenario=trap: plex authority r17 (35,890 items) with failed partial attempt r18; jellyfin authority jf-r08 with failed unknown attempt jf-r09; finding lineage at reviewItemId 42.",
+  );
 });

@@ -103,7 +103,7 @@ test("refresh semantics: synced attempt pinned as authority states it plainly", 
   assert.equal(semantics.authorityRefreshId, "plex-r17");
   assert.match(
     semantics.interpretation,
-    /Plex refresh plex-r17 is authoritative and complete \(1,234 items observed\)\./,
+    /Plex refresh plex-r17 is authoritative and complete \(35,890 items observed\)\./,
   );
 });
 

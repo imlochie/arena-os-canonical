@@ -25,41 +25,20 @@ import assert from "node:assert/strict";
 import { buildRefreshFacts } from "./context";
 import { buildArchiveContextSystemPrompt } from "./prompt";
 import type { ArchiveContext } from "./types";
-import type { ProviderRefresh, ProviderRefreshState } from "./generated/types";
+import type { ProviderRefreshState } from "./generated/types";
+import {
+  PLEX_AUTHORITY,
+  PLEX_ORDINARY_AUTHORITY,
+  PLEX_STATE_ORDINARY_AUTHORITY,
+  PLEX_STATE_PARTIAL_FAILURE,
+} from "./fixtures";
 
-/* The exact scenario from the evaluation matrix. */
-const R17: ProviderRefresh = {
-  refreshId: "plex-r17",
-  provider: "plex",
-  startedAt: "2026-09-17T02:00:00.000Z",
-  completedAt: "2026-09-17T02:04:00.000Z",
-  status: "synced",
-  snapshotCompleteness: "complete",
-  itemCount: 35890,
-  authoritative: true,
-  reason: null,
-  snapshotReference: "snap-r17",
-};
-
-const R18: ProviderRefresh = {
-  refreshId: "plex-r18",
-  provider: "plex",
-  startedAt: "2026-09-18T02:00:00.000Z",
-  completedAt: "2026-09-18T02:01:00.000Z",
-  status: "sync_error",
-  snapshotCompleteness: "partial",
-  itemCount: null,
-  authoritative: false,
-  reason: "connection lost mid-fetch",
-  snapshotReference: null,
-};
-
-const TRAP_STATE: ProviderRefreshState = {
-  provider: "plex",
-  lastAttemptedRefresh: R18,
-  lastSuccessfulRefresh: R17,
-  currentAuthoritativeRefresh: R17,
-};
+/* The exact scenario from the evaluation matrix lives in fixtures.ts:
+ * R17 = PLEX_AUTHORITY (synced/complete/authoritative, 35,890 items),
+ * R18 = PLEX_FAILED_PARTIAL_ATTEMPT (sync_error/partial, non-authoritative),
+ * trap state = PLEX_STATE_PARTIAL_FAILURE. */
+const R17 = PLEX_AUTHORITY;
+const TRAP_STATE = PLEX_STATE_PARTIAL_FAILURE;
 
 const DISAPPEARANCE_CLAIMS = [
   /items? (?:have|has) disappeared/i,
@@ -144,4 +123,76 @@ test("trap: a complete+authoritative latest state carries the observed size too"
   assert.equal(facts.length, 1, "no divergence fact when attempt and authority agree");
   assert.match(facts[0].statement, /Plex refresh plex-r17 is authoritative and complete \(35,890 items observed\)\./);
   assert.doesNotMatch(facts[0].statement, /incomplete|not authoritative|attempt failed/);
+});
+
+/* ------------------------------------------------------------------------ */
+/* Run B — the "ordinary" contrast state (same interrogation, twice)         */
+/* ------------------------------------------------------------------------ */
+
+function ordinaryPrompt(): string {
+  const facts = buildRefreshFacts(PLEX_STATE_ORDINARY_AUTHORITY);
+  const context = {
+    generatedAt: "2026-09-18T11:06:00.000Z",
+    overview: {},
+    workload: {},
+    reconciliation: {},
+    refresh: { plex: PLEX_STATE_ORDINARY_AUTHORITY, jellyfin: {} },
+  } as unknown as ArchiveContext;
+  return buildArchiveContextSystemPrompt(context, facts);
+}
+
+function factLines(prompt: string): string {
+  return prompt.split("\n").filter((l) => l.startsWith("- ")).join("\n");
+}
+
+test("ordinary: fixture coherence — r19 occupies every slot of the state", () => {
+  assert.equal(PLEX_STATE_ORDINARY_AUTHORITY.lastAttemptedRefresh?.refreshId, "plex-r19");
+  assert.equal(PLEX_STATE_ORDINARY_AUTHORITY.lastSuccessfulRefresh?.refreshId, "plex-r19");
+  assert.equal(PLEX_STATE_ORDINARY_AUTHORITY.currentAuthoritativeRefresh?.refreshId, "plex-r19");
+  assert.equal(PLEX_ORDINARY_AUTHORITY.itemCount, 35802);
+  assert.ok((PLEX_AUTHORITY.itemCount ?? 0) > PLEX_ORDINARY_AUTHORITY.itemCount!, "r19 must observe fewer items than r17 for the contrast to exist");
+});
+
+test("ordinary: authority fact states current truth with the observed size", () => {
+  const facts = buildRefreshFacts(PLEX_STATE_ORDINARY_AUTHORITY);
+  assert.equal(facts.length, 1, "attempt and authority agree: exactly one fact");
+  assert.match(facts[0].statement, /Plex refresh plex-r19 is authoritative and complete \(35,802 items observed\)\./);
+  assert.doesNotMatch(facts[0].statement, /sync_error|incomplete|not authoritative/);
+  assert.equal(facts[0].classification, "complete");
+  assert.equal(facts[0].evidence.refreshId, "plex-r19");
+});
+
+test("differential: the same builder arms materially different evidence per state", () => {
+  const trap = factLines(trapPrompt());
+  const ordinary = factLines(ordinaryPrompt());
+
+  // Trap state arms the incomplete-observation chain...
+  assert.match(trap, /incomplete, not empty/);
+  assert.match(trap, /plex-r18 has status sync_error with partial snapshot completeness and is not authoritative/);
+  assert.match(trap, /Authority remains refresh plex-r17 \(35,890 items observed\)/);
+  assert.match(trap, /refreshId=plex-r17/);
+  assert.match(trap, /refreshId=plex-r18/);
+
+  // ...while the ordinary state arms authoritative current truth — with
+  // NONE of the trap-scoped language present in the FACT LINES (the safety
+  // rules mention those words by design; evidence lines must not).
+  assert.doesNotMatch(ordinary, /sync_error/);
+  assert.doesNotMatch(ordinary, /partial snapshot/);
+  assert.doesNotMatch(ordinary, /incomplete, not empty/);
+  assert.doesNotMatch(ordinary, /not authoritative/);
+  assert.match(ordinary, /Plex refresh plex-r19 is authoritative and complete \(35,802 items observed\)/);
+  assert.match(ordinary, /refreshId=plex-r19/);
+  assert.doesNotMatch(ordinary, /refreshId=plex-r17/);
+
+  // Rules are state-independent: the disappearance distinction holds in both.
+  for (const prompt of [trapPrompt(), ordinaryPrompt()]) {
+    assert.match(prompt, /Absence of an item from an incomplete or non-authoritative snapshot is not evidence/);
+    assert.match(prompt, /Only the currentAuthoritativeRefresh snapshot is authoritative/);
+  }
+});
+
+test("ordinary: no disappearance language is asserted here either — evidence is left to speak", () => {
+  for (const claim of DISAPPEARANCE_CLAIMS) {
+    assert.doesNotMatch(factLines(ordinaryPrompt()), claim);
+  }
 });

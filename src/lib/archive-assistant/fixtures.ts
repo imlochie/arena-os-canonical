@@ -24,7 +24,7 @@ export const PLEX_AUTHORITY: ProviderRefresh = {
   completedAt: "2026-09-17T10:01:00.000Z",
   status: "synced",
   snapshotCompleteness: "complete",
-  itemCount: 1234,
+  itemCount: 35890,
   authoritative: true,
   reason: null,
   snapshotReference: "snap-plex-17",
@@ -76,6 +76,35 @@ export const PLEX_STATE_PARTIAL_FAILURE: ProviderRefreshState = {
   lastAttemptedRefresh: PLEX_FAILED_PARTIAL_ATTEMPT,
   lastSuccessfulRefresh: PLEX_AUTHORITY,
   currentAuthoritativeRefresh: PLEX_AUTHORITY,
+};
+
+/** Run-B ("ordinary") state: a complete authoritative refresh r19 has
+ *  legitimately replaced r17 as authority — and observes FEWER items
+ *  (35,802 vs 35,890). Absence here is current authoritative truth: the
+ *  exact contrast to the r18 trap. */
+export const PLEX_ORDINARY_AUTHORITY: ProviderRefresh = {
+  refreshId: "plex-r19",
+  provider: "plex",
+  startedAt: "2026-09-18T11:00:00.000Z",
+  completedAt: "2026-09-18T11:05:00.000Z",
+  status: "synced",
+  snapshotCompleteness: "complete",
+  itemCount: 35802,
+  authoritative: true,
+  reason: null,
+  snapshotReference: "snap-plex-19",
+};
+
+export const PLEX_STATE_ORDINARY_AUTHORITY: ProviderRefreshState = {
+  provider: "plex",
+  lastAttemptedRefresh: PLEX_ORDINARY_AUTHORITY,
+  lastSuccessfulRefresh: PLEX_ORDINARY_AUTHORITY,
+  currentAuthoritativeRefresh: PLEX_ORDINARY_AUTHORITY,
+};
+
+export const PLEX_HISTORY_ORDINARY: ProviderRefreshHistory = {
+  results: [PLEX_ORDINARY_AUTHORITY, PLEX_FAILED_PARTIAL_ATTEMPT, PLEX_AUTHORITY],
+  pagination: { page: 1, pageSize: 10, total: 3, totalPages: 1 },
 };
 
 export const JELLYFIN_STATE_FAILED_UNKNOWN: ProviderRefreshState = {
