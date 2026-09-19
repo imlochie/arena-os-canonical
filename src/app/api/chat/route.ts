@@ -1,38 +1,49 @@
-import { generate, type ChatMsg } from "@/lib/ai";
-import { getModel } from "@/lib/models";
-import { isLocalOnlyBody } from "@/lib/privacy";
+import { runChat } from "@/lib/chatRunner";
+import { internalAuthState, internalUnauthorizedResponse } from "@/lib/internal-auth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+/**
+ * Browser leg of the reasoning route.
+ *
+ * Credential rules (server-only ARENA_INTERNAL_API_KEY):
+ *   - no Authorization header            → browser call (the app's normal
+ *                                          chat flow sends none);
+ *   - Bearer == internal key             → internal service caller (kept for
+ *                                          compatibility with Archive
+ *                                          Assistant's canonical client,
+ *                                          which posts Bearer $ARENA_CANONICAL_API_KEY
+ *                                          to this path); archive evidence
+ *                                          forwarding is NOT honored — a
+ *                                          service credential is not a user
+ *                                          identity;
+ *   - Bearer != internal key             → only tolerated when the call
+ *                                          requests archiveContext (it is
+ *                                          then a user token forwarded to
+ *                                          Archive Assistant, which validates
+ *                                          it); otherwise 401.
+ */
 export async function POST(req: Request) {
+  const auth = internalAuthState(req);
+
+  let wantsArchive = false;
+  let body: any;
   try {
-    const body = await req.json();
-    const modelId: string = body.modelId ?? "openai";
-    const messages: ChatMsg[] = body.messages ?? [];
-    const temperature: number | undefined = body.temperature;
-    const system: string | undefined = body.system;
-    const localOnly = isLocalOnlyBody(body);
-    const keys = body.keys as { openrouter?: string; groq?: string; gemini?: string } | undefined;
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return Response.json({ error: "messages[] is required" }, { status: 400 });
-    }
-    // Validate model exists
-    getModel(modelId);
-
-    // Local Mode: keys are ignored (zero egress beats BYOK quality).
-    const result = await generate({
-      modelId,
-      messages,
-      temperature,
-      system,
-      keys: localOnly ? undefined : keys,
-      localOnly,
-    });
-    return Response.json({ ...result, modelId, localOnly });
-  } catch (e) {
-    console.error("chat error");
-    return Response.json({ error: "generation failed" }, { status: 500 });
+    body = await req.json();
+    wantsArchive = body?.archiveContext === true;
+  } catch {
+    body = {};
   }
+
+  if (auth.status === "invalid" && !wantsArchive) {
+    return internalUnauthorizedResponse();
+  }
+
+  const result = await runChat({
+    body,
+    authorization: req.headers.get("authorization"),
+    caller: auth.status === "ok" ? "internal_service" : "browser",
+  });
+  return Response.json(result.body, { status: result.status });
 }
