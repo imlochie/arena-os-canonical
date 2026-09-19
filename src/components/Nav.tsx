@@ -6,6 +6,7 @@ import { useState } from "react";
 import PrivacyControls from "./PrivacyControls";
 
 const LINKS = [
+  { href: "/college", label: "College", emoji: "🏛️" },
   { href: "/command", label: "Command", emoji: "🧭" },
   { href: "/", label: "Arena", emoji: "⚔️" },
   { href: "/council", label: "Council", emoji: "🧠" },
