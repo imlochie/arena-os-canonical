@@ -60,31 +60,32 @@ inferential status.
 ## Pre-registered tripwires (must be decided BEFORE a lab opens)
 
 **TW-1 — A-layer admission for the preference class.**
-Layer B can only bundle what Layer A concluded. Preferences are,
-deliberately, lineage-incomplete under the lattice (2026-09-19
-verification: provenance proves the statement's identity, not
-behavioural lineage — refusal recorded as the correct void). So today
-there is no preference conclusion for B to bundle. Options:
-1. B admits *identified-but-unconcluded* items as bundle members carrying
-   explicit state `unconcluded` (a new member state; no lattice change —
-   bundle-side vocabulary only);
-2. preference restatement gets a statement-level floor rule (a calculus
-   change — owner-gated);
-3. upstream attaches behavioural lineage to preferences (*rejected*:
-   producer already decided statement provenance is NOT event lineage).
-Stack's lean: **option 1** keeps the enforced split intact (nothing
-upgrades; B carries class-typed members, some of which are
-transport-preserved statements).
+Owner draft resolution (2026-09-19, **pending ratification**):
+**B admits evidence without A-conclusions — as evidence composition,
+not conclusion composition.** The bundle member type is not "certified
+conclusion" but "evidence-class-typed entry": a preference participates
+as itself (`⚠ evidence exists, lineage_incomplete`), alongside
+certified members. Bundle membership does not require, and never
+confers, an A-conclusion. The governing rule the owner attached to it:
+**"a missing A-conclusion does not erase evidence from B, and B
+membership does not automatically license C."** This keeps "not
+currently conclusion-formable" from accidentally meaning "not usable
+anywhere", while the member carries its status adjacently — nothing
+upgrades. Fall-back options (2/3) stand in reserve; the draft favours
+composition-of-evidence over any calculus floor change.
 
 **TW-2 — C as a claim, not a kind-smuggling channel.**
-C needs (i) a conclusion kind (or strict bundle-with-license) carrying
-status `interpretation`-shaped floor + explicit `not_established` list;
-(ii) its refs may include conclusion handles (A/B), which means the
-addressing space must admit conclusion references WITHOUT letting them
-re-enter the lattice as members (one-way); (iii) renderer lane: phrasing
-like "consistent with current interest" must pass the vocabulary guard
-*only inside interpretation claims* — guard stays hard for A/B. All
-owner-gated additions; none required for a Layer A/B lab.
+Owner draft resolution (2026-09-19, **pending ratification**): **C is
+genuinely a new claim kind** — A says what evidence establishes, B how
+established things relate, C what those relationships *may mean* — a
+new proposition, not a prettier bundle. It therefore needs its own:
+claim kind, licensing rule, epistemic ceiling, lineage, scope/window,
+renderer lane. Crucial property the owner attached: **C may say LESS
+than the evidence tempts** — "consistent with current interest" is an
+interpretation; "the user likes X" is a disguised behavioural fact and
+stays forbidden. Nothing in the draft weakens the existing guards; the
+renderer gains a second lane for interpretation-phrasing rather than a
+relaxation of the first.
 
 ## Replay / "archive wrap" product alignment (owner sketch, mapped)
 
@@ -111,19 +112,24 @@ owner-gated additions; none required for a Layer A/B lab.
   didn't earn*. The current machinery already enforces this on single
   claims; the design above extends the same rule to composition.
 
-## Owner decision points (open, enumerated)
+## Owner decision points (updated 2026-09-19)
 
-1. **B's member vocabulary**: does a bundle admit `unconcluded`
-   transport-preserved statements (option 1), or only certified
-   conclusion handles? (affects whether preferences can appear in B at
-   all under current lattice rules)
+Drafts recorded under the tripwires above (TW-1: composition-of-evidence
+with adjacent status — DRAFT pending ratification; TW-2: C as a new
+claim kind with its own licensing/floor/lineage/lane — DRAFT pending
+ratification). What remains open for ratification before any lab opens:
+
+1. **TW-1 ratification**: confirm "bundle member = evidence-class-typed
+   entry, status adjacent, never conferring a conclusion" as the
+   admitted vocabulary (vs certified-handles-only).
 2. **B's identity**: composition structure with per-member floors shown
    adjacently (no own status) vs a conclusion carrying `minStatus` — the
    note's lean is the former (a bundle with ITS OWN floor would dilute
    strong members; adjacency preserves the knife-edge).
-3. **C's status**: new closed status `interpretation` vs reusing
-   `coverage-limited`/`unknown`-style floors with a new kind. (New status
-   is semantically cleaner; new kinds are explicitly owner-gated.)
+3. **TW-2 ratification**: confirm Layer C as a new claim kind with its
+   own licensing rule, epistemic ceiling, lineage, scope/window, and
+   dedicated renderer lane ("C may say less than the evidence tempts" —
+   affect-fact phrasing stays forbidden even inside C).
 4. **Renderer lane for C**: allow-listed interpretation phrasing ("may
    be consistent with…", "signals are consistent with…") that is
    *forbidden* in A/B utterances — the current one-liner guard gains a
@@ -132,6 +138,81 @@ owner-gated additions; none required for a Layer A/B lab.
    (sessions/facts — already producer-side) vs which lines Arena may
    render (verdict lines only, all certified) — so Replay never renders
    from raw values.
+
+## Layer D — preference & intent (owner addition, 2026-09-19, same gating)
+
+The stack extends with a fourth layer that is deliberately **not** a
+reasoning layer:
+
+```
+                 ARCHIVE
+                    │
+             canonical evidence
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+     A. CONCLUSIONS      user-controlled
+          │              D. PREFERENCE /
+          ▼                  INTENT
+     B. COMPOSITION          │
+          │                  │
+          ▼                  │
+     C. INTERPRETATION       │
+          └────────┬─────────┘
+                   ▼
+             SUGGESTION ENGINE
+                   ▼
+             candidates/output
+```
+
+D describes the user's **chosen relationship with the system**, never
+the archive. Two subtypes:
+
+1. **Explicit preference** — statements the user makes ("I want more
+   experimental cinema", "don't show me superhero movies", "prioritize
+   what I haven't seen"). This is the seam already proven at
+   `1a2200b` (`docs/e2e-gate7-preference-provenance.md`): `preferenceId
+   / source / statement / scope / observedAt` — the foundations exist,
+   verified; D consumes them *as control inputs*, not A-layer evidence.
+2. **Preference configuration** — deliberate product controls
+   (discovery priorities, familiarity/novelty sliders, library/
+   outside-library weighting). Not a claim about the user at all:
+   "use this operating preference when generating suggestions."
+
+Two load-bearing properties:
+
+- **D does not wait for A/B/C.** A user can request "weird 90-minute
+  movies tonight" with an empty archive — intent is immediate. That is
+  what makes D a genuinely separate semantic layer rather than another
+  flavour of personalisation evidence.
+- **D can override what behavioural evidence suggests without making
+  the evidence false.** The owner's horror example: A observes horror
+  watched frequently; C provisionally says "possible current interest";
+  D records "deprioritize horror"; suggestion output silences horror
+  without any layer pretending "the user doesn't like horror anymore."
+  Evidence remains true. Interpretation remains provisional. Preference
+  remains user-controlled.
+
+Layer D also makes the recommendation engine's eventual honesty
+boundary explicit: `Given { established things (A), relationships (B),
+interpretations (C), currently selected controls (D) } → candidates`.
+Suggestions are authored by all four layers TOGETHER and answerable to
+each of them distinctly. Nothing downstream may launder a behavioural
+signal into a recommendation unpunished — every layer it passed through
+stays named.
+
+## Institutional lessons (running)
+
+1. **2026-09-19 — tree-integrity event.** Never trust branch continuity
+   from the worktree: verify tree AND ancestry before declaring lineage
+   (`git rev-parse HEAD^{tree}`, `git merge-base --is-ancestor`). The
+   session caught an empty-tree root commit, recovered read-only from
+   the single intact object, reconciled byte-identical against the
+   pushed lineage, merged non-destructively, and re-ran the full wall
+   on the merged tree before declaring it whole. No force-push, no
+   main, outsiders parked in the stash. `c5d0ba0` remains the verified
+   provenance boundary; `9ece4c3` is reconciled lineage, not
+   replacement history.
 
 ## Out of scope here (standing constraints)
 
