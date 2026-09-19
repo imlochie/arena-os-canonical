@@ -379,21 +379,44 @@ adversarial exam for the future seam is designed in
 
 The architecture is now treated as **gated**, not merely documented.
 
-**Arena-side freeze:** no seventh read, no adapter implementation, no
-normalizer changes, no "temporary" use of `personalAffinity` (or any
-Gen-1 field), no taste score. The next meaningful work is upstream in
-Archive Assistant — the evidence substrate must become real before Arena
-receives another byte of semantic authority.
+**Arena-side freeze (updated 2026-09-19, post re-earn):** the evidence
+substrate is now real and tree-verified, so the freeze narrows — Gate 6
+is the **only** permitted work, executed exactly to the owner-amended
+acceptance surface below. Still frozen: any "temporary" use of
+`personalAffinity` (or any Gen-1 field), any normalizer semantics beyond
+faithful preservation, any taste score, any behavioural reasoning (Gate
+7 stays terminal). The dependency rule is unchanged — Arena receives
+semantic authority only over what Archive Assistant has already made
+certain.
 
 | Gate | State |
 |---|---|
 | 1 · Gen-1 / Gen-2 semantics reconciled | ✅ this document |
 | 2 · epistemic adversarial lab specified | ✅ lab-002, phase 0 |
-| 3 · behavioural usage layer authoritative | ✗ **anticipatory** — the gate-5 report claimed done; verified 2026-09-19 against the GitHub source of truth (owner + independent sweep): **not landed** |
-| 4 · upstream provenance annotation (D2 applied) | ✗ **anticipatory** — claimed with gate 5, likewise absent from git |
-| 5 · seventh read (`GET /api/assistant/personalisation-context`) | ✗ **anticipatory — retracted (owner, 2026-09-19).** Directive relayed for the upstream session: recover the actual implementation from the current working session and push it to `imlochie/SomeSafePortablesoftware` on the intended branch/base. Arena does **not** start Gate 6. Lesson of record: a claimed artifact that is not in the GitHub source of truth does not exist for engineering purposes — the sweep (all 13 refs, no endpoint/schema hits) was the verification that mattered |
-| 6 · Arena evidence adapter | 🔒 brief received — strictly blocked until the Gate-5 commit is **verifiably visible in GitHub** and Arena can fetch the real OpenAPI. D4 discipline unchanged: generate from it, never hand-author a schema |
-| 7 · behavioural reasoning | terminal gate |
+| 3 · behavioural usage layer authoritative | ⚠️ **landed in part (owner), verified present 2026-09-19:** `0a971dd` ships the event substrate as SQLite (`behavioral_signal`, `explicit_preference`, `analytics_coverage` tables; Plex-derived events with `scope_identity`/ownership resolution), scope-aware derivation service (`behavioral-intelligence.ts`, 137 LOC) and analytics tests. Deliberate scope: ingestion is **not** exposed as a mutation endpoint; plugin-grade/provider-trimmed history classes remain open. Not yet the full gen-2 usage layer of the 01a0b5d9 direction doc |
+| 4 · upstream provenance annotation (D2 applied) | ⚠️ **per owner** — the new Gen-2 spec carries its own epistemic/provenance classes end-to-end, and `docs/arena-generation-lineage.md` now records Gen-1/Gen-2 as non-interchangeable contracts upstream; the D2 annotation of Gen-1's OpenAPI descriptions on `arena/01a0a0d9` itself remains to be applied |
+| 5 · seventh read (`GET /api/assistant/personalisation-context`) | ✅ **RE-EARNED 2026-09-19 — verified against the tree, not the report** (evidence below): ref `arena/01a0b5e9-somesafeportablesoftware`, tip `0a971dd` (off `main @ 0bea165`, 2026-09-19 05:44 UTC, "feat: publish archive personalisation evidence contract") |
+| 6 · Arena evidence adapter | 🔒 **READY** — acceptance surface amended by owner 2026-09-19 (below); implementation may proceed against the verified `0a971dd` contract, never against remembered architecture or the retired Gen-1 bridge. D4 discipline unchanged: generate from the real OpenAPI, never hand-author |
+| 7 · behavioural reasoning | terminal gate — "Gate 6 preserves. Gate 7 thinks." |
+
+### Gate-5 re-earn: verification record (first execution of the protocol)
+
+Named ref → fetched → tree inspected, 2026-09-19. Every box passed:
+
+- **Ref reachable:** `arena/01a0b5e9` tip = `0a971dd24ea73c21d5e54bda4ac486d394856702`, parent `main @ 0bea165`; 52 files, +3,218; visible in a fresh mirror clone of the GitHub remote.
+- **Endpoint exists:** `GET /assistant/personalisation-context` in `routes/analytics.ts` (registered via `routes/index.ts`) and in `lib/api-spec/openapi.yaml` (`getArchivePersonalisationContext`, ~line 1421) — "Read bounded behavioural context for Arena".
+- **Schemas exist:** `PersonalisationContext` requires all eight owner-named arrays — `facts`, `observedSignals`, `temporalSignals`, `collectionFacts`, `interpretations`, `uncertainties`, `explicitPreferences`, `constraints` (plus `domain`).
+- **Six classes discriminated:** `evidenceClass` enums — `fact`, `observed_signal`, `temporal_signal`, `collection_fact`, `interpretation`, `uncertainty` — with per-class epistemic enums (`observed|derived|coverage-limited|unknown` on facts; `coverage-limited|unknown` on uncertainties; etc.). Explicit preferences ride separately, as the endpoint description states ("Six-class evidence context and separate explicit preferences").
+- **Full provenance shape:** `BehavioralSignal` requires `signalId, profile, signalType, subjectIdentity, value, epistemicStatus, scopeIdentity, coverage, provenance, derivedAt`; `SignalProvenance` requires `derivedFrom, eventIds, providerEventIds, batchIds, scopeIdentity` — the brief's provider/event/batch lineage under those exact names (`ingestionBatch` as a literal appears nowhere; the lineage is `batchIds` ← `ingestion_id`).
+- **OpenAPI is real; generated contract derives from it:** spec is source of truth; `lib/api-zod` + `lib/api-client-react` regenerated in the same commit; `validate-api-contract.ts` now normalizes trailing whitespace so checked-in artifacts must match regeneration byte-for-byte (anti-drift enforcement tightened in the same commit).
+- **Boundary discipline held upstream:** response zod-validated server-side at the boundary; owner identity from Clerk auth / server local config — never from request input; the surface is read-only, commented: *"Ingestion is deliberately not exposed as a mutation endpoint."*
+- **Companion artifacts landed:** `docs/arena-personalisation-input-adapter-contract.md` (826 lines, 22 sections — the Gate-6 target contract, incl. §20 "Arena may claim / may not claim from this input alone"), `docs/personal-media-recommendation-contract.md` (previously in no ref), `docs/arena-generation-lineage.md` (D3 recorded upstream), `docs/labs/lab-002-epistemic-boundary.md` (upstream adopted the lab protocol), behavioural/analytics foundation docs, and `archive-analytics.test.ts` coverage.
+
+### Gate-6 acceptance surface (owner-amended, 2026-09-19)
+
+The adapter must preserve: `facts[]`, `observedSignals[]`, `temporalSignals[]`, `collectionFacts[]`, `interpretations[]`, `uncertainties[]`, `explicitPreferences[]`, `constraints[]` — and, for applicable evidence: `signalId`, `epistemicStatus`, `scopeIdentity`, `coverage`, `provenance`, `derivedAt`. It must preserve the distinctions: **observed ≠ interpreted · owned ≠ wanted · watched ≠ liked · recent ≠ preferred · incomplete ≠ absent**. The adapter is deliberately boring: Gate 6 proves **transport and epistemic preservation, not intelligence** — the moment it makes the archive *smarter*, it has wandered into Gate 7.
+
+Pipeline: `ARCHIVE ASSISTANT (authoritative evidence, owner-scoped, server-to-server) → ARENA CLIENT (runtime validation) → ARCHIVE CONTEXT (faithful normalization) → ARENA REASONING CONTEXT → STOP`.
 
 **Re-verification protocol (owner, 2026-09-19):** the retraction of
 gates 3–5 is a **provenance verdict, not necessarily an implementation
