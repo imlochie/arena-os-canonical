@@ -10,6 +10,7 @@ import { getActiveVersion, snapshotCourse } from "@/lib/college/curriculum";
 import { brisbaneToday } from "@/lib/college/time";
 import { resolveProtocol, initialRoster } from "@/lib/college/protocol";
 import { validateRoster, resolveFacultyForContext, recordSessionMembers } from "@/lib/college/members";
+import * as ledger from "@/lib/college/ledger";
 import {
   coordinationTrace,
   currentAttention,
@@ -162,6 +163,30 @@ export async function POST(req: Request) {
       );
     }
 
+    // THE LEDGER — the institutional timeline of what actually happened.
+    await ledger.record({
+      eventType: "class_opened",
+      summary: `Class opened: ${session.title}`,
+      detail: { sessionKind, weekIndex, protocol: protocol.label },
+      sessionId: session.id,
+      courseId,
+      slotId: body.slotId ? String(body.slotId) : null,
+      curriculumVersionId: session.curriculumVersionId ?? null,
+      actor: "founder",
+    });
+    for (const m of servingMembers) {
+      await ledger.record({
+        eventType: "faculty_activated",
+        summary: `${m.member.name} serving as ${m.member.positionKey}.`,
+        detail: { version: m.member.version, scope: m.scope, participation: m.participation },
+        sessionId: session.id,
+        courseId,
+        memberId: m.member.id,
+        positionKey: m.member.positionKey,
+        actor: "system",
+      });
+    }
+
     await enterPhase({
       sessionId: session.id,
       phaseKey: "orientation",
@@ -175,6 +200,8 @@ export async function POST(req: Request) {
       payload: session.objective || "(no objective recorded)",
       emittedBy: "system",
       protocol,
+      courseId,
+      sessionKind,
     });
 
     // Context that genuinely changes attention is an event, not decoration.
@@ -185,6 +212,8 @@ export async function POST(req: Request) {
         payload: "An open deviation exists in College State.",
         emittedBy: "system",
         protocol,
+        courseId,
+        sessionKind,
       });
     }
 
@@ -274,6 +303,8 @@ export async function POST(req: Request) {
       payload: "Teaching complete; evaluating record-worthiness.",
       emittedBy: "system",
       protocol,
+      courseId,
+      sessionKind,
     });
 
     // 9) HANDOFF ACROSS THE BRANCH BOUNDARY — explicit and auditable
@@ -322,6 +353,32 @@ export async function POST(req: Request) {
       .where(eq(collegeSessions.id, session.id))
       .returning();
 
+    // Record which faculty actually did what, then close the session in the
+    // ledger. These are observations only — no interpretation, no scoring.
+    for (const a of finalAttentionForLedger(await currentAttention(session.id))) {
+      await ledger.record({
+        eventType: a.spoke ? "faculty_activated" : "faculty_watching",
+        summary: `${a.name} ended the session ${a.state}${a.spoke ? " and contributed" : " without speaking"}.`,
+        detail: { state: a.state, spoke: a.spoke, reason: a.reason },
+        sessionId: session.id,
+        courseId,
+        positionKey: a.positionKey,
+        actor: "system",
+      });
+    }
+    await ledger.record({
+      eventType: "session_closed",
+      summary: `Session closed: ${session.title}`,
+      detail: {
+        facultyThatSpoke: runs.map((r) => r.positionKey),
+        recordWorthy: worthiness.recordWorthy,
+      },
+      sessionId: session.id,
+      courseId,
+      curriculumVersionId: session.curriculumVersionId ?? null,
+      actor: "system",
+    });
+
     const trace = await coordinationTrace(session.id);
     const finalAttention = await currentAttention(session.id);
 
@@ -367,4 +424,14 @@ export async function POST(req: Request) {
       { status: 500 }
     );
   }
+}
+
+
+/** Attention records worth writing to the institutional timeline. */
+function finalAttentionForLedger(
+  items: Array<{ positionKey: string; name: string; state: string; reason: string; spoke: boolean }>
+) {
+  // Dormant positions that never engaged are not worth a ledger line — the
+  // ledger is a timeline of what happened, not a roll call of what didn't.
+  return items.filter((i) => i.state !== "dormant" || i.spoke);
 }

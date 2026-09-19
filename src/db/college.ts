@@ -831,6 +831,21 @@ export const collegeFacultyMembers = pgTable("college_faculty_members", {
   // Activation overrides (JSON string[]) — event types; empty = policy default.
   activatesOnEvents: text("activates_on_events").notNull().default("[]"),
   activatesOnPhases: text("activates_on_phases").notNull().default("[]"),
+  // LAYER 5 — the rest of the attention vocabulary, so a configured member
+  // actually governs runtime. Empty means "fall back to the position policy",
+  // which is a genuine absence of configuration, not a silent override.
+  watchFor: text("watch_for").notNull().default("[]"),
+  staySilentOn: text("stay_silent_on").notNull().default("[]"),
+  escalateOn: text("escalate_on").notNull().default("[]"),
+  deferMatters: text("defer_matters").notNull().default("[]"), // [{matter,to}]
+  stopAttendingOn: text("stop_attending_on").notNull().default("[]"),
+  // none|request|material|integrity — empty string = use position policy.
+  interruptionAuthority: text("interruption_authority").notNull().default(""),
+  // dormant|watching|attentive — state when a session opens. Empty = policy.
+  defaultState: text("default_state").notNull().default(""),
+  // Whether this member may retain and retrieve faculty memory.
+  memoryEnabled: boolean("memory_enabled").notNull().default(true),
+  memoryScopeLimit: text("memory_scope_limit").notNull().default("course"),
   // Which preset this began life as, for provenance only.
   presetKey: text("preset_key").notNull().default(""),
   notes: text("notes").notNull().default(""),
@@ -1109,3 +1124,135 @@ export type CollegeTimetableInstanceRow = typeof collegeTimetableInstances.$infe
 export type CollegeIntentRow = typeof collegeIntents.$inferSelect;
 export type CollegeAuditRow = typeof collegeAudits.$inferSelect;
 export type CollegeAuditThresholdRow = typeof collegeAuditThresholds.$inferSelect;
+
+// ===========================================================================
+// LAYER 5 — RUNTIME INTEGRATION
+// Configuration must GOVERN runtime, not merely describe it.
+// ===========================================================================
+
+// The College Event Ledger.
+// Not a copy of every table — a structured institutional timeline of what
+// actually happened, in order. This is the connective tissue between the
+// timetable, the session, real-world context and the audit.
+//
+// RAW OBSERVATION ONLY. Interpretation lives in the audit, never here.
+export const collegeEventLedger = pgTable("college_event_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Brisbane date + time so the ledger reads as an institutional day.
+  date: text("date").notNull(), // YYYY-MM-DD
+  time: text("time").notNull().default(""), // HH:MM
+  occurredAt: timestamp("occurred_at").defaultNow(),
+  sequence: integer("sequence").notNull().default(0),
+  // timetable_slot_active | class_opened | faculty_activated | faculty_deferred |
+  // faculty_consulted | observer_noted | real_world_interruption |
+  // class_shortened | class_completed | session_closed | timetable_override |
+  // curriculum_change | goal_addressed | objective_demonstrated | decision_recorded
+  eventType: text("event_type").notNull(),
+  // What the event is about, in plain institutional language.
+  summary: text("summary").notNull().default(""),
+  // Structured detail (JSON) for machine consumption by the audit.
+  detail: text("detail").notNull().default("{}"),
+  // Links — all optional; the ledger never requires a full object graph.
+  sessionId: uuid("session_id"),
+  slotId: uuid("slot_id"),
+  courseId: uuid("course_id"),
+  memberId: uuid("member_id"),
+  positionKey: text("position_key").notNull().default(""),
+  // Versions in force AT THE TIME, so the audit never compares across silently
+  // changed conditions.
+  curriculumVersionId: uuid("curriculum_version_id"),
+  timetableVersionId: uuid("timetable_version_id"),
+  // student | faculty:<key> | system | founder
+  actor: text("actor").notNull().default("system"),
+  // informational | low | medium | high | critical
+  severity: text("severity").notNull().default("informational"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Notifications are DERIVED from ledger events and are suppressible.
+// A single missed class is informational. Repetition may become a signal.
+export const collegeNotifications = pgTable("college_notifications", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Stable identity so the same condition is not re-notified endlessly.
+  notificationKey: text("notification_key").notNull(),
+  severity: text("severity").notNull().default("informational"),
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""),
+  sourceEventId: uuid("source_event_id"),
+  scopeType: text("scope_type").notNull().default(""),
+  scopeId: uuid("scope_id"),
+  occurrenceCount: integer("occurrence_count").notNull().default(1),
+  // pending | shown | acknowledged | suppressed | settled
+  status: text("status").notNull().default("pending"),
+  // When a KEEP AS IS or acknowledgement silences this until a date.
+  suppressedUntil: text("suppressed_until").notNull().default(""),
+  suppressionReason: text("suppression_reason").notNull().default(""),
+  firstSeenAt: timestamp("first_seen_at").defaultNow(),
+  lastSeenAt: timestamp("last_seen_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Per-College notification policy. Arena must not assume what deserves
+// interruption.
+export const collegeNotificationPolicy = pgTable("college_notification_policy", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  eventType: text("event_type").notNull(),
+  severity: text("severity").notNull().default("informational"),
+  // How many occurrences before this is worth surfacing at all.
+  occurrencesBeforeSurfacing: integer("occurrences_before_surfacing").notNull().default(1),
+  // Whether it may ever interrupt, or only appear in a digest.
+  notify: boolean("notify").notNull().default(false),
+  reason: text("reason").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// A resolved attention decision, recorded per event so the founder can see
+// WHY a member did or did not act, and WHICH configuration layer decided it.
+export const collegeAttentionDecisions = pgTable("college_attention_decisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  eventId: uuid("event_id"),
+  eventType: text("event_type").notNull().default(""),
+  positionKey: text("position_key").notNull(),
+  memberId: uuid("member_id"),
+  memberName: text("member_name").notNull().default(""),
+  // dormant|watching|attentive|consulting|speaking|deferred|escalated
+  resolvedState: text("resolved_state").notNull(),
+  // notice | activate | consult | defer | escalate | speak | ignore
+  action: text("action").notNull().default("ignore"),
+  reason: text("reason").notNull().default(""),
+  // WHICH layer decided: session|course|position|member|institutional_default
+  decidedBy: text("decided_by").notNull().default("institutional_default"),
+  // The full provenance trail (JSON) for the runtime inspector.
+  provenance: text("provenance").notNull().default("[]"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// An explicit institutional decision that settles a source conflict.
+// The original disagreement is NEVER overwritten — it stays in
+// college_reconciliations. This records the position the College has taken.
+export const collegeInstitutionalDecisions = pgTable("college_institutional_decisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // What the decision is about.
+  subject: text("subject").notNull(),
+  subjectKey: text("subject_key").notNull().default(""),
+  conflictKey: text("conflict_key").notNull().default(""),
+  // adopt_a | adopt_b | new_position | leave_unresolved
+  decisionType: text("decision_type").notNull(),
+  // The position the College now holds.
+  statement: text("statement").notNull().default(""),
+  // What was NOT chosen, preserved deliberately.
+  notChosen: text("not_chosen").notNull().default(""),
+  rationale: text("rationale").notNull().default(""),
+  decidedBy: text("decided_by").notNull().default("founder"),
+  effectiveFrom: text("effective_from").notNull().default(""),
+  // active | superseded
+  status: text("status").notNull().default("active"),
+  supersededBy: uuid("superseded_by"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type CollegeEventLedgerRow = typeof collegeEventLedger.$inferSelect;
+export type CollegeNotificationRow = typeof collegeNotifications.$inferSelect;
+export type CollegeAttentionDecisionRow = typeof collegeAttentionDecisions.$inferSelect;
+export type CollegeInstitutionalDecisionRow = typeof collegeInstitutionalDecisions.$inferSelect;

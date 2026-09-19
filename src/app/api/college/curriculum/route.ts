@@ -3,19 +3,22 @@ import {
   collegeCourseWeeks,
   collegeCourses,
   collegeCurriculumChanges,
+  collegeCurriculumEntries,
   collegeCurriculumVersions,
 } from "@/db/college";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import {
   addCourseToCurriculum,
   createVersion,
   ensureInitialVersion,
+  getActiveVersion,
   getCurrentCurriculum,
   getCurriculumHealth,
   logChange,
   removeCourseFromCurriculum,
   snapshotCourse,
 } from "@/lib/college/curriculum";
+import { detectTimetableConflicts } from "@/lib/college/timetable";
 
 export const dynamic = "force-dynamic";
 
@@ -136,6 +139,125 @@ export async function POST(req: Request) {
         initiatedBy: body.initiatedBy,
       });
       return Response.json({ course }, { status: 201 });
+    }
+
+    // ---- LAYER 5: archive / reactivate / reorder / adopt a version --------
+    if (action === "set_course_status") {
+      const courseId = String(body.courseId ?? "");
+      const status = String(body.status ?? "");
+      const reason = String(body.reason ?? "").trim();
+      if (!courseId || !status) {
+        return Response.json({ error: "courseId and status required" }, { status: 400 });
+      }
+      if (!reason) {
+        return Response.json(
+          { error: "reason required — a course status change is a curriculum decision" },
+          { status: 400 }
+        );
+      }
+      const [before] = await db
+        .select()
+        .from(collegeCourses)
+        .where(eq(collegeCourses.id, courseId))
+        .limit(1);
+      if (!before) return Response.json({ error: "course not found" }, { status: 404 });
+
+      // Snapshot BEFORE the change so historical sessions keep what existed.
+      await snapshotCourse(courseId, null, reason);
+      const [row] = await db
+        .update(collegeCourses)
+        .set({ status })
+        .where(eq(collegeCourses.id, courseId))
+        .returning();
+
+      await logChange({
+        courseId,
+        changeType: status === "archived" ? "course_archived" : "course_status_changed",
+        significance: "institutional_decision",
+        field: "status",
+        previousValue: before.status,
+        newValue: status,
+        reason,
+        initiatedBy: body.initiatedBy ?? "founder",
+      });
+
+      // Surface, never repair: a timetable slot still pointing here is a
+      // conflict for the founder to resolve, not something to silently delete.
+      //
+      // Note the filter on course STATUS. Curriculum membership and course
+      // status are different things — a course can still be listed in the
+      // active version while being archived, and it is precisely that gap the
+      // founder needs to see.
+      const current = await getCurrentCurriculum();
+      const stillActive = current.courses
+        .filter((c) => String((c as { status?: string }).status ?? "active") === "active")
+        .map((c) => String((c as { id: string }).id));
+      const conflicts = await detectTimetableConflicts(stillActive);
+
+      return Response.json({
+        course: row,
+        timetableConflicts: conflicts,
+        note:
+          status === "archived"
+            ? "Course archived. Past sessions keep the course as it existed then. Any timetable slot still referencing it is reported above, not deleted."
+            : "Course status updated.",
+      });
+    }
+
+    if (action === "reorder") {
+      const order: string[] = Array.isArray(body.order) ? body.order.map(String) : [];
+      const reason = String(body.reason ?? "").trim();
+      if (!order.length) return Response.json({ error: "order required" }, { status: 400 });
+      if (!reason) return Response.json({ error: "reason required" }, { status: 400 });
+
+      const version = await getActiveVersion();
+      if (!version) return Response.json({ error: "no active curriculum version" }, { status: 400 });
+
+      for (let i = 0; i < order.length; i++) {
+        await db
+          .update(collegeCurriculumEntries)
+          .set({ position: i + 1 })
+          .where(
+            and(
+              eq(collegeCurriculumEntries.versionId, version.id),
+              eq(collegeCurriculumEntries.courseId, order[i])
+            )
+          );
+      }
+      await logChange({
+        courseId: null,
+        changeType: "curriculum_reordered",
+        significance: "metadata_edit",
+        field: "sequence",
+        previousValue: "",
+        newValue: order.join(","),
+        reason,
+        initiatedBy: body.initiatedBy ?? "founder",
+      });
+      return Response.json({ ok: true, order, note: "Order updated for the active version." });
+    }
+
+    if (action === "adopt_version") {
+      const versionId = String(body.versionId ?? "");
+      const reason = String(body.reason ?? "").trim();
+      if (!versionId || !reason) {
+        return Response.json({ error: "versionId and reason required" }, { status: 400 });
+      }
+      await db
+        .update(collegeCurriculumVersions)
+        .set({ status: "superseded" })
+        .where(eq(collegeCurriculumVersions.status, "active"));
+      const [row] = await db
+        .update(collegeCurriculumVersions)
+        .set({ status: "active" })
+        .where(eq(collegeCurriculumVersions.id, versionId))
+        .returning();
+      if (!row) return Response.json({ error: "version not found" }, { status: 404 });
+
+      return Response.json({
+        version: row,
+        note: "Adopted as the current curriculum. Previous versions are superseded, not deleted — historical sessions remain pinned to the version that applied when they ran.",
+      });
     }
 
     if (action === "duplicate_course") {

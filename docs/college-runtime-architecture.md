@@ -654,3 +654,136 @@ Observer/Critic/Researcher still working internally.
 5. No live model is reachable in this sandbox; all faculty output shown during
    verification came from the `local:text` fallback and must not be read as real
    model behaviour.
+
+---
+
+# LAYER 5 — RUNTIME INTEGRATION
+
+Layer 4 made the College configurable. Layer 5 makes the configuration
+**govern**. The gap it closes was real and specific: a founder could configure a
+faculty member in the Builder, and the runtime would quietly ignore it and use a
+hardcoded policy instead.
+
+Five tables were added (56 `pgTable` total; 55 College + 18 legacy untouched).
+
+## A. Configuration is now authoritative
+
+`src/lib/college/attention-resolver.ts` replaces the old
+`getAttentionPolicy(positionKey)` lookup. It composes an **effective policy**
+from the configuration layers and records which layer supplied each field.
+
+Precedence: `session` → `course` → `position` → `member` → `institutional_default`.
+
+Note that `position` sits ABOVE `member` deliberately. A member may **narrow**
+what it does — fewer triggers, lower interruption authority, a smaller
+consultation network — but may never widen beyond the position's ceiling.
+Authority flows from the position; preference flows from the member. Attempts to
+widen are recorded in the provenance with the reason they were refused.
+
+A value counts as configured only when genuinely set. An empty list means "not
+configured" and the next layer legitimately applies — an empty configuration is
+never read as an instruction to do nothing.
+
+Every routing decision is written to `college_attention_decisions` with
+`decided_by`, so the founder can always answer "why did the Critic stay quiet?".
+
+**Proof:** with the Critic configured to `activatesOnEvents: [contradiction_detected]`,
+a contradiction produced `attentive / activate / by=member`. Changing only the
+configuration to `[misconception_detected]` and sending the *identical* input
+produced `dormant / ignore`, with the reason
+`"contradiction_detected" is outside The Devil's Advocate's configured attention.`
+
+## B. Attention is a runtime state
+
+Seven states: dormant, watching, attentive, consulting, speaking, deferred,
+escalated. `watching` is a real, common, successful outcome — a mandatory
+Observer may watch an entire class without speaking once.
+
+Evaluation order is deliberate: stop-attending → defer → escalate → activate →
+silence → watch → dormant. Deferral is treated as **successful coordination**,
+not failure.
+
+Speaking order is resolved by role, never by which model call returned first.
+The Instructor is ranked last so it speaks to the student after the internal
+positions have fed in.
+
+## C. The College Event Ledger
+
+`college_event_ledger` is the connective tissue between the timetable, the
+session, real-world context and the audit. Without it the audit had to
+reconstruct history by joining scattered tables and inferring order.
+
+Two rules keep it honest: it records **observations, never interpretations**
+("class shortened" belongs here; "Thursday is inefficient" does not), and it is
+**append-only**. A ledger write failure never propagates into a class — a
+dropped observation is bad, a crashed lesson is worse.
+
+The audit now reads ledger events for contextual factors, and `comparePeriods`
+uses the ledger to detect whether the curriculum version, timetable version,
+faculty configuration or deviation count differed between two periods.
+
+## D. Notifications are quiet by default
+
+Derived from ledger events, never emitted directly. The default posture is
+silence: a single missed class has `occurrences: 99, notify: false` — it is
+recorded and never surfaced. Only `unexplained_deviation` (3 occurrences),
+`mandatory_faculty_missing` and `institutional_conflict` surface at all, and
+suppression is honoured against `suppressedUntil`.
+
+## E. Faculty memory
+
+Four kinds of knowledge stay separate: SOURCE MATERIAL, INSTITUTIONAL MEMORY,
+SESSION RECORD and FACULTY MEMORY.
+
+Writing faculty memory is cheap; leaving it is not. **Two independent gates**
+apply, and conflating them was a real bug caught during testing: the existing
+`canPromote` governs climbing the institutional ladder
+(observation → interpretation → hypothesis → established) and permits a single
+observation. That is the wrong question for *crossing into* institutional memory
+at all. `FACULTY_MEMORY_CROSSING_THRESHOLD = 2` now guards the boundary
+separately — one teacher noticing one thing once is precisely what must not
+become institutional truth. Past the crossing, entries land at the bottom rung
+and climb under the usual rules.
+
+Recalled memory is always rendered labelled:
+`[FACULTY MEMORY | source: … | confidence: seen twice]`, with an explicit
+instruction that it is a hint about what to try, never evidence about what is
+true. Members may be configured with `memoryEnabled: false` or a scope limit; a
+memory claiming wider scope than its member permits is refused.
+
+## F. Institutional decisions
+
+`POST /api/college/decisions` settles a conflict without erasing it. The
+long-standing Week 1 vs Week 11 disagreement is now decidable: adopting the
+calendar records `statement: "Week 11"` and `notChosen: "institutional_state: Week 1"`,
+while `college_reconciliations` still reports both original claims verbatim.
+`leave_unresolved` is offered as a legitimate choice.
+
+## G. Curriculum editor completed
+
+Added `set_course_status` (archive/reactivate), `reorder` and `adopt_version`.
+
+A second real bug surfaced here: `getCurrentCurriculum()` returns curriculum
+*membership* and ignores course `status`, so an archived course still counted as
+active and its orphaned timetable slot went unreported. Both call sites now
+filter on status. Verified end to end: archiving PSY110 surfaced
+`slot_without_active_course` for the Tuesday Digital Lab slot, reactivating
+cleared it, and the slot itself was never modified.
+
+## H. Tests
+
+`scripts/college-layer5-tests.mjs` — 20 end-to-end assertions against the real
+HTTP API and database, one per numbered requirement. **20/20 passing**, and
+idempotent across repeated runs (test 9 generates a unique probe each run so
+accumulated observations cannot silently satisfy the gate under test).
+
+## Layer 5 gaps
+
+1. Coordination still runs through the protocol-level window; per-member
+   coordination configuration is resolved and recorded but the consultation
+   sequence itself is not yet member-driven.
+2. `buildContextPacket` §13 narrowing is improved by attention resolution but
+   still sends a broadly-scoped packet rather than a per-member minimal one.
+3. Signal detection remains regex-based (`epistemicStatus: "signal"`).
+4. No live model is reachable in this sandbox; all faculty output during
+   verification came from the `local:text` fallback.

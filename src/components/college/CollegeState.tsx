@@ -212,6 +212,12 @@ export default function CollegeStateView() {
                 Faculty builder →
               </a>
               <a
+                href="/college/day"
+                className="inline-block rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] font-semibold text-amber-200 hover:bg-amber-500/20"
+              >
+                Today →
+              </a>
+              <a
                 href="/college/timetable"
                 className="inline-block rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] font-semibold text-amber-200 hover:bg-amber-500/20"
               >

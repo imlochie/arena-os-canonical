@@ -180,6 +180,15 @@ export async function POST(req: Request) {
       canInterrupt: body.canInterrupt,
       activatesOnEvents: body.activatesOnEvents,
       activatesOnPhases: body.activatesOnPhases,
+      watchFor: body.watchFor,
+      staySilentOn: body.staySilentOn,
+      escalateOn: body.escalateOn,
+      deferMatters: body.deferMatters,
+      stopAttendingOn: body.stopAttendingOn,
+      interruptionAuthority: body.interruptionAuthority,
+      defaultState: body.defaultState,
+      memoryEnabled: body.memoryEnabled,
+      memoryScopeLimit: body.memoryScopeLimit,
       notes: body.notes,
     });
     if (!result.ok) return Response.json({ error: result.error }, { status: 400 });

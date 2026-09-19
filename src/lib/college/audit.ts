@@ -35,6 +35,7 @@ import {
 } from "@/db/college";
 import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { brisbaneToday, addDays, daysBetween } from "./time";
+import * as ledger from "./ledger";
 
 // ---------------------------------------------------------------------------
 // Dimensions — evidence categories, deliberately NOT weighted into a score
@@ -297,9 +298,20 @@ export async function auditSlot(
     },
   ];
 
-  const contextualFactors = signals
-    .slice(0, 8)
-    .map((s) => `${s.signalType}: ${s.content}`.slice(0, 200));
+  // Real-world context comes from two places: declared context signals, and
+  // the institutional timeline. The ledger is the more reliable of the two
+  // because it was written as things happened, not reconstructed afterwards.
+  const ledgerContext = await ledger.range({
+    from: periodStart,
+    to: periodEnd,
+    slotId,
+    eventTypes: ["real_world_interruption", "class_shortened", "timetable_override"],
+  });
+
+  const contextualFactors = [
+    ...signals.slice(0, 8).map((s) => `${s.signalType}: ${s.content}`.slice(0, 200)),
+    ...ledgerContext.slice(0, 8).map((e: { date: string; eventType: string; summary: string }) => `${e.date} ${e.eventType}: ${e.summary}`.slice(0, 200)),
+  ];
 
   // ---- Status + recommendation -------------------------------------------
   let auditStatus: AuditStatus = "insufficient_evidence";
@@ -548,6 +560,32 @@ export async function comparePeriods(input: {
     );
   }
 
+  // Versions in force. If the curriculum, timetable or faculty configuration
+  // changed between the periods, the two are not the same experiment — and the
+  // ledger is what lets us know that without guessing.
+  const versionsA = await periodVersions(input.aStart, input.aEnd);
+  const versionsB = await periodVersions(input.bStart, input.bEnd);
+  for (const [label, va, vb] of [
+    ["curriculum version", versionsA.curriculum, versionsB.curriculum],
+    ["timetable version", versionsA.timetable, versionsB.timetable],
+  ] as const) {
+    if (va && vb && va !== vb) {
+      conditionsDiffer.push(
+        `The ${label} changed between the periods. Behaviour under one version is not directly comparable to another.`
+      );
+    }
+  }
+  if (versionsA.facultyChanged || versionsB.facultyChanged) {
+    conditionsDiffer.push(
+      "Faculty configuration changed during one of the periods. Who was teaching, and how, was not held constant."
+    );
+  }
+  if (versionsA.majorDeviations !== versionsB.majorDeviations) {
+    conditionsDiffer.push(
+      `Different numbers of recorded deviations: ${versionsA.majorDeviations} vs ${versionsB.majorDeviations}.`
+    );
+  }
+
   const comparable = conditionsDiffer.length === 0;
   const anyChange = rows.some((r) => r.changed);
 
@@ -662,4 +700,27 @@ export async function auditHistory(scopeType?: string, scopeId?: string) {
       .orderBy(desc(collegeAudits.createdAt));
   }
   return db.select().from(collegeAudits).orderBy(desc(collegeAudits.createdAt)).limit(50);
+}
+
+
+/**
+ * What was actually in force during a period, according to the ledger.
+ * Used to establish whether two periods are genuinely comparable.
+ */
+async function periodVersions(from: string, to: string) {
+  const entries = await ledger.range({ from, to });
+  const curriculum = new Set(
+    entries.map((e) => e.curriculumVersionId).filter(Boolean) as string[]
+  );
+  const timetable = new Set(
+    entries.map((e) => e.timetableVersionId).filter(Boolean) as string[]
+  );
+  return {
+    curriculum: curriculum.size === 1 ? [...curriculum][0] : curriculum.size ? "mixed" : null,
+    timetable: timetable.size === 1 ? [...timetable][0] : timetable.size ? "mixed" : null,
+    facultyChanged: entries.some((e) => e.eventType === "faculty_configuration_changed"),
+    majorDeviations: entries.filter(
+      (e) => e.eventType === "real_world_interruption" || e.eventType === "class_shortened"
+    ).length,
+  };
 }

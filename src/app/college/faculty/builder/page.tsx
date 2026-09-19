@@ -24,6 +24,15 @@ interface Member {
   missingSeverity: string;
   activatesOnEvents: string;
   activatesOnPhases: string;
+  watchFor: string;
+  staySilentOn: string;
+  escalateOn: string;
+  deferMatters: string;
+  stopAttendingOn: string;
+  interruptionAuthority: string;
+  defaultState: string;
+  memoryEnabled: boolean;
+  memoryScopeLimit: string;
   canConsult: string;
   canHandOffTo: string;
   canInterrupt: boolean;
@@ -63,6 +72,48 @@ const parse = (s: string): string[] => {
     return [];
   }
 };
+
+const SESSION_EVENTS = [
+  "lesson_started",
+  "student_response_received",
+  "misconception_detected",
+  "contradiction_detected",
+  "factual_uncertainty_detected",
+  "research_required",
+  "learning_evidence_observed",
+  "goal_conflict_detected",
+  "timetable_deviation_detected",
+  "record_worthy_event_detected",
+  "session_nearing_completion",
+];
+
+const EVENT_VOCAB: Array<{ field: keyof Member; label: string; help: string }> = [
+  {
+    field: "watchFor",
+    label: "Watch for",
+    help: "Noticed and tracked, but does not cause the member to act.",
+  },
+  {
+    field: "activatesOnEvents",
+    label: "Activate on",
+    help: "The member becomes attentive and may contribute.",
+  },
+  {
+    field: "staySilentOn",
+    label: "Stay silent on",
+    help: "Attends, but must not speak — useful for a mandatory observer.",
+  },
+  {
+    field: "escalateOn",
+    label: "Escalate on",
+    help: "Raises the matter rather than handling it alone.",
+  },
+  {
+    field: "stopAttendingOn",
+    label: "Stop attending on",
+    help: "Returns to dormant. Outranks every other rule.",
+  },
+];
 
 const MANDATORY_HELP: Record<string, string> = {
   college_wide: "Required in every session the College runs.",
@@ -140,6 +191,14 @@ export default function FacultyBuilderPage() {
         grantedAuthority: parse(String(draft.grantedAuthority ?? "[]")),
         activatesOnEvents: parse(String(draft.activatesOnEvents ?? "[]")),
         activatesOnPhases: parse(String(draft.activatesOnPhases ?? "[]")),
+        watchFor: parse(String(draft.watchFor ?? "[]")),
+        staySilentOn: parse(String(draft.staySilentOn ?? "[]")),
+        escalateOn: parse(String(draft.escalateOn ?? "[]")),
+        stopAttendingOn: parse(String(draft.stopAttendingOn ?? "[]")),
+        interruptionAuthority: draft.interruptionAuthority ?? "",
+        defaultState: draft.defaultState ?? "",
+        memoryEnabled: draft.memoryEnabled !== false,
+        memoryScopeLimit: draft.memoryScopeLimit ?? "course",
         canConsult: parse(String(draft.canConsult ?? "[]")),
         canHandOffTo: parse(String(draft.canHandOffTo ?? "[]")),
         reason,
@@ -400,6 +459,98 @@ export default function FacultyBuilderPage() {
                       );
                     })}
                   </div>
+                </Card>
+
+                <Card
+                  title="ATTENTION"
+                  hint="This is what the runtime actually obeys. Leave a list empty to fall back to the position's institutional policy."
+                >
+                  <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.55, marginBottom: 4 }}>
+                    WATCHING means attending silently. ACTIVATING means acting. A mandatory
+                    member may watch an entire class without speaking once.
+                  </div>
+                  {EVENT_VOCAB.map(({ field, label, help }) => (
+                    <Row key={field} label={label}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                        {SESSION_EVENTS.map((ev) => {
+                          const on = parse(String(draft[field] ?? "[]")).includes(ev);
+                          return (
+                            <button
+                              key={ev}
+                              onClick={() => toggleIn(field, ev)}
+                              style={{
+                                padding: "4px 9px", borderRadius: 6, cursor: "pointer",
+                                fontSize: 11, fontFamily: "inherit",
+                                background: on ? "#13202e" : "#0d1119",
+                                border: `1px solid ${on ? "#1d4ed8" : "#1e2637"}`,
+                                color: on ? "#93c5fd" : "#64748b",
+                              }}
+                            >
+                              {ev.replace(/_/g, " ")}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div style={{ fontSize: 10.5, color: "#475569", marginTop: 5 }}>{help}</div>
+                    </Row>
+                  ))}
+                  <Row label="Interruption">
+                    <select
+                      value={draft.interruptionAuthority ?? ""}
+                      onChange={(e) => setDraft({ ...draft, interruptionAuthority: e.target.value })}
+                      style={inp}
+                    >
+                      <option value="">(use the position&apos;s authority)</option>
+                      <option value="none">none — never interrupts</option>
+                      <option value="request">request — may ask, not seize</option>
+                      <option value="material">material — when it affects the lesson</option>
+                      <option value="integrity">integrity — to protect the record</option>
+                    </select>
+                    <div style={{ fontSize: 10.5, color: "#475569", marginTop: 5 }}>
+                      May be lowered freely. Raising it above the position&apos;s ceiling is refused.
+                    </div>
+                  </Row>
+                  <Row label="Opens as">
+                    <select
+                      value={draft.defaultState ?? ""}
+                      onChange={(e) => setDraft({ ...draft, defaultState: e.target.value })}
+                      style={inp}
+                    >
+                      <option value="">(use the position&apos;s default)</option>
+                      <option value="dormant">dormant</option>
+                      <option value="watching">watching</option>
+                      <option value="attentive">attentive</option>
+                    </select>
+                  </Row>
+                </Card>
+
+                <Card title="MEMORY" hint="Faculty memory is the member's own. It never becomes institutional truth on its own.">
+                  <Row label="Retains memory">
+                    <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: "#cbd5e1", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={draft.memoryEnabled !== false}
+                        onChange={(e) => setDraft({ ...draft, memoryEnabled: e.target.checked })}
+                      />
+                      may record and recall its own teaching observations
+                    </label>
+                  </Row>
+                  <Row label="Scope limit">
+                    <select
+                      value={draft.memoryScopeLimit ?? "course"}
+                      onChange={(e) => setDraft({ ...draft, memoryScopeLimit: e.target.value })}
+                      style={inp}
+                    >
+                      <option value="session">session — this class only</option>
+                      <option value="course">course — patterns within a course</option>
+                      <option value="student">student — patterns about the student</option>
+                    </select>
+                    <div style={{ fontSize: 10.5, color: "#475569", marginTop: 5 }}>
+                      A memory claiming wider scope than this is refused. Two independent
+                      observations are required before anything may be proposed for
+                      institutional memory.
+                    </div>
+                  </Row>
                 </Card>
 
                 <Card title="PARTICIPATION" hint="Mandatory means the responsibility cannot be omitted — not that the member always speaks.">

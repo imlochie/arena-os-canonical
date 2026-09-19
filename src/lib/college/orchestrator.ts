@@ -40,6 +40,11 @@ import {
   type AttentionPriority,
 } from "./attention";
 import { getFacultyPosition } from "./faculty";
+import {
+  effectivePolicies,
+  evaluateAttention,
+  recordAttentionDecision,
+} from "./attention-resolver";
 import { phaseRoster, type FacultyProtocol } from "./protocol";
 
 // ---------------------------------------------------------------------------
@@ -306,6 +311,15 @@ export async function emitEvent(opts: {
   emittedBy?: string;
   phaseKey?: string;
   protocol: FacultyProtocol;
+  /**
+   * LAYER 5 — context needed to resolve the CONFIGURED faculty member for each
+   * position. When supplied, member configuration governs routing. When absent,
+   * the institutional position policy applies, which is a genuine fallback
+   * rather than a silent override.
+   */
+  courseId?: string | null;
+  sessionKind?: string;
+  slotId?: string | null;
 }): Promise<EmitResult> {
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -317,10 +331,71 @@ export async function emitEvent(opts: {
 
   const phase = opts.phaseKey ?? (await currentPhase(opts.sessionId));
 
+  // Resolve the CONFIGURED faculty for this context. This is what makes the
+  // Faculty Builder authoritative: if a member has been configured, its
+  // attention rules decide, not the hardcoded position policy.
+  const effective = await effectivePolicies({
+    courseId: opts.courseId ?? null,
+    sessionKind: opts.sessionKind,
+    slotId: opts.slotId ?? null,
+    positions: opts.protocol.positions.map((p) => p.positionKey),
+  });
+
   for (const p of opts.protocol.positions) {
     const position = getFacultyPosition(p.positionKey);
     if (!position) continue;
     const policy = getAttentionPolicy(p.positionKey);
+
+    // --- configured member governs, when one exists -----------------------
+    const eff = effective.get(p.positionKey);
+    if (eff && eff.memberId) {
+      const outcome = evaluateAttention(eff, {
+        eventType: opts.eventType,
+        phaseKey: phase ?? undefined,
+        payload: opts.payload,
+      });
+
+      await recordAttentionDecision({
+        sessionId: opts.sessionId,
+        eventType: opts.eventType,
+        outcome,
+        provenance: eff.provenance,
+      });
+
+      if (outcome.action === "ignore") {
+        ignoredBy.push({ positionKey: p.positionKey, reason: outcome.reason });
+        continue;
+      }
+
+      const actionMap: Record<string, RoutedPosition["action"]> = {
+        notice: "note",
+        activate: "activate",
+        consult: "consult",
+        defer: "note",
+        escalate: "consult",
+        speak: "activate",
+      };
+
+      routed.push({
+        positionKey: p.positionKey,
+        name: eff.memberName || position.name,
+        priority: outcome.priority,
+        because: outcome.reason,
+        action: actionMap[outcome.action] ?? "note",
+        newState: outcome.state,
+      });
+
+      await setAttention({
+        sessionId: opts.sessionId,
+        positionKey: p.positionKey,
+        state: outcome.state,
+        reason: outcome.reason,
+        phaseKey: phase ?? "",
+      });
+      continue;
+    }
+
+    // --- no configured member: institutional position policy applies -------
     const trigger = evaluateTrigger(p.positionKey, opts.eventType);
 
     if (!trigger) {

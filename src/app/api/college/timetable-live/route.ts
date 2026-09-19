@@ -35,7 +35,12 @@ export async function GET(req: Request) {
 
     if (view === "conflicts") {
       const curriculum = await getCurrentCurriculum();
-      const activeIds = curriculum.courses.map((c) => String((c as { id: string }).id));
+      // Curriculum membership is not the same as course status. A course that
+      // is still a member of the active version but has been archived must
+      // count as NOT active, otherwise an orphaned slot goes unreported.
+      const activeIds = curriculum.courses
+        .filter((c) => String((c as { status?: string }).status ?? "active") === "active")
+        .map((c) => String((c as { id: string }).id));
       const conflicts = await detectTimetableConflicts(activeIds);
       return Response.json({
         conflicts,

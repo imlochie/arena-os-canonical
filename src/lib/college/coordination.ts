@@ -148,6 +148,7 @@ export async function runCoordinationWindow(opts: {
   // --- 0. The student's response enters the record as an event -------------
   await emitEvent({
     sessionId: opts.sessionId,
+    courseId: opts.courseId,
     eventType: "student_response_received",
     payload: opts.studentResponse.slice(0, 4000),
     emittedBy: "student",
@@ -195,6 +196,7 @@ export async function runCoordinationWindow(opts: {
   for (const s of allEvents) {
     const res = await emitEvent({
       sessionId: opts.sessionId,
+      courseId: opts.courseId,
       eventType: s.eventType,
       payload: `${s.because} [${s.epistemicStatus}]`,
       emittedBy: "system",

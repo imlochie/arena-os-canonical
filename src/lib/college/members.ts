@@ -212,6 +212,17 @@ export interface MemberInput {
   canInterrupt?: string[];
   activatesOnEvents?: string[];
   activatesOnPhases?: string[];
+  // LAYER 5 — the rest of the attention vocabulary. Empty means "not
+  // configured", and the position policy legitimately applies.
+  watchFor?: string[];
+  staySilentOn?: string[];
+  escalateOn?: string[];
+  deferMatters?: Array<{ matter: string; to: string }>;
+  stopAttendingOn?: string[];
+  interruptionAuthority?: string;
+  defaultState?: string;
+  memoryEnabled?: boolean;
+  memoryScopeLimit?: string;
   presetKey?: string;
   notes?: string;
 }
@@ -380,6 +391,23 @@ export async function updateMember(
       activatesOnPhases: patch.activatesOnPhases
         ? JSON.stringify(patch.activatesOnPhases)
         : existing.activatesOnPhases,
+      watchFor: patch.watchFor ? JSON.stringify(patch.watchFor) : existing.watchFor,
+      staySilentOn: patch.staySilentOn
+        ? JSON.stringify(patch.staySilentOn)
+        : existing.staySilentOn,
+      escalateOn: patch.escalateOn ? JSON.stringify(patch.escalateOn) : existing.escalateOn,
+      deferMatters: patch.deferMatters
+        ? JSON.stringify(patch.deferMatters)
+        : existing.deferMatters,
+      stopAttendingOn: patch.stopAttendingOn
+        ? JSON.stringify(patch.stopAttendingOn)
+        : existing.stopAttendingOn,
+      interruptionAuthority:
+        patch.interruptionAuthority ?? existing.interruptionAuthority,
+      defaultState: patch.defaultState ?? existing.defaultState,
+      memoryEnabled:
+        patch.memoryEnabled !== undefined ? patch.memoryEnabled : existing.memoryEnabled,
+      memoryScopeLimit: patch.memoryScopeLimit ?? existing.memoryScopeLimit,
       notes: patch.notes ?? existing.notes,
       version: existing.version + 1,
       updatedAt: new Date(),
