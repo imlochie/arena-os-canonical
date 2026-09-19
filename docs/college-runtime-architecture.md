@@ -938,16 +938,41 @@ system's behaviour — authority refusals arrive in `warnings`, the audit takes
 `scopeType`/`scopeId`, overrides belong to `/timetable-live` and need a date
 on the slot's own weekday. The system was right each time.
 
+## J. Consultation is a consequence of authority, not a hardcoded pair
+
+The first version of this layer could only consult when a member's attention
+explicitly resolved to `consult` — and `evaluateAttention` never returns that,
+so consultation was provable only as graph edges. Structure without behaviour.
+
+The rule is now derived. The runtime asks what authority an event calls for
+(`EVENT_NEEDS_AUTHORITY`), checks whether the activated member holds it, and
+if not, looks for a permitted consultee **that actually does**. Consulting
+someone equally unequipped would be coordination theatre.
+
+The old coordination window already sent factual uncertainty to the Researcher
+— the right outcome for the wrong reason, because the pair was fixed in
+TypeScript. Now the same hop happens *because* the Instructor lacks `research`
+authority and is configured to consult the Researcher, and it stops happening
+the moment either fact changes:
+
+| student turn | authority required | instructor holds it? | outcome |
+|---|---|---|---|
+| "is it true habits form in 21 days?" | `research` | no | **consults the Researcher** |
+| "memory works like a video recording" | `critique` | yes | **answers for itself** |
+
+Finding this also exposed a real defect: the runtime kept only each member's
+highest-ranked outcome across all events, which discarded *which* event had
+triggered it. A member activating on three events, only one of which exceeds
+its authority, lost precisely the fact consultation depends on. Engaged events
+are now tracked per member.
+
 ## Layer 6 gaps
 
-1. Consultation fires only when a member's attention resolves to `consult`.
-   With the current configuration no member does, so consultation is proven
-   by graph edges rather than by a live consultation in the canonical run.
-2. Class phases (§15 §16) use the existing phase plan; per-member phase
+1. Class phases (§15 §16) use the existing phase plan; per-member phase
    participation is resolved but not yet configurable in the Builder.
-3. Interruption is modelled and authority-checked, but no member currently
+2. Interruption is modelled and authority-checked, but no member currently
    escalates during a normal class, so acceptance is proven structurally.
-4. **No live model is reachable in this sandbox.** Every faculty utterance in
+3. **No live model is reachable in this sandbox.** Every faculty utterance in
    verification came from `local:text`. Routing, authority, memory,
    coordination and state are proven; language quality is not tested and must
    not be inferred.

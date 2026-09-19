@@ -219,16 +219,32 @@ async function main() {
   }
 
   // ==========================================================================
-  // 10. Faculty can consult  (through the graph, when an edge exists)
+  // 10. Faculty can consult  (a LIVE consultation, driven by the authority matrix)
   // ==========================================================================
   {
+    // Not "is there an edge in the graph" — that only proves the graph was
+    // built. This asks whether a member that met a matter outside its own
+    // authority actually went and asked someone who held it, and whether the
+    // ledger recorded the exchange.
     const graph = ex.coordinationGraph;
     const consultEdges = graph.edges.filter((e) => e.kind === "consult");
-    if (consultEdges.length > 0) {
-      ok(10, "Consultation edges are resolved from configuration",
-         `${consultEdges.length} consult edge(s), e.g. ${consultEdges[0].from} → ${consultEdges[0].to}`);
+    const live = ex.consultations ?? [];
+    const permitted = live.filter((c) => c.permitted);
+    const ledgerRows = await q(
+      "select count(*)::int as n from college_event_ledger where session_id=$1 and event_type='faculty_consulted'",
+      [sessionId]
+    );
+    const logged = ledgerRows[0]?.n ?? 0;
+
+    if (permitted.length > 0 && logged > 0) {
+      const c = permitted[0];
+      ok(10, "A member consults when the matter exceeds its own authority",
+         `${c.from} → ${c.to}; ${consultEdges.length} edge(s) available, ${permitted.length} used, ${logged} in ledger — "${c.basis.slice(0, 74)}…"`);
+    } else if (consultEdges.length > 0) {
+      bad(10, "A member consults when the matter exceeds its own authority",
+          `${consultEdges.length} consult edge(s) exist but none was used — coordination is structural only`);
     } else {
-      bad(10, "Consultation edges are resolved from configuration", "no consult edges in the graph");
+      bad(10, "A member consults when the matter exceeds its own authority", "no consult edges in the graph");
     }
   }
 

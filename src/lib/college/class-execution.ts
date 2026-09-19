@@ -57,6 +57,7 @@ import * as facultyMemory from "./faculty-memory";
 import * as ledger from "./ledger";
 import { compilePersonality } from "./members";
 import { getFacultyPosition } from "./faculty";
+import { hasAuthority, type AuthorityKey } from "./authority";
 import { setAttention } from "./orchestrator";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,30 @@ const POSITION_TASK: Record<string, string> = {
   assessor:
     "Describe what evidence WOULD demonstrate this capability and what has actually been evidenced. Formative only. Under 150 words.",
   specialist: "Provide domain-specific depth relevant to this objective. Under 150 words.",
+};
+
+/**
+ * Which authority best answers a given event.
+ *
+ * This is what makes consultation MEMBER-DRIVEN rather than hardcoded. The old
+ * coordination window knew, in TypeScript, that factual uncertainty means "run
+ * the researcher". That is the right outcome for the wrong reason — it was a
+ * fixed pair, not a consequence of what anybody was permitted to do.
+ *
+ * Here the runtime asks a question instead: this event calls for RESEARCH; does
+ * the activated member hold research authority? If not, does its configuration
+ * permit it to consult somebody who does? The Instructor→Researcher hop still
+ * happens, but now it happens BECAUSE the Instructor lacks research authority
+ * and is configured to consult the Researcher — and it stops happening the
+ * moment either of those facts changes.
+ */
+const EVENT_NEEDS_AUTHORITY: Record<string, AuthorityKey> = {
+  factual_uncertainty_detected: "research",
+  research_required: "research",
+  contradiction_detected: "critique",
+  misconception_detected: "critique",
+  learning_evidence_observed: "formative_assessment",
+  record_worthy_event_detected: "record",
 };
 
 /** Which actions the runtime will accept from a position at a given moment. */
@@ -328,6 +353,12 @@ export async function executeClass(opts: {
   // ---- 1. ATTENTION: evaluate every event against every member (§6) ------
   // Independently. One member's activation never implies another's.
   const outcomes = new Map<string, AttentionOutcome>();
+  // Which events each member actually engaged with. The winning outcome alone
+  // is not enough: a member may activate on three events and only ONE of them
+  // requires an authority it lacks. Collapsing to the highest-ranked outcome
+  // loses exactly the fact consultation depends on.
+  const engagedEvents = new Map<string, string[]>();
+
   for (const event of opts.events) {
     for (const [key, policy] of opts.policies) {
       const outcome = evaluateAttention(policy, {
@@ -341,6 +372,11 @@ export async function executeClass(opts: {
         outcome,
         provenance: policy.provenance,
       });
+      if (outcome.action === "activate" || outcome.action === "speak" || outcome.action === "consult") {
+        const list = engagedEvents.get(key) ?? [];
+        list.push(event.eventType);
+        engagedEvents.set(key, list);
+      }
       // The most engaged outcome across all events wins for this exchange.
       const existing = outcomes.get(key);
       if (!existing || engagementRank(outcome) > engagementRank(existing)) {
@@ -375,16 +411,50 @@ export async function executeClass(opts: {
   // A member that wants evidence asks the position its configuration permits
   // it to ask. If no such edge exists, the consultation does not happen and
   // that is recorded rather than silently routed elsewhere.
-  const consultRequests = [...outcomes.entries()].filter(
-    ([, o]) => o.action === "consult" || o.action === "escalate"
-  );
+  const consultRequests: Array<{
+    from: string;
+    outcome: AttentionOutcome;
+    needed: AuthorityKey | null;
+  }> = [];
 
-  for (const [from, outcome] of consultRequests) {
+  for (const [key, outcome] of outcomes) {
+    const policy = opts.policies.get(key)!;
+
+    // An explicit consult/escalate outcome always asks.
+    if (outcome.action === "consult" || outcome.action === "escalate") {
+      consultRequests.push({ from: key, outcome, needed: null });
+      continue;
+    }
+
+    // Otherwise: did this member activate on an event it is not equipped to
+    // answer? That is the question §8 asks — "can this member handle the
+    // event?" — and the authority matrix answers it.
+    if (outcome.action !== "activate" && outcome.action !== "speak") continue;
+
+    // Of the events this member engaged with, is there one calling for an
+    // authority it does not hold?
+    const engaged = engagedEvents.get(key) ?? [];
+    const unmet = engaged
+      .map((eventType) => EVENT_NEEDS_AUTHORITY[eventType])
+      .find((needed) => needed && !hasAuthority(key, policy.grantedAuthority, needed).allowed);
+    if (!unmet) continue;
+
+    consultRequests.push({ from: key, outcome, needed: unmet });
+  }
+
+  for (const { from, outcome, needed } of consultRequests) {
     const fromPolicy = opts.policies.get(from)!;
-    // Ask the first permitted consultee that is actually present and attends.
-    const target = fromPolicy.mayConsult.find(
+    // Ask a permitted consultee that is present AND actually holds the
+    // authority the matter requires. Consulting someone equally unequipped
+    // would be coordination theatre.
+    const candidates = fromPolicy.mayConsult.filter(
       (t) => canConsult(graph, from, t) && opts.policies.has(t)
     );
+    const target = needed
+      ? candidates.find((t) =>
+          hasAuthority(t, opts.policies.get(t)!.grantedAuthority, needed).allowed
+        )
+      : candidates[0];
     if (!target) {
       consultations.push({
         from,
@@ -395,13 +465,17 @@ export async function executeClass(opts: {
         confidence: "",
         evidence: "",
         permitted: false,
-        basis: `${outcome.memberName || from} would consult, but no permitted consultee is serving in this class. The matter stays with the originating position.`,
+        basis: needed
+          ? `${outcome.memberName || from} lacks ${needed} authority for this matter, and no permitted consultee holding ${needed} is serving in this class. The matter stays with the originating position, unresolved rather than guessed at.`
+          : `${outcome.memberName || from} would consult, but no permitted consultee is serving in this class. The matter stays with the originating position.`,
       });
       continue;
     }
 
     const targetPolicy = opts.policies.get(target)!;
-    const question = `${outcome.memberName || from} has encountered: ${outcome.reason} Answer only within your remit.`;
+    const question = needed
+      ? `${outcome.memberName || from} has encountered a matter requiring ${needed} authority, which it does not hold: ${outcome.reason} Answer only within your remit.`
+      : `${outcome.memberName || from} has encountered: ${outcome.reason} Answer only within your remit.`;
     const exec = await executeMember({
       policy: targetPolicy,
       sessionId: opts.sessionId,
@@ -428,7 +502,9 @@ export async function executeClass(opts: {
       confidence: exec.output?.proposal.confidence ?? "uncertain",
       evidence: exec.output?.proposal.evidence ?? "",
       permitted: true,
-      basis: `Permitted by the coordination graph: ${from} may consult ${target}.`,
+      basis: needed
+        ? `${from} lacks ${needed} authority; ${target} holds it and the coordination graph permits the consultation.`
+        : `Permitted by the coordination graph: ${from} may consult ${target}.`,
     });
 
     await ledger.record({
