@@ -89,8 +89,31 @@ export type Conclusion<TClaim = Record<string, unknown>> = {
 
 /** The calculator's refusal taxonomy. */
 export type RejectKind =
-  | "void_claim"         // C2: positive claim grounded on unknown
+  | "void_claim"         // C2: positive claim grounded on unknown / content the rule cannot honestly form
   | "lineage_incomplete" // C4: no evidence / no rule / dangling lineage
   | "bad_reference"      // C5/C4: ref outside the seven collections, out of range, or signalId mismatch
   | "window_merge"       // C3: differing windows cannot be silently merged
+  | "mixed_class"        // §3.2: aggregation over more than one evidence collection
   | "scope_merge";       // C3: conclusion scope exceeds the evidence's scope
+
+/* ------------------------- 7.2 claim payloads ---------------------------- */
+
+/** Restatement (§3.1): the structural re-voicing of ONE evidence item —
+ *  class, subject, value verbatim. Deliberately data, not prose: phrasing
+ *  belongs to the renderer (7.4), and nothing here may wear affect
+ *  vocabulary. */
+export type RestatementClaim = {
+  readonly restates: EvidenceRef;
+  readonly evidenceClass: string;
+  readonly subject: string | null;
+  readonly value: unknown;
+};
+
+/** Aggregation modes (§3.2): the three honest things a same-class,
+ *  same-scope, same-window union may compute. */
+export type AggregationMode = "count" | "sum" | "subjects";
+
+export type AggregationClaim =
+  | { readonly mode: "count"; readonly count: number; readonly members: readonly EvidenceRef[] }
+  | { readonly mode: "sum"; readonly count: number; readonly sum: number; readonly members: readonly EvidenceRef[] }
+  | { readonly mode: "subjects"; readonly count: number; readonly subjects: readonly string[]; readonly members: readonly EvidenceRef[] };

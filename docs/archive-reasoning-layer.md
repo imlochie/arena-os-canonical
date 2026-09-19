@@ -225,6 +225,12 @@ implemented** (`src/lib/archive-reasoning/`: closed-union types +
 executable C1–C5 lattice; 11 tests — ceiling arithmetic, C2 void claims
 including the two-stage scope-then-status pipeline they exposed,
 no-merge windows, scope checks, lineage/bad-reference/void rejects,
-category tripwires, determinism + freeze; 92/92 suite, typecheck and
-production build clean). Remaining slices: 7.2 restatement/aggregation →
-7.3 contradiction/temporal → 7.4 renderer → 7.5 lab-002 live.
+category tripwires, determinism + freeze). **Slice 7.2 implemented**
+(synthesizers: restatement — one item re-voiced structurally, class /
+subject / value verbatim — and aggregation over same-class memberships
+with three honest modes: count, zero-tolerance numeric sum, deduped
+sorted subjects; mixed-class aggregation is a structural reject; 9
+tests, 101/101 suite, typecheck clean; per-item window extraction
+honestly deferred to 7.3, whose unionWindow refusal it will wire to
+real window identities). Remaining: 7.3 contradiction/temporal → 7.4
+renderer → 7.5 lab-002 live.
