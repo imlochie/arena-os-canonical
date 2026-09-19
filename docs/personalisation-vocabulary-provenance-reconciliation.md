@@ -395,7 +395,23 @@ receives another byte of semantic authority.
 | 6 · Arena evidence adapter | 🔒 brief received — strictly blocked until the Gate-5 commit is **verifiably visible in GitHub** and Arena can fetch the real OpenAPI. D4 discipline unchanged: generate from it, never hand-author a schema |
 | 7 · behavioural reasoning | terminal gate |
 
-**Gate-5 principle preserved from the (anticipatory) report:** `signalId`
+**Re-verification protocol (owner, 2026-09-19):** the retraction of
+gates 3–5 is a **provenance verdict, not necessarily an implementation
+verdict** — the underlying engineering may be sound; it simply was never
+verified as landed. When the upstream session reports the recovered
+push, Gate 5 is **re-earned, not restored**: Arena must not trust the
+report. Verification means fetching the specific commit/ref named and
+checking the actual tree — the
+`GET /api/assistant/personalisation-context` endpoint exists; the
+schemas carry the six evidence classes and the full provenance shape
+(`signalId`, `signalType`, `subjectIdentity`, `value`,
+`epistemicStatus`, `scopeIdentity`, coverage, provenance,
+provider/event/batch lineage); and the generated contract derives from
+the real OpenAPI at that ref. Only then does the gate flip.
+Institutional memory of record: **truth isn't what the worker reports —
+truth is what the authoritative artifact can prove.**
+
+**Gate-5 principle preserved from the (retracted) report:** `signalId`
 is a **provenance handle, not an immutable semantic identity** — derived
 signals can be regenerated or replaced; the durable truth is the
 underlying observations and their provenance. Recorded here so the Gate-6
