@@ -396,8 +396,39 @@ certain.
 | 3 · behavioural usage layer authoritative | ⚠️ **landed in part (owner), verified present 2026-09-19:** `0a971dd` ships the event substrate as SQLite (`behavioral_signal`, `explicit_preference`, `analytics_coverage` tables; Plex-derived events with `scope_identity`/ownership resolution), scope-aware derivation service (`behavioral-intelligence.ts`, 137 LOC) and analytics tests. Deliberate scope: ingestion is **not** exposed as a mutation endpoint; plugin-grade/provider-trimmed history classes remain open. Not yet the full gen-2 usage layer of the 01a0b5d9 direction doc |
 | 4 · upstream provenance annotation (D2 applied) | ⚠️ **per owner** — the new Gen-2 spec carries its own epistemic/provenance classes end-to-end, and `docs/arena-generation-lineage.md` now records Gen-1/Gen-2 as non-interchangeable contracts upstream; the D2 annotation of Gen-1's OpenAPI descriptions on `arena/01a0a0d9` itself remains to be applied |
 | 5 · seventh read (`GET /api/assistant/personalisation-context`) | ✅ **RE-EARNED 2026-09-19 — verified against the tree, not the report** (evidence below): ref `arena/01a0b5e9-somesafeportablesoftware`, tip `0a971dd` (off `main @ 0bea165`, 2026-09-19 05:44 UTC, "feat: publish archive personalisation evidence contract") |
-| 6 · Arena evidence adapter | ✅ **IMPLEMENTED 2026-09-19** (below) — built against the verified `0a971dd` contract, generated never hand-authored; 8-test acceptance suite green (81/81 full suite), typecheck + production build clean. Pending the owner's independent tree inspection before anything Gate-7-adjacent is contemplated |
+| 6 · Arena evidence adapter | ✅ **IMPLEMENTED 2026-09-19** (below) — built against the verified `0a971dd` contract, generated never hand-authored; 8-test acceptance suite green (81/81 full suite), typecheck + production build clean. Becomes **authoritative** only on surviving the owner's independent fetch-and-inspect of `882abbd` (checklist below) |
 | 7 · behavioural reasoning | terminal gate — "Gate 6 preserves. Gate 7 thinks." Locked pending the owner's **independent fetch-and-inspect of `882abbd`** — the Gate-5 bouncer protocol applied symmetrically to Arena's own artifact |
+
+### The `882abbd` bouncer (owner, 2026-09-19)
+
+Gate 6's claim-to-authority pipeline, to be verified claim by claim
+against the freshly fetched Arena tree — reported implementation →
+named commit → fresh fetch → actual tree → claim-by-claim verification
+→ gate status:
+
+`0a971dd` authoritative contract → generated personalisation contract →
+server-side client → runtime validation → faithful ArchiveContext
+normalization → STOP.
+
+The inspection is suspicious of exactly the things that must not sneak
+through, any one of which is disqualifying:
+
+```
+✗ browser → Archive Assistant        ✗ ranking
+✗ request-selected owner             ✗ recommendations
+✗ Gen-1 presentation fields          ✗ candidate generation
+✗ inferred preferences               ✗ embeddings
+✗ taste scores                       ✗ model calls
+✗ action creation                    ✗ epistemic upgrading
+```
+
+If `882abbd` survives, Gate 6 becomes **authoritative** — not merely
+"implemented according to the developer" — and only then does Gate 7
+get the keys.
+
+**The Gate-7 question, recorded for when that day comes:** *what may
+Arena legitimately conclude when it has a pile of evidence that it is
+forbidden to pretend is more certain than it actually is?*
 
 ### Gate-7 standing constraints (owner, 2026-09-19)
 
