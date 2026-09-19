@@ -7,11 +7,14 @@
  *
  * The evidence is not a fixture invented for suspicion: it is the actual
  * JSON upstream's own runtime emitted at
- * imlochie/SomeSafePortablesoftware@b5ca1647883cc06c9180015b07470a7880d1a56a
- * — captured verbatim from getPersonalisationContext() after redoing the
- * exact seed of upstream's own regression test ("rebuilds explainable
- * recent, long-term, rewatch, scope, and explicit signals") with the
- * producer's own pipeline, and pinned at
+ * imlochie/SomeSafePortablesoftware@4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7
+ * ("Evolve archive temporal evidence to two windows": value.window AND
+ * value.previousWindow, both REQUIRED and contract-typed, one producer
+ * anchor, half-open non-overlapping spans) — captured verbatim from
+ * getPersonalisationContext() after redoing the exact seed of upstream's
+ * own regression test ("rebuilds explainable recent, long-term, rewatch,
+ * scope, and explicit signals", now including its previous-window event)
+ * with the producer's own pipeline, and pinned at
  * scripts/fixtures/real-evidence-upstream-capture.json.
  *
  * Chain: capture file → mock-personalisation-lab replay mode (real HTTP,
@@ -35,6 +38,8 @@ import { temporalClaim, compareWindows } from "../src/lib/archive-reasoning/temp
 import { surfaceContradictions } from "../src/lib/archive-reasoning/contradictions.ts";
 import { buildConclusion, ReasoningRejectError } from "../src/lib/archive-reasoning/lattice.ts";
 import { renderConclusion, assertRendererVocabulary, RenderError } from "../src/lib/archive-reasoning/render.ts";
+import { validatePersonalisationContract } from "../src/lib/personalisation/validate.ts";
+import { extractWindow } from "../src/lib/archive-reasoning/windows.ts";
 
 const CAPTURE_FILE = "scripts/fixtures/real-evidence-upstream-capture.json";
 const CAPTURE = JSON.parse(readFileSync(CAPTURE_FILE, "utf8"));
@@ -77,8 +82,15 @@ async function fetchPack() {
     { baseUrl: `http://127.0.0.1:${PORT}`, authMode: "local", ownerId: "gate7-real-evidence", timeoutMs: 4000 },
     { mode: "local", ownerId: "gate7-real-evidence" },
   );
-  return normalizePersonalisationContext(await client.getPersonalisationContext());
+  const raw = await client.getPersonalisationContext();
+  rawWire = JSON.parse(JSON.stringify(raw));
+  return normalizePersonalisationContext(rawWire);
 }
+
+/** The validated-but-pre-normalization body, preserved exactly as
+ *  received (mutated clones power the negative battery; certified rows
+ *  only ever use the unmutated real pack). */
+let rawWire = null;
 
 /* ------------------------------ scorebook -------------------------------- */
 
@@ -153,6 +165,13 @@ try {
 
 // ---- provenance & transport inventory (the contract actually transported it)
 const ev = pack.evidence;
+
+/** The producer-declared windows on the single real temporal row (both
+ *  REQUIRED at the contract since 141c789 / 4dcb2a0): current + previous,
+ *  one anchor, half-open non-overlapping. Used by the certified row 14
+ *  and the two-window verification section below. */
+const producerWindow = CAPTURE.context.temporalSignals[0].value.window;
+const producerPrevious = CAPTURE.context.temporalSignals[0].value.previousWindow;
 const counts = Object.fromEntries(
   ["facts", "observedSignals", "temporalSignals", "collectionFacts", "interpretations", "uncertainties", "explicitPreferences"]
     .map((k) => [k, ev[k].length]),
@@ -165,8 +184,8 @@ row("INGRESS", "real payload validates against the regenerated contract and norm
 const prov = ev.temporalSignals[0].provenance;
 row("INGRESS", "real provenance arrives intact through the seam",
   `observationIds=${prov.observationIds.length} evidenceKeys=${prov.evidenceKeys.length} ingestionBatchIds=${JSON.stringify(prov.ingestionBatchIds)} eventOccurredAt=${prov.eventOccurredAt.length} observedAt=${prov.observedAt.length} scope=${prov.scopeIdentity}`,
-  Array.isArray(prov.observationIds) && prov.observationIds.length === 3
-    && Array.isArray(prov.evidenceKeys) && prov.evidenceKeys.length === 3
+  Array.isArray(prov.observationIds) && prov.observationIds.length === 4
+    && Array.isArray(prov.evidenceKeys) && prov.evidenceKeys.length === 4
     && Array.isArray(prov.ingestionBatchIds) && Array.isArray(prov.eventOccurredAt)
     && prov.scopeIdentity === SCOPE);
 
@@ -181,11 +200,11 @@ row("INGRESS", "the surface carries its own constraints and they cross verbatim"
 // ---- what the calculus may certify from real evidence
 certify("DERIVE", "restate real observed fact (totalPlays)",
   restateEvidence(pack, { collection: "facts", index: 0 }, { window: WINDOW_ALL, scopeIdentity: "archive" }),
-  { expectStatus: "observed", mustContain: ["3", '"totalPlays"'] });
+  { expectStatus: "observed", mustContain: ["4", '"totalPlays"'] });
 
 certify("DERIVE", "restate real long-term signal with full provenance behind it",
   restateEvidence(pack, { collection: "observedSignals", index: 0 }, { window: WINDOW_ALL, scopeIdentity: SCOPE }),
-  { expectStatus: "derived", mustContain: ["totalWatches=3", '"behaviour-film"'] });
+  { expectStatus: "derived", mustContain: ["totalWatches=4", '"behaviour-film"'] });
 
 certify("DERIVE", "restate real temporal signal inside a caller-declared evidence window",
   restateEvidence(pack, { collection: "temporalSignals", index: 0 }, { window: WINDOW_90D, scopeIdentity: SCOPE }),
@@ -193,7 +212,7 @@ certify("DERIVE", "restate real temporal signal inside a caller-declared evidenc
 
 certify("DERIVE", "restate real collection fact",
   restateEvidence(pack, { collection: "collectionFacts", index: 0 }, { window: WINDOW_ALL, scopeIdentity: SCOPE }),
-  { expectStatus: "derived", mustContain: ["never_matched=3"] });
+  { expectStatus: "derived", mustContain: ["never_matched=4"] });
 
 certify("DERIVE", "count the non-unknown facts as real arithmetic",
   aggregateEvidence(pack, [0, 1, 2, 3, 5, 6, 7].map((index) => ({ collection: "facts", index })),
@@ -203,7 +222,7 @@ certify("DERIVE", "count the non-unknown facts as real arithmetic",
 certify("DERIVE", "sum real numeric facts",
   aggregateEvidence(pack, [{ collection: "facts", index: 0 }, { collection: "facts", index: 2 }],
     { mode: "sum", window: WINDOW_ALL, scopeIdentity: "archive" }),
-  { expectStatus: "derived", mustContain: ["a total of 5 across 2 facts"] });
+  { expectStatus: "derived", mustContain: ["a total of 7 across 2 facts"] });
 
 certify("DERIVE", "enumerate real subjects over both observed signals",
   aggregateEvidence(pack, [
@@ -227,6 +246,154 @@ const detB = renderConclusion(restateEvidence(pack, { collection: "temporalSigna
 row("DERIVE", "real evidence replays byte-identically (no clocks in the calculus)",
   detA.statement === detB.statement ? "byte-stable" : "DRIFTED", detA.statement === detB.statement);
 
+/* ================= two-window verification (upstream 4dcb2a0) =================
+ * Verification-only: do the producer's two declared windows let the
+ * EXISTING calculus form a trend? Answered as a finding, not a patch. */
+
+const realTemporalItem = ev.temporalSignals[0];
+
+// (a) Extraction boundary: the current window identifies verbatim; the
+//     previous window crosses transport as carried evidence data — the
+//     extractor does NOT mint a second identity from one row.
+const identifiedCurrent = extractWindow(realTemporalItem);
+row("EXTRACT", "two-window row: extractor identifies the CURRENT window verbatim; previousWindow crosses as data, not an invented identity",
+  `extracted=[${identifiedCurrent.startsAt} .. ${identifiedCurrent.endsAt}], carried previousWindow=[${producerPrevious.startsAt} .. ${producerPrevious.endsAt}]`,
+  !!identifiedCurrent
+    && identifiedCurrent.startsAt === producerWindow.startsAt
+    && identifiedCurrent.endsAt === producerWindow.endsAt
+    && !("previousWindow" in identifiedCurrent)
+    && producerPrevious.endsAt === producerWindow.startsAt // producer's own non-overlap, touching boundary
+    && Number.isFinite(Date.parse(producerPrevious.startsAt)),
+  "identification only; nothing reconstructed from derivedAt or comparisonWindowDays");
+
+// (b) The decisive addressing finding: Gate 7 compares evidence ITEMS,
+//     one extractable window per item. The second declared window inside
+//     one row has no evidence ref — the pair is unreachable by the
+//     existing members vocabulary.
+const refsToPrevious = ev.temporalSignals.filter((item) => {
+  const w = extractWindow(item);
+  return w && w.startsAt === producerPrevious.startsAt && w.endsAt === producerPrevious.endsAt;
+});
+row("FINDING", "SEMANTIC GAP: compareWindows members point at items, one window per item; no ref can address value.previousWindow inside the single real row",
+  `temporalSignals=${ev.temporalSignals.length}; refs whose extracted window equals the declared previousWindow: ${refsToPrevious.length}`,
+  ev.temporalSignals.length === 1 && refsToPrevious.length === 0,
+  "producer meaning fully declared AND fully preserved — upstream models two windows inside one row; documented, not patched");
+
+// (c) The only two temporal refs the surface offers are this same item
+//     twice — identity overlap refuses instead of hallucinating a pair.
+attemptVoid("VOID", "previous-vs-current over the single existing ref is refused for identity overlap (no pair interpretation from one row)",
+  () => compareWindows(pack, [{ collection: "temporalSignals", index: 0 }, { collection: "temporalSignals", index: 0 }], { metricKey: "watchesLast90Days" }),
+  { expectedKinds: ["void_claim"] });
+
+/* ------- negative battery: the two-window surface must not soften walls ------- */
+function twinPack(mutate, metricMutation = true) {
+  const wire = JSON.parse(JSON.stringify(rawWire));
+  const twin = JSON.parse(JSON.stringify(rawWire.temporalSignals[0]));
+  twin.signalId = "sig-neg-twin";
+  twin.provenance = {
+    ...twin.provenance,
+    evidenceKeys: ["watch_observation:neg-twin"],
+    providerEventIds: ["plex-evt-neg-twin"],
+    observationIds: [77001],
+    eventIds: [77001],
+    batchIds: ["ing-neg-twin"],
+    ingestionBatchIds: ["ing-neg-twin"],
+  };
+  if (metricMutation) twin.value.watchesLast90Days = 6;
+  mutate(twin);
+  wire.temporalSignals.push(twin);
+  return normalizePersonalisationContext(wire);
+}
+
+// 1. overlapping windows refuse
+attemptVoid("NEGATIVE", "overlapping windows still refuse a comparison",
+  () => { const p = twinPack((t) => {
+      const shifted = 30 * 86_400_000; // shifted −30d: overlaps the real row's window by construction
+      t.value.window = {
+        startsAt: new Date(Date.parse(producerWindow.startsAt) - shifted).toISOString(),
+        endsAt: new Date(Date.parse(producerWindow.endsAt) - shifted).toISOString(),
+      };
+      t.value.previousWindow = {
+        startsAt: new Date(Date.parse(producerPrevious.startsAt) - shifted).toISOString(),
+        endsAt: new Date(Date.parse(producerPrevious.endsAt) - shifted).toISOString(),
+      };
+    }, false); return compareWindows(p, [{ collection: "temporalSignals", index: 0 }, { collection: "temporalSignals", index: 1 }], { metricKey: "watchesLast90Days" }); },
+  { expectedKinds: ["void_claim"] });
+
+// 2. identical windows across two rows refuse (identity overlap)
+attemptVoid("NEGATIVE", "identical windows across two rows refuse (identity overlap, never a trend out of a re-statement)",
+  () => { const p = twinPack((t) => {
+      t.value.window = { startsAt: producerWindow.startsAt, endsAt: producerWindow.endsAt };
+      t.value.previousWindow = { startsAt: producerPrevious.startsAt, endsAt: producerPrevious.endsAt };
+    }); return compareWindows(p, [{ collection: "temporalSignals", index: 0 }, { collection: "temporalSignals", index: 1 }], { metricKey: "watchesLast90Days" }); },
+  { expectedKinds: ["void_claim"] });
+
+// 3./4. missing windows refuse AT THE CONTRACT (REQUIRED since 141c789 / 4dcb2a0)
+for (const [label, field] of [["missing previousWindow", "previousWindow"], ["missing window", "window"]]) {
+  const broken = JSON.parse(JSON.stringify(rawWire));
+  delete broken.temporalSignals[0].value[field];
+  try {
+    validatePersonalisationContract("PersonalisationContext", broken);
+    row("NEGATIVE", `${label} on a real row: the contract must refuse`, "validator ACCEPTED the broken payload", false);
+  } catch (error) {
+    const message = String(error?.message ?? error);
+    row("NEGATIVE", `${label} on a real row: the contract must refuse`,
+      `REFUSED at ingress: ${message.slice(0, 120)}`,
+      /ArchiveAssistantContractError$/.test(error?.constructor?.name ?? "") && message.includes(field));
+  }
+}
+
+// 5. malformed bounds: string-typed, so the contract passes them; the
+//    calculus semantic guard (parseable instants) refuses formation.
+attemptVoid("NEGATIVE", "malformed bounds: contract types permit strings, calculus refuses formation downstream",
+  () => { const p = twinPack((t) => {
+      t.value.window = { startsAt: "not-an-instant", endsAt: "also-not-an-instant" };
+      t.value.previousWindow = { startsAt: "not-an-instant", endsAt: "also-not-an-instant" };
+    }); return temporalClaim(p, { collection: "temporalSignals", index: 1 }); },
+  { expectedKinds: ["lineage_incomplete", "void_claim"] });
+
+// 6. mismatched scopes across members
+attemptVoid("NEGATIVE", "mismatched scopes across members refuse the comparison",
+  () => { const p = twinPack((t) => {
+      t.scopeIdentity = "plex:other-tenant";
+      t.provenance = { ...t.provenance, scopeIdentity: "plex:other-tenant" };
+    }); return compareWindows(p, [{ collection: "temporalSignals", index: 0 }, { collection: "temporalSignals", index: 1 }], { metricKey: "watchesLast90Days" }); },
+  { expectedKinds: ["void_claim", "lineage_incomplete", "mixed_class"] });
+
+// 7. unknown (non-numeric) load-bearing metric kills the positive compare
+attemptVoid("NEGATIVE", "unknown load-bearing metric refuses (no interpolation ever)",
+  () => { const p = twinPack((t) => { t.value.watchesLast90Days = null; }, false);
+    return compareWindows(p, [{ collection: "temporalSignals", index: 0 }, { collection: "temporalSignals", index: 1 }], { metricKey: "watchesLast90Days" }); },
+  { expectedKinds: ["void_claim"] });
+
+// 8. missing lineage on a member refuses the conclusion (C4) — the twin
+//    gets its own honest non-overlapping window first, so the flow truly
+//    reaches the lineage check rather than refusing on overlap earlier.
+attemptVoid("NEGATIVE", "missing lineage on a member refuses the conclusion",
+  () => { const p = twinPack((t) => {
+      t.provenance = {};
+      t.value.window = { startsAt: producerPrevious.startsAt, endsAt: producerPrevious.endsAt };
+      t.value.previousWindow = {
+        startsAt: new Date(Date.parse(producerPrevious.startsAt) - 90 * 86_400_000).toISOString(),
+        endsAt: producerPrevious.startsAt,
+      };
+    });
+    return compareWindows(p, [{ collection: "temporalSignals", index: 0 }, { collection: "temporalSignals", index: 1 }], { metricKey: "watchesLast90Days" }); },
+  { expectedKinds: ["lineage_incomplete"] });
+
+// 9. contradictory coverage-vs-producer window declarations refuse (never reconciled)
+attemptVoid("NEGATIVE", "contradictory window declarations refuse (conflict propagates through comparison)",
+  () => { const p = twinPack((t) => {
+      t.coverage = { ...(t.coverage ?? {}), windowDays: 30 }; // coverage declares rolling_30d @ derivedAt, twin keeps the producer 90d span — conflict
+    }); return compareWindows(p, [{ collection: "temporalSignals", index: 0 }, { collection: "temporalSignals", index: 1 }], { metricKey: "watchesLast90Days" }); },
+  { expectedKinds: ["void_claim"] });
+
+// 10. a single window is never a comparison
+attemptVoid("NEGATIVE", "single-window temporal evidence refuses a comparison outright",
+  () => compareWindows(pack, [{ collection: "temporalSignals", index: 0 }], { metricKey: "watchesLast90Days" }),
+  { expectedKinds: ["lineage_incomplete"] });
+
+
 // ---- what stays VOID even with provenance-complete evidence
 attemptVoid("VOID", "including an unknown fact in a positive aggregate kills the whole claim",
   () => aggregateEvidence(pack, ev.facts.map((_, index) => ({ collection: "facts", index })),
@@ -236,7 +403,6 @@ attemptVoid("VOID", "including an unknown fact in a positive aggregate kills the
 // (Owner verdict after the 3d7f104 experiment isolated the defect to the
 // extractor's anchor vocabulary: extractWindow identifies the contract-typed
 // value.window; identification, never reconstruction — no DAY_MS here.)
-const producerWindow = CAPTURE.context.temporalSignals[0].value.window;
 const asOfClaim = temporalClaim(pack, { collection: "temporalSignals", index: 0 });
 const realSpanDays = (Date.parse(producerWindow.endsAt) - Date.parse(producerWindow.startsAt)) / 86_400_000;
 row("DERIVE", "real producer-declared window licenses a bounded as-of claim (identification, not reconstruction)",
@@ -316,10 +482,10 @@ lines.push(``);
 lines.push(`## What the calculus legitimately derives from real evidence`);
 lines.push(``);
 lines.push(`- **Restatements** carry real metrics inside real envelopes (watchesLast90Days=2,`);
-lines.push(`  totalWatches=3, never_matched=3, totalPlays=3) with status, scope lineage,`);
+lines.push(`  totalWatches=4, never_matched=4, totalPlays=4) with status, scope lineage,`);
 lines.push(`  and an inspectable derivation — never upgraded, never paraphrased.`);
 lines.push(`- **Aggregation arithmetic** over real facts: counts and sums over non-unknown`);
-lines.push(`  membership (7 facts recorded; total of 5 across 2 facts; one distinct subject).`);
+lines.push(`  membership (7 facts recorded; total of 7 across 2 facts; one distinct subject).`);
 lines.push(`- **Unknown ground** on the real surface (hoursWatched = null value) yields an`);
 lines.push(`  absence-qualified conclusion floored at \`unknown\` — open, scoped, never`);
 lines.push(`  smoothed upward.`);
@@ -355,6 +521,32 @@ lines.push(`2. **Interpretation & uncertainty payload** — upstream emits none 
 lines.push(`   classes that carry "licensed inference" and "named limits" remain unfed.`);
 lines.push(``);
 lines.push(`*(Temporal window identity WAS class #1 here; it is resolved — see above.)*`);
+
+lines.push(`## Two-window evidence (upstream 4dcb2a0): verification verdict`);
+lines.push(``);
+lines.push(`**SEMANTIC GAP (documented, not patched).** The producer's two windows are`);
+lines.push(`fully declared — typed, REQUIRED, single-anchored, half-open non-overlapping`);
+lines.push(`(see the EXTRACT row: bounds verbatim, \`previousWindow.endsAt ===`);
+lines.push(`window.startsAt\`) — and they crossed the entire seam intact. Gate 7's`);
+lines.push(`comparison rule is ≥2 evidence ITEMS with one extractable window each;`);
+lines.push(`upstream models the pair inside ONE row. The FINDING row shows no evidence`);
+lines.push(`ref in the real pack can address \`value.previousWindow\` — no extractor fix`);
+lines.push(`of the 2cc6f6c class can bridge that, because \`extractWindow\` recognizes the`);
+lines.push(`declared shape fine; it is the evidence-unit mismatch (row-vs-window) that`);
+lines.push(`blocks membership, upstream's modelling choice. The calculus itself is`);
+lines.push(`provably capable when comparisons arrive as two items (the adversarial`);
+lines.push(`battery exercises exactly that pattern). Smallest seams, ranked:`);
+lines.push(`1. **producer-side**: emit the previous observation as its own row (a`);
+lines.push(`   distinguishing row-identity dimension is required — the signal-row`);
+lines.push(`   uniqueness key is (owner, scope, profile, type, subject) — plus a shared`);
+lines.push(`   per-row numeric metric key for the existing compareWindows arithmetic);`);
+lines.push(`2. **Arena-side** (rejected for now): extend evidence addressing with an`);
+lines.push(`   explicit declared-window channel — real machinery surgery across`);
+lines.push(`   EvidenceRef/resolve/lineage for zero new licensed meaning.`);
+lines.push(`No fix implemented; verification-only slice per directive. The 10-case`);
+lines.push(`negative battery confirms no wall moved: overlap/identity/missing/`);
+lines.push(`malformed/scope/unknown/lineage/conflict/singleton all still refuse.`);
+lines.push(``);
 lines.push(``);
 if (failures.length) {
   lines.push(`## Failures`);

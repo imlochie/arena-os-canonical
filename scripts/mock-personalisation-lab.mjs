@@ -82,12 +82,13 @@ function sig(over) {
     && Number.isFinite(Date.parse(envelope.derivedAt))
   ) {
     const end = Date.parse(envelope.derivedAt);
+    const starts = new Date(end - envelope.coverage.windowDays * 86_400_000).toISOString();
+    const previousStarts = new Date(end - 2 * envelope.coverage.windowDays * 86_400_000).toISOString();
     envelope.value = {
       ...envelope.value,
-      window: {
-        startsAt: new Date(end - envelope.coverage.windowDays * 86_400_000).toISOString(),
-        endsAt: envelope.derivedAt,
-      },
+      window: { startsAt: starts, endsAt: envelope.derivedAt },
+      // upstream 4dcb2a0 REQUIRED field, same anchor, adjacent half-open span.
+      ...("previousWindow" in envelope.value ? {} : { previousWindow: { startsAt: previousStarts, endsAt: starts } }),
     };
   }
   return envelope;

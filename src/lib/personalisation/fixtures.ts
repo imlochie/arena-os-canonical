@@ -106,7 +106,10 @@ export function canonicalWire() {
         // producer-declared measurement bounds, anchored at the item's own
         // derivedAt (the producer's single-anchor invariant).
         value: { playsLast30d: 4, playsLast90d: 7,
-          window: { startsAt: "2026-08-20T05:00:00.000Z", endsAt: "2026-09-19T05:00:00.000Z" } },
+          window: { startsAt: "2026-08-20T05:00:00.000Z", endsAt: "2026-09-19T05:00:00.000Z" },
+          // required since upstream 4dcb2a0: the adjacent prior window,
+          // half-open non-overlapping, same anchor.
+          previousWindow: { startsAt: "2026-07-21T05:00:00.000Z", endsAt: "2026-08-20T05:00:00.000Z" } },
         coverage: { windowDays: 30, complete: true },
         evidenceClass: "temporal_signal",
       }),

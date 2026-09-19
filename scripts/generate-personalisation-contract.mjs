@@ -10,19 +10,22 @@
  *
  * Contract authority (locked by the owner, 2026-09-19 — Gate-5 re-verified
  * against the fetched tree, not a report; temporal-window re-verification
- * same day against the tree carrying upstream 141c789 + 3180bf9):
+ * same day against the trees carrying upstream 141c789 + 3180bf9 and
+ * then 4dcb2a0):
  *   repo    : imlochie/SomeSafePortablesoftware
  *   branch  : arena/01a0b5e9-somesafeportablesoftware
- *   commit  : 3180bf9bc63c1cf755c0725c2fd1336b2c360460
- *             ("fix: anchor temporal signal derivation"): producer now emits
- *             an explicit, contract-typed TemporalSignalValue.window
- *             {startsAt, endsAt} on recent_activity, anchored at the same
- *             derivation instant as derivedAt (single-anchor invariant,
- *             producer-regression-enforced). Supersedes
- *             b5ca1647883cc06c9180015b07470a7880d1a56a ("test: verify
- *             provenance-backed evidence surface"), which superseded
- *             0a971dd24ea73c21d5e54bda4ac486d394856702 ("feat: publish
- *             archive personalisation evidence contract").
+ *   commit  : 4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7
+ *             ("Evolve archive temporal evidence to two windows"):
+ *             TemporalSignalValue now REQUIRES [window, previousWindow] —
+ *             current [now-90d, now], previous [now-180d, now-90d),
+ *             half-open non-overlapping, one producer anchor, alongside
+ *             watchesPrevious90Days / watchesLast90Days. Supersedes
+ *             3180bf9bc63c1cf755c0725c2fd1336b2c360460 ("fix: anchor
+ *             temporal signal derivation", window bounds from 141c789),
+ *             itself superseding b5ca1647883cc06c9180015b07470a7880d1a56a
+ *             ("test: verify provenance-backed evidence surface"), which
+ *             superseded 0a971dd24ea73c21d5e54bda4ac486d394856702
+ *             ("feat: publish archive personalisation evidence contract").
  *
  * Outputs (both AUTO-GENERATED — never hand-edit):
  *   src/lib/personalisation/generated/contract.ts  (operation + schemas snapshot)
@@ -82,11 +85,11 @@ await runGenerator({
   contractDoc: CONTRACT_DOC,
   defaults: {
     repo: "imlochie/SomeSafePortablesoftware",
-    ref: "3180bf9bc63c1cf755c0725c2fd1336b2c360460",
+    ref: "4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7",
     sourceLabel:
       "https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml",
     sourceRef:
-      "imlochie/SomeSafePortablesoftware@3180bf9bc63c1cf755c0725c2fd1336b2c360460",
+      "imlochie/SomeSafePortablesoftware@4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7",
   },
   checkName: "Archive Assistant personalisation contract",
 });

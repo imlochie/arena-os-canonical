@@ -46,7 +46,8 @@ test("7.2 restatement: faithful re-voicing of one item — class, subject, value
     evidenceClass: "temporal_signal",
     subject: "show:example-show",
     value: { playsLast30d: 4, playsLast90d: 7,
-      window: { startsAt: "2026-08-20T05:00:00.000Z", endsAt: "2026-09-19T05:00:00.000Z" } },
+      window: { startsAt: "2026-08-20T05:00:00.000Z", endsAt: "2026-09-19T05:00:00.000Z" },
+      previousWindow: { startsAt: "2026-07-21T05:00:00.000Z", endsAt: "2026-08-20T05:00:00.000Z" } },
   });
   assert.equal(c.derivation.rule, "restate.v1");
 });

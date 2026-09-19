@@ -3,7 +3,7 @@
  * AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
  *
  * Source of truth : https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml
- * Upstream ref    : imlochie/SomeSafePortablesoftware@3180bf9bc63c1cf755c0725c2fd1336b2c360460
+ * Upstream ref    : imlochie/SomeSafePortablesoftware@4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7
  *
  * Byte-for-byte reproducible: regenerate whenever the upstream OpenAPI
  * document changes (npm run generate:personalisation-contract), then commit both
@@ -24,7 +24,7 @@
 
 export const personalisationContractMeta = {
   "sourceSpec": "https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml",
-  "sourceRef": "imlochie/SomeSafePortablesoftware@3180bf9bc63c1cf755c0725c2fd1336b2c360460"
+  "sourceRef": "imlochie/SomeSafePortablesoftware@4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7"
 };
 
 export const personalisationOperations = {
@@ -407,10 +407,14 @@ export const personalisationSchemas = {
   "TemporalSignalValue": {
     "type": "object",
     "required": [
-      "window"
+      "window",
+      "previousWindow"
     ],
     "properties": {
       "window": {
+        "$ref": "#/components/schemas/TemporalWindow"
+      },
+      "previousWindow": {
         "$ref": "#/components/schemas/TemporalWindow"
       }
     },

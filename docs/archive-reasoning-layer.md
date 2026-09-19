@@ -366,3 +366,18 @@ as-of claim whose window is the producer's own declared 90d span;
 everything else unchanged (trend still unavailable: one window; unknown
 floors; preference channel; byte-stable determinism). Suite 131/131
 (+4), adversarial 33/33, tsc/build clean.
+
+**Two-window verification (2026-09-19, upstream 4dcb2a0 — SEMANTIC GAP,
+documented):** the producer emitted two fully-declared, single-anchored,
+non-overlapping windows in ONE temporal row. Every seam layer preserved
+and validated them; the extractor identifies the current window
+verbatim; a bounded as-of claim stays certified. A within-row trend is
+unformable by existing machinery: `compareWindows` addresses evidence
+*items*, one window each, and no evidence ref can reach
+`value.previousWindow` (measured: 0 refs in the real pack). Not an
+extractor-shape gap (not the 2cc6f6c class); an evidence-unit mismatch —
+upstream's row-vs-window modelling choice. Zero machinery changes; the
+10-case negative battery confirms no wall moved. Smallest seam is
+producer-side (previous observation as its own row; needs a distinct
+signal-row identity dimension plus per-row metric parity). Report:
+`docs/gate7-two-window-verification.md`.

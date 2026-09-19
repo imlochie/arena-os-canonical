@@ -104,7 +104,7 @@ test("contract sanity: the generated snapshot exposes exactly the seventh read, 
   assert.equal(op.response, "PersonalisationContext");
 
   // The transcript of authority: the snapshot records the owner-verified ref.
-  assert.match(personalisationContractMeta.sourceRef, /3180bf9bc63c1cf755c0725c2fd1336b2c360460/);
+  assert.match(personalisationContractMeta.sourceRef, /4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7/);
 });
 
 test("contract sanity: PersonalisationContext requires domain plus all eight collections", () => {
@@ -127,7 +127,7 @@ test("contract sanity: temporal window is producer-declared, closed, and require
   assert.deepEqual(tw.required, ["startsAt", "endsAt"]);
   assert.equal(tw.additionalProperties, false);
   const tsv = schemas.TemporalSignalValue;
-  assert.deepEqual(tsv.required, ["window"]);
+  assert.deepEqual(tsv.required, ["window", "previousWindow"]); // second window since upstream 4dcb2a0
   const pts = schemas.PersonalisationTemporalSignal as {
     allOf?: Array<{ required?: string[]; properties?: Record<string, unknown> }>;
   };
@@ -304,7 +304,7 @@ test("gate-6 #4: domain plus all eight collections survive normalization verbati
   // Arena may label the source of evidence — as transport metadata,
   // wrapping the evidence, never inside it.
   assert.equal(transport.endpoint, "GET /assistant/personalisation-context");
-  assert.match(transport.contractRef, /3180bf9bc63c1cf755c0725c2fd1336b2c360460/);
+  assert.match(transport.contractRef, /4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7/);
   assert.ok(Number.isFinite(Date.parse(transport.receivedAt)));
 
   // The honest-empty context also survives: every collection present.
