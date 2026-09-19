@@ -427,3 +427,103 @@ session was taught and the course was then retitled and its week-1 objective
 replaced, the historical session still resolves to *Personal Systems* with its
 original objective, while the live course reads *Personal Systems & Behavioural
 Design*.
+
+---
+
+# LAYER 3 — ATTENTION AND COORDINATION
+
+*Appended after Layer 2 (`ff0b201`). Additive: 7 new tables (36 College total),
+no Layer 1 or Layer 2 table renamed or altered, 18 legacy tables untouched.*
+
+The faculty is an **orchestration problem**, not a collection of prompts. The
+orchestrator decides WHEN a position should operate; the AI is merely an
+implementation of that position at a bounded execution point.
+
+## Build order (as specified, 1–10 before AI)
+
+1. `attention.ts` — attention policies (declarative, no generation)
+2. activation/deactivation — `setAttention()`, nine states
+3. session phases — `enterPhase()`, 7 phases
+4. event model — 15 event types, `emitEvent()` routing
+5. consultation model — `requestConsultation()` / `answerConsultation()`
+6. handoff model — `handOff()` / `settleHandoff()`
+7. coordination state — `currentAttention()`, `coordinationBoard()`
+8. interruption authority — `mayInterrupt()`, four authority levels
+9. coordination trace — `coordinationTrace()`
+10. course protocols — `protocol.ts`, per-course configuration
+
+Only then is generation attached, in `coordination.ts`, at the points the
+orchestrator has already decided.
+
+## Attention states
+
+`dormant` · `watching` · `engaged` · `consulting` · `waiting` · `deferred` ·
+`escalated` · `handing_off` · `completed`
+
+Only `engaged`, `consulting` and `escalated` may speak. **Dormant positions
+consume no context and generate nothing** — verified: in an orchestrated class
+the Researcher recorded 2 attention transitions and 0 contributions.
+
+## Interruption authority (deliberately unequal)
+
+| position | authority | effect |
+|---|---|---|
+| Observer, Socratic, Specialist | `none` | must report via observation or handoff |
+| Critic, Assessor | `request` | may raise a consultation, never seize |
+| Instructor, Researcher | `material` | may interrupt only if the matter materially affects the lesson |
+| Registrar | `integrity` | may interrupt for institutional integrity — **not** routine recordkeeping |
+
+Every interruption carries a reason. Refusals are **recorded**, not dropped:
+role creep is evidence.
+
+## Signals are not findings
+
+`detectSignals()` returns `epistemicStatus: "signal"` — never `fact`. A keyword
+match proposes a candidate event; faculty decide whether it is real. The Critic
+is instructed to answer `NO CONCERN` when reasoning is sound, and stands down.
+
+## Coordination windows
+
+The student experiences ONE teacher. Internally, verified across three inputs:
+
+| student input | signals | faculty that generated | visible |
+|---|---|---|---|
+| "Okay, that sounds reasonable." | 0 | Instructor | 1 |
+| "But you said tracking always works. So basically every system fails…" | misconception, contradiction | Observer, **Critic**, Instructor | 1 |
+| "Is it true habits take 21 days? What does the research say?" | factual_uncertainty, research_required | Observer, **Researcher**, Instructor | 1 |
+
+The Critic woke only for the reasoning problem; the Researcher only for the
+factual one. Neither spoke to the student.
+
+## Role creep guard (§17)
+
+`checkRemit()` defers by matter, verified:
+
+- Instructor asked about the historical record → **defer to registrar**
+- Registrar asked how to teach → **defer to instructor**
+- Researcher asked whether the curriculum should change → **defer to founder**
+
+Curriculum authority defers to the founder, never to another AI position.
+
+## Course protocols
+
+`college_faculty_protocols` stores per-course configuration. PSY110 declares
+Instructor primary, Observer continuous, Critic and Researcher conditional,
+Registrar administrative. The protocol layer **refuses** to store a
+configuration that violates the branch split:
+
+- Registrar as `primary` → refused, "administration does not attend teaching sessions"
+- Instructor as `administrative` → refused, "faculty must not silently acquire record-keeping authority"
+- a `conditional` position with no activation conditions → refused
+
+## Remaining gaps
+
+1. Signal detection is heuristic (regex). It proposes candidates only; it is
+   deliberately not presented as understanding. A model-based detector would
+   slot in behind the same `DetectedSignal` contract.
+2. Consultation answers currently come from the consulted position's own run;
+   multi-turn consultation exchanges are not yet modelled.
+3. Attention policies are code-level defaults. Courses override composition and
+   phases, but not yet the trigger table itself.
+4. No live model is reachable here, so every faculty run degrades to
+   `localTextReply`. The orchestration is proven; the prose is fallback.

@@ -192,12 +192,20 @@ export default function CollegeStateView() {
             {s.institution.phase ? (
               <p className="mt-1 text-[12px] text-slate-500">{s.institution.phase}</p>
             ) : null}
-            <a
-              href="/college/curriculum"
-              className="mt-2 inline-block rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[12px] font-semibold text-emerald-200 hover:bg-emerald-500/20"
-            >
-              Manage curriculum →
-            </a>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <a
+                href="/college/curriculum"
+                className="inline-block rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[12px] font-semibold text-emerald-200 hover:bg-emerald-500/20"
+              >
+                Manage curriculum →
+              </a>
+              <a
+                href="/college/faculty"
+                className="inline-block rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-[12px] font-semibold text-indigo-200 hover:bg-indigo-500/20"
+              >
+                Faculty attention →
+              </a>
+            </div>
           </div>
           <div className="text-right">
             <p className="text-sm font-bold text-white">{s.realWorld.longDate}</p>

@@ -8,6 +8,17 @@ import { assessRecordWorthiness } from "@/lib/college/registrar";
 import { computeCollegeState } from "@/lib/college/state";
 import { getActiveVersion, snapshotCourse } from "@/lib/college/curriculum";
 import { brisbaneToday } from "@/lib/college/time";
+import { resolveProtocol, initialRoster } from "@/lib/college/protocol";
+import {
+  coordinationTrace,
+  currentAttention,
+  emitEvent,
+  enterPhase,
+  handOff,
+  setAttention,
+  settleHandoff,
+} from "@/lib/college/orchestrator";
+import { runCoordinationWindow } from "@/lib/college/coordination";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -16,14 +27,22 @@ export const maxDuration = 300;
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
+    const courseId = url.searchParams.get("courseId");
+    const sessionKind = url.searchParams.get("sessionKind") ?? "lesson";
     const orientation = await buildOrientation({
-      courseId: url.searchParams.get("courseId"),
-      sessionKind: url.searchParams.get("sessionKind") ?? "lesson",
+      courseId,
+      sessionKind,
       weekIndex: url.searchParams.get("weekIndex")
         ? Number(url.searchParams.get("weekIndex"))
         : null,
     });
-    return Response.json({ orientation });
+    const protocol = await resolveProtocol(courseId, sessionKind);
+    return Response.json({
+      orientation,
+      protocol,
+      plannedRoster: initialRoster(protocol),
+      note: "Faculty are not all activated. The protocol declares who is primary, who watches continuously, and who stays dormant until a declared condition occurs.",
+    });
   } catch (e) {
     console.error("orientation error", e);
     return Response.json(
@@ -33,10 +52,14 @@ export async function GET(req: Request) {
   }
 }
 
-// POST → run one complete class:
-//   orient → open session (pinned to curriculum version) → run faculty in their
-//   own bounded contexts → coordinate without erasing dissent → registrar
-//   worthiness check (handoff, not filing) → session left ready for review.
+// POST → run one complete class under faculty orchestration.
+//
+//   orient → resolve the course's faculty protocol → open session (pinned to
+//   the curriculum) → set initial attention → move through phases → route
+//   events to the positions whose remit they fall in → optional coordination
+//   window over a student response → close → registrar handoff.
+//
+// Positions that are not relevant stay dormant. Attending is not speaking.
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -44,6 +67,8 @@ export async function POST(req: Request) {
     const kind = getSessionKind(sessionKind);
     const courseId = body.courseId ? String(body.courseId) : null;
     const localOnly = body.localOnly === true;
+    const studentResponse = body.studentResponse ? String(body.studentResponse) : null;
+    const declaredEvents: string[] = Array.isArray(body.events) ? body.events.map(String) : [];
 
     const state = await computeCollegeState();
     const weekIndex =
@@ -54,7 +79,10 @@ export async function POST(req: Request) {
     // 1) ORIENT
     const orientation = await buildOrientation({ courseId, sessionKind, weekIndex, state });
 
-    // 2) OPEN SESSION — pinned to the curriculum context that exists NOW
+    // 2) PROTOCOL — the course decides which faculty are relevant to it
+    const protocol = await resolveProtocol(courseId, sessionKind);
+
+    // 3) OPEN SESSION — pinned to the curriculum context that exists NOW
     const version = await getActiveVersion();
     const snapshot = courseId
       ? await snapshotCourse(courseId, version?.id ?? null, "session opened")
@@ -73,7 +101,7 @@ export async function POST(req: Request) {
         objective: String(
           body.objective ?? orientation.whatShouldBeHappening.objective ?? ""
         ).slice(0, 2000),
-        facultyPlan: JSON.stringify(orientation.whoShouldAct.map((c) => c.positionKey)),
+        facultyPlan: JSON.stringify(protocol.positions.map((p) => p.positionKey)),
         curriculumVersionId: version?.id ?? null,
         courseSnapshotId: snapshot?.id ?? null,
       })
@@ -86,12 +114,54 @@ export async function POST(req: Request) {
       actor: "system",
     });
 
-    // 3) TEACH — each position in its own bounded context
+    // 4) INITIAL ATTENTION — most of the faculty is deliberately dormant
+    for (const r of initialRoster(protocol)) {
+      await setAttention({
+        sessionId: session.id,
+        positionKey: r.positionKey,
+        state: r.state,
+        reason: r.reason,
+        phaseKey: "orientation",
+      });
+    }
+
+    await enterPhase({
+      sessionId: session.id,
+      phaseKey: "orientation",
+      protocol,
+      note: "Session opened.",
+    });
+
+    await emitEvent({
+      sessionId: session.id,
+      eventType: "lesson_started",
+      payload: session.objective || "(no objective recorded)",
+      emittedBy: "system",
+      protocol,
+    });
+
+    // Context that genuinely changes attention is an event, not decoration.
+    if (state.attention?.items?.some((i) => /deviation/i.test(i.title ?? ""))) {
+      await emitEvent({
+        sessionId: session.id,
+        eventType: "timetable_deviation_detected",
+        payload: "An open deviation exists in College State.",
+        emittedBy: "system",
+        protocol,
+      });
+    }
+
+    // 5) TEACHING PHASE — only positions the phase makes primary actually run
+    await enterPhase({ sessionId: session.id, phaseKey: "teaching", protocol });
+
     const runs: FacultyRun[] = [];
     const errors: string[] = [];
-    for (const c of orientation.whoShouldAct) {
+    const attentionAfterPhase = await currentAttention(session.id);
+    const speaking = attentionAfterPhase.filter((a) => a.state === "engaged");
+
+    for (const a of speaking) {
       const r = await runFacultyPosition({
-        positionKey: c.positionKey,
+        positionKey: a.positionKey,
         sessionId: session.id,
         courseId,
         weekIndex,
@@ -101,12 +171,43 @@ export async function POST(req: Request) {
         localOnly,
       });
       if ("error" in r) errors.push(r.error);
-      else runs.push(r);
+      else {
+        runs.push(r);
+        await setAttention({
+          sessionId: session.id,
+          positionKey: a.positionKey,
+          state: "engaged",
+          reason: "Contributed to the teaching phase.",
+          spoke: true,
+        });
+      }
     }
 
-    // 4) COORDINATE — preserve the individual positions
-    const coordination = coordinateFaculty(runs);
+    // 6) COORDINATION WINDOW — only when the student actually said something
+    let window = null;
+    if (studentResponse) {
+      window = await runCoordinationWindow({
+        sessionId: session.id,
+        protocol,
+        studentResponse,
+        courseId,
+        weekIndex,
+        objective: session.objective,
+        orientationBriefing: orientation.briefing,
+        declaredEvents,
+        localOnly,
+      });
+      for (const c of window.internalContributions) {
+        if (!runs.some((r) => r.positionKey === c.positionKey && r.content === c.content)) {
+          runs.push(c);
+        }
+      }
+    }
 
+    // 7) REFLECTION
+    await enterPhase({ sessionId: session.id, phaseKey: "reflection", protocol });
+
+    const coordination = coordinateFaculty(runs);
     await db.insert(collegeSessionEvents).values({
       sessionId: session.id,
       stage: "understanding",
@@ -114,13 +215,49 @@ export async function POST(req: Request) {
       actor: "system",
     });
 
-    // 5) REGISTRAR HANDOFF — Administration is invoked only now, and only
-    // evaluates worthiness. It does not attend the class and does not file.
+    // 8) SESSION NEARING COMPLETION — this is what wakes Administration
+    await emitEvent({
+      sessionId: session.id,
+      eventType: "session_nearing_completion",
+      payload: "Teaching complete; evaluating record-worthiness.",
+      emittedBy: "system",
+      protocol,
+    });
+
+    // 9) HANDOFF ACROSS THE BRANCH BOUNDARY — explicit and auditable
     const worthiness = assessRecordWorthiness({
       subject: session.title,
       content: coordination.summary,
       sessionCompleted: true,
     });
+
+    let registrarHandoff = null;
+    if (worthiness.recordWorthy) {
+      await enterPhase({ sessionId: session.id, phaseKey: "institutional_record", protocol });
+      const ho = await handOff({
+        sessionId: session.id,
+        fromPosition: "instructor",
+        toPosition: "registrar",
+        reason: worthiness.reason,
+        payload: coordination.summary,
+      });
+      if (ho.ok) {
+        await settleHandoff({
+          id: ho.handoff.id,
+          disposition: "accepted",
+          dispositionReason:
+            "Administration accepts the handoff and will evaluate record-worthiness. Filing remains a separate act.",
+        });
+        registrarHandoff = ho.handoff;
+      }
+    } else {
+      await setAttention({
+        sessionId: session.id,
+        positionKey: "registrar",
+        state: "dormant",
+        reason: "Nothing record-worthy occurred. No record required.",
+      });
+    }
 
     const [updated] = await db
       .update(collegeSessions)
@@ -133,22 +270,25 @@ export async function POST(req: Request) {
       .where(eq(collegeSessions.id, session.id))
       .returning();
 
-    await db.insert(collegeSessionEvents).values({
-      sessionId: session.id,
-      stage: "faculty_record",
-      note: `Faculty handed off to Administration. Record-worthy: ${worthiness.recordWorthy} (${worthiness.reason})`,
-      actor: "faculty",
-    });
+    const trace = await coordinationTrace(session.id);
+    const finalAttention = await currentAttention(session.id);
 
     return Response.json(
       {
         session: updated,
+        protocol: { label: protocol.label, isDefault: protocol.isDefault },
         orientation,
         faculty: runs,
         coordination,
+        coordinationWindow: window,
+        attention: finalAttention,
+        trace,
         registrarHandoff: {
           ...worthiness,
-          note: "Administration evaluates worthiness. Filing remains a separate explicit act — POST /api/college/records then PATCH action=file.",
+          handoff: registrarHandoff,
+          note: worthiness.recordWorthy
+            ? "Administration evaluates worthiness. Filing remains a separate explicit act — POST /api/college/records then PATCH action=file."
+            : "NO RECORD REQUIRED. The Registrar stayed dormant.",
         },
         facultyErrors: errors,
         curriculumPinned: {

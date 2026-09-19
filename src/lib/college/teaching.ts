@@ -73,6 +73,8 @@ export interface FacultyRun {
   ms: number;
   contextIncluded: string[];
   limitations: string[];
+  /** False when this was internal faculty work the student never sees. */
+  visibleToStudent?: boolean;
 }
 
 /**
@@ -88,6 +90,20 @@ export async function runFacultyPosition(opts: {
   orientationBriefing: string;
   priorContributions?: Array<{ positionKey: string; content: string }>;
   localOnly?: boolean;
+  /**
+   * Replaces the position's default task for this one execution point. The
+   * orchestrator uses this to ask a position a *specific* question rather than
+   * its general one — e.g. asking the Critic to inspect a single response.
+   */
+  taskOverride?: string;
+  /** Additional bounded context supplied by the orchestrator. */
+  extraContext?: string;
+  /**
+   * Whether this execution produces student-visible output. Internal faculty
+   * work (observation, silent inspection, consultation) is NOT shown in the
+   * classroom — attending is not the same as speaking.
+   */
+  visibleToStudent?: boolean;
 }): Promise<FacultyRun | { error: string }> {
   const position = getFacultyPosition(opts.positionKey);
   if (!position) return { error: `unknown position ${opts.positionKey}` };
@@ -117,18 +133,26 @@ export async function runFacultyPosition(opts: {
     .map((p) => `--- ${p.positionKey} said ---\n${p.content.slice(0, 900)}`)
     .join("\n\n");
 
+  const task = opts.taskOverride ?? spec.task;
+
   const userContent = [
     opts.orientationBriefing,
     "",
     "---",
     "",
     packet.context,
+    opts.extraContext ? `\n---\n\n${opts.extraContext}` : "",
     peer ? `\n---\n\nOTHER FACULTY POSITIONS IN THIS SESSION:\n${peer}` : "",
     "",
     "---",
     "",
-    `YOUR TASK (${position.name}): ${spec.task}`,
-  ].join("\n");
+    opts.visibleToStudent === false
+      ? "THIS IS INTERNAL FACULTY WORK. It will NOT be shown to the student. Do not address the student."
+      : "",
+    `YOUR TASK (${position.name}): ${task}`,
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
 
   const started = Date.now();
   const res = await generate({
@@ -153,10 +177,13 @@ export async function runFacultyPosition(opts: {
     })
     .returning();
 
+  const internal = opts.visibleToStudent === false;
   await db.insert(collegeSessionEvents).values({
     sessionId: opts.sessionId,
     stage: "lesson",
-    note: `${position.name} contributed (${spec.contributionType}, via ${res.via}).`,
+    note: `${position.name} contributed (${spec.contributionType}, via ${res.via})${
+      internal ? " — internal faculty work, not shown to the student." : "."
+    }`,
     actor: `faculty:${position.key}`,
   });
 
@@ -170,6 +197,7 @@ export async function runFacultyPosition(opts: {
     ms: Date.now() - started,
     contextIncluded: packet.included,
     limitations: packet.limitations,
+    visibleToStudent: opts.visibleToStudent !== false,
   };
 }
 

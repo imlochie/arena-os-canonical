@@ -627,3 +627,154 @@ export type CollegeCurriculumEntryRow = typeof collegeCurriculumEntries.$inferSe
 export type CollegeCourseSnapshotRow = typeof collegeCourseSnapshots.$inferSelect;
 export type CollegeCurriculumChangeRow = typeof collegeCurriculumChanges.$inferSelect;
 export type CollegeCurriculumProposalRow = typeof collegeCurriculumProposals.$inferSelect;
+
+// ============================================================================
+// LAYER 3 — attention, coordination and orchestration
+// ============================================================================
+// Additive only. No Layer 1 or Layer 2 table is renamed or altered.
+//
+// The faculty is an ORCHESTRATION problem, not a collection of prompts. These
+// tables make attention, activation, consultation, handoff and interruption
+// first-class institutional state rather than emergent LLM behaviour.
+// ============================================================================
+
+// Session phases. A phase is a declared segment of a class that determines
+// which faculty are relevant. Distinct from `stage` on college_sessions, which
+// records lifecycle position; a phase governs ATTENTION.
+export const collegeSessionPhases = pgTable("college_session_phases", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  phaseKey: text("phase_key").notNull(), // orientation|inquiry|teaching|challenge|practice|reflection|institutional_record
+  sequence: integer("sequence").notNull().default(0),
+  // Which positions the phase makes relevant — from the course protocol,
+  // never hardcoded globally.
+  primaryPositions: text("primary_positions").notNull().default("[]"), // JSON
+  watchingPositions: text("watching_positions").notNull().default("[]"), // JSON
+  enteredAt: timestamp("entered_at").defaultNow(),
+  exitedAt: timestamp("exited_at"),
+  note: text("note").notNull().default(""),
+});
+
+// Events that occur during a session. Faculty become active because an event
+// falls within their remit — not because "the AI was asked to answer".
+export const collegeSessionEventBus = pgTable("college_session_event_bus", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  sequence: integer("sequence").notNull().default(0),
+  // lesson_started | learning_objective_changed | student_response_received |
+  // misconception_detected | factual_uncertainty_detected |
+  // contradiction_detected | research_required | learning_evidence_observed |
+  // goal_conflict_detected | timetable_deviation_detected | decision_proposed |
+  // decision_accepted | record_worthy_event_detected | session_phase_changed |
+  // session_nearing_completion
+  eventType: text("event_type").notNull(),
+  payload: text("payload").notNull().default(""),
+  // Who or what emitted it: student | system | faculty:<key>
+  emittedBy: text("emitted_by").notNull().default("system"),
+  phaseKey: text("phase_key").notNull().default(""),
+  // Which positions this event was routed to, and why (JSON audit).
+  routedTo: text("routed_to").notNull().default("[]"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Stateful faculty participation. A faculty member can ATTEND without SPEAKING.
+export const collegeFacultyAttention = pgTable("college_faculty_attention", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  positionKey: text("position_key").notNull(),
+  // dormant|watching|engaged|consulting|waiting|deferred|escalated|handing_off|completed
+  state: text("state").notNull().default("dormant"),
+  previousState: text("previous_state").notNull().default(""),
+  // Why the state changed — every transition is explainable.
+  reason: text("reason").notNull().default(""),
+  // The event that caused the transition, if any.
+  triggeredByEventId: uuid("triggered_by_event_id"),
+  phaseKey: text("phase_key").notNull().default(""),
+  // Did this transition produce student-visible output?
+  spoke: boolean("spoke").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// One faculty position formally requesting another's attention.
+export const collegeConsultations = pgTable("college_consultations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  requestingPosition: text("requesting_position").notNull(),
+  requestedPosition: text("requested_position").notNull(),
+  reason: text("reason").notNull().default(""),
+  question: text("question").notNull().default(""),
+  // Evidence references handed over with the request (JSON).
+  evidenceRefs: text("evidence_refs").notNull().default("[]"),
+  urgency: text("urgency").notNull().default("normal"), // low|normal|high|urgent
+  scope: text("scope").notNull().default(""), // what the consulted position may address
+  responseRequired: boolean("response_required").notNull().default(true),
+  // open|answered|declined|out_of_remit|expired
+  status: text("status").notNull().default("open"),
+  response: text("response").notNull().default(""),
+  // The decision or observation that resulted.
+  outcome: text("outcome").notNull().default(""),
+  contributionId: uuid("contribution_id"), // links to the produced contribution
+  respondedAt: timestamp("responded_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Deliberate transfer of responsibility between positions. Explicit + auditable.
+export const collegeHandoffs = pgTable("college_handoffs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  fromPosition: text("from_position").notNull(),
+  toPosition: text("to_position").notNull(),
+  reason: text("reason").notNull().default(""),
+  // What is being handed over.
+  payload: text("payload").notNull().default(""),
+  // Did the receiving position accept, defer, or refuse (out of remit)?
+  disposition: text("disposition").notNull().default("pending"), // pending|accepted|deferred|refused
+  dispositionReason: text("disposition_reason").notNull().default(""),
+  // Crossing the faculty/administration boundary is significant.
+  crossesBranch: boolean("crosses_branch").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Interruptions. Not every position may interrupt, and every interruption
+// must carry a reason. Refused attempts are recorded too — role creep is
+// evidence, not something to hide.
+export const collegeInterruptions = pgTable("college_interruptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  positionKey: text("position_key").notNull(),
+  interruptedPosition: text("interrupted_position").notNull().default(""),
+  reason: text("reason").notNull().default(""),
+  urgency: text("urgency").notNull().default("normal"),
+  // granted|refused — refusal is a first-class outcome
+  outcome: text("outcome").notNull().default("refused"),
+  outcomeReason: text("outcome_reason").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Course-specific faculty protocol. Attention is configuration, not code.
+// A course declares which positions are primary, continuous, conditional and
+// administrative — and under what conditions the conditional ones activate.
+export const collegeFacultyProtocols = pgTable("college_faculty_protocols", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Null courseId = the College default protocol.
+  courseId: uuid("course_id"),
+  sessionKind: text("session_kind").notNull().default(""),
+  label: text("label").notNull().default(""),
+  // JSON: [{positionKey, mode, activatesOn[], reason}]
+  //   mode: primary|continuous|conditional|administrative
+  positions: text("positions").notNull().default("[]"),
+  // JSON: [{phaseKey, primary[], watching[]}]
+  phasePlan: text("phase_plan").notNull().default("[]"),
+  active: boolean("active").notNull().default(true),
+  reason: text("reason").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type CollegeSessionPhaseRow = typeof collegeSessionPhases.$inferSelect;
+export type CollegeSessionEventBusRow = typeof collegeSessionEventBus.$inferSelect;
+export type CollegeFacultyAttentionRow = typeof collegeFacultyAttention.$inferSelect;
+export type CollegeConsultationRow = typeof collegeConsultations.$inferSelect;
+export type CollegeHandoffRow = typeof collegeHandoffs.$inferSelect;
+export type CollegeInterruptionRow = typeof collegeInterruptions.$inferSelect;
+export type CollegeFacultyProtocolRow = typeof collegeFacultyProtocols.$inferSelect;
