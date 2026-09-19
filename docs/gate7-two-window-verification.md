@@ -142,3 +142,11 @@ nothing. The SET of licensed conclusions did not grow.
 > bounded as-of claims*. Whether the machinery may *compare* those two
 > windows is now a producer modelling question with a zero-Arena-delta
 > answer — not an Arena construction problem.
+
+---
+
+**Next slice (proposal only, owner-gated):** `docs/gate7-two-window-seam-proposal.md`
+— the landing-ready producer-side delta (previous observation as its own
+row, `recent_activity_previous` + parity key `watches`), verified
+zero-Arena-delta, with downstream movement pre-registered. Not
+implemented anywhere.
