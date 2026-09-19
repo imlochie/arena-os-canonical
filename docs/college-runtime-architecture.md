@@ -787,3 +787,167 @@ accumulated observations cannot silently satisfy the gate under test).
 3. Signal detection remains regex-based (`epistemicStatus: "signal"`).
 4. No live model is reachable in this sandbox; all faculty output during
    verification came from the `local:text` fallback.
+
+---
+
+# LAYER 6 — THE CLASS RUNTIME
+
+Layers 1–5 built the organs. Layer 6 makes them operate as one organism:
+
+```
+MEMORY → ATTENTION → COORDINATION → TEACHING → RECORD → AUDIT
+```
+
+Nothing was redesigned and nothing working was replaced. `/api/college/class`
+still runs the Layer 2–5 loop unchanged; the member-driven runtime is a second
+entry point at `/api/college/class-runtime`, so any regression stays
+attributable.
+
+## THREE RIVERS — the distinction that governs everything else
+
+The system now holds three different kinds of memory, and conflating them is
+how an institution loses control of its own knowledge:
+
+| | what it is | threshold |
+|---|---|---|
+| **Event Ledger** | what happened | none — record generously |
+| **Faculty Memory** | what one member learned from what happened | member's own judgement |
+| **Institutional Memory** | what the College has established | corroboration, then the ladder |
+
+Two chains run from events, and they are deliberately not the same chain:
+
+```
+Event → Observation → Faculty Memory → Corroboration → Institutional Memory
+Event → Audit → Interpretation → Governance Decision
+```
+
+They meet only at the founder. Nothing crosses from the first river to the
+second automatically.
+
+## A. The resolution chain (§1 §2)
+
+`preflightClass()` resolves clock → slot → curriculum → course version →
+objective → faculty → member versions → attention → memory → real-world
+context, and reports each subsystem as a **diagnostic state** — valid,
+degraded, unavailable — never a score. "Class health: 7/10" would say nothing
+about which organ is failing.
+
+Preflight is a GET with no side effects. Checking whether a class can start
+must never start one.
+
+A blocking problem returns 409 with the problems named and **nothing created
+and nothing substituted**. Proving this is test 27: a class requested against
+a non-existent course blocks, names the problem, and creates no session row.
+
+## B. Coordination is a graph, not a hardcoded sequence (§8–§12)
+
+`buildCoordinationGraph()` resolves who may talk to whom from member
+configuration. Edges exist or they do not; no runtime shortcut may invent one.
+
+Building it surfaced two modelling errors that had been latent since Layer 3:
+
+1. **Deferring to the founder is not a broken edge.** `founder` and
+   `institutional authority` are not faculty positions, so the graph was
+   refusing the single most important thing a member can do with a question
+   that is not theirs. They are now **escalations** that leave the class and
+   become governance items.
+
+2. **The administration boundary only held in one direction.** The Registrar
+   could not be consulted, but nothing stopped the Registrar from consulting
+   or interrupting *into* a class. Administration must not silently become
+   teaching faculty; the boundary is now enforced on both the source and the
+   target of every edge. The Registrar may still **defer** — routing a
+   teaching question back to the Instructor is exactly right.
+
+## C. Per-member bounded context (§3–§5 §17 §18)
+
+`buildMemberContext()` wraps the position packet rather than replacing it, so
+the institutional charter and epistemic labelling survive. It adds faculty
+memory retrieved **narrowly** (limit 4, not 50), each entry carrying a
+`retrievedBecause` so "why did the Instructor remember this?" is answerable
+without reading source code.
+
+Verified distinct in test 5: observer 2 scopes in / 10 withheld; critic 5/7;
+researcher 4/8; instructor 5/7. Different members genuinely receive different
+slices of reality.
+
+## D. The output contract (§32 §33 §34)
+
+Faculty do not reply; they return a proposal —
+`ACTION · CONTENT · TARGET · REASON · CONFIDENCE · EVIDENCE` — and the runtime
+decides whether it is permitted. An action the member may not take is
+**downgraded to observation with the content preserved**, because the thinking
+may matter even when the act does not.
+
+Parsing is defensive. A model that ignores the format produces a valid
+observation, not an error.
+
+## E. Attention is not speech (§7 §14)
+
+Most members watch. Silence is recorded as a successful outcome and never
+padded into dialogue to demonstrate that an agent ran. One class, one
+student-facing voice — the Instructor — with everything else internal,
+recorded and inspectable.
+
+## F. Inspector and replay (§35 §36)
+
+`/college/inspector` reconstructs a session from its immutable references:
+the curriculum version it was pinned to, the member versions that served, the
+memory that existed, the attention decisions with their `decidedBy`, the
+ledger in order.
+
+**Replay is not re-execution.** Nothing re-runs a class. Where the College has
+changed since, the divergence is reported rather than hidden — a course
+renamed after the fact shows both names.
+
+## G. Governance queue (§31) and the audit boundary (§29)
+
+One derived queue, phrased identically:
+`WHAT · WHY · EVIDENCE · SOURCE · IMPACT · AUTHORITY REQUIRED`.
+
+Derived, not stored — every item already exists somewhere, and a second copy
+would drift. Audit signals are marked **informational**: a request to look,
+never a request to act. An empty queue says **NO CHANGE INDICATED**.
+
+## H. Defects this layer found in itself
+
+Three were caught by running the runtime and reading its own records:
+
+1. **Fallback output was becoming faculty memory.** The offline engine's
+   boilerplate was being stored as observations — and because memory
+   accumulates toward a corroboration threshold, repeated fallback runs could
+   have carried that text across the crossing gate into institutional truth.
+   Fallback executions are now refused memory explicitly. Five polluted rows
+   were purged.
+
+2. **Duplicate `memory_recorded` ledger entries**, because
+   `facultyMemory.remember()` already writes one. The second would have
+   inflated any audit that counts events.
+
+3. **The student-facing response was missing from the ledger** — the one act
+   of the class the student actually experiences.
+
+## I. Tests
+
+`scripts/college-layer6-tests.mjs` — 28 assertions, one per §39 requirement,
+against the real HTTP API and database. **28/28 passing**, idempotent across
+three consecutive runs. Layer 5's 20 still pass: **48 assertions total**.
+
+Four initially failed and all four were the *test's* wrong assumptions, not the
+system's behaviour — authority refusals arrive in `warnings`, the audit takes
+`scopeType`/`scopeId`, overrides belong to `/timetable-live` and need a date
+on the slot's own weekday. The system was right each time.
+
+## Layer 6 gaps
+
+1. Consultation fires only when a member's attention resolves to `consult`.
+   With the current configuration no member does, so consultation is proven
+   by graph edges rather than by a live consultation in the canonical run.
+2. Class phases (§15 §16) use the existing phase plan; per-member phase
+   participation is resolved but not yet configurable in the Builder.
+3. Interruption is modelled and authority-checked, but no member currently
+   escalates during a normal class, so acceptance is proven structurally.
+4. **No live model is reachable in this sandbox.** Every faculty utterance in
+   verification came from `local:text`. Routing, authority, memory,
+   coordination and state are proven; language quality is not tested and must
+   not be inferred.

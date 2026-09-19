@@ -229,6 +229,18 @@ export default function CollegeStateView() {
               >
                 Audit →
               </a>
+              <a
+                href="/college/governance"
+                className="inline-block rounded-lg border border-slate-500/30 bg-slate-500/10 px-3 py-1.5 text-[12px] font-semibold text-slate-200 hover:bg-slate-500/20"
+              >
+                Governance →
+              </a>
+              <a
+                href="/college/inspector"
+                className="inline-block rounded-lg border border-slate-500/30 bg-slate-500/10 px-3 py-1.5 text-[12px] font-semibold text-slate-200 hover:bg-slate-500/20"
+              >
+                Inspector →
+              </a>
             </div>
           </div>
           <div className="text-right">

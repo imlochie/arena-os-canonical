@@ -77,19 +77,29 @@ export default function DayPage() {
     Array<{ id: string; title: string; severity: string; occurrenceCount: number }>
   >([]);
   const [date, setDate] = useState("");
+  const [liveState, setLiveState] = useState<{
+    current: { kind: string; title: string; startTime: string; endTime: string; completionEvidence: string };
+    next: { title: string; startTime: string; inMinutes: number | null } | null;
+    faculty: Array<{ positionKey: string; memberName: string; state: string; detail: string }>;
+    timetable: { state: string; detail: string };
+    governance: { actionable: number; informational: number };
+    audit: { state: string; detail: string };
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async (d?: string) => {
     const qs = d ? `?date=${d}` : "";
-    const [tl, led, notif] = await Promise.all([
+    const [tl, led, notif, ls] = await Promise.all([
       fetch(`/api/college/timetable-live${qs}`).then((r) => r.json()),
       fetch(`/api/college/ledger${qs}`).then((r) => r.json()),
       fetch("/api/college/ledger?view=notifications").then((r) => r.json()),
+      fetch("/api/college/live").then((r) => r.json()).catch(() => null),
     ]);
     setLive(tl.live ?? null);
     setEntries(led.entries ?? []);
     setNotifications(notif.pending ?? []);
+    setLiveState(ls?.state ?? null);
     setDate(led.date ?? d ?? "");
     setLoading(false);
   }, []);
@@ -154,6 +164,99 @@ export default function DayPage() {
             </Link>
           </div>
         </div>
+
+        {/* RIGHT NOW — the live runtime state (§24). Only meaningful for today. */}
+        {liveState && (
+          <div
+            style={{
+              marginTop: 16,
+              padding: "13px 16px",
+              background: "#0e1420",
+              border: "1px solid #1e293b",
+              borderRadius: 10,
+              display: "grid",
+              gridTemplateColumns: "1.4fr 1fr 1.2fr",
+              gap: 18,
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 10, letterSpacing: 1.3, color: "#475569", fontWeight: 700 }}>
+                RIGHT NOW
+              </div>
+              <div style={{ fontSize: 14.5, marginTop: 4, color: liveState.current.kind === "none" ? "#64748b" : "#e2e8f0" }}>
+                {liveState.current.title}
+                {liveState.current.startTime && (
+                  <span style={{ color: "#64748b", fontSize: 12 }}>
+                    {" "}
+                    {liveState.current.startTime}
+                    {liveState.current.endTime ? `–${liveState.current.endTime}` : ""}
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: "#475569", marginTop: 3, lineHeight: 1.45 }}>
+                {liveState.current.completionEvidence}
+              </div>
+              {liveState.next && (
+                <div style={{ fontSize: 11.5, color: "#64748b", marginTop: 6 }}>
+                  NEXT — {liveState.next.title} at {liveState.next.startTime}
+                  {liveState.next.inMinutes !== null && liveState.next.inMinutes >= 0
+                    ? ` (in ${liveState.next.inMinutes} min)`
+                    : ""}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontSize: 10, letterSpacing: 1.3, color: "#475569", fontWeight: 700 }}>
+                FACULTY
+              </div>
+              {liveState.faculty.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#475569", marginTop: 4 }}>none configured</div>
+              ) : (
+                liveState.faculty.slice(0, 6).map((f) => (
+                  <div key={f.positionKey} style={{ fontSize: 11.5, marginTop: 3, color: "#94a3b8" }}>
+                    {f.memberName}
+                    <span
+                      style={{
+                        color:
+                          f.state === "speaking"
+                            ? "#22c55e"
+                            : f.state === "watching"
+                              ? "#38bdf8"
+                              : "#475569",
+                      }}
+                    >
+                      {" "}
+                      — {f.state}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontSize: 10, letterSpacing: 1.3, color: "#475569", fontWeight: 700 }}>
+                INSTITUTION
+              </div>
+              <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 4 }}>
+                Timetable — {liveState.timetable.state}
+              </div>
+              <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 3 }}>
+                Governance —{" "}
+                {liveState.governance.actionable ? (
+                  <Link href="/college/governance" style={{ color: "#fbbf24", textDecoration: "none" }}>
+                    {liveState.governance.actionable} awaiting decision →
+                  </Link>
+                ) : (
+                  <span style={{ color: "#475569" }}>nothing awaiting decision</span>
+                )}
+              </div>
+              <div style={{ fontSize: 11.5, color: "#94a3b8", marginTop: 3 }}>
+                Audit — <span style={{ color: "#475569" }}>{liveState.audit.state}</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {notifications.length > 0 && (
           <div style={{ marginTop: 16, padding: "12px 15px", background: "#2b2417", border: "1px solid #d97706", borderRadius: 9 }}>
