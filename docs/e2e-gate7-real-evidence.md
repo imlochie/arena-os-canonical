@@ -1,6 +1,6 @@
 # Gate 7 — first real-evidence reasoning pass
 
-> **Date:** 2026-09-19 · **Base commit:** `67822dd` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-real-evidence-driver.mjs` · **Verdict:** **PASS** (32/32)
+> **Date:** 2026-09-19 · **Base commit:** `2641049` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-real-evidence-driver.mjs` · **Verdict:** **PASS** (34/34)
 >
 > **The question** (Gate 7's own, finally not hypothetical): given real
 > provenance-backed evidence, what is Arena actually permitted to conclude?
@@ -9,7 +9,7 @@
 
 The payload at `scripts/fixtures/real-evidence-upstream-capture.json` is the
 actual JSON upstream's runtime emitted — `getPersonalisationContext()` at
-`imlochie/SomeSafePortablesoftware@b5ca1647883cc06c9180015b07470a7880d1a56a`,
+`imlochie/SomeSafePortablesoftware@8e54a283c392c53f64099a903b293de220e565ce`,
 seeded with the exact events of upstream's own regression test ("rebuilds
 explainable recent, long-term, rewatch, scope, and explicit signals"), derived
 as-of 2026-09-19T00:00:00.000Z. It is not a fixture Arena designed: Arena captured
@@ -21,38 +21,40 @@ normalize → lattice → calculus → renderer).
 
 | # | Class | Check | Outcome |
 |---|-------|-------|---------|
-| 1 | INGRESS | real payload validates against the regenerated contract and normalizes verbatim | ✅ {"facts":8,"observedSignals":2,"temporalSignals":1,"collectionFacts":1,"interpretations":0,"uncertainties":0,"explicitPreferences":1} |
-| 2 | INGRESS | real provenance arrives intact through the seam | ✅ observationIds=4 evidenceKeys=4 ingestionBatchIds=["manual-cd159f07-ee2b-4f63-9923-a3d2c020c88d"] eventOccurredAt=4 observedAt=4 scope=plex:movies-v1 |
-| 3 | INGRESS | the surface carries its own constraints and they cross verbatim | ✅ ["Signals are observations, not likes or preferences","No universal taste score","No recommendation decision is made here"] — _the producer tells the seam what is not licensed; preservation keeps that_ |
-| 4 | DERIVE | restate real observed fact (totalPlays) | ✅ CERTIFIED status=observed statement="The archive records 4 for "totalPlays" in the all_ingested window." — _certificate carried_ |
-| 5 | DERIVE | restate real long-term signal with full provenance behind it | ✅ CERTIFIED status=derived statement="The archive records title=behaviour-film, totalWatches=4, firstWatchedAt=2020-01-01T10:00:00.000Z, lastWatchedAt=2026-09-01T10:00:00.000Z, activeMonths=4 for "behaviour-film" in the all_ingested window." — _certificate carried_ |
-| 6 | DERIVE | restate real temporal signal inside a caller-declared evidence window | ✅ CERTIFIED status=derived statement="The archive records title=behaviour-film, watchesLast30Days=1, watchesLast90Days=2, watchesPrevious90Days=1, lastWatchedAt=2026-09-01T10:00:00.000Z, comparisonWindowDays=90, window={…}, previousWindow={…} for "behaviour-film" in the rolling_90d window (2026-06-21T12:20:41.670Z to 2026-09-19T12:20:41.670Z)." — _certificate carried_ |
-| 7 | DERIVE | restate real collection fact | ✅ CERTIFIED status=derived statement="The archive records never_matched=4 for "archive" in the all_ingested window." — _certificate carried_ |
-| 8 | DERIVE | count the non-unknown facts as real arithmetic | ✅ CERTIFIED status=derived statement="7 facts recorded in the all_ingested window." — _certificate carried_ |
-| 9 | DERIVE | sum real numeric facts | ✅ CERTIFIED status=derived statement="The archive records a total of 7 across 2 facts in the all_ingested window." — _certificate carried_ |
-| 10 | DERIVE | enumerate real subjects over both observed signals | ✅ CERTIFIED status=derived statement="2 observed signals covering 1 distinct subject in the all_ingested window: "behaviour-film"." — _certificate carried_ |
-| 11 | DERIVE | unknown ground stays unknown on the REAL surface (hoursWatched = null value) | ✅ CERTIFIED status=unknown statement=""hours watched: duration evidence insufficient for a single number" remains open — no positive evidence is available within scope archive in this evidence delivery." — _certificate carried_ |
-| 12 | DERIVE | real evidence replays byte-identically (no clocks in the calculus) | ✅ byte-stable |
-| 13 | EXTRACT | two-window row: extractor identifies the CURRENT window verbatim; previousWindow crosses as data, not an invented identity | ✅ extracted=[2026-06-21T12:20:41.670Z .. 2026-09-19T12:20:41.670Z], carried previousWindow=[2026-03-23T12:20:41.670Z .. 2026-06-21T12:20:41.670Z] — _identification only; nothing reconstructed from derivedAt or comparisonWindowDays_ |
-| 14 | FINDING | SEMANTIC GAP: compareWindows members point at items, one window per item; no ref can address value.previousWindow inside the single real row | ✅ temporalSignals=1; refs whose extracted window equals the declared previousWindow: 0 — _producer meaning fully declared AND fully preserved — upstream models two windows inside one row; documented, not patched_ |
-| 15 | VOID | previous-vs-current over the single existing ref is refused for identity overlap (no pair interpretation from one row) | ✅ VOID (void_claim) |
-| 16 | NEGATIVE | overlapping windows still refuse a comparison | ✅ VOID (void_claim) |
-| 17 | NEGATIVE | identical windows across two rows refuse (identity overlap, never a trend out of a re-statement) | ✅ VOID (void_claim) |
-| 18 | NEGATIVE | missing previousWindow on a real row: the contract must refuse | ✅ REFUSED at ingress: Archive Assistant response violates the PersonalisationContext contract at temporalSignals[0].value: missing required pr |
-| 19 | NEGATIVE | missing window on a real row: the contract must refuse | ✅ REFUSED at ingress: Archive Assistant response violates the PersonalisationContext contract at temporalSignals[0].value: missing required pr |
-| 20 | NEGATIVE | malformed bounds: contract types permit strings, calculus refuses formation downstream | ✅ VOID (lineage_incomplete) |
-| 21 | NEGATIVE | mismatched scopes across members refuse the comparison | ✅ VOID (void_claim) |
-| 22 | NEGATIVE | unknown load-bearing metric refuses (no interpolation ever) | ✅ VOID (void_claim) |
-| 23 | NEGATIVE | missing lineage on a member refuses the conclusion | ✅ VOID (lineage_incomplete) |
-| 24 | NEGATIVE | contradictory window declarations refuse (conflict propagates through comparison) | ✅ VOID (void_claim) |
-| 25 | NEGATIVE | single-window temporal evidence refuses a comparison outright | ✅ VOID (lineage_incomplete) |
-| 26 | VOID | including an unknown fact in a positive aggregate kills the whole claim | ✅ VOID (void_claim) |
-| 27 | DERIVE | real producer-declared window licenses a bounded as-of claim (identification, not reconstruction) | ✅ window=[2026-06-21T12:20:41.670Z .. 2026-09-19T12:20:41.670Z] asOf=2026-09-19T12:20:41.670Z span=90d status=derived rule=temporal.asof.v1 — _the window arrived typed and declared upstream; the extractor copied the strings_ |
-| 28 | VOID | one real temporal signal cannot ground a trend | ✅ VOID (void_claim) |
-| 29 | VOID | real explicit preference statement is not handled enough to ground a conclusion | ✅ VOID (lineage_incomplete) |
-| 30 | VOID | real interpretation channel is EMPTY: nothing to restate | ✅ VOID (bad_reference) |
-| 31 | VOID | real uncertainty channel is EMPTY: the named-limit channel has no payload here | ✅ VOID (bad_reference) |
-| 32 | CONTRADICTION | zero contradictions surfaced anywhere on real evidence (incl. the same-subject signal pair: identical lineage = one chain) | ✅ [["facts",0],["observedSignals",0],["temporalSignals",0],["collectionFacts",0],["interpretations",0],["uncertainties",0],["explicitPreferences",0]] — _identical-lineage derivation is the exemption that fired on REAL data_ |
+| 1 | INGRESS | real payload validates against the regenerated contract and normalizes verbatim | ✅ {"facts":8,"observedSignals":2,"temporalSignals":2,"collectionFacts":1,"interpretations":0,"uncertainties":0,"explicitPreferences":1} |
+| 2 | INGRESS | real provenance arrives intact through the seam (current row: its own 2 window events, not the whole history) | ✅ observationIds=2 evidenceKeys=2 ingestionBatchIds=["manual-a629bb75-dbb3-46d8-b1e2-f2f166190ffb"] eventOccurredAt=2 observedAt=2 scope=plex:movies-v1 |
+| 3 | INGRESS | previous row carries its own provenance chain (1 window event, same anchor, complete family) | ✅ observationIds=1 evidenceKeys=1 scope=plex:movies-v1 derivedAt=2026-09-19T13:29:45.131Z |
+| 4 | INGRESS | the surface carries its own constraints and they cross verbatim | ✅ ["Signals are observations, not likes or preferences","No universal taste score","No recommendation decision is made here"] — _the producer tells the seam what is not licensed; preservation keeps that_ |
+| 5 | DERIVE | restate real observed fact (totalPlays) | ✅ CERTIFIED status=observed statement="The archive records 4 for "totalPlays" in the all_ingested window." — _certificate carried_ |
+| 6 | DERIVE | restate real long-term signal with full provenance behind it | ✅ CERTIFIED status=derived statement="The archive records title=behaviour-film, totalWatches=4, firstWatchedAt=2020-01-01T10:00:00.000Z, lastWatchedAt=2026-09-01T10:00:00.000Z, activeMonths=4 for "behaviour-film" in the all_ingested window." — _certificate carried_ |
+| 7 | DERIVE | restate real temporal signal inside a caller-declared evidence window | ✅ CERTIFIED status=derived statement="The archive records title=behaviour-film, watches=2, watchesLast30Days=1, watchesLast90Days=2, watchesPrevious90Days=1, lastWatchedAt=2026-09-01T10:00:00.000Z, comparisonWindowDays=90, window={…} for "behaviour-film" in the rolling_90d window (2026-06-21T13:29:45.131Z to 2026-09-19T13:29:45.131Z)." — _certificate carried_ |
+| 8 | DERIVE | restate real collection fact | ✅ CERTIFIED status=derived statement="The archive records never_matched=4 for "archive" in the all_ingested window." — _certificate carried_ |
+| 9 | DERIVE | count the non-unknown facts as real arithmetic | ✅ CERTIFIED status=derived statement="7 facts recorded in the all_ingested window." — _certificate carried_ |
+| 10 | DERIVE | sum real numeric facts | ✅ CERTIFIED status=derived statement="The archive records a total of 7 across 2 facts in the all_ingested window." — _certificate carried_ |
+| 11 | DERIVE | enumerate real subjects over both observed signals | ✅ CERTIFIED status=derived statement="2 observed signals covering 1 distinct subject in the all_ingested window: "behaviour-film"." — _certificate carried_ |
+| 12 | DERIVE | unknown ground stays unknown on the REAL surface (hoursWatched = null value) | ✅ CERTIFIED status=unknown statement=""hours watched: duration evidence insufficient for a single number" remains open — no positive evidence is available within scope archive in this evidence delivery." — _certificate carried_ |
+| 13 | DERIVE | real evidence replays byte-identically (no clocks in the calculus) | ✅ byte-stable |
+| 14 | EXTRACT | two temporal rows: each extractor identifies its own window verbatim; adjacency prev.endsAt==curr.startsAt read, never reconstructed | ✅ prev extracted=[2026-03-23T13:29:45.131Z .. 2026-06-21T13:29:45.131Z] \| curr extracted=[2026-06-21T13:29:45.131Z .. 2026-09-19T13:29:45.131Z] — _identification only; nothing reconstructed from derivedAt or comparisonWindowDays_ |
+| 15 | FINDING | GAP CLOSED by producer emission (unchanged calculus): the previous observation now has its own ref — the pair is reachable vocabul | ✅ temporalSignals=2; refs whose extracted window equals the declared previous window: 1 — _evidence unit moved from 1-row-2-windows to 2-rows-1-window-each; the addressing vocabulary was always sufficient_ |
+| 16 | DERIVE | certified two-window trend over REAL producer evidence: prev vs curr by the parity key, exact arithmetic | ✅ perWindow=[prev@(2026-03-23T13:29:45.131Z -> 1), curr@(2026-06-21T13:29:45.131Z -> 2)] delta=1 relation=greater — _delta/relation are arithmetic over parity-key values; no adjective, no interpretation_ |
+| 17 | DERIVE | trend replays byte-identically (claim JSON stable across recomputation) | ✅ claim-stable=true — _textual, not aliasing: comparison is its own claim identity_ |
+| 18 | NEGATIVE | overlapping windows still refuse a comparison | ✅ VOID (void_claim) |
+| 19 | NEGATIVE | identical windows across two rows refuse (identity overlap, never a trend out of a re-statement) | ✅ VOID (void_claim) |
+| 20 | NEGATIVE | missing window on a real row: the contract must refuse | ✅ REFUSED at ingress: Archive Assistant response violates the PersonalisationContext contract at temporalSignals[0].value: missing required pr |
+| 21 | NEGATIVE | missing previousWindow on a real row: the contract must accept (new producer shape) | ✅ ACCEPTED at ingress (schema-required = [window] only) |
+| 22 | NEGATIVE | malformed bounds: contract types permit strings, calculus refuses formation downstream | ✅ VOID (lineage_incomplete) |
+| 23 | NEGATIVE | mismatched scopes across members refuse the comparison | ✅ VOID (void_claim) |
+| 24 | NEGATIVE | unknown load-bearing metric refuses (no interpolation ever) | ✅ VOID (void_claim) |
+| 25 | NEGATIVE | missing lineage on a member refuses the conclusion | ✅ VOID (lineage_incomplete) |
+| 26 | NEGATIVE | contradictory window declarations refuse (conflict propagates through comparison) | ✅ VOID (void_claim) |
+| 27 | NEGATIVE | single-window temporal evidence refuses a comparison outright | ✅ VOID (lineage_incomplete) |
+| 28 | VOID | including an unknown fact in a positive aggregate kills the whole claim | ✅ VOID (void_claim) |
+| 29 | DERIVE | real producer-declared window licenses a bounded as-of claim (identification, not reconstruction) | ✅ window=[2026-06-21T13:29:45.131Z .. 2026-09-19T13:29:45.131Z] asOf=2026-09-19T13:29:45.131Z span=90d status=derived rule=temporal.asof.v1 — _the window arrived typed and declared upstream; the extractor copied the strings_ |
+| 30 | VOID | identity overlap still refuses as a negative construct (twin of one ref, never a pair from one row) | ✅ VOID (void_claim) |
+| 31 | VOID | real explicit preference statement is not handled enough to ground a conclusion | ✅ VOID (lineage_incomplete) |
+| 32 | VOID | real interpretation channel is EMPTY: nothing to restate | ✅ VOID (bad_reference) |
+| 33 | VOID | real uncertainty channel is EMPTY: the named-limit channel has no payload here | ✅ VOID (bad_reference) |
+| 34 | CONTRADICTION | zero contradictions surfaced anywhere on real evidence (incl. the same-subject signal pair: identical lineage = one chain) | ✅ [["facts",0],["observedSignals",0],["temporalSignals",0],["collectionFacts",0],["interpretations",0],["uncertainties",0],["explicitPreferences",0]] — _identical-lineage derivation is the exemption that fired on REAL data_ |
 
 ## Certified sentences (all of them)
 
@@ -60,8 +62,8 @@ normalize → lattice → calculus → renderer).
   ↳ `status observed · scope archive · window {"label":"all_ingested","startsAt":null,"endsAt":null} · rule restate.v1 · via "facts[0]"`
 - **[DERIVE]** “The archive records title=behaviour-film, totalWatches=4, firstWatchedAt=2020-01-01T10:00:00.000Z, lastWatchedAt=2026-09-01T10:00:00.000Z, activeMonths=4 for "behaviour-film" in the all_ingested window.”  
   ↳ `status derived · scope plex:movies-v1 · window {"label":"all_ingested","startsAt":null,"endsAt":null} · rule restate.v1 · via "observedSignals[0]"`
-- **[DERIVE]** “The archive records title=behaviour-film, watchesLast30Days=1, watchesLast90Days=2, watchesPrevious90Days=1, lastWatchedAt=2026-09-01T10:00:00.000Z, comparisonWindowDays=90, window={…}, previousWindow={…} for "behaviour-film" in the rolling_90d window (2026-06-21T12:20:41.670Z to 2026-09-19T12:20:41.670Z).”  
-  ↳ `status derived · scope plex:movies-v1 · window {"label":"rolling_90d","startsAt":"2026-06-21T12:20:41.670Z","endsAt":"2026-09-19T12:20:41.670Z"} · rule restate.v1 · via "temporalSignals[0]"`
+- **[DERIVE]** “The archive records title=behaviour-film, watches=2, watchesLast30Days=1, watchesLast90Days=2, watchesPrevious90Days=1, lastWatchedAt=2026-09-01T10:00:00.000Z, comparisonWindowDays=90, window={…} for "behaviour-film" in the rolling_90d window (2026-06-21T13:29:45.131Z to 2026-09-19T13:29:45.131Z).”  
+  ↳ `status derived · scope plex:movies-v1 · window {"label":"rolling_90d","startsAt":"2026-06-21T13:29:45.131Z","endsAt":"2026-09-19T13:29:45.131Z"} · rule restate.v1 · via "temporalSignals[0]"`
 - **[DERIVE]** “The archive records never_matched=4 for "archive" in the all_ingested window.”  
   ↳ `status derived · scope plex:movies-v1 · window {"label":"all_ingested","startsAt":null,"endsAt":null} · rule restate.v1 · via "collectionFacts[0]"`
 - **[DERIVE]** “7 facts recorded in the all_ingested window.”  
@@ -72,6 +74,8 @@ normalize → lattice → calculus → renderer).
   ↳ `status derived · scope plex:movies-v1 · window {"label":"all_ingested","startsAt":null,"endsAt":null} · rule aggregate.v1:subjects · via "observedSignals[0]", "observedSignals[1]"`
 - **[DERIVE]** “"hours watched: duration evidence insufficient for a single number" remains open — no positive evidence is available within scope archive in this evidence delivery.”  
   ↳ `status unknown · scope archive · window {"label":"all_ingested","startsAt":null,"endsAt":null} · rule qualify.v1 · via "facts[4]"`
+- **[DERIVE]** “"behaviour-film": watches was 1 in the window from 2026-03-23T13:29:45.131Z to 2026-06-21T13:29:45.131Z and 2 in the window from 2026-06-21T13:29:45.131Z to 2026-09-19T13:29:45.131Z; the later window is greater by 1.”  
+  ↳ `temporal.compare.v1:watches`
 
 ## What the calculus legitimately derives from real evidence
 
@@ -99,7 +103,7 @@ identification of value.window, bounds verbatim, span = the producer's own
 ## What remains void even with provenance-complete evidence
 
 - Any positive claim whose membership includes the unknown fact (void_claim).
-- Trends (compareWindows): one real temporal signal cannot ground a comparison.
+- Trends (compareWindows) with fewer than two real temporal rows: singleton
 - The explicit-preference statement: its real provenance is
   `{source:"operator statement"}` — no lineage handles of any kind, so the
   lattice wall (lineage_incomplete) fires before any status question. The
@@ -115,28 +119,24 @@ identification of value.window, bounds verbatim, span = the producer's own
    classes that carry "licensed inference" and "named limits" remain unfed.
 
 *(Temporal window identity WAS class #1 here; it is resolved — see above.)*
-## Two-window evidence (upstream 4dcb2a0): verification verdict
+## Two-window evidence (upstream 8e54a28): verification verdict
 
-**SEMANTIC GAP (documented, not patched).** The producer's two windows are
-fully declared — typed, REQUIRED, single-anchored, half-open non-overlapping
-(see the EXTRACT row: bounds verbatim, `previousWindow.endsAt ===
-window.startsAt`) — and they crossed the entire seam intact. Gate 7's
-comparison rule is ≥2 evidence ITEMS with one extractable window each;
-upstream models the pair inside ONE row. The FINDING row shows no evidence
-ref in the real pack can address `value.previousWindow` — no extractor fix
-of the 2cc6f6c class can bridge that, because `extractWindow` recognizes the
-declared shape fine; it is the evidence-unit mismatch (row-vs-window) that
-blocks membership, upstream's modelling choice. The calculus itself is
-provably capable when comparisons arrive as two items (the adversarial
-battery exercises exactly that pattern). Smallest seams, ranked:
-1. **producer-side**: emit the previous observation as its own row (a
-   distinguishing row-identity dimension is required — the signal-row
-   uniqueness key is (owner, scope, profile, type, subject) — plus a shared
-   per-row numeric metric key for the existing compareWindows arithmetic);
-2. **Arena-side** (rejected for now): extend evidence addressing with an
-   explicit declared-window channel — real machinery surgery across
-   EvidenceRef/resolve/lineage for zero new licensed meaning.
-No fix implemented; verification-only slice per directive. The 10-case
-negative battery confirms no wall moved: overlap/identity/missing/
-malformed/scope/unknown/lineage/conflict/singleton all still refuse.
+**VERIFIED.** The seam proposal (docs/gate7-two-window-seam-proposal.md)
+landed upstream at `8e54a283c392c53f64099a903b293de220e565ce` ("Emit
+separate previous temporal evidence row"): the previous observation is now
+its own row (`recent_activity_previous`) with its own window, the parity
+key `watches` on both rows, one producer anchor (`derivedAt` = current
+window `endsAt`), rows emitted only for non-empty windows, per-row event
+evidence. Historical record of the pre-landing verdict (SEMANTIC GAP at
+4dcb2a0): docs/gate7-two-window-verification.md. On this capture, the
+DERIVE rows show the full loop closing with zero Arena change: each window
+identified verbatim from its own row (adjacent: `prev.endsAt === curr.startsAt`,
+read, never reconstructed), the unchanged `compareWindows("watches")` pair
+certifies `delta=+1 / relation="greater"` (prev 1 → curr 2) with both rows
+load-bearing, scope intact, envelope spanning prev→curr, byte-identical
+replay, and the renderer speaking exactly the earned arithmetic. The
+refusal class: retired as within-one-row (two real rows now); preserved
+as the twin-construct negative, which still fails closed. No Arena
+machinery, extractor, calculus, renderer, or conclusion-kind moved in this
+slice — producer emission alone resolved the evidence unit.
 

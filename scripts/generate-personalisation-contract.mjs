@@ -14,7 +14,14 @@
  * then 4dcb2a0):
  *   repo    : imlochie/SomeSafePortablesoftware
  *   branch  : arena/01a0b5e9-somesafeportablesoftware
- *   commit  : 4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7
+ *   commit  : 8e54a283c392c53f64099a903b293de220e565ce
+ *             ("Emit separate previous temporal evidence row"):
+ *             TemporalSignalValue.previousWindow becomes optional
+ *             (required [window, previousWindow] -> [window]) as the
+ *             producer now emits the previous observation as its own
+ *             row, signalType "recent_activity_previous", parity key
+ *             `watches`, per-row window, shared derivedAt anchor.
+ *             Supersedes 4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7
  *             ("Evolve archive temporal evidence to two windows"):
  *             TemporalSignalValue now REQUIRES [window, previousWindow] —
  *             current [now-90d, now], previous [now-180d, now-90d),
@@ -85,11 +92,11 @@ await runGenerator({
   contractDoc: CONTRACT_DOC,
   defaults: {
     repo: "imlochie/SomeSafePortablesoftware",
-    ref: "4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7",
+    ref: "8e54a283c392c53f64099a903b293de220e565ce",
     sourceLabel:
       "https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml",
     sourceRef:
-      "imlochie/SomeSafePortablesoftware@4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7",
+      "imlochie/SomeSafePortablesoftware@8e54a283c392c53f64099a903b293de220e565ce",
   },
   checkName: "Archive Assistant personalisation contract",
 });

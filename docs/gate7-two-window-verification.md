@@ -150,3 +150,49 @@ nothing. The SET of licensed conclusions did not grow.
 row, `recent_activity_previous` + parity key `watches`), verified
 zero-Arena-delta, with downstream movement pre-registered. Not
 implemented anywhere.
+
+---
+
+## Post-landing re-verification — upstream `8e54a28` (2026-09-19): **VERIFIED**
+
+Upstream landed the proposal as commit
+`8e54a283c392c53f64099a903b293de220e565ce` ("Emit separate previous
+temporal evidence row", branch `arena/01a0b5e9-somesafeportablesoftware`).
+Tree-verified diff `4dcb2a0..8e54a28` (6 files): the previous observation
+is emitted as its own row (`recent_activity_previous`, evidenceClass
+`temporal_signal`) carrying its own `value.window`, the parity key
+`watches` on both rows, `previousWindow` demoted to optional-legacy
+(schema `required: [window]`), rows only for non-empty windows, and both
+rows anchored to the same `derivedAt` (= current window `endsAt`). Each
+row's provenance now lists exactly its own window's events (2 / 1).
+
+Re-run of this battery against a fresh real capture (same upstream
+regression seed, producer's own pipeline, pinned at
+`scripts/fixtures/real-evidence-upstream-capture.json`) — the movement
+matches the pre-registered table exactly: INGRESS `temporalSignals` 1→2;
+FINDING refs-to-previous 0→1 (**gap closed: the evidence-addressing
+vocabulary was always sufficient; the evidence unit moved**); a NEW
+certified row: `compareWindows([prev, curr], "watches")` certifies
+`delta=+1, relation="greater"` (prev 1 → curr 2) with perWindow bounds
+verbatim, both rows load-bearing, scope `plex:movies-v1`, rule
+`temporal.compare.v1:watches`, byte-identical replay; row 15's
+within-one-row refusal is retired (two real rows exist) and preserved as
+the twin-construct negative, which still fails closed; every other row
+byte-identical. **Render**: `"behaviour-film": watches was 1 in the
+window from 2026-03-23T13:29:45.131Z to 2026-06-21T13:29:45.131Z and 2
+in the window from 2026-06-21T13:29:45.131Z to 2026-09-19T13:29:45.131Z;
+the later window is greater by 1.”
+
+Arena-side delta in this slice: contract pin 4dcb2a0→8e54a28 (regenerated
+outputs: `required [window]`, previousWindow optional), three pin-literal
+asserts plus one schema-requiredness assert tracked the pin, one stale
+fixture comment, the real-evidence battery's pre-registered evolution.
+**Zero** machinery, extractor, lattice, calculus, renderer, or
+conclusion-kind change. Regressions: suite 131/131 · real-evidence 34/34
+· adversarial 33/33 · capability probe 13/13 · tsc clean · build compiled
+· contract `--check` green at `8e54a28`.
+
+The loop is closed end-to-end on producer-authored evidence: producer
+meaning → public contract → evidence seam → faithful normalization →
+temporal extraction → existing calculus → certified conclusion →
+renderer. No new Arena intelligence was required.

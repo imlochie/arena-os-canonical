@@ -3,7 +3,7 @@
  * AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
  *
  * Source of truth : https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml
- * Upstream ref    : imlochie/SomeSafePortablesoftware@4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7
+ * Upstream ref    : imlochie/SomeSafePortablesoftware@8e54a283c392c53f64099a903b293de220e565ce
  *
  * Byte-for-byte reproducible: regenerate whenever the upstream OpenAPI
  * document changes (npm run generate:personalisation-contract), then commit both
@@ -24,7 +24,7 @@
 
 export const personalisationContractMeta = {
   "sourceSpec": "https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml",
-  "sourceRef": "imlochie/SomeSafePortablesoftware@4dcb2a0183bb5d5a9f59a3b8c8f24e71037d62c7"
+  "sourceRef": "imlochie/SomeSafePortablesoftware@8e54a283c392c53f64099a903b293de220e565ce"
 };
 
 export const personalisationOperations = {
@@ -407,14 +407,14 @@ export const personalisationSchemas = {
   "TemporalSignalValue": {
     "type": "object",
     "required": [
-      "window",
-      "previousWindow"
+      "window"
     ],
     "properties": {
       "window": {
         "$ref": "#/components/schemas/TemporalWindow"
       },
       "previousWindow": {
+        "description": "Legacy compatibility field; new producers emit a separate previous temporal row.",
         "$ref": "#/components/schemas/TemporalWindow"
       }
     },

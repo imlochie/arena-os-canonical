@@ -381,3 +381,21 @@ upstream's row-vs-window modelling choice. Zero machinery changes; the
 producer-side (previous observation as its own row; needs a distinct
 signal-row identity dimension plus per-row metric parity). Report:
 `docs/gate7-two-window-verification.md`.
+
+**2026-09-19 (post-landing re-verification, upstream `8e54a28`).**
+Upstream landed the smallest-seam proposal ("Emit separate previous
+temporal evidence row"): the previous observation is now its own
+validated row (`recent_activity_previous`) with its own window, parity
+key `watches`, one producer anchor, non-empty windows only, per-row
+event provenance. Arena delta: the contract pin moved (previousWindow
+now optional-legacy), the pin-asserts tracked it, the real-evidence
+battery evolved exactly along its pre-registered path (INGRESS 1→2
+temporal rows; FINDING 0→1 refs — gap closed; NEW certified
+`compareWindows("watches")` row: prev 1 → curr 2, `delta=+1`,
+`relation="greater"`, perWindow bounds verbatim; the within-one-row
+refusal is retired and preserved as the twin-construct negative). No
+calculus, extractor, lattice, renderer, or conclusion-kind change — the
+loop closes: producer meaning → contract → seam → normalize → extract →
+calculus → certified conclusion → renderer. Real-evidence battery
+34/34; suite 131/131; adversarial 33/33; capability probe 13/13; tsc +
+build + contract `--check` green at `8e54a28`.
