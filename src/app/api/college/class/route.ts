@@ -9,6 +9,7 @@ import { computeCollegeState } from "@/lib/college/state";
 import { getActiveVersion, snapshotCourse } from "@/lib/college/curriculum";
 import { brisbaneToday } from "@/lib/college/time";
 import { resolveProtocol, initialRoster } from "@/lib/college/protocol";
+import { validateRoster, resolveFacultyForContext, recordSessionMembers } from "@/lib/college/members";
 import {
   coordinationTrace,
   currentAttention,
@@ -82,6 +83,27 @@ export async function POST(req: Request) {
     // 2) PROTOCOL — the course decides which faculty are relevant to it
     const protocol = await resolveProtocol(courseId, sessionKind);
 
+    // 2b) REQUIRED-FACULTY VALIDATION — before anything begins.
+    // A mandatory responsibility that cannot be instantiated is surfaced, and
+    // never silently substituted with an unrelated faculty member.
+    const rosterCheck = await validateRoster({
+      courseId,
+      sessionKind,
+      requiredPositions: kind.requiredPositions,
+    });
+    if (!rosterCheck.canInitialise && body.force !== true) {
+      return Response.json(
+        {
+          error: "SESSION CANNOT FULLY INITIALISE",
+          roster: rosterCheck.roster,
+          problems: rosterCheck.problems,
+          severity: rosterCheck.severity,
+          note: "A mandatory faculty responsibility has no active configuration. Configure it, or pass force:true to proceed deliberately with the gap recorded.",
+        },
+        { status: 409 }
+      );
+    }
+
     // 3) OPEN SESSION — pinned to the curriculum context that exists NOW
     const version = await getActiveVersion();
     const snapshot = courseId
@@ -125,6 +147,21 @@ export async function POST(req: Request) {
       });
     }
 
+    // Record WHICH MEMBER occupied each position, at which version, so the
+    // historical record knows who actually taught this class.
+    const servingMembers = await resolveFacultyForContext({ courseId, sessionKind });
+    if (servingMembers.length) {
+      await recordSessionMembers(
+        session.id,
+        servingMembers.map((m) => ({
+          positionKey: m.member.positionKey,
+          memberId: m.member.id,
+          memberName: m.member.name,
+          participation: m.participation,
+        }))
+      );
+    }
+
     await enterPhase({
       sessionId: session.id,
       phaseKey: "orientation",
@@ -160,6 +197,20 @@ export async function POST(req: Request) {
     const speaking = attentionAfterPhase.filter((a) => a.state === "engaged");
 
     for (const a of speaking) {
+      // When the student has said something, the Instructor speaks ONCE — at the
+      // end of the coordination window, after the other positions have fed in.
+      // Running it here as well would produce two student-facing answers.
+      if (studentResponse && a.positionKey === "instructor") {
+        await setAttention({
+          sessionId: session.id,
+          positionKey: "instructor",
+          state: "engaged",
+          reason: "Holding the response until faculty coordination has completed.",
+          spoke: false,
+        });
+        continue;
+      }
+
       const r = await runFacultyPosition({
         positionKey: a.positionKey,
         sessionId: session.id,
@@ -169,6 +220,7 @@ export async function POST(req: Request) {
         orientationBriefing: orientation.briefing,
         priorContributions: runs.map((x) => ({ positionKey: x.positionKey, content: x.content })),
         localOnly,
+        sessionKind,
       });
       if ("error" in r) errors.push(r.error);
       else {
@@ -277,6 +329,14 @@ export async function POST(req: Request) {
       {
         session: updated,
         protocol: { label: protocol.label, isDefault: protocol.isDefault },
+        rosterValidation: rosterCheck,
+        servingMembers: servingMembers.map((m) => ({
+          positionKey: m.member.positionKey,
+          memberName: m.member.name,
+          version: m.member.version,
+          scope: m.scope,
+          participation: m.participation,
+        })),
         orientation,
         faculty: runs,
         coordination,

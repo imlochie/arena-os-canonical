@@ -778,3 +778,334 @@ export type CollegeConsultationRow = typeof collegeConsultations.$inferSelect;
 export type CollegeHandoffRow = typeof collegeHandoffs.$inferSelect;
 export type CollegeInterruptionRow = typeof collegeInterruptions.$inferSelect;
 export type CollegeFacultyProtocolRow = typeof collegeFacultyProtocols.$inferSelect;
+
+// ============================================================================
+// LAYER 4 — faculty members, live timetable, audit
+// ============================================================================
+// Additive only. No earlier table is renamed or altered.
+//
+// Principle for this layer, from the founder:
+//   "Do not optimise the College by default. Make the College observable,
+//    understandable, and governable."
+//
+// And: uncertainty must not paralyse. A conflict exposes where an
+// INSTITUTIONAL DECISION is needed; the decision becomes authoritative while
+// the original disagreement stays preserved.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// FACULTY MEMBERS — a configured persona occupying an institutional position
+// ---------------------------------------------------------------------------
+// POSITION = the institutional responsibility (code-defined, authority-bearing)
+// MEMBER   = who occupies it (founder-configured, personality-bearing)
+// Personality must never override institutional authority.
+export const collegeFacultyMembers = pgTable("college_faculty_members", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(), // "The Patient Teacher"
+  positionKey: text("position_key").notNull(), // instructor|observer|critic|...
+  // active|inactive|archived|retired — never hard-deleted once it has taught
+  status: text("status").notNull().default("active"),
+  // Personality: structured dials PLUS a real instruction.
+  temperament: text("temperament").notNull().default(""),
+  communicationStyle: text("communication_style").notNull().default(""),
+  teachingStyle: text("teaching_style").notNull().default(""),
+  questioningStyle: text("questioning_style").notNull().default(""),
+  directness: integer("directness").notNull().default(3), // 1..5
+  warmth: integer("warmth").notNull().default(3),
+  formality: integer("formality").notNull().default(3),
+  ambiguityTolerance: integer("ambiguity_tolerance").notNull().default(3),
+  personalityInstruction: text("personality_instruction").notNull().default(""),
+  // Responsibilities actually enabled for this member (JSON string[]).
+  responsibilities: text("responsibilities").notNull().default("[]"),
+  // Granted authority (JSON string[]) — INTERSECTED with the position's
+  // architectural ceiling at runtime. Configuration can only ever subtract.
+  grantedAuthority: text("granted_authority").notNull().default("[]"),
+  // college_wide|course|session_type|phase|optional|conditional
+  mandatoryLevel: text("mandatory_level").notNull().default("optional"),
+  // block|warn — what happens if a mandatory member cannot be instantiated
+  missingSeverity: text("missing_severity").notNull().default("warn"),
+  // Coordination network overrides (JSON string[]); empty = use policy default.
+  canConsult: text("can_consult").notNull().default("[]"),
+  canHandOffTo: text("can_hand_off_to").notNull().default("[]"),
+  canInterrupt: text("can_interrupt").notNull().default("[]"),
+  // Activation overrides (JSON string[]) — event types; empty = policy default.
+  activatesOnEvents: text("activates_on_events").notNull().default("[]"),
+  activatesOnPhases: text("activates_on_phases").notNull().default("[]"),
+  // Which preset this began life as, for provenance only.
+  presetKey: text("preset_key").notNull().default(""),
+  notes: text("notes").notNull().default(""),
+  // Current version number; history lives in college_faculty_member_versions.
+  version: integer("version").notNull().default(1),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Immutable snapshots. Historical sessions retain the configuration that
+// applied when they occurred — changing a personality must not rewrite history.
+export const collegeFacultyMemberVersions = pgTable("college_faculty_member_versions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  memberId: uuid("member_id").notNull(),
+  version: integer("version").notNull().default(1),
+  snapshot: text("snapshot").notNull().default("{}"), // full JSON of the member
+  changeSummary: text("change_summary").notNull().default(""),
+  reason: text("reason").notNull().default(""),
+  changedBy: text("changed_by").notNull().default("founder"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Assignment of a member to a scope. Most specific valid scope wins.
+export const collegeFacultyAssignments = pgTable("college_faculty_assignments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  memberId: uuid("member_id").notNull(),
+  // college|school|course|session_type|timetable_slot|session
+  scope: text("scope").notNull().default("college"),
+  scopeRef: text("scope_ref").notNull().default(""), // courseId, slotId, kind...
+  // mandatory|optional|conditional|administrative
+  participation: text("participation").notNull().default("optional"),
+  // Session-scope assignments are temporary overrides and expire.
+  temporary: boolean("temporary").notNull().default(false),
+  reason: text("reason").notNull().default(""),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Which member actually occupied which position in a given session, and at
+// which version. This is what makes faculty history honest.
+export const collegeSessionFacultyMembers = pgTable("college_session_faculty_members", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull(),
+  memberId: uuid("member_id"),
+  memberVersionId: uuid("member_version_id"),
+  positionKey: text("position_key").notNull(),
+  memberName: text("member_name").notNull().default(""), // denormalised on purpose
+  participation: text("participation").notNull().default("optional"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Faculty memory — what a member learned about teaching this student/course.
+// DISTINCT from institutional memory. Remember generously, believe cautiously.
+export const collegeFacultyMemory = pgTable("college_faculty_memory", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  memberId: uuid("member_id"),
+  positionKey: text("position_key").notNull().default(""),
+  courseId: uuid("course_id"),
+  sessionId: uuid("session_id"),
+  content: text("content").notNull(),
+  // session|course|student|subject — the bound of what it claims
+  memoryScope: text("memory_scope").notNull().default("session"),
+  observationCount: integer("observation_count").notNull().default(1),
+  // private = faculty's own; proposed = offered for institutional promotion;
+  // promoted = accepted into college_memory; declined = rejected
+  promotionStatus: text("promotion_status").notNull().default("private"),
+  promotedMemoryId: uuid("promoted_memory_id"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// LIVE TIMETABLE
+// ---------------------------------------------------------------------------
+// TEMPLATE (recurring structure) → INSTANCE (a real date) → SESSION (what
+// actually happened). Kept strictly distinct.
+
+export const collegeTimetableVersions = pgTable("college_timetable_versions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  termId: uuid("term_id"),
+  versionNumber: integer("version_number").notNull().default(1),
+  label: text("label").notNull().default(""),
+  status: text("status").notNull().default("active"), // draft|active|superseded|archived
+  reason: text("reason").notNull().default(""),
+  effectiveFrom: text("effective_from"), // ISO date
+  effectiveTo: text("effective_to"),
+  supersedesId: uuid("supersedes_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// The daily backbone: Launch Sequence, Life Skills, Today's Subject, ...
+export const collegeTimetablePeriods = pgTable("college_timetable_periods", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  versionId: uuid("version_id"),
+  key: text("key").notNull(), // launch_sequence|life_skills|todays_subject|...
+  label: text("label").notNull(),
+  sequence: integer("sequence").notNull().default(0),
+  startTime: text("start_time").notNull().default(""), // "10:15" 24h
+  endTime: text("end_time").notNull().default(""),
+  intent: text("intent").notNull().default(""), // "Become ready. Set the tone."
+  icon: text("icon").notNull().default(""),
+  colorKey: text("color_key").notNull().default(""),
+  // Times taken from the reference image but not independently confirmed.
+  needsConfiguration: boolean("needs_configuration").notNull().default(false),
+  configurationNote: text("configuration_note").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const collegeDayThemes = pgTable("college_day_themes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  versionId: uuid("version_id"),
+  dayOfWeek: integer("day_of_week").notNull(), // 1=Mon..7=Sun
+  theme: text("theme").notNull().default(""), // RESET|EXPLORE|ADULTING|...
+  colorKey: text("color_key").notNull().default(""),
+  note: text("note").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// A SLOT is a place in the timetable. The activity occupying it can change.
+export const collegeTimetableTemplateSlots = pgTable("college_timetable_template_slots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  versionId: uuid("version_id"),
+  periodId: uuid("period_id"),
+  dayOfWeek: integer("day_of_week").notNull(),
+  startTime: text("start_time").notNull().default(""),
+  endTime: text("end_time").notNull().default(""),
+  sequence: integer("sequence").notNull().default(0),
+  title: text("title").notNull().default(""),
+  description: text("description").notNull().default(""),
+  // fixed | scheduled | slotable — fixed routines vs configurable activity slots
+  slotBehaviour: text("slot_behaviour").notNull().default("scheduled"),
+  // academic|creative|administrative|health|relationship|household|adventure|
+  // recovery|entertainment|routine — the day is not all "courses"
+  activityType: text("activity_type").notNull().default("routine"),
+  categoryKey: text("category_key").notNull().default(""),
+  courseId: uuid("course_id"), // reference, never a duplicate of the course
+  sessionKind: text("session_kind").notNull().default(""),
+  // Does entering this slot create a College session?
+  generatesSession: boolean("generates_session").notNull().default(false),
+  // Does it participate in College State reasoning?
+  informsCollegeState: boolean("informs_college_state").notNull().default(true),
+  facultyRequirement: text("faculty_requirement").notNull().default("[]"), // JSON
+  icon: text("icon").notNull().default(""),
+  colorKey: text("color_key").notNull().default(""),
+  items: text("items").notNull().default("[]"), // JSON checklist from the design
+  notes: text("notes").notNull().default(""),
+  recurrence: text("recurrence").notNull().default("weekly"), // weekly|none
+  effectiveFrom: text("effective_from"),
+  effectiveTo: text("effective_to"),
+  needsConfiguration: boolean("needs_configuration").notNull().default(false),
+  configurationNote: text("configuration_note").notNull().default(""),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// A date-specific override. NEVER mutates the recurring template.
+export const collegeTimetableOverrides = pgTable("college_timetable_overrides", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  slotId: uuid("slot_id"),
+  date: text("date").notNull(), // ISO date this applies to
+  // cancelled|moved|substituted|extended|shortened|rescheduled|special_session|
+  // holiday|personal_commitment|unavailable|unscheduled
+  exceptionType: text("exception_type").notNull().default("cancelled"),
+  newStartTime: text("new_start_time").notNull().default(""),
+  newEndTime: text("new_end_time").notNull().default(""),
+  newTitle: text("new_title").notNull().default(""),
+  newCourseId: uuid("new_course_id"),
+  reason: text("reason").notNull().default(""),
+  provenance: text("provenance").notNull().default("founder"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// What actually happened at a slot on a date. Runtime state is NOT inferred
+// from the clock passing — completion requires evidence.
+export const collegeTimetableInstances = pgTable("college_timetable_instances", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  slotId: uuid("slot_id"),
+  versionId: uuid("version_id"), // the timetable version that applied THEN
+  date: text("date").notNull(),
+  startTime: text("start_time").notNull().default(""),
+  endTime: text("end_time").notNull().default(""),
+  title: text("title").notNull().default(""),
+  courseId: uuid("course_id"),
+  overrideId: uuid("override_id"),
+  // scheduled|current|in_progress|completed|missed|cancelled|deviated|unknown
+  runtimeStatus: text("runtime_status").notNull().default("scheduled"),
+  // How do we know? clock alone is NOT sufficient for "completed".
+  statusEvidence: text("status_evidence").notNull().default(""),
+  sessionId: uuid("session_id"),
+  deviationId: uuid("deviation_id"),
+  notes: text("notes").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// INTENT — what a structure is FOR. Audits evaluate against intent, not
+// against a theoretical optimum.
+// ---------------------------------------------------------------------------
+export const collegeIntents = pgTable("college_intents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  subjectType: text("subject_type").notNull(), // course|slot|goal|curriculum|timetable|faculty
+  subjectId: uuid("subject_id"),
+  subjectKey: text("subject_key").notNull().default(""),
+  statement: text("statement").notNull(),
+  // GOAL / PLAN / EXPERIMENT are different things, per the founder.
+  intentKind: text("intent_kind").notNull().default("plan"), // goal|plan|experiment
+  // For experiments: how long before it is fair to look?
+  reviewAfterDays: integer("review_after_days"),
+  supersedesId: uuid("supersedes_id"),
+  active: boolean("active").notNull().default(true),
+  reason: text("reason").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// AUDIT — understanding, not optimisation
+// ---------------------------------------------------------------------------
+export const collegeAudits = pgTable("college_audits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  scopeType: text("scope_type").notNull(), // curriculum|timetable|course|class|goal|faculty|slot
+  scopeId: uuid("scope_id"),
+  scopeLabel: text("scope_label").notNull().default(""),
+  periodStart: text("period_start").notNull().default(""),
+  periodEnd: text("period_end").notNull().default(""),
+  comparedPeriodStart: text("compared_period_start").notNull().default(""),
+  comparedPeriodEnd: text("compared_period_end").notNull().default(""),
+  // Conditions that applied, so two periods are never presented as a clean
+  // experiment when they were not.
+  curriculumVersionId: uuid("curriculum_version_id"),
+  timetableVersionId: uuid("timetable_version_id"),
+  conditionsNote: text("conditions_note").notNull().default(""),
+  comparableConditions: boolean("comparable_conditions").notNull().default(true),
+  // Per-dimension evidence, never collapsed into one score (JSON).
+  dimensions: text("dimensions").notNull().default("[]"),
+  evidenceConsidered: text("evidence_considered").notNull().default("[]"),
+  facultyObservations: text("faculty_observations").notNull().default("[]"),
+  contextualFactors: text("contextual_factors").notNull().default("[]"),
+  // stable|improving|deteriorating|changed|uncertain|insufficient_evidence
+  auditStatus: text("audit_status").notNull().default("insufficient_evidence"),
+  interpretation: text("interpretation").notNull().default(""),
+  // keep_as_is|investigate|propose_change|no_decision — "keep as is" is real
+  decision: text("decision").notNull().default("no_decision"),
+  decisionReason: text("decision_reason").notNull().default(""),
+  decidedBy: text("decided_by").notNull().default(""),
+  // Stops the same question being reopened every week.
+  reopenAfter: text("reopen_after"), // ISO date
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Configurable thresholds. Arena must not assume what counts as meaningful.
+export const collegeAuditThresholds = pgTable("college_audit_thresholds", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  scopeType: text("scope_type").notNull().default("slot"),
+  scopeId: uuid("scope_id"),
+  minObservations: integer("min_observations").notNull().default(4),
+  minWeeks: integer("min_weeks").notNull().default(3),
+  deviationsBeforeReview: integer("deviations_before_review").notNull().default(3),
+  reviewIntervalDays: integer("review_interval_days").notNull().default(28),
+  reason: text("reason").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type CollegeFacultyMemberRow = typeof collegeFacultyMembers.$inferSelect;
+export type CollegeFacultyMemberVersionRow = typeof collegeFacultyMemberVersions.$inferSelect;
+export type CollegeFacultyAssignmentRow = typeof collegeFacultyAssignments.$inferSelect;
+export type CollegeSessionFacultyMemberRow = typeof collegeSessionFacultyMembers.$inferSelect;
+export type CollegeFacultyMemoryRow = typeof collegeFacultyMemory.$inferSelect;
+export type CollegeTimetableVersionRow = typeof collegeTimetableVersions.$inferSelect;
+export type CollegeTimetablePeriodRow = typeof collegeTimetablePeriods.$inferSelect;
+export type CollegeDayThemeRow = typeof collegeDayThemes.$inferSelect;
+export type CollegeTimetableTemplateSlotRow = typeof collegeTimetableTemplateSlots.$inferSelect;
+export type CollegeTimetableOverrideRow = typeof collegeTimetableOverrides.$inferSelect;
+export type CollegeTimetableInstanceRow = typeof collegeTimetableInstances.$inferSelect;
+export type CollegeIntentRow = typeof collegeIntents.$inferSelect;
+export type CollegeAuditRow = typeof collegeAudits.$inferSelect;
+export type CollegeAuditThresholdRow = typeof collegeAuditThresholds.$inferSelect;

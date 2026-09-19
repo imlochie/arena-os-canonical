@@ -205,6 +205,24 @@ export default function CollegeStateView() {
               >
                 Faculty attention →
               </a>
+              <a
+                href="/college/faculty/builder"
+                className="inline-block rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-[12px] font-semibold text-indigo-200 hover:bg-indigo-500/20"
+              >
+                Faculty builder →
+              </a>
+              <a
+                href="/college/timetable"
+                className="inline-block rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] font-semibold text-amber-200 hover:bg-amber-500/20"
+              >
+                Timetable →
+              </a>
+              <a
+                href="/college/audit"
+                className="inline-block rounded-lg border border-slate-500/30 bg-slate-500/10 px-3 py-1.5 text-[12px] font-semibold text-slate-200 hover:bg-slate-500/20"
+              >
+                Audit →
+              </a>
             </div>
           </div>
           <div className="text-right">

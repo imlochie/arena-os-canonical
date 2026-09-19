@@ -41,6 +41,26 @@ export function brisbaneTime(now: Date = new Date()): string {
   }).format(now);
 }
 
+/**
+ * The institutional clock as structured parts. The live timetable uses this
+ * rather than re-deriving timezone handling of its own.
+ */
+export function brisbaneNow(now: Date = new Date()): {
+  isoDate: string;
+  hour: number;
+  minute: number;
+  dayOfWeek: number;
+} {
+  const hhmm = brisbaneTime(now);
+  const [h, m] = hhmm.split(":").map(Number);
+  return {
+    isoDate: brisbaneToday(now),
+    hour: Number.isFinite(h) ? h : 0,
+    minute: Number.isFinite(m) ? m : 0,
+    dayOfWeek: brisbaneDayOfWeek(now),
+  };
+}
+
 /** Long human date, e.g. "Sunday, 20 September 2026". */
 export function brisbaneLongDate(now: Date = new Date()): string {
   return new Intl.DateTimeFormat("en-AU", {

@@ -23,6 +23,7 @@ import { buildContextPacket } from "./context";
 import { buildOrientation } from "./orientation";
 import { getFacultyPosition } from "./faculty";
 import { computeCollegeState } from "./state";
+import { compilePersonality, resolveFacultyForContext } from "./members";
 
 /** What each position is asked to produce. Different roles → different output. */
 const POSITION_TASK: Record<string, { task: string; contributionType: string; stance: string }> = {
@@ -75,6 +76,8 @@ export interface FacultyRun {
   limitations: string[];
   /** False when this was internal faculty work the student never sees. */
   visibleToStudent?: boolean;
+  /** Which configured faculty member occupied the position, if any. */
+  memberName?: string;
 }
 
 /**
@@ -104,6 +107,8 @@ export async function runFacultyPosition(opts: {
    * classroom — attending is not the same as speaking.
    */
   visibleToStudent?: boolean;
+  /** Used to resolve which configured member occupies this position. */
+  sessionKind?: string;
 }): Promise<FacultyRun | { error: string }> {
   const position = getFacultyPosition(opts.positionKey);
   if (!position) return { error: `unknown position ${opts.positionKey}` };
@@ -154,11 +159,27 @@ export async function runFacultyPosition(opts: {
     .filter((s) => s !== "")
     .join("\n");
 
+  // PERSONALITY layer. Compiled separately from institutional rules and
+  // appended AFTER them, so institutional rules always come first and win.
+  let personalityBlock = "";
+  let memberName = "";
+  if (opts.courseId !== undefined) {
+    const serving = await resolveFacultyForContext({
+      courseId: opts.courseId ?? null,
+      sessionKind: opts.sessionKind,
+    });
+    const mine = serving.find((s) => s.member.positionKey === position.key);
+    if (mine) {
+      personalityBlock = compilePersonality(mine.member);
+      memberName = mine.member.name;
+    }
+  }
+
   const started = Date.now();
   const res = await generate({
     modelId: "openai",
     messages: [{ role: "user", content: userContent }],
-    system: packet.system,
+    system: personalityBlock ? `${packet.system}\n\n---\n\n${personalityBlock}` : packet.system,
     temperature: 0.6,
     localOnly: opts.localOnly,
     category: "reasoning",
@@ -198,6 +219,7 @@ export async function runFacultyPosition(opts: {
     contextIncluded: packet.included,
     limitations: packet.limitations,
     visibleToStudent: opts.visibleToStudent !== false,
+    memberName: memberName || undefined,
   };
 }
 

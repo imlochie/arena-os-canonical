@@ -527,3 +527,130 @@ configuration that violates the branch split:
    phases, but not yet the trigger table itself.
 4. No live model is reachable here, so every faculty run degrades to
    `localTextReply`. The orchestration is proven; the prose is fallback.
+
+---
+
+# LAYER 4 — FACULTY CONFIGURATION, LIVE TIMETABLE, AUDIT
+
+Layer 4 adds three subsystems and one architectural correction. Fifteen tables
+were appended to `src/db/college.ts`; no existing College table was renamed or
+restructured, and the 18 legacy tables were not touched.
+
+## A. Faculty configuration
+
+**Position vs member.** A POSITION is an institutional responsibility and is the
+only thing that carries authority. A MEMBER is a configured persona occupying a
+position. Personality is expressive; it is never permissive.
+
+`POSITION_AUTHORITY_CEILING` bounds what each position may ever be granted.
+`resolveAuthority` computes `requested ∩ ceiling − protected` and returns an
+explicit `refused[]` with reasons, which the Builder surfaces. Three authorities
+are architecturally protected and cannot be granted to anyone:
+`decide_curriculum`, `alter_history`, `formal_assessment`.
+
+`detectAuthorityClaims` additionally scans personality text for five classes of
+claim (final-decision, suppression-of-uncertainty, curriculum, history,
+assessment). These are warnings, not silent edits — the text is preserved, the
+claim simply has no effect.
+
+**Mandatory ≠ speaking.** `mandatoryLevel` is one of college_wide, course,
+session_type, phase, conditional, optional. It states that a responsibility
+cannot be omitted, not that the member talks. `validateRoster` runs before a
+session opens; an uninstantiable mandatory position yields
+`SESSION CANNOT FULLY INITIALISE` with per-member `block` or `warn` severity.
+No unrelated member is ever substituted.
+
+**Versioning.** Every edit snapshots the prior configuration into
+`college_faculty_member_versions` and bumps `version`. Sessions record which
+member occupied which position *and* which version applied, in
+`college_session_faculty_members`. Verified: renaming a live member to
+"The Patient Teacher (renamed) / Brisk / v4" left historical sessions correctly
+reporting "The Patient Teacher / Direct / warmth 1 / v2".
+
+Members are never deleted. `DELETE /api/college/members` returns 405 by design.
+
+## B. Live timetable
+
+**Template → version → slot → override → instance.** `SLOT` is a place in the
+week, `ACTIVITY` is what occupies it, `SESSION` is what happened. A date-specific
+override never mutates the recurring template — verified by cancelling Soul
+Session on 2026-09-27 and confirming 2026-10-04 remained `scheduled`.
+
+**Completion is never inferred.** `setInstanceStatus` rejects completed / missed /
+deviated / in_progress without evidence: *"The clock passing the end time is not
+evidence that something happened."* A slot whose end time has passed with no
+evidence resolves to `unknown`, not `completed`.
+
+**Overlaps are surfaced, not arbitrated.** The reference design genuinely
+overlaps Garage Downtime (17:00–19:30) with Dinner (18:30–19:30), consistent with
+its own Core Rule #1, *"Follow the periods, not the clock."* `livePosition`
+returns `concurrent[]` plus an explanatory note rather than picking a winner.
+
+**Import, don't invent.** `importReferenceTimetable()` creates a new version with
+11 periods, 7 day themes and 77 slots. Five genuinely ambiguous values are
+flagged `needsConfiguration` with a note instead of being guessed: the
+Garage/Dinner overlap, the 12:00–12:20 gap, Sleep's missing end time, Wednesday
+DoorDash sitting outside its band, and unprinted AM/PM.
+
+Ten activity types (academic, creative, administrative, health, relationship,
+household, adventure, recovery, entertainment, routine) keep life from being
+recast as coursework. `detectTimetableConflicts` reports
+`slot_without_active_course` / `active_course_without_slot` / `needs_configuration`
+and never auto-repairs.
+
+## C. Audit
+
+An audit answers what happened, how consistently, against what intent, on what
+evidence — it never opens with "how can we improve this?".
+
+**Separate dimensions, never one score.** Slots are evaluated on attendance,
+consistency, goal alignment, friction and sustainability; courses on exposure,
+completion, learning evidence and continuity.
+
+**Evidence before recommendation.** Defaults are 4 observations across 3 weeks,
+3 deviations before review, 28-day reopen interval — all configurable per scope,
+because Arena must not assume what counts as meaningful. Below threshold the
+output is literally *"INSUFFICIENT EVIDENCE. No change indicated. Let it run."*
+`POST` refuses `propose_change` outright on insufficient evidence.
+
+**NO CHANGE REQUIRED is a real outcome.** A `keep_as_is` decision sets
+`reopenAfter` and returns *"This question will not be reopened before <date>."*
+Verified: a slot at 5-of-6 completion with one medical absence returned
+*"NO CHANGE INDICATED. No meaningful problem identified."*
+
+**No manufactured winners.** `comparePeriods` refuses to present two periods as a
+clean experiment when they differ in structure, intent, context, observation
+count, evidence sufficiency or length. Verified: comparing a 4-observation period
+against a 2-observation one returns `comparable: false` with both reasons stated.
+Differences are always phrased as description, never causation.
+
+Deviations matching appointment/work/travel/household/availability are classified
+as **explained**, setting friction to `not_applicable` — real-world interruption
+is not schedule failure.
+
+## D. Session integration
+
+`/api/college/class` now validates the roster before opening, records serving
+members with pinned versions, and compiles personality as a separate block
+appended *after* institutional rules so the institution always outranks the
+persona.
+
+One pre-existing defect was fixed here: the Instructor ran in the teaching phase
+and again in the coordination window, producing two student-facing answers. The
+Instructor now holds its response until coordination completes. Layer 3
+regression re-verified — exactly one visible response in every case, with
+Observer/Critic/Researcher still working internally.
+
+## Layer 4 gaps
+
+1. Attention policies remain code-level defaults; the per-member attention
+   vocabulary (watch for / activate on / stay silent on / consult on / escalate
+   on / defer on) is stored but not yet enforced by the orchestrator.
+2. Faculty memory (`college_faculty_memory`) has schema and promotion gating but
+   no UI.
+3. Coordination configuration per member is stored but the orchestrator still
+   uses protocol-level coordination.
+4. Notification suppression is not implemented.
+5. No live model is reachable in this sandbox; all faculty output shown during
+   verification came from the `local:text` fallback and must not be read as real
+   model behaviour.
