@@ -175,13 +175,19 @@ export const collegeFaculty = pgTable("college_faculty", {
   id: uuid("id").primaryKey().defaultRandom(),
   positionKey: text("position_key").notNull(), // instructor|researcher|critic|registrar|...
   name: text("name").notNull(),
+  // faculty = educational actor · administration = record-keeping function.
+  // Administration does not teach; Faculty does not own historical records.
+  branch: text("branch").notNull().default("faculty"),
   remit: text("remit").notNull().default(""),
   // What this position may and may not do (authority boundary, enforced in lib)
   authorityBoundary: text("authority_boundary").notNull().default(""),
   // May this position file institutional records without human approval?
   mayFileRecords: boolean("may_file_records").notNull().default(false),
-  // May this position issue a formal assessment, or only recommend?
-  mayAssess: boolean("may_assess").notNull().default(false),
+  // Formative observation vs formal assessment are different authorities.
+  // none | formative | formal — "formal" is reserved for institutional authority.
+  assessmentAuthority: text("assessment_authority").notNull().default("none"),
+  // Does this position attend teaching sessions at all?
+  participatesInClass: boolean("participates_in_class").notNull().default(true),
   outputType: text("output_type").notNull().default("guidance"),
   // Reuse of the existing Workforce abstraction where a sensible mapping exists
   workforceRoleId: text("workforce_role_id").notNull().default(""),
@@ -217,6 +223,10 @@ export const collegeSessions = pgTable("college_sessions", {
   status: text("status").notNull().default("scheduled"), // scheduled|running|completed|interrupted|missed
   objective: text("objective").notNull().default(""),
   facultyPlan: text("faculty_plan").notNull().default("[]"), // JSON position keys
+  // Curriculum context AS IT WAS when the session occurred. Historical
+  // accuracy: later curriculum edits must never rewrite a past session.
+  curriculumVersionId: uuid("curriculum_version_id"),
+  courseSnapshotId: uuid("course_snapshot_id"),
   // Bridges into existing Arena runtime (nullable — never required)
   cognitiveSessionId: uuid("cognitive_session_id"),
   councilRunId: uuid("council_run_id"),
@@ -462,3 +472,158 @@ export type CollegeMemoryRow = typeof collegeMemory.$inferSelect;
 export type CollegeMemoryEvidenceRow = typeof collegeMemoryEvidence.$inferSelect;
 export type CollegeRecordRow = typeof collegeRecords.$inferSelect;
 export type CollegeStateSnapshotRow = typeof collegeStateSnapshots.$inferSelect;
+
+// ============================================================================
+// LAYER 2 — reconciliation, formative evidence, curriculum
+// ============================================================================
+// Additive only. No Layer 1 table is renamed or altered.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Institutional reconciliation — a conflict is STATE, not an error
+// ---------------------------------------------------------------------------
+// When authoritative sources disagree, the disagreement itself becomes part of
+// institutional state and persists until formally resolved. The system never
+// picks a winner, and never "fixes" a conflict because today's date suggests
+// an interpretation.
+export const collegeReconciliations = pgTable("college_reconciliations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // stable identity so the same live conflict is not re-opened every request
+  conflictKey: text("conflict_key").notNull(),
+  // temporal | catalogue | timetable | governance | curriculum | other
+  conflictType: text("conflict_type").notNull().default("other"),
+  subject: text("subject").notNull(),
+  sourceAKey: text("source_a_key").notNull().default(""),
+  sourceAClaim: text("source_a_claim").notNull().default(""),
+  sourceBKey: text("source_b_key").notNull().default(""),
+  sourceBClaim: text("source_b_claim").notNull().default(""),
+  detail: text("detail").notNull().default(""),
+  provenance: text("provenance").notNull().default(""),
+  detectedAt: timestamp("detected_at").defaultNow(),
+  lastSeenAt: timestamp("last_seen_at").defaultNow(),
+  // open | acknowledged | awaiting_authority | resolved | accepted_as_permanent
+  status: text("status").notNull().default("open"),
+  // what kind of act would settle it (amendment, clarification, decision)
+  requiredAuthority: text("required_authority").notNull().default(""),
+  requiredAction: text("required_action").notNull().default(""),
+  resolution: text("resolution").notNull().default(""),
+  resolutionProvenance: text("resolution_provenance").notNull().default(""),
+  resolvedBy: text("resolved_by").notNull().default(""),
+  resolvedAt: timestamp("resolved_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// Formative evidence — what learning was observed (NOT formal attainment)
+// ---------------------------------------------------------------------------
+// Faculty may record these freely. They never constitute a formal assessment.
+export const collegeFormativeEvidence = pgTable("college_formative_evidence", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id"),
+  courseId: uuid("course_id"),
+  weekIndex: integer("week_index"),
+  positionKey: text("position_key").notNull().default("instructor"),
+  // demonstrated_understanding | demonstrated_skill | confusion | misconception |
+  // successful_explanation | incomplete_understanding | needs_practice
+  evidenceType: text("evidence_type").notNull().default("demonstrated_understanding"),
+  content: text("content").notNull(),
+  capabilityKey: text("capability_key").notNull().default(""),
+  // Always "formative". Present so the distinction is explicit in the data.
+  assessmentKind: text("assessment_kind").notNull().default("formative"),
+  truthClass: text("truth_class").notNull().default("fact"),
+  confidence: text("confidence").notNull().default("known"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// Curriculum — living institutional state, versioned
+// ---------------------------------------------------------------------------
+// The handbook defines the framework. The CURRENT curriculum is the founder's
+// to decide, and changes must never rewrite what was true at the time.
+export const collegeCurriculumVersions = pgTable("college_curriculum_versions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  termId: uuid("term_id"),
+  versionNumber: integer("version_number").notNull().default(1),
+  label: text("label").notNull().default(""),
+  status: text("status").notNull().default("active"), // active | superseded
+  reason: text("reason").notNull().default(""),
+  initiatedBy: text("initiated_by").notNull().default("founder"),
+  effectiveFrom: text("effective_from"), // ISO date
+  supersedesId: uuid("supersedes_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Membership: which courses are ACTIVE in a given curriculum version.
+// A course existing (in Notion or in college_courses) does not imply membership.
+export const collegeCurriculumEntries = pgTable("college_curriculum_entries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  versionId: uuid("version_id").notNull(),
+  courseId: uuid("course_id").notNull(),
+  position: integer("position").notNull().default(0), // ordering
+  entryStatus: text("entry_status").notNull().default("active"), // active|paused
+  note: text("note").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Immutable snapshot of what a course MEANT at a point in time.
+// Historical sessions reference a snapshot, so later edits cannot rewrite them.
+export const collegeCourseSnapshots = pgTable("college_course_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  courseId: uuid("course_id").notNull(),
+  versionId: uuid("version_id"),
+  code: text("code").notNull(),
+  title: text("title").notNull(),
+  summary: text("summary").notNull().default(""),
+  status: text("status").notNull().default(""),
+  weeklyStructure: text("weekly_structure").notNull().default("[]"), // JSON
+  capturedAt: timestamp("captured_at").defaultNow(),
+  reason: text("reason").notNull().default(""),
+});
+
+// Auditable curriculum change log — distinguishes metadata edits from
+// institutional decisions.
+export const collegeCurriculumChanges = pgTable("college_curriculum_changes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  versionId: uuid("version_id"),
+  courseId: uuid("course_id"),
+  // course_added | course_removed | course_edited | status_changed |
+  // week_edited | reordered | timetable_changed | metadata_edit
+  changeType: text("change_type").notNull().default("metadata_edit"),
+  // metadata_edit = ordinary; institutional_decision = record-worthy
+  significance: text("significance").notNull().default("metadata_edit"),
+  field: text("field").notNull().default(""),
+  previousValue: text("previous_value").notNull().default(""),
+  newValue: text("new_value").notNull().default(""),
+  reason: text("reason").notNull().default(""),
+  initiatedBy: text("initiated_by").notNull().default("founder"),
+  effectiveDate: text("effective_date"),
+  recordId: uuid("record_id"), // set if filed by the Registrar
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// AI curriculum proposals — generated, never auto-applied.
+export const collegeCurriculumProposals = pgTable("college_curriculum_proposals", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull(),
+  rationale: text("rationale").notNull().default(""),
+  evidence: text("evidence").notNull().default(""),
+  affectedCourses: text("affected_courses").notNull().default("[]"), // JSON
+  expectedConsequences: text("expected_consequences").notNull().default(""),
+  conflicts: text("conflicts").notNull().default(""),
+  alternatives: text("alternatives").notNull().default(""),
+  proposedBy: text("proposed_by").notNull().default("faculty"),
+  // proposed | accepted | rejected
+  status: text("status").notNull().default("proposed"),
+  decidedBy: text("decided_by").notNull().default(""),
+  decidedAt: timestamp("decided_at"),
+  decisionNote: text("decision_note").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type CollegeReconciliationRow = typeof collegeReconciliations.$inferSelect;
+export type CollegeFormativeEvidenceRow = typeof collegeFormativeEvidence.$inferSelect;
+export type CollegeCurriculumVersionRow = typeof collegeCurriculumVersions.$inferSelect;
+export type CollegeCurriculumEntryRow = typeof collegeCurriculumEntries.$inferSelect;
+export type CollegeCourseSnapshotRow = typeof collegeCourseSnapshots.$inferSelect;
+export type CollegeCurriculumChangeRow = typeof collegeCurriculumChanges.$inferSelect;
+export type CollegeCurriculumProposalRow = typeof collegeCurriculumProposals.$inferSelect;

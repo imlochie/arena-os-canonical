@@ -338,7 +338,9 @@ export async function bootstrapCollege(): Promise<BootstrapResult> {
         remit: p.remit,
         authorityBoundary: p.authorityBoundary,
         mayFileRecords: p.mayFileRecords,
-        mayAssess: p.mayAssess,
+        branch: p.branch,
+        assessmentAuthority: p.assessmentAuthority,
+        participatesInClass: p.participatesInClass,
         outputType: p.outputType,
         workforceRoleId: p.workforceRoleId,
         contextScope: JSON.stringify(p.contextScope),
@@ -348,7 +350,7 @@ export async function bootstrapCollege(): Promise<BootstrapResult> {
     }
     created.push(`faculty:${FACULTY_POSITIONS.length}`);
     notes.push(
-      "No faculty position may file records or issue formal assessments. The Registrar proposes; filing remains an explicit institutional act."
+      "Faculty may record FORMATIVE observations about learning; no position holds FORMAL assessment authority. The Registrar is Administration, does not attend class, and proposes records only — filing remains an explicit institutional act."
     );
   } else {
     skipped.push("faculty");

@@ -75,7 +75,13 @@ Remit: ${p.remit}
 The question you exist to answer: "${p.question}"
 Authority boundary: ${p.authorityBoundary}
 Expected output: ${p.outputType}
-${p.mayFileRecords ? "" : "You may NOT file institutional records. You may only propose them.\n"}${p.mayAssess ? "" : "You may NOT issue a formal assessment. You may only recommend one.\n"}
+${p.mayFileRecords ? "" : "You may NOT file institutional records. You may only propose them.\n"}${
+    p.assessmentAuthority === "formative"
+      ? "You MAY record formative observations about learning (what was demonstrated, what remains unclear). You may NOT declare a learning outcome formally assessed or achieved — that requires institutional authority.\n"
+      : p.assessmentAuthority === "none"
+        ? "You may NOT make determinations about the student's attainment.\n"
+        : ""
+  }
 Other positions may disagree with you. That disagreement is valuable and will be preserved — do not soften your position to manufacture consensus, and do not pretend to speak for positions other than your own.`;
 }
 

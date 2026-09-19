@@ -14,17 +14,47 @@
 
 export type FacultyDerivation = "canon-derived" | "inferred" | "proposed";
 
+/**
+ * Institutional branch. Correction accepted from the founder: Administration
+ * is NOT a teaching faculty member.
+ *
+ *   Faculty teach, observe and interpret.
+ *   Administration classifies, verifies and files.
+ *
+ * The Registrar is therefore an administrative FUNCTION invoked when a session
+ * produces something record-worthy — not a participant in every class.
+ */
+export type InstitutionalBranch = "faculty" | "administration";
+
+/**
+ * Authority to make statements about learning. Split per founder correction:
+ * an AI teacher must be able to observe learning without being able to declare
+ * a learning outcome officially achieved.
+ */
+export type AssessmentAuthority =
+  | "none" // may not make statements about attainment at all
+  | "formative" // may record observed evidence of learning
+  | "formal"; // may declare an outcome officially assessed — institutional authority only
+
 export interface FacultyPosition {
   key: string;
   name: string;
   emoji: string;
+  /** faculty = educational actor · administration = record-keeping function */
+  branch: InstitutionalBranch;
   remit: string;
   /** What this position may NOT do. Enforced by the runtime, not just prose. */
   authorityBoundary: string;
   /** Registrar proposes records; only filing makes them institutional. */
   mayFileRecords: boolean;
-  /** AI faculty recommend; formal assessment authority is a human decision. */
-  mayAssess: boolean;
+  /**
+   * Replaces the old coarse `mayAssess: false`. Faculty may record formative
+   * observations about learning; nobody may issue a FORMAL assessment without
+   * institutional authority the College has not yet defined.
+   */
+  assessmentAuthority: AssessmentAuthority;
+  /** Does this position participate in teaching sessions at all? */
+  participatesInClass: boolean;
   outputType: string;
   /** Which context packet keys this position receives (bounded context). */
   contextScope: string[];
@@ -41,12 +71,14 @@ export const FACULTY_POSITIONS: FacultyPosition[] = [
     key: "instructor",
     name: "Instructor",
     emoji: "🎓",
+    branch: "faculty",
     remit:
       "Teach principles before techniques, build understanding, adapt to the student's current level and stated intent.",
     authorityBoundary:
       "May teach and recommend. May not change curriculum, file records, or declare institutional decisions.",
     mayFileRecords: false,
-    mayAssess: false,
+    assessmentAuthority: "formative",
+    participatesInClass: true,
     outputType: "lesson / explanation / tutorial",
     contextScope: ["position", "course", "objective", "prior_learning", "context_signals", "goals"],
     workforceRoleId: "editor",
@@ -58,11 +90,13 @@ export const FACULTY_POSITIONS: FacultyPosition[] = [
     key: "researcher",
     name: "Researcher",
     emoji: "🔬",
+    branch: "faculty",
     remit: "Establish what information is relevant, accurate and sufficient for the session.",
     authorityBoundary:
       "May supply evidence and cite limits. May not assess the student or file records.",
     mayFileRecords: false,
-    mayAssess: false,
+    assessmentAuthority: "none",
+    participatesInClass: true,
     outputType: "evidence brief",
     contextScope: ["position", "course", "objective", "open_questions"],
     workforceRoleId: "researcher",
@@ -74,12 +108,14 @@ export const FACULTY_POSITIONS: FacultyPosition[] = [
     key: "critic",
     name: "Critic",
     emoji: "🔥",
+    branch: "faculty",
     remit:
       "Pressure-test the current understanding. Surface assumptions, counter-evidence and overstated confidence.",
     authorityBoundary:
       "May dissent and must be recorded when it does. May not overrule the Instructor or file records.",
     mayFileRecords: false,
-    mayAssess: false,
+    assessmentAuthority: "formative",
+    participatesInClass: true,
     outputType: "critique / dissent",
     contextScope: ["position", "course", "objective", "prior_learning", "teaching_memory"],
     workforceRoleId: "critic",
@@ -91,12 +127,14 @@ export const FACULTY_POSITIONS: FacultyPosition[] = [
     key: "registrar",
     name: "Registrar",
     emoji: "🗂️",
+    branch: "administration",
     remit:
       "Identify what is record-worthy, propose institutional records with provenance, and preserve chronology.",
     authorityBoundary:
       "PROPOSES records only. Filing is a separate institutional act requiring explicit approval. Never rewrites history — corrections supersede.",
     mayFileRecords: false,
-    mayAssess: false,
+    assessmentAuthority: "none",
+    participatesInClass: false,
     outputType: "record proposal",
     contextScope: ["position", "session_outcome", "institutional_state", "prior_records"],
     workforceRoleId: "operator",
@@ -108,12 +146,14 @@ export const FACULTY_POSITIONS: FacultyPosition[] = [
     key: "observer",
     name: "Observer",
     emoji: "👁️",
+    branch: "faculty",
     remit:
       "Record what actually happened during the session without interpreting it: evidence, friction, what was produced.",
     authorityBoundary:
       "Records observations only. May not interpret, assess, or file. Observation must stay separable from interpretation.",
     mayFileRecords: false,
-    mayAssess: false,
+    assessmentAuthority: "formative",
+    participatesInClass: true,
     outputType: "observation log",
     contextScope: ["position", "session_outcome"],
     workforceRoleId: "",
@@ -125,12 +165,14 @@ export const FACULTY_POSITIONS: FacultyPosition[] = [
     key: "assessor",
     name: "Assessor",
     emoji: "📐",
+    branch: "faculty",
     remit:
       "Judge whether evidence demonstrates the intended capability, against authentic-project criteria.",
     authorityBoundary:
       "Produces RECOMMENDED assessments only. Formal academic judgement requires human acceptance — an open decision the founder has not yet resolved.",
     mayFileRecords: false,
-    mayAssess: false,
+    assessmentAuthority: "formative",
+    participatesInClass: true,
     outputType: "recommended assessment",
     contextScope: ["position", "course", "objective", "evidence", "capabilities"],
     workforceRoleId: "strategist",
@@ -142,10 +184,12 @@ export const FACULTY_POSITIONS: FacultyPosition[] = [
     key: "specialist",
     name: "Specialist",
     emoji: "🧪",
+    branch: "faculty",
     remit: "Provide domain depth for a specific School or subject when a session needs it.",
     authorityBoundary: "Advisory within its domain. No institutional authority.",
     mayFileRecords: false,
-    mayAssess: false,
+    assessmentAuthority: "none",
+    participatesInClass: true,
     outputType: "domain guidance",
     contextScope: ["position", "course", "objective"],
     workforceRoleId: "engineer",
@@ -157,11 +201,13 @@ export const FACULTY_POSITIONS: FacultyPosition[] = [
     key: "socratic",
     name: "Socratic Faculty",
     emoji: "❓",
+    branch: "faculty",
     remit:
       "Develop independent judgement by questioning rather than answering. Encourage reflection.",
     authorityBoundary: "Asks questions. Does not supply conclusions or file records.",
     mayFileRecords: false,
-    mayAssess: false,
+    assessmentAuthority: "formative",
+    participatesInClass: true,
     outputType: "questions",
     contextScope: ["position", "objective", "prior_learning"],
     workforceRoleId: "critic",
@@ -197,7 +243,7 @@ export const SESSION_KINDS: SessionKindDef[] = [
     emoji: "📖",
     description: "Standard teaching session against a weekly objective.",
     requiredPositions: ["instructor", "observer"],
-    optionalPositions: ["socratic", "researcher", "registrar"],
+    optionalPositions: ["socratic", "researcher"],
     stages: ["orientation", "context_check", "lesson", "practice", "reflection", "close"],
   },
   {
@@ -215,7 +261,7 @@ export const SESSION_KINDS: SessionKindDef[] = [
     emoji: "🔬",
     description: "Investigation-heavy session requiring evidence and scrutiny.",
     requiredPositions: ["instructor", "researcher", "critic"],
-    optionalPositions: ["registrar"],
+    optionalPositions: [],
     stages: ["orientation", "context_check", "inquiry", "understanding", "reflection", "close"],
   },
   {
@@ -223,9 +269,9 @@ export const SESSION_KINDS: SessionKindDef[] = [
     name: "Retrospective",
     emoji: "🪞",
     description: "Looking back over delivered work to consolidate and correct.",
-    requiredPositions: ["instructor", "critic", "registrar"],
+    requiredPositions: ["instructor", "critic"],
     optionalPositions: ["observer"],
-    stages: ["orientation", "understanding", "reflection", "faculty_record", "institutional_update", "close"],
+    stages: ["orientation", "understanding", "reflection", "faculty_record", "close"],
   },
   {
     key: "assessment",
@@ -233,7 +279,7 @@ export const SESSION_KINDS: SessionKindDef[] = [
     emoji: "📐",
     description: "Reviewing evidence against intended capability.",
     requiredPositions: ["assessor", "observer"],
-    optionalPositions: ["critic", "registrar"],
+    optionalPositions: ["critic"],
     stages: ["context_check", "understanding", "faculty_record", "close"],
   },
   {
@@ -256,38 +302,51 @@ export function getSessionKind(key: string): SessionKindDef {
  * Determine which faculty positions a session requires, with the reason for
  * each. Derived from the session kind, then adjusted for actual circumstances.
  */
+/**
+ * Determine which FACULTY positions a session requires, with the reason for
+ * each.
+ *
+ * Administration is deliberately excluded. Per the institutional correction,
+ * the Registrar does not attend class; it is invoked afterwards, only if the
+ * session produced something record-worthy. See `registrar.ts`.
+ */
 export function deriveFacultyComposition(
   sessionKind: string,
-  signals: { hasOpenDeviation?: boolean; hasRecordWorthyOutcome?: boolean; isRevisit?: boolean } = {}
+  signals: { hasOpenDeviation?: boolean; isRevisit?: boolean; needsEvidence?: boolean } = {}
 ): Array<{ positionKey: string; reason: string; required: boolean }> {
   const kind = getSessionKind(sessionKind);
-  const out: Array<{ positionKey: string; reason: string; required: boolean }> = kind.requiredPositions.map(
-    (p) => ({
+  const teachingOnly = (k: string) => {
+    const p = getFacultyPosition(k);
+    return Boolean(p && p.branch === "faculty" && p.participatesInClass);
+  };
+
+  const out: Array<{ positionKey: string; reason: string; required: boolean }> = kind.requiredPositions
+    .filter(teachingOnly)
+    .map((p) => ({
       positionKey: p,
       reason: `Required by session kind "${kind.name}".`,
       required: true,
-    })
-  );
+    }));
   const has = (k: string) => out.some((o) => o.positionKey === k);
 
-  if (signals.hasOpenDeviation && !has("registrar")) {
-    out.push({
-      positionKey: "registrar",
-      reason: "An open timetable deviation exists; the difference may need recording.",
-      required: false,
-    });
-  }
-  if (signals.hasRecordWorthyOutcome && !has("registrar")) {
-    out.push({
-      positionKey: "registrar",
-      reason: "Session produced a potentially record-worthy outcome.",
-      required: false,
-    });
-  }
-  if (signals.isRevisit && !has("critic")) {
+  if (signals.isRevisit && !has("critic") && teachingOnly("critic")) {
     out.push({
       positionKey: "critic",
       reason: "Revisiting prior material; previous understanding should be pressure-tested.",
+      required: false,
+    });
+  }
+  if (signals.needsEvidence && !has("researcher") && teachingOnly("researcher")) {
+    out.push({
+      positionKey: "researcher",
+      reason: "Session requires supporting evidence.",
+      required: false,
+    });
+  }
+  if (signals.hasOpenDeviation && !has("observer") && teachingOnly("observer")) {
+    out.push({
+      positionKey: "observer",
+      reason: "An open deviation exists; what actually happens should be recorded carefully.",
       required: false,
     });
   }

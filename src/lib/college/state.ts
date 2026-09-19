@@ -32,6 +32,8 @@ import {
   collegeWeeks,
 } from "@/db/college";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { openConflicts, registerConflict } from "./reconciliation";
+import { getCurrentCurriculum, getCurriculumHealth } from "./curriculum";
 import {
   brisbaneDayOfWeek,
   brisbaneLongDate,
@@ -145,6 +147,17 @@ export interface CollegeState {
     items: Array<{ severity: string; title: string; detail: string; truthClass: string }>;
   };
   conflicts: Array<{ title: string; detail: string; sources: string[] }>;
+  /** Persisted reconciliation records — conflicts as durable institutional state. */
+  reconciliation: {
+    open: Array<Record<string, unknown>>;
+    count: number;
+  };
+  curriculum2: {
+    version: Record<string, unknown> | null;
+    courses: Array<Record<string, unknown>>;
+    health: Array<{ condition: string; detail: string; severity: string }>;
+    activeCourseCount: number;
+  };
   unknowns: string[];
   sources: Array<Record<string, unknown>>;
 }
@@ -249,6 +262,22 @@ export async function computeCollegeState(now: Date = new Date()): Promise<Colle
         detail,
         sources: ["Academic Calendar (Source of Truth)", "Institutional State — Current"],
       });
+      // Persist as institutional state: the disagreement outlives this request
+      // and can only be closed by an explicit institutional act.
+      await registerConflict({
+        conflictKey: "temporal:semester-position",
+        conflictType: "temporal",
+        subject: "Current academic week",
+        sourceAKey: "academic_calendar",
+        sourceAClaim: `Week ${d.weekIndex}`,
+        sourceBKey: "institutional_state",
+        sourceBClaim: `Week ${declared}`,
+        detail,
+        provenance: "Derived by the College State engine from the Academic Calendar and Institutional State.",
+        requiredAuthority: "Administration",
+        requiredAction:
+          "Reconcile the calendar with Institutional State: either advance/close the semester record or extend the published calendar.",
+      });
       attention.push({
         severity: "high",
         title: "Unresolved academic position",
@@ -268,6 +297,19 @@ export async function computeCollegeState(now: Date = new Date()): Promise<Colle
         title: "Calendar exhausted",
         detail,
         sources: ["Academic Calendar (Source of Truth)"],
+      });
+      await registerConflict({
+        conflictKey: "temporal:calendar-exhausted",
+        conflictType: "temporal",
+        subject: "Calendar has no entry for today",
+        sourceAKey: "academic_calendar",
+        sourceAClaim: `Defines weeks 1–${term.weekCount}`,
+        sourceBKey: "system_clock",
+        sourceBClaim: `Today derives to week ${d.weekIndex}`,
+        detail,
+        provenance: "Derived by the College State engine.",
+        requiredAuthority: "Administration",
+        requiredAction: "Close Semester I or publish the next teaching period.",
       });
       attention.push({
         severity: "high",
@@ -463,6 +505,38 @@ export async function computeCollegeState(now: Date = new Date()): Promise<Colle
     .where(eq(collegeFaculty.active, true))
     .orderBy(asc(collegeFaculty.positionKey));
 
+  // ---- persisted reconciliation state ----
+  const openRecon = await openConflicts();
+  for (const r of openRecon) {
+    attention.push({
+      severity: "high",
+      title: `Unresolved: ${r.subject}`,
+      detail: `${r.sourceAKey} says "${r.sourceAClaim}" · ${r.sourceBKey} says "${r.sourceBClaim}". Required: ${r.requiredAction || "institutional decision"}.`,
+      truthClass: "conflict",
+    });
+  }
+
+  // ---- curriculum (living institutional state) ----
+  const curriculumNow = await getCurrentCurriculum();
+  const health = await getCurriculumHealth();
+  for (const c of health.conditions.filter((x) => x.severity === "high")) {
+    attention.push({
+      severity: "high",
+      title: c.condition,
+      detail: c.detail,
+      truthClass: "conflict",
+    });
+  }
+  if (!curriculumNow.version) {
+    unknowns.push(
+      "No curriculum version exists. The College has not yet decided what it currently teaches."
+    );
+  } else if (!curriculumNow.courses.length) {
+    unknowns.push(
+      "The active curriculum is empty. Courses are known but none has been explicitly selected into the curriculum."
+    );
+  }
+
   // ---- sources ----
   const sources = await db.select().from(collegeSources).orderBy(asc(collegeSources.key));
 
@@ -556,6 +630,16 @@ export async function computeCollegeState(now: Date = new Date()): Promise<Colle
     },
     attention: { items: attention },
     conflicts,
+    reconciliation: {
+      open: openRecon as unknown as Array<Record<string, unknown>>,
+      count: openRecon.length,
+    },
+    curriculum2: {
+      version: (curriculumNow.version as unknown as Record<string, unknown>) ?? null,
+      courses: curriculumNow.courses,
+      health: health.conditions,
+      activeCourseCount: health.activeCourseCount,
+    },
     unknowns,
     sources: sources as unknown as Array<Record<string, unknown>>,
   };

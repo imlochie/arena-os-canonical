@@ -308,3 +308,122 @@ red band; unknowns get their own panel titled *"What the College does not know."
 4. **Academic position** — reconcile Week 1 vs week 11, or close Semester I?
 5. **Mode selection** — explicit Student/Founder/Direct-Help switch, or inferred?
 6. **Source of truth split** — which domains are Notion's, which are Arena's?
+
+---
+
+# LAYER 2 — THE EXECUTABLE TEACHING LOOP
+
+*Appended after Layer 1 was committed (`082cd3a`). Layer 1 is not rewritten. The
+22 original College tables and 18 legacy tables are unchanged; Layer 2 adds 7
+tables and 3 columns.*
+
+## A. Current College runtime architecture
+
+```
+                     ┌──────────────────────────────────┐
+   Notion (canon) ──▶ │ college_sources  (the seam)      │  Arena never mutates canon
+                     └──────────────┬───────────────────┘
+                                    ▼
+                     ┌──────────────────────────────────┐
+                     │ COLLEGE STATE  (control loop)    │ ── recomputed, never remembered
+                     │ position · curriculum · memory   │
+                     │ attention · unknowns · conflicts │
+                     └──────────────┬───────────────────┘
+                                    ▼  buildOrientation()
+                     ┌──────────────────────────────────┐
+                     │ ORIENTATION — 8 standing answers │
+                     └──────────────┬───────────────────┘
+                                    ▼
+   FACULTY (teach/observe/interpret)        ADMINISTRATION (classify/file)
+   ├ instructor   interpretation            └ registrar — invoked only when a
+   ├ researcher   observation                 session produces something
+   ├ critic       DISSENT                     record-worthy. Not in class.
+   ├ socratic     question
+   ├ observer     observation
+   ├ assessor     assessment (formative only)
+   └ specialist   interpretation
+                                    ▼
+                     session → contributions → coordination (dissent preserved)
+                             → formative evidence → registrar handoff
+                             → College State update → next class
+```
+
+Runtime paths that actually exist: `src/lib/college/{state,orientation,teaching,
+faculty,curriculum,reconciliation,context,memory,registrar}.ts` and the routes
+under `src/app/api/college/*`. There is no Tool Runtime, no Collaboration
+Orchestrator, no Archive Assistant — see §0.
+
+## B. Current data model (29 College tables)
+
+Layer 2 additions only:
+
+| table | purpose |
+|---|---|
+| `college_reconciliations` | durable conflicts: source A/B, claims, provenance, detected_at, type, status, required authority/action, resolution, resolution provenance, resolved_at |
+| `college_formative_evidence` | formative observations; `assessment_kind` on every row |
+| `college_curriculum_versions` | versioned curriculum; supersedes chain |
+| `college_curriculum_entries` | **explicit** course membership in a version |
+| `college_course_snapshots` | immutable course+weeks as they were at a point in time |
+| `college_curriculum_changes` | what/previous/new/reason/initiator + `significance` |
+| `college_curriculum_proposals` | AI may propose; never activates |
+
+Columns added: `college_faculty.branch`, `.assessment_authority`,
+`.participates_in_class`; `college_sessions.curriculum_version_id`,
+`.course_snapshot_id`.
+
+## C. State lifecycle
+
+Recompute → detect conflicts → `registerConflict()` (idempotent by
+`conflict_key`; a resolved conflict is **not** reopened unless the claims
+themselves changed) → surface in `attention`/`unknowns` → optional immutable
+snapshot. UNKNOWN stays UNKNOWN. The Week 1 vs Week 11 conflict is now a row,
+not a recomputed opinion, and no code path picks a winner.
+
+## D. Faculty lifecycle
+
+Composition derived from session kind → each position gets a **different**
+context packet (`buildContextPacket`) and a **different** task (`POSITION_TASK`)
+→ contributions persisted with `contribution_type`, `stance`, `truth_class` →
+coordination summarises **without collapsing dissent**. A position whose
+`assessment_authority` is `none` cannot make statements about attainment. A
+position whose branch is `administration` is refused entry to a class.
+
+## E. Registrar lifecycle
+
+Post-class only. Faculty hands off → Registrar judges NO RECORD REQUIRED vs
+RECORD REQUIRED against eight criteria → filing is a **separate explicit act**.
+Filed records are immutable; corrections supersede. Faculty never gains
+authority over historical records.
+
+## F. Teaching / memory lifecycle
+
+Observation → candidate → corroboration (1/2/3) → promotion. A one-off
+observation cannot become permanent truth: *"Promotion refused. A one-off
+observation does not become permanent truth automatically."* Promoted memory
+re-enters the next class through orientation §5/§6, which is how the College can
+answer *why are we teaching this differently now?*
+
+## G. Remaining gaps (honest)
+
+1. **Formal assessment is undefined** — deliberately. Faculty may observe; no
+   authority exists to declare an outcome officially achieved. The API returns
+   403 rather than guessing.
+2. **Timetable is empty** — 0 slots. Curriculum↔timetable conflicts are detected
+   and surfaced, never auto-repaired.
+3. **No live model reachable** in this environment; all generation degrades to
+   `localTextReply` and is labelled `via: "offline-fallback"`. Nothing is
+   presented as if a real model produced it.
+4. **Registrar's Office canon unavailable** (Notion page unreachable); Registrar
+   rules remain inferred from the Information Flow Protocol.
+5. **AI curriculum proposals** are modelled but intentionally not wired to any
+   generator — the institution manages its curriculum deterministically first.
+6. Student identity, enrolment, multi-term progression, and cross-course
+   prerequisite enforcement are not implemented.
+
+## The guarantee Layer 2 buys
+
+Editing the curriculum cannot rewrite history. Verified end-to-end: after a
+session was taught and the course was then retitled and its week-1 objective
+replaced, the historical session still resolves to *Personal Systems* with its
+original objective, while the live course reads *Personal Systems & Behavioural
+Design*.
