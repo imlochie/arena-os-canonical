@@ -1,6 +1,6 @@
 # Gate 7 — explicit-preference provenance verification
 
-> **Date:** 2026-09-19 · **Arena commit:** `a3acf0e` · **Upstream:** `1a2200bcbb496154f9ed9ede77059d6be9d0a1be`
+> **Date:** 2026-09-19 · **Arena commit:** `9ece4c3` · **Upstream:** `1a2200bcbb496154f9ed9ede77059d6be9d0a1be`
 > ("Add provenance identity for explicit preferences", branch arena/01a0b5e9-somesafeportablesoftware,
 > atop base 8e54a283c392c53f64099a903b293de220e565ce)
 > **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-preference-provenance.mjs`

@@ -1,6 +1,6 @@
 # Gate 7 — first real-evidence reasoning pass
 
-> **Date:** 2026-09-19 · **Base commit:** `a3acf0e` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-real-evidence-driver.mjs` · **Verdict:** **PASS** (37/37)
+> **Date:** 2026-09-19 · **Base commit:** `9ece4c3` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-real-evidence-driver.mjs` · **Verdict:** **PASS** (37/37)
 >
 > **The question** (Gate 7's own, finally not hypothetical): given real
 > provenance-backed evidence, what is Arena actually permitted to conclude?

@@ -1,6 +1,6 @@
 # Gate 7 slice 7.5 — lab-002 live adversarial run
 
-> **Date:** 2026-09-19 · **Commit:** `2641049` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-adversarial-driver.mjs` · **Verdict:** **PASS** (33/33 checks)
+> **Date:** 2026-09-19 · **Commit:** `9ece4c3` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-adversarial-driver.mjs` · **Verdict:** **PASS** (33/33 checks)
 >
 > Protocol per docs/archive-reasoning-lab-002.md (bench protocol), executed against
 > REAL code-paths: dev-fixture HTTP server → genuine personalisation client (read-only
