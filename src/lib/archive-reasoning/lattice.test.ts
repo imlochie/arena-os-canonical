@@ -33,6 +33,7 @@ import {
 } from "./lattice";
 import {
   canonicalWire,
+  emptyWire,
   minimalWire,
 } from "../personalisation/fixtures";
 import { normalizePersonalisationContext } from "../personalisation/context";
@@ -235,9 +236,21 @@ test("7.1 lattice: missing epistemicStatus on evidence floors to unknown — it 
   assert.equal(statusOf({ epistemicStatus: "derived" }), "derived");
   assert.equal(statusOf({}), "unknown");
   assert.equal(statusOf({ epistemicStatus: "confirmed" }), "unknown");
-  // And end-to-end: an explicitPreferences item (no status field in the
-  // current contract) cannot ground a positive claim yet.
+  // And end-to-end: unknown ground voids positive claims (C2) — with the
+  // C4 wall firing first for lineage-less items, so this leg uses the
+  // canonical unknown fact (lineage intact) to isolate C2.
   const pack = packOf();
+  assert.throws(
+    () => buildConclusion({
+      kind: "restatement", pack, rule: "restate.v1",
+      loadBearing: [{ collection: "facts", index: 3 }], // watchlist_presence: unknown, lineage intact
+      scopeIdentity: "archive",
+      window: WINDOW_ALL, claim: { presence: "recorded" },
+    }),
+    (error: unknown) => (error as ReasoningRejectError).rejectKind === "void_claim",
+  );
+  // An explicitPreferences item (no status and no lineage in the current
+  // contract) is refused at the earlier wall regardless.
   assert.throws(
     () => buildConclusion({
       kind: "restatement", pack, rule: "restate.v1",
@@ -245,7 +258,35 @@ test("7.1 lattice: missing epistemicStatus on evidence floors to unknown — it 
       scopeIdentity: "archive",
       window: WINDOW_ALL, claim: { preference: "recorded" },
     }),
-    (error: unknown) => (error as ReasoningRejectError).rejectKind === "void_claim",
+    (error: unknown) => (error as ReasoningRejectError).rejectKind === "lineage_incomplete",
+  );
+});
+
+test("7.1 C4 defense-in-depth: handle-less provenance cannot ground a claim, even out-of-seam", () => {
+  // The seam refuses provenance-less items at ingress; this lattice is the
+  // second wall — found by the 7.5 adversarial exam (S3b), fixed here, and
+  // pinned with its own unit regression.
+  const wiring = {
+    domain: "archive-personalisation",
+    facts: [{ evidenceClass: "fact", factType: "lineage_less", value: 1, epistemicStatus: "observed", provenance: {} }],
+    observedSignals: [], temporalSignals: [], collectionFacts: [], interpretations: [],
+    uncertainties: [], explicitPreferences: [], constraints: [],
+  };
+  const pack = normalizePersonalisationContext(wiring as never);
+  assert.throws(
+    () => buildConclusion({
+      kind: "restatement",
+      pack,
+      rule: "restate.v1",
+      loadBearing: [{ collection: "facts", index: 0 }],
+      scopeIdentity: "archive",
+      window: WINDOW_ALL,
+      claim: { activity: "present", windowKey: windowIdentity(WINDOW_ALL) },
+    }),
+    (error: unknown) =>
+      error instanceof ReasoningRejectError &&
+      (error as ReasoningRejectError).rejectKind === "lineage_incomplete" &&
+      /provenance completeness/.test((error as Error).message),
   );
 });
 
@@ -267,8 +308,16 @@ test("7.1 lattice: conclusions are deterministic and frozen", () => {
   assert.ok(Object.isFrozen(a.derivation.loadBearing));
 
   // Minimal-pack honesty: an unknown-only pack still yields its
-  // uncertainty without touching positive kinds.
-  const minimal = packOf(minimalWire());
+  // uncertainty without touching positive kinds. (minimalWire's bare
+  // items deliberately carry ONLY the class marker — that fixture exists
+  // to prove the Gate-6 adapter synthesizes nothing; the lattice's C4
+  // provenance wall is what refuses them, so this leg arms its own
+  // inline uncertainty with its lineage handle to keep testing the
+  // behaviour under examination: absence emissions on thin ground.)
+  const minimal = packOf({
+    ...emptyWire(),
+    uncertainties: [{ evidenceClass: "uncertainty", provenance: { derivedFrom: "adapter_capability_report" } }],
+  });
   assert.doesNotThrow(() =>
     buildConclusion({
       kind: "absence_qualified",

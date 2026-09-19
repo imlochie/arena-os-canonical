@@ -255,5 +255,22 @@ incapable of becoming bare universal negatives, an attribution string
 (status · scope · window key · rule · lineage refs) every sentence
 travels with, and fail-closed discrimination: any claim shape it does
 not recognize is an `unsupported_claim` throw, never improvisation;
-12 tests, 125/125 suite, typecheck + build clean). Remaining: 7.5
-lab-002 live.
+12 tests, 125/125 suite, typecheck + build clean). **Slice 7.5
+implemented — lab-002 live** (`scripts/mock-personalisation-lab.mjs` +
+`scripts/e2e-gate7-adversarial-driver.mjs`, ledger
+`docs/e2e-gate7-adversarial.md`): the nine trap states (owner's
+T1–T8 numbering, T1 differential A/B) executed end-to-end — dev
+fixture HTTP → real read-only client → generated-contract runtime
+validation → Gate-6 adapter → lattice → calculus → renderer. 33/33
+checks on the cold run after one genuine exam finding: S3b exposed
+that the lattice never enforced C4 per-item (a provenance-less item
+slipping past the seam could ground conclusions); fixed IN the
+lattice (every load-bearing item must carry a lineage handle), one
+unit regression pinned, 126/126 suite re-earned. Trap invariants
+held: no fluent crossing exists (played≠watched, viewCount≠watch
+truth, offset≠enjoyment, completed≠liked, owned≠wanted,
+rewatched≠preferred, unavailable≠nothing-to-suggest,
+briefing rank≠taste), voids are typed and named, every certified
+sentence carries its certificate, and the renderer refused a
+hand-fabricated taste-ranking claim as `unsupported_claim`. Zero
+model calls in the entire gate, still.

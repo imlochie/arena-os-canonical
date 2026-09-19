@@ -134,6 +134,13 @@ const COLLECTION_NOUN: Record<string, string> = {
   explicitPreferences: "explicit preferences",
 };
 
+/** Singular naive plural agreement over the CLAIM's own count — arithmetic
+ *  over a certified number, not an inference. */
+function nounFor(collection: string, count = 2): string {
+  const noun = COLLECTION_NOUN[collection] ?? "items";
+  return count === 1 ? noun.replace(/s$/, "") : noun;
+}
+
 function refDescription(ref: EvidenceRef): string {
   return ref.signalId ?? `${ref.collection}[${ref.index}]`;
 }
@@ -170,10 +177,10 @@ function renderAggregation(conclusion: Conclusion): string {
   const claim = conclusion.claim as AggregationClaim;
   const members = (claim as { members?: readonly EvidenceRef[] }).members;
   const collection = members?.[0]?.collection;
-  const noun = collection ? COLLECTION_NOUN[collection] : undefined;
-  if (!claim || !noun || (claim.mode !== "count" && claim.mode !== "sum" && claim.mode !== "subjects")) {
+  if (!claim || !collection || !COLLECTION_NOUN[collection] || (claim.mode !== "count" && claim.mode !== "sum" && claim.mode !== "subjects")) {
     throw new RenderError("unsupported_claim", "aggregation claim is not a certified mode/membership");
   }
+  const noun = nounFor(collection, claim.count);
   const b = new StatementBuilder();
   const window = windowPhrase(conclusion.window);
   if (claim.mode === "count") {

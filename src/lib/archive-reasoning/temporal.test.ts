@@ -238,9 +238,11 @@ test("7.3 contradiction: determinism + frozen conclusions; unknown-grounded cont
 
   // A contradiction kind may stand on unknown ground (C2 only voids
   // positive claims): conflicting fact values, one of them unknown.
+  // Lineage handles armed (C4 wall) — distinct batches make them two
+  // independent witnesses.
   const facts = [
-    { evidenceClass: "fact", factType: "total_plays", value: 412, epistemicStatus: "observed", provenance: {} },
-    { evidenceClass: "fact", factType: "total_plays", value: 900, epistemicStatus: "unknown", provenance: {} },
+    { evidenceClass: "fact", factType: "total_plays", value: 412, epistemicStatus: "observed", provenance: { derivedFrom: "watch_observation", batchIds: ["ing-wit-a"] } },
+    { evidenceClass: "fact", factType: "total_plays", value: 900, epistemicStatus: "unknown", provenance: { derivedFrom: "watch_observation", batchIds: ["ing-wit-b"] } },
   ];
   const pack2 = packOf({ ...emptyWire(), facts });
   const found = surfaceContradictions(pack2, "facts");

@@ -203,6 +203,33 @@ export function buildConclusion<TClaim = Record<string, unknown>>(
 
   const items = args.loadBearing.map((ref) => resolveRef(args.pack, ref));
 
+  // C4 · provenance completeness (design §2): every load-bearing item must
+  // carry at least one lineage handle sufficient to re-derive it —
+  // derivedFrom, or a non-empty signalIds / eventIds / providerEventIds /
+  // batchIds. The seam normally refuses such evidence at ingress; this
+  // lattice is the defense-in-depth: anything that reaches it out-of-seam
+  // still cannot ground a conclusion. Missing lineage ≠ usable evidence.
+  for (const [position, item] of items.entries()) {
+    const provenance = (item as { provenance?: unknown }).provenance;
+    const record =
+      provenance !== null && typeof provenance === "object"
+        ? (provenance as Record<string, unknown>)
+        : null;
+    const hasHandle =
+      record !== null &&
+      (typeof record.derivedFrom === "string" && record.derivedFrom.trim().length > 0 ||
+        ["signalIds", "eventIds", "providerEventIds", "batchIds"].some(
+          (key) => Array.isArray(record[key]) && record[key].length > 0,
+        ));
+    if (!hasHandle) {
+      const ref = args.loadBearing[position];
+      throw new ReasoningRejectError(
+        "lineage_incomplete",
+        `load-bearing evidence ${ref.signalId ?? `${ref.collection}[${ref.index}]`} carries no lineage handle (C4 · provenance completeness); a conclusion that cannot name its derivation path is void`,
+      );
+    }
+  }
+
   // C3 · scope: never broader than what the evidence declares.
   const declaredScopes = new Set(
     items
