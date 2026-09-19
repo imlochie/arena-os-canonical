@@ -389,17 +389,17 @@ receives another byte of semantic authority.
 |---|---|
 | 1 · Gen-1 / Gen-2 semantics reconciled | ✅ this document |
 | 2 · epistemic adversarial lab specified | ✅ lab-002, phase 0 |
-| 3 · behavioural usage layer authoritative | reported ✅ (owner gate-5 report, 2026-09-19) — **not yet visible in upstream git** |
-| 4 · upstream provenance annotation (D2 applied) | reported ✅ with gate 3–5 — not yet visible upstream |
-| 5 · seventh read (`GET /api/assistant/personalisation-context`) | reported ✅ per owner gate-5 report — **blocked pending push**: endpoint, schema, and all Gate 3–5 artifacts are absent from every `SomeSafePortablesoftware` ref (all 13 swept: `personalisation-context`, `signalId`, `epistemicStatus`, `scopeIdentity`, `ingestionBatch`, `watch_observation` — only the 01a0b5d9 direction doc matches), and from `imlochie/archiveassistant` (ruled out: stale v0 scaffold, last commit 2026-09-01) |
-| 6 · Arena evidence adapter | 🔒 **brief received, standing ready — strictly blocked on spec visibility**: Arena's contract must be *generated from the real upstream OpenAPI*; hand-authoring a schema from the brief's field list would fabricate the transport and void the provenance discipline |
+| 3 · behavioural usage layer authoritative | ✗ **anticipatory** — the gate-5 report claimed done; verified 2026-09-19 against the GitHub source of truth (owner + independent sweep): **not landed** |
+| 4 · upstream provenance annotation (D2 applied) | ✗ **anticipatory** — claimed with gate 5, likewise absent from git |
+| 5 · seventh read (`GET /api/assistant/personalisation-context`) | ✗ **anticipatory — retracted (owner, 2026-09-19).** Directive relayed for the upstream session: recover the actual implementation from the current working session and push it to `imlochie/SomeSafePortablesoftware` on the intended branch/base. Arena does **not** start Gate 6. Lesson of record: a claimed artifact that is not in the GitHub source of truth does not exist for engineering purposes — the sweep (all 13 refs, no endpoint/schema hits) was the verification that mattered |
+| 6 · Arena evidence adapter | 🔒 brief received — strictly blocked until the Gate-5 commit is **verifiably visible in GitHub** and Arena can fetch the real OpenAPI. D4 discipline unchanged: generate from it, never hand-author a schema |
 | 7 · behavioural reasoning | terminal gate |
 
-**Gate-5 principle preserved from the owner's report:** `signalId` is a
-**provenance handle, not an immutable semantic identity** — derived
+**Gate-5 principle preserved from the (anticipatory) report:** `signalId`
+is a **provenance handle, not an immutable semantic identity** — derived
 signals can be regenerated or replaced; the durable truth is the
 underlying observations and their provenance. Recorded here so the Gate-6
-adapter (when unblocked) cannot later canonify it.
+adapter (when genuinely unblocked) cannot later canonify it.
 
 Gate 6, when unblocked, is the first point Arena touches this evidence —
 and is boring by design: server-to-server client → generated/validated
