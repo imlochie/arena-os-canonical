@@ -86,7 +86,18 @@ export async function POST(req: Request) {
         weekIndex,
         courseId,
         slotId,
-        title: String(body.title ?? preflight.slot.title ?? `${kind.emoji} ${kind.name}`).slice(0, 200),
+        // "(unscheduled)" is the preflight's honest label for "no timetable
+        // slot is active", but it is a poor session TITLE. Prefer the course,
+        // then the session kind, and keep the unscheduled fact in the ledger
+        // detail where it belongs.
+        title: String(
+          body.title ??
+            (preflight.slot.source === "none"
+              ? preflight.course
+                ? `${preflight.course.code} — ${kind.name}`
+                : `${kind.emoji} ${kind.name}`
+              : preflight.slot.title)
+        ).slice(0, 200),
         sessionKind,
         scheduledTime: preflight.slot.startTime,
         observedDate: brisbaneToday(),
@@ -106,6 +117,7 @@ export async function POST(req: Request) {
         runtime: "member_driven",
         sessionKind,
         weekIndex,
+        scheduled: preflight.slot.source !== "none",
         preflightSeverity: preflight.severity,
         degradedSubsystems: preflight.diagnostics
           .filter((d) => d.state !== "valid" && d.state !== "not_applicable")

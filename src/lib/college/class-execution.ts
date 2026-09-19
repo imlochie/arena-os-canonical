@@ -595,6 +595,22 @@ export async function executeClass(opts: {
         reason: "Delivered the student-facing response.",
         spoke: true,
       }).catch(() => {});
+      // The one student-facing act of the class belongs in the timeline.
+      await ledger.record({
+        eventType: "faculty_activated",
+        summary: `${exec.memberName} delivered the student-facing response.`,
+        detail: {
+          studentFacing: true,
+          confidence: exec.output.proposal.confidence,
+          fallback: exec.output.fallback,
+          ms: exec.ms,
+        },
+        sessionId: opts.sessionId,
+        courseId: opts.courseId,
+        positionKey: "instructor",
+        memberId: policy.memberId,
+        actor: "system",
+      });
     } else if (exec.output) {
       // The Instructor proposed something it may not do. Do not substitute
       // another voice — say plainly that no student-facing response was made.
@@ -614,6 +630,24 @@ export async function executeClass(opts: {
     const content = m.output.proposal.content.trim();
     if (content.length < 40) continue;
     if (/\bNO CONCERN\b/i.test(content)) continue;
+
+    // FALLBACK OUTPUT MUST NEVER BECOME MEMORY.
+    //
+    // The offline engine emits boilerplate, not teaching. Storing it would
+    // pollute faculty memory with text no faculty member ever reasoned about,
+    // and — because memory accumulates toward a corroboration threshold —
+    // repeated fallback runs could carry that boilerplate across the crossing
+    // gate and into institutional truth. The observation is discarded, loudly.
+    if (m.output.fallback) {
+      candidateMemories.push({
+        positionKey: m.positionKey,
+        content: content.slice(0, 120),
+        kind: memoryKindFor(m.positionKey),
+        stored: false,
+        note: "FALLBACK EXECUTION — not stored. Fallback output demonstrates routing, not teaching, and must never accumulate toward institutional truth.",
+      });
+      continue;
+    }
 
     const policy = opts.policies.get(m.positionKey);
     if (!policy?.memoryEnabled) {
@@ -648,18 +682,10 @@ export async function executeClass(opts: {
           ? "Recorded as faculty memory. This is the member's own observation, not institutional knowledge."
           : (res.refused ?? "Refused."),
       });
-      if (res.ok) {
-        await ledger.record({
-          eventType: "memory_recorded",
-          summary: `${m.memberName} recorded a faculty observation.`,
-          detail: { kind, scope: policy.memoryScopeLimit },
-          sessionId: opts.sessionId,
-          courseId: opts.courseId,
-          positionKey: m.positionKey,
-          memberId: policy.memberId,
-          actor: "system",
-        });
-      }
+      // NOTE: no ledger write here. `facultyMemory.remember()` already records
+      // memory_recorded, and writing it again produced two entries for one
+      // observation — which would have quietly inflated the institutional
+      // timeline and any audit that counts events.
     } catch (e) {
       failures.push(
         `MEMORY WRITE FAILURE for ${m.memberName}: ${e instanceof Error ? e.message : String(e)}`
