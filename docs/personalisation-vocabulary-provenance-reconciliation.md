@@ -397,7 +397,21 @@ certain.
 | 4 · upstream provenance annotation (D2 applied) | ⚠️ **per owner** — the new Gen-2 spec carries its own epistemic/provenance classes end-to-end, and `docs/arena-generation-lineage.md` now records Gen-1/Gen-2 as non-interchangeable contracts upstream; the D2 annotation of Gen-1's OpenAPI descriptions on `arena/01a0a0d9` itself remains to be applied |
 | 5 · seventh read (`GET /api/assistant/personalisation-context`) | ✅ **RE-EARNED 2026-09-19 — verified against the tree, not the report** (evidence below): ref `arena/01a0b5e9-somesafeportablesoftware`, tip `0a971dd` (off `main @ 0bea165`, 2026-09-19 05:44 UTC, "feat: publish archive personalisation evidence contract") |
 | 6 · Arena evidence adapter | ✅ **IMPLEMENTED 2026-09-19** (below) — built against the verified `0a971dd` contract, generated never hand-authored; 8-test acceptance suite green (81/81 full suite), typecheck + production build clean. Pending the owner's independent tree inspection before anything Gate-7-adjacent is contemplated |
-| 7 · behavioural reasoning | terminal gate — "Gate 6 preserves. Gate 7 thinks." Still fully locked |
+| 7 · behavioural reasoning | terminal gate — "Gate 6 preserves. Gate 7 thinks." Locked pending the owner's **independent fetch-and-inspect of `882abbd`** — the Gate-5 bouncer protocol applied symmetrically to Arena's own artifact |
+
+### Gate-7 standing constraints (owner, 2026-09-19)
+
+Gate 7 carries a **different burden of proof** from Gate 6, and the
+adapter invariant is permanent within it:
+
+**Arena may preserve evidence. Arena may identify evidence. Arena may
+not upgrade evidence.**
+
+Interpretation must never be smuggled into the adapter merely because
+interpretation is useful; reasoning lives in Gate 7's own layer, over
+preserved evidence, or not at all. Until the owner independently
+verifies the Gate-6 tree, there is no Gate-7 work: no prompts, no
+candidates, no scoring, no behavioural conclusions.
 
 ### Gate-6 implementation record (2026-09-19)
 
