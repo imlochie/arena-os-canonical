@@ -220,5 +220,11 @@ Each slice lands with its tests, docs, and register update — and stops.
 ## 9. Status
 
 2026-09-19 · Gate 6 verified authoritative by owner inspection of
-`882abbd`; Gate 7 unlocked and opened with this design. No reasoning code
-exists yet. Next: owner sign-off on §1–§8, then slice 7.1.
+`882abbd`; Gate 7 unlocked and opened with this design. **Slice 7.1
+implemented** (`src/lib/archive-reasoning/`: closed-union types +
+executable C1–C5 lattice; 11 tests — ceiling arithmetic, C2 void claims
+including the two-stage scope-then-status pipeline they exposed,
+no-merge windows, scope checks, lineage/bad-reference/void rejects,
+category tripwires, determinism + freeze; 92/92 suite, typecheck and
+production build clean). Remaining slices: 7.2 restatement/aggregation →
+7.3 contradiction/temporal → 7.4 renderer → 7.5 lab-002 live.
