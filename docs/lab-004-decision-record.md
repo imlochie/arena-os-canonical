@@ -270,3 +270,19 @@ implementation conversation start. Gen-1 lesson stands on the door.
 - `docs/gate7-claim-composition-design.md` (stack + TW-1/TW-2);
 - `docs/e2e-gate7-preference-provenance.md` (verified provenance substrate);
 - `src/lib/personalisation/generated/contract.ts`, `src/lib/archive-reasoning/lattice.test.ts`, `scripts/fixtures/real-evidence-upstream-capture.json`, `src/lib/archive-assistant/fixtures.ts` (tree anchors for all current-state claims).
+
+---
+
+## 13. Owner ratification and close-out (append-only; 2026-09-20)
+
+This section is **append-only**. It records *that* the analysis above was ratified and *when*; it modifies, extends, or reinterprets **nothing** in sections 1–12. The distinction is deliberate and must be preserved: sections 1–12 record **what was decided**; this section records **when and how it became ratified**.
+
+1. **The owner reviewed and accepted the resolved architecture.** On 2026-09-20 the status of this artifact changed from *Arena-side resolved analysis* to **owner-ratified cross-repo architecture**.
+2. **The normative arrow rules govern; diagram layout is illustrative.** The forbidden-arrow list and the E/D direction defined in sections 4, 5 and 7 are the authority. Any architecture diagram — including the owner's own — is a rendering. If a diagram appears to show D feeding A, B, or C, or E feeding the epistemic layers, **the diagram is wrong, not the arrows**. Future readers who conclude "surely D feeds C here" from a picture must be pointed to this sentence.
+3. **A/B/C and D→E remain orthogonal axes.** A/B/C is the epistemic axis (*what is true?*); D→E is the authority axis (*what may we do?*). Authority carries no epistemic strength; epistemic support carries no authority. Neither axis borrows from the other.
+4. **Architecture is resolved; the implementation contract is not.** Lab-004 is closed at the architecture level. The runtime contract — shape, transport, provenance mandate, scope vocabulary, entity resolution, audit authority — remains uninvented and must not be inferred from this record.
+5. **Everything recorded as open remains open, exactly as recorded.** Nothing here narrows, merges, or advances any open item: product decisions **PD-1…PD-7** (§10), the **eight Archive-Assistant questions** (§11), and **TW-1 / TW-2** (outside Lab-004 scope; owner draft positions, still unratified).
+6. **The hard implementation hold (§12) is unchanged.** This ratification opens no build gate. The eight AA questions of §11 are the entrance to the next gate, whenever the owner chooses to open it — and nothing builds before that gate.
+7. **Ratification date: 2026-09-20.**
+
+*Lab-004 is closed at the architecture level. The next gate begins at the eight AA questions, not here.*
