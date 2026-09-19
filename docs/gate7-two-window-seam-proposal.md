@@ -107,6 +107,22 @@ provenance stamps.
   path); row 28 singleton still `lineage_incomplete`; every other row
   byte-identical, determinism pair included.
 
+## Seam-level capability proof (synthetic dress rehearsal, already landed)
+
+The "Arena delta: none" claim above is demonstrated at seam level, not
+inferred, in `docs/gate7-two-window-capability-probe.md` — 13/13 checks,
+`scripts/e2e-gate7-capability-probe.mjs` against lab persona `g7cap`
+(SYNTHETIC; NOT real evidence) emitting exactly this emission shape
+through the genuine seam: lab → read-only client → generated-contract
+validation → Gate-6 normalize → lattice → `compareWindows` → renderer.
+All owner retention items survived: both declared windows verbatim, both
+refs load-bearing, parity-key values, arithmetic delta/relation, derived
+status, explicit scope, deterministic rule, byte-stable lineage, renderer
+vocabulary-clean. Regressions held at the same commit (suite 131/131,
+real-evidence 32/32, adversarial 33/33). Post-landing, that same
+demonstration is re-run against producer-authored evidence per the
+pre-registered movement above.
+
 ## Owner decision points
 
 1. **Bounds-only deeper window:** carry `previousWindow` [now−270d,

@@ -237,6 +237,46 @@ const PERSONAS = {
     ],
   }),
 
+  /* g7cap — SYNTHETIC capability persona (pre-registration dress rehearsal
+   * for docs/gate7-two-window-seam-proposal.md; NOT real evidence and NOT
+   * an adversarial trap entry). Emits the exact proposed emission shape:
+   * two temporal rows, one subject, "recent_activity" + "recent_activity_
+   * previous", parity key `watches`, adjacent half-open non-overlapping
+   * windows, one derivedAt anchor. Coverage carries no window material,
+   * so the extractor takes the producer-declared branch in both rows. */
+  g7cap: () => wire({
+    temporalSignals: [
+      sig({
+        signalId: "sig-g7cap-cur",
+        signalType: "recent_activity",
+        profile: "recent",
+        subjectIdentity: "movie:behaviour-film",
+        value: {
+          title: "movie:behaviour-film",
+          watchesLast30Days: 1, watchesLast90Days: 2, watches: 2, comparisonWindowDays: 90,
+          window: { startsAt: "2026-06-21T05:00:00.000Z", endsAt: "2026-09-19T05:00:00.000Z" },
+          previousWindow: { startsAt: "2026-03-23T05:00:00.000Z", endsAt: "2026-06-21T05:00:00.000Z" },
+        },
+        coverage: { complete: true },
+        evidenceClass: "temporal_signal",
+      }),
+      sig({
+        signalId: "sig-g7cap-prev",
+        signalType: "recent_activity_previous",
+        profile: "recent",
+        subjectIdentity: "movie:behaviour-film",
+        value: {
+          title: "movie:behaviour-film",
+          watches: 1,
+          window: { startsAt: "2026-03-23T05:00:00.000Z", endsAt: "2026-06-21T05:00:00.000Z" },
+          previousWindow: { startsAt: "2025-12-23T05:00:00.000Z", endsAt: "2026-03-23T05:00:00.000Z" },
+        },
+        coverage: { complete: true },
+        evidenceClass: "temporal_signal",
+      }),
+    ],
+  }),
+
   /* owner T4 = doc T6: completed status, one full play, zero preference
    * evidence — "you enjoyed it, didn't you?" */
   t4: () => wire({
