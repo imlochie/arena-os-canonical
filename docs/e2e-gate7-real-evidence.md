@@ -1,6 +1,6 @@
 # Gate 7 — first real-evidence reasoning pass
 
-> **Date:** 2026-09-19 · **Base commit:** `4b11b51` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-real-evidence-driver.mjs` · **Verdict:** **PASS** (19/19)
+> **Date:** 2026-09-19 · **Base commit:** `2b1acac` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-real-evidence-driver.mjs` · **Verdict:** **PASS** (19/19)
 >
 > **The question** (Gate 7's own, finally not hypothetical): given real
 > provenance-backed evidence, what is Arena actually permitted to conclude?
@@ -22,11 +22,11 @@ normalize → lattice → calculus → renderer).
 | # | Class | Check | Outcome |
 |---|-------|-------|---------|
 | 1 | INGRESS | real payload validates against the regenerated contract and normalizes verbatim | ✅ {"facts":8,"observedSignals":2,"temporalSignals":1,"collectionFacts":1,"interpretations":0,"uncertainties":0,"explicitPreferences":1} |
-| 2 | INGRESS | real provenance arrives intact through the seam | ✅ observationIds=3 evidenceKeys=3 ingestionBatchIds=["manual-0d6a3acb-ace2-47f6-91d1-2d263cfbf4f0"] eventOccurredAt=3 observedAt=3 scope=plex:movies-v1 |
+| 2 | INGRESS | real provenance arrives intact through the seam | ✅ observationIds=3 evidenceKeys=3 ingestionBatchIds=["manual-d0c074c2-9b13-4474-9935-50e54af7d516"] eventOccurredAt=3 observedAt=3 scope=plex:movies-v1 |
 | 3 | INGRESS | the surface carries its own constraints and they cross verbatim | ✅ ["Signals are observations, not likes or preferences","No universal taste score","No recommendation decision is made here"] — _the producer tells the seam what is not licensed; preservation keeps that_ |
 | 4 | DERIVE | restate real observed fact (totalPlays) | ✅ CERTIFIED status=observed statement="The archive records 3 for "totalPlays" in the all_ingested window." — _certificate carried_ |
 | 5 | DERIVE | restate real long-term signal with full provenance behind it | ✅ CERTIFIED status=derived statement="The archive records title=behaviour-film, totalWatches=3, firstWatchedAt=2020-01-01T10:00:00.000Z, lastWatchedAt=2026-09-01T10:00:00.000Z, activeMonths=3 for "behaviour-film" in the all_ingested window." — _certificate carried_ |
-| 6 | DERIVE | restate real temporal signal inside a caller-declared evidence window | ✅ CERTIFIED status=derived statement="The archive records title=behaviour-film, watchesLast30Days=1, watchesLast90Days=2, lastWatchedAt=2026-09-01T10:00:00.000Z, comparisonWindowDays=90 for "behaviour-film" in the rolling_90d window (2026-06-21T10:22:53.741Z to 2026-09-19T10:22:53.741Z)." — _certificate carried_ |
+| 6 | DERIVE | restate real temporal signal inside a caller-declared evidence window | ✅ CERTIFIED status=derived statement="The archive records title=behaviour-film, watchesLast30Days=1, watchesLast90Days=2, lastWatchedAt=2026-09-01T10:00:00.000Z, comparisonWindowDays=90, window={…} for "behaviour-film" in the rolling_90d window (2026-06-21T11:16:29.301Z to 2026-09-19T11:16:29.301Z)." — _certificate carried_ |
 | 7 | DERIVE | restate real collection fact | ✅ CERTIFIED status=derived statement="The archive records never_matched=3 for "archive" in the all_ingested window." — _certificate carried_ |
 | 8 | DERIVE | count the non-unknown facts as real arithmetic | ✅ CERTIFIED status=derived statement="7 facts recorded in the all_ingested window." — _certificate carried_ |
 | 9 | DERIVE | sum real numeric facts | ✅ CERTIFIED status=derived statement="The archive records a total of 5 across 2 facts in the all_ingested window." — _certificate carried_ |
@@ -47,8 +47,8 @@ normalize → lattice → calculus → renderer).
   ↳ `status observed · scope archive · window {"label":"all_ingested","startsAt":null,"endsAt":null} · rule restate.v1 · via "facts[0]"`
 - **[DERIVE]** “The archive records title=behaviour-film, totalWatches=3, firstWatchedAt=2020-01-01T10:00:00.000Z, lastWatchedAt=2026-09-01T10:00:00.000Z, activeMonths=3 for "behaviour-film" in the all_ingested window.”  
   ↳ `status derived · scope plex:movies-v1 · window {"label":"all_ingested","startsAt":null,"endsAt":null} · rule restate.v1 · via "observedSignals[0]"`
-- **[DERIVE]** “The archive records title=behaviour-film, watchesLast30Days=1, watchesLast90Days=2, lastWatchedAt=2026-09-01T10:00:00.000Z, comparisonWindowDays=90 for "behaviour-film" in the rolling_90d window (2026-06-21T10:22:53.741Z to 2026-09-19T10:22:53.741Z).”  
-  ↳ `status derived · scope plex:movies-v1 · window {"label":"rolling_90d","startsAt":"2026-06-21T10:22:53.741Z","endsAt":"2026-09-19T10:22:53.741Z"} · rule restate.v1 · via "temporalSignals[0]"`
+- **[DERIVE]** “The archive records title=behaviour-film, watchesLast30Days=1, watchesLast90Days=2, lastWatchedAt=2026-09-01T10:00:00.000Z, comparisonWindowDays=90, window={…} for "behaviour-film" in the rolling_90d window (2026-06-21T11:16:29.301Z to 2026-09-19T11:16:29.301Z).”  
+  ↳ `status derived · scope plex:movies-v1 · window {"label":"rolling_90d","startsAt":"2026-06-21T11:16:29.301Z","endsAt":"2026-09-19T11:16:29.301Z"} · rule restate.v1 · via "temporalSignals[0]"`
 - **[DERIVE]** “The archive records never_matched=3 for "archive" in the all_ingested window.”  
   ↳ `status derived · scope plex:movies-v1 · window {"label":"all_ingested","startsAt":null,"endsAt":null} · rule restate.v1 · via "collectionFacts[0]"`
 - **[DERIVE]** “7 facts recorded in the all_ingested window.”  

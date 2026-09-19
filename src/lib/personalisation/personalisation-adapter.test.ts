@@ -104,7 +104,7 @@ test("contract sanity: the generated snapshot exposes exactly the seventh read, 
   assert.equal(op.response, "PersonalisationContext");
 
   // The transcript of authority: the snapshot records the owner-verified ref.
-  assert.match(personalisationContractMeta.sourceRef, /b5ca1647883cc06c9180015b07470a7880d1a56a/);
+  assert.match(personalisationContractMeta.sourceRef, /3180bf9bc63c1cf755c0725c2fd1336b2c360460/);
 });
 
 test("contract sanity: PersonalisationContext requires domain plus all eight collections", () => {
@@ -115,6 +115,25 @@ test("contract sanity: PersonalisationContext requires domain plus all eight col
     [...(schema.required ?? [])].sort(),
     ["domain", ...EIGHT_COLLECTIONS].sort(),
   );
+});
+
+test("contract sanity: temporal window is producer-declared, closed, and required", () => {
+  // Upstream 3180bf9 made TemporalSignalValue.window REQUIRED and typed it
+  // as a closed TemporalWindow {startsAt, endsAt}. The snapshot must carry
+  // that authority verbatim — the meaning crossed the contract.
+  const schemas = personalisationSchemas as Record<string, Record<string, unknown>>;
+  const tw = schemas.TemporalWindow;
+  assert.ok(tw, "TemporalWindow must be in the generated snapshot");
+  assert.deepEqual(tw.required, ["startsAt", "endsAt"]);
+  assert.equal(tw.additionalProperties, false);
+  const tsv = schemas.TemporalSignalValue;
+  assert.deepEqual(tsv.required, ["window"]);
+  const pts = schemas.PersonalisationTemporalSignal as {
+    allOf?: Array<{ required?: string[]; properties?: Record<string, unknown> }>;
+  };
+  const overlay = pts.allOf?.find((part) => part.required?.includes("value"));
+  assert.ok(overlay, "temporal signals must require their typed value ($ref TemporalSignalValue)");
+  assert.ok(JSON.stringify(overlay?.properties?.value ?? null).includes("TemporalSignalValue"));
 });
 
 test("contract sanity: every fixture is valid against the generated snapshot", () => {
@@ -285,7 +304,7 @@ test("gate-6 #4: domain plus all eight collections survive normalization verbati
   // Arena may label the source of evidence — as transport metadata,
   // wrapping the evidence, never inside it.
   assert.equal(transport.endpoint, "GET /assistant/personalisation-context");
-  assert.match(transport.contractRef, /b5ca1647883cc06c9180015b07470a7880d1a56a/);
+  assert.match(transport.contractRef, /3180bf9bc63c1cf755c0725c2fd1336b2c360460/);
   assert.ok(Number.isFinite(Date.parse(transport.receivedAt)));
 
   // The honest-empty context also survives: every collection present.

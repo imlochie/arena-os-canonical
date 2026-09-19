@@ -105,14 +105,21 @@ src/lib/archive-assistant/generated/types.ts      ← TypeScript types
   semantics to legacy Gen-1 assumptions by accident is exactly the type-
   archaeology this pin prevents. (Locked decision D4 in
   `docs/personalisation-vocabulary-provenance-reconciliation.md` §7.)
-- **Seventh-read seam (2026-09-19, converged; pin refreshed same-day):**
+- **Seventh-read seam (2026-09-19, converged; pin refreshed same-day
+  twice — first for provenance, then for the temporal window):**
   the Gate-6 personalisation-evidence contract generates separately —
   `npm run generate:personalisation-contract` →
   `src/lib/personalisation/generated/` — pinned to
-  `arena/01a0b5e9-somesafeportablesoftware @ b5ca164` (tip;
-  "test: verify provenance-backed evidence surface", enforcing
-  `0489d2c` "feat: enforce archive observation provenance"; supersedes
-  the owner-verified Gate-5 pin `0a971dd`). The refresh added five
+  `arena/01a0b5e9-somesafeportablesoftware @ 3180bf9` (tip;
+  "fix: anchor temporal signal derivation", with `141c789`
+  "feat: expose temporal signal window bounds": temporal signals now
+  carry a REQUIRED, contract-typed `TemporalSignalValue.window`
+  `{startsAt, endsAt}` anchored at the same instant as `derivedAt`
+  — single-anchor invariant, producer-regression-enforced).
+  Supersedes `b5ca164` ("test: verify provenance-backed evidence
+  surface"), which enforced `0489d2c` "feat: enforce archive
+  observation provenance" and superseded
+  the owner-verified Gate-5 pin `0a971dd`). The previous refresh added five
   required observation-provenance fields to `SignalProvenance`
   (`observationIds`, `evidenceKeys`, `ingestionBatchIds`,
   `eventOccurredAt`, `observedAt`) — the upstream answer to Lab-003's
@@ -281,10 +288,12 @@ the correct behaviour.
 upstream tree, not a report):**
 `imlochie/SomeSafePortablesoftware` branch
 `arena/01a0b5e9-somesafeportablesoftware`, commit
-`b5ca1647883cc06c9180015b07470a7880d1a56a`
-("test: verify provenance-backed evidence surface"; provenance
-enforcement from `0489d2c` "feat: enforce archive observation
-provenance" — same branch, superseding
+`3180bf9bc63c1cf755c0725c2fd1336b2c360460`
+("fix: anchor temporal signal derivation"; temporal window bounds
+from `141c789` "feat: expose temporal signal window bounds" — same
+branch; superseding `b5ca1647883cc06c9180015b07470a7880d1a56a`
+"test: verify provenance-backed evidence surface" with provenance
+enforcement from `0489d2c`, itself superseding
 `0a971dd24ea73c21d5e54bda4ac486d394856702`
 "feat: publish archive personalisation evidence contract"). Everything on
 this seam generates from that tree — never from remembered architecture
@@ -468,7 +477,7 @@ Assistant and never stands in for one in production.
 scripts/
   lib/openapi-contract-gen.mjs              shared dependency-free contract generator machinery
   generate-archive-assistant-contract.mjs   six-op seam driver (pins the assistant boundary)
-  generate-personalisation-contract.mjs     seventh-read seam driver (pins b5ca164)
+  generate-personalisation-contract.mjs     seventh-read seam driver (pins 3180bf9)
   archive-context-smoke.ts                  live-bridge smoke digest
   mock-archive-assistant.mjs                loopback dev fixture (not AA!)
   register-src-loader.mjs / src-loader-hooks.mjs   direct Node TS execution support

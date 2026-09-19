@@ -3,7 +3,7 @@
  * AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
  *
  * Source of truth : https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml
- * Upstream ref    : imlochie/SomeSafePortablesoftware@b5ca1647883cc06c9180015b07470a7880d1a56a
+ * Upstream ref    : imlochie/SomeSafePortablesoftware@3180bf9bc63c1cf755c0725c2fd1336b2c360460
  *
  * Byte-for-byte reproducible: regenerate whenever the upstream OpenAPI
  * document changes (npm run generate:personalisation-contract), then commit both
@@ -72,6 +72,7 @@ export type PersonalisationObservedSignal = BehavioralSignal & {
 
 export type PersonalisationTemporalSignal = BehavioralSignal & {
   evidenceClass: "temporal_signal";
+  value: TemporalSignalValue;
 };
 
 export type PersonalisationUncertainty = {
@@ -96,4 +97,14 @@ export type SignalProvenance = {
   observedAt: Array<string>;
   scopeIdentity: string;
   [key: string]: unknown;
+};
+
+export type TemporalSignalValue = {
+  window: TemporalWindow;
+  [key: string]: unknown;
+};
+
+export type TemporalWindow = {
+  startsAt: string;
+  endsAt: string;
 };

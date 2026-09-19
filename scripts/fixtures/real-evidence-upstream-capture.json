@@ -10,7 +10,7 @@
         "epistemicStatus": "observed",
         "provenance": {
           "source": "Archive Assistant normalized watch_event",
-          "observedAt": "2026-09-19T10:22:53.744Z",
+          "observedAt": "2026-09-19T11:16:29.304Z",
           "eventIds": [
             3,
             2,
@@ -25,7 +25,7 @@
         "epistemicStatus": "derived",
         "provenance": {
           "source": "Archive Assistant normalized watch_event",
-          "observedAt": "2026-09-19T10:22:53.744Z",
+          "observedAt": "2026-09-19T11:16:29.304Z",
           "eventIds": [
             3,
             2,
@@ -40,7 +40,7 @@
         "epistemicStatus": "derived",
         "provenance": {
           "source": "Archive Assistant normalized watch_event",
-          "observedAt": "2026-09-19T10:22:53.744Z",
+          "observedAt": "2026-09-19T11:16:29.304Z",
           "eventIds": [
             3,
             2,
@@ -59,7 +59,7 @@
         "epistemicStatus": "derived",
         "provenance": {
           "source": "Archive Assistant normalized watch_event",
-          "observedAt": "2026-09-19T10:22:53.744Z",
+          "observedAt": "2026-09-19T11:16:29.304Z",
           "eventIds": [
             3,
             2,
@@ -74,7 +74,7 @@
         "epistemicStatus": "unknown",
         "provenance": {
           "source": "Archive Assistant normalized watch_event",
-          "observedAt": "2026-09-19T10:22:53.744Z",
+          "observedAt": "2026-09-19T11:16:29.304Z",
           "eventIds": [
             3,
             2,
@@ -92,7 +92,7 @@
         "epistemicStatus": "derived",
         "provenance": {
           "source": "Archive Assistant normalized watch_event",
-          "observedAt": "2026-09-19T10:22:53.744Z",
+          "observedAt": "2026-09-19T11:16:29.305Z",
           "eventIds": [
             3,
             2,
@@ -113,7 +113,7 @@
         "epistemicStatus": "derived",
         "provenance": {
           "source": "Archive Assistant normalized watch_event",
-          "observedAt": "2026-09-19T10:22:53.744Z",
+          "observedAt": "2026-09-19T11:16:29.305Z",
           "eventIds": [
             3,
             2,
@@ -133,7 +133,7 @@
         "epistemicStatus": "derived",
         "provenance": {
           "source": "Archive Assistant normalized watch_event",
-          "observedAt": "2026-09-19T10:22:53.744Z",
+          "observedAt": "2026-09-19T11:16:29.305Z",
           "eventIds": [
             3,
             2,
@@ -187,10 +187,10 @@
             "behaviour-new-2"
           ],
           "ingestionBatchIds": [
-            "manual-0d6a3acb-ace2-47f6-91d1-2d263cfbf4f0"
+            "manual-d0c074c2-9b13-4474-9935-50e54af7d516"
           ],
           "batchIds": [
-            "manual-0d6a3acb-ace2-47f6-91d1-2d263cfbf4f0"
+            "manual-d0c074c2-9b13-4474-9935-50e54af7d516"
           ],
           "eventOccurredAt": [
             "2020-01-01T10:00:00.000Z",
@@ -198,13 +198,13 @@
             "2026-09-01T10:00:00.000Z"
           ],
           "observedAt": [
-            "2026-09-19T10:22:53.737Z",
-            "2026-09-19T10:22:53.737Z",
-            "2026-09-19T10:22:53.737Z"
+            "2026-09-19T11:16:29.298Z",
+            "2026-09-19T11:16:29.298Z",
+            "2026-09-19T11:16:29.298Z"
           ],
           "scopeIdentity": "plex:movies-v1"
         },
-        "derivedAt": "2026-09-19T10:22:53.740Z"
+        "derivedAt": "2026-09-19T11:16:29.301Z"
       },
       {
         "evidenceClass": "observed_signal",
@@ -253,10 +253,10 @@
             "behaviour-new-2"
           ],
           "ingestionBatchIds": [
-            "manual-0d6a3acb-ace2-47f6-91d1-2d263cfbf4f0"
+            "manual-d0c074c2-9b13-4474-9935-50e54af7d516"
           ],
           "batchIds": [
-            "manual-0d6a3acb-ace2-47f6-91d1-2d263cfbf4f0"
+            "manual-d0c074c2-9b13-4474-9935-50e54af7d516"
           ],
           "eventOccurredAt": [
             "2020-01-01T10:00:00.000Z",
@@ -264,13 +264,13 @@
             "2026-09-01T10:00:00.000Z"
           ],
           "observedAt": [
-            "2026-09-19T10:22:53.737Z",
-            "2026-09-19T10:22:53.737Z",
-            "2026-09-19T10:22:53.737Z"
+            "2026-09-19T11:16:29.298Z",
+            "2026-09-19T11:16:29.298Z",
+            "2026-09-19T11:16:29.298Z"
           ],
           "scopeIdentity": "plex:movies-v1"
         },
-        "derivedAt": "2026-09-19T10:22:53.741Z"
+        "derivedAt": "2026-09-19T11:16:29.301Z"
       }
     ],
     "temporalSignals": [
@@ -286,7 +286,11 @@
           "watchesLast30Days": 1,
           "watchesLast90Days": 2,
           "lastWatchedAt": "2026-09-01T10:00:00.000Z",
-          "comparisonWindowDays": 90
+          "comparisonWindowDays": 90,
+          "window": {
+            "startsAt": "2026-06-21T11:16:29.301Z",
+            "endsAt": "2026-09-19T11:16:29.301Z"
+          }
         },
         "epistemicStatus": "derived",
         "scopeIdentity": "plex:movies-v1",
@@ -318,10 +322,10 @@
             "behaviour-new-2"
           ],
           "ingestionBatchIds": [
-            "manual-0d6a3acb-ace2-47f6-91d1-2d263cfbf4f0"
+            "manual-d0c074c2-9b13-4474-9935-50e54af7d516"
           ],
           "batchIds": [
-            "manual-0d6a3acb-ace2-47f6-91d1-2d263cfbf4f0"
+            "manual-d0c074c2-9b13-4474-9935-50e54af7d516"
           ],
           "eventOccurredAt": [
             "2020-01-01T10:00:00.000Z",
@@ -329,13 +333,13 @@
             "2026-09-01T10:00:00.000Z"
           ],
           "observedAt": [
-            "2026-09-19T10:22:53.737Z",
-            "2026-09-19T10:22:53.737Z",
-            "2026-09-19T10:22:53.737Z"
+            "2026-09-19T11:16:29.298Z",
+            "2026-09-19T11:16:29.298Z",
+            "2026-09-19T11:16:29.298Z"
           ],
           "scopeIdentity": "plex:movies-v1"
         },
-        "derivedAt": "2026-09-19T10:22:53.741Z"
+        "derivedAt": "2026-09-19T11:16:29.301Z"
       }
     ],
     "collectionFacts": [
@@ -379,10 +383,10 @@
             "behaviour-new-2"
           ],
           "ingestionBatchIds": [
-            "manual-0d6a3acb-ace2-47f6-91d1-2d263cfbf4f0"
+            "manual-d0c074c2-9b13-4474-9935-50e54af7d516"
           ],
           "batchIds": [
-            "manual-0d6a3acb-ace2-47f6-91d1-2d263cfbf4f0"
+            "manual-d0c074c2-9b13-4474-9935-50e54af7d516"
           ],
           "eventOccurredAt": [
             "2020-01-01T10:00:00.000Z",
@@ -390,13 +394,13 @@
             "2026-09-01T10:00:00.000Z"
           ],
           "observedAt": [
-            "2026-09-19T10:22:53.737Z",
-            "2026-09-19T10:22:53.737Z",
-            "2026-09-19T10:22:53.737Z"
+            "2026-09-19T11:16:29.298Z",
+            "2026-09-19T11:16:29.298Z",
+            "2026-09-19T11:16:29.298Z"
           ],
           "scopeIdentity": "plex:movies-v1"
         },
-        "derivedAt": "2026-09-19T10:22:53.742Z"
+        "derivedAt": "2026-09-19T11:16:29.301Z"
       }
     ],
     "interpretations": [],
@@ -407,7 +411,7 @@
         "subjectIdentity": "Japanese cinema",
         "statement": "I am into Japanese cinema right now.",
         "scopeIdentity": "plex:movies-v1",
-        "observedAt": "2026-09-19T10:22:53.739Z",
+        "observedAt": "2026-09-19T11:16:29.300Z",
         "provenance": {
           "source": "operator statement"
         }

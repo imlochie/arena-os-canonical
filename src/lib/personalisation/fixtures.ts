@@ -101,7 +101,12 @@ export function canonicalWire() {
         signalId: "sig-tmp-1",
         signalType: "recent_activity",
         profile: "recent",
-        value: { playsLast30d: 4, playsLast90d: 7 },
+        // TemporalSignalValue.window is REQUIRED per the regenerated contract
+        // (upstream 3180bf9, "fix: anchor temporal signal derivation"):
+        // producer-declared measurement bounds, anchored at the item's own
+        // derivedAt (the producer's single-anchor invariant).
+        value: { playsLast30d: 4, playsLast90d: 7,
+          window: { startsAt: "2026-08-20T05:00:00.000Z", endsAt: "2026-09-19T05:00:00.000Z" } },
         coverage: { windowDays: 30, complete: true },
         evidenceClass: "temporal_signal",
       }),

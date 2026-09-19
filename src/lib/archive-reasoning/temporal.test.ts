@@ -95,7 +95,8 @@ test("7.3 temporal: an as-of claim carries the evidence window, the evidence tim
   const claim = c.claim;
   assert.equal(claim.asOf, DERIVED_AT); // the evidence's own time, not a clock
   assert.equal(claim.window.label, "rolling_30d");
-  assert.deepEqual(claim.metric, { playsLast30d: 4, playsLast90d: 7 });
+  assert.deepEqual(claim.metric, { playsLast30d: 4, playsLast90d: 7,
+    window: { startsAt: "2026-08-20T05:00:00.000Z", endsAt: "2026-09-19T05:00:00.000Z" } });
   assert.deepEqual(Object.keys(claim).sort(), ["asOf", "metric", "signal", "subject", "window", "windowKey"]);
 });
 
@@ -220,7 +221,8 @@ test("7.3 contradiction: different windows both stand — no conflict is manufac
 });
 
 test("7.3 contradiction: same values under overlapping windows are agreement — and silence is honest", () => {
-  const agreeing = temporalTwin({ value: { playsLast30d: 4, playsLast90d: 7 } });
+  const agreeing = temporalTwin({ value: { playsLast30d: 4, playsLast90d: 7,
+    window: { startsAt: "2026-08-20T05:00:00.000Z", endsAt: "2026-09-19T05:00:00.000Z" } } });
   const wire = { ...emptyWire(), temporalSignals: [canonicalWire().temporalSignals[0], agreeing] };
   const pack = packOf(wire);
   const found = surfaceContradictions(pack, "temporalSignals");
