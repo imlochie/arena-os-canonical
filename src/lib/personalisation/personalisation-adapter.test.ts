@@ -398,7 +398,27 @@ test("gate-6 #6: coverage-limited and unknown evidence is preserved, never flatt
   assert.deepEqual(bareEvidence.facts, []);
 });
 
-/* ---------- 7. Gen-1 presentation semantics do not reappear -------------- */
+/* ---------- contract-refresh: real-surface null + handle fidelity ---------- */
+
+test("validator: untyped unknown fact value accepts null (real surface emits it); typed null still refused", () => {
+  // The REAL upstream surface at b5ca164 emits an unknown fact with
+  // `value: null` (hoursWatched). The spec's `value: {}` is untyped →
+  // `unknown`; the runtime validator must not be stricter than the
+  // contract it enforces. Found by feeding producer-authored output to
+  // the validator; the repair is in the shared machinery, not the
+  // documents.
+  const wireWithNull = {
+    ...canonicalWire(),
+    facts: [
+      ...canonicalWire().facts.map((f) => ({ ...f })),
+      { evidenceClass: "fact", factType: "hoursWatched", value: null, epistemicStatus: "unknown", provenance: { source: "Analytics", observedAt: ["2026-09-19T10:00:00.000Z"], eventIds: [1] } },
+    ],
+  };
+  assert.doesNotThrow(() => validatePersonalisationContract("PersonalisationContext", wireWithNull));
+  // Typed fields keep their null gate (preserved strictness):
+  const typedNull = { ...canonicalWire(), facts: [{ ...canonicalWire().facts[0], epistemicStatus: null }] };
+  assert.throws(() => validatePersonalisationContract("PersonalisationContext", typedNull));
+});
 
 test("gate-6 #7: no Gen-1 presentation identifier exists on this seam", () => {
   // The generated contract (the authority itself) is free of them.

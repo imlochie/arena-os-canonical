@@ -65,6 +65,15 @@ export function createContractValidator(
     }
 
     if (value === null) {
+      // Untyped, enum-less schemas (the spec body's canonical `{}`, e.g.
+      // PersonalisationFact.value) are `unknown` by every other reading of
+      // the same spec: the generated TypeScript type is `unknown`,
+      // upstream's own zod parse accepts null, and upstream's runtime
+      // emits it (an unknown fact's value IS null on the real surface).
+      // Refusing those is stricter than the contract; typed fields keep
+      // the nullable gate below unchanged.
+      const typed = typeList(schema).length > 0;
+      if (!typed && !Array.isArray(schema.enum) && schema.const === undefined) return;
       const nullable = schema.nullable === true || typeList(schema).includes("null");
       if (!nullable) fail(rootSchema, path, "null is not allowed");
       return;

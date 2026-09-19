@@ -319,6 +319,25 @@ fields (`observationIds`/`evidenceKeys`/`ingestionBatchIds`/
 `eventOccurredAt`/`observedAt`), fixtures and the adversarial persona
 server were re-armed, and the full verification chain re-earned: 126/126
 suite, typecheck + build clean, and the Gate-7 adversarial exam re-run
-against the regenerated contract at 33/33. No reasoning semantics
-changed; the evidence now simply arrives with the provenance Lab-003's
-five-handle interrogation demanded. Gate 7 remains closed and accepted.
+against the regenerated contract at 33/33. **Real-evidence reasoning pass (2026-09-19, after the contract refresh):**
+the first pass of Gate-7's own question against producer-authored
+evidence — a verbatim capture of `getPersonalisationContext()` from
+upstream's own runtime at `b5ca164` (seed = upstream's own regression
+test), replayed through the real seam (dev-replay HTTP → real client →
+regenerated-contract validation → adapter → lattice → calculus →
+renderer). 19/19. It legitimately derives: real restatements carrying
+real metrics inside their evidence envelopes, real aggregation
+arithmetic, and an absence-qualified floor of `unknown` on the real
+unknown fact. It remains void — by design, reported not patched — on:
+positive claims touching unknown ground (void_claim), as-of/windowed
+temporal claims (the real surface's window vocabulary isn't the
+extractor's anchor set — lineage_incomplete), trends from one signal,
+the handle-less explicit-preference statement (lineage_incomplete),
+and the currently EMPTY interpretation/uncertainty channels. Surface
+constraints crossed verbatim ("Signals are observations, not likes or
+preferences…"). Ledger: `docs/e2e-gate7-real-evidence.md`; evidence
+receipt: `scripts/fixtures/real-evidence-upstream-capture.json`; one
+shared-machinery repair discovered by the pass and made in
+`src/lib/contract-validation.ts` (untyped `{}` schemas admit null —
+the runtime validator was stricter than the contract it enforces; the
+real surface emits `value: null` for unknown facts).

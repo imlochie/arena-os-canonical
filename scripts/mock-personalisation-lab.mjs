@@ -24,6 +24,7 @@
  */
 
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import { validatePersonalisationContract } from "../src/lib/personalisation/validate.ts";
 
 const SCOPE_ACCOUNT = "plex:account-main:tv";
@@ -315,15 +316,25 @@ const PERSONAS = {
 };
 
 const personaName = (process.env.ADVERSARIAL_PERSONA ?? "").trim();
-const persona = PERSONAS[personaName];
-if (!persona) {
-  console.error(`ADVERSARIAL_PERSONA must be one of: ${Object.keys(PERSONAS).join(", ")} (got "${personaName}")`);
-  process.exit(2);
+const captureFile = (process.env.REAL_CAPTURE_FILE ?? "").trim();
+let payload = null;
+if (captureFile) {
+  // REAL-EVIDENCE REPLAY: serve a producer-authored capture verbatim
+  // (scripts/fixtures/real-evidence-upstream-capture.json), still
+  // self-validated at startup. Used by the Gate-7 real-evidence driver.
+  payload = JSON.parse(readFileSync(captureFile, "utf8")).context;
+  console.error(`real-capture mode: serving ${captureFile}`);
+} else {
+  const persona = PERSONAS[personaName];
+  if (!persona) {
+    console.error(`ADVERSARIAL_PERSONA must be one of: ${Object.keys(PERSONAS).join(", ")} (got "${personaName}")`);
+    process.exit(2);
+  }
+  payload = persona();
 }
 
 // Self-check: the lab refuses to serve a payload its own contract would
-// reject. Persona drift fails fast at startup, never mid-exam.
-const payload = persona();
+// reject. Persona/capture drift fails fast at startup, never mid-exam.
 try {
   validatePersonalisationContract("PersonalisationContext", payload);
 } catch (error) {
