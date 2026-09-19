@@ -11,6 +11,8 @@
     "test": "node --import ./scripts/register-src-loader.mjs --test \"src/**/*.test.ts\"",
     "generate:archive-contract": "node scripts/generate-archive-assistant-contract.mjs",
     "check:archive-contract": "npm run generate:archive-contract -- --check",
+    "generate:personalisation-contract": "node scripts/generate-personalisation-contract.mjs",
+    "check:personalisation-contract": "npm run generate:personalisation-contract -- --check",
     "smoke:archive": "node --import ./scripts/register-src-loader.mjs scripts/archive-context-smoke.ts"
   },
   "dependencies": {

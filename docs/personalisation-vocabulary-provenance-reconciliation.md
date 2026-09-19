@@ -396,8 +396,48 @@ certain.
 | 3 · behavioural usage layer authoritative | ⚠️ **landed in part (owner), verified present 2026-09-19:** `0a971dd` ships the event substrate as SQLite (`behavioral_signal`, `explicit_preference`, `analytics_coverage` tables; Plex-derived events with `scope_identity`/ownership resolution), scope-aware derivation service (`behavioral-intelligence.ts`, 137 LOC) and analytics tests. Deliberate scope: ingestion is **not** exposed as a mutation endpoint; plugin-grade/provider-trimmed history classes remain open. Not yet the full gen-2 usage layer of the 01a0b5d9 direction doc |
 | 4 · upstream provenance annotation (D2 applied) | ⚠️ **per owner** — the new Gen-2 spec carries its own epistemic/provenance classes end-to-end, and `docs/arena-generation-lineage.md` now records Gen-1/Gen-2 as non-interchangeable contracts upstream; the D2 annotation of Gen-1's OpenAPI descriptions on `arena/01a0a0d9` itself remains to be applied |
 | 5 · seventh read (`GET /api/assistant/personalisation-context`) | ✅ **RE-EARNED 2026-09-19 — verified against the tree, not the report** (evidence below): ref `arena/01a0b5e9-somesafeportablesoftware`, tip `0a971dd` (off `main @ 0bea165`, 2026-09-19 05:44 UTC, "feat: publish archive personalisation evidence contract") |
-| 6 · Arena evidence adapter | 🔒 **READY** — acceptance surface amended by owner 2026-09-19 (below); implementation may proceed against the verified `0a971dd` contract, never against remembered architecture or the retired Gen-1 bridge. D4 discipline unchanged: generate from the real OpenAPI, never hand-author |
-| 7 · behavioural reasoning | terminal gate — "Gate 6 preserves. Gate 7 thinks." |
+| 6 · Arena evidence adapter | ✅ **IMPLEMENTED 2026-09-19** (below) — built against the verified `0a971dd` contract, generated never hand-authored; 8-test acceptance suite green (81/81 full suite), typecheck + production build clean. Pending the owner's independent tree inspection before anything Gate-7-adjacent is contemplated |
+| 7 · behavioural reasoning | terminal gate — "Gate 6 preserves. Gate 7 thinks." Still fully locked |
+
+### Gate-6 implementation record (2026-09-19)
+
+Built exactly to the owner-amended acceptance surface; the pipeline ends
+at STOP. Nothing reasoning-shaped exists.
+
+- **Contract authority:** generation pinned to
+  `SomeSafePortablesoftware @ 0a971dd24ea73c21d5e54bda4ac486d394856702`
+  (script header, generated-file meta, and
+  `npm run generate:personalisation-contract` defaults all carry it).
+  `scripts/lib/openapi-contract-gen.mjs` now hosts the shared generator
+  machinery; the six-op seam's bytes are provably unchanged
+  (regenerate-then-diff is empty).
+- **Modules:** `src/lib/personalisation/` — generated snapshot + types;
+  `validate.ts` (runtime validation at ingress, fails closed);
+  `client.ts` (one read, GET-only, no query/body/owner input,
+  server-only guard); `context.ts` (faithful normalization → deep-frozen
+  evidence + transport labeling); `types.ts` (preserve-only Arena model).
+  Shared: `src/lib/contract-validation.ts` factory; the six-op
+  `validate.ts` rewired onto it with its public surface unchanged (70
+  pre-existing tests green throughout).
+- **Acceptance suite** (`personalisation-adapter.test.ts`, owner
+  numbering): 1 server-to-server only · 2 owner scoping never from
+  request input · 3 ingress validation (missing array / bad enum /
+  mistyped `batchIds` / null / non-JSON / 401 / 404) · 4 all eight arrays
+  survive verbatim (+ transport labeling + freeze) · 5 full envelope
+  survives (`batchIds` stays `batchIds`, no `ingestionBatch` invention) ·
+  6 incomplete ≠ absence (coverage-limited/unknown preserved, optionals
+  never synthesized, absence never filled) · 7 Gen-1 identifiers absent
+  (snapshot + sources + normalized output) · 8 no epistemic upgrade
+  (status multiset invariant, empty stays empty, nothing manufactured).
+  First self-catch of record: the validator rejected an early fixture
+  lacking `evidenceClass` on signals — the generated contract enforcing
+  itself.
+- **Verification:** 81/81 tests · `tsc --noEmit` clean · `next build`
+  clean · both contract `--check` modes pass · lint unchanged (22
+  pre-existing findings in unrelated UI files, zero added).
+- **STOP honoured:** no prompt changes, no reasoning wiring, no routes,
+  no candidates, no scores; the adapter is reachable only server-side
+  and is not consumed by anything that thinks.
 
 ### Gate-5 re-earn: verification record (first execution of the protocol)
 

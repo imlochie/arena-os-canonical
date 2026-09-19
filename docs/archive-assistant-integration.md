@@ -105,6 +105,15 @@ src/lib/archive-assistant/generated/types.ts      ← TypeScript types
   semantics to legacy Gen-1 assumptions by accident is exactly the type-
   archaeology this pin prevents. (Locked decision D4 in
   `docs/personalisation-vocabulary-provenance-reconciliation.md` §7.)
+- **Seventh-read seam (2026-09-19, converged):** the Gate-6
+  personalisation-evidence contract generates separately —
+  `npm run generate:personalisation-contract` →
+  `src/lib/personalisation/generated/` — pinned to
+  `arena/01a0b5e9-somesafeportablesoftware @ 0a971dd` (the owner-verified
+  Gate-5 tree). The two seams share machinery
+  (`scripts/lib/openapi-contract-gen.mjs`) but never allow-lists: the
+  six-op bridge stays exactly six reads, the personalisation seam exactly
+  one. See "The seventh read" below.
 - If the contract is later published as a shared package (spec "Option A",
   e.g. `@workspace/archive-assistant-contract`), only
   `generated/` + the validator wiring changes; the public types in
@@ -258,6 +267,56 @@ over the usage layer); (2) lab-002
 evidence pack; (3) explicit owner decision. Until then, dropping them is
 the correct behaviour.
 
+## The seventh read: personalisation-evidence adapter (Gate 6, 2026-09-19)
+
+**Contract authority (owner-locked; re-verified against the fetched
+upstream tree, not a report):**
+`imlochie/SomeSafePortablesoftware` branch
+`arena/01a0b5e9-somesafeportablesoftware`, commit
+`0a971dd24ea73c21d5e54bda4ac486d394856702`
+("feat: publish archive personalisation evidence contract"). Everything on
+this seam generates from that tree — never from remembered architecture
+or the retired Gen-1 bridge. The upstream design contract for the adapter
+is `docs/arena-personalisation-input-adapter-contract.md` at that ref.
+
+```
+GET /api/assistant/personalisation-context   (server-to-server, bearer/local)
+        │  contract generated from the pinned OpenAPI (never hand-authored)
+        ▼
+src/lib/personalisation/generated/   operation table + schema snapshot + types
+        │  runtime validation at ingress (validate.ts fails closed)
+        ▼
+src/lib/personalisation/client.ts    one read, GET-only, zero request input
+        ▼
+src/lib/personalisation/context.ts   faithful normalization → frozen evidence
+        ▼
+STOP — Gate 6 proves transport + epistemic preservation, not intelligence
+```
+
+The adapter's contract is preservation: all eight collections cross
+verbatim (`facts`, `observedSignals`, `temporalSignals`, `collectionFacts`,
+`interpretations`, `uncertainties`, `explicitPreferences`, `constraints`,
+plus `domain`), with the full evidence envelope on applicable items
+(`signalId`, `signalType`, `subjectIdentity`, `value`, `epistemicStatus`,
+`scopeIdentity`, `coverage`, `provenance` — including `batchIds`, the
+contract's provider/event/batch lineage name; the adapter does not invent
+an `ingestionBatch` abstraction — and `derivedAt`). It preserves the
+distinctions the contract encodes — observed ≠ interpreted, owned ≠
+wanted, watched ≠ liked, recent ≠ preferred, incomplete ≠ absent — and it
+adds nothing: Arena may transport evidence and label its source
+(transport metadata only); **Arena may not upgrade the epistemic status of
+evidence**. Empty collections stay present and empty.
+
+Gate-6 acceptance is executable, in the owner's numbering:
+`src/lib/personalisation/personalisation-adapter.test.ts` proves (1)
+server-to-server only, (2) owner scoping cannot come from request input,
+(3) schema validation at ingress, (4) all eight arrays survive
+normalization, (5) the full envelope survives, (6) incomplete ≠ absence,
+(7) no Gen-1 presentation semantics reappear, (8) no epistemic upgrade.
+Anything reasoning-shaped — recommendations, candidates, ranking, scores,
+taste profiles, inference, embeddings, model calls — is Gate 7 and does
+not exist yet.
+
 ## Internal service authentication
 
 Arena's reasoning route has two entry legs with different credentials:
@@ -354,9 +413,11 @@ spec's compatibility matrix:
 Other useful scripts:
 
 ```bash
-npm run typecheck                 # tsc --noEmit
-npm run generate:archive-contract # regenerate generated/* from upstream OpenAPI
-npm run check:archive-contract    # fail if committed generated output is stale
+npm run typecheck                         # tsc --noEmit
+npm run generate:archive-contract         # regenerate six-op generated/* from upstream OpenAPI
+npm run check:archive-contract            # fail if committed generated output is stale
+npm run generate:personalisation-contract # regenerate the seventh-read generated/* (pinned 0a971dd)
+npm run check:personalisation-contract    # fail if committed generated output is stale
 ```
 
 ## End-to-end smoke ("what is happening in my archive?")
@@ -393,10 +454,13 @@ Assistant and never stands in for one in production.
 
 ```
 scripts/
-  generate-archive-assistant-contract.mjs   contract generator (dependency-free)
+  lib/openapi-contract-gen.mjs              shared dependency-free contract generator machinery
+  generate-archive-assistant-contract.mjs   six-op seam driver (pins the assistant boundary)
+  generate-personalisation-contract.mjs     seventh-read seam driver (pins 0a971dd)
   archive-context-smoke.ts                  live-bridge smoke digest
   mock-archive-assistant.mjs                loopback dev fixture (not AA!)
   register-src-loader.mjs / src-loader-hooks.mjs   direct Node TS execution support
+src/lib/contract-validation.ts              shared snapshot-driven runtime validator factory
 src/lib/archive-assistant/
   generated/contract.ts                     AUTO-GENERATED operation table + schemas
   generated/types.ts                        AUTO-GENERATED TypeScript types
@@ -408,6 +472,14 @@ src/lib/archive-assistant/
   http.ts                                   error → status-code boundary
   errors.ts / types.ts                      taxonomy / public types
   *.test.ts (+ fixtures.ts)                 compatibility tests
+src/lib/personalisation/                    Gate-6 evidence adapter (the seventh read)
+  generated/contract.ts                     AUTO-GENERATED single-op snapshot + schemas
+  generated/types.ts                        AUTO-GENERATED TypeScript types
+  client.ts                                 one read, GET-only, zero request input
+  validate.ts                               runtime validator over the snapshot (fails closed)
+  context.ts                                faithful normalization → frozen evidence (STOP)
+  types.ts                                  Arena evidence model (preserve-only)
+  fixtures.ts + personalisation-adapter.test.ts   8-test owner acceptance suite
 src/app/api/archive/context/route.ts                    GET /api/archive/context
 src/app/api/archive/findings/[reviewItemId]/lineage/route.ts
 src/app/api/chat/route.ts                   browser leg (opt-in archiveContext)
