@@ -1,6 +1,6 @@
 # Gate 7 — first real-evidence reasoning pass
 
-> **Date:** 2026-09-19 · **Base commit:** `2b1acac` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-real-evidence-driver.mjs` · **Verdict:** **PASS** (19/19)
+> **Date:** 2026-09-19 · **Base commit:** `3d7f104` · **Command:** `node --import ./scripts/register-src-loader.mjs scripts/e2e-gate7-real-evidence-driver.mjs` · **Verdict:** **PASS** (19/19)
 >
 > **The question** (Gate 7's own, finally not hypothetical): given real
 > provenance-backed evidence, what is Arena actually permitted to conclude?
@@ -34,8 +34,8 @@ normalize → lattice → calculus → renderer).
 | 11 | DERIVE | unknown ground stays unknown on the REAL surface (hoursWatched = null value) | ✅ CERTIFIED status=unknown statement=""hours watched: duration evidence insufficient for a single number" remains open — no positive evidence is available within scope archive in this evidence delivery." — _certificate carried_ |
 | 12 | DERIVE | real evidence replays byte-identically (no clocks in the calculus) | ✅ byte-stable |
 | 13 | VOID | including an unknown fact in a positive aggregate kills the whole claim | ✅ VOID (void_claim) |
-| 14 | VOID | real surface's window vocabulary is not the 7.3 extractor's: as-of claims unformable | ✅ VOID (lineage_incomplete) |
-| 15 | VOID | one real temporal signal cannot ground a trend | ✅ VOID (lineage_incomplete) |
+| 14 | DERIVE | real producer-declared window licenses a bounded as-of claim (identification, not reconstruction) | ✅ window=[2026-06-21T11:16:29.301Z .. 2026-09-19T11:16:29.301Z] asOf=2026-09-19T11:16:29.301Z span=90d status=derived rule=temporal.asof.v1 — _the window arrived typed and declared upstream; the extractor copied the strings_ |
+| 15 | VOID | one real temporal signal cannot ground a trend | ✅ VOID (void_claim) |
 | 16 | VOID | real explicit preference statement is not handled enough to ground a conclusion | ✅ VOID (lineage_incomplete) |
 | 17 | VOID | real interpretation channel is EMPTY: nothing to restate | ✅ VOID (bad_reference) |
 | 18 | VOID | real uncertainty channel is EMPTY: the named-limit channel has no payload here | ✅ VOID (bad_reference) |
@@ -70,14 +70,22 @@ normalize → lattice → calculus → renderer).
 - **Unknown ground** on the real surface (hoursWatched = null value) yields an
   absence-qualified conclusion floored at `unknown` — open, scoped, never
   smoothed upward.
+## The frontier that resolved in this slice
+
+The first real-evidence pass (05742a3) found the temporal-window frontier:
+the real surface expressed windows as coverage-era fields plus an untyped
+comparisonWindowDays — nothing the 7.3 extractor could anchor on. The seam
+investigation (docs/gate7-temporal-window-seam.md) ruled the meaning existed
+producer-side but wasn't crossing the contract; the downstream experiment
+(docs/gate7-temporal-window-experiment.md) then proved the meaning arrived
+(contract-typed, required, single-anchored) while the extractor still could
+not see it. The verdict: extractor branch, strictly additive. Row "real
+producer-declared window licenses a bounded as-of claim" is the flip:
+identification of value.window, bounds verbatim, span = the producer's own
+90d, asOf = the evidence's own derivedAt (= window.endsAt, single anchor).
 ## What remains void even with provenance-complete evidence
 
 - Any positive claim whose membership includes the unknown fact (void_claim).
-- As-of/windowed temporal claims: the real surface expresses windows as
-  `coverage.{collectingSince,historicalCoverageStart}` plus
-  `value.comparisonWindowDays`, which the 7.3 extractor does not anchor on —
-  **lineage_incomplete by design** (boundaries found before patches; the
-  extractor is unchanged in this slice).
 - Trends (compareWindows): one real temporal signal cannot ground a comparison.
 - The explicit-preference statement: its real provenance is
   `{source:"operator statement"}` — no lineage handles of any kind, so the
@@ -87,12 +95,10 @@ normalize → lattice → calculus → renderer).
   EMPTY upstream today — nothing to restate or qualify against.
 ## Evidence classes still insufficient (the honest remainder)
 
-1. **Temporal window identity on the real surface** — provenance-complete events,
-   but window EXPRESSION differs from the extractor's anchor vocabulary;
-   windowed claims wait on either surface-side window declaration or an owner-
-   decided extractor mapping. Provenance established lineage, not windows.
-2. **Preference-channel provenance** — explicit preference statements need
+1. **Preference-channel provenance** — explicit preference statements need
    handles (observationId / evidenceKey / observedAt family) before the lattice
    can ground anything on them; currently transport-only, correctly so.
-3. **Interpretation & uncertainty payload** — upstream emits none today; the
+2. **Interpretation & uncertainty payload** — upstream emits none today; the
    classes that carry "licensed inference" and "named limits" remain unfed.
+
+*(Temporal window identity WAS class #1 here; it is resolved — see above.)*

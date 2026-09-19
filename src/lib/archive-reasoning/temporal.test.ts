@@ -18,7 +18,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { ReasoningRejectError } from "./lattice";
+import { ReasoningRejectError, windowIdentity } from "./lattice";
 import { extractWindow, windowsOverlap } from "./windows";
 import { temporalClaim, compareWindows } from "./temporal";
 import { surfaceContradictions } from "./contradictions";
@@ -68,6 +68,78 @@ test("7.3 windows: extraction reads label and bounds honestly; rolling windows c
 test("7.3 windows: an item with no window material extracts nothing (null — not a fabricated span)", () => {
   assert.equal(extractWindow({ value: {}, coverage: {} }), null);
   assert.equal(extractWindow({}), null);
+  // A genuinely window-free temporal specimen: neither coverage material
+  // nor a producer-declared value.window — absence stays absence.
+  assert.equal(extractWindow({
+    evidenceClass: "temporal_signal",
+    value: { playsLast30d: 4, playsLast90d: 7 },
+    coverage: {},
+  }), null);
+});
+
+/* ------- 7.3 producer-declared window (upstream value.window) ------- */
+
+test("7.3 windows: producer-declared value.window is identified verbatim — bounds cross, no reconstruction", () => {
+  const base = canonicalWire().temporalSignals[0] as unknown as Record<string, unknown>;
+  const producerOnly = { ...base, coverage: {} }; // coverage silent; only the producer window speaks
+  const extracted = extractWindow(producerOnly);
+  assert.deepEqual(extracted, {
+    startsAt: "2026-08-20T05:00:00.000Z",
+    endsAt: "2026-09-19T05:00:00.000Z",
+  });
+  // Identification, not anchoring: a wildly different derivedAt must NOT
+  // shift the declared bounds (no DAY_MS, no arithmetic at this branch).
+  assert.deepEqual(extractWindow({ ...producerOnly, derivedAt: "2020-01-01T00:00:00.000Z" }), extracted);
+  // Malformed declarations are not windows: missing/unparseable bounds.
+  assert.equal(extractWindow({ ...base, coverage: {}, value: { window: { startsAt: "nope", endsAt: "also-nope" } } }), null);
+  assert.equal(extractWindow({ ...base, coverage: {}, value: { window: { startsAt: "2026-08-20T05:00:00.000Z" } } }), null);
+  // Non-temporal classes do not confer window semantics to a same-shaped blob.
+  assert.equal(extractWindow({
+    evidenceClass: "fact",
+    value: { window: { startsAt: "2020-01-01T00:00:00.000Z", endsAt: "2020-02-01T00:00:00.000Z" } },
+    coverage: {},
+  }), null);
+});
+
+test("7.3 windows: identical dual declarations collapse deterministically to the single window", () => {
+  const base = canonicalWire().temporalSignals[0] as unknown as Record<string, unknown>;
+  // Canonical fixture carries both authorities in agreement (coverage
+  // windowDays:30 @ derivedAt === value.window instants). The single
+  // window extracts, coverage representation keeps priority (stable key).
+  const expectedStart = new Date(Date.parse(DERIVED_AT) - 30 * DAY_MS).toISOString();
+  const a = extractWindow(base);
+  const b = extractWindow(base);
+  assert.deepEqual(a, { label: "rolling_30d", startsAt: expectedStart, endsAt: DERIVED_AT });
+  assert.deepEqual(a, b); // deterministic, byte-identical
+  assert.equal(windowIdentity(a!), windowIdentity(b!));
+});
+
+test("7.3 windows: conflicting declared windows are refused — never silently reconciled", () => {
+  const base = canonicalWire().temporalSignals[0] as unknown as Record<string, unknown>;
+  const conflict = {
+    ...base,
+    value: {
+      ...(base.value as Record<string, unknown>),
+      window: { startsAt: "2026-09-01T00:00:00.000Z", endsAt: "2026-09-19T05:00:00.000Z" }, // 18d ≠ coverage rolling_30d
+    },
+  };
+  assert.throws(
+    () => extractWindow(conflict),
+    (error: unknown) => (error as ReasoningRejectError).rejectKind === "void_claim",
+  );
+  // The same refusal on the claim path: no window identity, no claim.
+  const wire = { ...emptyWire(), temporalSignals: [conflict] };
+  const pack = packOf(wire);
+  assert.throws(
+    () => temporalClaim(pack, { collection: "temporalSignals", index: 0 }),
+    (error: unknown) => (error as ReasoningRejectError).rejectKind === "void_claim",
+  );
+  // And a label-only coverage window cannot be SHOWN identical to
+  // declared producer bounds — un-comparable is also a refusal.
+  assert.throws(
+    () => extractWindow({ ...base, coverage: { label: "all_ingested" } }),
+    (error: unknown) => (error as ReasoningRejectError).rejectKind === "void_claim",
+  );
 });
 
 test("7.3 windows: overlap is interval-exact; undetermined windows are reported, not guessed", () => {
@@ -101,7 +173,15 @@ test("7.3 temporal: an as-of claim carries the evidence window, the evidence tim
 });
 
 test("7.3 temporal: no extractable window → the claim is not formed (lineage, not invention)", () => {
-  const wire = { ...emptyWire(), temporalSignals: [{ ...canonicalWire().temporalSignals[0], coverage: {} }] };
+  // Genuinely window-free specimen per the producer-window branch: the
+  // canonical fixture legitimately carries value.window now, so the
+  // negative case must remove BOTH authorities.
+  const windowFree = {
+    ...(canonicalWire().temporalSignals[0] as unknown as Record<string, unknown>),
+    coverage: {},
+    value: { playsLast30d: 4, playsLast90d: 7 },
+  };
+  const wire = { ...emptyWire(), temporalSignals: [windowFree] };
   const pack = packOf(wire);
   assert.throws(
     () => temporalClaim(pack, { collection: "temporalSignals", index: 0 }),

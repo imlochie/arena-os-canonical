@@ -128,3 +128,14 @@ scoring, inference, or LLM surface touched at any point in this pass.
 > *Meaning crossed the contract this time — typed, required, anchored by
 > one clock. The extractor just hasn't been introduced to where it
 > arrived.*
+
+---
+
+**Resolution (same day, owner verdict: extractor branch):** implemented
+exactly as diagnosed — a strictly additive producer-window identification
+branch in `extractWindow` with the dual-authority conflict rule
+(coverage keeps priority on identical declarations; any disagreement is
+a `void_claim` refusal, never reconciliation). Verified: row 14 flipped
+to a certified bounded as-of claim over the producer's own window, every
+other battery row unchanged, suite 131/131, adversarial 33/33, tsc/build
+clean. Live ledger: `docs/e2e-gate7-real-evidence.md`.

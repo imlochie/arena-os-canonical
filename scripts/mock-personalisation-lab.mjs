@@ -50,9 +50,17 @@ function prov(over = {}) {
 }
 
 /** Signal envelope mirroring src/lib/personalisation/fixtures.ts (the
- *  canonical adapter fixture shape), evidenceClass always declared. */
+ *  canonical adapter fixture shape), evidenceClass always declared.
+ *
+ *  Producer-faithful completion (upstream 141c789 + 3180bf9): the contract
+ *  now REQUIRES TemporalSignalValue.window — a temporal signal that declares
+ *  a rolling coverage window would, real-side, also carry the identical
+ *  explicit bounds anchored at its own derivedAt. The helper emits exactly
+ *  those identical bounds (value.window ≡ coverage-declared window), unless
+ *  a persona overrides value.window explicitly — a persona CAN declare a
+ *  conflicting window deliberately (conflict refusal is then the test). */
 function sig(over) {
-  return {
+  const envelope = {
     signalId: "sig-lab",
     profile: "long_term",
     signalType: "long_term_affinity",
@@ -66,6 +74,23 @@ function sig(over) {
     evidenceClass: "observed_signal",
     ...over,
   };
+  if (
+    envelope.evidenceClass === "temporal_signal"
+    && envelope.value && typeof envelope.value === "object" && !("window" in envelope.value)
+    && typeof envelope.coverage?.windowDays === "number"
+    && Number.isFinite(envelope.coverage.windowDays) && envelope.coverage.windowDays > 0
+    && Number.isFinite(Date.parse(envelope.derivedAt))
+  ) {
+    const end = Date.parse(envelope.derivedAt);
+    envelope.value = {
+      ...envelope.value,
+      window: {
+        startsAt: new Date(end - envelope.coverage.windowDays * 86_400_000).toISOString(),
+        endsAt: envelope.derivedAt,
+      },
+    };
+  }
+  return envelope;
 }
 
 function wire(over = {}) {

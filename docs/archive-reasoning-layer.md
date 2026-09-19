@@ -341,3 +341,28 @@ shared-machinery repair discovered by the pass and made in
 `src/lib/contract-validation.ts` (untyped `{}` schemas admit null —
 the runtime validator was stricter than the contract it enforces; the
 real surface emits `value: null` for unknown facts).
+
+**Temporal-window resolution (2026-09-19, extractor vocabulary
+repair):** upstream landed `141c789` + `3180bf9` — temporal signals now
+carry a REQUIRED, closed, contract-typed `value.window {startsAt, endsAt}`
+anchored at the same instant as `derivedAt` (single clock, producer-
+regression-enforced). The downstream experiment
+(`docs/gate7-temporal-window-experiment.md`) falsified the zero-change
+hypothesis: the meaning crossed contract, client, adapter, and validator
+verbatim, while `extractWindow` still anchored only on the 7.3-era
+coverage vocabulary. Owner verdict: extractor branch. The repair is
+strictly additive — an identification branch for the producer-declared
+window (bounds verbatim; no DAY_MS, no anchoring, no reconstruction)
+with a dual-authority rule: one voice alone is used, identical dual
+declarations collapse deterministically to one window (coverage
+representation keeps priority), and ANY disagreement — including shapes
+that cannot be shown identical — is an explicit `void_claim` refusal:
+two semantic authorities are never silently reconciled. Guardian
+regressions cover recognition, verbatim bounds, no-arithmetic, dual-
+identical determinism, conflict refusal on both the extraction and the
+claim path, and the genuinely-window-free negative Testament. E2E
+battery: row 14 flipped from `lineage_incomplete` to a certified bounded
+as-of claim whose window is the producer's own declared 90d span;
+everything else unchanged (trend still unavailable: one window; unknown
+floors; preference channel; byte-stable determinism). Suite 131/131
+(+4), adversarial 33/33, tsc/build clean.

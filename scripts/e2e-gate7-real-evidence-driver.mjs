@@ -232,8 +232,23 @@ attemptVoid("VOID", "including an unknown fact in a positive aggregate kills the
   () => aggregateEvidence(pack, ev.facts.map((_, index) => ({ collection: "facts", index })),
     { mode: "count", window: WINDOW_ALL, scopeIdentity: "archive" }), { expectedKinds: ["void_claim"] });
 
-attemptVoid("VOID", "real surface's window vocabulary is not the 7.3 extractor's: as-of claims unformable",
-  () => temporalClaim(pack, { collection: "temporalSignals", index: 0 }), { expectedKinds: ["lineage_incomplete"] });
+// ---- the resolved frontier: producer-declared window → bounded as-of claim
+// (Owner verdict after the 3d7f104 experiment isolated the defect to the
+// extractor's anchor vocabulary: extractWindow identifies the contract-typed
+// value.window; identification, never reconstruction — no DAY_MS here.)
+const producerWindow = CAPTURE.context.temporalSignals[0].value.window;
+const asOfClaim = temporalClaim(pack, { collection: "temporalSignals", index: 0 });
+const realSpanDays = (Date.parse(producerWindow.endsAt) - Date.parse(producerWindow.startsAt)) / 86_400_000;
+row("DERIVE", "real producer-declared window licenses a bounded as-of claim (identification, not reconstruction)",
+  `window=[${asOfClaim.claim.window.startsAt} .. ${asOfClaim.claim.window.endsAt}] asOf=${asOfClaim.claim.asOf} span=${realSpanDays}d status=${asOfClaim.epistemicStatus} rule=${asOfClaim.derivation.rule}`,
+  asOfClaim.epistemicStatus === "derived"
+    && asOfClaim.claim.window.startsAt === producerWindow.startsAt
+    && asOfClaim.claim.window.endsAt === producerWindow.endsAt
+    && asOfClaim.claim.asOf === CAPTURE.context.temporalSignals[0].derivedAt
+    && asOfClaim.claim.asOf === producerWindow.endsAt // producer's own single-anchor invariant, crossing intact
+    && realSpanDays === 90
+    && asOfClaim.claim.metric.watchesLast90Days === 2,
+  "the window arrived typed and declared upstream; the extractor copied the strings");
 
 attemptVoid("VOID", "one real temporal signal cannot ground a trend",
   () => compareWindows(pack, [{ collection: "temporalSignals", index: 0 }, { collection: "temporalSignals", index: 0 }], { metricKey: "watchesLast90Days" }),
@@ -308,14 +323,22 @@ lines.push(`  membership (7 facts recorded; total of 5 across 2 facts; one disti
 lines.push(`- **Unknown ground** on the real surface (hoursWatched = null value) yields an`);
 lines.push(`  absence-qualified conclusion floored at \`unknown\` — open, scoped, never`);
 lines.push(`  smoothed upward.`);
+lines.push(`## The frontier that resolved in this slice`);
+lines.push(``);
+lines.push(`The first real-evidence pass (05742a3) found the temporal-window frontier:`);
+lines.push(`the real surface expressed windows as coverage-era fields plus an untyped`);
+lines.push(`comparisonWindowDays — nothing the 7.3 extractor could anchor on. The seam`);
+lines.push(`investigation (docs/gate7-temporal-window-seam.md) ruled the meaning existed`);
+lines.push(`producer-side but wasn't crossing the contract; the downstream experiment`);
+lines.push(`(docs/gate7-temporal-window-experiment.md) then proved the meaning arrived`);
+lines.push(`(contract-typed, required, single-anchored) while the extractor still could`);
+lines.push(`not see it. The verdict: extractor branch, strictly additive. Row "real`);
+lines.push(`producer-declared window licenses a bounded as-of claim" is the flip:`);
+lines.push(`identification of value.window, bounds verbatim, span = the producer's own`);
+lines.push(`90d, asOf = the evidence's own derivedAt (= window.endsAt, single anchor).`);
 lines.push(`## What remains void even with provenance-complete evidence`);
 lines.push(``);
 lines.push(`- Any positive claim whose membership includes the unknown fact (void_claim).`);
-lines.push(`- As-of/windowed temporal claims: the real surface expresses windows as`);
-lines.push(`  \`coverage.{collectingSince,historicalCoverageStart}\` plus`);
-lines.push(`  \`value.comparisonWindowDays\`, which the 7.3 extractor does not anchor on —`);
-lines.push(`  **lineage_incomplete by design** (boundaries found before patches; the`);
-lines.push(`  extractor is unchanged in this slice).`);
 lines.push(`- Trends (compareWindows): one real temporal signal cannot ground a comparison.`);
 lines.push(`- The explicit-preference statement: its real provenance is`);
 lines.push(`  \`{source:"operator statement"}\` — no lineage handles of any kind, so the`);
@@ -325,15 +348,13 @@ lines.push(`- Interpretations and uncertainties: channels exist in the contract 
 lines.push(`  EMPTY upstream today — nothing to restate or qualify against.`);
 lines.push(`## Evidence classes still insufficient (the honest remainder)`);
 lines.push(``);
-lines.push(`1. **Temporal window identity on the real surface** — provenance-complete events,`);
-lines.push(`   but window EXPRESSION differs from the extractor's anchor vocabulary;`);
-lines.push(`   windowed claims wait on either surface-side window declaration or an owner-`);
-lines.push(`   decided extractor mapping. Provenance established lineage, not windows.`);
-lines.push(`2. **Preference-channel provenance** — explicit preference statements need`);
+lines.push(`1. **Preference-channel provenance** — explicit preference statements need`);
 lines.push(`   handles (observationId / evidenceKey / observedAt family) before the lattice`);
 lines.push(`   can ground anything on them; currently transport-only, correctly so.`);
-lines.push(`3. **Interpretation & uncertainty payload** — upstream emits none today; the`);
+lines.push(`2. **Interpretation & uncertainty payload** — upstream emits none today; the`);
 lines.push(`   classes that carry "licensed inference" and "named limits" remain unfed.`);
+lines.push(``);
+lines.push(`*(Temporal window identity WAS class #1 here; it is resolved — see above.)*`);
 lines.push(``);
 if (failures.length) {
   lines.push(`## Failures`);
