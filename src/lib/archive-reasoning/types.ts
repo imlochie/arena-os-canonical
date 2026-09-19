@@ -175,3 +175,22 @@ export type ContradictionClaim = {
   readonly b: ContradictionSide;
   readonly overlapBasis: "identity" | "interval" | "undetermined";
 };
+
+/* ------------------------- 7.4 rendered verdict --------------------------- */
+
+/** A rendered conclusion (§5): one faithful sentence plus the certificate
+ *  it may never travel without. `statement` is prose; `attribution` is the
+ *  declared mechanics (status/scope/window/rule/lineage). The renderer
+ *  computes nothing: every field here is read off the input conclusion. */
+export type RenderedConclusion = {
+  readonly kind: ConclusionKind;
+  readonly statement: string;
+  readonly attribution: string;
+  readonly epistemicStatus: EpistemicStatus;
+  readonly scopeIdentity: string;
+  readonly windowKey: string;
+  readonly derivation: {
+    readonly rule: string;
+    readonly refs: readonly string[];
+  };
+};

@@ -243,5 +243,17 @@ windows of one subject; contradiction SURFACING that preserves both
 pieces with both lineages and no winner/resolved/merged field anywhere
 — identical lineage is one chain, non-overlapping windows both stand,
 undetermined overlap is declared as undetermined in the basis; 12
-tests, 113/113 suite, typecheck clean). Remaining: 7.4 renderer →
-7.5 lab-002 live.
+tests, 113/113 suite, typecheck clean). **Slice 7.4 implemented**
+(`render.ts`: the mouth, not the brain — fixed deterministic templates
+per kind keyed off the certified claim shapes only (never the evidence
+pile), a StatementBuilder that keeps template text scanned against an
+affect/second-person/upgrade vocabulary guard while quoted subjects
+travel exempt as data ("movie:love-actually" is a title, not an
+emotion), contradiction sentences that preserve both refs and disclaim
+resolution in the same breath, absence statements that are physically
+incapable of becoming bare universal negatives, an attribution string
+(status · scope · window key · rule · lineage refs) every sentence
+travels with, and fail-closed discrimination: any claim shape it does
+not recognize is an `unsupported_claim` throw, never improvisation;
+12 tests, 125/125 suite, typecheck + build clean). Remaining: 7.5
+lab-002 live.
