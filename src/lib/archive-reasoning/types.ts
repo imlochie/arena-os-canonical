@@ -117,3 +117,61 @@ export type AggregationClaim =
   | { readonly mode: "count"; readonly count: number; readonly members: readonly EvidenceRef[] }
   | { readonly mode: "sum"; readonly count: number; readonly sum: number; readonly members: readonly EvidenceRef[] }
   | { readonly mode: "subjects"; readonly count: number; readonly subjects: readonly string[]; readonly members: readonly EvidenceRef[] };
+
+/* ------------------------- 7.3 claim payloads ---------------------------- */
+
+/** Temporal claim (§3.3): one signal, stated strictly inside its own
+ *  extracted evidence window, as-of the evidence's own time. */
+export type TemporalClaim = {
+  readonly signal: EvidenceRef;
+  readonly subject: string | null;
+  readonly window: WindowIdentity;
+  readonly windowKey: string;
+  readonly asOf: string | null;
+  readonly metric: unknown;
+};
+
+/** One (window, value) point of a window comparison. */
+export type WindowComparisonPoint = {
+  readonly member: EvidenceRef;
+  readonly window: WindowIdentity;
+  readonly windowKey: string;
+  readonly value: number;
+};
+
+/** Arithmetic relation between two windows — numbers with an explicit
+ *  sign, never an adjective. */
+export type WindowComparison = {
+  readonly aWindowKey: string;
+  readonly bWindowKey: string;
+  readonly delta: number;
+  readonly relation: "greater" | "less" | "equal";
+};
+
+/** Window comparison claim (§3.3 trend): ≥2 non-overlapping windows of the
+ *  same subject, one named metric, adjacent-pair arithmetic. */
+export type WindowComparisonClaim = {
+  readonly subject: string | null;
+  readonly metricKey: string;
+  readonly perWindow: readonly WindowComparisonPoint[];
+  readonly comparisons: readonly WindowComparison[];
+  readonly members: readonly EvidenceRef[];
+};
+
+/** One side of a surfaced contradiction (§3.4): the piece of evidence,
+ *  preserved whole with its window. */
+export type ContradictionSide = {
+  readonly ref: EvidenceRef;
+  readonly window: WindowIdentity | null;
+  readonly value: unknown;
+};
+
+/** Contradiction claim: the disagreement itself is the output. There is
+ *  deliberately no winner/resolved/merged field. */
+export type ContradictionClaim = {
+  readonly collection: EvidenceCollectionKey;
+  readonly conflictingField: string;
+  readonly a: ContradictionSide;
+  readonly b: ContradictionSide;
+  readonly overlapBasis: "identity" | "interval" | "undetermined";
+};

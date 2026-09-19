@@ -232,5 +232,16 @@ with three honest modes: count, zero-tolerance numeric sum, deduped
 sorted subjects; mixed-class aggregation is a structural reject; 9
 tests, 101/101 suite, typecheck clean; per-item window extraction
 honestly deferred to 7.3, whose unionWindow refusal it will wire to
-real window identities). Remaining: 7.3 contradiction/temporal → 7.4
-renderer → 7.5 lab-002 live.
+real window identities). **Slice 7.3 implemented** (`windows.ts` /
+`temporal.ts` / `contradictions.ts`: evidence-anchored window
+extraction — explicit bounds, or rolling `windowDays` anchored at the
+item's own `derivedAt`, null when nothing is declared and never a
+fabricated span; as-of temporal claims carrying evidence time; window
+comparisons as sorted per-window arithmetic with explicit
+greater/less/equal relations, requiring ≥2 genuinely non-overlapping
+windows of one subject; contradiction SURFACING that preserves both
+pieces with both lineages and no winner/resolved/merged field anywhere
+— identical lineage is one chain, non-overlapping windows both stand,
+undetermined overlap is declared as undetermined in the basis; 12
+tests, 113/113 suite, typecheck clean). Remaining: 7.4 renderer →
+7.5 lab-002 live.
