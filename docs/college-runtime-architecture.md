@@ -994,12 +994,38 @@ memory_recalled  The Patient Teacher was handed 1 faculty memory item(s)
    evidence: single faculty observation — not corroborated, not institutional
 ```
 
+## L. The nine phases (§15 §16) — added without renaming any of them
+
+PREPARATION, OPEN, COORDINATION and CLOSURE had no representation. They are
+now defined, bringing the vocabulary to eleven phase keys.
+
+**Existing keys were not renamed.** `inquiry`, `challenge` and
+`institutional_record` are already written into stored attention rows and
+protocol configuration; renaming them to match the specification's wording
+would silently invalidate history to win a vocabulary argument. The mapping is
+recorded in the source instead: PRACTICE/ACTIVITY is `practice`, COORDINATION
+is `coordination` plus the existing coordination window, POST-CLASS is
+`institutional_record`.
+
+PREPARATION is deliberately empty of primary positions — the runtime resolves
+slot, curriculum, faculty and memory before anyone speaks, and §16 says not
+every class uses every phase. `defaultPrimary` and `defaultWatching` remain
+defaults a member's configuration overrides, not a fixed running order.
+
+Verified: the new phases accept transitions, an unknown phase is still
+rejected against all eleven, and administration stays out of teaching phases —
+entering `coordination` leaves the Registrar `dormant`, because the
+"Administration is never activated by a teaching phase" rule in `enterPhase`
+applies to the new keys exactly as it did to the old ones.
+
 ## Layer 6 gaps
 
-1. Class phases (§15 §16) use the existing phase plan; per-member phase
-   participation is resolved but not yet configurable in the Builder.
-2. Interruption is modelled and authority-checked, but no member currently
-   escalates during a normal class, so acceptance is proven structurally.
+1. Interruption is modelled, authority-checked and now fully recorded
+   (requested / accepted / rejected), but no member escalates during a normal
+   class with the current configuration, so acceptance is proven structurally
+   rather than by a live interruption.
+2. Per-member phase participation is resolved from configuration but is not
+   yet editable in the Faculty Builder UI.
 3. **No live model is reachable in this sandbox.** Every faculty utterance in
    verification came from `local:text`. Routing, authority, memory,
    coordination and state are proven; language quality is not tested and must

@@ -36,7 +36,39 @@ export interface SessionPhaseDef {
   defaultWatching: string[];
 }
 
+/**
+ * §15. The nine phases the specification names.
+ *
+ * Existing keys are NOT renamed. "inquiry", "challenge" and
+ * "institutional_record" are already written into stored attention rows and
+ * protocol configuration; renaming them to match the specification's wording
+ * would silently invalidate history to win a vocabulary argument. The
+ * specification's PRACTICE/ACTIVITY is this system's "practice", its
+ * COORDINATION is "challenge" plus the coordination window, and its
+ * POST-CLASS is "institutional_record".
+ *
+ * §16: not every class uses every phase, and participation is configuration-
+ * driven. These lists are DEFAULTS for a position, overridden by member
+ * configuration — they are not a fixed running order.
+ */
 export const SESSION_PHASES: SessionPhaseDef[] = [
+  {
+    key: "preparation",
+    label: "Preparation",
+    emoji: "🧾",
+    description:
+      "Before the student arrives: the runtime resolves slot, curriculum, faculty and memory. No teaching happens here and nothing is said.",
+    defaultPrimary: [],
+    defaultWatching: ["instructor", "observer"],
+  },
+  {
+    key: "open",
+    label: "Open",
+    emoji: "🔑",
+    description: "The class is declared open and the session record begins.",
+    defaultPrimary: ["instructor"],
+    defaultWatching: ["observer"],
+  },
   {
     key: "orientation",
     label: "Orientation",
@@ -86,10 +118,29 @@ export const SESSION_PHASES: SessionPhaseDef[] = [
     defaultWatching: [],
   },
   {
+    key: "coordination",
+    label: "Coordination",
+    emoji: "🔗",
+    description:
+      "Faculty resolve matters between themselves — consultation, deferral, handoff. The student sees none of this.",
+    defaultPrimary: [],
+    defaultWatching: ["instructor", "observer", "critic", "researcher"],
+  },
+  {
+    key: "closure",
+    label: "Closure",
+    emoji: "🔒",
+    description:
+      "The class ends: what happened, who participated, what remains open. Closure requires evidence, never the clock.",
+    defaultPrimary: ["instructor"],
+    defaultWatching: ["observer"],
+  },
+  {
     key: "institutional_record",
-    label: "Institutional record",
+    label: "Institutional record (post-class)",
     emoji: "🗂️",
-    description: "Administration evaluates whether anything must be recorded.",
+    description:
+      "After the class: Administration evaluates whether anything must be recorded. Proposing a record is not filing one.",
     defaultPrimary: ["registrar"],
     defaultWatching: [],
   },
