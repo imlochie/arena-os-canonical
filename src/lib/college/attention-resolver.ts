@@ -10,6 +10,7 @@ import {
   type InterruptionAuthority,
 } from "./attention";
 import { getFacultyPosition } from "./faculty";
+import { defaultAuthorityFor } from "./authority";
 import { resolveFacultyForContext, type ResolvedMember } from "./members";
 
 /**
@@ -111,6 +112,13 @@ export interface EffectivePolicy {
   relevantPhases: string[];
   memoryEnabled: boolean;
   memoryScopeLimit: string;
+  /**
+   * LAYER 6 — what the member was GRANTED, before intersection. Carried here
+   * so the runtime can resolve effective authority without re-reading the
+   * member row, and so an unconfigured position falls back to its own default
+   * grant rather than to an empty list (which would read as "may do nothing").
+   */
+  grantedAuthority: string[];
   provenance: ProvenanceEntry[];
   /** True when a configured member supplied at least one field. */
   configurationApplied: boolean;
@@ -341,6 +349,19 @@ export function composePolicy(
     value: defaultState,
   });
 
+  // Authority: a configured member supplies its grant; an unconfigured
+  // position falls back to its architectural default. Never an empty list —
+  // that would silently strip a position of its own remit.
+  const grantedAuthority = m ? jsonArray(m.grantedAuthority) : defaultAuthorityFor(positionKey);
+  provenance.push({
+    field: "grantedAuthority",
+    decidedBy: m ? configLayer : "position",
+    value: JSON.stringify(grantedAuthority),
+    note: m
+      ? "Granted on the member; intersected with the position ceiling at runtime."
+      : "No configured member; the position's default grant applies.",
+  });
+
   return {
     positionKey,
     memberId: m?.id ?? null,
@@ -360,6 +381,7 @@ export function composePolicy(
     relevantPhases: activatesOnPhases,
     memoryEnabled: m ? m.memoryEnabled : true,
     memoryScopeLimit: m?.memoryScopeLimit ?? "course",
+    grantedAuthority,
     provenance,
     configurationApplied: provenance.some((p) => p.decidedBy === configLayer),
   };
