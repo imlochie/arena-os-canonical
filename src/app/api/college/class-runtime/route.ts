@@ -207,6 +207,7 @@ export async function POST(req: Request) {
       studentResponse,
       phaseKey: "teaching",
       localOnly,
+      mandatoryFaculty: preflight.mandatoryFaculty,
     });
 
     // ---- 6. CLOSURE (§21) --------------------------------------------------

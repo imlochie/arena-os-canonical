@@ -96,6 +96,14 @@ const POSITION_TASK: Record<string, string> = {
  * and is configured to consult the Researcher — and it stops happening the
  * moment either of those facts changes.
  */
+/**
+ * The engine the College uses when nothing is configured. This is a default,
+ * not a dependency: §34 requires that no provider be hardcoded into the class
+ * runtime, and that model execution stay behind the existing AI abstraction.
+ * Set COLLEGE_MODEL_ID to change it without touching this file.
+ */
+const DEFAULT_COLLEGE_MODEL = "openai";
+
 const EVENT_NEEDS_AUTHORITY: Record<string, AuthorityKey> = {
   factual_uncertainty_detected: "research",
   research_required: "research",
@@ -286,11 +294,17 @@ async function executeMember(opts: {
   // charter, so institutional rules are read first and win on conflict.
   const personality = opts.memberRow ? compilePersonality(opts.memberRow) : "";
 
+  // §34. The runtime must not name a provider. Which engine serves the College
+  // is an institutional configuration decision, not a fact about teaching, so
+  // it is read from the environment and falls back to the abstraction's own
+  // default. Changing provider must never require editing the class runtime.
+  const modelId = process.env.COLLEGE_MODEL_ID?.trim() || DEFAULT_COLLEGE_MODEL;
+
   let text: string;
   let via: string;
   try {
     const res = await generate({
-      modelId: "openai",
+      modelId,
       messages: [{ role: "user", content: userContent }],
       system: personality ? `${packet.system}\n\n---\n\n${personality}` : packet.system,
       temperature: 0.6,
@@ -368,15 +382,34 @@ export async function executeClass(opts: {
   studentResponse?: string | null;
   phaseKey?: string;
   localOnly?: boolean;
+  /**
+   * Positions the preflight resolved as MANDATORY. §37 requires that a
+   * mandatory responsibility going unfulfilled be an explicit failure state —
+   * mandatory never means always speaking, but it does mean the responsibility
+   * cannot silently go missing.
+   */
+  mandatoryFaculty?: string[];
 }): Promise<ClassExecution> {
   const graph = buildCoordinationGraph(opts.policies);
   const members: MemberExecution[] = [];
   const consultations: ConsultationRecord[] = [];
+  // §37 COORDINATION FAILURE. A member serving in this class with no node in
+  // the graph cannot consult, defer, hand off or escalate — it is isolated,
+  // and silence from an isolated member is indistinguishable from silence by
+  // choice unless the condition is named.
+  const coordinationFailures: string[] = [...opts.policies.keys()]
+    .filter((key) => !graph.nodes.some((n) => n.positionKey === key))
+    .map(
+      (key) =>
+        `COORDINATION FAILURE: ${
+          opts.policies.get(key)?.memberName || key
+        } is serving in this class but has no node in the coordination graph. It cannot consult, defer or escalate, so any silence from it is isolation rather than a decision.`
+    );
   const deferrals: ClassExecution["deferrals"] = [];
   const interruptions: ClassExecution["interruptions"] = [];
   const candidateMemories: ClassExecution["candidateMemories"] = [];
   const silent: ClassExecution["silent"] = [];
-  const failures: string[] = [];
+  const failures: string[] = [...coordinationFailures];
   let usedFallback = false;
 
   // ---- 1. ATTENTION: evaluate every event against every member (§6) ------
@@ -813,6 +846,34 @@ export async function executeClass(opts: {
         `MEMORY WRITE FAILURE for ${m.memberName}: ${e instanceof Error ? e.message : String(e)}`
       );
     }
+  }
+
+  // ---- §37 MANDATORY FACULTY FAILURE ------------------------------------
+  // Mandatory does not mean always speaking (a mandatory Observer that watches
+  // in silence has done its job). It means the RESPONSIBILITY was carried. A
+  // mandatory position that neither executed nor was recorded as deliberately
+  // silent has simply gone missing, and that must be said out loud rather than
+  // inferred from an absence in the transcript.
+  for (const key of opts.mandatoryFaculty ?? []) {
+    const ran = members.some((m) => m.positionKey === key);
+    const deliberatelySilent = silent.some((sm) => sm.positionKey === key);
+    if (ran || deliberatelySilent) continue;
+    const name = opts.policies.get(key)?.memberName || key;
+    failures.push(
+      `MANDATORY FACULTY FAILURE: ${name} (${key}) is mandatory for this class but neither executed nor was recorded as attending in silence. The responsibility was not carried, and no substitute was appointed.`
+    );
+    await ledger
+      .record({
+        eventType: "faculty_silent",
+        summary: `MANDATORY FACULTY FAILURE — ${name} did not carry its mandatory responsibility in this class.`,
+        detail: { positionKey: key, mandatory: true, substituted: false },
+        sessionId: opts.sessionId,
+        courseId: opts.courseId,
+        positionKey: key,
+        severity: "high",
+        actor: "system",
+      })
+      .catch(() => {});
   }
 
   // Record the exchange in the session trail.

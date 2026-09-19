@@ -1018,6 +1018,41 @@ entering `coordination` leaves the Registrar `dormant`, because the
 "Administration is never activated by a teaching phase" rule in `enterPhase`
 applies to the new keys exactly as it did to the old ones.
 
+## M. Failure states and the model boundary (§34 §37)
+
+Two gaps closed by auditing the runtime against its own specification rather
+than against the tests, which were passing throughout.
+
+**A provider name was hardcoded in the class runtime.** `executeClass` called
+`generate({ modelId: "openai" })`. §34 requires execution to stay behind the
+AI abstraction with no provider named by the runtime; which engine serves the
+College is an institutional configuration decision, not a fact about teaching.
+It now reads `COLLEGE_MODEL_ID` and falls back to a named default constant.
+
+**Two of the four required failure states did not exist.** The runtime now
+reports six:
+
+| state | condition |
+|---|---|
+| `CONTEXT CONSTRUCTION FAILURE` | a member's packet could not be built |
+| `FACULTY EXECUTION FAILURE` | the member ran and failed |
+| `MEMORY RETRIEVAL FAILURE` / `MEMORY WRITE FAILURE` | memory unavailable in either direction |
+| `COORDINATION FAILURE` | **new** — a serving member has no node in the graph, so it cannot consult, defer or escalate |
+| `MANDATORY FACULTY FAILURE` | **new** — a mandatory responsibility was not carried |
+
+`MANDATORY FACULTY FAILURE` had to be written carefully, because mandatory
+does **not** mean always speaking:
+
+| mandatory Observer | outcome |
+|---|---|
+| executed | no failure |
+| recorded as attending in silence | no failure — silence is a valid outcome |
+| neither | **FAILURE** — the responsibility went missing and no substitute was appointed |
+
+The isolated-member case matters for the same reason: without naming it,
+silence caused by having no coordination edges is indistinguishable from
+silence by choice.
+
 ## Layer 6 gaps
 
 1. Interruption is modelled, authority-checked and now fully recorded
