@@ -274,3 +274,38 @@ briefing rank≠taste), voids are typed and named, every certified
 sentence carries its certificate, and the renderer refused a
 hand-fabricated taste-ranking claim as `unsupported_claim`. Zero
 model calls in the entire gate, still.
+
+## 10. Whole-gate acceptance record (owner, 2026-09-19)
+
+Gate 7 — slice by slice — was inspected and accepted at `12df1c5`:
+
+| Slice | Artifact | Inspection |
+|---|---|---|
+| 7.1 legitimacy lattice (C1–C5) | `5b10d59` + `db61ce0` | ✅ |
+| 7.2 restatement / aggregation | `c488839` | ✅ |
+| 7.3 temporal / contradiction | `61cca3a` | ✅ |
+| 7.4 renderer contract | `191868f` | ✅ |
+| 7.5 lab-002 live adversarial | `12df1c5` | ✅ |
+
+The owner's unedited register statement:
+
+> Gate 7 establishes a deterministic, evidence-bounded reasoning layer
+> whose implemented conclusion types are certified by the C1–C5 lattice,
+> whose temporal and contradiction operations preserve scope/window/
+> lineage constraints, and whose renderer can only phrase certified claim
+> shapes. Lab-002 T1–T8 plus structural traps passed end-to-end at 33/33
+> after S3b exposed and fixed a genuine per-item lineage gap.
+
+The epistemic qualifier preserved alongside it, deliberately:
+
+> This establishes the closure of the implemented and tested surfaces,
+> not a mathematical proof that an unbuilt future backdoor can never
+> exist.
+
+> That's not weakness. That's the honest boundary of what the exam can
+> establish.
+
+The surviving architectural line, intact across seven layers:
+
+> Archive Assistant knows. Arena preserves. The calculus decides what may
+> be concluded. The renderer only speaks what was already earned.
