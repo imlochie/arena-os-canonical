@@ -230,6 +230,35 @@ async function executeMember(opts: {
     };
   }
 
+  // §22 memory_recalled. Retrieval is an event: the reason a member said what
+  // it said is often a memory it was handed, and that has to be recoverable
+  // later without re-deriving it. One row per class, not one per memory —
+  // the ledger records that recall happened and what was handed over.
+  if (packet.memory.length > 0) {
+    await ledger
+      .record({
+        eventType: "memory_recalled",
+        summary: `${base.memberName} was handed ${packet.memory.length} faculty memory item(s) as a hint, not as institutional fact.`,
+        detail: {
+          // §18 explainable retrieval: source, reason and evidence state, so
+          // "why did this member remember that?" is answerable from the record.
+          memories: packet.memory.map((m) => ({
+            source: m.source,
+            confidence: m.confidence,
+            observationCount: m.observationCount,
+            retrievedBecause: m.retrievedBecause,
+            evidenceState: m.evidenceState,
+          })),
+          limit: 4,
+        },
+        sessionId: opts.sessionId,
+        courseId: opts.courseId,
+        positionKey: policy.positionKey,
+        actor: "system",
+      })
+      .catch(() => {});
+  }
+
   const allowed = allowedActionsFor(policy.positionKey, opts.visibleToStudent);
   const defaultAction: FacultyAction = opts.visibleToStudent ? "speak" : "observe";
 
@@ -535,12 +564,26 @@ export async function executeClass(opts: {
         ? `${outcome.memberName || key} holds "${authority}" interruption authority and a qualifying event occurred.`
         : `${outcome.memberName || key} has no interruption authority. The concern is recorded and reaches the Instructor as internal faculty work, not as an interruption.`,
     });
+    // §22. The request itself is a fact, independent of the answer. Recording
+    // only accepted interruptions would leave every refusal invisible — and a
+    // refusal is precisely the thing an authority model has to be able to show.
     await ledger.record({
-      eventType: permitted ? "faculty_escalated" : "faculty_watching",
+      eventType: "faculty_interruption_requested",
+      summary: `${outcome.memberName || key} requested to interrupt: ${outcome.reason}`,
+      detail: { authority, target: "instructor", event: outcome.reason },
+      sessionId: opts.sessionId,
+      courseId: opts.courseId,
+      positionKey: key,
+      actor: "system",
+    });
+    await ledger.record({
+      eventType: permitted
+        ? "faculty_interruption_accepted"
+        : "faculty_interruption_rejected",
       summary: permitted
         ? `${outcome.memberName || key} interrupted: ${outcome.reason}`
-        : `${outcome.memberName || key} raised a concern without interruption authority.`,
-      detail: { authority, accepted: permitted },
+        : `${outcome.memberName || key} was refused: no interruption authority. The concern still reaches the Instructor as internal faculty work.`,
+      detail: { authority, accepted: permitted, basis: interruptions[interruptions.length - 1].basis },
       sessionId: opts.sessionId,
       courseId: opts.courseId,
       positionKey: key,
@@ -575,7 +618,10 @@ export async function executeClass(opts: {
         spoke: false,
       }).catch(() => {});
       await ledger.record({
-        eventType: "faculty_watching",
+        // §22: faculty_watching is per-event attention; faculty_silent is the
+        // session-level fact that this member attended the whole class and
+        // never spoke. Session closure needs the second, not a pile of the first.
+        eventType: "faculty_silent",
         summary: `${outcome.memberName || key} attended without speaking.`,
         detail: { state: outcome.state, action: outcome.action, reason: outcome.reason },
         sessionId: opts.sessionId,

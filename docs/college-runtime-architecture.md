@@ -966,6 +966,34 @@ triggered it. A member activating on three events, only one of which exceeds
 its authority, lost precisely the fact consultation depends on. Engaged events
 are now tracked per member.
 
+## K. Ledger vocabulary completed (§22)
+
+Seven event types the specification names had no representation, so the
+runtime was quietly flattening distinctions that matter:
+
+| added | why it is not a synonym of something else |
+|---|---|
+| `faculty_interruption_requested` | asking is a fact independent of the answer |
+| `faculty_interruption_accepted` / `_rejected` | a refusal is the thing an authority model must be able to show |
+| `faculty_silent` | session-level "attended, never spoke" — `faculty_watching` is per-event |
+| `memory_recalled` | retrieval is an event; §18 requires it be explainable later |
+| `real_world_context_added` | context is not an interruption |
+| `record_proposed` / `record_filed` | proposing and filing are different institutional acts |
+
+Interruptions previously wrote `faculty_watching` when refused, which made
+every refusal indistinguishable from ordinary attendance — the ledger could
+not answer "who asked to interrupt and was told no?". Recall now carries
+source, confidence, observation count, retrieval reason and evidence state,
+so the memory behind an utterance is recoverable without re-deriving it:
+
+```
+memory_recalled  The Patient Teacher was handed 1 faculty memory item(s)
+                 as a hint, not as institutional fact.
+   source: accumulated observation
+   because: Recorded once in this course; included because little else…
+   evidence: single faculty observation — not corroborated, not institutional
+```
+
 ## Layer 6 gaps
 
 1. Class phases (§15 §16) use the existing phase plan; per-member phase

@@ -39,10 +39,20 @@ export const LEDGER_EVENTS = [
   "faculty_consulted",
   "faculty_deferred",
   "faculty_escalated",
+  // §22. Interruption is a three-part record: asking is not the same as being
+  // allowed, and a refusal is as much a fact as an acceptance.
+  "faculty_interruption_requested",
+  "faculty_interruption_accepted",
+  "faculty_interruption_rejected",
+  // A member that attended and said nothing is a recorded outcome, not an
+  // absence of data. Distinct from faculty_watching, which is per-event.
+  "faculty_silent",
+  "memory_recalled",
   "observer_noted",
   "objective_demonstrated",
   "goal_addressed",
   "real_world_interruption",
+  "real_world_context_added",
   "class_shortened",
   "class_completed",
   "session_closed",
@@ -52,6 +62,9 @@ export const LEDGER_EVENTS = [
   "memory_recorded",
   "memory_promoted",
   "audit_recorded",
+  // Proposing a record and filing one are different institutional acts.
+  "record_proposed",
+  "record_filed",
 ] as const;
 
 export type LedgerEventType = (typeof LEDGER_EVENTS)[number] | string;
