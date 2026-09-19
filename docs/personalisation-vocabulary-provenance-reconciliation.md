@@ -389,11 +389,28 @@ receives another byte of semantic authority.
 |---|---|
 | 1 · Gen-1 / Gen-2 semantics reconciled | ✅ this document |
 | 2 · epistemic adversarial lab specified | ✅ lab-002, phase 0 |
-| 3 · behavioural usage layer authoritative | ← upstream |
-| 4 · upstream provenance annotation (D2 applied) | ← upstream |
-| 5 · seventh read | gated on 3–4 + lab-002 pass + owner decision |
-| 6 · Arena evidence adapter | gated (adapter contract informed by lab-002 phase-1) |
+| 3 · behavioural usage layer authoritative | reported ✅ (owner gate-5 report, 2026-09-19) — **not yet visible in upstream git** |
+| 4 · upstream provenance annotation (D2 applied) | reported ✅ with gate 3–5 — not yet visible upstream |
+| 5 · seventh read (`GET /api/assistant/personalisation-context`) | reported ✅ per owner gate-5 report — **blocked pending push**: endpoint, schema, and all Gate 3–5 artifacts are absent from every `SomeSafePortablesoftware` ref (all 13 swept: `personalisation-context`, `signalId`, `epistemicStatus`, `scopeIdentity`, `ingestionBatch`, `watch_observation` — only the 01a0b5d9 direction doc matches), and from `imlochie/archiveassistant` (ruled out: stale v0 scaffold, last commit 2026-09-01) |
+| 6 · Arena evidence adapter | 🔒 **brief received, standing ready — strictly blocked on spec visibility**: Arena's contract must be *generated from the real upstream OpenAPI*; hand-authoring a schema from the brief's field list would fabricate the transport and void the provenance discipline |
 | 7 · behavioural reasoning | terminal gate |
+
+**Gate-5 principle preserved from the owner's report:** `signalId` is a
+**provenance handle, not an immutable semantic identity** — derived
+signals can be regenerated or replaced; the durable truth is the
+underlying observations and their provenance. Recorded here so the Gate-6
+adapter (when unblocked) cannot later canonify it.
+
+Gate 6, when unblocked, is the first point Arena touches this evidence —
+and is boring by design: server-to-server client → generated/validated
+contract → ArchiveContext → evidence preserved (signal, epistemicStatus,
+scope, coverage, event/provider/batch lineage, the six classes). No
+recommendations, candidates, ranking, scores, taste profiles, inference,
+embeddings, model calls, acquisition integration, actions, or feedback
+learning. Gen-1 fields stay absent from the Gen-2 representation unless
+they independently arrive contract-valid with documented semantics. Seven
+adapter tests, then full suite/typecheck/build — and stop before
+behavioural reasoning.
 
 Gates 3 and 4 are not implementation chores; they are what make the
 future adapter **legitimate**. The dependency rule of record:
