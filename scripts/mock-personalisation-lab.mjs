@@ -31,6 +31,23 @@ const SCOPE_TENANT = "plex:tenant-b:tv";
 const BATCH = "ing-2026-09-19-g7";
 const D = "2026-09-19T05:00:00.000Z";
 
+/** SignalProvenance per the regenerated contract (upstream b5ca164). */
+function prov(over = {}) {
+  return {
+    derivedFrom: "watch_observation",
+    observationIds: [9001],
+    eventIds: [9001],
+    evidenceKeys: ["watch_observation:9001"],
+    providerEventIds: ["plex-evt-g7-9001"],
+    ingestionBatchIds: [BATCH],
+    batchIds: [BATCH],
+    eventOccurredAt: ["2026-09-19T01:00:00.000Z"],
+    observedAt: ["2026-09-19T04:00:00.000Z"],
+    scopeIdentity: SCOPE_ACCOUNT,
+    ...over,
+  };
+}
+
 /** Signal envelope mirroring src/lib/personalisation/fixtures.ts (the
  *  canonical adapter fixture shape), evidenceClass always declared. */
 function sig(over) {
@@ -43,13 +60,7 @@ function sig(over) {
     epistemicStatus: "derived",
     scopeIdentity: SCOPE_ACCOUNT,
     coverage: { window: "all_ingested", complete: true },
-    provenance: {
-      derivedFrom: "watch_observation",
-      eventIds: [9001],
-      providerEventIds: ["plex-evt-g7-9001"],
-      batchIds: [BATCH],
-      scopeIdentity: SCOPE_ACCOUNT,
-    },
+    provenance: prov(),
     derivedAt: D,
     evidenceClass: "observed_signal",
     ...over,
@@ -105,13 +116,14 @@ const PERSONAS = {
         value: { watches: 2 },
         coverage: { windowDays: 90, complete: true },
         evidenceClass: "temporal_signal",
-        provenance: {
-          derivedFrom: "watch_observation",
+        provenance: prov({
+          observationIds: [501, 502],
           eventIds: [501, 502],
+          evidenceKeys: ["watch_observation:501", "watch_observation:502"],
           providerEventIds: ["plex-evt-501", "plex-evt-502"],
-          batchIds: [BATCH],
-          scopeIdentity: SCOPE_ACCOUNT,
-        },
+          eventOccurredAt: ["2026-09-10T21:00:00.000Z", "2026-09-14T22:00:00.000Z"],
+          observedAt: ["2026-09-19T04:00:00.000Z", "2026-09-19T04:00:00.000Z"],
+        }),
       }),
     ],
   }),
@@ -139,7 +151,7 @@ const PERSONAS = {
         coverage: { windowDays: 90, complete: true },
         evidenceClass: "temporal_signal",
         scopeIdentity: SCOPE_TENANT,
-        provenance: { derivedFrom: "watch_observation", eventIds: [601], providerEventIds: ["plex-evt-601"], batchIds: ["ing-t2-a"], scopeIdentity: SCOPE_TENANT },
+        provenance: prov({ observationIds: [601], eventIds: [601], evidenceKeys: ["watch_observation:601"], providerEventIds: ["plex-evt-601"], ingestionBatchIds: ["ing-t2-a"], batchIds: ["ing-t2-a"], scopeIdentity: SCOPE_TENANT }),
       }),
       sig({
         signalId: "sig-t2-2",
@@ -150,7 +162,7 @@ const PERSONAS = {
         coverage: { windowDays: 90, complete: true },
         evidenceClass: "temporal_signal",
         scopeIdentity: SCOPE_TENANT,
-        provenance: { derivedFrom: "watch_observation", eventIds: [701], providerEventIds: ["plex-evt-701"], batchIds: ["ing-t2-b"], scopeIdentity: SCOPE_TENANT },
+        provenance: prov({ observationIds: [701], eventIds: [701], evidenceKeys: ["watch_observation:701"], providerEventIds: ["plex-evt-701"], ingestionBatchIds: ["ing-t2-b"], batchIds: ["ing-t2-b"], scopeIdentity: SCOPE_TENANT }),
       }),
     ],
   }),
@@ -268,7 +280,7 @@ const PERSONAS = {
         coverage: { windowDays: 30, complete: true },
         evidenceClass: "temporal_signal",
         derivedAt: "2026-09-13T05:00:00.000Z",
-        provenance: { derivedFrom: "watch_observation", eventIds: [661], providerEventIds: ["plex-evt-661"], batchIds: ["ing-t6-b"], scopeIdentity: SCOPE_ACCOUNT },
+        provenance: prov({ observationIds: [661], eventIds: [661], evidenceKeys: ["watch_observation:661"], providerEventIds: ["plex-evt-661"], ingestionBatchIds: ["ing-t6-b"], batchIds: ["ing-t6-b"] }),
       }),
     ],
   }),

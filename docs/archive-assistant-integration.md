@@ -105,12 +105,20 @@ src/lib/archive-assistant/generated/types.ts      ← TypeScript types
   semantics to legacy Gen-1 assumptions by accident is exactly the type-
   archaeology this pin prevents. (Locked decision D4 in
   `docs/personalisation-vocabulary-provenance-reconciliation.md` §7.)
-- **Seventh-read seam (2026-09-19, converged):** the Gate-6
-  personalisation-evidence contract generates separately —
+- **Seventh-read seam (2026-09-19, converged; pin refreshed same-day):**
+  the Gate-6 personalisation-evidence contract generates separately —
   `npm run generate:personalisation-contract` →
   `src/lib/personalisation/generated/` — pinned to
-  `arena/01a0b5e9-somesafeportablesoftware @ 0a971dd` (the owner-verified
-  Gate-5 tree). The two seams share machinery
+  `arena/01a0b5e9-somesafeportablesoftware @ b5ca164` (tip;
+  "test: verify provenance-backed evidence surface", enforcing
+  `0489d2c` "feat: enforce archive observation provenance"; supersedes
+  the owner-verified Gate-5 pin `0a971dd`). The refresh added five
+  required observation-provenance fields to `SignalProvenance`
+  (`observationIds`, `evidenceKeys`, `ingestionBatchIds`,
+  `eventOccurredAt`, `observedAt`) — the upstream answer to Lab-003's
+  five-handle interrogation (4 of 5 gradeable handles present on
+  signals; `refreshId` remains a refresh-side concept, not signal
+  provenance). The two seams share machinery
   (`scripts/lib/openapi-contract-gen.mjs`) but never allow-lists: the
   six-op bridge stays exactly six reads, the personalisation seam exactly
   one. See "The seventh read" below.
@@ -273,8 +281,12 @@ the correct behaviour.
 upstream tree, not a report):**
 `imlochie/SomeSafePortablesoftware` branch
 `arena/01a0b5e9-somesafeportablesoftware`, commit
+`b5ca1647883cc06c9180015b07470a7880d1a56a`
+("test: verify provenance-backed evidence surface"; provenance
+enforcement from `0489d2c` "feat: enforce archive observation
+provenance" — same branch, superseding
 `0a971dd24ea73c21d5e54bda4ac486d394856702`
-("feat: publish archive personalisation evidence contract"). Everything on
+"feat: publish archive personalisation evidence contract"). Everything on
 this seam generates from that tree — never from remembered architecture
 or the retired Gen-1 bridge. The upstream design contract for the adapter
 is `docs/arena-personalisation-input-adapter-contract.md` at that ref.
@@ -456,7 +468,7 @@ Assistant and never stands in for one in production.
 scripts/
   lib/openapi-contract-gen.mjs              shared dependency-free contract generator machinery
   generate-archive-assistant-contract.mjs   six-op seam driver (pins the assistant boundary)
-  generate-personalisation-contract.mjs     seventh-read seam driver (pins 0a971dd)
+  generate-personalisation-contract.mjs     seventh-read seam driver (pins b5ca164)
   archive-context-smoke.ts                  live-bridge smoke digest
   mock-archive-assistant.mjs                loopback dev fixture (not AA!)
   register-src-loader.mjs / src-loader-hooks.mjs   direct Node TS execution support

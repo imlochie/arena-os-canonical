@@ -26,11 +26,18 @@ function signalEnvelope(over: Record<string, unknown>): Record<string, unknown> 
     epistemicStatus: "derived",
     scopeIdentity: SCOPE_TV,
     coverage: { window: "all_ingested", complete: true },
+    // SignalProvenance per the regenerated contract (upstream b5ca164,
+    // observation provenance enforced at 0489d2c): all ten fields required.
     provenance: {
       derivedFrom: "watch_observation",
+      observationIds: [101, 102, 103],
       eventIds: [101, 102, 103],
+      evidenceKeys: ["watch_observation:101", "watch_observation:102", "watch_observation:103"],
       providerEventIds: ["plex-evt-a1", "plex-evt-b2"],
+      ingestionBatchIds: [BATCH],
       batchIds: [BATCH],
+      eventOccurredAt: ["2026-09-15T20:00:00.000Z", "2026-09-17T21:00:00.000Z", "2026-09-19T01:00:00.000Z"],
+      observedAt: ["2026-09-19T04:00:00.000Z", "2026-09-19T04:00:00.000Z", "2026-09-19T04:00:00.000Z"],
       scopeIdentity: SCOPE_TV,
     },
     derivedAt: "2026-09-19T05:00:00.000Z",

@@ -3,7 +3,7 @@
  * AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
  *
  * Source of truth : https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml
- * Upstream ref    : imlochie/SomeSafePortablesoftware@0a971dd24ea73c21d5e54bda4ac486d394856702
+ * Upstream ref    : imlochie/SomeSafePortablesoftware@b5ca1647883cc06c9180015b07470a7880d1a56a
  *
  * Byte-for-byte reproducible: regenerate whenever the upstream OpenAPI
  * document changes (npm run generate:personalisation-contract), then commit both
@@ -24,7 +24,7 @@
 
 export const personalisationContractMeta = {
   "sourceSpec": "https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml",
-  "sourceRef": "imlochie/SomeSafePortablesoftware@0a971dd24ea73c21d5e54bda4ac486d394856702"
+  "sourceRef": "imlochie/SomeSafePortablesoftware@b5ca1647883cc06c9180015b07470a7880d1a56a"
 };
 
 export const personalisationOperations = {
@@ -330,14 +330,26 @@ export const personalisationSchemas = {
     "type": "object",
     "required": [
       "derivedFrom",
+      "observationIds",
       "eventIds",
+      "evidenceKeys",
       "providerEventIds",
+      "ingestionBatchIds",
       "batchIds",
+      "eventOccurredAt",
+      "observedAt",
       "scopeIdentity"
     ],
     "properties": {
       "derivedFrom": {
         "type": "string"
+      },
+      "observationIds": {
+        "type": "array",
+        "items": {
+          "type": "number",
+          "multipleOf": 1
+        }
       },
       "eventIds": {
         "type": "array",
@@ -346,13 +358,37 @@ export const personalisationSchemas = {
           "multipleOf": 1
         }
       },
+      "evidenceKeys": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
       "providerEventIds": {
         "type": "array",
         "items": {
           "type": "string"
         }
       },
+      "ingestionBatchIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
       "batchIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "eventOccurredAt": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "observedAt": {
         "type": "array",
         "items": {
           "type": "string"

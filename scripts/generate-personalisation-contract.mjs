@@ -12,8 +12,12 @@
  * against the fetched tree, not a report):
  *   repo    : imlochie/SomeSafePortablesoftware
  *   branch  : arena/01a0b5e9-somesafeportablesoftware
- *   commit  : 0a971dd24ea73c21d5e54bda4ac486d394856702
- *             ("feat: publish archive personalisation evidence contract")
+ *   commit  : b5ca1647883cc06c9180015b07470a7880d1a56a
+ *             ("test: verify provenance-backed evidence surface"; provenance
+ *             enforcement landed at 0489d2c, "feat: enforce archive observation
+ *             provenance") on the same pinned branch, superseding
+ *             0a971dd24ea73c21d5e54bda4ac486d394856702 ("feat: publish archive
+ *             personalisation evidence contract").
  *
  * Outputs (both AUTO-GENERATED — never hand-edit):
  *   src/lib/personalisation/generated/contract.ts  (operation + schemas snapshot)
@@ -73,11 +77,11 @@ await runGenerator({
   contractDoc: CONTRACT_DOC,
   defaults: {
     repo: "imlochie/SomeSafePortablesoftware",
-    ref: "0a971dd24ea73c21d5e54bda4ac486d394856702",
+    ref: "b5ca1647883cc06c9180015b07470a7880d1a56a",
     sourceLabel:
       "https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml",
     sourceRef:
-      "imlochie/SomeSafePortablesoftware@0a971dd24ea73c21d5e54bda4ac486d394856702",
+      "imlochie/SomeSafePortablesoftware@b5ca1647883cc06c9180015b07470a7880d1a56a",
   },
   checkName: "Archive Assistant personalisation contract",
 });

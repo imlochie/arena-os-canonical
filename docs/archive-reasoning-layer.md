@@ -309,3 +309,16 @@ The surviving architectural line, intact across seven layers:
 
 > Archive Assistant knows. Arena preserves. The calculus decides what may
 > be concluded. The renderer only speaks what was already earned.
+
+**Contract refresh (2026-09-19, after gate acceptance):** upstream landed
+canonical observation provenance (`0489d2c` enforcement + `b5ca164`
+regression proof on the same pinned branch). The seventh-read contract was
+regenerated from the new tip (pin `0a971dd` → `b5ca164`; staleness
+proven via `--check` first), `SignalProvenance` gained five required
+fields (`observationIds`/`evidenceKeys`/`ingestionBatchIds`/
+`eventOccurredAt`/`observedAt`), fixtures and the adversarial persona
+server were re-armed, and the full verification chain re-earned: 126/126
+suite, typecheck + build clean, and the Gate-7 adversarial exam re-run
+against the regenerated contract at 33/33. No reasoning semantics
+changed; the evidence now simply arrives with the provenance Lab-003's
+five-handle interrogation demanded. Gate 7 remains closed and accepted.

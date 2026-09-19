@@ -104,7 +104,7 @@ test("contract sanity: the generated snapshot exposes exactly the seventh read, 
   assert.equal(op.response, "PersonalisationContext");
 
   // The transcript of authority: the snapshot records the owner-verified ref.
-  assert.match(personalisationContractMeta.sourceRef, /0a971dd24ea73c21d5e54bda4ac486d394856702/);
+  assert.match(personalisationContractMeta.sourceRef, /b5ca1647883cc06c9180015b07470a7880d1a56a/);
 });
 
 test("contract sanity: PersonalisationContext requires domain plus all eight collections", () => {
@@ -285,7 +285,7 @@ test("gate-6 #4: domain plus all eight collections survive normalization verbati
   // Arena may label the source of evidence — as transport metadata,
   // wrapping the evidence, never inside it.
   assert.equal(transport.endpoint, "GET /assistant/personalisation-context");
-  assert.match(transport.contractRef, /0a971dd24ea73c21d5e54bda4ac486d394856702/);
+  assert.match(transport.contractRef, /b5ca1647883cc06c9180015b07470a7880d1a56a/);
   assert.ok(Number.isFinite(Date.parse(transport.receivedAt)));
 
   // The honest-empty context also survives: every collection present.
@@ -336,6 +336,16 @@ test("gate-6 #5: signalId/epistemicStatus/scopeIdentity/coverage/provenance (bat
       assert.ok(Array.isArray(provenance.eventIds));
       assert.ok(Array.isArray(provenance.providerEventIds));
       assert.ok(Array.isArray(provenance.batchIds));
+      // The regenerated contract (upstream b5ca164) adds observation-level
+      // handles; they cross verbatim, and the adapter invents neither its
+      // own spellings nor synthetic identities.
+      assert.ok(Array.isArray(provenance.observationIds));
+      assert.ok(Array.isArray(provenance.evidenceKeys));
+      assert.ok(Array.isArray(provenance.ingestionBatchIds));
+      assert.ok(Array.isArray(provenance.eventOccurredAt));
+      assert.ok(Array.isArray(provenance.observedAt));
+      assert.ok(!("observationId" in provenance));
+      assert.ok(!("evidenceKey" in provenance));
       assert.ok("scopeIdentity" in provenance);
       assert.ok(!("ingestionBatch" in provenance));
       assert.ok(!("ingestionBatch" in item));

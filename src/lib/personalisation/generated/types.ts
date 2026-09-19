@@ -3,7 +3,7 @@
  * AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
  *
  * Source of truth : https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml
- * Upstream ref    : imlochie/SomeSafePortablesoftware@0a971dd24ea73c21d5e54bda4ac486d394856702
+ * Upstream ref    : imlochie/SomeSafePortablesoftware@b5ca1647883cc06c9180015b07470a7880d1a56a
  *
  * Byte-for-byte reproducible: regenerate whenever the upstream OpenAPI
  * document changes (npm run generate:personalisation-contract), then commit both
@@ -86,9 +86,14 @@ export type PersonalisationUncertainty = {
 
 export type SignalProvenance = {
   derivedFrom: string;
+  observationIds: Array<number>;
   eventIds: Array<number>;
+  evidenceKeys: Array<string>;
   providerEventIds: Array<string>;
+  ingestionBatchIds: Array<string>;
   batchIds: Array<string>;
+  eventOccurredAt: Array<string>;
+  observedAt: Array<string>;
   scopeIdentity: string;
   [key: string]: unknown;
 };
