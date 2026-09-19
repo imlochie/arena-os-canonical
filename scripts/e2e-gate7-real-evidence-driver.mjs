@@ -179,7 +179,7 @@ const counts = Object.fromEntries(
 row("INGRESS", "real payload validates against the regenerated contract and normalizes verbatim",
   JSON.stringify(counts),
   counts.facts === 8 && counts.observedSignals === 2 && counts.temporalSignals === 2 && counts.collectionFacts === 1
-    && counts.interpretations === 0 && counts.uncertainties === 0 && counts.explicitPreferences === 1);
+    && counts.interpretations === 0 && counts.uncertainties === 0 && counts.explicitPreferences === 2);
 
 {
   const prov = ev.temporalSignals.find((s) => s.signalType === "recent_activity").provenance;
@@ -267,6 +267,42 @@ const currentItem = ev.temporalSignals.find((item) => item.signalType === "recen
 const previousItem = ev.temporalSignals.find((item) => item.signalType === "recent_activity_previous");
 const CUR = { collection: "temporalSignals", index: ev.temporalSignals.indexOf(currentItem) };
 const PREV = { collection: "temporalSignals", index: ev.temporalSignals.indexOf(previousItem) };
+
+/* -------- explicit-preference provenance seam (upstream 1a2200b) -------- */
+const canonicalPref = rawWire.explicitPreferences.find((p) => p.provenanceStatus === "authoritative");
+const legacyPref = rawWire.explicitPreferences.find((p) => p.provenanceStatus === "legacy");
+const PACK_PREF_KEYS = ["preferenceId", "subjectType", "subjectIdentity", "statement", "scopeIdentity", "observedAt", "provenanceStatus", "provenance"];
+function prefByStatus(collection, status) { return collection.find((p) => p.provenanceStatus === status); }
+{
+  const packCanon = prefByStatus(ev.explicitPreferences, "authoritative");
+  const packLegacy = prefByStatus(ev.explicitPreferences, "legacy");
+  const canonicalOk = PACK_PREF_KEYS.every((k) => JSON.stringify(packCanon[k]) === JSON.stringify(canonicalPref[k]))
+    && Object.keys(packCanon).every((k) => PACK_PREF_KEYS.includes(k))
+    && canonicalPref.provenance && Object.keys(canonicalPref.provenance).sort().join(",") === "observedAt,preferenceId,scopeIdentity,source"
+    && canonicalPref.provenance.source === "operator_statement"
+    && Number.isInteger(canonicalPref.preferenceId) && canonicalPref.provenance.preferenceId === canonicalPref.preferenceId
+    && canonicalPref.provenance.observedAt === canonicalPref.observedAt
+    && canonicalPref.provenance.scopeIdentity === canonicalPref.scopeIdentity;
+  row("PREFERENCE", "canonical preference provenance crosses the seam verbatim (all 8 public fields; closed 4-key provenance attached)",
+    `preferenceId=${canonicalPref.preferenceId} source=${canonicalPref.provenance?.source} observedAt=${canonicalPref.observedAt} scope=${canonicalPref.scopeIdentity} statement="${canonicalPref.statement}"`,
+    Boolean(canonicalOk),
+    "preferenceId / operator_statement / observedAt / scopeIdentity / subjectType / subjectIdentity / statement — no relabelling, no behavioural handles");
+  const legacyOk = PACK_PREF_KEYS.every((k) => JSON.stringify(packLegacy[k]) === JSON.stringify(legacyPref[k]))
+    && legacyPref.provenance === null && legacyPref.provenanceStatus === "legacy"
+    && "preferenceId" in legacyPref && "statement" in legacyPref && legacyPref.scopeIdentity === canonicalPref.scopeIdentity;
+  row("PREFERENCE", "legacy preference crosses as legacy: status + null, never replaced with a synthetic object",
+    `provenanceStatus=${legacyPref.provenanceStatus} provenance=${JSON.stringify(legacyPref.provenance)} statement="${legacyPref.statement}" observedAt=${legacyPref.observedAt}`,
+    Boolean(legacyOk), "null provenance preserved verbatim through transport and normalization");
+  const wireProv = JSON.stringify(canonicalPref.provenance);
+  const bodyProv = JSON.stringify(rawWire.explicitPreferences.find((p) => p.provenanceStatus === "authoritative").provenance);
+  row("PREFERENCE", "preference provenance named only as preference provenance — no event/batch lineage attached, owner unexposed",
+    `provenance.keys=${canonicalPref.provenance ? Object.keys(canonicalPref.provenance).join(",") : "none"}; owner-field present: ${"ownerId" in canonicalPref || "owner" in canonicalPref}`,
+    wireProv === bodyProv
+      && canonicalPref.provenance !== null
+      && !("ownerId" in canonicalPref) && !("owner" in canonicalPref)
+      && !/(eventId|observationId|evidenceKey|ingestionBatch|batchId|refreshId)/i.test(wireProv.replaceAll("preferenceId", "")),
+    "statement-level provenance is not converted into behavioural provenance");
+}
 
 // (a) Extraction boundary, per row: each window identifies verbatim from
 //     its own row's declaration; adjacency is read, not reconstructed.
@@ -550,17 +586,22 @@ lines.push(`## What remains void even with provenance-complete evidence`);
 lines.push(``);
 lines.push(`- Any positive claim whose membership includes the unknown fact (void_claim).`);
 lines.push(`- Trends (compareWindows) with fewer than two real temporal rows: singleton`);
-lines.push(`- The explicit-preference statement: its real provenance is`);
-lines.push(`  \`{source:"operator statement"}\` — no lineage handles of any kind, so the`);
-lines.push(`  lattice wall (lineage_incomplete) fires before any status question. The`);
-lines.push(`  statement IS carried verbatim by transport; it cannot yet ground conclusions.`);
+lines.push(`- The explicit-preference statement: since 1a2200b it carries a closed`);
+lines.push(`  canonical provenance (preferenceId / operator_statement / observedAt /`);
+lines.push(`  scopeIdentity) — statement-level identity, NOT behavioural lineage`);
+lines.push(`  handles — so the lattice wall (lineage_incomplete) still fires, by`);
+lines.push(`  design, before any status question. The statement AND its provenance`);
+lines.push(`  are carried verbatim by transport; neither yet grounds conclusions.`);
 lines.push(`- Interpretations and uncertainties: channels exist in the contract but are`);
 lines.push(`  EMPTY upstream today — nothing to restate or qualify against.`);
 lines.push(`## Evidence classes still insufficient (the honest remainder)`);
 lines.push(``);
-lines.push(`1. **Preference-channel provenance** — explicit preference statements need`);
-lines.push(`   handles (observationId / evidenceKey / observedAt family) before the lattice`);
-lines.push(`   can ground anything on them; currently transport-only, correctly so.`);
+lines.push(`1. **Preference-channel behavioural grounding** — upstream explicitly does`);
+lines.push(`   NOT attach watch-event lineage handles to preferences (verified at`);
+lines.push(`   1a2200b: no evidenceKey / observationId / eventId / ingestionBatchId on`);
+lines.push(`   the preference record); under the existing lattice, therefore, no`);
+lines.push(`   conclusion forms. Under current rules this is the correct void: a`);
+lines.push(`   statement's identity is not evidence of behaviour.`);
 lines.push(`2. **Interpretation & uncertainty payload** — upstream emits none today; the`);
 lines.push(`   classes that carry "licensed inference" and "named limits" remain unfed.`);
 lines.push(``);

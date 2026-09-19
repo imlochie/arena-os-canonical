@@ -14,7 +14,17 @@
  * then 4dcb2a0):
  *   repo    : imlochie/SomeSafePortablesoftware
  *   branch  : arena/01a0b5e9-somesafeportablesoftware
- *   commit  : 8e54a283c392c53f64099a903b293de220e565ce
+ *   commit  : 1a2200bcbb496154f9ed9ede77059d6be9d0a1be
+ *             ("Add provenance identity for explicit preferences"):
+ *             explicitPreferences items become typed
+ *             PersonalisationExplicitPreference (preferenceId, subjectType,
+ *             subjectIdentity, statement, scopeIdentity, observedAt,
+ *             provenanceStatus [authoritative|legacy], provenance nullable)
+ *             with a CLOSED PreferenceProvenance record (additionalProperties
+ *             false; exactly preferenceId/source:operator_statement/
+ *             observedAt/scopeIdentity); legacy rows carry
+ *             provenanceStatus:"legacy", provenance:null — never upgraded.
+ *             Supersedes 8e54a283c392c53f64099a903b293de220e565ce
  *             ("Emit separate previous temporal evidence row"):
  *             TemporalSignalValue.previousWindow becomes optional
  *             (required [window, previousWindow] -> [window]) as the
@@ -92,11 +102,11 @@ await runGenerator({
   contractDoc: CONTRACT_DOC,
   defaults: {
     repo: "imlochie/SomeSafePortablesoftware",
-    ref: "8e54a283c392c53f64099a903b293de220e565ce",
+    ref: "1a2200bcbb496154f9ed9ede77059d6be9d0a1be",
     sourceLabel:
       "https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml",
     sourceRef:
-      "imlochie/SomeSafePortablesoftware@8e54a283c392c53f64099a903b293de220e565ce",
+      "imlochie/SomeSafePortablesoftware@1a2200bcbb496154f9ed9ede77059d6be9d0a1be",
   },
   checkName: "Archive Assistant personalisation contract",
 });

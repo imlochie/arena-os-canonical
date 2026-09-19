@@ -399,3 +399,25 @@ loop closes: producer meaning → contract → seam → normalize → extract �
 calculus → certified conclusion → renderer. Real-evidence battery
 34/34; suite 131/131; adversarial 33/33; capability probe 13/13; tsc +
 build + contract `--check` green at `8e54a28`.
+
+**2026-09-19 (explicit-preference provenance, upstream `1a2200b`).**
+Upstream typed the preference record and closed its provenance:
+`PersonalisationExplicitPreference` (8 required fields) + closed
+`PreferenceProvenance` — exactly `{preferenceId, source:
+operator_statement, observedAt, scopeIdentity}`, `additionalProperties:
+false`; read-time classification `authoritative` vs `legacy` (stored
+provenance must match the row on all four fields; anything else →
+`provenance: null`, never silently upgraded); no caller-supplied
+provenance accepted; no watch-event identifiers in the shape; owner
+isolation via the authenticated owner query only. Verified end-to-end on
+a real capture (one canonical + one legacy fixture, seeded as upstream's
+own regression seeds them): every public field survives wire → pack
+verbatim; legacy stays `legacy`/null through normalization; **epistemic**
+verdict recorded, not patched — statement-level provenance is not
+behavioural lineage, so under the unchanged calculus no conclusion forms
+(lineage_incomplete) — the correct void under current rules. No new
+conclusion kinds, no preference-specific rules, no taste path; tripwire
+sweep clean; Gen-1 identifiers absent. Status: **PREFERENCE PROVENANCE
+VERIFIED** in `docs/e2e-gate7-preference-provenance.md` (21/21);
+real-evidence 37/37; adversarial 33/33; capability probe 13/13; suite
+131/131; contract `--check` green at `1a2200b`.

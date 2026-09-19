@@ -104,7 +104,7 @@ test("contract sanity: the generated snapshot exposes exactly the seventh read, 
   assert.equal(op.response, "PersonalisationContext");
 
   // The transcript of authority: the snapshot records the owner-verified ref.
-  assert.match(personalisationContractMeta.sourceRef, /8e54a283c392c53f64099a903b293de220e565ce/);
+  assert.match(personalisationContractMeta.sourceRef, /1a2200bcbb496154f9ed9ede77059d6be9d0a1be/);
 });
 
 test("contract sanity: PersonalisationContext requires domain plus all eight collections", () => {
@@ -304,7 +304,7 @@ test("gate-6 #4: domain plus all eight collections survive normalization verbati
   // Arena may label the source of evidence — as transport metadata,
   // wrapping the evidence, never inside it.
   assert.equal(transport.endpoint, "GET /assistant/personalisation-context");
-  assert.match(transport.contractRef, /8e54a283c392c53f64099a903b293de220e565ce/);
+  assert.match(transport.contractRef, /1a2200bcbb496154f9ed9ede77059d6be9d0a1be/);
   assert.ok(Number.isFinite(Date.parse(transport.receivedAt)));
 
   // The honest-empty context also survives: every collection present.

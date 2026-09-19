@@ -3,7 +3,7 @@
  * AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
  *
  * Source of truth : https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml
- * Upstream ref    : imlochie/SomeSafePortablesoftware@8e54a283c392c53f64099a903b293de220e565ce
+ * Upstream ref    : imlochie/SomeSafePortablesoftware@1a2200bcbb496154f9ed9ede77059d6be9d0a1be
  *
  * Byte-for-byte reproducible: regenerate whenever the upstream OpenAPI
  * document changes (npm run generate:personalisation-contract), then commit both
@@ -24,7 +24,7 @@
 
 export const personalisationContractMeta = {
   "sourceSpec": "https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml",
-  "sourceRef": "imlochie/SomeSafePortablesoftware@8e54a283c392c53f64099a903b293de220e565ce"
+  "sourceRef": "imlochie/SomeSafePortablesoftware@1a2200bcbb496154f9ed9ede77059d6be9d0a1be"
 };
 
 export const personalisationOperations = {
@@ -171,8 +171,7 @@ export const personalisationSchemas = {
       "explicitPreferences": {
         "type": "array",
         "items": {
-          "type": "object",
-          "additionalProperties": true
+          "$ref": "#/components/schemas/PersonalisationExplicitPreference"
         }
       },
       "constraints": {
@@ -180,6 +179,56 @@ export const personalisationSchemas = {
         "items": {
           "type": "string"
         }
+      }
+    }
+  },
+  "PersonalisationExplicitPreference": {
+    "type": "object",
+    "required": [
+      "preferenceId",
+      "subjectType",
+      "subjectIdentity",
+      "statement",
+      "scopeIdentity",
+      "observedAt",
+      "provenanceStatus",
+      "provenance"
+    ],
+    "properties": {
+      "preferenceId": {
+        "type": "number",
+        "minimum": 1,
+        "multipleOf": 1
+      },
+      "subjectType": {
+        "type": "string"
+      },
+      "subjectIdentity": {
+        "type": "string"
+      },
+      "statement": {
+        "type": "string"
+      },
+      "scopeIdentity": {
+        "type": "string"
+      },
+      "observedAt": {
+        "type": "string"
+      },
+      "provenanceStatus": {
+        "type": "string",
+        "enum": [
+          "authoritative",
+          "legacy"
+        ]
+      },
+      "provenance": {
+        "nullable": true,
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/PreferenceProvenance"
+          }
+        ]
       }
     }
   },
@@ -329,6 +378,35 @@ export const personalisationSchemas = {
       }
     },
     "additionalProperties": true
+  },
+  "PreferenceProvenance": {
+    "type": "object",
+    "required": [
+      "preferenceId",
+      "source",
+      "observedAt",
+      "scopeIdentity"
+    ],
+    "properties": {
+      "preferenceId": {
+        "type": "number",
+        "minimum": 1,
+        "multipleOf": 1
+      },
+      "source": {
+        "type": "string",
+        "enum": [
+          "operator_statement"
+        ]
+      },
+      "observedAt": {
+        "type": "string"
+      },
+      "scopeIdentity": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false
   },
   "SignalProvenance": {
     "type": "object",

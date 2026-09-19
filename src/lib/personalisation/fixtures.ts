@@ -144,7 +144,8 @@ export function canonicalWire() {
       },
     ],
     explicitPreferences: [
-      { kind: "subject_block", subjectIdentity: "movie:example", observedAt: "2026-09-10T00:00:00.000Z" },
+      { preferenceId: 3, subjectType: "subject", subjectIdentity: "movie:example", statement: "block this subject", scopeIdentity: SCOPE_TV, observedAt: "2026-09-10T00:00:00.000Z", provenanceStatus: "authoritative",
+        provenance: { preferenceId: 3, source: "operator_statement", observedAt: "2026-09-10T00:00:00.000Z", scopeIdentity: SCOPE_TV } },
     ],
     constraints: ["no_action_generation", "read_only_transport"],
   };

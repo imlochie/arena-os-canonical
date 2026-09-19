@@ -3,7 +3,7 @@
  * AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
  *
  * Source of truth : https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml
- * Upstream ref    : imlochie/SomeSafePortablesoftware@8e54a283c392c53f64099a903b293de220e565ce
+ * Upstream ref    : imlochie/SomeSafePortablesoftware@1a2200bcbb496154f9ed9ede77059d6be9d0a1be
  *
  * Byte-for-byte reproducible: regenerate whenever the upstream OpenAPI
  * document changes (npm run generate:personalisation-contract), then commit both
@@ -45,8 +45,19 @@ export type PersonalisationContext = {
   collectionFacts: Array<PersonalisationCollectionFact>;
   interpretations: Array<PersonalisationInterpretation>;
   uncertainties: Array<PersonalisationUncertainty>;
-  explicitPreferences: Array<Record<string, unknown>>;
+  explicitPreferences: Array<PersonalisationExplicitPreference>;
   constraints: Array<string>;
+};
+
+export type PersonalisationExplicitPreference = {
+  preferenceId: number;
+  subjectType: string;
+  subjectIdentity: string;
+  statement: string;
+  scopeIdentity: string;
+  observedAt: string;
+  provenanceStatus: "authoritative" | "legacy";
+  provenance: PreferenceProvenance | null;
 };
 
 export type PersonalisationFact = {
@@ -83,6 +94,13 @@ export type PersonalisationUncertainty = {
   coverage?: Record<string, unknown>;
   provenance?: Record<string, unknown>;
   [key: string]: unknown;
+};
+
+export type PreferenceProvenance = {
+  preferenceId: number;
+  source: "operator_statement";
+  observedAt: string;
+  scopeIdentity: string;
 };
 
 export type SignalProvenance = {
