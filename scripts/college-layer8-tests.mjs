@@ -433,6 +433,38 @@ async function main() {
     await q("delete from college_commitments where id=$1", [id]);
   }
 
+  // ==========================================================================
+  // 21–22. SLOT != CLASS — the College does not invite you into scheduled life
+  // ==========================================================================
+  {
+    // Tuesday 14:30 is "Digital Lab", one of only 2 academic slots in 77.
+    const academic = await get(
+      `/api/college/briefing?at=${encodeURIComponent("2026-09-22T14:30:00+10:00")}`
+    );
+    const an = academic.briefing.next;
+    if (an.classAvailable === true && an.lifeActivity === false) {
+      ok(21, "An academic slot invites a class",
+         `"${an.title}" → BEGIN CLASS`);
+    } else {
+      bad(21, "An academic slot invites a class",
+          `classAvailable=${an.classAvailable} life=${an.lifeActivity} title=${an.title}`);
+    }
+
+    // Sunday 15:30 is "Time with Kirra" — relationship time.
+    const life = await get(
+      `/api/college/briefing?at=${encodeURIComponent("2026-09-20T15:30:00+10:00")}`
+    );
+    const ln = life.briefing.next;
+    const noDemand = /nothing is being asked of you/i.test(ln.handoff);
+    if (ln.classAvailable === false && ln.lifeActivity === true && noDemand) {
+      ok(22, "Scheduled life is reported, never turned into an obligation",
+         `"${life.briefing.where.currentActivity}" (${ln.activityType}) — no class offered`);
+    } else {
+      bad(22, "Scheduled life is reported, never turned into an obligation",
+          `classAvailable=${ln.classAvailable} life=${ln.lifeActivity} handoff="${ln.handoff}"`);
+    }
+  }
+
   // ---- cleanup -------------------------------------------------------------
   await q("delete from college_commitments where statement like $1", [`${TAG}%`]);
   await q("delete from college_event_ledger where summary like $1", [`%${TAG}%`]);

@@ -114,8 +114,10 @@ interface Briefing {
   };
   next: {
     classAvailable: boolean;
+    lifeActivity: boolean;
     title: string | null;
     startTime: string | null;
+    activityType: string | null;
     handoff: string;
   };
   behaviour: { depth: string; continuity: string; reason: string; directive: string };
@@ -500,8 +502,12 @@ export default function CampusPage() {
           </Section>
         )}
 
-        {/* ---- TODAY + BEGIN ------------------------------------------------ */}
-        <Section title="TODAY" accent="#38bdf8">
+        {/* ---- RIGHT NOW + the way in ---------------------------------------
+            Not "TODAY". You might arrive at 7am, after TAFE, or from a bus on
+            a day you were never scheduled. The question the Campus answers is
+            "where is the College at the moment I arrived", not "what is your
+            day". ------------------------------------------------------------- */}
+        <Section title="RIGHT NOW" accent={b.next.lifeActivity ? "#64748b" : "#38bdf8"}>
           <div style={{ fontSize: 16, fontWeight: 500 }}>{b.where.currentActivity}</div>
           {b.where.nextActivity && (
             <div style={{ fontSize: 12.5, color: "#64748b", marginTop: 3 }}>
@@ -513,23 +519,26 @@ export default function CampusPage() {
           </div>
 
           <div style={{ display: "grid", gap: 9, marginTop: 15 }}>
+            {/* The College does not invite you into a class during scheduled
+                life. During relationship/recovery/health time the way in is
+                still there, but it is quiet and it is not called a class. */}
             <Link
               href="/college/day"
               style={{
                 display: "block",
                 padding: "14px 18px",
-                background: "#1d4ed8",
-                border: "1px solid #2563eb",
+                background: b.next.classAvailable ? "#1d4ed8" : "#111827",
+                border: `1px solid ${b.next.classAvailable ? "#2563eb" : "#243044"}`,
                 borderRadius: 10,
-                color: "#fff",
-                fontSize: 15,
-                fontWeight: 600,
+                color: b.next.classAvailable ? "#fff" : "#94a3b8",
+                fontSize: b.next.classAvailable ? 15 : 13.5,
+                fontWeight: b.next.classAvailable ? 600 : 500,
                 textDecoration: "none",
                 textAlign: "center",
                 minHeight: 48,
               }}
             >
-              BEGIN CLASS
+              {b.next.classAvailable ? "BEGIN CLASS" : "Open the College anyway"}
             </Link>
             <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
               {[

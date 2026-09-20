@@ -1395,4 +1395,37 @@ filtered, audited, or reasoned about — so it is now declared.
   the plan you set" is a fact; it is never rendered as a score, and there is no
   gamification anywhere in this layer.
 
-`scripts/college-layer8-tests.mjs` — 20 assertions, self-cleaning.
+## §L. Campus Arrival, not Daily Briefing
+
+The name matters because the usage pattern changed. You may enter Arena at 7am,
+after TAFE, before an evening class, from a phone somewhere else entirely, or
+after a week away. The system is not briefing you about *the day*. It is
+briefing you about **where the College is at the moment you arrive**. The
+section formerly headed TODAY is now RIGHT NOW, for the same reason.
+
+## §M. SLOT ≠ CLASS (correction found while living with the UI)
+
+The first Campus build offered a blue BEGIN CLASS button whenever the timetable
+had any position open. On a Sunday afternoon that meant the College inviting
+the student into a "class" during **Time with Kirra**.
+
+The timetable is 77 slots. Exactly **2** are academic. The other 75 are
+recovery, routine, health, relationship, entertainment, administrative,
+household, adventure and creative time — scheduled life the College observes
+and deliberately stays out of.
+
+`next.classAvailable` is now true only for genuinely academic positions.
+`next.lifeActivity` marks scheduled life, and the handoff reads:
+
+> "Time with Kirra" is scheduled now. That is not College time — nothing is
+> being asked of you here.
+
+The way in is still available — the button reads *"Open the College anyway"* —
+but it is quiet, grey, and it is not called a class. **An institution that
+schedules your recovery time is not entitled to bill it as study.** This is the
+same SLOT / ACTIVITY / SESSION separation as §L5, surfacing at the UI layer
+where it is far easier to violate by accident.
+
+Silence is information. So is declining to ask for something.
+
+`scripts/college-layer8-tests.mjs` — 22 assertions, self-cleaning.

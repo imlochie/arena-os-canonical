@@ -110,11 +110,19 @@ export interface CampusBriefing {
   };
   /** WHAT'S NEXT — the handoff into the class runtime. */
   next: {
-    /** Whether a class is scheduled/available to begin now. */
+    /**
+     * Whether a *class* can begin now. Deliberately narrower than "something
+     * is on the timetable": 75 of 77 slots are recovery, relationship, health
+     * and household time. Offering BEGIN CLASS over "Time with Kirra" would be
+     * the College claiming authority over a life it does not run.
+     */
     classAvailable: boolean;
+    /** Whether the current slot is scheduled life, not academic work. */
+    lifeActivity: boolean;
     title: string | null;
     courseId: string | null;
     startTime: string | null;
+    activityType: string | null;
     /** What the briefing recommends — never what it will do on its own. */
     handoff: string;
   };
@@ -288,13 +296,27 @@ export async function campusBriefing(now: Date = new Date()): Promise<CampusBrie
   const current = live.current;
   // "activity" is a genuine timetable position too — §L4 required life,
   // health and household activities to be first-class, not lesser slots.
-  const hasClass = current.kind === "class" || current.kind === "activity";
+  // SLOT ≠ CLASS. A timetable position exists for almost every waking hour,
+  // but only academic positions are something the College may invite you to
+  // *begin*. Everything else — recovery, relationship, health, household — is
+  // scheduled life the College observes and stays out of. Conflating the two
+  // would have the Campus offering BEGIN CLASS over time with Kirra.
+  const activityType =
+    (current as { activityType?: string | null }).activityType ?? null;
+  const scheduledNow = current.kind === "class" || current.kind === "activity";
+  const hasClass =
+    scheduledNow && (current.kind === "class" || activityType === "academic");
+  const lifeActivity = scheduledNow && !hasClass;
   const nextTitle = live.next?.title ?? null;
 
   let handoff: string;
   if (hasClass) {
     handoff =
       `"${current.title}" is the current timetable position. Begin when ready — preflight will validate it.`;
+  } else if (lifeActivity) {
+    // Reported, not managed. No invitation, no nudge, no suggestion that the
+    // time would be better spent studying.
+    handoff = `"${current.title}" is scheduled now. That is not College time — nothing is being asked of you here.`;
   } else if (live.next) {
     handoff = `Nothing is scheduled right now. Next is "${live.next.title}" at ${live.next.startTime}.`;
   } else {
@@ -316,9 +338,11 @@ export async function campusBriefing(now: Date = new Date()): Promise<CampusBrie
     matters: { external, governance: actionable, conditions, quiet },
     next: {
       classAvailable: hasClass,
+      lifeActivity,
       title: hasClass ? current.title : null,
       courseId: (current as { courseId?: string | null }).courseId ?? null,
       startTime: current.startTime || null,
+      activityType,
       handoff,
     },
     behaviour: {
