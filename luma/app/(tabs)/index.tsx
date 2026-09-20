@@ -230,6 +230,7 @@ export default function CameraScreen() {
           selectedId={cameraId}
           onSelect={onSelectCamera}
           screenWidth={width}
+          previewUri={lastPhoto}
         />
 
         {/* Shutter row */}

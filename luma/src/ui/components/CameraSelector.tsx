@@ -19,6 +19,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 
 import { Camera } from '../../cameras/catalog';
 import { haptic } from '../haptics';
@@ -31,6 +32,8 @@ interface Props {
   /** Item width; the strip snaps to this. */
   itemWidth?: number;
   screenWidth: number;
+  /** The user's most recent photo, used as a live look-preview surface. */
+  previewUri?: string | null;
 }
 
 export function CameraSelector({
@@ -39,6 +42,7 @@ export function CameraSelector({
   onSelect,
   itemWidth = 128,
   screenWidth,
+  previewUri,
 }: Props) {
   const listRef = useRef<FlatList<Camera>>(null);
   const sidePad = Math.max(0, (screenWidth - itemWidth) / 2);
@@ -75,6 +79,10 @@ export function CameraSelector({
         accessibilityState={{ selected: active }}
         accessibilityLabel={`${item.name} camera. ${item.tagline}`}
       >
+        {previewUri ? (
+          <ExpoImage source={{ uri: previewUri }} style={StyleSheet.absoluteFill} contentFit="cover" />
+        ) : null}
+        <View style={[StyleSheet.absoluteFill, styles.cardShade, active && styles.cardShadeActive]} />
         <Text style={[styles.number, active && styles.numberActive]}>{item.number}</Text>
         <Text style={[styles.name, active && styles.nameActive]} numberOfLines={1}>
           {item.name}
@@ -115,10 +123,15 @@ export function CameraSelector({
 const styles = StyleSheet.create({
   card: {
     alignItems: 'center',
+    overflow: 'hidden',
+    borderRadius: radius.md,
+    minHeight: 76,
     justifyContent: 'center',
     paddingVertical: spacing.sm,
     gap: 1,
   },
+  cardShade: { backgroundColor: 'rgba(0,0,0,0.58)' },
+  cardShadeActive: { backgroundColor: 'rgba(0,0,0,0.38)' },
   number: { ...typography.caption, color: palette.textFaint },
   numberActive: { color: palette.accent },
   name: { ...typography.heading, color: palette.textDim },

@@ -248,6 +248,15 @@ export const BUILT_IN_PRESETS: Preset[] = [
     },
     'Moody low-light grain with lifted shadows.',
   ),
+
+  // ---------------------------------------------------------- LOOK EXAMPLES
+  preset('digi-x', 'Digi-X', 'Digital', { exposure: 0.08, contrast: 0.3, highlights: 0.08, shadows: -0.12, saturation: 0.16, temperature: 0.12, sharpness: 0.38, grain: 0.28, vignette: 0.16 }, 'Warm, punchy point-and-shoot flash.', 1),
+  preset('gold-n', "Gold'n", 'Film', { exposure: 0.1, contrast: 0.08, highlights: -0.08, shadows: 0.16, saturation: 0.08, temperature: 0.3, tint: 0.03, fade: 0.1, grain: 0.24 }, 'Golden-hour warmth with soft highlights.', 1),
+  preset('red-light', 'Red Light', 'Night', { exposure: 0.02, contrast: 0.22, highlights: -0.05, shadows: -0.08, saturation: 0.22, temperature: 0.02, tint: 0.28, grain: 0.28, vignette: 0.3 }, 'Moody red ambient light for night portraits.', 1),
+  preset('digi-lite', 'Digi-Lite', 'Clean', { exposure: 0.1, contrast: -0.02, highlights: -0.04, shadows: 0.12, saturation: 0.06, temperature: 0.08, sharpness: 0.2 }, 'Bright, clean daylight with gentle polish.', 1),
+  preset('digi-s', 'Digi-S', 'Film', { exposure: 0.06, contrast: 0.04, highlights: -0.1, shadows: 0.12, saturation: 0.1, temperature: 0.22, tint: 0.04, grain: 0.22, fade: 0.12 }, 'Soft sunset color with warm skin tones.', 1),
+  preset('clean-girl', 'Clean Girl', 'Clean', { exposure: 0.08, contrast: -0.06, highlights: -0.1, shadows: 0.16, saturation: -0.02, temperature: 0.04, fade: 0.1, sharpness: 0.12 }, 'Airy neutral color for everyday portraits.', 1),
+  preset('bw', 'B&W', 'Black & White', { exposure: 0.03, contrast: 0.18, highlights: -0.06, shadows: 0.04, saturation: -1, sharpness: 0.28, grain: 0.18, vignette: 0.12 }, 'Clean, timeless monochrome.', 1),
 ];
 
 /** Map for O(1) lookup by id. */
