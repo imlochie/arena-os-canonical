@@ -19,8 +19,29 @@ look good"** should be effortless, with advanced controls tucked underneath.
 The first-milestone flow works end to end:
 
 ```
-Open app → Camera → Select preset → Take photo → Edit intensity → Before/After → Save photo
+Open app → Pick a camera → Choose a look → Take photo → Edit intensity → Before/After → Save photo
 ```
+
+## Product framing: cameras, not filters
+
+LUMA is organised around **five cameras, five looks** — you pick the *camera*
+that fits the moment, not a filter from a drawer:
+
+| # | Camera | Mood | Underlying family |
+|---|--------|------|-------------------|
+| 01 | **DigiCam** | Punchy point & shoot | Digital |
+| 02 | **Clean** | Soft & true to life | Clean |
+| 03 | **FilmBox** | Analog & faded | Film |
+| 04 | **Mono** | Timeless monochrome | Black & White |
+| 05 | **Nox** | After dark | Night |
+
+This is **presentation only** (`src/cameras/catalog.ts`). Internally every look
+is still a `Preset` recipe fed through the `ProcessingEngine`; a camera just
+groups a family's looks and adds identity + a viewfinder hint. The engine,
+recipes, projects, and persistence are unchanged — so the reframe adds zero risk
+to the core.
+
+> **Getting it on your iPhone:** see [`docs/DEVICE_BUILD.md`](./docs/DEVICE_BUILD.md).
 
 ## 1. Repository structure
 
@@ -38,6 +59,7 @@ luma/
 │   ├── licenses.tsx           # Open-source licenses
 │   └── privacy.tsx            # Privacy statement
 ├── src/
+│   ├── cameras/               # Camera catalog (product framing over presets)
 │   ├── engine/                # Image engine (isolated behind an interface)
 │   │   ├── types.ts           # Core data model: Adjustments, Preset, EditRecipe, Layer, Project
 │   │   ├── adjustments.ts     # Pure composition math (preset × intensity + offsets)
@@ -56,6 +78,7 @@ luma/
 │   └── data/                  # In-app license list
 ├── assets/                    # Icon, splash, adaptive icon
 ├── docs/ARCHITECTURE.md       # Key decisions (read this!)
+├── docs/DEVICE_BUILD.md       # Get LUMA onto your iPhone (EAS, no Mac)
 ├── THIRD_PARTY_LICENSES.md    # Authoritative license record
 ├── app.json                   # Expo config + iOS permissions
 ├── eas.json                   # EAS Build profiles
@@ -80,10 +103,13 @@ bundled native-module versions before installing):
 
 ## 3. Implemented features
 
-**Camera**
+**Camera (V2 — swipeable cameras)**
+- A snap-scrolling **five-camera selector** (number · name · mood); the chosen
+  camera gives the viewfinder an identity (tint + vignette hint)
+- Per-camera **look** sub-selector (the family's looks)
 - Rear/front switch, flash (off/auto/on), large tactile shutter
-- Tactile preset carousel with the selected look clearly badged
-- Recent-photo / import shortcut; capture hands straight off to the editor
+- Recent-photo / import shortcut; capture hands straight off to the editor with
+  the chosen look preselected
 - Permissions requested on demand, with a graceful denied state
 
 **Edit (non-destructive)**
@@ -115,10 +141,14 @@ bundled native-module versions before installing):
 
 ## 4. Known limitations
 
-- **Live full-feed preview grading on the camera is not applied to the raw
-  viewfinder.** The selected look is shown as a badge and applied instantly on
-  capture. True live preview needs a frame processor / native camera pipeline
-  (a deliberate future step — see next bottlenecks).
+- **Live full-feed preview grading on the camera is not real.** The viewfinder
+  is tinted/vignetted to *hint* at the selected camera's identity, but the feed
+  is not truly graded in real time. True live preview needs a frame processor /
+  native camera pipeline (the #1 next bottleneck). The real look is applied,
+  non-destructively, the instant you capture and land in the editor.
+- **Mono camera** can't desaturate the live RN feed without a frame processor, so
+  its viewfinder shows a "MONO · applied on capture" note; the B&W look is real
+  in the editor/export.
 - **Highlights/shadows are matrix approximations**, not true tone-curve
   operations. Real curves/HSL/halation/etc. are reserved for the native engine;
   the data model (`AdvancedEffects`) already has slots for them.

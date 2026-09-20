@@ -71,6 +71,20 @@ effective = clamp( preset.adjustments * intensity + manualOffsets )
 Manual offsets are **independent** of the preset, so changing intensity never
 destroys a user's manual tweaks.
 
+## 4b. Cameras are a product layer over recipes
+
+The user experiences "five cameras, five looks" (`src/cameras/catalog.ts`), but a
+**Camera is pure presentation**: it groups a preset family's look ids, adds
+identity (number/name/tagline), and a cheap viewfinder *hint* (tint/vignette).
+Capture still seeds an `EditRecipe` with a preset id. This deliberately keeps the
+engine/recipe/persistence layers ignorant of the "camera" concept, so the
+framing can evolve (or be renamed) without engine changes.
+
+The viewfinder hint is explicitly **not** real grading — it's a color wash so the
+feed *feels* like the chosen camera. Real-time grading requires a native frame
+processor and is the top roadmap item; the real look is applied non-destructively
+on capture.
+
 ## 5. State & persistence
 
 - `zustand` holds the in-memory editing session (`editorStore`) and settings.

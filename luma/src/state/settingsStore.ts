@@ -16,17 +16,24 @@ const repo = new SettingsRepository();
 interface SettingsState {
   settings: Settings;
   loaded: boolean;
-  /** The preset id currently selected in the Camera. Persisted separately. */
-  cameraPresetId: string | null;
+  /**
+   * The camera currently chosen in the viewfinder, and the look (preset id)
+   * selected within it. The engine still speaks in preset ids; "camera" is the
+   * product framing layered on top (see src/cameras/catalog.ts).
+   */
+  cameraId: string;
+  cameraLookId: string | null;
   load: () => Promise<void>;
   update: (patch: Partial<Settings>) => Promise<void>;
-  setCameraPreset: (id: string | null) => void;
+  setCamera: (cameraId: string, lookId: string | null) => void;
+  setCameraLook: (lookId: string | null) => void;
 }
 
-export const useSettingsStore = create<SettingsState>((set, get) => ({
+export const useSettingsStore = create<SettingsState>((set) => ({
   settings: { ...DEFAULT_SETTINGS },
   loaded: false,
-  cameraPresetId: 'clean',
+  cameraId: 'clean',
+  cameraLookId: 'clean',
 
   load: async () => {
     const settings = await repo.load();
@@ -38,7 +45,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ settings: next });
   },
 
-  setCameraPreset: (id) => set({ cameraPresetId: id }),
+  setCamera: (cameraId, lookId) => set({ cameraId, cameraLookId: lookId }),
+  setCameraLook: (lookId) => set({ cameraLookId: lookId }),
 }));
 
 export { repo as settingsRepository };
