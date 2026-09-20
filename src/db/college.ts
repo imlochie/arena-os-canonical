@@ -1302,3 +1302,84 @@ export const collegeExternalCommitments = pgTable("college_external_commitments"
 
 export type CollegeExternalCommitmentRow =
   typeof collegeExternalCommitments.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// LAYER 8 — COMMITMENTS AND BOUNDED ACCOUNTABILITY
+// ---------------------------------------------------------------------------
+// A GOAL is what we are trying to accomplish.
+// A PLAN is how we intended to get there.
+// A COMMITMENT is what the student explicitly agreed to do.
+// ACCOUNTABILITY is whether reality matched the commitment, and what the
+// College should understand from that.
+//
+// Those four are deliberately separate. Collapsing them is how a study system
+// becomes a task list that nags: every unmet intention starts reading as a
+// moral failure, and the goal quietly moves to make the numbers look better.
+//
+// THE COLLEGE NOTICES WITHOUT JUDGING. A missed commitment records WHAT was
+// missed and, where stated, WHY. It never concludes "therefore you are
+// failing", never silently lowers the goal, and never converts a run of
+// missed sessions into a verdict about the student.
+export const collegeCommitments = pgTable("college_commitments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // What was actually agreed, in the student's own terms.
+  statement: text("statement").notNull(),
+  // study_session | task | habit | attendance | submission | preparation
+  commitmentType: text("commitment_type").notNull().default("study_session"),
+  // What this serves. Optional: not every commitment belongs to a goal, and
+  // pretending otherwise would force false structure onto ordinary intentions.
+  goalId: uuid("goal_id"),
+  courseId: uuid("course_id"),
+  // External commitments (TAFE) may be the reason a commitment exists.
+  externalCommitmentId: uuid("external_commitment_id"),
+  // When the student said they would do it.
+  dueDate: text("due_date"), // ISO date, null = no dated expectation
+  // Size of the promise, so "behind by one session" is meaningful.
+  plannedMinutes: integer("planned_minutes"),
+  // open|completed|missed|deferred|cancelled|partial
+  // "missed" is a factual state, not a judgement. "cancelled" is a legitimate
+  // decision the student is allowed to make.
+  status: text("status").notNull().default("open"),
+  // WHY, when the student chose to say. Never inferred, never guessed.
+  // forgot | chose_not_to | circumstance | unclear_task | no_reason_given
+  missedReasonKind: text("missed_reason_kind").notNull().default(""),
+  missedReason: text("missed_reason").notNull().default(""),
+  // What actually happened, recorded at closure.
+  actualMinutes: integer("actual_minutes"),
+  completedAt: timestamp("completed_at"),
+  // The session that discharged it, when one did.
+  sessionId: uuid("session_id"),
+  // Where the commitment came from. The College may PROPOSE a commitment, but
+  // only the student may make one — proposals do not self-activate.
+  origin: text("origin").notNull().default("student"), // student|college_proposed
+  accepted: boolean("accepted").notNull().default(true),
+  // A commitment that was reviewed and deliberately left alone. Stops the
+  // same conversation reopening every single morning.
+  lastReviewedAt: timestamp("last_reviewed_at"),
+  agreedResponse: text("agreed_response").notNull().default(""),
+  reviewAfter: text("review_after"), // ISO date
+  notes: text("notes").notNull().default(""),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// The College's configured tone when reporting accountability. Intensity
+// changes WORDING ONLY. It never changes what is true, never creates an
+// obligation, and never grants any faculty member authority it lacks — the
+// Layer 3 rule that personality cannot confer authority applies here exactly.
+export const collegeAccountabilitySettings = pgTable("college_accountability_settings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // gentle | direct | firm
+  intensity: text("intensity").notNull().default("direct"),
+  // How many days of history a pattern may be detected across.
+  patternWindowDays: integer("pattern_window_days").notNull().default(14),
+  // How many misses before the College names a pattern rather than an event.
+  patternThreshold: integer("pattern_threshold").notNull().default(3),
+  reason: text("reason").notNull().default(""),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type CollegeCommitmentRow = typeof collegeCommitments.$inferSelect;
+export type CollegeAccountabilitySettingsRow =
+  typeof collegeAccountabilitySettings.$inferSelect;

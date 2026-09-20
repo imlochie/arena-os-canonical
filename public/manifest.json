@@ -1,5 +1,5 @@
 {
-  "name": "ArenaForge Personal — Private AI Arena",
+  "name": "ArenaForge Personal \u2014 Private AI Arena",
   "short_name": "ArenaForge",
   "description": "Blind battles, collab lab, and leaderboards. Local Mode works fully offline. Never trained on.",
   "start_url": "/",
@@ -11,6 +11,20 @@
       "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Campus Briefing",
+      "short_name": "Campus",
+      "url": "/college/campus",
+      "description": "Where the College is, what changed, and what matters today."
+    },
+    {
+      "name": "Today",
+      "short_name": "Today",
+      "url": "/college/day",
+      "description": "The operational timeline for today."
     }
   ]
 }

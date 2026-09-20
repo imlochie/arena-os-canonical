@@ -13,6 +13,13 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: "#060a17",
+  // The College is used on a phone as much as a desktop. `viewportFit: cover`
+  // lets full-bleed surfaces reach the edges on notched iPhones; the pages
+  // themselves pad with env(safe-area-inset-*) so nothing lands under the
+  // home indicator.
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

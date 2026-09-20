@@ -1233,3 +1233,166 @@ objective died because a number went by.
    recorded as one commitment, not as a repeating slot — deliberate for now,
    since the recurring-timetable machinery belongs to the College's own
    activities and should not silently absorb another institution's schedule.
+
+---
+
+# LAYER 8 — COMMITMENTS AND BOUNDED ACCOUNTABILITY
+
+Layer 7 gave the College a sense of time. Layer 8 gives it the ability to say
+*"you said you would do this"* — and, just as importantly, the discipline to
+stop there.
+
+The governing sentence for the whole layer:
+
+> The College should hold you accountable to commitments you have actually
+> made, while remaining capable of recognising when circumstances changed.
+
+## §A. Four things that must never merge
+
+| Concept | Question it answers | Where it lives |
+|---|---|---|
+| GOAL | What are we trying to accomplish? | `college_goals` |
+| PLAN | How did we intend to get there? | curriculum, timetable |
+| COMMITMENT | What did I explicitly agree to do? | `college_commitments` |
+| ACCOUNTABILITY | Did reality match, and what should we understand? | `accountability.ts` (derived) |
+
+Accountability is the only one of the four that is **computed, never stored**.
+`accountabilityState(now)` reads commitments and returns a view. There is no
+"accountability record" to drift out of date, and nothing to migrate when the
+wording changes.
+
+## §B. What the College may and may not say
+
+Permitted: *"You said you would do X. You haven't done X."* · *"Here's how we
+know."* · *"Here's how much time has passed."*
+
+Forbidden: *"Therefore you are failing."*
+
+A miss has several possible causes — `forgot`, `chose_not_to`, `circumstance`,
+`unclear_task`, `no_reason_given` — and the College cannot distinguish them by
+observation. So it does not try. It records the fact, records the reason **if
+one was given**, and leaves the interpretation to the person who has it.
+
+The hardest-won rule in this layer: **an overdue commitment is never
+auto-marked missed.** The clock proves that a date passed; it does not prove
+what happened. An overdue commitment stays `open` and is described as *"Due N
+day(s) ago with nothing recorded. The College does not assume why."* This is
+the same principle as §L6's refusal to infer session completion from time.
+
+## §C. Patterns
+
+A single miss is noise. `patternThreshold` (default 3) misses of the *same*
+statement within `patternWindowDays` (default 14) is a pattern, and patterns
+are the one thing the College will actively raise:
+
+> "90 minutes toward Assessment 01" — 3 times in 14 days.
+> Stated: TAFE orientation ran long
+> The College is not changing the objective. The pattern is recorded so today's
+> class can address the gap directly, and so the founder can decide whether the
+> commitment itself was the wrong shape.
+
+Note what it does **not** do. It does not lower the target, reschedule
+anything, or conclude the student is incapable. Moving a goal because it was
+missed is an institutional decision, and this layer has no authority to make
+one. **Never move the goal to flatter the numbers.**
+
+## §D. Intensity is wording, not authority
+
+`gentle | direct | firm` changes phrasing only:
+
+| intensity | the same overdue commitment |
+|---|---|
+| gentle | "Draft assessment outline" hasn't happened yet — it was due yesterday. |
+| direct | You committed to "Draft assessment outline" yesterday. It hasn't happened. |
+| firm | "Draft assessment outline" was committed to yesterday and has not been done. |
+
+Facts are byte-identical across all three (asserted by test 8). A "drill
+sergeant" faculty personality can sound as hard as it likes and still cannot
+invent an obligation or impose a consequence — **authority comes from the
+commitment and governance systems, never from personality.**
+
+## §E. Only the student commits
+
+`origin` is `student` or `college_proposed`. A College proposal is created
+`accepted: false` and is **inert** — it does not appear in counts, cannot be
+missed, and creates no obligation until `PATCH action:"accept"`. This is
+AI PROPOSAL ≠ INSTITUTIONAL DECISION applied to the student's own intentions.
+
+## §F. Review closes the loop
+
+An overdue commitment that is reviewed — with a **required** `agreedResponse` —
+becomes `settled` and stops resurfacing until `reviewAfter`. *"Leave it exactly
+as it is"* is a legitimate response, but it has to be said. This is the
+commitment-level equivalent of §19's "NO CHANGE REQUIRED", and it is what stops
+the briefing reopening the same wound every morning.
+
+## §G. INTENDED → ATTEMPTED → ACTUAL
+
+`plannedMinutes` and `actualMinutes` are both retained, and `partial` is a
+first-class outcome. Over time this is what will separate *"I can't study
+consistently"* from *"my sessions are too long"* from *"I work better after
+TAFE"* from *"this keeps getting deferred because the task isn't understood."*
+The closure half is wired at the API (`action:"close"`); binding it to the end
+of a class run is deliberately left for after the UI has been lived with.
+
+## §H. The Campus UI
+
+`/college/campus` is the place accountability speaks, and the rule governing it
+is that **not every day needs every section**. Each block is gated on having
+something real to say:
+
+| Section | Appears when |
+|---|---|
+| CURRENT POSITION | always — it is the answer to "where am I?" |
+| SINCE YOU WERE LAST HERE | material events exist, or you have been away |
+| ACCOUNTABILITY | at least one commitment has been made |
+| ACADEMIC CONTEXT | external (TAFE) commitments are known |
+| WORTH KNOWING | something needs a decision, or a condition is live |
+| GOALS | a goal exists |
+| TODAY + BEGIN CLASS | always — it is the exit into the runtime |
+
+A College with nothing to report renders one line: *"No significant changes
+since your last session."* Epistemic footnotes (`temporal.unmeasured`) are
+deliberately **not** promoted into WORTH KNOWING — "no external event has ever
+been recorded" is true, and inspectable, but it is not news.
+
+The page is a phone surface first: single column, 42–48px tap targets,
+`env(safe-area-inset-*)` padding, and a `viewportFit: cover` viewport. The
+manifest gains Campus and Today shortcuts. **There is no second mobile
+backend** — the phone and the desktop read the same `/api/college/briefing`
+over the same database. Desktop remains the Control Room (curriculum, faculty,
+governance, audit); the phone is the Campus.
+
+## §I. The briefing is still not a source of truth
+
+Unchanged and load-bearing:
+
+```
+Source → Institutional Decision → Operational State → Reality →
+Temporal State → Interpretation → BRIEFING → Runtime
+```
+
+Layer 8 adds commitments to Operational State and accountability to
+Interpretation. The briefing gained a section, not a privilege: test 18 asserts
+that two full briefing renders leave the commitment and ledger tables
+byte-identical.
+
+## §J. Ledger correction
+
+`external_academic_event` had been written by `/api/college/external` since
+Layer 7 while never appearing in `LEDGER_EVENTS`. `record()` accepted the
+string and wrote it silently. An event the vocabulary cannot name cannot be
+filtered, audited, or reasoned about — so it is now declared.
+**`LEDGER_EVENTS` is 32 types.**
+
+## §K. Deliberately not built
+
+- Automatic commitment creation from timetable slots. A scheduled class is not
+  a promise; conflating them would manufacture obligations nobody made.
+- Notifications. The phrasing is designed (*"your planned session ended 20
+  minutes ago, but no completion was recorded"*) but nothing is delivered yet.
+- Streaks as a visible number. `rhythmDelta` exists because "4 sessions behind
+  the plan you set" is a fact; it is never rendered as a score, and there is no
+  gamification anywhere in this layer.
+
+`scripts/college-layer8-tests.mjs` — 20 assertions, self-cleaning.

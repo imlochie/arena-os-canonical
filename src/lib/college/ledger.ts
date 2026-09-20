@@ -65,6 +65,20 @@ export const LEDGER_EVENTS = [
   // Proposing a record and filing one are different institutional acts.
   "record_proposed",
   "record_filed",
+  // §L8. Commitments are their own vocabulary: making, closing and reviewing
+  // are three different acts, and a review that changes nothing is still an
+  // event worth having in the record.
+  "commitment_made",
+  "commitment_closed",
+  "commitment_reviewed",
+  // §L7 correction. `/api/college/external` has been writing this event since
+  // Layer 7 while the vocabulary never declared it — `record()` accepted the
+  // string, so it wrote cleanly and silently. An event type the ledger cannot
+  // name is an event type nothing can filter, audit, or reason about, which is
+  // precisely the "unnamed truth" failure the ledger exists to prevent.
+  // Declared here rather than removed from the routes: external academic
+  // events are real, and the briefing already reads them.
+  "external_academic_event",
 ] as const;
 
 export type LedgerEventType = (typeof LEDGER_EVENTS)[number] | string;

@@ -41,6 +41,7 @@
 import { and, desc, gte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { collegeEventLedger, collegeSessions } from "@/db/college";
+import { accountabilityState, type AccountabilityState } from "./accountability";
 import { externalAcademicPicture, type ExternalAcademicPicture } from "./external-academic";
 import { governanceQueue, type GovernanceItem } from "./governance";
 import { liveCollegeState, type LiveCollegeState } from "./live-state";
@@ -93,6 +94,12 @@ export interface CampusBriefing {
     /** Plain statement, including "nothing material changed". */
     summary: string;
   };
+  /**
+   * ACCOUNTABILITY — what was committed to, and what happened. Sits beside
+   * the other sections rather than above them: the College notices, it does
+   * not preside.
+   */
+  accountability: AccountabilityState;
   /** WHAT MATTERS — only things with a real basis for mattering today. */
   matters: {
     external: ExternalAcademicPicture;
@@ -181,11 +188,12 @@ const MATERIAL_EVENTS = new Set([
  * write, and it does not run a model.
  */
 export async function campusBriefing(now: Date = new Date()): Promise<CampusBriefing> {
-  const [temporal, live, external, governance] = await Promise.all([
+  const [temporal, live, external, governance, accountability] = await Promise.all([
     resolveTemporalState(now),
     liveCollegeState(now),
     externalAcademicPicture(now),
     governanceQueue(),
+    accountabilityState(now),
   ]);
 
   const depth = DEPTH_FOR[temporal.continuity.state];
@@ -250,9 +258,29 @@ export async function campusBriefing(now: Date = new Date()): Promise<CampusBrie
   if (external.imminent.length) {
     conditions.push(external.implication);
   }
-  for (const u of temporal.unmeasured) conditions.push(u);
+  // Accountability speaks only when it has something factual to report. A
+  // quiet week produces no line at all rather than a reassurance nobody asked
+  // for — "you're doing great!" is exactly the padding this College refuses.
+  // NOTE: the accountability SUMMARY is deliberately NOT copied in here. It
+  // already has its own section, and repeating it made the briefing state the
+  // same fact twice in twenty lines — which is how a briefing starts feeling
+  // like nagging even when every individual sentence is fair.
+  // Patterns are different: a pattern is a distinct observation about
+  // repetition, not a restatement of today's position.
+  for (const p of accountability.patterns) {
+    conditions.push(
+      `Pattern: "${p.what}" missed ${p.occurrences} times in ${p.windowDays} days. ${p.response}`
+    );
+  }
+  // NOT here. `temporal.unmeasured` is an epistemic footnote — "the College
+  // has never recorded an external academic event" is true and worth being
+  // able to see, but it is not a thing that MATTERS TODAY. Promoting it into
+  // WORTH KNOWING meant a College with nothing to report still produced a
+  // bulleted list, which is exactly the padding this briefing exists to avoid.
+  // It stays available on `temporal.unmeasured` for anyone who looks.
 
-  const quiet = actionable.length === 0 && conditions.length === 0;
+  const quiet =
+    actionable.length === 0 && conditions.length === 0 && accountability.quiet;
 
   // ---- WHAT'S NEXT -------------------------------------------------------
   // The briefing REPORTS what is available. It never begins a class: that is
@@ -284,6 +312,7 @@ export async function campusBriefing(now: Date = new Date()): Promise<CampusBrie
     },
     temporal,
     changed: { since, items: deduped, materialCount, summary: changedSummary },
+    accountability,
     matters: { external, governance: actionable, conditions, quiet },
     next: {
       classAvailable: hasClass,
@@ -338,6 +367,17 @@ export function renderBriefing(b: CampusBriefing): string {
     L.push(`  … and ${b.changed.items.length - 8} more in the ledger.`);
   }
   L.push("");
+
+  if (!b.accountability.quiet || b.accountability.made > 0) {
+    L.push("ACCOUNTABILITY");
+    L.push(`  ${b.accountability.summary}`);
+    if (b.accountability.made > 0) {
+      L.push(
+        `  ${b.accountability.completed} / ${b.accountability.made} completed · ${b.accountability.rhythmNote}`
+      );
+    }
+    L.push("");
+  }
 
   L.push("WHAT MATTERS");
   if (b.matters.quiet) {
