@@ -2,9 +2,9 @@
 
 ## Current status: do not deploy the legacy application publicly
 
-The preserved application is not ready for a public or multi-user deployment. It has no authentication or authorization, incomplete migrations, no worker, no formal file storage design, no rate limiting, and production dependency advisories. It must be treated as a local development/prototype environment only.
+The preserved application is not ready for a public or multi-user deployment. The new Stem Lab slice has its own private account/session, membership, queue, worker, and private storage path, but the broader legacy Arena application still lacks equivalent authentication/authorization, complete migrations, rate limits, and dependency remediation. Treat the repository as local development/prototype software until the complete release gate is met.
 
-## Canonical self-hosted topology (target)
+## Canonical self-hosted topology (partially implemented for Stem Lab)
 
 ```text
 reverse proxy / TLS
@@ -30,7 +30,7 @@ Each service will be independently configurable and replaceable. The core applic
 | `minio` or equivalent | project file and export blobs | yes when files/exports enabled |
 | `ollama` or external local endpoint | optional local inference | no, but required for local-first acceptance test |
 
-No Compose file exists yet. It must be added with health checks, persistent named volumes, non-development secrets, and a documented upgrade/migration procedure rather than as a screenshot-only artifact.
+`docker-compose.yml` now implements PostgreSQL, Redis, MinIO, migrations, web, a CPU Demucs worker, health checks, persistent named volumes, and an isolated Playwright profile for the Stem Lab acceptance slice. Its local credentials are deliberately development-only. It has **not** been executed in this Docker-less sandbox, and it does not make the rest of the legacy Arena application production-ready.
 
 ## Environment policy
 

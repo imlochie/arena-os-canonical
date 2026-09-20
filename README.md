@@ -24,13 +24,30 @@ The preserved implementation is a Next.js 16 / React 19 / PostgreSQL application
 - a browser WebLLM experiment for the Arcade Forge; and
 - a metadata-only privacy event log plus export/wipe endpoints.
 
-These are valuable experiments, not a claim that the current app satisfies the canonical specification. There is no authentication, no server-side authorization, no worker, no durable provider registry, no file subsystem, no user-scoped privacy model, and no test suite. See [REBUILD.md](./REBUILD.md) for the audited classification and [SECURITY.md](./SECURITY.md) before exposing the current implementation to untrusted users.
+These are valuable experiments, not a claim that the current app satisfies the canonical specification. The legacy application still has no general authentication, server-side authorization, durable provider registry, user-scoped privacy model, or broad test suite. Stem Lab is a deliberately bounded exception with its own private media account/session, worker, storage, and Compose E2E harness; it does not secure every legacy Arena route. See [REBUILD.md](./REBUILD.md) for the audited classification and [SECURITY.md](./SECURITY.md) before exposing the current implementation to untrusted users.
 
-## Stem Lab integration
+## Stem Lab vertical-slice harness
 
-Stem Lab is an Arena module at `/stems`, linked from normal Arena navigation and project workspaces. It is intentionally an adapter rather than a replacement application: if `STEM_WORKER_URL` is unset or its real worker is unavailable, the UI reports that state and disables submission. It does not generate fake stems, waveforms, progress, or downloads.
+Stem Lab is an Arena module at `/stems`, linked from normal Arena navigation and project workspaces. It does not replace Arena and it does not create fake stems, fake progress, waveform data, or downloads.
 
-A configured worker must expose `GET /health` and `POST /v1/separations`; Arena forwards the selected source upload only to that configured self-hosted worker. Durable stem storage, job records, playback synchronization, and the Demucs worker deployment remain unimplemented in this current Arena codebase and are not represented as complete.
+An Arena-owned durable path is now implemented behind `STEM_PIPELINE_ENABLED=true`:
+
+- a private Stem Lab account/session and project-role layer for this media subsystem;
+- source inspection with `ffprobe`, sanitized filenames, checksums, and private object keys;
+- PostgreSQL source/job/stem records, Redis/BullMQ job delivery, and MinIO/S3-compatible private objects;
+- a separate CPU Demucs worker with isolated temporary directories, output/audio validation, cleanup, and retryable failures;
+- authenticated project state and byte-range private stem delivery; and
+- a real Compose/Playwright acceptance harness that registers, creates a project, uploads an original generated WAV, waits for Demucs, asserts four validated outputs, exercises browser playback, verifies access isolation, and covers corrupt-input/model-failure cases.
+
+`docker-compose.yml` provides PostgreSQL, Redis, MinIO, web, worker, migration, and browser-test services. Run the actual proof only on a Docker-capable machine:
+
+```bash
+npm run test:compose
+```
+
+This sandbox has no Docker CLI, so the Compose stack, real Demucs output, MinIO persistence, and browser E2E path are **implemented but not verified here**. The test harness fails explicitly instead of treating that missing prerequisite as success. Do not build waveforms, a mixer, downloads, or remix features until this command passes in a Docker-capable environment and every real-stack failure is resolved.
+
+For an operator-managed worker outside the durable pipeline, the compatibility adapter remains available through `STEM_WORKER_URL` (`GET /health`, `POST /v1/separations`). It does not make a durable Arena separation claim.
 
 ## Canonical direction
 

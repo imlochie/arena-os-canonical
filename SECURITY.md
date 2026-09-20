@@ -2,7 +2,7 @@
 
 ## Current security posture
 
-**The preserved legacy application is not approved for public or multi-user deployment.** It has no authentication, no server-side authorization model, incomplete migration history, and no automated security test coverage. The product claims in legacy UI must not be interpreted as a production security guarantee.
+**The preserved legacy application is not approved for public or multi-user deployment.** Its general routes still have no authentication or server-side authorization model, and its broad migration/security coverage remains incomplete. Stem Lab adds a bounded private-media session/membership layer and unexecuted Compose isolation checks, but that does not turn the legacy application into a general production security guarantee.
 
 High-priority reconstruction items are documented in [REBUILD.md](./REBUILD.md) and the intended controls in [ARCHITECTURE.md](./ARCHITECTURE.md).
 

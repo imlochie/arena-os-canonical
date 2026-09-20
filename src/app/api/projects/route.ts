@@ -1,5 +1,6 @@
 import { db } from "@/db";
-import { artifacts, battles, collabs, councilRuns, projectMemory, projects } from "@/db/schema";
+import { arenaProjectMembers, artifacts, battles, collabs, councilRuns, projectMemory, projects } from "@/db/schema";
+import { currentStemUser } from "@/lib/stems/auth";
 import { desc, eq, sql } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -42,7 +43,18 @@ export async function POST(req: Request) {
     if (!name) return Response.json({ error: "name required" }, { status: 400 });
     const description = (body.description ?? "").toString().slice(0, 500);
     const emoji = (body.emoji ?? "📁").toString().slice(0, 8);
-    const [row] = await db.insert(projects).values({ name, description, emoji }).returning();
+    // Legacy Arena projects remain usable anonymously. When a requester has a
+    // Stem Lab session, also create the private media membership so its project
+    // workspace can safely hand off to the durable stem pipeline.
+    const stemUser = await currentStemUser();
+    const [row] = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(projects).values({ name, description, emoji }).returning();
+      if (stemUser) {
+        await tx.insert(arenaProjectMembers).values({ projectId: created.id, userId: stemUser.id, role: "owner" })
+          .onConflictDoNothing();
+      }
+      return [created];
+    });
     return Response.json({ project: row }, { status: 201 });
   } catch (e) {
     console.error(e);

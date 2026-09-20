@@ -7,6 +7,8 @@ import {
   timestamp,
   uuid,
   primaryKey,
+  index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 // ---- Model registry (ELO tracked) ----
@@ -236,6 +238,118 @@ export const chatMessages = pgTable("chat_messages", {
   content: text("content").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// ---- Durable, private Stem Lab records ----
+// These tables are additive. They attach real audio assets to the existing Arena
+// project object without changing the legacy project's public API behavior.
+export const arenaUsers = pgTable("arena_users", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  username: text("username").notNull(),
+  email: text("email").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  displayName: text("display_name").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("arena_users_username_unique").on(t.username),
+  uniqueIndex("arena_users_email_unique").on(t.email),
+]);
+
+export const arenaSessions = pgTable("arena_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => arenaUsers.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("arena_sessions_token_hash_unique").on(t.tokenHash),
+  index("arena_sessions_user_id_idx").on(t.userId),
+]);
+
+export const arenaProjectMembers = pgTable("arena_project_members", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => arenaUsers.id, { onDelete: "cascade" }),
+  role: text("role").notNull(), // owner | editor | viewer
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("arena_project_members_project_user_unique").on(t.projectId, t.userId),
+  index("arena_project_members_user_id_idx").on(t.userId),
+]);
+
+export const stemWorkerHeartbeats = pgTable("stem_worker_heartbeats", {
+  id: text("id").primaryKey(),
+  engine: text("engine").notNull(),
+  model: text("model").notNull(),
+  device: text("device").notNull(),
+  lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+});
+
+export const stemSourceAssets = pgTable("stem_source_assets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  originalFilename: text("original_filename").notNull(),
+  mimeType: text("mime_type").notNull(),
+  storageKey: text("storage_key").notNull(),
+  checksumSha256: text("checksum_sha256").notNull(),
+  durationSeconds: integer("duration_seconds").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  channels: integer("channels").notNull(),
+  codec: text("codec").notNull(),
+  bitrate: integer("bitrate"),
+  fileSizeBytes: integer("file_size_bytes").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("stem_source_assets_storage_key_unique").on(t.storageKey),
+  index("stem_source_assets_project_id_idx").on(t.projectId),
+]);
+
+export const stemProcessingJobs = pgTable("stem_processing_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => stemSourceAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  model: text("model").notNull(),
+  requestedDevice: text("requested_device").notNull(),
+  resolvedDevice: text("resolved_device"),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  metadata: text("metadata").notNull().default("{}"),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("stem_processing_jobs_idempotency_unique").on(t.idempotencyKey),
+  index("stem_processing_jobs_project_id_idx").on(t.projectId),
+  index("stem_processing_jobs_status_idx").on(t.status),
+]);
+
+export const stemAssets = pgTable("stem_assets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => stemSourceAssets.id, { onDelete: "cascade" }),
+  separationJobId: uuid("separation_job_id").notNull().references(() => stemProcessingJobs.id, { onDelete: "cascade" }),
+  stemType: text("stem_type").notNull(),
+  engine: text("engine").notNull(),
+  model: text("model").notNull(),
+  modelVersion: text("model_version").notNull(),
+  storageKey: text("storage_key").notNull(),
+  checksumSha256: text("checksum_sha256").notNull(),
+  durationSeconds: integer("duration_seconds").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  channels: integer("channels").notNull(),
+  codec: text("codec").notNull(),
+  format: text("format").notNull(),
+  fileSizeBytes: integer("file_size_bytes").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("stem_assets_job_stem_unique").on(t.separationJobId, t.stemType),
+  uniqueIndex("stem_assets_storage_key_unique").on(t.storageKey),
+  index("stem_assets_project_id_idx").on(t.projectId),
+]);
 
 export type ModelCategoryRatingRow = typeof modelCategoryRatings.$inferSelect;
 export type ModelRow = typeof models.$inferSelect;

@@ -11,3 +11,9 @@ node_modules/
 
 # Nested Next build output
 **/.next/
+
+# Local/private stem-pipeline state and browser test output
+.arena-data/
+playwright-report/
+test-results/
+tests/fixtures/*.wav
