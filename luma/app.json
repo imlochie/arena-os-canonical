@@ -39,7 +39,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "LUMA uses the camera so you can take photos with live preset previews.",
+          "cameraPermission": "LUMA uses the camera so you can shoot with your selected camera look.",
           "recordAudioAndroid": false
         }
       ],

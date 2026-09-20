@@ -1,15 +1,13 @@
 # Get LUMA onto your iPhone
 
-This is the "LUMA escapes the repository" checklist. No Mac required — EAS builds
-in the cloud and gives you an install link / TestFlight build. **You** run these
+This is the "LUMA escapes the repository" checklist. No Mac required — EAS builds in the cloud and gives you an install link / TestFlight build. This route requires paid Apple Developer membership; a free Apple ID cannot sign an EAS iOS device build. **You** run these
 steps because they need your Apple ID and interactive `eas login`.
 
 > LUMA lives in the `luma/` subdirectory of the repo. Run everything from there.
 
 ## 0. One-time prerequisites
 
-- An **Apple ID** (a free one works for a 7-day development build; a paid Apple
-  Developer account, US$99/yr, is needed for TestFlight / longer-lived builds).
+- An **Apple Developer Program membership** (currently US$99/year, subject to Apple's pricing). EAS cloud builds for installing on a physical iPhone require Apple signing credentials. A free Apple ID is not sufficient for this EAS route.
 - Node 18+ and npm.
 
 ```bash

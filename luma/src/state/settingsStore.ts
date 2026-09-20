@@ -10,6 +10,7 @@ import {
   Settings,
   SettingsRepository,
 } from '../storage/settings';
+import { DEFAULT_CAMERA_ID, getCamera } from '../cameras/catalog';
 
 const repo = new SettingsRepository();
 
@@ -32,8 +33,8 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set) => ({
   settings: { ...DEFAULT_SETTINGS },
   loaded: false,
-  cameraId: 'clean',
-  cameraLookId: 'clean',
+  cameraId: DEFAULT_CAMERA_ID,
+  cameraLookId: getCamera(DEFAULT_CAMERA_ID)?.defaultLookId ?? null,
 
   load: async () => {
     const settings = await repo.load();

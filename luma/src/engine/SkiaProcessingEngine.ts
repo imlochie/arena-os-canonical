@@ -71,7 +71,7 @@ export class SkiaProcessingEngine implements ProcessingEngine {
       MipmapMode,
       ImageFormat,
     } = require('@shopify/react-native-skia');
-    const FileSystem = require('expo-file-system');
+    const FileSystem = require('expo-file-system/legacy');
 
     const adj = composeEffectiveAdjustments(recipe, preset);
     const matrix = this.computeColorMatrix(adj);

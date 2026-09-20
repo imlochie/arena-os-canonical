@@ -57,8 +57,11 @@ describe('camera catalog', () => {
     expect(getCamera('nope')).toBeUndefined();
   });
 
-  it('DEFAULT_CAMERA_ID points to a real camera', () => {
-    expect(getCamera(DEFAULT_CAMERA_ID)).toBeDefined();
+  it('DEFAULT_CAMERA_ID points to a real camera and its default look', () => {
+    const camera = getCamera(DEFAULT_CAMERA_ID);
+    expect(camera).toBeDefined();
+    expect(camera?.defaultLookId).toBe('clean-girl');
+    expect(camera?.lookIds).toContain(camera?.defaultLookId);
   });
 
   it('cameraForPresetId finds the owning camera', () => {
@@ -72,8 +75,6 @@ describe('camera catalog', () => {
     for (const cam of CAMERAS) {
       expect(cam.hint.vignette).toBeGreaterThanOrEqual(0);
       expect(cam.hint.vignette).toBeLessThanOrEqual(1);
-      expect(cam.hint.lift).toBeGreaterThanOrEqual(0);
-      expect(cam.hint.lift).toBeLessThanOrEqual(1);
       expect(typeof cam.hint.mono).toBe('boolean');
     }
   });

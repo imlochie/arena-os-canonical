@@ -26,8 +26,6 @@ export interface CameraHint {
   tint: string;
   /** Vignette strength hint [0,1]. */
   vignette: number;
-  /** A faint highlight lift for faded/film moods [0,1]. */
-  lift: number;
   /** Cameras whose real look is monochrome; surfaced in copy since a color
    *  overlay can't desaturate a live RN camera feed without a frame processor. */
   mono: boolean;
@@ -60,7 +58,7 @@ export const CAMERAS: Camera[] = [
     family: 'Digital',
     lookIds: ['digi-x', 'digi', 'digi-flash'],
     defaultLookId: 'digi-x',
-    hint: { tint: 'rgba(255,178,84,0.10)', vignette: 0.2, lift: 0, mono: false },
+    hint: { tint: 'rgba(255,178,84,0.10)', vignette: 0.2, mono: false },
   },
   {
     id: 'clean',
@@ -70,7 +68,7 @@ export const CAMERAS: Camera[] = [
     family: 'Clean',
     lookIds: ['clean-girl', 'digi-lite', 'clean-soft'],
     defaultLookId: 'clean-girl',
-    hint: { tint: 'rgba(255,241,224,0.05)', vignette: 0.08, lift: 0.04, mono: false },
+    hint: { tint: 'rgba(255,241,224,0.05)', vignette: 0.08, mono: false },
   },
   {
     id: 'filmbox',
@@ -80,7 +78,7 @@ export const CAMERAS: Camera[] = [
     family: 'Film',
     lookIds: ['gold-n', 'digi-s', 'warm-film'],
     defaultLookId: 'gold-n',
-    hint: { tint: 'rgba(206,172,120,0.14)', vignette: 0.26, lift: 0.12, mono: false },
+    hint: { tint: 'rgba(206,172,120,0.14)', vignette: 0.26, mono: false },
   },
   {
     id: 'mono',
@@ -90,7 +88,7 @@ export const CAMERAS: Camera[] = [
     family: 'Black & White',
     lookIds: ['bw', 'bw-classic'],
     defaultLookId: 'bw',
-    hint: { tint: 'rgba(232,232,236,0.06)', vignette: 0.3, lift: 0, mono: true },
+    hint: { tint: 'rgba(232,232,236,0.06)', vignette: 0.3, mono: true },
   },
   {
     id: 'nox',
@@ -100,7 +98,7 @@ export const CAMERAS: Camera[] = [
     family: 'Night',
     lookIds: ['red-light', 'night-flash', 'night-grain'],
     defaultLookId: 'red-light',
-    hint: { tint: 'rgba(64,96,168,0.14)', vignette: 0.34, lift: 0, mono: false },
+    hint: { tint: 'rgba(64,96,168,0.14)', vignette: 0.34, mono: false },
   },
 ];
 
