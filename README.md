@@ -103,6 +103,7 @@ Reconnaissance results on 2026-09-20:
 | --- | --- |
 | [REBUILD.md](./REBUILD.md) | Phase 0 evidence inventory, classification, retained lessons, and sequence |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Canonical system boundaries, data model, events, and invariants |
+| [ARCHIVE_SYNTHESIS.md](./ARCHIVE_SYNTHESIS.md) | Evidence ledger for selectively reconstructing canonical Arena from Options A and B |
 | [MIGRATION.md](./MIGRATION.md) | Legacy data and behavior mapping, export-first migration process |
 | [DEVELOPMENT.md](./DEVELOPMENT.md) | Development commands, configuration, and current limitations |
 | [DEPLOYMENT.md](./DEPLOYMENT.md) | Target self-hosting topology and current non-production status |
