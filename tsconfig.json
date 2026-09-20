@@ -1,42 +1,28 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "esnext"
-    ],
-    "allowJs": false,
-    "skipLibCheck": true,
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
     "strict": true,
     "noEmit": true,
-    "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "react-jsx",
-    "incremental": true,
+    "esModuleInterop": true,
+    "jsx": "preserve",
+    "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "./src/*"
-      ]
-    },
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ]
+      "@waveyard/audio": ["packages/audio/src/index.ts"],
+      "@waveyard/auth": ["packages/auth/src/index.ts"],
+      "@waveyard/database": ["packages/database/src/index.ts"],
+      "@waveyard/database/*": ["packages/database/src/*"],
+      "@waveyard/queue": ["packages/queue/src/index.ts"],
+      "@waveyard/storage": ["packages/storage/src/index.ts"],
+      "@waveyard/types": ["packages/types/src/index.ts"],
+      "@/*": ["apps/web/src/*"]
+    }
   },
-  "include": [
-    "next-env.d.ts",
-    "**/*.ts",
-    "**/*.tsx",
-    ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules"
-  ]
+  "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", ".next", "dist"]
 }
