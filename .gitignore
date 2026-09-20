@@ -1,16 +1,10 @@
 node_modules/
 .next/
-dist/
-coverage/
+.arena-data/
 .env
 .env.local
 .env.*.local
 *.log
-*.tsbuildinfo
-.waveyard-data/
-.pytest_cache/
-__pycache__/
-*.pyc
 
-# Generated audio fixture (created by scripts/create_audio_fixture.py)
-tests/fixtures/*.wav
+# TypeScript incremental build metadata
+*.tsbuildinfo

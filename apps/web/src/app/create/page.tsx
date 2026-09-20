@@ -1,3 +1,0 @@
-import Link from "next/link";
-import { CreateProject } from "@/components/CreateProject";
-export default function CreatePage() { return <main className="shell"><nav className="nav"><Link href="/" className="brand"><i>Waveyard</i><small>open stem studio</small></Link><div className="navlinks"><Link href="/">Home</Link></div></nav><section className="create"><div><span className="eyebrow">New project</span><h1>Start with the source.</h1><p className="notice">Waveyard creates a private project, probes the real file before processing, then queues a dedicated worker. Do not upload material you do not have rights to use.</p></div><CreateProject /></section></main>; }
