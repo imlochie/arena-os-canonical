@@ -1,27 +1,17 @@
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim AS base
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY apps/web/package.json apps/web/package.json
+COPY apps/worker/package.json apps/worker/package.json
+COPY packages/audio/package.json packages/audio/package.json
+COPY packages/auth/package.json packages/auth/package.json
+COPY packages/database/package.json packages/database/package.json
+COPY packages/queue/package.json packages/queue/package.json
+COPY packages/storage/package.json packages/storage/package.json
+COPY packages/types/package.json packages/types/package.json
+COPY packages/ui/package.json packages/ui/package.json
 RUN npm ci
 COPY . .
-# Route modules import the database singleton; the real runtime URL is injected
-# by Compose. This placeholder is never used to make a database connection here.
-ENV DATABASE_URL=postgresql://build:build@localhost:5432/build
-RUN npm run build
-
-FROM build AS migrator
-CMD ["npm", "run", "db:migrate"]
-
-FROM node:22-bookworm-slim AS runtime
-WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=build /app/package.json /app/package-lock.json ./
-RUN npm ci --omit=dev
-COPY --from=build /app/.next ./.next
-COPY --from=build /app/public ./public
-COPY --from=build /app/src ./src
-COPY --from=build /app/drizzle ./drizzle
-COPY --from=build /app/scripts ./scripts
-COPY --from=build /app/tsconfig.json ./tsconfig.json
-COPY --from=build /app/next.config.ts ./next.config.ts
+RUN npm run build --workspace=@waveyard/web
 EXPOSE 3000
-CMD ["npm", "run", "start"]
+CMD ["npm", "run", "start", "--workspace=@waveyard/web"]

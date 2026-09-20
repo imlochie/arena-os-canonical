@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Arena's real Demucs adapter.
+"""Waveyard's real Demucs command adapter.
 
-The worker invokes this process. It never synthesizes or relabels output: success
-means Demucs generated all four expected source files and each is non-empty.
+This module intentionally invokes Demucs and rejects missing model output. It does
+not synthesize, filter, or fabricate stems.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ def resolve_device(requested: str) -> str:
         import torch
     except ImportError as error:
         raise RuntimeError("PyTorch is not installed; cannot run Demucs.") from error
+
     has_cuda = bool(torch.cuda.is_available())
     if requested == "cuda":
         if not has_cuda:
@@ -42,7 +43,7 @@ def main() -> int:
     source = Path(args.input).resolve()
     output = Path(args.output).resolve()
     if not source.is_file():
-        raise RuntimeError("Input source does not exist.")
+        raise RuntimeError(f"Input does not exist: {source}")
     output.mkdir(parents=True, exist_ok=True)
 
     resolved_device = resolve_device(args.device)
@@ -51,40 +52,45 @@ def main() -> int:
         model_version = getattr(demucs, "__version__", "unknown")
     except ImportError:
         model_version = "unknown"
-
     raw_output = output / "demucs-raw"
     command = [
-        sys.executable, "-m", "demucs", "--name", args.model, "--device", resolved_device,
-        "--out", str(raw_output), str(source),
+        sys.executable,
+        "-m",
+        "demucs",
+        "--name",
+        args.model,
+        "--device",
+        resolved_device,
+        "--out",
+        str(raw_output),
+        str(source),
     ]
     completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if completed.returncode != 0:
-        raise RuntimeError(f"Demucs exited {completed.returncode}: {(completed.stderr or completed.stdout)[-3000:]}")
+        tail = (completed.stderr or completed.stdout)[-3000:]
+        raise RuntimeError(f"Demucs exited {completed.returncode}: {tail}")
 
     candidates = {path.name: path for path in raw_output.rglob("*.wav")}
     missing = [name for name in EXPECTED_STEMS if f"{name}.wav" not in candidates]
     if missing:
         raise RuntimeError(f"Demucs completed without expected stems: {', '.join(missing)}")
 
-    produced = []
+    stems = []
     for stem in EXPECTED_STEMS:
-        origin = candidates[f"{stem}.wav"]
+        source_stem = candidates[f"{stem}.wav"]
         destination = output / f"{stem}.wav"
-        shutil.copy2(origin, destination)
+        shutil.copy2(source_stem, destination)
         if destination.stat().st_size <= 0:
             raise RuntimeError(f"Demucs produced an empty {stem} stem.")
-        produced.append({"stemType": stem, "path": str(destination), "bytes": destination.stat().st_size})
+        stems.append({"stemType": stem, "path": str(destination), "bytes": destination.stat().st_size})
 
-    print(json.dumps({
-        "engine": "demucs", "model": args.model, "modelVersion": model_version,
-        "requestedDevice": args.device, "resolvedDevice": resolved_device, "stems": produced,
-    }))
+    print(json.dumps({"engine": "demucs", "model": args.model, "modelVersion": model_version, "requestedDevice": args.device, "resolvedDevice": resolved_device, "stems": stems}))
     return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except Exception as error:
+    except Exception as error:  # never claim a partial separation as success
         print(json.dumps({"error": str(error)}), file=sys.stderr)
         raise SystemExit(1)

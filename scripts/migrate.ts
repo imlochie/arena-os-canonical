@@ -1,38 +1,26 @@
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { Pool } from "pg";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { Client } from "pg";
 
 async function main() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) throw new Error("DATABASE_URL is required for migrations.");
-  const pool = new Pool({ connectionString });
-  const client = await pool.connect();
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) throw new Error("DATABASE_URL is required for migrations.");
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
   try {
-    await client.query("CREATE TABLE IF NOT EXISTS arena_schema_migrations (name text PRIMARY KEY NOT NULL, applied_at timestamp NOT NULL DEFAULT now())");
-    const completed = new Set((await client.query<{ name: string }>("SELECT name FROM arena_schema_migrations")).rows.map((row) => row.name));
-    const migrationDir = join(process.cwd(), "drizzle");
-    const names = (await readdir(migrationDir)).filter((name) => name.endsWith(".sql")).sort();
-    for (const name of names) {
-      if (completed.has(name)) continue;
-      const contents = await readFile(join(migrationDir, name), "utf8");
+    await client.query('CREATE TABLE IF NOT EXISTS "waveyard_schema_migrations" ("id" text PRIMARY KEY, "applied_at" timestamptz NOT NULL DEFAULT now())');
+    const migrationId = "0000_waveyard_initial";
+    const { rows } = await client.query('SELECT 1 FROM "waveyard_schema_migrations" WHERE "id" = $1', [migrationId]);
+    if (!rows.length) {
+      const sql = await readFile(resolve(process.cwd(), "packages/database/drizzle/0000_waveyard_initial.sql"), "utf8");
       await client.query("BEGIN");
       try {
-        await client.query(contents);
-        await client.query("INSERT INTO arena_schema_migrations (name) VALUES ($1)", [name]);
+        await client.query(sql);
+        await client.query('INSERT INTO "waveyard_schema_migrations" ("id") VALUES ($1)', [migrationId]);
         await client.query("COMMIT");
-        console.info(`Applied ${name}`);
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      }
-    }
-  } finally {
-    client.release();
-    await pool.end();
-  }
+        console.log(`Applied ${migrationId}.`);
+      } catch (error) { await client.query("ROLLBACK"); throw error; }
+    } else console.log(`${migrationId} already applied.`);
+  } finally { await client.end(); }
 }
-
-void main().catch((error) => {
-  console.error("Migration failed", error);
-  process.exit(1);
-});
+void main();

@@ -1,9 +1,0 @@
-node_modules
-.next
-.git
-.env
-.env.*
-.arena-data
-playwright-report
-test-results
-tests/fixtures/*.wav
