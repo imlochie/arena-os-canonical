@@ -54,6 +54,7 @@ The command generates an original deterministic fixture, invokes actual Demucs, 
 - [Storage](docs/STORAGE.md)
 - [Workers](docs/WORKERS.md)
 - [Remix engine](docs/REMIX_ENGINE.md)
+- [Phase 1 Compose proof report](docs/PHASE_1_REPORT.md)
 - [Publication and moderation](docs/MODERATION.md)
 
 ## Verification status

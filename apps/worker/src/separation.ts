@@ -58,6 +58,8 @@ export async function processSeparation(payload: SeparationJobPayload, reportSta
   const inputPath = join(tempDirectory, "source-upload");
   const outputDirectory = join(tempDirectory, "output");
   const storage = getStorage();
+  const uploadedKeys: string[] = [];
+  let completed = false;
 
   try {
     await updateJob(job.id, { status: "preparing", stage: "preparing", startedAt: new Date(), errorCode: null, errorMessage: null });
@@ -78,6 +80,7 @@ export async function processSeparation(payload: SeparationJobPayload, reportSta
     for (const stem of validatedStems) {
       const storageKey = privateObjectKey(job.projectId, "stem", "wav");
       await storage.putFile(storageKey, stem.path, "audio/wav");
+      uploadedKeys.push(storageKey);
       values.push({
         projectId: job.projectId,
         sourceAssetId: source.id,
@@ -102,12 +105,16 @@ export async function processSeparation(payload: SeparationJobPayload, reportSta
       await tx.insert(stemAssets).values(values);
       await tx.update(processingJobs).set({ status: "complete", stage: "complete", completedAt: new Date(), updatedAt: new Date(), metadata: JSON.stringify({ engine: "demucs", model: payload.model, resolvedDevice: result.resolvedDevice, outputCount: values.length }) }).where(eq(processingJobs.id, job.id));
     });
+    completed = true;
     await reportStage("complete");
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown separation failure.";
     await updateJob(job.id, { status: "failed", stage: "failed", errorCode: "separation_failed", errorMessage: message, completedAt: new Date() });
     throw error;
   } finally {
+    if (!completed) {
+      await Promise.allSettled(uploadedKeys.map((key) => storage.delete(key)));
+    }
     await rm(tempDirectory, { recursive: true, force: true });
   }
 }

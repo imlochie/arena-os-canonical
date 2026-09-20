@@ -15,6 +15,8 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   let temporaryDirectory: string | undefined;
+  let storedKey: string | undefined;
+  let persisted = false;
   try {
     const user = await requireUser();
     const form = await request.formData();
@@ -36,17 +38,22 @@ export async function POST(request: Request) {
     const checksum = await checksumFile(localUpload);
     const storageKey = privateObjectKey(projectId, "source", extname(cleanName));
     await getStorage().putFile(storageKey, localUpload, upload.type || "application/octet-stream");
+    storedKey = storageKey;
 
     const db = getDb();
-    const [source] = await db.insert(sourceAssets).values({
-      projectId, originalFilename: cleanName, mimeType: upload.type || "application/octet-stream", storageKey, checksumSha256: checksum,
-      durationSeconds: Math.round(metadata.durationSeconds), sampleRate: metadata.sampleRate, channels: metadata.channels,
-      codec: metadata.codec, bitrate: metadata.bitrate, fileSizeBytes: metadata.sizeBytes,
-    }).returning();
-    const [job] = await db.insert(processingJobs).values({
-      projectId, sourceAssetId: source.id, type: "separation", status: "queued", stage: "queued", idempotencyKey: `separation:${source.id}:${requestedModel}`,
-      model: requestedModel, requestedDevice,
-    }).returning();
+    const { source, job } = await db.transaction(async (tx) => {
+      const [createdSource] = await tx.insert(sourceAssets).values({
+        projectId, originalFilename: cleanName, mimeType: upload.type || "application/octet-stream", storageKey, checksumSha256: checksum,
+        durationSeconds: Math.round(metadata.durationSeconds), sampleRate: metadata.sampleRate, channels: metadata.channels,
+        codec: metadata.codec, bitrate: metadata.bitrate, fileSizeBytes: metadata.sizeBytes,
+      }).returning();
+      const [createdJob] = await tx.insert(processingJobs).values({
+        projectId, sourceAssetId: createdSource.id, type: "separation", status: "queued", stage: "queued", idempotencyKey: `separation:${createdSource.id}:${requestedModel}`,
+        model: requestedModel, requestedDevice,
+      }).returning();
+      return { source: createdSource, job: createdJob };
+    });
+    persisted = true;
     try {
       await enqueueSeparation({ processingJobId: job.id, projectId, sourceAssetId: source.id, model: requestedModel, requestedDevice: requestedDevice as "auto" | "cpu" | "cuda" });
     } catch (queueError) {
@@ -61,6 +68,7 @@ export async function POST(request: Request) {
     console.error("upload failed", error);
     return NextResponse.json({ error: "Upload failed before processing started." }, { status: 500 });
   } finally {
+    if (storedKey && !persisted) await getStorage().delete(storedKey).catch(() => undefined);
     if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true });
   }
 }
