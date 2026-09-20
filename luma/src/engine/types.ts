@@ -220,6 +220,8 @@ export interface EditRecipe {
   /** Manual adjustment offsets layered on top of the preset. */
   adjustments: Adjustments;
   crop: Crop;
+  /** Cached local source analysis used consistently by preview and export. */
+  analysis?: import('./adaptive').ImageAnalysis;
   /** Advanced effects, reserved for future versions. */
   advanced?: AdvancedEffects;
 }

@@ -36,6 +36,7 @@ import { haptic } from '../../src/ui/haptics';
 import { EMPTY_RECIPE } from '../../src/engine/types';
 import { CAMERAS, DEFAULT_CAMERA_ID, getCamera } from '../../src/cameras/catalog';
 import { getBuiltInPreset } from '../../src/presets/library';
+import { analyzeSourceImage } from '../../src/engine/adaptiveNative';
 import { palette, layout, radius, spacing, typography } from '../../src/theme/tokens';
 
 type CycleFlash = 'off' | 'auto' | 'on';
@@ -82,7 +83,14 @@ export default function CameraScreen() {
   }, [permission, requestPermission]);
 
   const openEditorWith = useCallback(
-    (uri: string, w: number, h: number, assetId?: string) => {
+    async (uri: string, w: number, h: number, assetId?: string) => {
+      let analysis;
+      try {
+        analysis = await analyzeSourceImage(uri);
+      } catch {
+        // Analysis is an optimization; editing still works if a decoder fails.
+        analysis = undefined;
+      }
       beginSession(
         { uri, width: w, height: h, assetId },
         {
@@ -92,6 +100,7 @@ export default function CameraScreen() {
             crop: { ...EMPTY_RECIPE.crop },
             presetId: cameraLookId,
             presetIntensity: lookPreset?.defaultIntensity ?? 1,
+            analysis,
           },
         },
       );

@@ -30,7 +30,8 @@ import {
 } from '@shopify/react-native-skia';
 
 import { getEngine } from '../../engine';
-import { composeEffectiveAdjustments } from '../../engine/adjustments';
+import { addAdjustments, clampAdjustments, composeEffectiveAdjustments } from '../../engine/adjustments';
+import { resolveAdaptiveLook } from '../../engine/adaptive';
 import { EditRecipe, NEUTRAL_ADJUSTMENTS, Preset } from '../../engine/types';
 import { GRAIN_OVERLAY_SHADER } from '../../engine/shaders';
 import { palette } from '../../theme/tokens';
@@ -66,7 +67,14 @@ export function PhotoRenderer({
   const engine = getEngine();
 
   const adj = useMemo(
-    () => (showOriginal ? NEUTRAL_ADJUSTMENTS : composeEffectiveAdjustments(recipe, preset)),
+    () => {
+      if (showOriginal) return NEUTRAL_ADJUSTMENTS;
+      if (preset && recipe.analysis) {
+        const adaptive = resolveAdaptiveLook(preset, recipe.analysis, recipe.presetIntensity).adjustments;
+        return clampAdjustments(addAdjustments(adaptive, recipe.adjustments));
+      }
+      return composeEffectiveAdjustments(recipe, preset);
+    },
     [recipe, preset, showOriginal],
   );
   const matrix = useMemo(() => engine.computeColorMatrix(adj), [adj, engine]);

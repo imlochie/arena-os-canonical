@@ -75,7 +75,9 @@ export class SkiaProcessingEngine implements ProcessingEngine {
     } = require('@shopify/react-native-skia');
     const FileSystem = require('expo-file-system/legacy');
 
-    const analysis = preset ? await analyzeSourceImage(source.uri) : null;
+    const analysis = preset
+      ? recipe.analysis ?? (await analyzeSourceImage(source.uri))
+      : null;
     const adaptive = preset && analysis
       ? resolveAdaptiveLook(preset, analysis, recipe.presetIntensity).adjustments
       : null;
