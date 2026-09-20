@@ -183,7 +183,7 @@ const MATERIAL_EVENTS = new Set([
 export async function campusBriefing(now: Date = new Date()): Promise<CampusBriefing> {
   const [temporal, live, external, governance] = await Promise.all([
     resolveTemporalState(now),
-    liveCollegeState(),
+    liveCollegeState(now),
     externalAcademicPicture(now),
     governanceQueue(),
   ]);

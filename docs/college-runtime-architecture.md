@@ -1147,6 +1147,17 @@ anything. Do not open with obligations or a backlog."*
 question against a different clock and changes nothing, so "what would you say
 if I disappeared for three weeks?" is answerable before it happens.
 
+The clock is threaded all the way down — `liveCollegeState(at)` and
+`livePosition(date, at)` both accept it — so a simulated arrival moves the
+timetable position too. Without that, the briefing would report a three-week
+absence beside today's real timetable and quietly contradict itself:
+
+| simulated arrival | resolves to |
+|---|---|
+| Monday 2026-10-05 09:00 | no active class (before the first slot) |
+| Monday 2026-10-05 10:30 | Launch Sequence, next Bedroom reset |
+| Monday 2026-10-05 14:30 | LOCO PRØD, next Gym / Movement |
+
 ## C. Material change versus routine activity
 
 A class running is **activity**. A curriculum changing is **material**. Without
@@ -1205,5 +1216,7 @@ idempotent. Layer 6 still 28/28. Total across Layers 5–7: **68 assertions**.
 2. External commitments are recorded manually. There is no provider
    integration, and there should not be one until the founder asks: the
    College would then be asserting facts it cannot verify.
-3. The briefing reads `liveCollegeState()`, which uses the real clock, so the
-   `?at=` simulation moves temporal state but not the timetable position.
+3. External commitments carry no recurrence. A weekly TAFE class has to be
+   recorded as one commitment, not as a repeating slot — deliberate for now,
+   since the recurring-timetable machinery belongs to the College's own
+   activities and should not silently absorb another institution's schedule.

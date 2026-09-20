@@ -54,12 +54,19 @@ export interface LiveCollegeState {
   note: string;
 }
 
-export async function liveCollegeState(): Promise<LiveCollegeState> {
-  const now = brisbaneNow();
+/**
+ * `at` resolves the live state AS IF it were another moment. It changes no
+ * record — it re-asks the question against a different clock, the same
+ * discipline as Layer 6 replay. Without it, Layer 7's `?at=` would move
+ * temporal state while leaving the timetable stuck on the real day, which
+ * would be a briefing that quietly contradicts itself.
+ */
+export async function liveCollegeState(at?: Date): Promise<LiveCollegeState> {
+  const now = brisbaneNow(at);
   const hhmm = `${String(now.hour).padStart(2, "0")}:${String(now.minute).padStart(2, "0")}`;
   const nowMinutes = now.hour * 60 + now.minute;
 
-  const position = await livePosition();
+  const position = await livePosition(now.isoDate, at);
 
   // ---- IS A SESSION ACTUALLY RUNNING? ------------------------------------
   // Running means a session row says so. Not "the clock is between two times".

@@ -455,8 +455,8 @@ export interface LivePosition {
  * Where the College is right now, from the application clock — never from
  * conversational memory.
  */
-export async function livePosition(atIso?: string): Promise<LivePosition> {
-  const now = brisbaneNow();
+export async function livePosition(atIso?: string, at?: Date): Promise<LivePosition> {
+  const now = brisbaneNow(at);
   const date = atIso ?? now.isoDate;
   const day = await resolveDay(date);
   const nowMinutes = now.hour * 60 + now.minute;
