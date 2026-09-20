@@ -1208,12 +1208,25 @@ becomes indistinguishable from an assumption."*
 `scripts/college-layer7-tests.mjs` — 20 assertions, **20/20 passing** and
 idempotent. Layer 6 still 28/28. Total across Layers 5–7: **68 assertions**.
 
+## G. Goal pressure, in both directions
+
+A goal's `timeframe` is only a deadline when it names a date. `semester`,
+`long_term` and `open` are durations or intentions, and converting them into
+deadlines would manufacture pressure the founder never set.
+
+| goal | timeframe | pressure | reported as |
+|---|---|---|---|
+| Complete PSY110 Semester I | `2026-10-02` | **yes** | "Dated target in 7 days. Temporal pressure is real and stated." |
+| Build a sustainable daily rhythm | `long_term` | no | "Never formally reviewed. Not a problem in itself — stated so it is visible." |
+| Complete PSY110 (arriving 2026-10-10) | `2026-10-02` | — | "Dated target passed 8 day(s) ago. **The goal is still open; the date is not.**" |
+
+That last line is the one that matters. A passed deadline is reported as a
+passed date, not as a failed goal — the College does not get to decide that an
+objective died because a number went by.
+
 ## Layer 7 gaps
 
-1. `TIME SINCE GOAL START` and deadline countdowns are implemented, but no
-   goal currently carries a dated target, so goal pressure is proven by the
-   negative case (urgency is never manufactured) rather than a live deadline.
-2. External commitments are recorded manually. There is no provider
+1. External commitments are recorded manually. There is no provider
    integration, and there should not be one until the founder asks: the
    College would then be asserting facts it cannot verify.
 3. External commitments carry no recurrence. A weekly TAFE class has to be

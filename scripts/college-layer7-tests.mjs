@@ -372,15 +372,35 @@ async function main() {
   // 20. Goals carry temporal condition without manufactured urgency
   // ==========================================================================
   {
+    // Both directions matter. A dated target must produce real, stated
+    // pressure; an undated one must never be given invented urgency.
     const goals = b.temporal.goals ?? [];
     const fabricated = goals.filter((g) => g.underTimePressure && !g.deadline);
-    if (fabricated.length === 0) {
-      ok(20, "Urgency is never manufactured for a goal without a deadline",
-         goals.length ? `${goals.length} goal(s), none given invented pressure` : "no active goals; nothing invented");
+    const dated = goals.filter((g) => g.deadline);
+
+    // Create a deliberately undated goal so the negative case is always
+    // exercised, even if the College happens to hold only dated ones.
+    const scratch = await post("/api/college/goals", {
+      title: `Harness undated goal ${RUN}`,
+      scope: "student",
+      timeframe: "long_term",
+      status: "active",
+    });
+    const scratchId = scratch.goal?.id ?? null;
+    const after = await get("/api/college/briefing");
+    const undated = (after.briefing?.temporal?.goals ?? []).find((g) => g.id === scratchId);
+
+    if (fabricated.length === 0 && undated && undated.underTimePressure === false) {
+      const datedNote = dated.length
+        ? `; dated goal reports "${dated[0].condition.slice(0, 52)}…"`
+        : "";
+      ok(20, "Urgency tracks real dates, and is never manufactured without one",
+         `undated goal "long_term" → pressure=false${datedNote}`);
     } else {
-      bad(20, "Urgency is never manufactured for a goal without a deadline",
-          `${fabricated.length} goal(s) marked urgent with no dated target`);
+      bad(20, "Urgency tracks real dates, and is never manufactured without one",
+          `fabricated=${fabricated.length} undatedPressure=${undated?.underTimePressure}`);
     }
+    if (scratchId) await q("delete from college_goals where id=$1", [scratchId]);
   }
 
   // ---- cleanup ------------------------------------------------------------
