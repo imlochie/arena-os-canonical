@@ -47,6 +47,21 @@ const patch = jsonCall("PATCH");
 const pool = new pg.Pool({ connectionString: DB });
 const q = async (sql, params = []) => (await pool.query(sql, params)).rows;
 
+/**
+ * Remove this run's fixtures and un-park the caller's real commitments.
+ * MUST run even when an assertion throws: an earlier version only cleaned up
+ * on the happy path, so a crash at test 18 left five real commitments parked
+ * as inactive and the Campus quietly under-reporting. A test harness that can
+ * silently alter the state it is inspecting is worse than no harness.
+ */
+async function cleanup(parked) {
+  await q("delete from college_commitments where statement like $1", [`${TAG}%`]);
+  await q("delete from college_event_ledger where summary like $1", [`%${TAG}%`]);
+  for (const p of parked) {
+    await q("update college_commitments set active=true where id=$1", [p.id]);
+  }
+}
+
 const mk = async (statement, extra = {}) => {
   const r = await post("/api/college/commitments", { statement, ...extra });
   return r.commitment?.id ?? null;
@@ -54,11 +69,13 @@ const mk = async (statement, extra = {}) => {
 const close = (id, status, extra = {}) =>
   post("/api/college/commitments", { action: "close", id, status, ...extra });
 
+let parked = [];
+
 async function main() {
   console.log("\n\x1b[1mLAYER 8 — BOUNDED ACCOUNTABILITY\x1b[0m\n");
 
   // Park pre-existing commitments so counts are deterministic, then restore.
-  const parked = await q(
+  parked = await q(
     "update college_commitments set active=false where active=true returning id"
   );
 
@@ -465,12 +482,7 @@ async function main() {
     }
   }
 
-  // ---- cleanup -------------------------------------------------------------
-  await q("delete from college_commitments where statement like $1", [`${TAG}%`]);
-  await q("delete from college_event_ledger where summary like $1", [`%${TAG}%`]);
-  for (const p of parked) {
-    await q("update college_commitments set active=true where id=$1", [p.id]);
-  }
+  await cleanup(parked);
 
   console.log(`\n\x1b[1m${passed} passed, ${failures.length} failed\x1b[0m\n`);
   if (failures.length) {
@@ -485,6 +497,9 @@ async function main() {
 main().catch(async (e) => {
   console.error("Test harness error:", e.message);
   console.error(e.stack);
+  // Restore before dying, or the harness corrupts the state it was inspecting.
+  await cleanup(parked).catch((c) => console.error("cleanup failed:", c.message));
+  console.error(`Restored ${parked.length} parked commitment(s).`);
   await pool.end().catch(() => {});
   process.exit(1);
 });
