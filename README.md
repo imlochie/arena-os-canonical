@@ -26,6 +26,12 @@ The preserved implementation is a Next.js 16 / React 19 / PostgreSQL application
 
 These are valuable experiments, not a claim that the current app satisfies the canonical specification. There is no authentication, no server-side authorization, no worker, no durable provider registry, no file subsystem, no user-scoped privacy model, and no test suite. See [REBUILD.md](./REBUILD.md) for the audited classification and [SECURITY.md](./SECURITY.md) before exposing the current implementation to untrusted users.
 
+## Stem Lab integration
+
+Stem Lab is an Arena module at `/stems`, linked from normal Arena navigation and project workspaces. It is intentionally an adapter rather than a replacement application: if `STEM_WORKER_URL` is unset or its real worker is unavailable, the UI reports that state and disables submission. It does not generate fake stems, waveforms, progress, or downloads.
+
+A configured worker must expose `GET /health` and `POST /v1/separations`; Arena forwards the selected source upload only to that configured self-hosted worker. Durable stem storage, job records, playback synchronization, and the Demucs worker deployment remain unimplemented in this current Arena codebase and are not represented as complete.
+
 ## Canonical direction
 
 The rebuild is designed around:

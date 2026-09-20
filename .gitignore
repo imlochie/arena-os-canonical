@@ -8,3 +8,6 @@ node_modules/
 
 # TypeScript incremental build metadata
 *.tsbuildinfo
+
+# Nested Next build output
+**/.next/

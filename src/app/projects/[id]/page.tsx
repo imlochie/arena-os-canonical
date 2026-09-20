@@ -105,6 +105,7 @@ export default function ProjectPage() {
           <a href={`/council?projectId=${p.id}`} className="rounded-xl bg-cyan-600/80 px-3 py-2 text-xs font-extrabold text-white hover:bg-cyan-600">🧠 Council</a>
           <a href={`/?projectId=${p.id}`} className="rounded-xl bg-violet-600/80 px-3 py-2 text-xs font-extrabold text-white hover:bg-violet-600">⚔️ Battle</a>
           <a href={`/collab?projectId=${p.id}`} className="rounded-xl bg-emerald-600/80 px-3 py-2 text-xs font-extrabold text-white hover:bg-emerald-600">🤝 Collab</a>
+          <a href={`/stems?projectId=${p.id}`} className="rounded-xl bg-fuchsia-600/80 px-3 py-2 text-xs font-extrabold text-white hover:bg-fuchsia-600">🎚️ Stems</a>
           <a href={`/chat?projectId=${p.id}`} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-bold text-white hover:bg-white/10">💬 Chat</a>
         </div>
       </div>
