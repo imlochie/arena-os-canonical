@@ -3,6 +3,7 @@ import { collegeInstitutionalDecisions, collegeReconciliations } from "@/db/coll
 import { desc, eq } from "drizzle-orm";
 import { brisbaneToday } from "@/lib/college/time";
 import * as ledger from "@/lib/college/ledger";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,10 @@ export const dynamic = "force-dynamic";
  * College now has a stated position, and the operational state follows the
  * position rather than sitting frozen.
  */
-export async function GET() {
+export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const [conflicts, decisions] = await Promise.all([
       db.select().from(collegeReconciliations).orderBy(desc(collegeReconciliations.lastSeenAt)),
@@ -65,6 +69,9 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const _g = await guard(req, "institutional_decision");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const decisionType = String(body.decisionType ?? "");

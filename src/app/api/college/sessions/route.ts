@@ -9,11 +9,15 @@ import { desc, eq } from "drizzle-orm";
 import { deriveFacultyComposition, getSessionKind } from "@/lib/college/faculty";
 import { computeCollegeState } from "@/lib/college/state";
 import { brisbaneToday } from "@/lib/college/time";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → sessions, newest first. ?id= returns one with its full trail.
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
@@ -55,6 +59,9 @@ export async function GET(req: Request) {
 // POST → open a session. Faculty composition is DERIVED from the session kind
 // and current circumstances, not hardcoded.
 export async function POST(req: Request) {
+  const _g = await guard(req, "run_session");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const sessionKind = String(body.sessionKind ?? "lesson");
@@ -112,6 +119,9 @@ export async function POST(req: Request) {
 
 // PATCH → advance the lifecycle or close the session. Appends to the trail.
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "run_session");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const id = String(body.id ?? "");

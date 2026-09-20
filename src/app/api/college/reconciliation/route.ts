@@ -1,10 +1,14 @@
 import { listConflicts, resolveConflict } from "@/lib/college/reconciliation";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → institutional reconciliation state. A conflict persists as state until
 // an explicit institutional act closes it.
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const status = url.searchParams.get("status") ?? undefined;
@@ -19,6 +23,9 @@ export async function GET(req: Request) {
 // PATCH → resolve / acknowledge a conflict. Requires a stated resolution and
 // its provenance; the College does not close disagreements by assertion.
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "institutional_decision");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const id = String(body.id ?? "");

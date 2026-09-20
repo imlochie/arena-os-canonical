@@ -30,11 +30,15 @@ import { assessRecordWorthiness } from "@/lib/college/registrar";
 import { recordSessionMembers, resolveFacultyForContext } from "@/lib/college/members";
 import { enterPhase } from "@/lib/college/orchestrator";
 import * as ledger from "@/lib/college/ledger";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 export async function POST(req: Request) {
+  const _g = await guard(req, "run_session");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const sessionKind = String(body.sessionKind ?? "lesson");

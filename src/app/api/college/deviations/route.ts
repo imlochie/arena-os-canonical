@@ -1,11 +1,15 @@
 import { db } from "@/db";
 import { collegeDeviations } from "@/db/college";
 import { desc, eq } from "drizzle-orm";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → timetable-vs-reality deviations.
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const resolution = url.searchParams.get("resolution");
@@ -24,6 +28,9 @@ export async function GET(req: Request) {
 // Recording a deviation does NOT decide the institutional response and does
 // NOT mark the timetable wrong. Adjustment is a separate, explicit act.
 export async function POST(req: Request) {
+  const _g = await guard(req, "capture_evidence");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const scheduledState = String(body.scheduledState ?? "").trim();
@@ -65,6 +72,9 @@ export async function POST(req: Request) {
 // PATCH → decide the institutional response (the "therefore Z" step).
 // Requires a decision basis: the system never invents the response itself.
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "capture_evidence");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const id = String(body.id ?? "");

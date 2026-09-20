@@ -3,6 +3,7 @@ import { brisbaneToday } from "@/lib/college/time";
 import { db } from "@/db";
 import { collegeNotifications } from "@/db/college";
 import { desc } from "drizzle-orm";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,9 @@ export const dynamic = "force-dynamic";
  *   ?view=notifications what actually deserves the founder's attention
  */
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const view = url.searchParams.get("view");
@@ -63,6 +67,9 @@ export async function GET(req: Request) {
 
 /** Record a real-world context signal, or configure notification behaviour. */
 export async function POST(req: Request) {
+  const _g = await guard(req, "institutional_decision");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const action = String(body.action ?? "record");

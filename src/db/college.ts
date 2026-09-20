@@ -1383,3 +1383,59 @@ export const collegeAccountabilitySettings = pgTable("college_accountability_set
 export type CollegeCommitmentRow = typeof collegeCommitments.$inferSelect;
 export type CollegeAccountabilitySettingsRow =
   typeof collegeAccountabilitySettings.$inferSelect;
+
+// ===========================================================================
+// LAYER 9 — INSTITUTIONAL SURFACES AND DEVICE IDENTITY
+// ===========================================================================
+// The College is about to be reachable from a phone over the public internet.
+// Until now every route was open, which was survivable only because nothing
+// but localhost could reach it.
+//
+// The model deliberately mirrors the Faculty authority model rather than
+// inventing a second one: a SURFACE has a ceiling, configuration may only
+// SUBTRACT from it, and no credential can grant authority the surface does
+// not structurally hold. The phone is another institutional surface, not
+// another institution.
+// ===========================================================================
+
+/** A paired client. One row per physical device that may talk to the College. */
+export const collegeDevices = pgTable("college_devices", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** Human label, e.g. "Lochie's iPhone". Shown in the Control Room. */
+  name: text("name").notNull(),
+  /**
+   * Which institutional surface this device is. The ceiling is derived from
+   * this and cannot be widened per-device.
+   *   campus       — the phone. Inhabits the institution.
+   *   control_room — desktop. Administers the institution.
+   */
+  surface: text("surface").notNull().default("campus"),
+  /** SHA-256 of the bearer token. The token itself is shown exactly once. */
+  tokenHash: text("token_hash").notNull(),
+  /** Last 6 chars of the token, so a device is identifiable without storing it. */
+  tokenHint: text("token_hint").notNull().default(""),
+  platform: text("platform").notNull().default("unknown"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  lastSeenAt: timestamp("last_seen_at"),
+  /** Revocation is immediate and permanent. A lost phone is a real scenario. */
+  revokedAt: timestamp("revoked_at"),
+  revokedReason: text("revoked_reason").notNull().default(""),
+});
+
+/**
+ * Short-lived pairing codes. The phone never sees a long-lived secret until
+ * it has proved it was physically handed a code by someone at the Control
+ * Room, which is the only enrolment authority that exists.
+ */
+export const collegePairingCodes = pgTable("college_pairing_codes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  code: text("code").notNull().unique(),
+  surface: text("surface").notNull().default("campus"),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  usedByDeviceId: uuid("used_by_device_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type CollegeDevice = typeof collegeDevices.$inferSelect;
+export type CollegePairingCode = typeof collegePairingCodes.$inferSelect;

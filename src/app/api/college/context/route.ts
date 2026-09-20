@@ -1,11 +1,15 @@
 import { db } from "@/db";
 import { collegeContextSignals } from "@/db/college";
 import { desc, eq } from "drizzle-orm";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → declared real-world conditions currently in effect.
-export async function GET() {
+export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const rows = await db
       .select()
@@ -24,6 +28,9 @@ export async function GET() {
 // is told or what is filed. It does not infer hidden conditions, and this is
 // contextual reasoning rather than surveillance.
 export async function POST(req: Request) {
+  const _g = await guard(req, "capture_evidence");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const content = String(body.content ?? "").trim();
@@ -51,6 +58,9 @@ export async function POST(req: Request) {
 
 // PATCH → retire a condition that no longer applies.
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "capture_evidence");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const id = String(body.id ?? "");

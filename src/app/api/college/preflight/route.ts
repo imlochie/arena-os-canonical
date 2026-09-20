@@ -10,10 +10,14 @@
 // ============================================================================
 
 import { preflightClass, renderPreflight } from "@/lib/college/class-runtime";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const preflight = await preflightClass({

@@ -6,11 +6,15 @@ import {
   fileRecord,
   proposeRecord,
 } from "@/lib/college/registrar";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → institutional record. ?status=filed|proposed|superseded
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const status = url.searchParams.get("status");
@@ -29,6 +33,9 @@ export async function GET(req: Request) {
 // POST → Registrar proposes a record (never files it).
 // Record-worthiness is tested first: routine working material is refused.
 export async function POST(req: Request) {
+  const _g = await guard(req, "institutional_decision");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const subject = String(body.subject ?? "").trim();
@@ -95,6 +102,9 @@ export async function POST(req: Request) {
 
 // PATCH → file a proposed record. This is the institutional act.
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "institutional_decision");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const id = String(body.id ?? "");

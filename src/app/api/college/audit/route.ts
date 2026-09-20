@@ -14,6 +14,7 @@ import { db } from "@/db";
 import { collegeAuditThresholds, collegeIntents } from "@/db/college";
 import { desc } from "drizzle-orm";
 import { addDays, brisbaneToday } from "@/lib/college/time";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,9 @@ export const dynamic = "force-dynamic";
 //   ?compare=1&aStart=&aEnd=&bStart=&bEnd=
 //   ?view=history
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const view = url.searchParams.get("view");
@@ -83,6 +87,9 @@ export async function GET(req: Request) {
 
 // POST → record an audit decision, set an intent, or configure thresholds.
 export async function POST(req: Request) {
+  const _g = await guard(req, "institutional_decision");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const action = String(body.action ?? "decide");

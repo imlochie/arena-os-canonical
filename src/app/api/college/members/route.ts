@@ -24,6 +24,7 @@ import { FACULTY_POSITIONS } from "@/lib/college/faculty";
 import { db } from "@/db";
 import { collegeFacultyAssignments } from "@/db/college";
 import { desc } from "drizzle-orm";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,9 @@ export const dynamic = "force-dynamic";
 //   ?id=            one member with its version history
 //   ?validate=1     roster validation for a session context
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
@@ -93,6 +97,9 @@ export async function GET(req: Request) {
 
 // POST → create | from_preset | duplicate | assign
 export async function POST(req: Request) {
+  const _g = await guard(req, "configure_faculty");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const action = String(body.action ?? "create");
@@ -204,6 +211,9 @@ export async function POST(req: Request) {
 
 // PATCH → edit a member, or change its status. Never deletes.
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "configure_faculty");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const id = String(body.id ?? "");
@@ -234,7 +244,10 @@ export async function PATCH(req: Request) {
 }
 
 // DELETE → refused by design.
-export async function DELETE() {
+export async function DELETE(req: Request) {
+  const _g = await guard(req, "configure_faculty");
+  if (!_g.ok) return refuse(_g);
+
   return Response.json(
     {
       error:

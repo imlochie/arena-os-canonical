@@ -10,8 +10,12 @@
 // ============================================================================
 
 import { campusBriefing, renderBriefing } from "@/lib/college/campus-briefing";
+import { guard, refuse } from "@/lib/college/guard";
 
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
 

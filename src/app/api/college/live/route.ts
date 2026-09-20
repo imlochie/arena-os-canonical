@@ -7,10 +7,14 @@
 // ============================================================================
 
 import { liveCollegeState, renderLiveState } from "@/lib/college/live-state";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const state = await liveCollegeState();
     if (new URL(req.url).searchParams.get("format") === "text") {

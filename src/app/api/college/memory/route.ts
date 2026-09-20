@@ -2,11 +2,15 @@ import { db } from "@/db";
 import { collegeMemory, collegeMemoryEvidence } from "@/db/college";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { canPromote, type EpistemicStatus } from "@/lib/college/truth";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → educational memory. ?scope= ?status= ?type=
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const scope = url.searchParams.get("scope");
@@ -35,6 +39,9 @@ export async function GET(req: Request) {
 // POST → record an observation from teaching. Always enters at the lowest
 // epistemic rung unless explicitly justified; never auto-promoted to truth.
 export async function POST(req: Request) {
+  const _g = await guard(req, "institutional_decision");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const content = String(body.content ?? "").trim();
@@ -80,6 +87,9 @@ export async function POST(req: Request) {
 // PATCH → corroborate or promote. The institution must be able to explain why
 // its teaching approach changed, so promotion is gated and evidence-linked.
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "institutional_decision");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const id = String(body.id ?? "");

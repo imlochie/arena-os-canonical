@@ -10,11 +10,15 @@ import {
 } from "@/lib/college/orchestrator";
 import { deferIfOutOfRemit } from "@/lib/college/coordination";
 import type { AttentionPriority } from "@/lib/college/attention";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → consultations, handoffs and the full coordination trace for a session.
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const sessionId = url.searchParams.get("sessionId");
@@ -55,6 +59,9 @@ export async function GET(req: Request) {
 //   action=handoff   deliberate transfer of responsibility
 //   action=settle    the receiving position accepts / defers / refuses
 export async function POST(req: Request) {
+  const _g = await guard(req, "run_session");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const action = String(body.action ?? "consult");

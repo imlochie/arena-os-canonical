@@ -16,12 +16,16 @@ import { collegeExternalCommitments } from "@/db/college";
 import { externalAcademicPicture } from "@/lib/college/external-academic";
 import * as ledger from "@/lib/college/ledger";
 import { brisbaneToday } from "@/lib/college/time";
+import { guard, refuse } from "@/lib/college/guard";
 
 const TYPES = ["course", "unit", "assessment", "placement", "exam", "class", "admin"];
 const STATUSES = ["active", "upcoming", "completed", "withdrawn", "unknown"];
 const EVIDENCE = ["reported", "documented", "verified"];
 
-export async function GET() {
+export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const picture = await externalAcademicPicture();
     return Response.json(picture);
@@ -34,6 +38,9 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const _g = await guard(req, "record_external");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json().catch(() => ({}));
     const action = String(body.action ?? "record");

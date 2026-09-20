@@ -19,6 +19,7 @@ import {
   enterPhase,
 } from "@/lib/college/orchestrator";
 import { resolveProtocol } from "@/lib/college/protocol";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,9 @@ export const dynamic = "force-dynamic";
 //   /api/college/attention                 → policies, phases, events, states
 //   /api/college/attention?sessionId=...   → who is attending, and why
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const sessionId = url.searchParams.get("sessionId");
@@ -71,6 +75,9 @@ export async function GET(req: Request) {
 //   action=interrupt   attempt an interruption (refusals are recorded)
 //   action=check       ask whether a matter is within a position's remit
 export async function POST(req: Request) {
+  const _g = await guard(req, "run_session");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const action = String(body.action ?? "emit");

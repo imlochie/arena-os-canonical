@@ -7,6 +7,7 @@ import {
   type FacultyMemoryKind,
 } from "@/lib/college/faculty-memory";
 import { effectivePolicies } from "@/lib/college/attention-resolver";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,9 @@ export const dynamic = "force-dynamic";
  * institution holds to be true.
  */
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const positionKey = url.searchParams.get("positionKey");
@@ -50,6 +54,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const _g = await guard(req, "configure_faculty");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const action = String(body.action ?? "remember");

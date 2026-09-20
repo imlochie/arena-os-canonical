@@ -1,11 +1,15 @@
 import { db } from "@/db";
 import { collegeTimetableSlots } from "@/db/college";
 import { asc, eq } from "drizzle-orm";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → the scheduled intent (what SHOULD be happening).
-export async function GET() {
+export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const rows = await db
       .select()
@@ -26,6 +30,9 @@ export async function GET() {
 // POST → declare a timetable slot. Confidence must be stated honestly so the
 // state engine can distinguish an established slot from a provisional one.
 export async function POST(req: Request) {
+  const _g = await guard(req, "edit_timetable");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const dayOfWeek = Number(body.dayOfWeek);
@@ -60,6 +67,9 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const _g = await guard(req, "edit_timetable");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");

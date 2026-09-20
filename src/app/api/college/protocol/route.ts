@@ -9,11 +9,15 @@ import { SESSION_PHASES } from "@/lib/college/attention";
 import { db } from "@/db";
 import { collegeFacultyProtocols } from "@/db/college";
 import { desc } from "drizzle-orm";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → the protocol governing a course (or the College default).
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const courseId = url.searchParams.get("courseId");
@@ -44,6 +48,9 @@ export async function GET(req: Request) {
 
 // POST → declare a course's faculty protocol.
 export async function POST(req: Request) {
+  const _g = await guard(req, "institutional_decision");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const reason = String(body.reason ?? "").trim();

@@ -1,4 +1,5 @@
 import { computeCollegeState, snapshotCollegeState } from "@/lib/college/state";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
@@ -6,6 +7,9 @@ export const dynamic = "force-dynamic";
 // itself, recomputed from persistent state (never from model memory).
 // ?snapshot=1 also persists an auditable snapshot.
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const state = await computeCollegeState();

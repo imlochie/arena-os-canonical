@@ -2,11 +2,15 @@ import { db } from "@/db";
 import { collegeFormativeEvidence } from "@/db/college";
 import { desc, eq } from "drizzle-orm";
 import { recordFormativeEvidence } from "@/lib/college/teaching";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → formative evidence. Never formal attainment.
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const sessionId = url.searchParams.get("sessionId");
@@ -28,6 +32,9 @@ export async function GET(req: Request) {
 
 // POST → record a formative observation about learning.
 export async function POST(req: Request) {
+  const _g = await guard(req, "capture_evidence");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const content = String(body.content ?? "").trim();

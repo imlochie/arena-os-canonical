@@ -19,12 +19,16 @@ import {
   snapshotCourse,
 } from "@/lib/college/curriculum";
 import { detectTimetableConflicts } from "@/lib/college/timetable";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → current curriculum, all known courses, health, versions, change log.
 // "Known" and "active" are deliberately separate lists.
-export async function GET() {
+export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const current = await getCurrentCurriculum();
     const health = await getCurriculumHealth();
@@ -58,6 +62,9 @@ export async function GET() {
 
 // POST → curriculum actions. Every mutation is an explicit institutional act.
 export async function POST(req: Request) {
+  const _g = await guard(req, "edit_curriculum");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const action = String(body.action ?? "");
@@ -309,6 +316,9 @@ export async function POST(req: Request) {
 // PATCH → edit a course or its weekly structure.
 // Snapshots first, so history keeps what the course meant before the edit.
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "edit_curriculum");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const courseId = String(body.courseId ?? "");

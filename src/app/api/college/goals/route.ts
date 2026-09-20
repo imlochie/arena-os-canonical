@@ -1,11 +1,15 @@
 import { db } from "@/db";
 import { collegeGoalLinks, collegeGoals } from "@/db/college";
 import { desc, eq } from "drizzle-orm";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 
 // GET → goals as living institutional state (never a productivity score).
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
@@ -25,6 +29,9 @@ export async function GET(req: Request) {
 
 // POST → create a goal with origin and purpose (not a checklist item).
 export async function POST(req: Request) {
+  const _g = await guard(req, "record_commitment");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const title = String(body.title ?? "").trim();
@@ -53,6 +60,9 @@ export async function POST(req: Request) {
 // PATCH → update status/progress, or link a goal to institutional activity so
 // the College can tell which activity serves which goal.
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "record_commitment");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const id = String(body.id ?? "");

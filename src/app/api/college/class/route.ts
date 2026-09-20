@@ -21,12 +21,16 @@ import {
   settleHandoff,
 } from "@/lib/college/orchestrator";
 import { runCoordinationWindow } from "@/lib/college/coordination";
+import { guard, refuse } from "@/lib/college/guard";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 // GET → orientation only. The College orients itself before any teaching.
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const courseId = url.searchParams.get("courseId");
@@ -63,6 +67,9 @@ export async function GET(req: Request) {
 //
 // Positions that are not relevant stay dormant. Attending is not speaking.
 export async function POST(req: Request) {
+  const _g = await guard(req, "run_session");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json();
     const sessionKind = String(body.sessionKind ?? "lesson");

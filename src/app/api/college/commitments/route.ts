@@ -22,12 +22,16 @@ import {
 } from "@/lib/college/accountability";
 import * as ledger from "@/lib/college/ledger";
 import { brisbaneToday } from "@/lib/college/time";
+import { guard, refuse } from "@/lib/college/guard";
 
 const TYPES = ["study_session", "task", "habit", "attendance", "submission", "preparation"];
 const CLOSE_STATUSES = ["completed", "missed", "deferred", "cancelled", "partial"];
 const REASON_KINDS = ["forgot", "chose_not_to", "circumstance", "unclear_task", "no_reason_given"];
 
 export async function GET(req: Request) {
+  const _g = await guard(req, "read_state");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const url = new URL(req.url);
     const at = url.searchParams.get("at");
@@ -53,6 +57,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const _g = await guard(req, "record_commitment");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json().catch(() => ({}));
     const action = String(body.action ?? "make");
@@ -193,6 +200,9 @@ export async function POST(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  const _g = await guard(req, "record_commitment");
+  if (!_g.ok) return refuse(_g);
+
   try {
     const body = await req.json().catch(() => ({}));
 
