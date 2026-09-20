@@ -15,6 +15,7 @@ const LINKS = [
   { href: "/arcade", label: "Arcade", emoji: "🎮" },
   { href: "/chat", label: "Chat", emoji: "💬" },
   { href: "/image", label: "Image", emoji: "🖼️" },
+  { href: "/luma", label: "LUMA", emoji: "◐" },
   { href: "/assistants", label: "Assistants", emoji: "🧬" },
   { href: "/leaderboard", label: "Board", emoji: "🏆" },
   { href: "/guide", label: "Guide", emoji: "📦" },
