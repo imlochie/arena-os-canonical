@@ -1524,4 +1524,16 @@ The client is deliberately thin. It holds no state the server doesn't hold and
 phrases nothing the server doesn't phrase — otherwise the phone becomes a
 second source of truth that can disagree with the first.
 
-`scripts/college-layer9-tests.mjs` — 14 assertions, self-cleaning.
+## §G. The health check refuses to lie
+
+`GET /api/health` reports liveness, and one thing more: if the request arrives
+from outside *and* `COLLEGE_AUTH_MODE` is not `strict`, it returns **503**
+instead of `200` with a caveat.
+
+An open API on a public hostname is the exact condition this layer exists to
+prevent, so it is not reported as a field to skim — a warning inside a `200`
+gets scrolled past, while a 503 stops a load balancer bringing the instance
+into service and fails any deploy check looking for a 2xx. Being loudly broken
+is safer than being quietly open. Loopback development is unaffected.
+
+`scripts/college-layer9-tests.mjs` — 17 assertions, self-cleaning.

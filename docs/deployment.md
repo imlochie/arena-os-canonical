@@ -100,8 +100,9 @@ while it doesn't matter.
 2. `DATABASE_URL=… npm run migrate`
 3. Deploy with `COLLEGE_AUTH_MODE=strict`.
 4. `curl https://your-domain/api/health` → expect `{"ok":true,"authMode":"strict"}`.
-   **If it says `development`, the environment variable did not reach the
-   process, and the College is open.**
+   **A public College with auth off returns HTTP 503 and refuses to report
+   healthy.** If you see that, stop and fix the environment variable before
+   going further — do not pair a device against it, do not seed it.
 5. Restore institutional state: `POST /api/college/bootstrap`, then
    `curriculum init` + `add_course`, `members from_preset` + `assign`,
    `timetable-live import_reference`. Bootstrap seeds canon only.
@@ -116,9 +117,26 @@ the database answers, nothing more. A health endpoint that runs business logic
 becomes a way to trigger business logic from outside.
 
 It is intentionally **unauthenticated**: monitoring cannot hold a device token.
-It exposes no connection string and no institutional state. It does report
-whether auth is `strict` or `development`, which is the single most useful
-thing to see from outside after a deploy.
+It exposes no connection string and no institutional state.
+
+It also refuses to lie. If the request arrives from outside *and*
+`COLLEGE_AUTH_MODE` is not `strict`, it returns **503** rather than `200` with
+a caveat in a field:
+
+```json
+{
+  "ok": false,
+  "status": "REFUSING TO REPORT HEALTHY",
+  "error": "This College is reachable from outside and COLLEGE_AUTH_MODE is not set to strict.",
+  "consequence": "Every College route is answering unauthenticated callers right now…",
+  "remedy": "Set COLLEGE_AUTH_MODE=strict in the environment and restart."
+}
+```
+
+This is deliberate. A warning inside a `200` is something you skim past at
+11pm; a 503 stops a load balancer bringing the instance into service and fails
+any deploy script checking for a 2xx. **Being loudly broken is safer than
+being quietly open.** Local development on loopback is unaffected.
 
 ---
 
@@ -136,6 +154,8 @@ After Layer 9:
 - tokens are stored as SHA-256 hashes
 - revocation takes effect on the next request
 
-**The one remaining footgun is `COLLEGE_AUTH_MODE`.** Unset, loopback gets
-Control Room authority with no token. That is correct for a laptop and
-catastrophic in public, which is why `/api/health` reports it.
+**The one remaining footgun was `COLLEGE_AUTH_MODE`.** Unset, loopback gets
+Control Room authority with no token — correct for a laptop, catastrophic in
+public. That is now self-detecting: a College reachable from outside without
+strict mode returns 503 from `/api/health` and names both the consequence and
+the fix.

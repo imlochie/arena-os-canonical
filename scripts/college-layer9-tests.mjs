@@ -245,6 +245,42 @@ async function main() {
     }
   }
 
+  // ==========================================================================
+  // 15-17. THE HEALTH CHECK IS A DEPLOYMENT RED LIGHT, NOT A FIELD TO SKIM
+  // ==========================================================================
+  {
+    // Local development must stay unaffected — this check exists to catch a
+    // misconfigured *deployment*, not to make laptop work ceremonial.
+    const local = await call("/api/health");
+    if (local.status === 200 && local.json?.ok === true) {
+      ok(15, "Local development still reports healthy",
+         `authMode "${local.json.authMode}", database ${local.json.database}`);
+    } else {
+      bad(15, "Local development still reports healthy", `${local.status} ${JSON.stringify(local.json)}`);
+    }
+
+    // The dangerous combination: reachable from outside AND not strict.
+    const exposed = await call("/api/health", { headers: REMOTE });
+    if (exposed.status === 503 && exposed.json?.ok === false) {
+      ok(16, "A publicly reachable College with auth off refuses to report healthy",
+         `HTTP 503 "${exposed.json.status}" — a load balancer will not bring it into service`);
+    } else {
+      bad(16, "A publicly reachable College with auth off refuses to report healthy",
+          `got ${exposed.status} ok=${exposed.json?.ok}`);
+    }
+
+    const body = exposed.json ?? {};
+    const saysWhy = /answering unauthenticated callers/i.test(body.consequence ?? "");
+    const saysFix = /COLLEGE_AUTH_MODE=strict/i.test(body.remedy ?? "");
+    if (saysWhy && saysFix) {
+      ok(17, "The refusal states the consequence and the remedy",
+         "names what is exposed and the exact variable to set");
+    } else {
+      bad(17, "The refusal states the consequence and the remedy",
+          `why=${saysWhy} fix=${saysFix}`);
+    }
+  }
+
   // ---- cleanup ------------------------------------------------------------
   await q("delete from college_pairing_codes where used_by_device_id in (select id from college_devices where name like $1) or code in (select code from college_pairing_codes where used_at is null and created_at > now() - interval '5 minutes')", [`${TAG}%`]);
   await q("delete from college_devices where name like $1", [`${TAG}%`]);
