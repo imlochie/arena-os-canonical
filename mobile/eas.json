@@ -1,0 +1,11 @@
+{
+  "cli": { "version": ">= 5.0.0" },
+  "build": {
+    "preview": {
+      "ios": { "simulator": false },
+      "distribution": "internal",
+      "channel": "preview"
+    },
+    "production": { "channel": "production" }
+  }
+}

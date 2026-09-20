@@ -1429,3 +1429,99 @@ where it is far easier to violate by accident.
 Silence is information. So is declining to ask for something.
 
 `scripts/college-layer8-tests.mjs` — 22 assertions, self-cleaning.
+
+---
+
+# LAYER 9 — INSTITUTIONAL SURFACES
+
+The College is about to be reachable from a phone. Everything in this layer
+exists because of one discovery made while planning the iOS client.
+
+## §A. What the inspection found
+
+The API had **no authentication of any kind**. Not weak authentication —
+none. 31 route groups, 25 of them accepting POST/PATCH/DELETE, 59 tables, and
+no credential check anywhere. Verified rather than assumed:
+
+```
+POST /api/college/bootstrap   → 201   (unauthenticated, reseeded the institution)
+```
+
+That call was a probe against the live system and it *worked*, injecting six
+stale faculty rows into the real roster. They were removed. This was survivable
+only because nothing but localhost could reach the server; a phone ends that
+immediately.
+
+## §B. Surfaces, not users
+
+There is one student. Building accounts, passwords and recovery flows would be
+the generic school-management application the founder rejected. Instead the
+College recognises **surfaces**, and the model deliberately reuses the shape of
+the Faculty authority system (§AUTHORITY) rather than inventing a second,
+differently-shaped permission system — because two permission models is how two
+institutions accidentally come into existence.
+
+| Capability | campus | control_room |
+|---|:--:|:--:|
+| `read_state` | ✅ | ✅ |
+| `run_session` | ✅ | ✅ |
+| `record_commitment` | ✅ | ✅ |
+| `capture_evidence` | ✅ | ✅ |
+| `record_external` | ✅ | ✅ |
+| `edit_curriculum` | ❌ | ✅ |
+| `edit_timetable` | ❌ | ✅ |
+| `configure_faculty` | ❌ | ✅ |
+| `institutional_decision` | ❌ | ✅ |
+| `bootstrap` | ❌ | ✅ |
+
+**The phone can be a student. It cannot be the institution.** The ceiling is
+derived from the surface, never stored per device, so there is no capability
+column to flip. Test 9 asserts that column's absence.
+
+Refusals are stated, never bare:
+
+> Curriculum is edited in the Control Room, not from the Campus. The founder is
+> the institutional authority for curriculum decisions, and that authority is
+> exercised deliberately at a desk — not from a phone.
+
+## §C. Pairing
+
+The enrolment authority is physical possession of the Control Room. Mint a
+code, type it into the phone within ten minutes, receive a token once. Codes
+are single-use. Tokens are stored as SHA-256 hashes — a database dump is not a
+set of working keys. Revocation is immediate and **keeps the device row**,
+because which devices were trusted and when that ended is institutional record.
+
+## §D. Development access is a named mode, not an accident
+
+With `COLLEGE_AUTH_MODE` unset, loopback requests get `control_room` without a
+token. Setting it to **`strict`** removes that entirely, and `.env.example`
+documents it as mandatory for any deployment. A backdoor you forget about is
+the one that matters, so the guard reports `development: true` on every caller
+it grants this way.
+
+## §E. Two false results worth recording
+
+1. **Next.js sets `x-forwarded-for` on every request**, including direct
+   loopback. Treating its presence as "came via a proxy" locked the developer
+   out of their own machine. The guard now looks for a **non-loopback hop** in
+   the chain, which is what actually indicates travel.
+2. **`fetch()` silently ignores a `Host` override.** The spoofing test appeared
+   to pass while actually sending `Host: localhost`, i.e. asserting nothing.
+   Test 14 now opens a raw TCP socket. It genuinely fails without the guard.
+
+Both are the same lesson in different clothes: a security test that cannot fail
+is not a test.
+
+## §F. The iOS client
+
+`mobile/` — Expo/React Native, real native views, `.ipa` built by EAS in the
+cloud with **no Mac required**. It inherits the Campus rules exactly: sections
+appear only when the College has something to say, and BEGIN CLASS only appears
+when a class is genuinely available.
+
+The client is deliberately thin. It holds no state the server doesn't hold and
+phrases nothing the server doesn't phrase — otherwise the phone becomes a
+second source of truth that can disagree with the first.
+
+`scripts/college-layer9-tests.mjs` — 14 assertions, self-cleaning.
