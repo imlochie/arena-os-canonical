@@ -18,7 +18,7 @@
  */
 
 import { buildColorMatrix, buildShaderUniforms } from './colorPipeline';
-import { composeEffectiveAdjustments } from './adjustments';
+import { addAdjustments, clampAdjustments, composeEffectiveAdjustments } from './adjustments';
 import {
   ColorMatrix,
   EngineCapabilities,
@@ -29,6 +29,8 @@ import {
 } from './ProcessingEngine';
 import { Adjustments, EditRecipe, Preset, SourceAsset } from './types';
 import { CHARACTER_SHADER } from './shaders';
+import { analyzeSourceImage } from './adaptiveNative';
+import { resolveAdaptiveLook } from './adaptive';
 
 export class SkiaProcessingEngine implements ProcessingEngine {
   readonly capabilities: EngineCapabilities = {
@@ -73,7 +75,13 @@ export class SkiaProcessingEngine implements ProcessingEngine {
     } = require('@shopify/react-native-skia');
     const FileSystem = require('expo-file-system/legacy');
 
-    const adj = composeEffectiveAdjustments(recipe, preset);
+    const analysis = preset ? await analyzeSourceImage(source.uri) : null;
+    const adaptive = preset && analysis
+      ? resolveAdaptiveLook(preset, analysis, recipe.presetIntensity).adjustments
+      : null;
+    const adj = adaptive
+      ? clampAdjustments(addAdjustments(adaptive, recipe.adjustments))
+      : composeEffectiveAdjustments(recipe, preset);
     const matrix = this.computeColorMatrix(adj);
     const uniforms = this.computeShaderUniforms(adj, Math.random() * 1000);
 

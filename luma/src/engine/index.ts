@@ -26,5 +26,6 @@ export function setEngine(next: ProcessingEngine): void {
 export * from './types';
 export * from './adjustments';
 export * from './adaptive';
+export { analyzeSourceImage } from './adaptiveNative';
 export * from './ProcessingEngine';
 export { buildColorMatrix, buildShaderUniforms, identityColorMatrix } from './colorPipeline';
