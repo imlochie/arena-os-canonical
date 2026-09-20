@@ -1,113 +1,216 @@
 # Arena archive synthesis ledger
 
-## Purpose
+## Purpose and evidence boundary
 
-This document records how evidence from the two supplied historical Arena options
-is evaluated before it becomes part of the canonical Arena architecture. It is a
-selection ledger, not a mechanical merge plan.
+This is the selection ledger for reconstructing one canonical Arena from two
+historical implementations. It is **not** a merge plan.
 
-## Evidence status
+The user inspected the supplied archives and provided the concrete source
+inventory recorded below. The archive bytes are not mounted in this workspace,
+so paths and contents are recorded as *user-supplied recovered evidence* rather
+than pretending they were copied directly here. When an archive or a specific
+commit becomes readable, append its immutable source reference to the relevant
+port record before transplanting code.
 
-The supplied extraction brief describes **Option A** and **Option B**, but the
-archive contents themselves have not been made readable in this workspace yet.
-Consequently, entries below record the architectural evidence in that brief and
-current-repository observations. They do **not** claim that an implementation
-was copied from either archive. When source files become available, add their
-path and commit reference before porting implementation details.
+## Archive inventory
 
-## Canonical operating loop
+| | Option A | Option B |
+| --- | --- | --- |
+| Files / approximate TS(X) lines | 108 / 12,951 | 68 / 13,708 |
+| Main shape | Distributed operational Arena OS with independently addressable resource routes | Consolidated cognitive/provider engine with larger implementation modules |
+| Principal tables | models, category ratings, assistants, battles/messages, templates, collabs/contributions, council runs/artifacts, projects, artifacts, project memory, privacy events, arcade games, chats/messages | projects, artifacts, project memories, models, personas, battles/messages, cognitive sessions, collab messages, chats/messages, arcade games, privacy events, templates, user settings |
+| Strongest evidence | Cognitive jobs, workforce, strategies, handoffs, project context, battle lifecycle, Council/Collab persistence, privacy/resource routes | Cognitive engine, intelligence layer, provider interface, simulation/reference engine, richer persisted cognitive-session and model metadata |
+
+Option A and Option B are overlapping attempts at Arena, not a linear version
+history. Neither archive is automatically canonical.
+
+## Recovered implementation evidence
+
+### Option A — retain the operational/domain mechanisms
+
+**Resource lifecycle pattern.** A decomposes operations into explicit routes,
+including battle retrieval, vote, judge, reveal, follow-up, and stream routes;
+project-specific artifact and memory routes; individual Collab routes with
+iterate/crown actions; Council retrieval/artifact routes; and privacy
+summary/events/wipe routes. This is evidence that major cognitive operations
+need identifiable lifecycles rather than one collection endpoint.
+
+**Cognitive jobs.** `src/lib/cognitiveJobs.ts` defines seven executable job
+recipes:
 
 ```text
-input → think / compare / critique → synthesize → capture artifact
-      → project memory → future work
+creative_workshop       second_brain        thinking_instrument
+deep_research           systems_designer    simulation_partner
+thought_editor
 ```
 
-Projects are the durable context for that loop. Chats, battles, councils,
-collaborations, and Stem Lab processing are work operations inside or attached
-to a project; none creates a parallel project concept.
+Each recipe carries the job question/description, two roles, critique and
+synthesis instructions, artifact kinds/instructions, and examples. The
+meaningful execution order is:
 
-## Retention decisions
+```text
+raw material → perspectives → cross-critique → synthesis → artifact
+```
 
-| Canonical concept | Evidence | Decision | Current evidence / required direction |
-| --- | --- | --- | --- |
-| Project as long-lived work container | A | retain | `projects` is the common parent. Every new subsystem must reference it rather than introduce another project table. |
-| Typed reusable artifacts | A | retain | `artifacts`, council artifacts, and source links should converge on the canonical artifact/provenance model. |
-| Typed project memory | A | retain and extend | `project_memory` already distinguishes fact, decision, preference, open question, rejected idea, and source. Add `invariant` and provenance rather than replacing it with an untyped notes field. |
-| Cognitive jobs and complementary roles | A, B | retain | `src/lib/cognitiveJobs.ts` is the seed configuration, not merely page copy. It should become executable, versioned workflow configuration. |
-| Council: perspective → cross-critique → synthesis → artifact | A | retain | The current Council route performs this sequence. Its execution state and provenance need durable job/session records before treating it as canonical production behavior. |
-| Cross-surface handoffs | A | retain | Handoffs must create source-linked project work, not only carry query-string text between screens. |
-| Blind empirical battle evaluation | A | retain | Existing randomized sides, stored history, Elo/Bradley–Terry work, category ratings, ties, and both-bad results are evidence. Historical battle records remain authoritative over a leaderboard cache. |
-| Provider abstraction and capability-aware routing | A, B | rebuild deliberately | Replace direct provider branching with one provider contract, declared capabilities, recorded routing/environment, and explicit user-visible fallback policy. |
-| Local-only / privacy boundary | A | retain and enforce below UI | Local-only must prevent cloud calls in the provider router. Audit records are metadata only. A UI toggle alone is insufficient. |
-| Simulation/reference execution | B | retain only as labelled reference | Simulation is useful for tests, demos, and deterministic workflows, but must never be represented as a queried model or a real provider response. |
-| Resource lifecycle APIs | B | retain | Resources need scoped GET/create/update/delete and source/provenance links; collection-only routes are insufficient. |
-| Arcade | B | retain as secondary | Offline deterministic games remain isolated from the cognitive core and do not set the core data model. |
-| Stem Lab | current Arena work | retain as a project module | Private audio assets/jobs attach to the canonical project object. It is not a second product or a replacement for Arena. |
+The roles and job prompts are evidence, not immutable product copy. Preserve
+the role architecture and version the configuration rather than creating a
+second parallel job system.
+
+**Workforce and strategy.** `src/lib/workforce.ts` separates model, role, and
+job. Its roles (Researcher, Critic, Architect, Engineer, Creative Director,
+Strategist, Editor, Operator) specify preferred model *archetypes* and ELO
+categories. `src/lib/strategies.ts` encodes Council, Debate, Brainstorm,
+Second Brain, Systems, Scenarios, and Signal collaboration strategies.
+Canonical routing therefore starts from job requirements and roles, never a
+hard-coded model name.
+
+**Project continuity.** `src/lib/projectContext.ts` retrieves project, recent
+typed memory, and artifacts and injects a bounded context block into future
+operations. `src/lib/handoffs.ts` carries text, project, source, job, and
+strategy between Arena, Council, and Collab. A useful handoff must become a
+source-linked operation or project object, not only a query-string payload.
+
+**Battle methodology.** A persists battles and generic role/content battle
+messages, supports A/B randomization, blind reveal, `a`/`b`/`tie`/`both-bad`
+votes, follow-ups, judging, streaming, historical records, relational category
+ratings, and rating diagnostics. The historical vote record is authoritative;
+leaderboards are derived measurement views.
+
+**Privacy and offline evidence.** A contains `privacy.ts`, `privacyClient.ts`,
+`localEngine.ts`, `webllm.ts`, `stream.ts`, privacy events/summary/wipe,
+optional BYOK routing, local execution, and an arcade isolated from the
+cognitive core. Those mechanisms are evidence for an actual provider-layer
+local-only boundary, not a decorative privacy screen.
+
+### Option B — retain the consolidated execution mechanisms
+
+**Cognitive configuration.** `src/lib/cognitiveEngine.ts` defines seven
+layers (workshop, second brain, thinking instrument, research, systems design,
+simulation, thought editor), with two roles, a synthesis role, prompts,
+presentation metadata, and sample inputs. `intelligenceLayer.ts` formalizes:
+
+```text
+cognitive job → role requirements → model selection → synthesis
+```
+
+This is complementary to A's job/workforce structure. The canonical system
+will use one versioned `CognitiveJobDefinition`, with A's execution and
+artifact fields plus B's explicit synthesis-role and presentation metadata.
+
+**Provider and reference execution.** `providers.ts` normalizes Ollama, Groq,
+OpenRouter, Gemini, Pollinations, and simulated execution with text, reasoning
+when genuinely supplied, token counts/estimates, latency, throughput, and
+provider identity. `simulation.ts` also contains generic `TaskConfig`,
+`TaskProcessor`, `Result`, `executePipeline`, `RateLimiter`, and
+`StateManager` utilities. Retain the provider contract and only the utilities
+that solve a concrete worker/routing problem.
+
+A simulation/reference response is valuable for deterministic development,
+demos, and failure testing. It must be a distinct execution environment and
+provider kind in durable data and API results; it is never model evidence and
+never silently substitutes for a real provider.
+
+**Richer metadata.** B contributes useful candidate fields: provider model ID,
+context length, local status, badges, user notes, explicit blind status,
+rating deltas, artifact summary/metadata/update timestamp, memory importance
+and active state, invariants, persona classification, and user settings.
+These are inputs to a single canonical migration, not parallel schemas.
+
+## Canonical resolution decisions
+
+| Domain | Canonical decision | Why |
+| --- | --- | --- |
+| IDs | UUID identifiers | Existing Arena and the private Stem Lab use UUIDs; they suit distributed workers and do not expose serial ordering. IDs never authorize access. |
+| Projects | One `projects` table: UUID, name, description, status, timestamps, and one intentional visual identity representation | A's project continuity is the stronger domain model. Do not retain competing emoji versus color/icon models without a user-facing need and migration decision. |
+| Artifacts | Keep A's `kind`, `body`, `source_type`, `source_id`, and optional project association; add B's `summary`, bounded `metadata`, and `updated_at` deliberately | Artifacts can be project-independent imports while still retaining source lineage. Metadata is not a substitute for normalized provenance. |
+| Project memory | One typed memory table with `fact`, `decision`, `preference`, `open_question`, `rejected_idea`, `source`, and `invariant`; add importance, active/archived state, and source/provenance references | B's `invariant`, importance, and activity lifecycle complete A's useful taxonomy. `useful_source` resolves to the canonical `source` name. |
+| Models and ratings | Separate provider/model registry from relational category ratings | A's relational rating table supports queryability and integrity. B's provider-model ID, context length, local flag, and display metadata belong on the model/adapter mapping, not JSON category Elo. |
+| Assistants/personas | One canonical assistant/persona concept | Retain A's existing `assistants` identity, extended with B's title/category/default/system classification if proven necessary. Do not create both tables. |
+| Battle transcript | A generic contribution/message sequence is the base; attach structured per-turn response/latency/token telemetry to canonical responses | It supports multi-turn evolution without storing two incompatible transcript formats. B's paired turn telemetry remains valuable. |
+| Cognitive work | One `cognitive_sessions` parent with normalized contributions/rounds, critiques, synthesis, artifacts, and source links | This preserves B's useful session snapshot while avoiding separate competing `council_runs`, `collabs`, and opaque message stores as canonical roots. Council and Collab become execution modes/workflows over the same records. |
+| Providers | Provider registry + provider connection + model descriptor + runtime adapter | Separates provider, provider model ID, cognitive role, and model selection. No static catalogue or direct fetch branch becomes the source of truth. |
+| Simulation | Explicit `reference`/`simulation` provider environment | It remains useful without being capable of silently claiming a real model/provider result. |
+| Jobs | Persist before enqueue; workers own long operations | This is already proven for the Stem Lab vertical slice and becomes the model for provider-backed cognitive work. |
 
 ## Non-negotiable invariants
 
 1. There is one canonical representation for projects, artifacts, memory,
    providers, models, assistants, battles, sessions, ratings, and privacy
-   events. New fields belong in a deliberate migration; duplicate tables or
-   alternate route families are not a solution.
-2. Every useful output can retain provenance: project, source operation,
-   provider/model/environment where applicable, and source artifact/response.
-3. A simulation/reference result is labelled at the data and API boundary,
-   not inferred from presentation text.
-4. A local-only policy is enforced by the provider router before a network
-   request can be made.
-5. Jobs own long-running work. Web requests validate, persist, enqueue, and
-   report state; workers execute.
-6. Existing legacy UI is evidence, not proof of production behavior. Do not
-   represent a capability as real until its backing provider, worker, storage,
-   authorization, and test path are real.
+   events.
+2. Every useful output retains provenance: project, source operation, source
+   artifact/response, execution environment, and provider/model where relevant.
+3. Human evaluation, automated judging, and model execution are separate
+   concepts and separate data fields.
+4. A reference/simulated response is labelled at the provider, API, database,
+   and UI boundaries. It cannot alter empirical leaderboard evidence as though
+   it were a real model call.
+5. A local-only policy is enforced by the provider router before any cloud
+   request is possible.
+6. Long-running work is persisted and queued; web requests validate, authorize,
+   persist, enqueue, and report state while workers execute.
+7. Legacy UI is evidence, not production proof. Do not claim a provider,
+   worker, privacy, authorization, or storage guarantee without its real
+   backing path and tests.
 
-## Known conflicts and gaps in the current implementation
+## Current-repository alignment and gaps
 
-- The legacy provider implementation is a direct, static catalog with fallback
-  behavior, not the canonical provider/connection/capability contract described
-  in `ARCHITECTURE.md`. Its reference/offline responses need explicit durable
-  execution metadata before they can support empirical evaluation.
-- Legacy projects, artifacts, memory, chats, and councils do not yet share the
-  authenticated membership model used by the new private Stem Lab slice. The
-  Stem Lab account tables are a bounded vertical-slice implementation, not a
-  license to create a second canonical identity system.
-- Legacy migrations remain incomplete. The Stem Lab migration baseline is
-  repeatable only for that slice; it is not a full fresh-install migration chain
-  for every existing Arena table.
-- `project_memory` lacks the `invariant` kind and source/provenance fields.
-- Council and collaboration workflows contain valuable orchestration but need
-  canonical durable response/job/provenance records and tests before they can
-  serve as the definitive execution architecture.
+The current Arena checkout already preserves significant Option A evidence:
+`src/lib/cognitiveJobs.ts`, `workforce.ts`, `strategies.ts`, `handoffs.ts`,
+`projectContext.ts`, Council orchestration, artifact/project-memory tables,
+battle lifecycle/ratings, privacy helpers, and offline/arcade surfaces.
 
-## Resolution order
+It is not yet canonical implementation:
 
-After the real Stem Lab Compose acceptance path has passed, canonicalize in this
-order:
+- `src/lib/ai.ts` is a direct/static provider dispatch and fallback chain, not a
+  durable provider/connection/capability router. Its local/reference fallbacks
+  require explicit persisted execution metadata before they can be trusted as
+  evaluation inputs.
+- Legacy project, artifact, memory, chat, Council, and Battle resources do not
+  yet share a general membership/authorization model. The new Stem Lab session
+  and membership path is a bounded vertical slice, not a second permanent
+  identity architecture.
+- Legacy migration history is incomplete. The repeatable Stem Lab migration
+  baseline does not reconstruct all legacy Arena tables.
+- `project_memory` lacks invariant, importance/active lifecycle, and provenance
+  fields.
+- Council and Collab contain useful orchestration but need canonical durable
+  response/job/provenance records and real tests.
 
-1. General identity, project membership, and complete migration baseline.
-2. Canonical project, artifact, memory, session/response, and provenance
-   records, including an `invariant` memory type.
-3. Provider connection/model/capability registry and a router that makes local,
-   cloud, and simulated execution explicit.
-4. One durable, provider-backed cognitive operation through a worker, with
-   project-scoped authorization and real integration tests.
+## Sequenced reconstruction
+
+The real Stem Lab Compose acceptance path remains the current infrastructure
+gate. Do not start waveforms, mixer work, remixing, or cosmetic studio features
+before it passes in a Docker-capable environment.
+
+After that proof, canonicalize in this order:
+
+1. General identity, project membership, complete migration baseline, and a
+   legacy-import fixture.
+2. Canonical projects, artifacts, typed memory, sessions/responses, and
+   provenance fields.
+3. Provider connection/model/capability registry plus a router that records
+   local, cloud, browser-local, and reference execution explicitly.
+4. One authenticated, provider-backed cognitive job through a durable worker,
+   with a real local-provider path and integration tests.
 5. Migrate Council, Collab, and Battle execution onto those records while
-   preserving their useful role, critique, voting, and rating methodology.
-6. Expand secondary product surfaces only after the Tier 1 loop is proven.
+   preserving A's role/critique/voting/rating mechanics and B's useful
+   telemetry.
+6. Expand workforce, handoffs, settings, benchmarks, and secondary product
+   surfaces only after the Tier 1 loop is proven.
 
 ## Future archive-port record
 
-For every port from Option A or Option B, record:
+For every concrete port, append:
 
 ```text
 archive option and commit/path:
-retained idea:
+recovered mechanism:
 canonical concept:
 conflicts considered:
 why this implementation was selected:
+migration impact:
 tests proving the behavior:
 ```
 
-This prevents an accidental "A + B" repository and leaves a reviewable answer
-to where each retained mechanism came from.
+This creates a reviewable answer to where retained code came from and prevents
+an accidental "A + B" repository.
