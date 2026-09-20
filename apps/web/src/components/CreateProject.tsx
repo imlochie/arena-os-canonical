@@ -1,9 +1,7 @@
 "use client";
 import { ChangeEvent, FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
 
 export function CreateProject() {
-  const router = useRouter();
   const [fileName, setFileName] = useState(""); const [message, setMessage] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setMessage(null); setBusy(true); const form = new FormData(event.currentTarget); const title = String(form.get("title") ?? "");
@@ -13,7 +11,7 @@ export function CreateProject() {
     const payload = new FormData(); payload.set("projectId", created.project.id); payload.set("file", audio); payload.set("model", String(form.get("model") ?? "htdemucs")); payload.set("device", String(form.get("device") ?? "auto"));
     const upload = await fetch("/api/uploads", { method:"POST", body:payload }); const uploaded = await upload.json().catch(() => ({})); setBusy(false);
     if (!upload.ok) return setMessage(uploaded.error ?? "Upload could not be queued. The project was created.");
-    router.push(`/projects/${created.project.id}`);
+    window.location.assign(`/projects/${created.project.id}`);
   }
   return <form className="form" onSubmit={submit}><label>Track title<input name="title" required maxLength={160} placeholder="Untitled session" /></label><label>Source audio<input name="file" required type="file" accept="audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg" onChange={(event:ChangeEvent<HTMLInputElement>) => setFileName(event.target.files?.[0]?.name ?? "")} /></label>{fileName && <p className="notice">Selected: {fileName}. It will be probed and stored privately before a real separation job is queued.</p>}<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}><label>Genre<input name="genre" maxLength={80} placeholder="Optional" /></label><label>License<select name="license" defaultValue="all-rights-reserved"><option value="all-rights-reserved">All rights reserved</option><option value="cc-by">CC BY</option><option value="cc-by-nc">CC BY-NC</option></select></label></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}><label>Separation model<select name="model" defaultValue="htdemucs"><option value="htdemucs">htdemucs · vocals / drums / bass / other</option></select></label><label>Processing device<select name="device" defaultValue="auto"><option value="auto">Auto · CUDA if available</option><option value="cpu">CPU</option><option value="cuda">CUDA · fail if unavailable</option></select></label></div><label>Description<textarea name="description" rows={3} maxLength={4000} placeholder="Optional session notes" /></label>{message && <p className="error" role="alert">{message}</p>}<button className="button" disabled={busy}>{busy ? "Creating and queuing…" : "Separate this track"}</button></form>;
 }

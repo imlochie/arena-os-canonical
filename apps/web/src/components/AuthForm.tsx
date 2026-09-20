@@ -1,9 +1,7 @@
 "use client";
 import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
 
 export function AuthForm() {
-  const router = useRouter();
   const [mode, setMode] = useState<"register" | "login">("register");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -14,7 +12,7 @@ export function AuthForm() {
     const response = await fetch(`/api/auth/${mode}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const json = await response.json().catch(() => ({})); setBusy(false);
     if (!response.ok) return setMessage(json.error ?? "Account action failed.");
-    router.push("/create");
+    window.location.assign("/create");
   }
   return <form className="form" onSubmit={submit}>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}><b>{mode === "register" ? "Start a private studio" : "Sign in to your studio"}</b><button type="button" className="button secondary" style={{ padding: "6px 9px" }} onClick={() => setMode(mode === "register" ? "login" : "register")}>{mode === "register" ? "I have an account" : "Create account"}</button></div>

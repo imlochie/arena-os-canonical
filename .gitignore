@@ -14,7 +14,3 @@ __pycache__/
 
 # Generated audio fixture (created by scripts/create_audio_fixture.py)
 tests/fixtures/*.wav
-
-# Browser test artifacts
-playwright-report/
-test-results/

@@ -80,17 +80,11 @@ function required(name: string) {
 }
 
 let provider: StorageProvider | undefined;
-function repositoryRoot() {
-  const current = process.cwd();
-  if (process.env.WAVEYARD_ROOT) return resolve(process.env.WAVEYARD_ROOT);
-  return existsSync(join(current, "apps")) ? current : resolve(current, "../..");
-}
-
 export function getStorage(): StorageProvider {
   if (provider) return provider;
   const kind = process.env.STORAGE_PROVIDER ?? "local";
   provider = kind === "local"
-    ? new LocalStorageProvider(resolve(/* turbopackIgnore: true */ process.env.LOCAL_STORAGE_PATH ?? join(repositoryRoot(), ".waveyard-data/objects")))
+    ? new LocalStorageProvider(resolve(process.env.LOCAL_STORAGE_PATH ?? join(process.cwd(), ".waveyard-data/objects")))
     : new S3StorageProvider(required("S3_BUCKET"));
   return provider;
 }
