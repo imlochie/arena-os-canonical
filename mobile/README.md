@@ -72,6 +72,12 @@ Lost the phone? Revoke it from the same page. It stops working on the very
 next request, and the device stays listed — which devices were trusted, and
 when that ended, is part of the record.
 
+## Pointing the app at a real server
+
+The College address is entered at pairing time and stored alongside the token,
+so there is no build-time API URL to bake in. Repointing the app at a new
+deployment is: unpair, re-pair with the new address.
+
 ## Deployment requirement
 
 Set **`COLLEGE_AUTH_MODE=strict`** on the server before exposing it to the

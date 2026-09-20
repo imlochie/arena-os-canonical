@@ -12,17 +12,31 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Photograph TAFE assessment sheets, whiteboards and briefs so they enter the College's evidence pipeline as a source.",
         "NSPhotoLibraryUsageDescription": "Attach an existing photo of course material as evidence."
-      }
+      },
+      "buildNumber": "1"
     },
     "android": {
       "package": "com.lochie.college.campus"
     },
     "plugins": [
-      ["expo-camera", { "cameraPermission": "Capture TAFE material as College evidence." }],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Capture TAFE material as College evidence."
+        }
+      ],
       "expo-secure-store"
     ],
     "extra": {
-      "eas": { "projectId": "00000000-0000-0000-0000-000000000000" }
+      "eas": {
+        "projectId": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0b0f17"
     }
   }
 }

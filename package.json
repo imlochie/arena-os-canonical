@@ -6,7 +6,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "migrate": "node scripts/migrate.mjs",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.85",

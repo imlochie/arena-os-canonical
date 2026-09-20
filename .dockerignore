@@ -1,0 +1,9 @@
+node_modules
+.next
+.git
+.pgdata
+mobile
+drizzle/meta
+*.log
+.env*
+!.env.example
