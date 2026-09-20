@@ -14,6 +14,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       db.select().from(stemAssets).where(eq(stemAssets.projectId, id)).orderBy(asc(stemAssets.createdAt)),
       db.select().from(processingJobs).where(eq(processingJobs.projectId, id)).orderBy(asc(processingJobs.createdAt)),
     ]);
-    return NextResponse.json({ project, role, sources, stems, jobs });
+    return NextResponse.json({
+      project,
+      role,
+      sources: sources.map(({ storageKey: _storageKey, ...source }) => source),
+      stems: stems.map(({ storageKey: _storageKey, waveformKey: _waveformKey, ...stem }) => stem),
+      jobs,
+    });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
