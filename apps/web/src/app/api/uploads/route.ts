@@ -5,8 +5,8 @@ import { join, extname } from "node:path";
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { acceptedAudioFilename, checksumFile, MAX_UPLOAD_BYTES, probeAudio, sanitizedFilename } from "@waveyard/audio";
-import { getDb, processingJobs, sourceAssets } from "@waveyard/database";
-import { enqueueSeparation } from "@waveyard/queue";
+import { getDb, processingJobs, sourceAssets, waveformJobs } from "@waveyard/database";
+import { enqueueSeparation, enqueueWaveform } from "@waveyard/queue";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
     storedKey = storageKey;
 
     const db = getDb();
-    const { source, job } = await db.transaction(async (tx) => {
+    const { source, job, waveformJob } = await db.transaction(async (tx) => {
       const [createdSource] = await tx.insert(sourceAssets).values({
         projectId, originalFilename: cleanName, mimeType: upload.type || "application/octet-stream", storageKey, checksumSha256: checksum,
         durationSeconds: Math.round(metadata.durationSeconds), sampleRate: metadata.sampleRate, channels: metadata.channels,
@@ -51,16 +51,26 @@ export async function POST(request: Request) {
         projectId, sourceAssetId: createdSource.id, type: "separation", status: "queued", stage: "queued", idempotencyKey: `separation:${createdSource.id}:${requestedModel}`,
         model: requestedModel, requestedDevice,
       }).returning();
-      return { source: createdSource, job: createdJob };
+      const [createdWaveformJob] = await tx.insert(waveformJobs).values({
+        projectId, sourceAssetId: createdSource.id, status: "queued", stage: "queued", idempotencyKey: `waveform:source:${createdSource.id}`,
+      }).returning();
+      return { source: createdSource, job: createdJob, waveformJob: createdWaveformJob };
     });
     persisted = true;
     try {
       await enqueueSeparation({ processingJobId: job.id, projectId, sourceAssetId: source.id, model: requestedModel, requestedDevice: requestedDevice as "auto" | "cpu" | "cuda" });
     } catch (queueError) {
       await db.update(processingJobs).set({ status: "failed", stage: "queue-unavailable", errorCode: "queue_unavailable", errorMessage: queueError instanceof Error ? queueError.message.slice(0, 1000) : "Queue unavailable.", completedAt: new Date(), updatedAt: new Date() }).where(eq(processingJobs.id, job.id));
-      return NextResponse.json({ error: "The upload was stored, but processing could not be queued. Start the worker/Redis and retry this source." }, { status: 503 });
+      return NextResponse.json({ error: "The upload was stored, but separation could not be queued. Start the worker/Redis and retry this source." }, { status: 503 });
     }
-    return NextResponse.json({ source, job }, { status: 201 });
+    let waveformQueued = true;
+    try {
+      await enqueueWaveform({ waveformJobId: waveformJob.id, projectId, sourceAssetId: source.id });
+    } catch (queueError) {
+      waveformQueued = false;
+      await db.update(waveformJobs).set({ status: "failed", stage: "queue-unavailable", errorCode: "queue_unavailable", errorMessage: queueError instanceof Error ? queueError.message.slice(0, 1000) : "Queue unavailable.", completedAt: new Date(), updatedAt: new Date() }).where(eq(waveformJobs.id, waveformJob.id));
+    }
+    return NextResponse.json({ source, job, waveformJob: { id: waveformJob.id, queued: waveformQueued } }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     const message = error instanceof Error ? error.message : "Upload failed.";

@@ -28,7 +28,10 @@ npm run worker
 npm run typecheck
 npm run lint
 npm test
+npx playwright test --list
 STEM_DEVICE=cpu npm run prove:demucs
+# Docker-capable hosts only: the hard release/real-stack gate
+npm run test:compose
 ```
 
 The CPU proof requires local model dependencies and may be slow. CUDA verification is a distinct check on actual NVIDIA hardware: if unavailable, report `GPU TEST: NOT RUN`.

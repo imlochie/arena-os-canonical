@@ -33,7 +33,9 @@ The worker doctor and job metadata report the requested and resolved device. The
 
 ## Waveforms and playback
 
-Waveform generation consumes actual stored audio and writes cached peak data. The browser does not decode full large audio files repeatedly just to draw overview data. Playback uses real stem media elements scheduled from a shared transport clock; mute/solo/volume/pan adjust gain/panner nodes without creating substitute audio.
+The waveform worker consumes actual private source/stem audio and writes a checksummed `waveyard-peaks-v1` JSON document back to private storage. FFmpeg decodes the first audio stream to bounded 44.1 kHz mono signed-16 PCM; deterministic min/max reduction produces 256, 512, 1024, 2048, and 4096 bucket resolutions. The web API reads at most the configured metadata limit, validates every bucket/value, and returns the document only after project-viewer authorization. It returns no object key.
+
+The browser does not decode full large audio files repeatedly just to draw overview data. Playback uses real stem media elements scheduled from one shared transport clock; mute/solo/volume/pan adjust gain/panner nodes without creating substitute audio. Browser clock correction is useful audition behavior, not a claim of sample-perfect synchronization or rendered remix output.
 
 ## Verification
 

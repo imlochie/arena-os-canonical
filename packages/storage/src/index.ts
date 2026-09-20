@@ -1,4 +1,9 @@
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createReadStream, existsSync, promises as fs } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
@@ -8,14 +13,25 @@ export interface StorageProvider {
   readonly kind: "local" | "s3";
   putFile(key: string, localPath: string, contentType?: string): Promise<void>;
   getToFile(key: string, localPath: string): Promise<void>;
+  // Bounded derived metadata (waveforms), never large audio delivery.
+  getBuffer(key: string, maxBytes: number): Promise<Buffer>;
   delete(key: string): Promise<void>;
-  createDownloadUrl(key: string, expiresInSeconds: number): Promise<string | null>;
+  createDownloadUrl(
+    key: string,
+    expiresInSeconds: number,
+    downloadName?: string,
+  ): Promise<string | null>;
   getLocalPath(key: string): string | null;
   healthcheck(): Promise<void>;
 }
 
-export function privateObjectKey(projectId: string, category: "source" | "stem" | "export", extension: string) {
-  const safeExtension = extension.replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "bin";
+export function privateObjectKey(
+  projectId: string,
+  category: "source" | "stem" | "waveform" | "export",
+  extension: string,
+) {
+  const safeExtension =
+    extension.replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "bin";
   return `projects/${projectId}/${category}/${randomUUID()}.${safeExtension}`;
 }
 
@@ -23,7 +39,8 @@ function safeLocalPath(root: string, key: string) {
   const normalized = normalize(key).replace(/^([/\\])+/, "");
   const target = resolve(root, normalized);
   const resolvedRoot = resolve(root);
-  if (!target.startsWith(`${resolvedRoot}/`) && target !== resolvedRoot) throw new Error("Unsafe storage key.");
+  if (!target.startsWith(`${resolvedRoot}/`) && target !== resolvedRoot)
+    throw new Error("Unsafe storage key.");
   return target;
 }
 
@@ -39,10 +56,32 @@ class LocalStorageProvider implements StorageProvider {
     await fs.mkdir(dirname(localPath), { recursive: true });
     await fs.copyFile(safeLocalPath(this.root, key), localPath);
   }
-  async delete(key: string) { await fs.rm(safeLocalPath(this.root, key), { force: true }); }
-  async createDownloadUrl() { return null; }
-  getLocalPath(key: string) { return safeLocalPath(this.root, key); }
-  async healthcheck() { await fs.mkdir(this.root, { recursive: true }); await fs.access(this.root); }
+  async getBuffer(key: string, maxBytes: number) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+      throw new Error("A positive metadata read limit is required.");
+    const location = safeLocalPath(this.root, key);
+    const details = await fs.stat(location);
+    if (details.size > maxBytes)
+      throw new Error("Derived metadata exceeds the allowed read size.");
+    return fs.readFile(location);
+  }
+  async delete(key: string) {
+    await fs.rm(safeLocalPath(this.root, key), { force: true });
+  }
+  async createDownloadUrl(
+    _key: string,
+    _expiresInSeconds: number,
+    _downloadName?: string,
+  ) {
+    return null;
+  }
+  getLocalPath(key: string) {
+    return safeLocalPath(this.root, key);
+  }
+  async healthcheck() {
+    await fs.mkdir(this.root, { recursive: true });
+    await fs.access(this.root);
+  }
 }
 
 class S3StorageProvider implements StorageProvider {
@@ -53,24 +92,90 @@ class S3StorageProvider implements StorageProvider {
       region: process.env.S3_REGION ?? "us-east-1",
       endpoint: process.env.S3_ENDPOINT,
       forcePathStyle: process.env.S3_FORCE_PATH_STYLE === "true",
-      credentials: { accessKeyId: required("S3_ACCESS_KEY"), secretAccessKey: required("S3_SECRET_KEY") },
+      credentials: {
+        accessKeyId: required("S3_ACCESS_KEY"),
+        secretAccessKey: required("S3_SECRET_KEY"),
+      },
     });
   }
   async putFile(key: string, localPath: string, contentType?: string) {
-    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: createReadStream(localPath), ContentType: contentType }));
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: createReadStream(localPath),
+        ContentType: contentType,
+      }),
+    );
   }
   async getToFile(key: string, localPath: string) {
-    const response = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
-    if (!response.Body || !("transformToByteArray" in response.Body)) throw new Error("Storage object body is unavailable.");
+    const response = await this.client.send(
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+    if (!response.Body || !("transformToByteArray" in response.Body))
+      throw new Error("Storage object body is unavailable.");
     await fs.mkdir(dirname(localPath), { recursive: true });
     await fs.writeFile(localPath, await response.Body.transformToByteArray());
   }
-  async delete(key: string) { await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key })); }
-  async createDownloadUrl(key: string, expiresInSeconds: number) {
-    return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), { expiresIn: expiresInSeconds });
+  async getBuffer(key: string, maxBytes: number) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+      throw new Error("A positive metadata read limit is required.");
+    // Request at most limit + 1 bytes. Reading an unbounded S3 body before
+    // checking its length would let malformed derived metadata consume memory.
+    const response = await this.client.send(
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Range: `bytes=0-${maxBytes}`,
+      }),
+    );
+    if (!response.Body || !("transformToByteArray" in response.Body))
+      throw new Error("Storage object body is unavailable.");
+    const bytes = Buffer.from(await response.Body.transformToByteArray());
+    if (bytes.byteLength > maxBytes)
+      throw new Error("Derived metadata exceeds the allowed read size.");
+    return bytes;
   }
-  getLocalPath() { return null; }
-  async healthcheck() { await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: ".waveyard-healthcheck", Body: "ok" })); await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: ".waveyard-healthcheck" })); }
+  async delete(key: string) {
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+  }
+  async createDownloadUrl(
+    key: string,
+    expiresInSeconds: number,
+    downloadName?: string,
+  ) {
+    return getSignedUrl(
+      this.client,
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ResponseContentDisposition: downloadName
+          ? `attachment; filename="${downloadName.replace(/[\\"\r\n]/g, "_")}"`
+          : undefined,
+      }),
+      { expiresIn: expiresInSeconds },
+    );
+  }
+  getLocalPath() {
+    return null;
+  }
+  async healthcheck() {
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: ".waveyard-healthcheck",
+        Body: "ok",
+      }),
+    );
+    await this.client.send(
+      new DeleteObjectCommand({
+        Bucket: this.bucket,
+        Key: ".waveyard-healthcheck",
+      }),
+    );
+  }
 }
 
 function required(name: string) {
@@ -83,14 +188,22 @@ let provider: StorageProvider | undefined;
 function repositoryRoot() {
   const current = process.cwd();
   if (process.env.WAVEYARD_ROOT) return resolve(process.env.WAVEYARD_ROOT);
-  return existsSync(join(current, "apps")) ? current : resolve(current, "../..");
+  return existsSync(join(current, "apps"))
+    ? current
+    : resolve(current, "../..");
 }
 
 export function getStorage(): StorageProvider {
   if (provider) return provider;
   const kind = process.env.STORAGE_PROVIDER ?? "local";
-  provider = kind === "local"
-    ? new LocalStorageProvider(resolve(/* turbopackIgnore: true */ process.env.LOCAL_STORAGE_PATH ?? join(repositoryRoot(), ".waveyard-data/objects")))
-    : new S3StorageProvider(required("S3_BUCKET"));
+  provider =
+    kind === "local"
+      ? new LocalStorageProvider(
+          resolve(
+            /* turbopackIgnore: true */ process.env.LOCAL_STORAGE_PATH ??
+              join(repositoryRoot(), ".waveyard-data/objects"),
+          ),
+        )
+      : new S3StorageProvider(required("S3_BUCKET"));
   return provider;
 }

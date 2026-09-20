@@ -41,12 +41,14 @@ User ──< ProjectMembership >── Project
 Project ──< SourceAsset
 Project ──< StemAsset
 Project ──< ProcessingJob
+Project ──< WaveformJob ──< WaveformAsset
 Project ──< RemixSession ──< RemixTrack ──< RemixClip
+                              └──< RemixVersion
 Project ──< Export
 Project ──< Comment / Activity / Publication
 ```
 
-A `SourceAsset` stores original file metadata, checksum and private storage key. A `StemAsset` stores its separation job, source type, engine/model/version, actual probed metadata, checksum, storage key and waveform reference. A `RemixClip` references an existing audio asset with timeline/source offsets; it never copies the audio source.
+A `SourceAsset` stores original file metadata, checksum and private storage key. A `StemAsset` stores its separation job, source type, engine/model/version, actual probed metadata, checksum and private storage key. A `WaveformAsset` belongs to exactly one source or stem asset and records a private, validated peak-document key; its JSON payload is never stored in PostgreSQL or exposed in project-list responses. A `RemixClip` references an existing project stem with timeline/source offsets and gain; it never copies the audio source.
 
 ## Separation engine contract
 

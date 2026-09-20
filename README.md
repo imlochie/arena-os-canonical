@@ -6,13 +6,14 @@ It has an original digital-studio/music-archive identity and is not affiliated w
 
 ## Current phase
 
-**Phase 0 and the narrow upload → queue → Demucs → storage → playback foundation are implemented in source.** The platform deliberately does not claim that remixing, export rendering, public publication, discovery, collaboration, moderation, or waveform UI are complete yet.
+**Phase 2 Studio Core is implemented in source.** The real path now includes worker-derived private waveform artifacts, authenticated waveform delivery, a shared stem audition transport, and persistent non-destructive remix sessions. The platform deliberately does **not** claim worker-side remix rendering/export, publication, discovery, collaboration, moderation, beat detection, or a full DAW.
 
 The implemented path is real code, not seeded output:
 
 ```text
-register → private project → server-validated audio upload → BullMQ job
-→ dedicated worker → python -m demucs → validate outputs → storage → private synchronized playback
+register → private project → server-validated audio upload → BullMQ jobs
+→ dedicated worker → python -m demucs / FFmpeg waveform extraction
+→ validated private stems + peak documents → authenticated Studio audition/remix metadata
 ```
 
 The path requires PostgreSQL, Redis, storage, FFmpeg, PyTorch, and Demucs. If those services are absent or a model fails, jobs report failure; the app never invents stems or completion.
@@ -55,6 +56,8 @@ The command generates an original deterministic fixture, invokes actual Demucs, 
 - [Workers](docs/WORKERS.md)
 - [Remix engine](docs/REMIX_ENGINE.md)
 - [Phase 1 Compose proof report](docs/PHASE_1_REPORT.md)
+- [Phase 2 Studio Core design](docs/PHASE_2_DESIGN.md)
+- [Phase 2 Studio Core report](docs/PHASE_2_REPORT.md)
 - [Publication and moderation](docs/MODERATION.md)
 
 ## Verification status
@@ -62,10 +65,11 @@ The command generates an original deterministic fixture, invokes actual Demucs, 
 | Check | Status in this workspace | Meaning |
 | --- | --- | --- |
 | Phase 0 reconnaissance | verified | The predecessor app was unrelated and removed from the runtime path. |
-| TypeScript, unit tests, lint | verified | `typecheck`, two unit tests, and lint exit successfully. |
-| Production build | verified with non-fatal warnings | Web and worker builds exit successfully; see the phase report for sandbox lockfile/trace warnings. |
+| TypeScript, unit tests, lint | verified | `typecheck`, seven deterministic unit tests, and lint exit successfully. |
+| Production build | verified | Web and worker builds exit successfully. |
+| Phase 2 Compose E2E discovery | verified | The real-stack browser suite includes waveform, download, remix snapshot/restore, and authorization assertions; it is listed but not executed here. |
 | Real Demucs / CPU | failed honestly | The proof reached the real Python adapter, which stopped because PyTorch/Demucs are absent in this host. |
 | CUDA Demucs | not verified | Requires an NVIDIA/CUDA runtime; never inferred or faked. |
-| Compose upload through playback | not verified | Docker and dependent services are unavailable in this sandbox. |
+| Compose upload through Studio | not verified | Docker and dependent services are unavailable in this sandbox. |
 
-Read [the Phase 0 report](docs/PHASE_0_REPORT.md) before treating any unchecked capability as complete.
+Read the [Phase 2 report](docs/PHASE_2_REPORT.md) and [Phase 0 report](docs/PHASE_0_REPORT.md) before treating any unchecked capability as complete.

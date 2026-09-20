@@ -21,3 +21,20 @@ export type AudioMetadata = {
   container: string;
   sizeBytes: number;
 };
+
+export const WAVEFORM_RESOLUTIONS = [256, 512, 1024, 2048, 4096] as const;
+export type WaveformResolution = (typeof WAVEFORM_RESOLUTIONS)[number];
+export type WaveformJobPayload = {
+  waveformJobId: string;
+  projectId: string;
+  sourceAssetId?: string;
+  stemAssetId?: string;
+};
+export type WaveformPeaks = { min: number[]; max: number[] };
+export type WaveformDocument = {
+  format: "waveyard-peaks-v1";
+  durationSeconds: number;
+  sampleRate: number;
+  channels: number;
+  resolutions: Record<string, WaveformPeaks>;
+};

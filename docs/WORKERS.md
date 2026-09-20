@@ -2,16 +2,14 @@
 
 The worker is an independent process. It consumes BullMQ jobs and is the only runtime allowed to start Demucs, FFmpeg rendering, waveform generation, transcoding, or export work.
 
-## Job types
+## Implemented job types
 
-- `separation`
-- `waveform`
-- `preview`
-- `transcode`
-- `remix-render`
-- `export`
+- `separation` — one processing job drives the real Demucs adapter and persists validated `vocals`, `drums`, `bass`, and `other` outputs.
+- `waveform` — one durable job targets exactly one source or stem asset and persists a validated peak document.
 
-Every job records type, status, priority, attempts, timestamps, progress stage, safe error summary, idempotency key and engine metadata. Percentages are shown only if measurable; otherwise the UI displays a truthful named stage.
+Preview/transcode/remix-render/export jobs are not implemented by Phase 2 and must not be represented as available.
+
+Jobs record durable status, attempts, timestamps, named stage, safe error summary, and idempotency key. Separation additionally records engine/model/device metadata. Percentages are shown only if measurable; otherwise the UI displays a truthful named stage.
 
 ## Failure and retry rules
 
