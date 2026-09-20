@@ -1065,3 +1065,145 @@ silence by choice.
    verification came from `local:text`. Routing, authority, memory,
    coordination and state are proven; language quality is not tested and must
    not be inferred.
+
+---
+
+# LAYER 7 — CAMPUS BRIEFING / ARRIVAL RUNTIME
+
+Layer 6 taught the College to track what it knows. Layer 7 asks a different
+question: **how long has it been, and what does that mean?**
+
+The briefing sits **above** the runtime, not inside it:
+
+```
+COLLEGE STATE → TEMPORAL STATE → CAMPUS BRIEFING → BEGIN CLASS
+                                                       ↓
+                                                CLASS PREFLIGHT
+                                                       ↓
+                              MEMORY → ATTENTION → COORDINATION
+                                                       ↓
+                                                    TEACHING
+                                                       ↓
+                                               RECORD → AUDIT
+```
+
+## Why the old briefing failed
+
+It asked *"generate me an interesting daily summary."* That is a prose task,
+and a prose task will always produce prose — including on days when nothing
+happened. This one asks:
+
+> Resolve my current institutional state at this exact point in time,
+> determine what has changed since I was last here, determine whether that
+> changes today's operating context, and present the result before handing me
+> into the appropriate class runtime.
+
+## A. Time is operational context, not presentation metadata
+
+`resolveTemporalState()` measures, deterministically and from the application
+clock in Australia/Brisbane:
+
+```
+CURRENT TIME → TIME SINCE LAST COLLEGE SESSION → TIME SINCE LAST EXTERNAL
+ACADEMIC EVENT → TIME SINCE GOAL START → TIME REMAINING TO DEADLINE →
+TIME SINCE LAST REVIEW → TIME SINCE LAST MEANINGFUL PROGRESS →
+CURRENT TIMETABLE POSITION → CURRENT CONTINUITY STATE
+```
+
+Every interval is an `Interval`, and `known: false` is a first-class outcome.
+*"No College session has ever been observed"* must never render as `0 days
+ago`, which would read as "just now" — an invented elapsed time is worse than
+an admitted gap, because every downstream decision inherits the fiction. Each
+interval also carries the **evidence** it was measured from, so no number in
+the briefing is unattributable.
+
+**Meaningful progress is evidenced, not felt.** The temptation is to score
+engagement; that is exactly the psychological profiling the College refuses.
+Instead there is a fixed, inspectable list of ledger events that constitute
+demonstrated movement. Opening a page is not progress. Attendance is
+participation, and it is measured separately.
+
+## B. The briefing changes behaviour with elapsed time
+
+| continuity | threshold | behaviour |
+|---|---|---|
+| `no_history` | nothing recorded | say so; do not invent a past |
+| `normal` | ≤ 3 days | quick orientation |
+| `short_absence` | < 8 days | mention what changed |
+| `extended_absence` | < 22 days | reconstruct continuity |
+| `long_absence` | ≥ 22 days | re-entry briefing |
+
+Thresholds are exported constants, not magic numbers buried in a conditional —
+a student told "you have been away a long time" is entitled to know what the
+College counts as long.
+
+Verified against the same data at four arrival times: 1 day → quick
+orientation, 5 days → what changed, 15 days → reconstruct continuity, 30 days
+→ re-entry, whose directive explicitly restrains the briefing: *"The student is
+returning, not continuing. Establish where the College is before proposing
+anything. Do not open with obligations or a backlog."*
+
+**`?at=` is replay for arrival.** Like Layer 6's session replay it re-asks the
+question against a different clock and changes nothing, so "what would you say
+if I disappeared for three weeks?" is answerable before it happens.
+
+## C. Material change versus routine activity
+
+A class running is **activity**. A curriculum changing is **material**. Without
+that line every briefing becomes noise, and "nothing changed" becomes
+unsayable. `MATERIAL_EVENTS` is a small explicit set; attendance, recall and
+watching are deliberately excluded.
+
+This is what lets the briefing honestly say *"Nothing material changed while
+you were away. Ordinary activity may have continued; none of it altered the
+institution."*
+
+## D. The external academic world
+
+The College does not replace TAFE. It needs to know what the provider
+requires, where the student is in it, and what has happened since — so today's
+session can fit around that reality.
+
+Four rules hold `collegeExternalCommitments` in place:
+
+1. **The provider is the authority.** Arena records what it was told. It never
+   computes external progress and never marks an external unit complete.
+2. **Reported is not verified.** Every commitment carries an evidence level,
+   and a `reported` one says so in its own condition text.
+3. **External pressure is context, not command.** A TAFE deadline may change
+   what today's session should attempt. It must never rewrite the timetable —
+   the Layer 4 rule that "student unavailable" never becomes a permanent
+   timetable change applies here verbatim.
+4. **Silence is not absence.** With nothing recorded the College says it knows
+   nothing about TAFE, rather than inferring that nothing is happening.
+
+A commitment with no date **never becomes urgent**, and recording one with no
+`sourceNote` is refused outright: *"An external fact with no stated source
+becomes indistinguishable from an assumption."*
+
+## E. What the briefing may not do
+
+- **It never generates.** Neither `campus-briefing.ts` nor `temporal-state.ts`
+  imports the AI abstraction — asserted structurally in test 12. A briefing
+  that can call a model can hallucinate an institution.
+- **It never mutates.** Three briefings in a row leave ledger, sessions and
+  memory byte-identical. Arriving is not an institutional act.
+- **It never begins a class.** There is no POST; the route returns 405.
+  Beginning a class stays an explicit, separate call into Layer 6's preflight,
+  where it is validated.
+
+## F. Tests
+
+`scripts/college-layer7-tests.mjs` — 20 assertions, **20/20 passing** and
+idempotent. Layer 6 still 28/28. Total across Layers 5–7: **68 assertions**.
+
+## Layer 7 gaps
+
+1. `TIME SINCE GOAL START` and deadline countdowns are implemented, but no
+   goal currently carries a dated target, so goal pressure is proven by the
+   negative case (urgency is never manufactured) rather than a live deadline.
+2. External commitments are recorded manually. There is no provider
+   integration, and there should not be one until the founder asks: the
+   College would then be asserting facts it cannot verify.
+3. The briefing reads `liveCollegeState()`, which uses the real clock, so the
+   `?at=` simulation moves temporal state but not the timetable position.

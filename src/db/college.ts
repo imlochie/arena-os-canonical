@@ -1256,3 +1256,49 @@ export type CollegeEventLedgerRow = typeof collegeEventLedger.$inferSelect;
 export type CollegeNotificationRow = typeof collegeNotifications.$inferSelect;
 export type CollegeAttentionDecisionRow = typeof collegeAttentionDecisions.$inferSelect;
 export type CollegeInstitutionalDecisionRow = typeof collegeInstitutionalDecisions.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// LAYER 7 — EXTERNAL ACADEMIC WORLD
+// ---------------------------------------------------------------------------
+// The College does not replace TAFE and does not govern it. It needs to know
+// three things: what the external provider REQUIRES, WHERE the student is in
+// it, and WHAT HAS HAPPENED since they last studied — so that today's College
+// session can fit around that reality instead of pretending it does not exist.
+//
+// This is deliberately thin. An external commitment is NOT a course, NOT a
+// curriculum entry and NOT something the College may grade, reschedule or
+// mark complete on the student's behalf. Arena holds operational awareness of
+// it; the provider remains the authority. Recording "TAFE assessment due
+// Friday" must never become the College asserting an academic judgement.
+export const collegeExternalCommitments = pgTable("college_external_commitments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // The provider, e.g. "TAFE Queensland". Free text: the College does not own
+  // a registry of institutions and must not pretend to.
+  provider: text("provider").notNull(),
+  title: text("title").notNull(),
+  // course | unit | assessment | placement | exam | class | admin
+  commitmentType: text("commitment_type").notNull().default("course"),
+  // Where the student is in it, in the PROVIDER's terms, recorded verbatim.
+  // The College never computes this and never advances it automatically.
+  progressState: text("progress_state").notNull().default(""),
+  // ISO dates. Null means genuinely unknown, never "today".
+  startsOn: text("starts_on"),
+  dueOn: text("due_on"),
+  endsOn: text("ends_on"),
+  // active | upcoming | completed | withdrawn | unknown
+  status: text("status").notNull().default("active"),
+  // Who told the College. Evidence, not assumption.
+  sourceNote: text("source_note").notNull().default(""),
+  // How much weight this may carry. The College does not verify provider
+  // records, so it must be honest that this is reported, not confirmed.
+  // reported | documented | verified
+  evidenceLevel: text("evidence_level").notNull().default("reported"),
+  lastConfirmedAt: timestamp("last_confirmed_at"),
+  notes: text("notes").notNull().default(""),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type CollegeExternalCommitmentRow =
+  typeof collegeExternalCommitments.$inferSelect;

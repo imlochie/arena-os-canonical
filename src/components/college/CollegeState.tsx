@@ -212,6 +212,12 @@ export default function CollegeStateView() {
                 Faculty builder →
               </a>
               <a
+                href="/college/campus"
+                className="inline-block rounded-lg border border-slate-500/30 bg-slate-500/10 px-3 py-1.5 text-[12px] font-semibold text-slate-200 hover:bg-slate-500/20"
+              >
+                Campus →
+              </a>
+              <a
                 href="/college/day"
                 className="inline-block rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] font-semibold text-amber-200 hover:bg-amber-500/20"
               >

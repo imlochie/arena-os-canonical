@@ -6,3 +6,7 @@ node_modules/
 .env.*.local
 *.log
 tsconfig.tsbuildinfo
+
+# Local dev database (PGlite) — never committed
+.pgdata/
+.pglite-server.mjs
