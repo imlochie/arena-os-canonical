@@ -22,6 +22,7 @@ async function main() {
     check("Redis", async () => { const redis = getQueueConnection(); const pong = await redis.ping(); return { ok:pong === "PONG", detail:pong }; }),
     check("Storage", async () => { const storage = getStorage(); await storage.healthcheck(); return { ok:true, detail:storage.kind }; }),
   ]);
-  if (results.some((ok) => !ok)) process.exitCode = 1;
+  const failed = results.some((ok) => !ok);
+  setImmediate(() => process.exit(failed ? 1 : 0));
 }
 void main();

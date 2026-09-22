@@ -194,11 +194,18 @@ test.describe("real Compose separation pipeline", () => {
     ).toBe(401);
     expect(
       (
-        await page.request.get(
-          "/api/assets/00000000-0000-0000-0000-000000000000",
-        )
+        await intruder.get("/api/assets/00000000-0000-0000-0000-000000000000")
       ).status(),
     ).toBe(404);
+
+    const ownerContext = await playwrightRequest.newContext({ baseURL });
+    const ownerLogin = await ownerContext.post("/api/auth/login", {
+      data: {
+        identity: owner.username,
+        password: owner.password,
+      },
+    });
+    expect(ownerLogin.status()).toBe(200);
 
     const viewer = await playwrightRequest.newContext({ baseURL });
     const viewerName = `viewer_${stamp}`;
@@ -211,7 +218,7 @@ test.describe("real Compose separation pipeline", () => {
       },
     });
     expect(viewerRegistration.status()).toBe(201);
-    const invite = await page.request.post(
+    const invite = await ownerContext.post(
       `/api/projects/${projectId}/members`,
       { data: { identity: viewerName, role: "viewer" } },
     );
@@ -221,7 +228,7 @@ test.describe("real Compose separation pipeline", () => {
       (await viewer.get(`/api/assets/${stemIds[0]}/waveform`)).status(),
     ).toBe(200);
     const remixes = await (
-      await page.request.get(`/api/projects/${projectId}/remixes`)
+      await ownerContext.get(`/api/projects/${projectId}/remixes`)
     ).json();
     const remixId = remixes.remixes[0].id;
     expect((await viewer.get(`/api/remixes/${remixId}`)).status()).toBe(200);
@@ -253,14 +260,24 @@ test.describe("real Compose separation pipeline", () => {
   });
 
   test("rejects corrupt audio before persistence and records a terminal real-Demucs failure without stems", async ({
-    page,
+    baseURL,
   }) => {
-    const create = await page.request.post("/api/projects", {
+    const ownerContext = await playwrightRequest.newContext({ baseURL });
+    const ownerRegistration = await ownerContext.post("/api/auth/register", {
+      data: {
+        username: `fail_${stamp}`,
+        displayName: "Waveyard Failure Owner",
+        email: `failure-owner-${stamp}@example.test`,
+        password: "long-test-password-123",
+      },
+    });
+    expect(ownerRegistration.status()).toBe(201);
+    const create = await ownerContext.post("/api/projects", {
       data: { title: "Invalid input guard" },
     });
     expect(create.status()).toBe(201);
     const invalidProject = (await create.json()).project.id;
-    const corrupt = await page.request.post("/api/uploads", {
+    const corrupt = await ownerContext.post("/api/uploads", {
       multipart: {
         projectId: invalidProject,
         model: "htdemucs",
@@ -274,17 +291,17 @@ test.describe("real Compose separation pipeline", () => {
     });
     expect(corrupt.status()).toBe(422);
     const invalidProjectState = await (
-      await page.request.get(`/api/projects/${invalidProject}`)
+      await ownerContext.get(`/api/projects/${invalidProject}`)
     ).json();
     expect(invalidProjectState.sources).toHaveLength(0);
     expect(invalidProjectState.jobs).toHaveLength(0);
 
-    const failureProjectResponse = await page.request.post("/api/projects", {
+    const failureProjectResponse = await ownerContext.post("/api/projects", {
       data: { title: "Real Demucs model failure" },
     });
     expect(failureProjectResponse.status()).toBe(201);
     const failureProject = (await failureProjectResponse.json()).project.id;
-    const failedUpload = await page.request.post("/api/uploads", {
+    const failedUpload = await ownerContext.post("/api/uploads", {
       multipart: {
         projectId: failureProject,
         model: "definitely-not-a-demucs-model",
@@ -301,13 +318,13 @@ test.describe("real Compose separation pipeline", () => {
     await expect
       .poll(
         async () =>
-          (await (await page.request.get(`/api/jobs/${failedJobId}`)).json())
+          (await (await ownerContext.get(`/api/jobs/${failedJobId}`)).json())
             .job.status,
         { timeout: 120_000, intervals: [2_000, 5_000] },
       )
       .toBe("failed");
     const failureState = await (
-      await page.request.get(`/api/projects/${failureProject}`)
+      await ownerContext.get(`/api/projects/${failureProject}`)
     ).json();
     expect(failureState.stems).toHaveLength(0);
     expect(failureState.jobs.at(-1).errorMessage).toBeTruthy();

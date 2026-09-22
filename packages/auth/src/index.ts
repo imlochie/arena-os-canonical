@@ -50,7 +50,10 @@ export function sessionCookie(token: string, expiresAt: Date) {
     value: token,
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
+  secure:
+  process.env.SESSION_COOKIE_SECURE === "true" ||
+  (process.env.SESSION_COOKIE_SECURE !== "false" &&
+    process.env.NODE_ENV === "production"),
     path: "/",
     expires: expiresAt,
   };
