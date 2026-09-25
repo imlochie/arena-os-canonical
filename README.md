@@ -55,6 +55,7 @@ The command generates an original deterministic fixture, invokes actual Demucs, 
 - [Storage](docs/STORAGE.md)
 - [Workers](docs/WORKERS.md)
 - [Remix engine](docs/REMIX_ENGINE.md)
+- [CI and release gate](docs/CI.md)
 - [Phase 1 Compose proof report](docs/PHASE_1_REPORT.md)
 - [Phase 2 Studio Core design](docs/PHASE_2_DESIGN.md)
 - [Phase 2 Studio Core report](docs/PHASE_2_REPORT.md)
@@ -67,10 +68,12 @@ The command generates an original deterministic fixture, invokes actual Demucs, 
 | Phase 0 reconnaissance | verified | The predecessor app was unrelated and removed from the runtime path. |
 | TypeScript, unit tests, lint | verified | `typecheck`, seven deterministic unit tests, and lint exit successfully. |
 | Production build | verified | Web and worker builds exit successfully. |
-| Phase 2 Compose release gate | verified | `npm run test:compose` passed the three-test real-stack Playwright suite against the canonical Compose topology. |
+| Phase 2 Compose release gate | verified | `npm run test:compose` passed the four-test real-stack Playwright suite against the canonical Compose topology. |
 | Real Demucs / CPU | verified in Compose | The release gate performed actual CPU Demucs separation, validated persisted stems and waveform/media access, and completed the lifecycle assertions. |
-| Authorization and failure handling | verified in Compose | The same suite exercised project/private-media isolation, collaborator roles, corrupt-audio rejection, and terminal Demucs failure without stem creation. |
+| Waveform recovery and idempotency | verified in Compose | The gate injected waveform storage-boundary failures and an active-worker restart, then verified retry, cleanup, and duplicate-artifact protection. |
+| Authorization and terminal failure handling | verified in Compose | The same suite exercised project/private-media isolation, collaborator roles, corrupt-audio rejection, and terminal Demucs failure without stem creation. |
+| CI / release automation | configured | GitHub Actions performs clean static validation and the same Compose release gate; a successful workflow is required as CI evidence. |
 | CUDA Demucs | not verified | Requires an NVIDIA/CUDA runtime; never inferred or faked. |
-| Operational fault injection | not verified | Worker interruption/recovery, storage faults, partial-artifact cleanup, and retry/idempotency scenarios remain follow-up release coverage. |
+| Production operations | not verified | Cloud storage behavior, backups, monitoring, long-duration load, and production credentials/networking are outside the local Compose gate. |
 
-Read the [Phase 2 report](docs/PHASE_2_REPORT.md) and [Phase 0 report](docs/PHASE_0_REPORT.md) for the verified scope and remaining boundaries.
+Read the [CI and release gate](docs/CI.md), [Phase 2 report](docs/PHASE_2_REPORT.md), and [Phase 0 report](docs/PHASE_0_REPORT.md) for the verified scope and remaining boundaries.

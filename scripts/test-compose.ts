@@ -30,6 +30,7 @@ async function waitForHealth() {
 async function main() {
   try { await command("docker", ["version"], false); } catch { throw new Error("Docker is required for real Compose verification and is not available."); }
   const keep = process.env.WAVEYARD_KEEP_COMPOSE === "1";
+  const keepE2eContainer = process.env.WAVEYARD_KEEP_E2E_CONTAINER === "1";
   // This secret exists only for the lifetime of the Compose release gate. It
   // enables deterministic, authenticated fault injection without exposing a
   // control route in normal deployments.
@@ -42,7 +43,12 @@ async function main() {
     await waitForHealth();
     // `up --build` does not build profile-gated services. Build the E2E image
     // here so this gate can never run an older Playwright test suite.
-    await command("docker", ["compose", "--profile", "test", "run", "--rm", "--build", "e2e"], true, composeEnv);
+    const e2eArgs = ["compose", "--profile", "test", "run", "--build"];
+    if (keepE2eContainer)
+      e2eArgs.push("--name", "waveyard-e2e-release-gate");
+    else e2eArgs.push("--rm");
+    e2eArgs.push("e2e");
+    await command("docker", e2eArgs, true, composeEnv);
   } finally {
     if (!keep) await command("docker", ["compose", "down", "--volumes", "--remove-orphans"], true, composeEnv).catch(() => undefined);
   }

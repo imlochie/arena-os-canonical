@@ -43,24 +43,23 @@ Phase 2 adds a small, real Studio workspace to Waveyard’s existing private upl
 | `npm run build` | passed — web route compilation and worker TypeScript build |
 | `npx playwright test --list` | passed — discovers the real Compose suite including waveform/remix assertions |
 | `git diff --check` | passed |
-| `npm run test:compose` | passed — 3 real-stack Playwright tests against the canonical Docker Compose topology |
+| `npm run test:compose` | passed — 4 real-stack Playwright tests against the canonical Docker Compose topology |
 
 The unit coverage directly tests deterministic PCM min/max reduction, malformed waveform validation, remix numeric bounds, malformed input rejection, and mute/solo semantics.
 
 The Compose release gate exercised the full CPU separation path: browser registration and project creation; Waveyard upload; web-process `probeAudio`/FFprobe validation; durable source, separation-job, and waveform-job creation; Redis/BullMQ worker consumption; real CPU Demucs separation; persisted private stems; worker-generated waveform artifacts; authenticated waveform and media access; playback; remix persistence; and lifecycle completion assertions.
 
-Its three passing tests also established the exercised authorization and terminal-failure behavior: project/private-media isolation and collaborator roles, corrupt-audio rejection, and a terminal real-Demucs failure that did not produce stems. This is runtime evidence for the tested Compose path, not a general claim that every infrastructure-failure mode has been exercised.
+Its four passing tests also established the exercised authorization and failure behavior: project/private-media isolation and collaborator roles, corrupt-audio rejection, a terminal real-Demucs failure that did not produce stems, and waveform recovery after injected storage-boundary faults plus an active-worker restart. The recovery scenario verifies retry/idempotency, partial-artifact cleanup, and duplicate durable-artifact protection. This is runtime evidence for the tested Compose path, not a general claim that every infrastructure-failure mode has been exercised.
 
 ## Remaining verification boundaries
 
 - CUDA Demucs remains unverified and must be tested only on actual NVIDIA-capable infrastructure.
-- The completed gate did not inject interrupted waveform work, worker restart/recovery, storage read/write failures, partial-artifact cleanup, or retry/idempotency failures. Those scenarios require explicit failure-injection coverage.
-- The completed gate is a canonical Compose result. CI/release automation still needs to reproduce it without undocumented workstation state.
+- The completed gate does not establish production-cloud storage behavior, long-duration workload behavior, backup/restore, monitoring, or operational incident handling.
+- Repository CI now invokes the same Compose gate from a clean checkout. A green GitHub Actions workflow is additional CI evidence, not a claim that production operations or CUDA have been verified.
 
 ## Follow-up work
 
-1. Add Compose release-gate failure injection for interrupted waveform work, worker recovery, storage faults, cleanup, retry/idempotency, and duplicate durable-record prevention.
-2. Automate the Compose release gate in repository-level CI.
-3. Add worker-owned remix render/export jobs before representing a remix as a rendered audio artifact.
-4. Add server-side optimistic concurrency conflict handling if concurrent editor support is introduced.
-5. Decide remix/publication licensing policy with the project owner; this change makes no license decision.
+1. Observe and maintain the repository-level Compose CI gate, including its failure diagnostics and cleanup behavior.
+2. Add worker-owned remix render/export jobs before representing a remix as a rendered audio artifact.
+3. Add server-side optimistic concurrency conflict handling if concurrent editor support is introduced.
+4. Decide remix/publication licensing policy with the project owner; this change makes no license decision.

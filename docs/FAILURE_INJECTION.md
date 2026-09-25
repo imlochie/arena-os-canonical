@@ -2,7 +2,7 @@
 
 The Compose release gate runs the real web process, PostgreSQL, Redis/BullMQ, MinIO, worker, FFmpeg, Demucs, and Playwright browser suite. Its fault scenarios use one-time, token-gated worker boundary faults rather than replacing storage, queueing, audio decoding, or separation with mocks.
 
-**Status:** the failure scenarios are implemented in source and must be exercised with `npm run test:compose` on a Docker-capable host. They are not represented as a passing runtime result until that gate completes.
+**Status:** the canonical Docker Compose release gate exercised these scenarios successfully as part of its four-test runtime baseline. The repository CI workflow now reruns the same gate from a clean checkout; a green workflow is CI evidence for this Compose path, not a production-readiness or CUDA claim.
 
 The gate generates a per-run secret in `scripts/test-compose.ts`. It is supplied only to the Compose services for that run. The fault-control route returns `404` unless that secret is configured, and requires the secret on every request. Production deployments must not set `WAVEYARD_TEST_FAULT_TOKEN`.
 
