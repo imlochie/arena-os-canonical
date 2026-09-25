@@ -6,7 +6,7 @@ It has an original digital-studio/music-archive identity and is not affiliated w
 
 ## Current phase
 
-**Phase 2 Studio Core is implemented in source.** The real path now includes worker-derived private waveform artifacts, authenticated waveform delivery, a shared stem audition transport, and persistent non-destructive remix sessions. The platform deliberately does **not** claim worker-side remix rendering/export, publication, discovery, collaboration, moderation, beat detection, or a full DAW.
+**Phase 2 Studio Core is implemented and its canonical Docker Compose release gate has been exercised.** The real path includes worker-derived private waveform artifacts, authenticated waveform delivery, a shared stem audition transport, and persistent non-destructive remix sessions. The platform deliberately does **not** claim worker-side remix rendering/export, publication, discovery, collaboration, moderation, beat detection, or a full DAW.
 
 The implemented path is real code, not seeded output:
 
@@ -62,14 +62,15 @@ The command generates an original deterministic fixture, invokes actual Demucs, 
 
 ## Verification status
 
-| Check | Status in this workspace | Meaning |
+| Check | Status | Meaning |
 | --- | --- | --- |
 | Phase 0 reconnaissance | verified | The predecessor app was unrelated and removed from the runtime path. |
 | TypeScript, unit tests, lint | verified | `typecheck`, seven deterministic unit tests, and lint exit successfully. |
 | Production build | verified | Web and worker builds exit successfully. |
-| Phase 2 Compose E2E discovery | verified | The real-stack browser suite includes waveform, download, remix snapshot/restore, and authorization assertions; it is listed but not executed here. |
-| Real Demucs / CPU | failed honestly | The proof reached the real Python adapter, which stopped because PyTorch/Demucs are absent in this host. |
+| Phase 2 Compose release gate | verified | `npm run test:compose` passed the three-test real-stack Playwright suite against the canonical Compose topology. |
+| Real Demucs / CPU | verified in Compose | The release gate performed actual CPU Demucs separation, validated persisted stems and waveform/media access, and completed the lifecycle assertions. |
+| Authorization and failure handling | verified in Compose | The same suite exercised project/private-media isolation, collaborator roles, corrupt-audio rejection, and terminal Demucs failure without stem creation. |
 | CUDA Demucs | not verified | Requires an NVIDIA/CUDA runtime; never inferred or faked. |
-| Compose upload through Studio | not verified | Docker and dependent services are unavailable in this sandbox. |
+| Operational fault injection | not verified | Worker interruption/recovery, storage faults, partial-artifact cleanup, and retry/idempotency scenarios remain follow-up release coverage. |
 
-Read the [Phase 2 report](docs/PHASE_2_REPORT.md) and [Phase 0 report](docs/PHASE_0_REPORT.md) before treating any unchecked capability as complete.
+Read the [Phase 2 report](docs/PHASE_2_REPORT.md) and [Phase 0 report](docs/PHASE_0_REPORT.md) for the verified scope and remaining boundaries.
