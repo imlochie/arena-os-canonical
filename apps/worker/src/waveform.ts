@@ -10,8 +10,26 @@ import {
   waveformAssets,
   waveformJobs,
 } from "@waveyard/database";
+import {
+  consumeTestFault,
+  recordTestFaultEvent,
+  type TestFault,
+} from "@waveyard/queue";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
 import type { WaveformJobPayload } from "@waveyard/types";
+
+async function consumeStemWaveformFault(
+  payload: WaveformJobPayload,
+  fault: TestFault,
+) {
+  if (!payload.stemAssetId || !(await consumeTestFault(fault))) return false;
+  await recordTestFaultEvent({
+    fault,
+    event: "injected",
+    at: new Date().toISOString(),
+  });
+  return true;
+}
 
 async function updateJob(
   id: string,
@@ -92,6 +110,7 @@ export async function processWaveform(
   const documentPath = join(temporaryDirectory, "waveform.json");
   const storage = getStorage();
   let storedKey: string | undefined;
+  let injectedFault: TestFault | undefined;
   let complete = false;
   try {
     await updateJob(job.id, {
@@ -104,10 +123,19 @@ export async function processWaveform(
       completedAt: null,
     });
     await reportStage("preparing");
+    if (await consumeStemWaveformFault(payload, "waveform-storage-read")) {
+      injectedFault = "waveform-storage-read";
+      throw new Error("Injected waveform storage read failure.");
+    }
     await storage.getToFile(asset.storageKey, inputPath);
 
     await updateJob(job.id, { status: "processing", stage: "decoding" });
     await reportStage("decoding");
+    if (await consumeStemWaveformFault(payload, "waveform-worker-restart")) {
+      // Docker restarts this intentional non-zero exit. BullMQ then recovers
+      // the stalled job using its original durable waveform-job identifier.
+      process.exit(75);
+    }
     const waveform = await generateWaveform(inputPath, pcmPath);
     await writeFile(documentPath, JSON.stringify(waveform));
     const checksumSha256 = await checksumFile(documentPath);
@@ -115,7 +143,15 @@ export async function processWaveform(
     await updateJob(job.id, { status: "finalizing", stage: "storing" });
     await reportStage("storing");
     storedKey = privateObjectKey(job.projectId, "waveform", "json");
+    if (await consumeStemWaveformFault(payload, "waveform-storage-write")) {
+      injectedFault = "waveform-storage-write";
+      throw new Error("Injected waveform storage write failure.");
+    }
     await storage.putFile(storedKey, documentPath, "application/json");
+    if (await consumeStemWaveformFault(payload, "waveform-after-write")) {
+      injectedFault = "waveform-after-write";
+      throw new Error("Injected failure after waveform storage write.");
+    }
     const metadata = JSON.stringify({
       format: waveform.format,
       durationSeconds: waveform.durationSeconds,
@@ -164,8 +200,23 @@ export async function processWaveform(
     });
     throw error;
   } finally {
-    if (!complete && storedKey)
-      await storage.delete(storedKey).catch(() => undefined);
+    if (!complete && storedKey) {
+      let cleanupVerified = false;
+      try {
+        await storage.delete(storedKey);
+        cleanupVerified = !(await storage.exists(storedKey));
+      } catch {
+        // Preserve the original lifecycle failure; the fault audit makes an
+        // unsuccessful cleanup visible to the release gate.
+      }
+      if (injectedFault === "waveform-after-write")
+        await recordTestFaultEvent({
+          fault: injectedFault,
+          event: "cleanup",
+          cleanupVerified,
+          at: new Date().toISOString(),
+        });
+    }
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 }

@@ -57,6 +57,7 @@ services:
       SEPARATION_MODEL: htdemucs
       STEM_DEVICE: cpu
       WORKER_CONCURRENCY: "1"
+      WAVEYARD_TEST_FAULT_TOKEN: ${WAVEYARD_TEST_FAULT_TOKEN:-}
     depends_on:
       postgres: { condition: service_healthy }
   web:
@@ -77,6 +78,7 @@ services:
       start_period: 20s
   worker:
     build: { context: ., dockerfile: docker/worker.Dockerfile }
+    restart: on-failure
     environment:
       <<: *waveyard_env
       SESSION_COOKIE_SECURE: "false"
@@ -96,6 +98,7 @@ services:
     environment:
       WAVEYARD_E2E_URL: http://web:3000
       PYTHON_BIN: python3
+      WAVEYARD_TEST_FAULT_TOKEN: ${WAVEYARD_TEST_FAULT_TOKEN:-}
     depends_on:
       web: { condition: service_healthy }
       worker: { condition: service_healthy }

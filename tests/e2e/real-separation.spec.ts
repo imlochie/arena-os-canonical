@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect, request as playwrightRequest, test } from "@playwright/test";
+import {
+  expect,
+  request as playwrightRequest,
+  test,
+  type APIRequestContext,
+} from "@playwright/test";
 
 const fixture = resolve(
   process.cwd(),
@@ -16,6 +21,36 @@ const owner = {
 };
 let projectId = "";
 let stemIds: string[] = [];
+const testFaultToken = process.env.WAVEYARD_TEST_FAULT_TOKEN;
+const waveformFaults = [
+  "waveform-storage-read",
+  "waveform-storage-write",
+  "waveform-after-write",
+  "waveform-worker-restart",
+] as const;
+type WaveformFault = (typeof waveformFaults)[number];
+
+async function armWaveformFault(
+  context: APIRequestContext,
+  fault: WaveformFault,
+) {
+  const response = await context.post("/api/test/faults", {
+    headers: { "x-waveyard-test-fault-token": testFaultToken! },
+    data: { fault },
+  });
+  expect(response.status()).toBe(201);
+}
+
+async function faultEvents(context: APIRequestContext, fault: WaveformFault) {
+  const response = await context.get(`/api/test/faults?fault=${fault}`, {
+    headers: { "x-waveyard-test-fault-token": testFaultToken! },
+  });
+  expect(response.status()).toBe(200);
+  return (await response.json()).events as Array<{
+    event: string;
+    cleanupVerified?: boolean;
+  }>;
+}
 
 test.describe.configure({ mode: "serial" });
 test.describe("real Compose separation pipeline", () => {
@@ -158,6 +193,100 @@ test.describe("real Compose separation pipeline", () => {
       `/api/remixes/${remixId}/versions/${versionId}/restore`,
     );
     expect(restore.status()).toBe(200);
+  });
+
+  test("recovers real waveform work after storage faults and a worker restart without duplicate artifacts", async ({
+    baseURL,
+  }) => {
+    test.skip(!testFaultToken, "The fault-injection gate is enabled by npm run test:compose.");
+    test.setTimeout(15 * 60 * 1000);
+    const context = await playwrightRequest.newContext({ baseURL });
+    try {
+      const login = await context.post("/api/auth/login", {
+        data: { identity: owner.username, password: owner.password },
+      });
+      expect(login.status()).toBe(200);
+      for (const fault of waveformFaults) await armWaveformFault(context, fault);
+
+      const create = await context.post("/api/projects", {
+        data: { title: "Waveform recovery fixture" },
+      });
+      expect(create.status()).toBe(201);
+      const recoveryProjectId = (await create.json()).project.id as string;
+      const upload = await context.post("/api/uploads", {
+        multipart: {
+          projectId: recoveryProjectId,
+          model: "htdemucs",
+          device: "cpu",
+          file: {
+            name: "fixture.wav",
+            mimeType: "audio/wav",
+            buffer: readFileSync(fixture),
+          },
+        },
+      });
+      expect(upload.status()).toBe(201);
+
+      await expect
+        .poll(
+          async () => {
+            const response = await context.get(
+              `/api/projects/${recoveryProjectId}`,
+            );
+            if (!response.ok()) return { stems: 0, jobs: [] as string[] };
+            const body = await response.json();
+            return {
+              stems: body.stems.length,
+              jobs: body.waveformJobs.map((job: { status: string }) => job.status),
+            };
+          },
+          { timeout: 14 * 60 * 1000, intervals: [2_000, 5_000, 10_000] },
+        )
+        .toEqual({
+          stems: 4,
+          jobs: ["complete", "complete", "complete", "complete", "complete"],
+        });
+
+      const state = await (
+        await context.get(`/api/projects/${recoveryProjectId}`)
+      ).json();
+      expect(state.sources).toHaveLength(1);
+      expect(state.stems).toHaveLength(4);
+      expect(state.waveformJobs).toHaveLength(5);
+      expect(state.waveforms).toHaveLength(5);
+      const stemWaveformJobs = state.waveformJobs.filter(
+        (job: { stemAssetId: string | null }) => Boolean(job.stemAssetId),
+      );
+      expect(stemWaveformJobs).toHaveLength(4);
+      expect(
+        stemWaveformJobs.every((job: { attempts: number }) => job.attempts >= 2),
+      ).toBe(true);
+      expect(new Set(state.stems.map((stem: { id: string }) => stem.id)).size).toBe(4);
+      expect(
+        new Set(
+          state.waveforms.map(
+            (waveform: { sourceAssetId: string | null; stemAssetId: string | null }) =>
+              waveform.sourceAssetId ?? waveform.stemAssetId,
+          ),
+        ).size,
+      ).toBe(5);
+
+      for (const fault of waveformFaults) {
+        await expect.poll(() => faultEvents(context, fault)).toContainEqual(
+          expect.objectContaining({ event: "injected" }),
+        );
+      }
+      await expect
+        .poll(() => faultEvents(context, "waveform-after-write"))
+        .toContainEqual(
+          expect.objectContaining({
+            event: "cleanup",
+            cleanupVerified: true,
+          }),
+        );
+    } finally {
+      await context.dispose();
+    }
   });
 
   test("enforces project and private-media isolation, including collaborator roles", async ({

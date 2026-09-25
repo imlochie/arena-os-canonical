@@ -1,6 +1,7 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -15,6 +16,7 @@ export interface StorageProvider {
   getToFile(key: string, localPath: string): Promise<void>;
   // Bounded derived metadata (waveforms), never large audio delivery.
   getBuffer(key: string, maxBytes: number): Promise<Buffer>;
+  exists(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   createDownloadUrl(
     key: string,
@@ -64,6 +66,14 @@ class LocalStorageProvider implements StorageProvider {
     if (details.size > maxBytes)
       throw new Error("Derived metadata exceeds the allowed read size.");
     return fs.readFile(location);
+  }
+  async exists(key: string) {
+    try {
+      await fs.access(safeLocalPath(this.root, key));
+      return true;
+    } catch {
+      return false;
+    }
   }
   async delete(key: string) {
     await fs.rm(safeLocalPath(this.root, key), { force: true });
@@ -135,6 +145,19 @@ class S3StorageProvider implements StorageProvider {
     if (bytes.byteLength > maxBytes)
       throw new Error("Derived metadata exceeds the allowed read size.");
     return bytes;
+  }
+  async exists(key: string) {
+    try {
+      await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      return true;
+    } catch (error) {
+      const status = (error as { $metadata?: { httpStatusCode?: number } })
+        .$metadata?.httpStatusCode;
+      if (status === 404) return false;
+      throw error;
+    }
   }
   async delete(key: string) {
     await this.client.send(

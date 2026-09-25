@@ -1,8 +1,17 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
-function command(commandName: string, args: string[], inherit = true) {
+function command(
+  commandName: string,
+  args: string[],
+  inherit = true,
+  env: NodeJS.ProcessEnv = process.env,
+) {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(commandName, args, { stdio: inherit ? "inherit" : "pipe" });
+    const child = spawn(commandName, args, {
+      stdio: inherit ? "inherit" : "pipe",
+      env,
+    });
     child.once("error", (error) => reject(error));
     child.once("close", (code) => code === 0 ? resolve() : reject(new Error(`${commandName} ${args.join(" ")} exited ${code}`)));
   });
@@ -21,12 +30,19 @@ async function waitForHealth() {
 async function main() {
   try { await command("docker", ["version"], false); } catch { throw new Error("Docker is required for real Compose verification and is not available."); }
   const keep = process.env.WAVEYARD_KEEP_COMPOSE === "1";
+  // This secret exists only for the lifetime of the Compose release gate. It
+  // enables deterministic, authenticated fault injection without exposing a
+  // control route in normal deployments.
+  const composeEnv = {
+    ...process.env,
+    WAVEYARD_TEST_FAULT_TOKEN: randomBytes(32).toString("hex"),
+  };
   try {
-    await command("docker", ["compose", "up", "--build", "-d"]);
+    await command("docker", ["compose", "up", "--build", "-d"], true, composeEnv);
     await waitForHealth();
-    await command("docker", ["compose", "--profile", "test", "run", "--rm", "e2e"]);
+    await command("docker", ["compose", "--profile", "test", "run", "--rm", "e2e"], true, composeEnv);
   } finally {
-    if (!keep) await command("docker", ["compose", "down", "--volumes", "--remove-orphans"]).catch(() => undefined);
+    if (!keep) await command("docker", ["compose", "down", "--volumes", "--remove-orphans"], true, composeEnv).catch(() => undefined);
   }
 }
 void main();
