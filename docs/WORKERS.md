@@ -6,8 +6,9 @@ The worker is an independent process. It consumes BullMQ jobs and is the only ru
 
 - `separation` — one processing job drives the real Demucs adapter and persists validated `vocals`, `drums`, `bass`, and `other` outputs.
 - `waveform` — one durable job targets exactly one source or stem asset and persists a validated peak document.
+- `export` — one durable job renders an immutable persisted `RemixVersion` through FFmpeg, validates the resulting WAV, and persists exactly one private `ExportAsset`.
 
-Preview/transcode/remix-render/export jobs are not implemented by Phase 2 and must not be represented as available.
+Preview/transcode jobs remain unimplemented. Export is intentionally limited to the persisted RemixVersion WAV path described in [Studio Export](PHASE_3_EXPORT.md).
 
 Jobs record durable status, attempts, timestamps, named stage, safe error summary, and idempotency key. Separation additionally records engine/model/device metadata. Percentages are shown only if measurable; otherwise the UI displays a truthful named stage.
 

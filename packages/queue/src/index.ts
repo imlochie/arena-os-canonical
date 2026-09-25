@@ -1,14 +1,20 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
-import type { SeparationJobPayload, WaveformJobPayload } from "@waveyard/types";
+import type {
+  ExportJobPayload,
+  SeparationJobPayload,
+  WaveformJobPayload,
+} from "@waveyard/types";
 
 export const SEPARATION_QUEUE = "waveyard-separation";
 export const WAVEFORM_QUEUE = "waveyard-waveform";
+export const EXPORT_QUEUE = "waveyard-export";
 export const TEST_FAULTS = [
   "waveform-storage-read",
   "waveform-storage-write",
   "waveform-after-write",
   "waveform-worker-restart",
+  "export-render",
 ] as const;
 export type TestFault = (typeof TEST_FAULTS)[number];
 
@@ -19,6 +25,7 @@ const TEST_FAULT_TTL_SECONDS = 15 * 60;
 let connection: IORedis | undefined;
 let separationQueue: Queue<SeparationJobPayload> | undefined;
 let waveformQueue: Queue<WaveformJobPayload> | undefined;
+let exportQueue: Queue<ExportJobPayload> | undefined;
 
 export function getQueueConnection() {
   if (!connection) {
@@ -45,6 +52,14 @@ export function getWaveformQueue() {
   return waveformQueue;
 }
 
+export function getExportQueue() {
+  if (!exportQueue)
+    exportQueue = new Queue<ExportJobPayload>(EXPORT_QUEUE, {
+      connection: getQueueConnection(),
+    });
+  return exportQueue;
+}
+
 export async function enqueueSeparation(payload: SeparationJobPayload) {
   return getSeparationQueue().add("separate", payload, {
     jobId: payload.processingJobId,
@@ -62,6 +77,16 @@ export async function enqueueWaveform(payload: WaveformJobPayload) {
     backoff: { type: "exponential", delay: 5_000 },
     removeOnComplete: { age: 60 * 60 * 24, count: 5000 },
     removeOnFail: { age: 60 * 60 * 24 * 7, count: 5000 },
+  });
+}
+
+export async function enqueueExport(payload: ExportJobPayload) {
+  return getExportQueue().add("render", payload, {
+    jobId: payload.exportJobId,
+    attempts: 2,
+    backoff: { type: "exponential", delay: 10_000 },
+    removeOnComplete: { age: 60 * 60 * 24, count: 1000 },
+    removeOnFail: { age: 60 * 60 * 24 * 7, count: 1000 },
   });
 }
 

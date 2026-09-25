@@ -30,6 +30,15 @@ export type WaveformJobPayload = {
   sourceAssetId?: string;
   stemAssetId?: string;
 };
+
+export type ExportJobPayload = {
+  exportJobId: string;
+  projectId: string;
+  remixSessionId: string;
+  remixVersionId: string;
+  format: "wav";
+};
+
 export type WaveformPeaks = { min: number[]; max: number[] };
 export type WaveformDocument = {
   format: "waveyard-peaks-v1";

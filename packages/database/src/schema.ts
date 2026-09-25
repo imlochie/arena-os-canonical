@@ -191,3 +191,54 @@ export const remixVersions = pgTable("remix_versions", {
   snapshot: text("snapshot").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("remix_versions_session_id_idx").on(table.remixSessionId)]);
+
+// An export request is immutable provenance over a named persisted remix
+// version. The worker is the only process allowed to render its output.
+export const exportJobs = pgTable("export_jobs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "restrict" }),
+  remixVersionId: uuid("remix_version_id").notNull().references(() => remixVersions.id, { onDelete: "restrict" }),
+  requestedById: uuid("requested_by_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  format: text("format").notNull().default("wav"),
+  sampleRate: integer("sample_rate").notNull().default(44100),
+  channels: integer("channels").notNull().default(2),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("export_jobs_idempotency_unique").on(table.idempotencyKey),
+  index("export_jobs_project_id_idx").on(table.projectId),
+  index("export_jobs_version_id_idx").on(table.remixVersionId),
+  index("export_jobs_status_idx").on(table.status),
+]);
+
+// An export asset exists only after the worker stored and validated the exact
+// output of its linked export job. It never contains a browser-only render.
+export const exportAssets = pgTable("export_assets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  exportJobId: uuid("export_job_id").notNull().references(() => exportJobs.id, { onDelete: "cascade" }),
+  remixVersionId: uuid("remix_version_id").notNull().references(() => remixVersions.id, { onDelete: "restrict" }),
+  storageKey: text("storage_key").notNull(),
+  filename: text("filename").notNull(),
+  checksumSha256: text("checksum_sha256").notNull(),
+  durationSeconds: integer("duration_seconds").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  channels: integer("channels").notNull(),
+  codec: text("codec").notNull(),
+  format: text("format").notNull(),
+  fileSizeBytes: integer("file_size_bytes").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("export_assets_job_unique").on(table.exportJobId),
+  uniqueIndex("export_assets_storage_key_unique").on(table.storageKey),
+  index("export_assets_project_id_idx").on(table.projectId),
+  index("export_assets_version_id_idx").on(table.remixVersionId),
+]);

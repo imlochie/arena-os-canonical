@@ -21,6 +21,9 @@ const owner = {
 };
 let projectId = "";
 let stemIds: string[] = [];
+let remixId = "";
+let remixVersionId = "";
+let exportJobId = "";
 const testFaultToken = process.env.WAVEYARD_TEST_FAULT_TOKEN;
 const waveformFaults = [
   "waveform-storage-read",
@@ -29,14 +32,16 @@ const waveformFaults = [
   "waveform-worker-restart",
 ] as const;
 type WaveformFault = (typeof waveformFaults)[number];
+type TestFault = WaveformFault | "export-render";
 
-async function armWaveformFault(
+async function armTestFault(
   context: APIRequestContext,
-  fault: WaveformFault,
+  fault: TestFault,
+  count = 1,
 ) {
   const response = await context.post("/api/test/faults", {
     headers: { "x-waveyard-test-fault-token": testFaultToken! },
-    data: { fault },
+    data: { fault, count },
   });
   expect(response.status()).toBe(201);
 }
@@ -174,7 +179,7 @@ test.describe("real Compose separation pipeline", () => {
       await page.request.get(`/api/projects/${projectId}/remixes`)
     ).json();
     expect(remixes.remixes).toHaveLength(1);
-    const remixId = remixes.remixes[0].id;
+    remixId = remixes.remixes[0].id;
     const savedRemix = await (
       await page.request.get(`/api/remixes/${remixId}`)
     ).json();
@@ -188,9 +193,9 @@ test.describe("real Compose separation pipeline", () => {
       { data: { name: "Initial arrangement" } },
     );
     expect(version.status()).toBe(201);
-    const versionId = (await version.json()).version.id;
+    remixVersionId = (await version.json()).version.id;
     const restore = await page.request.post(
-      `/api/remixes/${remixId}/versions/${versionId}/restore`,
+      `/api/remixes/${remixId}/versions/${remixVersionId}/restore`,
     );
     expect(restore.status()).toBe(200);
   });
@@ -206,7 +211,7 @@ test.describe("real Compose separation pipeline", () => {
         data: { identity: owner.username, password: owner.password },
       });
       expect(login.status()).toBe(200);
-      for (const fault of waveformFaults) await armWaveformFault(context, fault);
+      for (const fault of waveformFaults) await armTestFault(context, fault);
 
       const create = await context.post("/api/projects", {
         data: { title: "Waveform recovery fixture" },
@@ -289,6 +294,105 @@ test.describe("real Compose separation pipeline", () => {
     }
   });
 
+  test("renders a persisted remix version through the worker and keeps export retries private and idempotent", async ({
+    baseURL,
+  }) => {
+    test.skip(!testFaultToken, "The export failure path is enabled by npm run test:compose.");
+    const context = await playwrightRequest.newContext({ baseURL });
+    try {
+      const login = await context.post("/api/auth/login", {
+        data: { identity: owner.username, password: owner.password },
+      });
+      expect(login.status()).toBe(200);
+
+      const requested = await context.post(
+        `/api/remix-versions/${remixVersionId}/exports`,
+        { data: { format: "wav" } },
+      );
+      expect(requested.status()).toBe(201);
+      exportJobId = (await requested.json()).job.id;
+      const repeated = await context.post(
+        `/api/remix-versions/${remixVersionId}/exports`,
+        { data: { format: "wav" } },
+      );
+      expect(repeated.status()).toBe(200);
+      expect((await repeated.json()).job.id).toBe(exportJobId);
+
+      await expect
+        .poll(
+          async () => {
+            const response = await context.get(`/api/exports/${exportJobId}`);
+            if (!response.ok()) return { status: "http", asset: false };
+            const body = await response.json();
+            return { status: body.job.status, asset: Boolean(body.asset) };
+          },
+          { timeout: 180_000, intervals: [1_000, 2_000, 5_000] },
+        )
+        .toEqual({ status: "complete", asset: true });
+      const completed = await (
+        await context.get(`/api/exports/${exportJobId}`)
+      ).json();
+      expect(completed.asset.remixVersionId).toBe(remixVersionId);
+      expect(completed.asset.storageKey).toBeUndefined();
+      expect(completed.asset.format).toBe("wav");
+      expect(completed.asset.checksumSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(completed.asset.fileSizeBytes).toBeGreaterThan(1000);
+      const media = await context.get(`/api/exports/${exportJobId}/media`, {
+        headers: { Range: "bytes=0-2047" },
+      });
+      expect(media.status()).toBe(206);
+      expect(media.headers()["content-type"]).toContain("audio/wav");
+
+      const failedVersion = await context.post(
+        `/api/remixes/${remixId}/versions`,
+        { data: { name: "Terminal export failure" } },
+      );
+      expect(failedVersion.status()).toBe(201);
+      const failedVersionId = (await failedVersion.json()).version.id;
+      await armTestFault(context, "export-render", 2);
+      const failedRequest = await context.post(
+        `/api/remix-versions/${failedVersionId}/exports`,
+        { data: { format: "wav" } },
+      );
+      expect(failedRequest.status()).toBe(201);
+      const failedExportId = (await failedRequest.json()).job.id;
+      await expect
+        .poll(
+          async () =>
+            (await (await context.get(`/api/exports/${failedExportId}`)).json())
+              .job.status,
+          { timeout: 90_000, intervals: [1_000, 2_000, 5_000] },
+        )
+        .toBe("failed");
+      const failed = await (
+        await context.get(`/api/exports/${failedExportId}`)
+      ).json();
+      expect(failed.asset).toBeNull();
+      expect(failed.job.errorCode).toBe("render_failed");
+
+      const retry = await context.post(`/api/exports/${failedExportId}/retry`);
+      expect(retry.status()).toBe(200);
+      await expect
+        .poll(
+          async () => {
+            const body = await (
+              await context.get(`/api/exports/${failedExportId}`)
+            ).json();
+            return { status: body.job.status, asset: Boolean(body.asset) };
+          },
+          { timeout: 180_000, intervals: [1_000, 2_000, 5_000] },
+        )
+        .toEqual({ status: "complete", asset: true });
+      const retried = await (
+        await context.get(`/api/exports/${failedExportId}`)
+      ).json();
+      expect(retried.job.attempts).toBeGreaterThanOrEqual(3);
+      expect(retried.asset.remixVersionId).toBe(failedVersionId);
+    } finally {
+      await context.dispose();
+    }
+  });
+
   test("enforces project and private-media isolation, including collaborator roles", async ({
     page,
     request,
@@ -312,6 +416,10 @@ test.describe("real Compose separation pipeline", () => {
     );
     expect(
       (await intruder.get(`/api/assets/${stemIds[0]}/waveform`)).status(),
+    ).toBe(403);
+    expect((await intruder.get(`/api/exports/${exportJobId}`)).status()).toBe(403);
+    expect(
+      (await intruder.get(`/api/exports/${exportJobId}/media`)).status(),
     ).toBe(403);
     expect(
       (await request.get(`${baseURL}/api/assets/${stemIds[0]}`)).status(),
@@ -356,6 +464,17 @@ test.describe("real Compose separation pipeline", () => {
     expect(
       (await viewer.get(`/api/assets/${stemIds[0]}/waveform`)).status(),
     ).toBe(200);
+    expect((await viewer.get(`/api/exports/${exportJobId}`)).status()).toBe(200);
+    expect(
+      (await viewer.get(`/api/exports/${exportJobId}/media`)).status(),
+    ).toBe(200);
+    expect(
+      (
+        await viewer.post(`/api/remix-versions/${remixVersionId}/exports`, {
+          data: { format: "wav" },
+        })
+      ).status(),
+    ).toBe(403);
     const remixes = await (
       await ownerContext.get(`/api/projects/${projectId}/remixes`)
     ).json();

@@ -43,12 +43,11 @@ Project ──< StemAsset
 Project ──< ProcessingJob
 Project ──< WaveformJob ──< WaveformAsset
 Project ──< RemixSession ──< RemixTrack ──< RemixClip
-                              └──< RemixVersion
-Project ──< Export
+                              └──< RemixVersion ──< ExportJob ── ExportAsset
 Project ──< Comment / Activity / Publication
 ```
 
-A `SourceAsset` stores original file metadata, checksum and private storage key. A `StemAsset` stores its separation job, source type, engine/model/version, actual probed metadata, checksum and private storage key. A `WaveformAsset` belongs to exactly one source or stem asset and records a private, validated peak-document key; its JSON payload is never stored in PostgreSQL or exposed in project-list responses. A `RemixClip` references an existing project stem with timeline/source offsets and gain; it never copies the audio source.
+A `SourceAsset` stores original file metadata, checksum and private storage key. A `StemAsset` stores its separation job, source type, engine/model/version, actual probed metadata, checksum and private storage key. A `WaveformAsset` belongs to exactly one source or stem asset and records a private, validated peak-document key; its JSON payload is never stored in PostgreSQL or exposed in project-list responses. A `RemixClip` references an existing project stem with timeline/source offsets and gain; it never copies the audio source. An `ExportJob` is immutable provenance over one persisted `RemixVersion`; its one `ExportAsset`, if successful, stores validated output metadata and a private object key without exposing that key to clients.
 
 ## Separation engine contract
 

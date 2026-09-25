@@ -18,6 +18,10 @@ The Studio timeline permits start/length edits and duplicate/delete operations. 
 
 The Studio transport is a real shared browser audition path for persisted stems: it has synchronized play/pause/stop/seek, a loop range, master gain, and per-stem gain/pan/mute/solo. It uses media elements and Web Audio nodes; it does not render, encode, upload, or claim to export audio. Browser-level timing correction is not sample-perfect synchronization.
 
+## Export boundary
+
+Phase 3 adds a worker-owned WAV export over an immutable persisted `RemixVersion`; see [Studio Export](PHASE_3_EXPORT.md). The worker reads the version snapshot and private stems, renders through FFmpeg, validates the result, and records one private `ExportAsset` for its durable `ExportJob`. Browser playback remains an audition path and is never substituted for an export.
+
 ## Deliberately absent
 
-Phase 2 has no worker-side remix renderer, mixdown/export asset, BPM detection, beat grid, fades, arbitrary track creation, crossfades, collaboration/conflict resolution, or public publication. A future export must be a worker-owned job that reads the authoritative persisted arrangement and emits a newly validated private audio asset. It must never be substituted with browser playback.
+The Studio still has no BPM detection, beat grid, fades, arbitrary track creation, crossfades, collaboration/conflict resolution, public publication, video export, plugin processing, advanced mastering, or GPU rendering.
