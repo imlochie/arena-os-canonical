@@ -40,7 +40,9 @@ async function main() {
   try {
     await command("docker", ["compose", "up", "--build", "-d"], true, composeEnv);
     await waitForHealth();
-    await command("docker", ["compose", "--profile", "test", "run", "--rm", "e2e"], true, composeEnv);
+    // `up --build` does not build profile-gated services. Build the E2E image
+    // here so this gate can never run an older Playwright test suite.
+    await command("docker", ["compose", "--profile", "test", "run", "--rm", "--build", "e2e"], true, composeEnv);
   } finally {
     if (!keep) await command("docker", ["compose", "down", "--volumes", "--remove-orphans"], true, composeEnv).catch(() => undefined);
   }
