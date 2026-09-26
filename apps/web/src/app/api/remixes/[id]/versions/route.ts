@@ -16,7 +16,15 @@ async function snapshot(remix: typeof remixSessions.$inferSelect) {
   const tracks = await db.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id)).orderBy(asc(remixTracks.sortOrder));
   const clips = tracks.length ? await db.select().from(remixClips).where(inArray(remixClips.remixTrackId, tracks.map((track) => track.id))) : [];
   return {
-    name: remix.name, masterVolume: remix.masterVolume, loopStartMs: remix.loopStartMs, loopEndMs: remix.loopEndMs,
+    name: remix.name,
+    masterVolume: remix.masterVolume,
+    loopStartMs: remix.loopStartMs,
+    loopEndMs: remix.loopEndMs,
+    tempoBpm: remix.tempoBpm,
+    timeSignatureNumerator: remix.timeSignatureNumerator,
+    timeSignatureDenominator: remix.timeSignatureDenominator,
+    gridDivision: remix.gridDivision,
+    snapEnabled: remix.snapEnabled,
     tracks: tracks.map((track) => ({ ...track, clips: clips.filter((clip) => clip.remixTrackId === track.id) })),
   };
 }

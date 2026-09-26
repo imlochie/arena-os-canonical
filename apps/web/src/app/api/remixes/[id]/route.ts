@@ -9,7 +9,7 @@ import {
 } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
-import { normaliseRemixState } from "@/lib/remix";
+import { crossfadeError, normaliseRemixState } from "@/lib/remix";
 
 async function getRemixAccess(
   userId: string,
@@ -158,6 +158,9 @@ export async function PUT(
         { error: "A clip extends beyond its source stem." },
         { status: 422 },
       );
+    const crossfadeMessage = input.tracks.map(crossfadeError).find(Boolean);
+    if (crossfadeMessage)
+      return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
     await db.transaction(async (tx) => {
       await tx
         .update(remixSessions)
@@ -166,6 +169,11 @@ export async function PUT(
           masterVolume: input.masterVolume,
           loopStartMs: input.loopStartMs,
           loopEndMs: input.loopEndMs,
+          tempoBpm: input.tempoBpm,
+          timeSignatureNumerator: input.timeSignatureNumerator,
+          timeSignatureDenominator: input.timeSignatureDenominator,
+          gridDivision: input.gridDivision,
+          snapEnabled: input.snapEnabled,
           version: remix.version + 1,
           updatedAt: new Date(),
         })
@@ -198,6 +206,8 @@ export async function PUT(
           durationMs: clip.durationMs,
           sourceOffsetMs: clip.sourceOffsetMs,
           gain: clip.gain,
+          fadeInMs: clip.fadeInMs,
+          fadeOutMs: clip.fadeOutMs,
         })),
       );
       if (clips.length) await tx.insert(remixClips).values(clips);
