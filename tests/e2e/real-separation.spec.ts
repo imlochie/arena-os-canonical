@@ -729,7 +729,16 @@ test.describe("real Compose separation pipeline", () => {
       expect((await moderator.post(`/api/moderation/projects/${projectId}/actions`, { data: { action: "remove", reason: "Final moderation removal." } })).status()).toBe(200);
       expect((await anonymous.get(`/api/public/projects/${projectId}`)).status()).toBe(404);
       expect((await ownerContext.get(`/api/projects/${projectId}`)).status()).toBe(200);
-      expect((await ownerContext.put(`/api/projects/${projectId}/publication`, { data: { visibility: "public", rightsAcknowledged: true } })).status()).toBe(409);
+      const completedExport = await (
+        await ownerContext.get(`/api/exports/${exportJobId}`)
+      ).json();
+      expect((await ownerContext.put(`/api/projects/${projectId}/publication`, {
+        data: {
+          visibility: "public",
+          rightsAcknowledged: true,
+          publishedExportAssetId: completedExport.asset.id,
+        },
+      })).status()).toBe(409);
       const audit = await (await ownerContext.get(`/api/projects/${projectId}/publication/audit`)).json();
       const events = audit.events as Array<{ eventType: string; reason: string | null }>;
       expect(events.some((event) => event.eventType === "report_submitted" && event.reason)).toBe(true);
