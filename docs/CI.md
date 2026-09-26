@@ -33,12 +33,15 @@ The CI job keeps Compose resources temporarily so it can collect logs when a fai
 
 ## Evidence boundary
 
-The Compose release gate verifies the checked-in four-test real-stack suite, including:
+The Compose release gate verifies the checked-in five-test real-stack suite, including:
 
 - authenticated project creation and original upload;
 - FFprobe validation, durable source/job records, real CPU Demucs separation, persisted stems, waveform/media access, browser playback, remix persistence, and completion lifecycle assertions;
 - waveform retry/recovery after injected storage-boundary failures and a worker restart, including duplicate-artifact and cleanup assertions;
+- worker-owned persisted RemixVersion WAV export, private export retrieval, terminal render failure without an asset, same-job manual retry, and successful re-render;
 - collaborator/private-media authorization;
 - corrupt-audio rejection and a terminal Demucs failure with no generated stems.
 
-A green workflow is evidence for that local Compose topology and its asserted CPU processing path. It is **not** a production-readiness claim. It does not by itself verify production credentials/networking/backups/monitoring, cloud-object-store behavior outside MinIO, long-duration load behavior, or CUDA/GPU execution. CUDA remains a separate check on NVIDIA-capable infrastructure.
+At `232fe8ae23b1f6705a60e148b59c1e6778243b66`, a Docker-capable host ran `npm run test:compose` successfully: `5 passed (3.3m)`. This is local Compose evidence, not a GitHub Actions result: Actions runner allocation is presently blocked by an external billing limitation.
+
+A green workflow, when one is available, is evidence for that local Compose topology and its asserted CPU processing path. It is **not** a production-readiness claim. It does not by itself verify production credentials/networking/backups/monitoring, cloud-object-store behavior outside MinIO, long-duration load behavior, or CUDA/GPU execution. CUDA remains a separate check on NVIDIA-capable infrastructure.
