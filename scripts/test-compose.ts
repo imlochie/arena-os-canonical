@@ -42,11 +42,15 @@ async function main() {
     WAVEYARD_INITIAL_MODERATOR_EMAILS: "moderator@waveyard.test",
   };
   try {
-    await command("docker", ["compose", "up", "--build", "-d"], true, composeEnv);
+    // Build every service, including the profile-gated E2E image, exactly once.
+    // `compose run --build` would rebuild the worker's large local ML image after
+    // the stack is healthy, delaying the actual Playwright gate by tens of minutes.
+    await command("docker", ["compose", "--profile", "test", "build"], true, composeEnv);
+    await command("docker", ["compose", "up", "-d"], true, composeEnv);
     await waitForHealth();
-    // `up --build` does not build profile-gated services. Build the E2E image
-    // here so this gate can never run an older Playwright test suite.
-    const e2eArgs = ["compose", "--profile", "test", "run", "--build"];
+    // The images above are already current for this invocation. Never ask run
+    // to rebuild them: this must start the test container, not a second bake.
+    const e2eArgs = ["compose", "--profile", "test", "run"];
     if (keepE2eContainer)
       e2eArgs.push("--name", "waveyard-e2e-release-gate");
     else e2eArgs.push("--rm");
