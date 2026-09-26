@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { StudioCore } from "./StudioCore";
+import { PublicationPanel } from "./PublicationPanel";
 
 type ProjectData = {
   project: {
@@ -9,7 +10,10 @@ type ProjectData = {
     description: string;
     licenseCode: string;
     visibility: string;
+    publicationStatus: string;
+    moderationStatus: string;
   };
+  role: "viewer" | "contributor" | "editor" | "owner";
   stems: any[];
   waveforms: any[];
   waveformJobs: Array<{
@@ -133,6 +137,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           open or return later.
         </p>
       )}
+      <PublicationPanel
+        projectId={projectId}
+        editable={data.role === "owner" || data.role === "editor"}
+      />
       {data.stems.length ? (
         <StudioCore
           projectId={projectId}

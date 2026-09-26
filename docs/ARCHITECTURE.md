@@ -44,10 +44,10 @@ Project ──< ProcessingJob
 Project ──< WaveformJob ──< WaveformAsset
 Project ──< RemixSession ──< RemixTrack ──< RemixClip
                               └──< RemixVersion ──< ExportJob ── ExportAsset
-Project ──< Comment / Activity / Publication
+Project ──< ProjectAuditEvent
 ```
 
-A `SourceAsset` stores original file metadata, checksum and private storage key. A `StemAsset` stores its separation job, source type, engine/model/version, actual probed metadata, checksum and private storage key. A `WaveformAsset` belongs to exactly one source or stem asset and records a private, validated peak-document key; its JSON payload is never stored in PostgreSQL or exposed in project-list responses. A `RemixClip` references an existing project stem with timeline/source offsets and gain; it never copies the audio source. An `ExportJob` is immutable provenance over one persisted `RemixVersion`; its one `ExportAsset`, if successful, stores validated output metadata and a private object key without exposing that key to clients.
+A `SourceAsset` stores original file metadata, checksum and private storage key. A `StemAsset` stores its separation job, source type, engine/model/version, actual probed metadata, checksum and private storage key. A `WaveformAsset` belongs to exactly one source or stem asset and records a private, validated peak-document key; its JSON payload is never stored in PostgreSQL or exposed in project-list responses. A `RemixClip` references an existing project stem with timeline/source offsets and gain; it never copies the audio source. An `ExportJob` is immutable provenance over one persisted `RemixVersion`; its one `ExportAsset`, if successful, stores validated output metadata and a private object key without exposing that key to clients. A published project may point to exactly one selected completed `ExportAsset`; append-only `ProjectAuditEvent` records rights acknowledgement, publication state changes, reports, and moderator decisions.
 
 ## Separation engine contract
 
@@ -77,7 +77,7 @@ A processing job has an idempotency key scoped to project/source/model. Worker r
 
 `StorageProvider` supports `local`, `s3`, and MinIO through the S3 protocol. Private keys use random UUID-derived paths; APIs authorize project membership before issuing a download URL or streaming a local object. Storage credentials stay server-side.
 
-Visibility is a project policy (`private`, `unlisted`, `public`), not a client UI preference. Private source/stem/export assets require a server-side membership check. Public assets are exposed only once publication and license rules permit them.
+Visibility is a project policy (`private`, `unlisted`, `public`), not a client UI preference. Private source/stem/export assets require a server-side membership check. Only a project's explicitly selected completed final export can be publicly streamed once publication, license, and moderation rules permit it; original sources, stems, and non-selected exports remain private.
 
 ## Remix principles
 
