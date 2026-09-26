@@ -58,6 +58,8 @@ services:
       STEM_DEVICE: cpu
       WORKER_CONCURRENCY: "1"
       WAVEYARD_TEST_FAULT_TOKEN: ${WAVEYARD_TEST_FAULT_TOKEN:-}
+      # Optional one-time bootstrap allowlist. Roles are persisted at registration.
+      WAVEYARD_INITIAL_MODERATOR_EMAILS: ${WAVEYARD_INITIAL_MODERATOR_EMAILS:-}
     depends_on:
       postgres: { condition: service_healthy }
   web:

@@ -7,8 +7,11 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createReadStream, existsSync, promises as fs } from "node:fs";
+import { Readable } from "node:stream";
 import { dirname, join, normalize, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+
+export type StorageRead = { stream: Readable; size: number; start: number; end: number };
 
 export interface StorageProvider {
   readonly kind: "local" | "s3";
@@ -24,6 +27,7 @@ export interface StorageProvider {
     downloadName?: string,
   ): Promise<string | null>;
   getLocalPath(key: string): string | null;
+  openReadStream(key: string, range?: { start: number; end: number }): Promise<StorageRead>;
   healthcheck(): Promise<void>;
 }
 
@@ -87,6 +91,15 @@ class LocalStorageProvider implements StorageProvider {
   }
   getLocalPath(key: string) {
     return safeLocalPath(this.root, key);
+  }
+  async openReadStream(key: string, range?: { start: number; end: number }) {
+    const location = safeLocalPath(this.root, key);
+    const details = await fs.stat(location);
+    const start = range?.start ?? 0;
+    const end = range?.end ?? details.size - 1;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= details.size)
+      throw new Error("Invalid object byte range.");
+    return { stream: createReadStream(location, { start, end }), size: details.size, start, end };
   }
   async healthcheck() {
     await fs.mkdir(this.root, { recursive: true });
@@ -183,6 +196,22 @@ class S3StorageProvider implements StorageProvider {
   }
   getLocalPath() {
     return null;
+  }
+  async openReadStream(key: string, range?: { start: number; end: number }) {
+    const head = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+    const size = Number(head.ContentLength ?? 0);
+    const start = range?.start ?? 0;
+    const end = range?.end ?? size - 1;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= size)
+      throw new Error("Invalid object byte range.");
+    const response = await this.client.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      Range: `bytes=${start}-${end}`,
+    }));
+    if (!response.Body || !(response.Body instanceof Readable))
+      throw new Error("Storage object body is unavailable.");
+    return { stream: response.Body, size, start, end };
   }
   async healthcheck() {
     await this.client.send(

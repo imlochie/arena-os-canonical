@@ -14,6 +14,7 @@ export const users = pgTable("users", {
   avatarUrl: text("avatar_url"),
   bio: text("bio").notNull().default(""),
   emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+  platformRole: text("platform_role").notNull().default("member"),
   ...timestamps,
 }, (table) => [uniqueIndex("users_username_unique").on(table.username), uniqueIndex("users_email_unique").on(table.email)]);
 
@@ -39,6 +40,9 @@ export const projects = pgTable("projects", {
   visibility: text("visibility").notNull().default("private"),
   publicationStatus: text("publication_status").notNull().default("draft"),
   moderationStatus: text("moderation_status").notNull().default("active"),
+  // SQL migration owns this forward foreign key because export_assets is declared
+  // later in this module; application publication logic also verifies project scope.
+  publishedExportAssetId: uuid("published_export_asset_id"),
   ...timestamps,
 }, (table) => [index("projects_owner_id_idx").on(table.ownerId), index("projects_visibility_idx").on(table.visibility)]);
 
@@ -241,4 +245,19 @@ export const exportAssets = pgTable("export_assets", {
   uniqueIndex("export_assets_storage_key_unique").on(table.storageKey),
   index("export_assets_project_id_idx").on(table.projectId),
   index("export_assets_version_id_idx").on(table.remixVersionId),
+]);
+
+// Publication history is append-only. Current public state remains canonical on
+// projects; these events preserve the actor, reason, and normalized transition.
+export const projectAuditEvents = pgTable("project_audit_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  actorId: uuid("actor_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  eventType: text("event_type").notNull(),
+  reason: text("reason"),
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("project_audit_events_project_created_idx").on(table.projectId, table.createdAt),
+  index("project_audit_events_type_created_idx").on(table.eventType, table.createdAt),
 ]);

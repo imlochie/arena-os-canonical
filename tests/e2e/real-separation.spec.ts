@@ -24,6 +24,7 @@ let stemIds: string[] = [];
 let remixId = "";
 let remixVersionId = "";
 let exportJobId = "";
+let retriedExportJobId = "";
 const testFaultToken = process.env.WAVEYARD_TEST_FAULT_TOKEN;
 const waveformFaults = [
   "waveform-storage-read",
@@ -383,6 +384,7 @@ test.describe("real Compose separation pipeline", () => {
           { timeout: 180_000, intervals: [1_000, 2_000, 5_000] },
         )
         .toEqual({ status: "complete", asset: true });
+      retriedExportJobId = failedExportId;
       const retried = await (
         await context.get(`/api/exports/${failedExportId}`)
       ).json();
@@ -576,5 +578,164 @@ test.describe("real Compose separation pipeline", () => {
     ).json();
     expect(failureState.stems).toHaveLength(0);
     expect(failureState.jobs.at(-1).errorMessage).toBeTruthy();
+  });
+
+
+  test("publishes an explicit final export without exposing private media or project internals", async ({
+    baseURL,
+    request,
+  }) => {
+    const anonymous = await playwrightRequest.newContext({ baseURL });
+    const ownerContext = await playwrightRequest.newContext({ baseURL });
+    try {
+      expect((await anonymous.get(`/api/public/projects/${projectId}`)).status()).toBe(404);
+      const privateCatalogue = await (await anonymous.get(`/api/public/projects?q=deterministic`)).json();
+      expect(privateCatalogue.projects.some((project: { id: string }) => project.id === projectId)).toBe(false);
+      const ownerLogin = await ownerContext.post("/api/auth/login", {
+        data: { identity: owner.username, password: owner.password },
+      });
+      expect(ownerLogin.status()).toBe(200);
+      const exportState = await (
+        await ownerContext.get(`/api/exports/${exportJobId}`)
+      ).json();
+      const selectedAssetId = exportState.asset.id as string;
+      const viewerName = `publication_viewer_${stamp}`;
+      const viewer = await playwrightRequest.newContext({ baseURL });
+      try {
+        expect((await viewer.post("/api/auth/register", { data: {
+          username: viewerName,
+          displayName: "Publication Viewer",
+          email: `publication-viewer-${stamp}@example.test`,
+          password: "long-test-password-123",
+        } })).status()).toBe(201);
+        expect((await ownerContext.post(`/api/projects/${projectId}/members`, {
+          data: { identity: viewerName, role: "viewer" },
+        })).status()).toBe(201);
+        expect((await viewer.put(`/api/projects/${projectId}/publication`, {
+          data: { visibility: "public", publishedExportAssetId: selectedAssetId, rightsAcknowledged: true },
+        })).status()).toBe(403);
+      } finally { await viewer.dispose(); }
+
+      const missingAcknowledgement = await ownerContext.put(
+        `/api/projects/${projectId}/publication`,
+        { data: { visibility: "public", publishedExportAssetId: selectedAssetId } },
+      );
+      expect(missingAcknowledgement.status()).toBe(422);
+      expect((await missingAcknowledgement.json()).code).toBe("rights_acknowledgement_required");
+      const published = await ownerContext.put(`/api/projects/${projectId}/publication`, {
+        data: {
+          visibility: "public",
+          publishedExportAssetId: selectedAssetId,
+          rightsAcknowledged: true,
+          downloadPermission: "public",
+        },
+      });
+      expect(published.status()).toBe(200);
+      expect((await published.json()).publication.visibility).toBe("public");
+
+      const publicDetail = await anonymous.get(`/api/public/projects/${projectId}`);
+      expect(publicDetail.status()).toBe(200);
+      const publicBody = await publicDetail.json();
+      expect(publicBody.project.title).toBe("Original deterministic fixture");
+      expect(publicBody.release.storageKey).toBeUndefined();
+      expect(publicBody.release.id).toBeUndefined();
+      expect(JSON.stringify(publicBody)).not.toContain("storageKey");
+      expect(JSON.stringify(publicBody)).not.toContain("remixVersionId");
+      expect(JSON.stringify(publicBody)).not.toContain("exportJobId");
+      expect(JSON.stringify(publicBody)).not.toContain("members");
+      expect(JSON.stringify(publicBody)).not.toContain("stems");
+      const publicRelease = await anonymous.get(`/api/public/projects/${projectId}/release`, {
+        headers: { Range: "bytes=0-2047" },
+        maxRedirects: 0,
+      });
+      expect(publicRelease.status()).toBe(206);
+      expect(publicRelease.headers()["content-type"]).toContain("audio/wav");
+      expect(publicRelease.headers()["location"]).toBeUndefined();
+      const publicDownload = await anonymous.get(`/api/public/projects/${projectId}/release?download=1`);
+      expect(publicDownload.status()).toBe(200);
+      expect(publicDownload.headers()["content-disposition"]).toContain("attachment");
+      expect((await anonymous.get(`/api/assets/${stemIds[0]}`)).status()).toBe(401);
+      expect((await anonymous.get(`/api/exports/${exportJobId}`)).status()).toBe(401);
+      expect((await anonymous.get(`/api/exports/${retriedExportJobId}`)).status()).toBe(401);
+
+      const catalogue = await anonymous.get(`/api/public/projects?q=deterministic`);
+      expect(catalogue.status()).toBe(200);
+      expect((await catalogue.json()).projects.some((project: { id: string }) => project.id === projectId)).toBe(true);
+      const audit = await ownerContext.get(`/api/projects/${projectId}/publication/audit`);
+      expect(audit.status()).toBe(200);
+      const auditEvents = (await audit.json()).events as Array<{ eventType: string; actorId: string; metadata: { before: unknown; after: { visibility: string } } }>;
+      expect(auditEvents.some((event) => event.eventType === "rights_acknowledged" && Boolean(event.actorId))).toBe(true);
+      expect(auditEvents.some((event) => event.eventType === "published" && event.metadata.after.visibility === "public")).toBe(true);
+
+      const unlisted = await ownerContext.put(`/api/projects/${projectId}/publication`, {
+        data: { visibility: "unlisted", publishedExportAssetId: selectedAssetId, rightsAcknowledged: true },
+      });
+      expect(unlisted.status()).toBe(200);
+      expect((await anonymous.get(`/api/public/projects/${projectId}`)).status()).toBe(200);
+      const hiddenFromCatalogue = await (await anonymous.get(`/api/public/projects?q=deterministic`)).json();
+      expect(hiddenFromCatalogue.projects.some((project: { id: string }) => project.id === projectId)).toBe(false);
+
+      expect((await ownerContext.put(`/api/projects/${projectId}/publication`, {
+        data: { visibility: "public", publishedExportAssetId: selectedAssetId, rightsAcknowledged: true },
+      })).status()).toBe(200);
+      expect((await ownerContext.put(`/api/projects/${projectId}/publication`, {
+        data: { visibility: "private" },
+      })).status()).toBe(200);
+      expect((await anonymous.get(`/api/public/projects/${projectId}`)).status()).toBe(404);
+      expect((await ownerContext.put(`/api/projects/${projectId}/publication`, {
+        data: { visibility: "public", publishedExportAssetId: selectedAssetId, rightsAcknowledged: true, downloadPermission: "public" },
+      })).status()).toBe(200);
+    } finally {
+      await anonymous.dispose();
+      await ownerContext.dispose();
+    }
+  });
+
+  test("records reports and moderator hide, restore, and remove decisions without deleting owner data", async ({ baseURL }) => {
+    const anonymous = await playwrightRequest.newContext({ baseURL });
+    const ownerContext = await playwrightRequest.newContext({ baseURL });
+    const reporter = await playwrightRequest.newContext({ baseURL });
+    const moderator = await playwrightRequest.newContext({ baseURL });
+    try {
+      expect((await ownerContext.post("/api/auth/login", { data: { identity: owner.username, password: owner.password } })).status()).toBe(200);
+      expect((await reporter.post("/api/auth/register", { data: {
+        username: `reporter_${stamp}`,
+        displayName: "Reporter",
+        email: `reporter-${stamp}@example.test`,
+        password: "long-test-password-123",
+      } })).status()).toBe(201);
+      expect((await moderator.post("/api/auth/register", { data: {
+        username: "moderator",
+        displayName: "Waveyard Moderator",
+        email: "moderator@waveyard.test",
+        password: "long-test-password-123",
+      } })).status()).toBe(201);
+      const report = await reporter.post(`/api/public/projects/${projectId}/reports`, { data: { reason: "This needs a moderation review." } });
+      expect(report.status()).toBe(201);
+      expect((await reporter.post(`/api/public/projects/${projectId}/reports`, { data: { reason: "This needs a moderation review." } })).status()).toBe(200);
+      expect((await anonymous.get(`/api/public/projects/${projectId}`)).status()).toBe(200);
+      expect((await reporter.post(`/api/moderation/projects/${projectId}/actions`, { data: { action: "hide", reason: "Not authorized." } })).status()).toBe(403);
+      const queue = await moderator.get("/api/moderation/projects?status=reported");
+      expect(queue.status()).toBe(200);
+      expect((await queue.json()).projects.some((project: { id: string }) => project.id === projectId)).toBe(true);
+      expect((await moderator.post(`/api/moderation/projects/${projectId}/actions`, { data: { action: "hide", reason: "Temporarily hidden for review." } })).status()).toBe(200);
+      expect((await anonymous.get(`/api/public/projects/${projectId}`)).status()).toBe(404);
+      expect((await anonymous.get(`/api/public/projects/${projectId}/release`)).status()).toBe(404);
+      expect((await ownerContext.get(`/api/projects/${projectId}`)).status()).toBe(200);
+      expect((await moderator.post(`/api/moderation/projects/${projectId}/actions`, { data: { action: "restore", reason: "Review completed." } })).status()).toBe(200);
+      expect((await anonymous.get(`/api/public/projects/${projectId}`)).status()).toBe(200);
+      expect((await moderator.post(`/api/moderation/projects/${projectId}/actions`, { data: { action: "remove", reason: "Final moderation removal." } })).status()).toBe(200);
+      expect((await anonymous.get(`/api/public/projects/${projectId}`)).status()).toBe(404);
+      expect((await ownerContext.get(`/api/projects/${projectId}`)).status()).toBe(200);
+      expect((await ownerContext.put(`/api/projects/${projectId}/publication`, { data: { visibility: "public", rightsAcknowledged: true } })).status()).toBe(409);
+      const audit = await (await ownerContext.get(`/api/projects/${projectId}/publication/audit`)).json();
+      const events = audit.events as Array<{ eventType: string; reason: string | null }>;
+      expect(events.some((event) => event.eventType === "report_submitted" && event.reason)).toBe(true);
+      expect(events.some((event) => event.eventType === "hidden" && event.reason === "Temporarily hidden for review.")).toBe(true);
+      expect(events.some((event) => event.eventType === "restored" && event.reason === "Review completed.")).toBe(true);
+      expect(events.some((event) => event.eventType === "removed" && event.reason === "Final moderation removal.")).toBe(true);
+    } finally {
+      await anonymous.dispose(); await ownerContext.dispose(); await reporter.dispose(); await moderator.dispose();
+    }
   });
 });

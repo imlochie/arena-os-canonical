@@ -37,6 +37,9 @@ async function main() {
   const composeEnv = {
     ...process.env,
     WAVEYARD_TEST_FAULT_TOKEN: randomBytes(32).toString("hex"),
+    // The Phase 4 Compose test registers this address and verifies persisted
+    // moderator-only decisions through the same HTTP boundary.
+    WAVEYARD_INITIAL_MODERATOR_EMAILS: "moderator@waveyard.test",
   };
   try {
     await command("docker", ["compose", "up", "--build", "-d"], true, composeEnv);
