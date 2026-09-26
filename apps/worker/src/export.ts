@@ -21,6 +21,8 @@ type SnapshotClip = {
   durationMs: number;
   sourceOffsetMs: number;
   gain: number;
+  fadeInMs: number;
+  fadeOutMs: number;
 };
 type SnapshotTrack = {
   stemAssetId: string;
@@ -83,17 +85,43 @@ function parseSnapshot(raw: string): ExportSnapshot {
         const item = clip as Record<string, unknown>;
         if (typeof item.stemAssetId !== "string")
           throw new ExportFailure("invalid_snapshot", "Persisted remix clip is invalid.");
+        const durationMs = finite(item.durationMs, 1, 86_400_000);
+        const fadeInMs = item.fadeInMs === undefined
+          ? 0
+          : finite(item.fadeInMs, 0, durationMs);
+        const fadeOutMs = item.fadeOutMs === undefined
+          ? 0
+          : finite(item.fadeOutMs, 0, durationMs);
+        if (fadeInMs + fadeOutMs > durationMs)
+          throw new ExportFailure("invalid_snapshot", "Persisted remix clip fades exceed its duration.");
         return {
           stemAssetId: item.stemAssetId,
           timelineStartMs: finite(item.timelineStartMs, 0, 86_400_000),
-          durationMs: finite(item.durationMs, 1, 86_400_000),
+          durationMs,
           sourceOffsetMs: finite(item.sourceOffsetMs, 0, 86_400_000),
           gain: finite(item.gain, 0, 4),
+          fadeInMs,
+          fadeOutMs,
         };
       }),
     };
   });
   return { masterVolume: finite(value.masterVolume, 0, 2), tracks };
+}
+
+function assertValidCrossfades(tracks: SnapshotTrack[]) {
+  for (const track of tracks) {
+    const clips = [...track.clips].sort((left, right) => left.timelineStartMs - right.timelineStartMs);
+    for (let index = 0; index < clips.length - 1; index += 1) {
+      const left = clips[index];
+      const right = clips[index + 1];
+      const overlap = left.timelineStartMs + left.durationMs - right.timelineStartMs;
+      if (overlap <= 0) continue;
+      if ((left.fadeOutMs > 0 || right.fadeInMs > 0) &&
+          (left.fadeOutMs !== overlap || right.fadeInMs !== overlap))
+        throw new ExportFailure("invalid_snapshot", "Persisted remix crossfade is invalid.");
+    }
+  }
 }
 
 function seconds(milliseconds: number) {
@@ -204,6 +232,7 @@ export async function processExport(
     await reportStage("resolving-remix");
 
     const snapshot = parseSnapshot(version.snapshot);
+    assertValidCrossfades(snapshot.tracks);
     const hasSolo = snapshot.tracks.some((track) => track.solo && !track.muted);
     const activeTracks = snapshot.tracks
       .filter((track) => !track.muted && (!hasSolo || track.solo))
@@ -254,7 +283,14 @@ export async function processExport(
       const gains = panGains(clip.track.pan);
       const volume = (clip.track.volume * clip.gain).toFixed(6);
       const delay = Math.round(clip.timelineStartMs);
-      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(clip.durationMs)},asetpts=PTS-STARTPTS,aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume},adelay=${delay}|${delay}[clip${index}]`;
+      const fades = [
+        clip.fadeInMs > 0 ? `afade=t=in:st=0:d=${seconds(clip.fadeInMs)}` : "",
+        clip.fadeOutMs > 0
+          ? `afade=t=out:st=${seconds(clip.durationMs - clip.fadeOutMs)}:d=${seconds(clip.fadeOutMs)}`
+          : "",
+      ].filter(Boolean).join(",");
+      const fadeSegment = fades ? `,${fades}` : "";
+      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(clip.durationMs)},asetpts=PTS-STARTPTS,aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
     });
     const labels = clips.map((_clip, index) => `[clip${index}]`).join("");
     filters.push(
