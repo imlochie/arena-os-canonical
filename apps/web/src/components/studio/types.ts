@@ -1,4 +1,5 @@
 import type { RemixStateInput, RemixTrackInput } from "@/lib/remix";
+import type { GridDivision } from "@/lib/timing";
 
 export type Stem = {
   id: string;
@@ -36,6 +37,11 @@ export type Remix = {
   masterVolume: number;
   loopStartMs: number;
   loopEndMs: number | null;
+  tempoBpm: number;
+  timeSignatureNumerator: number;
+  timeSignatureDenominator: number;
+  gridDivision: GridDivision;
+  snapEnabled: boolean;
   tracks: PersistedTrack[];
 };
 
@@ -47,6 +53,11 @@ export function remixState(remix: Remix): RemixStateInput {
     masterVolume: remix.masterVolume,
     loopStartMs: remix.loopStartMs,
     loopEndMs: remix.loopEndMs,
+    tempoBpm: remix.tempoBpm,
+    timeSignatureNumerator: remix.timeSignatureNumerator,
+    timeSignatureDenominator: remix.timeSignatureDenominator,
+    gridDivision: remix.gridDivision,
+    snapEnabled: remix.snapEnabled,
     tracks: remix.tracks,
   };
 }

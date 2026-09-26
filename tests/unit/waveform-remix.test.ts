@@ -112,3 +112,73 @@ describe("remix arrangement normalisation", () => {
     ).toBeNull();
   });
 });
+
+import { moveClip, splitClipAt, trimClipLeft, trimClipRight } from "../../apps/web/src/lib/arrangement";
+import { barMs, beatMs, musicalPosition, snapTimelineMs } from "../../apps/web/src/lib/timing";
+
+describe("musical timing and clip operations", () => {
+  const timing = {
+    tempoBpm: 120,
+    timeSignatureNumerator: 4,
+    timeSignatureDenominator: 4,
+    gridDivision: "beat" as const,
+    snapEnabled: true,
+  };
+  const clip = {
+    stemAssetId: "stem-a",
+    timelineStartMs: 1000,
+    durationMs: 4000,
+    sourceOffsetMs: 500,
+    gain: 1,
+    fadeInMs: 0,
+    fadeOutMs: 0,
+  };
+
+  it("calculates stable musical positions and snapping", () => {
+    expect(beatMs(timing)).toBe(500);
+    expect(barMs(timing)).toBe(2000);
+    expect(snapTimelineMs(760, timing)).toBe(1000);
+    expect(musicalPosition(2500, timing)).toEqual({ bar: 2, beat: 2, subdivision: 1 });
+  });
+
+  it("preserves source media while moving, trimming, and splitting clips", () => {
+    expect(moveClip(clip, 2250).timelineStartMs).toBe(2250);
+    expect(trimClipLeft(clip, 1500, 10_000)).toMatchObject({
+      timelineStartMs: 1500,
+      sourceOffsetMs: 1000,
+      durationMs: 3500,
+    });
+    expect(trimClipRight(clip, 3500, 10_000).durationMs).toBe(2500);
+    expect(splitClipAt(clip, 2500)).toMatchObject({
+      left: { durationMs: 1500, sourceOffsetMs: 500 },
+      right: { timelineStartMs: 2500, sourceOffsetMs: 2000, durationMs: 2500 },
+    });
+  });
+
+  it("defaults missing Phase 5 snapshot fields without changing legacy clips", () => {
+    const normalized = normaliseRemixState({
+      masterVolume: 1,
+      loopStartMs: 0,
+      loopEndMs: null,
+      tracks: [{
+        id: "track-a",
+        stemAssetId: "stem-a",
+        name: "Legacy track",
+        sortOrder: 0,
+        volume: 1,
+        pan: 0,
+        muted: false,
+        solo: false,
+        clips: [{ stemAssetId: "stem-a", timelineStartMs: 0, durationMs: 1000, sourceOffsetMs: 0, gain: 1 }],
+      }],
+    });
+    expect(normalized).toMatchObject({
+      tempoBpm: 120,
+      timeSignatureNumerator: 4,
+      timeSignatureDenominator: 4,
+      gridDivision: "beat",
+      snapEnabled: true,
+      tracks: [{ clips: [{ fadeInMs: 0, fadeOutMs: 0 }] }],
+    });
+  });
+});

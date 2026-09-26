@@ -157,6 +157,11 @@ export const remixSessions = pgTable("remix_sessions", {
   masterVolume: real("master_volume").notNull().default(1),
   loopStartMs: integer("loop_start_ms").notNull().default(0),
   loopEndMs: integer("loop_end_ms"),
+  tempoBpm: real("tempo_bpm").notNull().default(120),
+  timeSignatureNumerator: integer("time_signature_numerator").notNull().default(4),
+  timeSignatureDenominator: integer("time_signature_denominator").notNull().default(4),
+  gridDivision: text("grid_division").notNull().default("beat"),
+  snapEnabled: boolean("snap_enabled").notNull().default(true),
   version: integer("version").notNull().default(1),
   ...timestamps,
 }, (table) => [index("remix_sessions_project_id_idx").on(table.projectId), index("remix_sessions_owner_id_idx").on(table.ownerId)]);
@@ -173,7 +178,7 @@ export const remixTracks = pgTable("remix_tracks", {
   solo: boolean("solo").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index("remix_tracks_session_id_idx").on(table.remixSessionId), uniqueIndex("remix_tracks_session_stem_unique").on(table.remixSessionId, table.stemAssetId)]);
+}, (table) => [index("remix_tracks_session_id_idx").on(table.remixSessionId), index("remix_tracks_session_stem_idx").on(table.remixSessionId, table.stemAssetId)]);
 
 export const remixClips = pgTable("remix_clips", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -183,6 +188,8 @@ export const remixClips = pgTable("remix_clips", {
   durationMs: integer("duration_ms").notNull(),
   sourceOffsetMs: integer("source_offset_ms").notNull().default(0),
   gain: real("gain").notNull().default(1),
+  fadeInMs: integer("fade_in_ms").notNull().default(0),
+  fadeOutMs: integer("fade_out_ms").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("remix_clips_track_id_idx").on(table.remixTrackId), index("remix_clips_asset_id_idx").on(table.stemAssetId)]);
