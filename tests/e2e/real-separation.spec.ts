@@ -599,7 +599,9 @@ test.describe("real Compose separation pipeline", () => {
         await ownerContext.get(`/api/exports/${exportJobId}`)
       ).json();
       const selectedAssetId = exportState.asset.id as string;
-      const viewerName = `publication_viewer_${stamp}`;
+      // Keep this distinct from the earlier collaborator while remaining under
+      // the production username limit of 32 characters.
+      const viewerName = `pub_${stamp}`;
       const viewer = await playwrightRequest.newContext({ baseURL });
       try {
         expect((await viewer.post("/api/auth/register", { data: {
