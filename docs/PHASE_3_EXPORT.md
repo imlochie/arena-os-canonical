@@ -58,7 +58,7 @@ persisted RemixVersion
 
 It also exercises a terminal worker render fault without an asset, a retry of that same durable job, request idempotency, and collaborator/intruder authorization behavior.
 
-**Status:** implementation and static validation are tracked with the source change. The Phase 3 scenario is not runtime-verified until `npm run test:compose` completes on a Docker-capable host. The existing four-test Compose baseline remains independently verified. GitHub Actions runner execution remains an external billing blocker and is not a Phase 3 repository defect.
+**Status: VERIFIED.** On a Docker-capable host, `npm run test:compose` passed all five real-stack scenarios in 3.3 minutes at commit `232fe8ae23b1f6705a60e148b59c1e6778243b66`. The expanded suite includes the original four Compose acceptance paths plus the persisted RemixVersion → worker export → injected terminal render failure → same-job manual retry → successful re-render lifecycle. This is local Docker Compose evidence, not GitHub Actions CI evidence. GitHub Actions runner execution remains blocked by an external billing limitation and is not a Phase 3 repository defect. See [the Phase 3 report](PHASE_3_REPORT.md) for the evidence and remaining boundaries.
 
 ## Deliberately absent
 
