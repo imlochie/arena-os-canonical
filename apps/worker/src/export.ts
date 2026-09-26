@@ -254,7 +254,7 @@ export async function processExport(
       const gains = panGains(clip.track.pan);
       const volume = (clip.track.volume * clip.gain).toFixed(6);
       const delay = Math.round(clip.timelineStartMs);
-      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(clip.durationMs)},asetpts=PTS-STARTPTS,aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=c0*${gains.left}|c1=c1*${gains.right},volume=${volume},adelay=${delay}|${delay}[clip${index}]`;
+      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(clip.durationMs)},asetpts=PTS-STARTPTS,aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume},adelay=${delay}|${delay}[clip${index}]`;
     });
     const labels = clips.map((_clip, index) => `[clip${index}]`).join("");
     filters.push(
