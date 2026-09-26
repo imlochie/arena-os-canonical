@@ -300,7 +300,7 @@ test.describe("real Compose separation pipeline", () => {
     await page.goto(`/projects/${twoSourceProjectId}`);
     await expect(page.locator('[data-testid^="source-stems-"]').first()).toBeVisible();
     await page
-      .getByLabel("Add source audio")
+      .locator('input[type="file"][name="file"][aria-label="Add source audio"]')
       .setInputFiles({
         name: "song-b.wav",
         mimeType: "audio/wav",
