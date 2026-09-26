@@ -358,9 +358,12 @@ test.describe("real Compose separation pipeline", () => {
     await page.reload();
     await expect(page.getByTestId(`source-stems-${sourceA.id}`)).toContainText("song-a.wav");
     await expect(page.getByTestId(`source-stems-${sourceB.id}`)).toContainText("song-b.wav");
-    await page
-      .getByRole("button", { name: /song-b\.wav — Vocals/ })
-      .click();
+    const sourceBVocalsSelect = page
+      .getByTestId(`source-stems-${sourceB.id}`)
+      .locator("button.stem-select")
+      .filter({ hasText: /^song-b\.wav — Vocals/ });
+    await expect(sourceBVocalsSelect).toHaveCount(1);
+    await sourceBVocalsSelect.click();
     await expect(
       page.getByRole("heading", { name: "song-b.wav — Vocals" }),
     ).toBeVisible();
