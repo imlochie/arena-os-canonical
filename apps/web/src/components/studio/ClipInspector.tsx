@@ -2,7 +2,7 @@
 
 import { WaveformCanvas } from "@/components/WaveformCanvas";
 import type { useStemTransport } from "@/lib/useStemTransport";
-import { bytes, clock, type Source, type Stem } from "./types";
+import { bytes, clock, sourceStemLabel, type Source, type Stem } from "./types";
 
 type Transport = ReturnType<typeof useStemTransport>;
 
@@ -17,19 +17,22 @@ export function ClipInspector({
   duration: number;
   transport: Transport;
 }) {
+  const label = sourceStemLabel(source, stem.stemType);
   return (
     <aside className="inspector">
       <span className="eyebrow">Selected stem</span>
-      <h3>{stem.stemType}</h3>
+      <h3>{label}</h3>
       <WaveformCanvas
         assetId={stem.id}
-        label={`${stem.stemType} inspector waveform`}
+        label={`${label} inspector waveform`}
         compact
         position={transport.position}
         duration={duration}
         onSeek={transport.seek}
       />
       <dl>
+        <dt>Source</dt>
+        <dd>{source?.originalFilename ?? "Unavailable source metadata"}</dd>
         <dt>Duration</dt>
         <dd>{clock(stem.durationSeconds)}</dd>
         <dt>Format</dt>

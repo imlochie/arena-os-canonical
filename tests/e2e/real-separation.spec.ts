@@ -207,7 +207,9 @@ test.describe("real Compose separation pipeline", () => {
     await expect(
       page.getByRole("heading", { name: "Remix timeline" }),
     ).toBeVisible();
-    await page.getByLabel("Vocals clip 1 start").fill("2");
+    await page
+      .getByLabel("copyright-safe-fixture.wav — Vocals clip 1 start")
+      .fill("2");
     await page.getByLabel("Tempo BPM").fill("98");
     await page.getByLabel("Time signature numerator").fill("3");
     await page.getByLabel("Grid division").selectOption("half-beat");
@@ -224,7 +226,8 @@ test.describe("real Compose separation pipeline", () => {
     ).json();
     expect(
       savedRemix.tracks.find(
-        (track: { name: string }) => track.name === "Vocals",
+        (track: { name: string }) =>
+          track.name === "copyright-safe-fixture.wav — Vocals",
       ).clips[0].timelineStartMs,
     ).toBe(2000);
     expect(savedRemix.remix).toMatchObject({
@@ -244,6 +247,177 @@ test.describe("real Compose separation pipeline", () => {
       `/api/remixes/${remixId}/versions/${remixVersionId}/restore`,
     );
     expect(restore.status()).toBe(200);
+  });
+
+  test("adds a second source through Studio, keeps source identity explicit, and snapshots all eight stems in a new remix", async ({
+    page,
+  }) => {
+    test.setTimeout(25 * 60 * 1000);
+    const response = await page.request.post("/api/auth/login", {
+      data: { identity: owner.username, password: owner.password },
+    });
+    expect(response.status()).toBe(200);
+
+    const create = await page.request.post("/api/projects", {
+      data: { title: "Two source Studio workflow" },
+    });
+    expect(create.status()).toBe(201);
+    const twoSourceProjectId = (await create.json()).project.id as string;
+    const firstUpload = await page.request.post("/api/uploads", {
+      multipart: {
+        projectId: twoSourceProjectId,
+        model: "htdemucs",
+        device: "cpu",
+        file: {
+          name: "song-a.wav",
+          mimeType: "audio/wav",
+          buffer: readFileSync(fixture),
+        },
+      },
+    });
+    expect(firstUpload.status()).toBe(201);
+
+    await expect
+      .poll(
+        async () => {
+          const project = await page.request.get(
+            `/api/projects/${twoSourceProjectId}`,
+          );
+          if (!project.ok()) return { sources: 0, stems: 0, waveformJobs: 0 };
+          const state = await project.json();
+          return {
+            sources: state.sources.length,
+            stems: state.stems.length,
+            waveformJobs: state.waveformJobs.filter(
+              (job: { status: string }) => job.status === "complete",
+            ).length,
+          };
+        },
+        { timeout: 11 * 60 * 1000, intervals: [2_000, 5_000, 10_000] },
+      )
+      .toEqual({ sources: 1, stems: 4, waveformJobs: 5 });
+
+    await page.goto(`/projects/${twoSourceProjectId}`);
+    await expect(page.locator('[data-testid^="source-stems-"]').first()).toBeVisible();
+    await page
+      .getByLabel("Add source audio")
+      .setInputFiles({
+        name: "song-b.wav",
+        mimeType: "audio/wav",
+        buffer: readFileSync(fixture),
+      });
+    await page.getByRole("button", { name: "Separate added source" }).click();
+    await expect(page.getByText(/Queued song-b\.wav/)).toBeVisible();
+
+    await expect
+      .poll(
+        async () => {
+          const project = await page.request.get(
+            `/api/projects/${twoSourceProjectId}`,
+          );
+          if (!project.ok())
+            return { sources: 0, stems: 0, jobs: 0, waveforms: 0 };
+          const state = await project.json();
+          return {
+            sources: state.sources.length,
+            stems: state.stems.length,
+            jobs: state.jobs.filter(
+              (job: { status: string }) => job.status === "complete",
+            ).length,
+            waveforms: state.waveformJobs.filter(
+              (job: { status: string }) => job.status === "complete",
+            ).length,
+          };
+        },
+        { timeout: 11 * 60 * 1000, intervals: [2_000, 5_000, 10_000] },
+      )
+      .toEqual({ sources: 2, stems: 8, jobs: 2, waveforms: 10 });
+
+    const completedProject = await (
+      await page.request.get(`/api/projects/${twoSourceProjectId}`)
+    ).json();
+    const sourceA = completedProject.sources.find(
+      (source: { originalFilename: string }) => source.originalFilename === "song-a.wav",
+    );
+    const sourceB = completedProject.sources.find(
+      (source: { originalFilename: string }) => source.originalFilename === "song-b.wav",
+    );
+    expect(sourceA).toBeTruthy();
+    expect(sourceB).toBeTruthy();
+    expect(
+      completedProject.stems.filter(
+        (stem: { sourceAssetId: string }) => stem.sourceAssetId === sourceA.id,
+      ),
+    ).toHaveLength(4);
+    expect(
+      completedProject.stems.filter(
+        (stem: { sourceAssetId: string }) => stem.sourceAssetId === sourceB.id,
+      ),
+    ).toHaveLength(4);
+
+    await page.reload();
+    await expect(page.getByTestId(`source-stems-${sourceA.id}`)).toContainText("song-a.wav");
+    await expect(page.getByTestId(`source-stems-${sourceB.id}`)).toContainText("song-b.wav");
+    await page
+      .getByRole("button", { name: /song-b\.wav — Vocals/ })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "song-b.wav — Vocals" }),
+    ).toBeVisible();
+    await expect(page.getByText("Source · song-b.wav")).toBeVisible();
+    await expect(
+      page.getByLabel("song-b.wav — Vocals audio"),
+    ).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Create remix session" }).click();
+    await expect(page.locator(".timeline-direct .timeline-track")).toHaveCount(8);
+    const remixes = await (
+      await page.request.get(`/api/projects/${twoSourceProjectId}/remixes`)
+    ).json();
+    expect(remixes.remixes).toHaveLength(1);
+    const twoSourceRemixId = remixes.remixes[0].id as string;
+    const initialRemix = await (
+      await page.request.get(`/api/remixes/${twoSourceRemixId}`)
+    ).json();
+    expect(initialRemix.tracks).toHaveLength(8);
+    for (const sourceName of ["song-a.wav", "song-b.wav"])
+      for (const stemType of ["Bass", "Drums", "Other", "Vocals"])
+        expect(initialRemix.tracks.map((track: { name: string }) => track.name)).toContain(
+          `${sourceName} — ${stemType}`,
+        );
+
+    await page
+      .getByLabel("song-a.wav — Vocals clip 1 start")
+      .fill("1");
+    await page.getByRole("button", { name: "Save now" }).click();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    page.once("dialog", (dialog) => void dialog.accept("Two source snapshot"));
+    await page.getByRole("button", { name: "Save version" }).click();
+    await expect(
+      page.getByRole("button", { name: "Two source snapshot" }),
+    ).toBeVisible();
+    await page
+      .getByLabel("song-a.wav — Vocals clip 1 start")
+      .fill("2");
+    await page.getByRole("button", { name: "Save now" }).click();
+    await page.reload();
+    await expect(
+      page.getByLabel("song-a.wav — Vocals clip 1 start"),
+    ).toHaveValue("2");
+    page.once("dialog", (dialog) => void dialog.accept());
+    await page.getByRole("button", { name: "Two source snapshot" }).click();
+    await expect(
+      page.getByLabel("song-a.wav — Vocals clip 1 start"),
+    ).toHaveValue("1");
+
+    const sourceBStem = completedProject.stems.find(
+      (stem: { sourceAssetId: string }) => stem.sourceAssetId === sourceB.id,
+    );
+    const privateStem = await page.request.get(`/api/assets/${sourceBStem.id}`, {
+      headers: { Range: "bytes=0-2047" },
+    });
+    expect(privateStem.status()).toBe(206);
+    expect(privateStem.headers()["content-type"]).toContain("audio/wav");
   });
 
   test("persists timing, looped crossfades, track copies, restore, and authoritative arrangement export", async ({ baseURL }) => {

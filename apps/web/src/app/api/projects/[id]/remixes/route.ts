@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { asc, desc, eq } from "drizzle-orm";
-import { getDb, remixClips, remixSessions, remixTracks, stemAssets } from "@waveyard/database";
+import { getDb, remixClips, remixSessions, remixTracks, sourceAssets, stemAssets } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
 
@@ -20,15 +20,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const body = await request.json().catch(() => ({}));
     const name = String(body.name ?? "Untitled remix").trim().slice(0, 120) || "Untitled remix";
     const db = getDb();
-    const stems = await db.select().from(stemAssets).where(eq(stemAssets.projectId, projectId)).orderBy(asc(stemAssets.createdAt));
-    if (!stems.length) return NextResponse.json({ error: "A completed project with real stems is required before creating a remix." }, { status: 409 });
+    const availableStems = await db
+      .select({ stem: stemAssets, sourceFilename: sourceAssets.originalFilename })
+      .from(stemAssets)
+      .innerJoin(sourceAssets, eq(stemAssets.sourceAssetId, sourceAssets.id))
+      .where(eq(stemAssets.projectId, projectId))
+      .orderBy(asc(stemAssets.createdAt));
+    if (!availableStems.length) return NextResponse.json({ error: "A completed project with real stems is required before creating a remix." }, { status: 409 });
     const [session] = await db.transaction(async (tx) => {
       const [created] = await tx.insert(remixSessions).values({ projectId, ownerId: user.id, name }).returning();
-      const tracks = await tx.insert(remixTracks).values(stems.map((stem, sortOrder) => ({
-        remixSessionId: created.id, stemAssetId: stem.id, name: stem.stemType[0].toUpperCase() + stem.stemType.slice(1), sortOrder,
+      // A session is a creation-time snapshot. Later source uploads remain separate
+      // until the editor explicitly creates another arrangement.
+      const tracks = await tx.insert(remixTracks).values(availableStems.map(({ stem, sourceFilename }, sortOrder) => ({
+        remixSessionId: created.id,
+        stemAssetId: stem.id,
+        name: `${sourceFilename} — ${stem.stemType[0].toUpperCase() + stem.stemType.slice(1)}`,
+        sortOrder,
       }))).returning();
       await tx.insert(remixClips).values(tracks.map((track) => {
-        const stem = stems.find((candidate) => candidate.id === track.stemAssetId)!;
+        const stem = availableStems.find((candidate) => candidate.stem.id === track.stemAssetId)!.stem;
         return { remixTrackId: track.id, stemAssetId: stem.id, timelineStartMs: 0, sourceOffsetMs: 0, durationMs: Math.max(1, Math.round(stem.durationSeconds * 1000)), gain: 1 };
       }));
       return [created];

@@ -50,6 +50,7 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
     ? await db
         .select({
           id: stemAssets.id,
+          sourceAssetId: stemAssets.sourceAssetId,
           stemType: stemAssets.stemType,
           durationSeconds: stemAssets.durationSeconds,
           sampleRate: stemAssets.sampleRate,

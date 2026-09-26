@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { StudioCore } from "./StudioCore";
+import type { Source } from "./studio/types";
 import { PublicationPanel } from "./PublicationPanel";
 
 type ProjectData = {
@@ -24,6 +25,7 @@ type ProjectData = {
   }>;
   jobs: Array<{
     id: string;
+    sourceAssetId: string;
     status: string;
     stage: string;
     errorMessage: string | null;
@@ -31,13 +33,19 @@ type ProjectData = {
     requestedDevice: string;
     resolvedDevice: string | null;
   }>;
-  sources: any[];
+  sources: Source[];
 };
+
+const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
 
 export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [data, setData] = useState<ProjectData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const [addingSource, setAddingSource] = useState(false);
+  const [selectedSourceName, setSelectedSourceName] = useState("");
+  const [sourceMessage, setSourceMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -63,7 +71,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [projectId]);
+  }, [projectId, refresh]);
 
   async function retry(jobId: string) {
     setRetrying(true);
@@ -74,7 +82,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     const json = await response.json().catch(() => ({}));
     setRetrying(false);
     if (!response.ok) setError(json.error ?? "Retry could not be started.");
-    else window.location.reload();
+    else setRefresh((value) => value + 1);
   }
 
   async function retryWaveform(jobId: string) {
@@ -87,7 +95,35 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setRetrying(false);
     if (!response.ok)
       setError(json.error ?? "Waveform retry could not be started.");
-    else window.location.reload();
+    else setRefresh((value) => value + 1);
+  }
+
+  async function addSource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const selected = new FormData(form).get("file");
+    if (!(selected instanceof File) || selected.size <= 0) {
+      setSourceMessage("Choose an audio file to add to this private project.");
+      return;
+    }
+    setAddingSource(true);
+    setSourceMessage(null);
+    const payload = new FormData();
+    payload.set("projectId", projectId);
+    payload.set("file", selected);
+    payload.set("model", "htdemucs");
+    payload.set("device", "auto");
+    const response = await fetch("/api/uploads", { method: "POST", body: payload });
+    const body = await response.json().catch(() => ({}));
+    setAddingSource(false);
+    if (!response.ok) {
+      setSourceMessage(body.error ?? "The additional source could not be queued.");
+      return;
+    }
+    form.reset();
+    setSelectedSourceName("");
+    setSourceMessage(`Queued ${selected.name}. The existing worker will separate it and derive private waveforms.`);
+    setRefresh((value) => value + 1);
   }
 
   if (error)
@@ -99,6 +135,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   if (!data) return <p className="notice">Opening private studio…</p>;
 
   const latest = data.jobs.at(-1);
+  const editable = data.role === "owner" || data.role === "editor";
   return (
     <>
       <header className="project-header">
@@ -114,6 +151,42 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           </div>
         )}
       </header>
+      {editable && (
+        <section className="add-source-panel" aria-label="Add source audio">
+          <div>
+            <span className="eyebrow">Two-source workflow</span>
+            <h2>Add source audio</h2>
+            <p>Queue another private song in this project. It uses the same validated local separation pipeline and never replaces an existing source.</p>
+          </div>
+          <form className="add-source-form" onSubmit={(event) => void addSource(event)}>
+            <label>
+              Add source audio
+              <input
+                aria-label="Add source audio"
+                name="file"
+                type="file"
+                accept={AUDIO_ACCEPT}
+                disabled={addingSource}
+                onChange={(event: ChangeEvent<HTMLInputElement>) => setSelectedSourceName(event.target.files?.[0]?.name ?? "")}
+              />
+            </label>
+            {selectedSourceName && <small>Selected: {selectedSourceName}</small>}
+            <button className="button" disabled={addingSource}>
+              {addingSource ? "Queuing source…" : "Separate added source"}
+            </button>
+          </form>
+          {sourceMessage && <p className={sourceMessage.startsWith("Queued") ? "notice" : "error"} role="status">{sourceMessage}</p>}
+        </section>
+      )}
+      <section className="project-sources" aria-label="Project sources">
+        <div className="panel-title"><h2>Sources</h2><span>{data.sources.length} private source{data.sources.length === 1 ? "" : "s"}</span></div>
+        {data.sources.map((source, index) => (
+          <div className="project-source" data-testid={`project-source-${source.id}`} key={source.id}>
+            <span>Source {index + 1}</span>
+            <b>{source.originalFilename}</b>
+          </div>
+        ))}
+      </section>
       {latest?.status === "failed" && (
         <div>
           <p className="error" role="alert">
@@ -121,13 +194,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             {latest.errorMessage || "No safe error detail was recorded."} Source
             audio remains stored; no stems were marked complete.
           </p>
-          <button
+          {editable && <button
             className="button"
             disabled={retrying}
             onClick={() => void retry(latest.id)}
           >
             {retrying ? "Retrying…" : "Retry separation"}
-          </button>
+          </button>}
         </div>
       )}
       {latest && latest.status !== "complete" && latest.status !== "failed" && (
@@ -174,13 +247,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
               playback/download remains available; no substitute peaks are
               drawn.
             </p>
-            <button
+            {editable && <button
               className="button secondary"
               disabled={retrying}
               onClick={() => void retryWaveform(job.id)}
             >
               {retrying ? "Retrying…" : "Retry waveform"}
-            </button>
+            </button>}
           </div>
         ))}
       <p className="notice" style={{ marginTop: 22 }}>

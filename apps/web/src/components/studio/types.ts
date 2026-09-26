@@ -3,6 +3,7 @@ import type { GridDivision } from "@/lib/timing";
 
 export type Stem = {
   id: string;
+  sourceAssetId: string;
   stemType: string;
   durationSeconds: number;
   sampleRate: number;
@@ -46,6 +47,11 @@ export type Remix = {
 };
 
 export type RemixVersionSummary = { id: string; name: string; createdAt: string };
+
+export function sourceStemLabel(source: Source | undefined, stemType: string) {
+  const name = source?.originalFilename ?? "Unknown source";
+  return `${name} — ${stemType[0]?.toUpperCase() ?? ""}${stemType.slice(1)}`;
+}
 
 export function remixState(remix: Remix): RemixStateInput {
   return {
