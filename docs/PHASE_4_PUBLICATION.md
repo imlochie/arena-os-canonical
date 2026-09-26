@@ -69,7 +69,25 @@ The private workspace has a publication panel. `/discover` is a cursor-paginated
 
 ## Runtime status
 
-Phase 4 static validation is tracked with its implementation. The expanded Compose gate must be run on a Docker-capable host before Phase 4 is reported as runtime-verified. This is separate from the verified Phase 3 gate and from unavailable GitHub Actions runtime evidence.
+**VERIFIED IN LOCAL DOCKER COMPOSE**
+
+**Verified commit:** `a1c8e37c3623a72dc6b9a5aee2bd10eabfe76cb5`
+**Runtime gate:** `npm run test:compose`
+**Result:** `7 passed (3.1m)`
+
+The Docker-capable-host gate built and ran the real Compose topology—PostgreSQL, Redis/BullMQ, MinIO, migrations, Next.js web application, CPU Demucs/FFmpeg worker, and profile-gated Playwright E2E container—and tore it down cleanly after success.
+
+The seven verified scenarios cover:
+
+1. authenticated upload, real Demucs separation, persisted stems, and playback;
+2. waveform recovery after storage faults and worker restart;
+3. persisted RemixVersion export, terminal render failure, same-job retry, privacy, and idempotency;
+4. project and private-media isolation;
+5. corrupt-audio rejection and terminal Demucs failure without generated stems;
+6. explicit publication, public final-release delivery, discovery behavior, and private-data boundaries; and
+7. reporting plus moderator hide, restore, and remove lifecycle.
+
+This is **local Docker Compose evidence**, not GitHub Actions CI evidence. GitHub Actions runner allocation remains unavailable because of the existing external billing limitation. The verification does not imply production readiness, CUDA/GPU verification, cloud-storage operations, backups, monitoring, or load/incident readiness.
 
 ## Deliberately absent
 
