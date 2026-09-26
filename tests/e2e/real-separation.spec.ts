@@ -12,6 +12,10 @@ const fixture = resolve(
   process.cwd(),
   "tests/fixtures/copyright-safe-fixture.wav",
 );
+const analysisFixture = resolve(
+  process.cwd(),
+  "tests/fixtures/analysis-fsharp-minor-120.wav",
+);
 const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const owner = {
   username: `owner_${stamp}`,
@@ -33,7 +37,7 @@ const waveformFaults = [
   "waveform-worker-restart",
 ] as const;
 type WaveformFault = (typeof waveformFaults)[number];
-type TestFault = WaveformFault | "export-render";
+type TestFault = WaveformFault | "analysis-engine" | "export-render";
 
 async function armTestFault(
   context: APIRequestContext,
@@ -298,7 +302,9 @@ test.describe("real Compose separation pipeline", () => {
       .toEqual({ sources: 1, stems: 4, waveformJobs: 5 });
 
     await page.goto(`/projects/${twoSourceProjectId}`);
-    await expect(page.locator('[data-testid^="source-stems-"]').first()).toBeVisible();
+    const initialStemGroups = page.locator('[data-testid^="source-stems-"]');
+    await expect(initialStemGroups).toHaveCount(1);
+    await expect(initialStemGroups).toBeVisible();
     await page
       .locator('input[type="file"][name="file"][aria-label="Add source audio"]')
       .setInputFiles({
@@ -421,6 +427,188 @@ test.describe("real Compose separation pipeline", () => {
     });
     expect(privateStem.status()).toBe(206);
     expect(privateStem.headers()["content-type"]).toContain("audio/wav");
+  });
+
+  test("runs local musical analysis for two sources, persists real beat knowledge, and retries without duplicate analysis rows", async ({
+    page,
+  }) => {
+    test.skip(!testFaultToken, "The analysis retry path is enabled by npm run test:compose.");
+    test.setTimeout(25 * 60 * 1000);
+    const login = await page.request.post("/api/auth/login", {
+      data: { identity: owner.username, password: owner.password },
+    });
+    expect(login.status()).toBe(200);
+    const create = await page.request.post("/api/projects", {
+      data: { title: "Deterministic musical analysis" },
+    });
+    expect(create.status()).toBe(201);
+    const analysisProjectId = (await create.json()).project.id as string;
+
+    const uploadA = await page.request.post("/api/uploads", {
+      multipart: {
+        projectId: analysisProjectId,
+        model: "htdemucs",
+        device: "cpu",
+        file: {
+          name: "analysis-song-a-fsharp-minor.wav",
+          mimeType: "audio/wav",
+          buffer: readFileSync(analysisFixture),
+        },
+      },
+    });
+    expect(uploadA.status()).toBe(201);
+    await expect
+      .poll(
+        async () => {
+          const response = await page.request.get(`/api/projects/${analysisProjectId}`);
+          if (!response.ok()) return { stems: 0, waveforms: 0, status: "http" };
+          const state = await response.json();
+          return {
+            stems: state.stems.length,
+            waveforms: state.waveformJobs.filter(
+              (job: { status: string }) => job.status === "complete",
+            ).length,
+            status: state.sources[0]?.analysis?.status,
+          };
+        },
+        { timeout: 12 * 60 * 1000, intervals: [2_000, 5_000, 10_000] },
+      )
+      .toEqual({ stems: 4, waveforms: 5, status: "complete" });
+
+    const firstState = await (
+      await page.request.get(`/api/projects/${analysisProjectId}`)
+    ).json();
+    const sourceA = firstState.sources[0];
+    expect(sourceA.analysis).toMatchObject({
+      analysisEngine: "waveyard-numpy-dsp",
+      analysisEngineVersion: "1.0.0",
+      musicalKey: "F# minor",
+    });
+    // The fixture is intentionally 120 BPM F# minor. Spectral-flux tracking is
+    // asserted within ±4 BPM, 44–51 detected positions, and a 470–530ms grid
+    // interval tolerance to allow deterministic frame-boundary placement.
+    expect(sourceA.analysis.bpm).toBeGreaterThanOrEqual(116);
+    expect(sourceA.analysis.bpm).toBeLessThanOrEqual(124);
+    expect(sourceA.analysis.beatGrid.length).toBeGreaterThanOrEqual(44);
+    expect(sourceA.analysis.beatGrid.length).toBeLessThanOrEqual(51);
+    const sourceAIntervals = sourceA.analysis.beatGrid
+      .slice(1)
+      .map((position: number, index: number) => position - sourceA.analysis.beatGrid[index]);
+    const sourceAMedianInterval = [...sourceAIntervals].sort((left, right) => left - right)[Math.floor(sourceAIntervals.length / 2)];
+    expect(sourceAMedianInterval).toBeGreaterThanOrEqual(470);
+    expect(sourceAMedianInterval).toBeLessThanOrEqual(530);
+
+    // Two injected worker attempts leave a durable failure. The UI retry must
+    // then enqueue the exact same analysis row for a real engine execution.
+    await armTestFault(page.request, "analysis-engine", 2);
+    const uploadB = await page.request.post("/api/uploads", {
+      multipart: {
+        projectId: analysisProjectId,
+        model: "htdemucs",
+        device: "cpu",
+        file: {
+          name: "analysis-song-b-fsharp-minor.wav",
+          mimeType: "audio/wav",
+          buffer: readFileSync(analysisFixture),
+        },
+      },
+    });
+    expect(uploadB.status()).toBe(201);
+    await expect
+      .poll(
+        async () => {
+          const response = await page.request.get(`/api/projects/${analysisProjectId}`);
+          if (!response.ok()) return { sources: 0, stems: 0, waveforms: 0, status: "http", attempts: 0 };
+          const state = await response.json();
+          const source = state.sources.find(
+            (candidate: { originalFilename: string }) => candidate.originalFilename === "analysis-song-b-fsharp-minor.wav",
+          );
+          return {
+            sources: state.sources.length,
+            stems: state.stems.length,
+            waveforms: state.waveformJobs.filter(
+              (job: { status: string }) => job.status === "complete",
+            ).length,
+            status: source?.analysis?.status,
+            attempts: source?.analysis?.attempts ?? 0,
+          };
+        },
+        { timeout: 12 * 60 * 1000, intervals: [2_000, 5_000, 10_000] },
+      )
+      .toEqual({ sources: 2, stems: 8, waveforms: 10, status: "failed", attempts: 2 });
+
+    const failedState = await (
+      await page.request.get(`/api/projects/${analysisProjectId}`)
+    ).json();
+    const sourceB = failedState.sources.find(
+      (source: { originalFilename: string }) => source.originalFilename === "analysis-song-b-fsharp-minor.wav",
+    );
+    expect(sourceB.analysis).toMatchObject({ status: "failed", errorCode: "analysis_failed" });
+
+    await page.goto(`/projects/${analysisProjectId}`);
+    const sourceBAnalysis = page
+      .getByTestId(`project-source-${sourceB.id}`)
+      .getByTestId(`source-analysis-${sourceB.id}`);
+    await expect(sourceBAnalysis).toContainText("Analysis unavailable");
+    await sourceBAnalysis.getByRole("button", { name: "Retry analysis" }).click();
+    await expect
+      .poll(
+        async () => {
+          const response = await page.request.get(`/api/projects/${analysisProjectId}`);
+          const state = await response.json();
+          return state.sources.find(
+            (source: { id: string }) => source.id === sourceB.id,
+          )?.analysis?.status;
+        },
+        { timeout: 90_000, intervals: [1_000, 2_000, 5_000] },
+      )
+      .toBe("complete");
+
+    const completeState = await (
+      await page.request.get(`/api/projects/${analysisProjectId}`)
+    ).json();
+    expect(completeState.sources).toHaveLength(2);
+    const analyses = completeState.sources.map((source: { analysis: { id: string } | null }) => source.analysis);
+    expect(analyses).toHaveLength(2);
+    expect(new Set(analyses.map((analysis: { id: string }) => analysis.id)).size).toBe(2);
+    const completedSourceB = completeState.sources.find(
+      (source: { id: string }) => source.id === sourceB.id,
+    );
+    expect(completedSourceB.analysis).toMatchObject({
+      status: "complete",
+      musicalKey: "F# minor",
+    });
+    expect(completedSourceB.analysis.attempts).toBeGreaterThanOrEqual(3);
+    expect(
+      (
+        await page.request.post(
+          `/api/source-analyses/${completedSourceB.analysis.id}/retry`,
+        )
+      ).status(),
+    ).toBe(409);
+
+    await page.reload();
+    await expect(
+      page
+        .getByTestId(`project-source-${sourceA.id}`)
+        .getByTestId(`source-analysis-${sourceA.id}`),
+    ).toContainText("F# minor");
+    await expect(
+      page
+        .getByTestId(`project-source-${sourceB.id}`)
+        .getByTestId(`source-analysis-${sourceB.id}`),
+    ).toContainText("Beat grid");
+    const sourceBVocalsSelect = page
+      .getByTestId(`source-stems-${sourceB.id}`)
+      .locator("button.stem-select")
+      .filter({ hasText: /^analysis-song-b-fsharp-minor\.wav — Vocals/ });
+    await expect(sourceBVocalsSelect).toHaveCount(1);
+    await sourceBVocalsSelect.click();
+    const selectedSourceAnalysis = page
+      .locator(".inspector")
+      .getByTestId(`source-analysis-${sourceB.id}`);
+    await expect(selectedSourceAnalysis).toContainText("F# minor");
+    await expect(selectedSourceAnalysis).toContainText("Beat grid");
   });
 
   test("persists timing, looped crossfades, track copies, restore, and authoritative arrangement export", async ({ baseURL }) => {

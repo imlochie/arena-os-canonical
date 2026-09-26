@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { checksumFile, generateWaveform } from "@waveyard/audio";
 import {
   getDb,
+  sourceAnalyses,
   sourceAssets,
   stemAssets,
   waveformAssets,
@@ -12,6 +13,7 @@ import {
 } from "@waveyard/database";
 import {
   consumeTestFault,
+  enqueueSourceAnalysis,
   recordTestFaultEvent,
   type TestFault,
 } from "@waveyard/queue";
@@ -39,6 +41,65 @@ async function updateJob(
     .update(waveformJobs)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(waveformJobs.id, id));
+}
+
+/** Queue analysis after every source/stem waveform has reached a terminal state. */
+async function maybeQueueSourceAnalysis(projectId: string, sourceAssetId: string) {
+  const db = getDb();
+  const [analysis, stems, projectWaveformJobs] = await Promise.all([
+    db
+      .select()
+      .from(sourceAnalyses)
+      .where(
+        and(
+          eq(sourceAnalyses.projectId, projectId),
+          eq(sourceAnalyses.sourceAssetId, sourceAssetId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0]),
+    db
+      .select({ id: stemAssets.id })
+      .from(stemAssets)
+      .where(
+        and(
+          eq(stemAssets.projectId, projectId),
+          eq(stemAssets.sourceAssetId, sourceAssetId),
+        ),
+      ),
+    db.select().from(waveformJobs).where(eq(waveformJobs.projectId, projectId)),
+  ]);
+  if (!analysis || analysis.status !== "queued") return;
+  const stemIds = new Set(stems.map((stem) => stem.id));
+  const related = projectWaveformJobs.filter(
+    (job) =>
+      job.sourceAssetId === sourceAssetId ||
+      (job.stemAssetId !== null && stemIds.has(job.stemAssetId)),
+  );
+  const terminal = new Set(["complete", "failed", "cancelled"]);
+  if (!related.length || related.some((job) => !terminal.has(job.status))) return;
+  try {
+    await enqueueSourceAnalysis({
+      sourceAnalysisId: analysis.id,
+      projectId,
+      sourceAssetId,
+      analysisEngine: analysis.analysisEngine,
+      analysisEngineVersion: analysis.analysisEngineVersion,
+    });
+  } catch (error) {
+    await db
+      .update(sourceAnalyses)
+      .set({
+        status: "failed",
+        stage: "queue-unavailable",
+        errorCode: "queue_unavailable",
+        analysisError:
+          error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(sourceAnalyses.id, analysis.id));
+  }
 }
 
 /** Worker-owned waveform extraction. The web process never invokes ffmpeg. */
@@ -101,6 +162,9 @@ export async function processWaveform(
     });
     throw new Error("The waveform audio asset is unavailable.");
   }
+  const analysisSourceAssetId = payload.sourceAssetId ?? (
+    "sourceAssetId" in asset ? asset.sourceAssetId : undefined
+  );
 
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "waveyard-waveform-"),
@@ -184,6 +248,8 @@ export async function processWaveform(
         })
         .where(eq(waveformJobs.id, job.id));
     });
+    if (analysisSourceAssetId)
+      await maybeQueueSourceAnalysis(job.projectId, analysisSourceAssetId);
     complete = true;
     await reportStage("complete");
   } catch (error) {
@@ -198,6 +264,8 @@ export async function processWaveform(
       errorMessage: message,
       completedAt: new Date(),
     });
+    if (analysisSourceAssetId)
+      await maybeQueueSourceAnalysis(job.projectId, analysisSourceAssetId);
     throw error;
   } finally {
     if (!complete && storedKey) {

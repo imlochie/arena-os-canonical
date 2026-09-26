@@ -147,6 +147,38 @@ export const waveformAssets = pgTable("waveform_assets", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex("waveform_assets_storage_key_unique").on(table.storageKey), uniqueIndex("waveform_assets_job_unique").on(table.waveformJobId), index("waveform_assets_project_id_idx").on(table.projectId)]);
 
+export const sourceAnalyses = pgTable("source_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  bpm: real("bpm"),
+  bpmConfidence: real("bpm_confidence"),
+  musicalKey: text("musical_key"),
+  keyConfidence: real("key_confidence"),
+  // Canonical JSON list of beat positions in source milliseconds. It is source
+  // metadata, deliberately independent from RemixSession's timing model.
+  beatGrid: text("beat_grid"),
+  beatConfidence: real("beat_confidence"),
+  analysisError: text("analysis_error"),
+  errorCode: text("error_code"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_analyses_source_asset_unique").on(table.sourceAssetId),
+  uniqueIndex("source_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("source_analyses_project_id_idx").on(table.projectId),
+  index("source_analyses_status_idx").on(table.status),
+]);
+
 // A remix is non-destructive arrangement metadata over existing stems. No clip
 // operation copies or mutates original separated audio.
 export const remixSessions = pgTable("remix_sessions", {

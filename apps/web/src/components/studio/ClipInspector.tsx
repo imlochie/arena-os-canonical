@@ -3,6 +3,7 @@
 import { WaveformCanvas } from "@/components/WaveformCanvas";
 import type { useStemTransport } from "@/lib/useStemTransport";
 import { bytes, clock, sourceStemLabel, type Source, type Stem } from "./types";
+import { SourceAnalysisSummary } from "./SourceAnalysisSummary";
 
 type Transport = ReturnType<typeof useStemTransport>;
 
@@ -52,6 +53,7 @@ export function ClipInspector({
           {stem.model} · {stem.modelVersion}
         </dd>
       </dl>
+      {source && <SourceAnalysisSummary source={source} compact />}
       <a className="button secondary" href={`/api/assets/${stem.id}?download=1`}>
         Download stem
       </a>

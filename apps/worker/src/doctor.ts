@@ -18,6 +18,8 @@ async function main() {
     check("FFmpeg", () => command("ffmpeg", ["-version"])),
     check("PyTorch + CUDA", () => command(python, ["-c", "import torch; print(f'torch={torch.__version__} cuda={torch.cuda.is_available()}')"])),
     check("Demucs", () => command(python, ["-m", "demucs", "--help"])),
+    check("Musical analysis", () => command(python, ["services/analysis/analyze.py", "--help"])),
+    check("Pinned NumPy", () => command(python, ["-c", "import numpy; print(f'numpy={numpy.__version__}')"])),
     check("PostgreSQL", async () => { await getPool().query("select 1"); return { ok:true, detail:"connected" }; }),
     check("Redis", async () => { const redis = getQueueConnection(); const pong = await redis.ping(); return { ok:pong === "PONG", detail:pong }; }),
     check("Storage", async () => { const storage = getStorage(); await storage.healthcheck(); return { ok:true, detail:storage.kind }; }),

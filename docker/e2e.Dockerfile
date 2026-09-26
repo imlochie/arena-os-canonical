@@ -13,5 +13,5 @@ COPY packages/types/package.json packages/types/package.json
 COPY packages/ui/package.json packages/ui/package.json
 RUN npm ci
 COPY . .
-RUN python3 scripts/create_audio_fixture.py
+RUN python3 scripts/create_audio_fixture.py && python3 scripts/create_analysis_fixture.py
 CMD ["npm", "run", "test:e2e"]

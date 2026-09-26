@@ -2,7 +2,8 @@
 
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { StudioCore } from "./StudioCore";
-import type { Source } from "./studio/types";
+import { SourceAnalysisSummary } from "./studio/SourceAnalysisSummary";
+import type { Source, SourceAnalysis } from "./studio/types";
 import { PublicationPanel } from "./PublicationPanel";
 
 type ProjectData = {
@@ -59,7 +60,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         return;
       }
       setData(json);
-      const active = [...(json.jobs ?? []), ...(json.waveformJobs ?? [])].some(
+      const active = [
+        ...(json.jobs ?? []),
+        ...(json.waveformJobs ?? []),
+        ...(json.sources ?? [])
+          .map((source: { analysis?: { status?: string } | null }) => source.analysis)
+          .filter(Boolean),
+      ].some(
         (job: { status: string }) =>
           ["queued", "preparing", "processing", "finalizing"].includes(
             job.status,
@@ -95,6 +102,19 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setRetrying(false);
     if (!response.ok)
       setError(json.error ?? "Waveform retry could not be started.");
+    else setRefresh((value) => value + 1);
+  }
+
+  async function retryAnalysis(analysis: SourceAnalysis) {
+    setRetrying(true);
+    setError(null);
+    const response = await fetch(`/api/source-analyses/${analysis.id}/retry`, {
+      method: "POST",
+    });
+    const json = await response.json().catch(() => ({}));
+    setRetrying(false);
+    if (!response.ok)
+      setError(json.error ?? "Analysis retry could not be started.");
     else setRefresh((value) => value + 1);
   }
 
@@ -180,12 +200,24 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       )}
       <section className="project-sources" aria-label="Project sources">
         <div className="panel-title"><h2>Sources</h2><span>{data.sources.length} private source{data.sources.length === 1 ? "" : "s"}</span></div>
-        {data.sources.map((source, index) => (
-          <div className="project-source" data-testid={`project-source-${source.id}`} key={source.id}>
-            <span>Source {index + 1}</span>
-            <b>{source.originalFilename}</b>
-          </div>
-        ))}
+        {data.sources.map((source, index) => {
+          const sourceStems = data.stems.filter(
+            (stem: { sourceAssetId: string }) => stem.sourceAssetId === source.id,
+          );
+          return (
+            <article className="project-source" data-testid={`project-source-${source.id}`} key={source.id}>
+              <div className="project-source-head">
+                <span>Source {index + 1}</span>
+                <b>{source.originalFilename}</b>
+                <small>Stems: {sourceStems.length ? sourceStems.map((stem: { stemType: string }) => `${stem.stemType[0].toUpperCase()}${stem.stemType.slice(1)}`).join(" · ") : "Pending validation"}</small>
+              </div>
+              <SourceAnalysisSummary
+                source={source}
+                onRetry={editable ? (analysis) => void retryAnalysis(analysis) : undefined}
+              />
+            </article>
+          );
+        })}
       </section>
       {latest?.status === "failed" && (
         <div>

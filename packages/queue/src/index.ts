@@ -3,17 +3,20 @@ import IORedis from "ioredis";
 import type {
   ExportJobPayload,
   SeparationJobPayload,
+  SourceAnalysisJobPayload,
   WaveformJobPayload,
 } from "@waveyard/types";
 
 export const SEPARATION_QUEUE = "waveyard-separation";
 export const WAVEFORM_QUEUE = "waveyard-waveform";
+export const SOURCE_ANALYSIS_QUEUE = "waveyard-source-analysis";
 export const EXPORT_QUEUE = "waveyard-export";
 export const TEST_FAULTS = [
   "waveform-storage-read",
   "waveform-storage-write",
   "waveform-after-write",
   "waveform-worker-restart",
+  "analysis-engine",
   "export-render",
 ] as const;
 export type TestFault = (typeof TEST_FAULTS)[number];
@@ -25,6 +28,7 @@ const TEST_FAULT_TTL_SECONDS = 15 * 60;
 let connection: IORedis | undefined;
 let separationQueue: Queue<SeparationJobPayload> | undefined;
 let waveformQueue: Queue<WaveformJobPayload> | undefined;
+let sourceAnalysisQueue: Queue<SourceAnalysisJobPayload> | undefined;
 let exportQueue: Queue<ExportJobPayload> | undefined;
 
 export function getQueueConnection() {
@@ -52,6 +56,15 @@ export function getWaveformQueue() {
   return waveformQueue;
 }
 
+export function getSourceAnalysisQueue() {
+  if (!sourceAnalysisQueue)
+    sourceAnalysisQueue = new Queue<SourceAnalysisJobPayload>(
+      SOURCE_ANALYSIS_QUEUE,
+      { connection: getQueueConnection() },
+    );
+  return sourceAnalysisQueue;
+}
+
 export function getExportQueue() {
   if (!exportQueue)
     exportQueue = new Queue<ExportJobPayload>(EXPORT_QUEUE, {
@@ -73,6 +86,16 @@ export async function enqueueSeparation(payload: SeparationJobPayload) {
 export async function enqueueWaveform(payload: WaveformJobPayload) {
   return getWaveformQueue().add("generate", payload, {
     jobId: payload.waveformJobId,
+    attempts: 2,
+    backoff: { type: "exponential", delay: 5_000 },
+    removeOnComplete: { age: 60 * 60 * 24, count: 5000 },
+    removeOnFail: { age: 60 * 60 * 24 * 7, count: 5000 },
+  });
+}
+
+export async function enqueueSourceAnalysis(payload: SourceAnalysisJobPayload) {
+  return getSourceAnalysisQueue().add("analyze", payload, {
+    jobId: payload.sourceAnalysisId,
     attempts: 2,
     backoff: { type: "exponential", delay: 5_000 },
     removeOnComplete: { age: 60 * 60 * 24, count: 5000 },

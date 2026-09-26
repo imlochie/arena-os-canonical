@@ -16,6 +16,23 @@ export type Stem = {
   modelVersion: string;
 };
 
+export type SourceAnalysis = {
+  id: string;
+  status: "queued" | "preparing" | "processing" | "finalizing" | "complete" | "failed" | "cancelled";
+  stage: string;
+  attempts: number;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+  bpm: number | null;
+  bpmConfidence: number | null;
+  musicalKey: string | null;
+  keyConfidence: number | null;
+  beatGrid: number[] | null;
+  beatConfidence: number | null;
+  analysisError: string | null;
+  analyzedAt: string | null;
+};
+
 export type Source = {
   id: string;
   originalFilename: string;
@@ -26,6 +43,7 @@ export type Source = {
   mimeType: string;
   fileSizeBytes: number;
   checksumSha256: string;
+  analysis?: SourceAnalysis | null;
 };
 
 export type PersistedTrack = RemixTrackInput & {

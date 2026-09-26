@@ -13,11 +13,17 @@ import {
 import {
   getDb,
   processingJobs,
+  sourceAnalyses,
   sourceAssets,
   stemAssets,
   waveformJobs,
 } from "@waveyard/database";
 import { enqueueWaveform } from "@waveyard/queue";
+import {
+  analysisIdempotencyKey,
+  SOURCE_ANALYSIS_ENGINE,
+  SOURCE_ANALYSIS_ENGINE_VERSION,
+} from "./analysis";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
 import type { SeparationJobPayload, StemType } from "@waveyard/types";
 
@@ -215,13 +221,13 @@ export async function processSeparation(
       });
     }
 
-    const waveformWork = await db.transaction(async (tx) => {
+    const durableWork = await db.transaction(async (tx) => {
       await tx.delete(stemAssets).where(eq(stemAssets.separationJobId, job.id));
       const storedStems = await tx
         .insert(stemAssets)
         .values(values)
         .returning({ id: stemAssets.id });
-      const jobs = await tx
+      const waveformWork = await tx
         .insert(waveformJobs)
         .values(
           storedStems.map((stem) => ({
@@ -235,6 +241,20 @@ export async function processSeparation(
         .returning({
           id: waveformJobs.id,
           stemAssetId: waveformJobs.stemAssetId,
+        });
+      // The durable analysis record is created only after Demucs validation;
+      // waveform completion schedules it later. It never changes source/stem rows.
+      await tx
+        .insert(sourceAnalyses)
+        .values({
+          projectId: job.projectId,
+          sourceAssetId: source.id,
+          status: "queued",
+          stage: "waiting-for-waveforms",
+          idempotencyKey: analysisIdempotencyKey(source.id),
+          analysisEngine: SOURCE_ANALYSIS_ENGINE,
+          analysisEngineVersion: SOURCE_ANALYSIS_ENGINE_VERSION,
+          sourceChecksumSha256: source.checksumSha256,
         });
       await tx
         .update(processingJobs)
@@ -251,12 +271,11 @@ export async function processSeparation(
           }),
         })
         .where(eq(processingJobs.id, job.id));
-      return jobs;
+      return waveformWork;
     });
-    // Separation is complete even if a later waveform enqueue needs a retry.
-    // The durable waveform job records the actual queue failure instead of
-    // pretending stem generation failed.
-    for (const waveformJob of waveformWork) {
+    // Separation is complete even if a later derived-artifact queue needs a
+    // retry. Each durable job records its own failure boundary.
+    for (const waveformJob of durableWork) {
       try {
         await enqueueWaveform({
           waveformJobId: waveformJob.id,

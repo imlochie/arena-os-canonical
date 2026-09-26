@@ -31,6 +31,14 @@ export type WaveformJobPayload = {
   stemAssetId?: string;
 };
 
+export type SourceAnalysisJobPayload = {
+  sourceAnalysisId: string;
+  projectId: string;
+  sourceAssetId: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
 export type ExportJobPayload = {
   exportJobId: string;
   projectId: string;
