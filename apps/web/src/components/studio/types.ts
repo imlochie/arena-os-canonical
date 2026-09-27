@@ -45,6 +45,17 @@ export type SourceSectionAnalysis = {
   analyzedAt: string | null;
 };
 
+export type SourceAlignmentInfo = {
+  sourceAssetId: string;
+  sourceName: string;
+  analysisStatus: string;
+  bpm: number | null;
+  musicalKey: string | null;
+  beatGrid: number[] | null;
+  beatConfidence: number | null;
+  sectionAnalysisStatus: string | null;
+};
+
 export type SourceSection = {
   id: string;
   sectionIndex: number;

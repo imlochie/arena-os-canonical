@@ -3,15 +3,18 @@
 import { useState } from "react";
 import {
   beatGridAvailability,
+  clipTempoRatio,
+  crossSourceAlignmentState,
   nearestBeat,
+  projectSourceBeatToRemixMs,
   semitoneShift,
   snapSourceWindowToBeats,
   tempoRatioForBpm,
 } from "@waveyard/types";
 import { splitClipAt } from "@/lib/arrangement";
 import type { RemixClipInput } from "@/lib/remix";
-import { barMs, beatMs, snapTimelineMs, type MusicalTiming } from "@/lib/timing";
-import type { Remix } from "./types";
+import { barMs, beatMs, formatMusicalPosition, snapTimelineMs, type MusicalTiming } from "@/lib/timing";
+import type { Remix, SourceAlignmentInfo } from "./types";
 import type { ClipSelection } from "./ArrangementTimeline";
 
 function updateSelected(remix: Remix, selection: Exclude<ClipSelection, null>, update: (clip: RemixClipInput) => RemixClipInput) {
@@ -35,7 +38,10 @@ export function ArrangementInspector({
   sourceKeyByStemId,
   sourceBeatByStemId,
   sourceAssetIdByStemId,
+  sourceAlignmentByStemId,
+  comparisonSource,
   slicePrefill,
+  onAlignBeat,
   onReload,
 }: {
   remix: Remix;
@@ -48,7 +54,10 @@ export function ArrangementInspector({
   sourceKeyByStemId?: Map<string, string | null>;
   sourceBeatByStemId?: Map<string, { status: string; beatGrid: number[] | null; beatConfidence: number | null }>;
   sourceAssetIdByStemId?: Map<string, string>;
+  sourceAlignmentByStemId?: Map<string, SourceAlignmentInfo>;
+  comparisonSource?: SourceAlignmentInfo | null;
   slicePrefill?: { sourceAssetId: string; startBeatIndex: number; endBeatIndex: number; token: string } | null;
+  onAlignBeat?: (clipId: string, sourceBeatIndex: number, timelineTargetMs: number) => Promise<string | null>;
   onReload: () => void;
 }) {
   const [enteredStartBeatIndex, setStartBeatIndex] = useState(0);
@@ -56,6 +65,9 @@ export function ArrangementInspector({
   const [dismissedPrefill, setDismissedPrefill] = useState<string | null>(null);
   const [repetitions, setRepetitions] = useState(4);
   const [actionError, setActionError] = useState("");
+  const [alignBeatIndex, setAlignBeatIndex] = useState(0);
+  const [alignmentMessage, setAlignmentMessage] = useState("");
+  const [aligning, setAligning] = useState(false);
   const track = selection ? remix.tracks.find((candidate) => candidate.id === selection.trackId) : undefined;
   const clip = track && selection ? track.clips[selection.clipIndex] : undefined;
   const prefillKey = slicePrefill ? `${slicePrefill.sourceAssetId}:${slicePrefill.startBeatIndex}:${slicePrefill.endBeatIndex}:${slicePrefill.token}` : null;
@@ -84,6 +96,43 @@ export function ArrangementInspector({
   const sourceRatio = clip.tempoSyncEnabled
     ? tempoRatioForBpm(remix.tempoBpm, sourceBpm ?? Number.NaN)
     : 1;
+  const sourceAlignment = sourceAlignmentByStemId?.get(clip.stemAssetId);
+  const clipTempoRatioValue = clipTempoRatio(clip.tempoSyncEnabled, sourceAlignment?.bpm, remix.tempoBpm);
+  const sourceConsumedMs = clipTempoRatioValue
+    ? Math.ceil(clip.durationMs * clipTempoRatioValue)
+    : 0;
+  const alignableBeatIndices = (sourceAlignment?.beatGrid ?? []).flatMap((beat, index) =>
+    beat >= clip.sourceOffsetMs && beat <= clip.sourceOffsetMs + sourceConsumedMs ? [index] : [],
+  );
+  const selectedAlignBeatIndex = alignableBeatIndices.includes(alignBeatIndex)
+    ? alignBeatIndex
+    : (alignableBeatIndices[0] ?? null);
+  const projectedSourceBeats = clip.tempoSyncEnabled && sourceAlignment?.beatGrid
+    ? alignableBeatIndices.slice(0, 16).map((index) => ({
+      index,
+      timelineMs: projectSourceBeatToRemixMs({
+        sourceBeatMs: sourceAlignment.beatGrid![index],
+        sourceOffsetMs: clip.sourceOffsetMs,
+        timelineStartMs: clip.timelineStartMs,
+        sourceBpm: sourceAlignment.bpm,
+        remixBpm: remix.tempoBpm,
+        tempoSyncEnabled: true,
+      }),
+    }))
+    : [];
+  const alignmentState = crossSourceAlignmentState({
+    analysisComplete: sourceAlignment?.analysisStatus === "complete",
+    beatGridAvailable: Boolean(sourceAlignment?.beatGrid?.length),
+    tempoSyncEnabled: clip.tempoSyncEnabled,
+    keySyncEnabled: clip.keySyncEnabled,
+    beatSnapEnabled: clip.beatSnapEnabled,
+  });
+  const sourceKeyShift = sourceAlignment?.musicalKey && remix.targetKey
+    ? semitoneShift(sourceAlignment.musicalKey, remix.targetKey)
+    : null;
+  const comparisonKeyShift = comparisonSource?.musicalKey && remix.targetKey
+    ? semitoneShift(comparisonSource.musicalKey, remix.targetKey)
+    : null;
   const selectedSourceDurationMs = endBeatIndex > startBeatIndex
     ? Math.max(0, (beatInfo?.beatGrid?.[endBeatIndex] ?? 0) - (beatInfo?.beatGrid?.[startBeatIndex] ?? 0))
     : 0;
@@ -128,6 +177,14 @@ export function ArrangementInspector({
     });
     if (!response.ok) { setActionError((await response.json().catch(() => ({}))).error ?? "Could not create loop."); return; }
     onReload();
+  };
+  const alignBeatToPlayhead = async () => {
+    if (!clip.id || selectedAlignBeatIndex === null || !onAlignBeat) return;
+    setAligning(true);
+    setAlignmentMessage("");
+    const message = await onAlignBeat(clip.id, selectedAlignBeatIndex, Math.round(positionMs));
+    setAligning(false);
+    setAlignmentMessage(message ?? `Source beat ${selectedAlignBeatIndex + 1} aligned to ${formatMusicalPosition(positionMs, timing)}.`);
   };
   const splitAtPlayhead = () => {
     const split = splitClipAt(clip, snapTimelineMs(positionMs, timing));
@@ -177,6 +234,35 @@ export function ArrangementInspector({
         ? <p>Beat grid analysis is not available for this source. Free positioning remains available.</p>
         : <p>Beat grid {beatState === "low-confidence" ? "available with low confidence" : "available"} · {beatInfo!.beatGrid!.length} beats · confidence {beatInfo!.beatConfidence === null ? "unknown" : beatInfo!.beatConfidence.toFixed(2)}. Source beat alignment: {clip.sourceOffsetMs} ms. Source offset and trim boundaries resolve to analyzed beats{clip.tempoSyncEnabled ? " using the existing tempo ratio" : ""}.</p>}
     </fieldset>
+    {sourceAlignment && <fieldset className="cross-source-alignment"><legend>Cross-source alignment</legend>
+      <p><b>{sourceAlignment.sourceName}</b> · <span className={`alignment-state ${alignmentState}`}>{alignmentState.replaceAll("-", " ")}</span></p>
+      <dl>
+        <dt>Source BPM</dt><dd>{sourceAlignment.bpm?.toFixed(1) ?? "Unknown"}</dd>
+        <dt>Remix BPM</dt><dd>{remix.tempoBpm.toFixed(1)}</dd>
+        <dt>Tempo ratio</dt><dd>{clipTempoRatioValue?.toFixed(4) ?? "Unavailable"}</dd>
+        <dt>Source key</dt><dd>{sourceAlignment.musicalKey ?? "Unknown"}</dd>
+        <dt>Remix key</dt><dd>{remix.targetKey ?? "None"}</dd>
+        <dt>Key shift</dt><dd>{sourceKeyShift === null ? "Unavailable" : `${sourceKeyShift >= 0 ? "+" : ""}${sourceKeyShift}`}</dd>
+        <dt>Beat grid</dt><dd>{sourceAlignment.beatGrid?.length ? "Available" : "Unavailable"}</dd>
+        <dt>Sections</dt><dd>{sourceAlignment.sectionAnalysisStatus === "complete" ? "Available" : "Unavailable"}</dd>
+        <dt>Timeline anchor</dt><dd>{formatMusicalPosition(clip.timelineStartMs, timing)}</dd>
+      </dl>
+      {comparisonSource && comparisonSource.sourceAssetId !== sourceAlignment.sourceAssetId && <div className="source-comparison">
+        <b>Compared sources</b>
+        <p>{comparisonSource.sourceName}: {comparisonSource.bpm?.toFixed(1) ?? "Unknown"} BPM · {comparisonSource.musicalKey ?? "Unknown key"}<br />
+        {sourceAlignment.sourceName}: {sourceAlignment.bpm?.toFixed(1) ?? "Unknown"} BPM · {sourceAlignment.musicalKey ?? "Unknown key"}<br />
+        Remix: {remix.tempoBpm.toFixed(1)} BPM · {remix.targetKey ?? "No target key"}</p>
+        <small>BPM transform required: {comparisonSource.bpm !== sourceAlignment.bpm ? "yes" : "no"} · Key transform required: {comparisonKeyShift !== null && comparisonKeyShift !== 0 ? "yes" : "no"} · Beat grids: {comparisonSource.beatGrid?.length && sourceAlignment.beatGrid?.length ? "available" : "unavailable"}</small>
+      </div>}
+      {projectedSourceBeats.length > 0 && <div className="projected-beat-markers" aria-label="Projected source beats">
+        <span>Projected source beats</span>
+        <div>{projectedSourceBeats.map(({ index, timelineMs }) => <i key={index} title={timelineMs === null ? "Unavailable" : `${formatMusicalPosition(timelineMs, timing)} · ${timelineMs} ms`}>{index + 1}</i>)}</div>
+      </div>}
+      {selectedAlignBeatIndex === null
+        ? <p className="notice">No authoritative source beat falls inside this clip&apos;s current source window.</p>
+        : <div className="align-beat-controls"><label>Source beat <select aria-label="Align source beat" value={selectedAlignBeatIndex} onChange={(event) => setAlignBeatIndex(Number(event.target.value))}>{alignableBeatIndices.map((index) => <option key={index} value={index}>Beat {index + 1} · {sourceAlignment.beatGrid![index]} ms</option>)}</select></label><button className="button secondary" disabled={!clip.id || !onAlignBeat || aligning} onClick={() => void alignBeatToPlayhead()}>{aligning ? "Aligning…" : "Align Beat to Playhead"}</button></div>}
+      {alignmentMessage && <p className="notice">{alignmentMessage}</p>}
+    </fieldset>}
     <fieldset className="beat-slice"><legend>Slice</legend>
       {beatState === "unavailable" ? <p>Beat slicing unavailable. Use freehand trimming instead.</p> : <>
         {prefillMatches && <p className="notice">Selected source section is using beats {startBeatIndex}–{endBeatIndex}. Section actions create ordinary clips from this same canonical slice range.</p>}

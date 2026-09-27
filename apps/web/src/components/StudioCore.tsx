@@ -83,6 +83,20 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
       beatConfidence: analysis?.beatConfidence ?? null,
     }] as const;
   })), [sourceById, stems]);
+  const sourceAlignmentByStemId = useMemo(() => new Map(stems.map((stem) => {
+    const source = sourceById.get(stem.sourceAssetId);
+    const analysis = source?.analysis;
+    return [stem.id, {
+      sourceAssetId: stem.sourceAssetId,
+      sourceName: source?.originalFilename ?? "Unknown source",
+      analysisStatus: analysis?.status ?? "unavailable",
+      bpm: analysis?.status === "complete" ? analysis.bpm : null,
+      musicalKey: analysis?.status === "complete" ? normaliseMusicalKey(analysis.musicalKey) : null,
+      beatGrid: analysis?.status === "complete" && Array.isArray(analysis.beatGrid) ? analysis.beatGrid : null,
+      beatConfidence: analysis?.beatConfidence ?? null,
+      sectionAnalysisStatus: source?.sectionAnalysis?.status ?? null,
+    }] as const;
+  })), [sourceById, stems]);
   const selected = stems.find((stem) => stem.id === selectedId) ?? stems[0];
   const source = selected ? sourceById.get(selected.sourceAssetId) : undefined;
   const selectedSourceBpm = selected ? sourceBpmByStemId.get(selected.id) : null;
@@ -266,6 +280,33 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     setSaveState("saved");
     return null;
   }, [clipSelection, record, remix, selected, transport.position]);
+  const alignClipBeat = useCallback(async (
+    clipId: string,
+    sourceBeatIndex: number,
+    timelineTargetMs: number,
+  ) => {
+    if (!remix) return "Create a remix session before aligning source beats.";
+    const response = await fetch(`/api/remixes/${remix.id}/clips/align-beat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clipId, sourceBeatIndex, timelineTargetMs }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return body.error ?? "Could not align the selected source beat.";
+    if (!body.clip) return "The alignment action returned no clip.";
+    // This single persisted timeline edit is one ordinary arrangement history
+    // entry; source offset and all transform intent remain untouched.
+    record(remix);
+    setRemix({
+      ...remix,
+      tracks: remix.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => clip.id === body.clip.id ? body.clip : clip),
+      })),
+    });
+    setSaveState("saved");
+    return null;
+  }, [record, remix]);
 
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
@@ -307,7 +348,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
           <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
         </div>
         <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onPreview={previewTimeline} onCommit={commitTimeline} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
-        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} slicePrefill={slicePrefill} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
+        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} sourceAlignmentByStemId={sourceAlignmentByStemId} comparisonSource={selected ? sourceAlignmentByStemId.get(selected.id) : null} slicePrefill={slicePrefill} onAlignBeat={alignClipBeat} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
     </section>

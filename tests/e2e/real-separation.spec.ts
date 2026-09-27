@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { nearestBeat } from "@waveyard/types";
+import { alignSourceBeatToTimelineMs, nearestBeat } from "@waveyard/types";
 import {
   expect,
   request as playwrightRequest,
@@ -878,6 +878,41 @@ test.describe("real Compose separation pipeline", () => {
     expect(sectionAdd.status()).toBe(201);
     const addedSectionClip = (await sectionAdd.json()).clips[0];
     expect(addedSectionClip).toMatchObject({ timelineStartMs: 20_000, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false });
+    // Phase 12 moves only the timeline anchor. It resolves an authoritative
+    // Source-B beat server-side and preserves the ordinary clip source window.
+    const alignmentBeatIndex = sectionForSlice.startBeatIndex + 1;
+    const alignmentTargetMs = 45_000;
+    const alignResponse = await page.request.post(`/api/remixes/${beatRemixId}/clips/align-beat`, {
+      data: { clipId: insertedSectionClip.id, sourceBeatIndex: alignmentBeatIndex, timelineTargetMs: alignmentTargetMs },
+    });
+    expect(alignResponse.status()).toBe(200);
+    const alignedSectionClip = (await alignResponse.json()).clip;
+    const expectedAlignedStart = alignSourceBeatToTimelineMs({
+      sourceBeatMs: completedSourceB.analysis.beatGrid[alignmentBeatIndex],
+      sourceOffsetMs: insertedSectionClip.sourceOffsetMs,
+      timelineTargetMs: alignmentTargetMs,
+      sourceBpm: completedSourceB.analysis.bpm,
+      remixBpm: 96,
+      tempoSyncEnabled: true,
+    });
+    expect(expectedAlignedStart).not.toBeNull();
+    expect(alignedSectionClip).toMatchObject({
+      id: insertedSectionClip.id,
+      timelineStartMs: expectedAlignedStart,
+      sourceOffsetMs: insertedSectionClip.sourceOffsetMs,
+      durationMs: insertedSectionClip.durationMs,
+      gain: insertedSectionClip.gain,
+      fadeInMs: insertedSectionClip.fadeInMs,
+      fadeOutMs: insertedSectionClip.fadeOutMs,
+      tempoSyncEnabled: true,
+      keySyncEnabled: false,
+      beatSnapEnabled: true,
+    });
+    const unavailableAlignment = await page.request.post(`/api/remixes/${beatRemixId}/clips/align-beat`, {
+      data: { clipId: addedSectionClip.id, sourceBeatIndex: 999_999, timelineTargetMs: 0 },
+    });
+    expect(unavailableAlignment.status()).toBe(422);
+    expect((await unavailableAlignment.json()).errorCode).toBe("cross_source_alignment_unavailable");
     const sectionLoop = await page.request.post(`/api/remixes/${beatRemixId}/clips/from-section`, {
       data: {
         sectionId: sectionForSlice.id,
@@ -928,6 +963,11 @@ test.describe("real Compose separation pipeline", () => {
       addedSectionClip.id,
       ...sectionLoopClips.map((clip) => clip.id),
     ]));
+    expect(slicedTrack.clips.find((candidate: { id: string }) => candidate.id === insertedSectionClip.id)).toMatchObject({
+      timelineStartMs: expectedAlignedStart,
+      sourceOffsetMs: insertedSectionClip.sourceOffsetMs,
+      durationMs: insertedSectionClip.durationMs,
+    });
 
     const loopResponse = await page.request.post(`/api/remixes/${beatRemixId}/clips/loop`, {
       data: { clipId: slice.id, repetitions: 3 },
