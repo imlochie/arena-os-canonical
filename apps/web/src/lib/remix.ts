@@ -1,3 +1,4 @@
+import { normaliseMusicalKey } from "@waveyard/types";
 import {
   DEFAULT_TIMING,
   GRID_DIVISIONS,
@@ -16,6 +17,8 @@ export type RemixClipInput = {
   fadeOutMs: number;
   // Missing on historical snapshots means preserve the original, untransformed behavior.
   tempoSyncEnabled: boolean;
+  // Missing on historical snapshots means preserve the original, untransformed behavior.
+  keySyncEnabled: boolean;
 };
 export type RemixTrackInput = {
   id: string;
@@ -33,6 +36,7 @@ export type RemixStateInput = MusicalTiming & {
   masterVolume: number;
   loopStartMs: number;
   loopEndMs: number | null;
+  targetKey: string | null;
   tracks: RemixTrackInput[];
 };
 
@@ -86,6 +90,7 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
         fadeOutMs,
         // Missing in historical snapshots preserves prior, untransformed export behavior.
         tempoSyncEnabled: clip.tempoSyncEnabled === true,
+        keySyncEnabled: clip.keySyncEnabled === true,
       });
     }
     tracks.push({
@@ -102,11 +107,16 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
   }
   const loopStartMs = Math.round(clamp(value.loopStartMs, 0, 86_400_000));
   const loopEndCandidate = value.loopEndMs === null || value.loopEndMs === undefined ? null : Math.round(clamp(value.loopEndMs, 0, 86_400_000));
+  const targetKey = value.targetKey === null || value.targetKey === undefined
+    ? null
+    : normaliseMusicalKey(value.targetKey);
+  if (value.targetKey !== null && value.targetKey !== undefined && !targetKey) return null;
   return {
     name: value.name ? String(value.name).trim().slice(0, 120) : undefined,
     masterVolume: clamp(value.masterVolume, 0, 2),
     loopStartMs,
     loopEndMs: loopEndCandidate && loopEndCandidate > loopStartMs ? loopEndCandidate : null,
+    targetKey,
     tracks,
     ...normaliseTiming(value),
   };

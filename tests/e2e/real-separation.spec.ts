@@ -74,6 +74,7 @@ function remixPayload(state: { remix: Record<string, unknown>; tracks: Array<Rec
     timeSignatureDenominator: remix.timeSignatureDenominator,
     gridDivision: remix.gridDivision,
     snapEnabled: remix.snapEnabled,
+    targetKey: remix.targetKey,
     tracks: state.tracks.map((track) => ({
       id: track.id,
       stemAssetId: track.stemAssetId,
@@ -92,6 +93,7 @@ function remixPayload(state: { remix: Record<string, unknown>; tracks: Array<Rec
         fadeInMs: clip.fadeInMs,
         fadeOutMs: clip.fadeOutMs,
         tempoSyncEnabled: clip.tempoSyncEnabled === true,
+        keySyncEnabled: clip.keySyncEnabled === true,
       })),
     })),
   };
@@ -587,6 +589,40 @@ test.describe("real Compose separation pipeline", () => {
       status: "failed", errorCode: "tempo_sync_analysis_missing",
     });
 
+    // Key sync has an independently explicit failure boundary. The target is
+    // persisted on the remix; no source key is copied into clip state.
+    const keyRemixCreate = await page.request.post(`/api/projects/${analysisProjectId}/remixes`, {
+      data: { name: "Key sync analysis remix" },
+    });
+    expect(keyRemixCreate.status()).toBe(201);
+    const keyRemixId = (await keyRemixCreate.json()).remix.id as string;
+    const keyState = await (await page.request.get(`/api/remixes/${keyRemixId}`)).json();
+    const keyPayload = remixPayload(keyState);
+    keyPayload.targetKey = "D minor";
+    const keySourceBTrack = keyPayload.tracks.find((track) => track.stemAssetId === sourceBStem.id);
+    expect(keySourceBTrack).toBeTruthy();
+    const keySourceBClip = keySourceBTrack!.clips[0] as Record<string, unknown>;
+    keySourceBClip.durationMs = 4_000;
+    keySourceBClip.sourceOffsetMs = 0;
+    keySourceBClip.keySyncEnabled = true;
+    expect((await page.request.put(`/api/remixes/${keyRemixId}`, { data: keyPayload })).status()).toBe(200);
+    const unavailableKeyVersion = await page.request.post(`/api/remixes/${keyRemixId}/versions`, {
+      data: { name: "Key sync requires analysis" },
+    });
+    expect(unavailableKeyVersion.status()).toBe(201);
+    const unavailableKeyVersionId = (await unavailableKeyVersion.json()).version.id as string;
+    const unavailableKeyExport = await page.request.post(`/api/remix-versions/${unavailableKeyVersionId}/exports`, {
+      data: { format: "wav" },
+    });
+    expect(unavailableKeyExport.status()).toBe(201);
+    const unavailableKeyExportId = (await unavailableKeyExport.json()).job.id as string;
+    await expect.poll(async () => {
+      const body = await (await page.request.get(`/api/exports/${unavailableKeyExportId}`)).json();
+      return { status: body.job.status, errorCode: body.job.errorCode };
+    }, { timeout: 90_000, intervals: [1_000, 2_000, 5_000] }).toEqual({
+      status: "failed", errorCode: "key_sync_analysis_missing",
+    });
+
     await page.goto(`/projects/${analysisProjectId}`);
     const sourceBAnalysis = page
       .getByTestId(`project-source-${sourceB.id}`)
@@ -653,6 +689,31 @@ test.describe("real Compose separation pipeline", () => {
     expect(syncedMedia.status()).toBe(206);
     expect(syncedMedia.headers()["content-type"]).toContain("audio/wav");
 
+    const keySyncedVersion = await page.request.post(`/api/remixes/${keyRemixId}/versions`, {
+      data: { name: "Source B shifted to D minor" },
+    });
+    expect(keySyncedVersion.status()).toBe(201);
+    const keySyncedVersionId = (await keySyncedVersion.json()).version.id as string;
+    const keySyncedExport = await page.request.post(`/api/remix-versions/${keySyncedVersionId}/exports`, {
+      data: { format: "wav" },
+    });
+    expect(keySyncedExport.status()).toBe(201);
+    const keySyncedExportId = (await keySyncedExport.json()).job.id as string;
+    await expect.poll(async () => {
+      const body = await (await page.request.get(`/api/exports/${keySyncedExportId}`)).json();
+      return { status: body.job.status, asset: Boolean(body.asset) };
+    }, { timeout: 180_000, intervals: [1_000, 2_000, 5_000] }).toEqual({ status: "complete", asset: true });
+    const keySyncedResult = await (await page.request.get(`/api/exports/${keySyncedExportId}`)).json();
+    expect(keySyncedResult.asset.remixVersionId).toBe(keySyncedVersionId);
+    const keySyncedState = await (await page.request.get(`/api/remixes/${keyRemixId}`)).json();
+    expect(keySyncedState.remix.targetKey).toBe("D minor");
+    expect(keySyncedState.tracks.find((track: { stemAssetId: string }) => track.stemAssetId === sourceBStem.id).clips[0]).toMatchObject({ keySyncEnabled: true, tempoSyncEnabled: false });
+    const keySyncedMedia = await page.request.get(`/api/exports/${keySyncedExportId}/media`, {
+      headers: { Range: "bytes=0-2047" },
+    });
+    expect(keySyncedMedia.status()).toBe(206);
+    expect(keySyncedMedia.headers()["content-type"]).toContain("audio/wav");
+
     await page.reload();
     await expect(
       page
@@ -703,19 +764,19 @@ test.describe("real Compose separation pipeline", () => {
       payload.loopEndMs = 9_000;
       for (const track of payload.tracks) {
         const stemAssetId = String(track.stemAssetId);
-        track.clips = [{ stemAssetId, timelineStartMs: 0, durationMs: 8_000, sourceOffsetMs: 0, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false }];
+        track.clips = [{ stemAssetId, timelineStartMs: 0, durationMs: 8_000, sourceOffsetMs: 0, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false }];
       }
       // The first track has two overlapping clips. Equal one-second boundary
       // fades make this the supported deterministic crossfade form.
       payload.tracks[0].clips = [
-        { stemAssetId: String(payload.tracks[0].stemAssetId), timelineStartMs: 0, durationMs: 7_000, sourceOffsetMs: 0, gain: 0.8, fadeInMs: 0, fadeOutMs: 1_000, tempoSyncEnabled: false },
-        { stemAssetId: String(payload.tracks[0].stemAssetId), timelineStartMs: 6_000, durationMs: 6_000, sourceOffsetMs: 6_000, gain: 1, fadeInMs: 1_000, fadeOutMs: 0, tempoSyncEnabled: false },
+        { stemAssetId: String(payload.tracks[0].stemAssetId), timelineStartMs: 0, durationMs: 7_000, sourceOffsetMs: 0, gain: 0.8, fadeInMs: 0, fadeOutMs: 1_000, tempoSyncEnabled: false, keySyncEnabled: false },
+        { stemAssetId: String(payload.tracks[0].stemAssetId), timelineStartMs: 6_000, durationMs: 6_000, sourceOffsetMs: 6_000, gain: 1, fadeInMs: 1_000, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false },
       ];
       const saved = await context.put(`/api/remixes/${remixId}`, { data: payload });
       expect(saved.status()).toBe(200);
       const arranged = await saved.json();
       expect(arranged.remix).toMatchObject({ tempoBpm: 96, timeSignatureNumerator: 3, timeSignatureDenominator: 4, gridDivision: "half-beat", snapEnabled: true, loopStartMs: 1_000, loopEndMs: 9_000 });
-      expect(arranged.tracks[0].clips).toMatchObject([{ fadeOutMs: 1_000, tempoSyncEnabled: false }, { timelineStartMs: 6_000, fadeInMs: 1_000, tempoSyncEnabled: false }]);
+      expect(arranged.tracks[0].clips).toMatchObject([{ fadeOutMs: 1_000, tempoSyncEnabled: false, keySyncEnabled: false }, { timelineStartMs: 6_000, fadeInMs: 1_000, tempoSyncEnabled: false, keySyncEnabled: false }]);
 
       const invalidCrossfade = structuredClone(payload);
       invalidCrossfade.tracks[0].clips[0].fadeOutMs = 500;

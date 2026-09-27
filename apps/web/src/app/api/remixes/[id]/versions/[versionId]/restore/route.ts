@@ -85,6 +85,7 @@ export async function POST(
         fadeInMs: clip.fadeInMs,
         fadeOutMs: clip.fadeOutMs,
         tempoSyncEnabled: clip.tempoSyncEnabled,
+        keySyncEnabled: clip.keySyncEnabled,
       })));
       if (clips.length) await tx.insert(remixClips).values(clips);
       await tx.update(remixSessions).set({
@@ -97,6 +98,7 @@ export async function POST(
         timeSignatureDenominator: state.timeSignatureDenominator,
         gridDivision: state.gridDivision,
         snapEnabled: state.snapEnabled,
+        targetKey: state.targetKey,
         version: remix.version + 1,
         updatedAt: new Date(),
       }).where(eq(remixSessions.id, remix.id));

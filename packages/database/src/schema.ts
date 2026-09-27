@@ -194,6 +194,8 @@ export const remixSessions = pgTable("remix_sessions", {
   timeSignatureDenominator: integer("time_signature_denominator").notNull().default(4),
   gridDivision: text("grid_division").notNull().default("beat"),
   snapEnabled: boolean("snap_enabled").notNull().default(true),
+  // A user-selected canonical key; source keys remain authoritative analyses.
+  targetKey: text("target_key"),
   version: integer("version").notNull().default(1),
   ...timestamps,
 }, (table) => [index("remix_sessions_project_id_idx").on(table.projectId), index("remix_sessions_owner_id_idx").on(table.ownerId)]);
@@ -224,6 +226,8 @@ export const remixClips = pgTable("remix_clips", {
   fadeOutMs: integer("fade_out_ms").notNull().default(0),
   // Intent only. The worker derives source BPM and the effective ratio at render time.
   tempoSyncEnabled: boolean("tempo_sync_enabled").notNull().default(false),
+  // Intent only. The worker derives source/target semitones while rendering.
+  keySyncEnabled: boolean("key_sync_enabled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("remix_clips_track_id_idx").on(table.remixTrackId), index("remix_clips_asset_id_idx").on(table.stemAssetId)]);

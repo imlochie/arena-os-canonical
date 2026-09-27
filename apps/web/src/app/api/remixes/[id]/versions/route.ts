@@ -25,6 +25,7 @@ async function snapshot(remix: typeof remixSessions.$inferSelect) {
     timeSignatureDenominator: remix.timeSignatureDenominator,
     gridDivision: remix.gridDivision,
     snapEnabled: remix.snapEnabled,
+    targetKey: remix.targetKey,
     tracks: tracks.map((track) => ({ ...track, clips: clips.filter((clip) => clip.remixTrackId === track.id) })),
   };
 }

@@ -61,6 +61,7 @@ export type Remix = {
   timeSignatureDenominator: number;
   gridDivision: GridDivision;
   snapEnabled: boolean;
+  targetKey: string | null;
   tracks: PersistedTrack[];
 };
 
@@ -82,6 +83,7 @@ export function remixState(remix: Remix): RemixStateInput {
     timeSignatureDenominator: remix.timeSignatureDenominator,
     gridDivision: remix.gridDivision,
     snapEnabled: remix.snapEnabled,
+    targetKey: remix.targetKey,
     tracks: remix.tracks,
   };
 }

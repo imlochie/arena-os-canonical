@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normaliseMusicalKey } from "@waveyard/types";
 import { analysisDisplayState } from "../../apps/web/src/components/studio/SourceAnalysisSummary";
 import {
   analysisIdempotencyKey,
@@ -9,7 +10,6 @@ import {
   normaliseAnalysisResult,
   normaliseBeatGrid,
   normaliseBpm,
-  normaliseMusicalKey,
   SOURCE_ANALYSIS_ENGINE,
   SOURCE_ANALYSIS_ENGINE_VERSION,
 } from "../../apps/worker/src/analysis";

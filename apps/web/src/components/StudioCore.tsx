@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS } from "@waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTimeline";
 import { ArrangementInspector } from "./studio/ArrangementInspector";
@@ -64,6 +65,11 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
     const bpm = analysis?.bpm;
     return [stem.id, analysis?.status === "complete" && Number.isFinite(bpm) && bpm! >= 40 && bpm! <= 300 ? bpm! : null] as const;
+  })), [sourceById, stems]);
+  const sourceKeyByStemId = useMemo(() => new Map(stems.map((stem) => {
+    const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
+    const key = analysis?.status === "complete" ? normaliseMusicalKey(analysis.musicalKey) : null;
+    return [stem.id, key] as const;
   })), [sourceById, stems]);
   const selected = stems.find((stem) => stem.id === selectedId) ?? stems[0];
   const source = selected ? sourceById.get(selected.sourceAssetId) : undefined;
@@ -236,6 +242,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
         <div className="arrangement-settings" aria-label="Arrangement timing settings">
           <label>BPM <input aria-label="Tempo BPM" type="number" min="20" max="300" value={remix.tempoBpm} onChange={(event) => changeRemix((current) => ({ ...current, tempoBpm: Number(event.target.value) || 120 }))} /></label>
           <button className="button secondary" disabled={!selectedSourceBpm} title={selectedSourceBpm ? `Use ${selectedSourceBpm.toFixed(2)} BPM from the selected source` : "Selected source has no complete BPM analysis"} onClick={() => selectedSourceBpm && changeRemix((current) => ({ ...current, tempoBpm: selectedSourceBpm }))}>Use source BPM</button>
+          <label>Target key <select aria-label="Target remix key" value={remix.targetKey ?? ""} onChange={(event) => changeRemix((current) => ({ ...current, targetKey: event.target.value || null }))}><option value="">No target key</option>{SUPPORTED_MUSICAL_KEYS.map((key) => <option key={key} value={key}>{key}</option>)}</select></label>
           <label>Beats/bar <input aria-label="Time signature numerator" type="number" min="1" max="12" value={remix.timeSignatureNumerator} onChange={(event) => changeRemix((current) => ({ ...current, timeSignatureNumerator: Number(event.target.value) || 4 }))} /></label>
           <label>Beat value <select aria-label="Time signature denominator" value={remix.timeSignatureDenominator} onChange={(event) => changeRemix((current) => ({ ...current, timeSignatureDenominator: Number(event.target.value) }))}>{[1, 2, 4, 8, 16].map((value) => <option value={value} key={value}>{value}</option>)}</select></label>
           <label>Grid <select aria-label="Grid division" value={remix.gridDivision} onChange={(event) => changeRemix((current) => ({ ...current, gridDivision: event.target.value as GridDivision }))}>{["bar", "beat", "half-beat", "quarter-note"].map((value) => <option value={value} key={value}>{value}</option>)}</select></label>
@@ -243,7 +250,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
           <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
         </div>
         <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} sourceDurationById={sourceDurationById} onSelection={setClipSelection} onPreview={previewTimeline} onCommit={commitTimeline} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
-        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} onChange={changeRemix} onSelection={setClipSelection} />
+        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} onChange={changeRemix} onSelection={setClipSelection} />
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
     </section>

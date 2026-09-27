@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { normaliseMusicalKey, semitoneShift } from "@waveyard/types";
 import { validateWaveform, waveformPeaksForResolution } from "@waveyard/audio";
+import { pitchFilterChain, pitchRatioForSemitones, resolveKeySync } from "../../apps/worker/src/key";
 import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "../../apps/worker/src/tempo";
 import {
   effectiveMuted,
@@ -144,6 +146,42 @@ describe("tempo sync derivation", () => {
   });
 });
 
+describe("key sync derivation", () => {
+  it("parses source-analysis keys and normalizes enharmonic spellings", () => {
+    expect(normaliseMusicalKey("Gb minor")).toBe("F# minor");
+    expect(normaliseMusicalKey("B# major")).toBe("C major");
+    expect(normaliseMusicalKey("not a key")).toBeNull();
+  });
+
+  it("calculates deterministic signed chromatic shifts across C and B", () => {
+    expect(semitoneShift("B major", "C major")).toBe(1);
+    expect(semitoneShift("C major", "B major")).toBe(-1);
+    expect(semitoneShift("F# minor", "D minor")).toBe(-4);
+    expect(semitoneShift("Gb minor", "F# major")).toBe(0);
+    expect(semitoneShift(null, "C major")).toBeNull();
+    expect(resolveKeySync("failed", "F# minor", "D minor")).toEqual({ errorCode: "key_sync_analysis_missing" });
+    expect(resolveKeySync("complete", null, "D minor")).toEqual({ errorCode: "key_sync_key_unavailable" });
+  });
+
+  it("builds a deterministic pitch-preserving FFmpeg chain", () => {
+    expect(() => pitchRatioForSemitones(12)).toThrow("Invalid");
+    expect(pitchRatioForSemitones(3)).toBeCloseTo(2 ** (3 / 12));
+    expect(pitchFilterChain(-1, 44_100)).toContain("asetrate=41625,aresample=44100,atempo=");
+  });
+
+  it("defaults legacy key intent off and preserves an explicit enabled intent", () => {
+    const base = {
+      masterVolume: 1, loopStartMs: 0, loopEndMs: null,
+      tracks: [{ id: "t", stemAssetId: "s", name: "Stem", sortOrder: 0, volume: 1, pan: 0, muted: false, solo: false,
+        clips: [{ stemAssetId: "s", timelineStartMs: 0, durationMs: 1000, sourceOffsetMs: 0, gain: 1 }] }],
+    };
+    expect(normaliseRemixState(base)?.targetKey).toBeNull();
+    expect(normaliseRemixState(base)?.tracks[0].clips[0].keySyncEnabled).toBe(false);
+    const enabled = normaliseRemixState({ ...base, targetKey: "Db minor", tracks: [{ ...base.tracks[0], clips: [{ ...base.tracks[0].clips[0], keySyncEnabled: true }] }] });
+    expect(enabled).toMatchObject({ targetKey: "C# minor", tracks: [{ clips: [{ keySyncEnabled: true }] }] });
+  });
+});
+
 describe("musical timing and clip operations", () => {
   const timing = {
     tempoBpm: 120,
@@ -161,6 +199,7 @@ describe("musical timing and clip operations", () => {
     fadeInMs: 0,
     fadeOutMs: 0,
     tempoSyncEnabled: false,
+    keySyncEnabled: false,
   };
 
   it("calculates stable musical positions and snapping", () => {

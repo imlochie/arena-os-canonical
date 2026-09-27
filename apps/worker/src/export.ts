@@ -14,7 +14,8 @@ import {
 } from "@waveyard/database";
 import { consumeTestFault } from "@waveyard/queue";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
-import type { ExportJobPayload } from "@waveyard/types";
+import { normaliseMusicalKey, type ExportJobPayload } from "@waveyard/types";
+import { pitchFilterChain, resolveKeySync } from "./key";
 import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "./tempo";
 
 type SnapshotClip = {
@@ -26,6 +27,7 @@ type SnapshotClip = {
   fadeInMs: number;
   fadeOutMs: number;
   tempoSyncEnabled: boolean;
+  keySyncEnabled: boolean;
 };
 type SnapshotTrack = {
   stemAssetId: string;
@@ -39,6 +41,7 @@ type SnapshotTrack = {
 type ExportSnapshot = {
   masterVolume: number;
   tempoBpm: number;
+  targetKey: string | null;
   tracks: SnapshotTrack[];
 };
 
@@ -108,6 +111,8 @@ function parseSnapshot(raw: string): ExportSnapshot {
           fadeOutMs,
           // Historical versions are intentionally rendered without a transform.
           tempoSyncEnabled: item.tempoSyncEnabled === true,
+          // Historical versions are intentionally rendered without a transform.
+          keySyncEnabled: item.keySyncEnabled === true,
         };
       }),
     };
@@ -115,6 +120,7 @@ function parseSnapshot(raw: string): ExportSnapshot {
   return {
     masterVolume: finite(value.masterVolume, 0, 2),
     tempoBpm: finite(value.tempoBpm ?? 120, 20, 300),
+    targetKey: normaliseMusicalKey(value.targetKey),
     tracks,
   };
 }
@@ -267,14 +273,15 @@ export async function processExport(
         "The persisted remix references an unavailable project stem.",
       );
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
-    const syncedSourceIds = [...new Set(clips
-      .filter((clip) => clip.tempoSyncEnabled)
+    const transformedSourceIds = [...new Set(clips
+      .filter((clip) => clip.tempoSyncEnabled || clip.keySyncEnabled)
       .map((clip) => stemById.get(clip.stemAssetId)!.sourceAssetId))];
-    const analyses = syncedSourceIds.length
-      ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, syncedSourceIds))
+    const analyses = transformedSourceIds.length
+      ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, transformedSourceIds))
       : [];
     const analysisBySourceId = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
     const tempoByClip = new Map<number, { ratio: number; sourceDurationMs: number }>();
+    const keyShiftByClip = new Map<number, number>();
     for (const [index, clip] of clips.entries()) {
       const stem = stemById.get(clip.stemAssetId)!;
       let sourceDurationMs = clip.durationMs;
@@ -287,6 +294,22 @@ export async function processExport(
         const ratio = tempoRatio(snapshot.tempoBpm, analysis.bpm!);
         sourceDurationMs = requiredSourceDurationMs(clip.durationMs, ratio);
         tempoByClip.set(index, { ratio, sourceDurationMs });
+      }
+      if (clip.keySyncEnabled) {
+        const analysis = analysisBySourceId.get(stem.sourceAssetId);
+        const resolution = resolveKeySync(
+          analysis?.projectId === job.projectId ? analysis.status : undefined,
+          normaliseMusicalKey(analysis?.musicalKey),
+          snapshot.targetKey,
+        );
+        if ("errorCode" in resolution)
+          throw new ExportFailure(
+            resolution.errorCode,
+            resolution.errorCode === "key_sync_analysis_missing"
+              ? "Key sync requires complete source key analysis."
+              : "Key sync requires usable source and target keys.",
+          );
+        keyShiftByClip.set(index, resolution.semitones);
       }
       if (!sourceDurationFits(
         clip.sourceOffsetMs,
@@ -320,6 +343,7 @@ export async function processExport(
       const volume = (clip.track.volume * clip.gain).toFixed(6);
       const delay = Math.round(clip.timelineStartMs);
       const tempo = tempoByClip.get(index);
+      const keyShift = keyShiftByClip.get(index);
       const fades = [
         clip.fadeInMs > 0 ? `afade=t=in:st=0:d=${seconds(clip.fadeInMs)}` : "",
         clip.fadeOutMs > 0
@@ -327,11 +351,17 @@ export async function processExport(
           : "",
       ].filter(Boolean).join(",");
       const fadeSegment = fades ? `,${fades}` : "";
-      // The only transform happens here, before clip gain, fades, pan, delay, and mix.
-      const tempoSegment = tempo
-        ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}`
-        : "";
-      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
+      // Keep the established Phase 6 and unsynced filters byte-for-byte in
+      // their existing order. Key sync adds its transform before the final trim.
+      if (keyShift === undefined) {
+        const tempoSegment = tempo
+          ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}`
+          : "";
+        return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
+      }
+      // Tempo then pitch precede output trim, gain, fades, pan, delay, and mix.
+      const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)}` : "";
+      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
     });
     const labels = clips.map((_clip, index) => `[clip${index}]`).join("");
     filters.push(

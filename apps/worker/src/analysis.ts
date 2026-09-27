@@ -11,48 +11,10 @@ import {
   recordTestFaultEvent,
 } from "@waveyard/queue";
 import { getStorage } from "@waveyard/storage";
-import type { SourceAnalysisJobPayload } from "@waveyard/types";
+import { normaliseMusicalKey, type SourceAnalysisJobPayload } from "@waveyard/types";
 
 export const SOURCE_ANALYSIS_ENGINE = "waveyard-numpy-dsp";
 export const SOURCE_ANALYSIS_ENGINE_VERSION = "1.0.0";
-const CANONICAL_PITCHES = [
-  "C",
-  "C#",
-  "D",
-  "D#",
-  "E",
-  "F",
-  "F#",
-  "G",
-  "G#",
-  "A",
-  "A#",
-  "B",
-] as const;
-const ENHARMONIC_PITCHES: Record<string, (typeof CANONICAL_PITCHES)[number]> = {
-  C: "C",
-  "B#": "C",
-  "C#": "C#",
-  Db: "C#",
-  D: "D",
-  "D#": "D#",
-  Eb: "D#",
-  E: "E",
-  Fb: "E",
-  "E#": "F",
-  F: "F",
-  "F#": "F#",
-  Gb: "F#",
-  G: "G",
-  "G#": "G#",
-  Ab: "G#",
-  A: "A",
-  "A#": "A#",
-  Bb: "A#",
-  B: "B",
-  Cb: "B",
-};
-
 export type AnalysisEngineResult = {
   analysisEngine: string;
   analysisEngineVersion: string;
@@ -132,19 +94,6 @@ export function beatConfidenceFromGrid(
   return normaliseConfidence(
     0.55 * Math.max(0, Math.min(1, bpmConfidence)) + 0.45 * regularity,
   )!;
-}
-
-export function normaliseMusicalKey(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const match = /^\s*([A-G](?:#|b)?)[\s_-]+(major|minor)\s*$/i.exec(value);
-  if (!match) return null;
-  const pitch = ENHARMONIC_PITCHES[
-    `${match[1][0].toUpperCase()}${match[1].slice(1)}`
-  ];
-  const mode = match[2].toLowerCase();
-  return pitch && (mode === "major" || mode === "minor")
-    ? `${pitch} ${mode}`
-    : null;
 }
 
 /** Beat positions are canonical source milliseconds and must be strictly ordered. */

@@ -175,6 +175,7 @@ export async function PUT(
           timeSignatureDenominator: input.timeSignatureDenominator,
           gridDivision: input.gridDivision,
           snapEnabled: input.snapEnabled,
+          targetKey: input.targetKey,
           version: remix.version + 1,
           updatedAt: new Date(),
         })
@@ -210,6 +211,7 @@ export async function PUT(
           fadeInMs: clip.fadeInMs,
           fadeOutMs: clip.fadeOutMs,
           tempoSyncEnabled: clip.tempoSyncEnabled,
+          keySyncEnabled: clip.keySyncEnabled,
         })),
       );
       if (clips.length) await tx.insert(remixClips).values(clips);

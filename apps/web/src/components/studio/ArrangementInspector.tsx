@@ -1,5 +1,6 @@
 "use client";
 
+import { semitoneShift } from "@waveyard/types";
 import { splitClipAt } from "@/lib/arrangement";
 import type { RemixClipInput } from "@/lib/remix";
 import { snapTimelineMs, type MusicalTiming } from "@/lib/timing";
@@ -24,6 +25,7 @@ export function ArrangementInspector({
   onChange,
   onSelection,
   sourceBpmByStemId,
+  sourceKeyByStemId,
 }: {
   remix: Remix;
   selection: ClipSelection;
@@ -32,6 +34,7 @@ export function ArrangementInspector({
   onChange: (transform: (current: Remix) => Remix) => void;
   onSelection: (selection: ClipSelection) => void;
   sourceBpmByStemId?: Map<string, number | null>;
+  sourceKeyByStemId?: Map<string, string | null>;
 }) {
   const track = selection ? remix.tracks.find((candidate) => candidate.id === selection.trackId) : undefined;
   const clip = track && selection ? track.clips[selection.clipIndex] : undefined;
@@ -42,6 +45,8 @@ export function ArrangementInspector({
   const sourceBpm = sourceBpmByStemId?.get(clip.stemAssetId) ?? null;
   const usableBpm = Number.isFinite(sourceBpm) && sourceBpm! >= 40 && sourceBpm! <= 300;
   const tempoRatio = usableBpm ? remix.tempoBpm / sourceBpm! : null;
+  const sourceKey = sourceKeyByStemId?.get(clip.stemAssetId) ?? null;
+  const keyShift = sourceKey && remix.targetKey ? semitoneShift(sourceKey, remix.targetKey) : null;
   const splitAtPlayhead = () => {
     const split = splitClipAt(clip, snapTimelineMs(positionMs, timing));
     if (!split) return;
@@ -71,6 +76,12 @@ export function ArrangementInspector({
       {usableBpm
         ? (clip.tempoSyncEnabled && <p>Source {sourceBpm!.toFixed(2)} BPM → remix {remix.tempoBpm.toFixed(2)} BPM · ratio {tempoRatio!.toFixed(4)}. Export-only; arrangement preview uses original audio.</p>)
         : <p>Source tempo unavailable. {clip.tempoSyncEnabled ? "Export will fail until this source has complete BPM analysis." : "Tempo sync cannot be rendered until BPM analysis completes."}</p>}
+    </fieldset>
+    <fieldset className="key-sync"><legend>Key Sync</legend>
+      <label><input aria-label="Key sync" type="checkbox" checked={clip.keySyncEnabled} onChange={(event) => update((item) => ({ ...item, keySyncEnabled: event.target.checked }))} /> {clip.keySyncEnabled ? "Sync to remix key" : "Off"}</label>
+      {sourceKey && remix.targetKey && keyShift !== null
+        ? (clip.keySyncEnabled && <p>Source {sourceKey} → remix {remix.targetKey} · {keyShift >= 0 ? "+" : ""}{keyShift} semitones. Export-only; arrangement preview uses original audio.</p>)
+        : <p>{!sourceKey ? "Source key unavailable." : "Target remix key unavailable."} {clip.keySyncEnabled ? "Export will fail until complete key analysis and a target key are available." : "Key sync cannot be rendered until both are available."}</p>}
     </fieldset>
     <label>Fade in (ms)<input type="number" min="0" max={maxFade} value={clip.fadeInMs} onChange={(event) => update((item) => ({ ...item, fadeInMs: Math.min(Math.max(0, Number(event.target.value) || 0), item.durationMs - item.fadeOutMs) }))} /></label>
     <label>Fade out (ms)<input type="number" min="0" max={Math.max(0, clip.durationMs - clip.fadeInMs)} value={clip.fadeOutMs} onChange={(event) => update((item) => ({ ...item, fadeOutMs: Math.min(Math.max(0, Number(event.target.value) || 0), item.durationMs - item.fadeInMs) }))} /></label>
