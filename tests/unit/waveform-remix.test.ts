@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   beatGridAvailability,
+  beatRangeToSourceWindow,
+  createLoopClips,
   nearestBeat,
   normaliseMusicalKey,
   projectSourceBeatToTimelineMs,
   semitoneShift,
+  sliceClipToBeatRange,
   snapSourceWindowToBeats,
   tempoRatioForBpm,
 } from "@waveyard/types";
@@ -234,6 +237,69 @@ describe("beat-aware arrangement", () => {
     expect(ratio).toBe(0.8);
     expect(projectSourceBeatToTimelineMs(2_000, 1_000, 500, ratio!)).toBe(1_750);
     expect(projectSourceBeatToTimelineMs(2_000, 1_000, 500, 0)).toBeNull();
+  });
+});
+
+describe("beat-aligned chopping and looping", () => {
+  const grid = [0, 500, 1_000, 1_500, 2_000];
+  const clip = {
+    id: "clip-a",
+    stemAssetId: "stem-a",
+    timelineStartMs: 2_000,
+    durationMs: 1_000,
+    sourceOffsetMs: 0,
+    gain: 0.75,
+    fadeInMs: 100,
+    fadeOutMs: 200,
+    tempoSyncEnabled: true,
+    keySyncEnabled: true,
+    beatSnapEnabled: true,
+  };
+
+  it("resolves first, interior, and final valid beat intervals", () => {
+    expect(beatRangeToSourceWindow(grid, 0, 1, 2_000)).toEqual({ ok: true, sourceOffsetMs: 0, sourceDurationMs: 500 });
+    expect(beatRangeToSourceWindow(grid, 1, 3, 2_000)).toEqual({ ok: true, sourceOffsetMs: 500, sourceDurationMs: 1_000 });
+    expect(beatRangeToSourceWindow(grid, 3, 4, 2_000)).toEqual({ ok: true, sourceOffsetMs: 1_500, sourceDurationMs: 500 });
+  });
+
+  it("rejects invalid beat ranges, duplicate timestamps, unavailable grids, and out-of-source windows", () => {
+    expect(beatRangeToSourceWindow(grid, -1, 1, 2_000)).toMatchObject({ ok: false, reason: "beat_range_invalid" });
+    expect(beatRangeToSourceWindow(grid, 3, 2, 2_000)).toMatchObject({ ok: false, reason: "beat_range_invalid" });
+    expect(beatRangeToSourceWindow([], 0, 1, 2_000)).toMatchObject({ ok: false, reason: "beat_grid_unavailable" });
+    expect(beatRangeToSourceWindow([0, 500, 500], 1, 2, 2_000)).toMatchObject({ ok: false, reason: "beat_range_invalid" });
+    expect(beatRangeToSourceWindow(grid, 2, 4, 1_900)).toMatchObject({ ok: false, reason: "source_bounds_invalid" });
+  });
+
+  it("creates independent transformed slice metadata from source beats", () => {
+    const result = sliceClipToBeatRange(clip, grid, 1, 3, 2_000, 0.8);
+    expect(result).toMatchObject({ ok: true, clip: {
+      id: undefined,
+      stemAssetId: "stem-a",
+      sourceOffsetMs: 500,
+      durationMs: 1_250,
+      timelineStartMs: 2_000,
+      gain: 0.75,
+      fadeInMs: 100,
+      fadeOutMs: 200,
+      tempoSyncEnabled: true,
+      keySyncEnabled: true,
+      beatSnapEnabled: true,
+    } });
+    expect(clip).toMatchObject({ id: "clip-a", sourceOffsetMs: 0, durationMs: 1_000 });
+  });
+
+  it("creates bounded deterministic loop clips with independent entries", () => {
+    expect(createLoopClips(clip, 1)).toMatchObject([{ timelineStartMs: 3_000 }]);
+    const loops = createLoopClips(clip, 3);
+    expect(loops).toMatchObject([
+      { id: undefined, timelineStartMs: 3_000, sourceOffsetMs: 0, durationMs: 1_000, tempoSyncEnabled: true, keySyncEnabled: true, beatSnapEnabled: true, gain: 0.75, fadeInMs: 100, fadeOutMs: 200 },
+      { id: undefined, timelineStartMs: 4_000 },
+      { id: undefined, timelineStartMs: 5_000 },
+    ]);
+    expect(loops?.[0]).not.toBe(loops?.[1]);
+    expect(createLoopClips(clip, 0)).toBeNull();
+    expect(createLoopClips(clip, -1)).toBeNull();
+    expect(createLoopClips(clip, 65)).toBeNull();
   });
 });
 

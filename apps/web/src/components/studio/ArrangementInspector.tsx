@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   beatGridAvailability,
   nearestBeat,
@@ -9,7 +10,7 @@ import {
 } from "@waveyard/types";
 import { splitClipAt } from "@/lib/arrangement";
 import type { RemixClipInput } from "@/lib/remix";
-import { snapTimelineMs, type MusicalTiming } from "@/lib/timing";
+import { barMs, beatMs, snapTimelineMs, type MusicalTiming } from "@/lib/timing";
 import type { Remix } from "./types";
 import type { ClipSelection } from "./ArrangementTimeline";
 
@@ -33,6 +34,7 @@ export function ArrangementInspector({
   sourceBpmByStemId,
   sourceKeyByStemId,
   sourceBeatByStemId,
+  onReload,
 }: {
   remix: Remix;
   selection: ClipSelection;
@@ -43,7 +45,12 @@ export function ArrangementInspector({
   sourceBpmByStemId?: Map<string, number | null>;
   sourceKeyByStemId?: Map<string, string | null>;
   sourceBeatByStemId?: Map<string, { status: string; beatGrid: number[] | null; beatConfidence: number | null }>;
+  onReload: () => void;
 }) {
+  const [startBeatIndex, setStartBeatIndex] = useState(0);
+  const [endBeatIndex, setEndBeatIndex] = useState(1);
+  const [repetitions, setRepetitions] = useState(4);
+  const [actionError, setActionError] = useState("");
   const track = selection ? remix.tracks.find((candidate) => candidate.id === selection.trackId) : undefined;
   const clip = track && selection ? track.clips[selection.clipIndex] : undefined;
   if (!track || !clip || !selection)
@@ -60,6 +67,10 @@ export function ArrangementInspector({
   const sourceRatio = clip.tempoSyncEnabled
     ? tempoRatioForBpm(remix.tempoBpm, sourceBpm ?? Number.NaN)
     : 1;
+  const selectedSourceDurationMs = endBeatIndex > startBeatIndex
+    ? Math.max(0, (beatInfo?.beatGrid?.[endBeatIndex] ?? 0) - (beatInfo?.beatGrid?.[startBeatIndex] ?? 0))
+    : 0;
+  const selectedTimelineDurationMs = sourceRatio ? Math.round(selectedSourceDurationMs / sourceRatio) : 0;
   const snapSourceOffset = (item: RemixClipInput, sourceOffsetMs: number) => {
     const snapped = item.beatSnapEnabled && beatState !== "unavailable"
       ? nearestBeat(sourceOffsetMs, beatInfo?.beatGrid)
@@ -78,6 +89,28 @@ export function ArrangementInspector({
       fadeOutMs,
       fadeInMs: Math.min(item.fadeInMs, snapped.durationMs - fadeOutMs),
     };
+  };
+  const createBeatSlice = async () => {
+    if (!clip.id) { setActionError("Save this clip before creating a slice."); return; }
+    setActionError("");
+    const response = await fetch(`/api/remixes/${remix.id}/clips/slice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clipId: clip.id, startBeatIndex, endBeatIndex }),
+    });
+    if (!response.ok) { setActionError((await response.json().catch(() => ({}))).error ?? "Could not create slice."); return; }
+    onReload();
+  };
+  const createBeatLoop = async () => {
+    if (!clip.id) { setActionError("Save this clip before creating a loop."); return; }
+    setActionError("");
+    const response = await fetch(`/api/remixes/${remix.id}/clips/loop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clipId: clip.id, repetitions }),
+    });
+    if (!response.ok) { setActionError((await response.json().catch(() => ({}))).error ?? "Could not create loop."); return; }
+    onReload();
   };
   const splitAtPlayhead = () => {
     const split = splitClipAt(clip, snapTimelineMs(positionMs, timing));
@@ -127,6 +160,20 @@ export function ArrangementInspector({
         ? <p>Beat grid analysis is not available for this source. Free positioning remains available.</p>
         : <p>Beat grid {beatState === "low-confidence" ? "available with low confidence" : "available"} · {beatInfo!.beatGrid!.length} beats · confidence {beatInfo!.beatConfidence === null ? "unknown" : beatInfo!.beatConfidence.toFixed(2)}. Source beat alignment: {clip.sourceOffsetMs} ms. Source offset and trim boundaries resolve to analyzed beats{clip.tempoSyncEnabled ? " using the existing tempo ratio" : ""}.</p>}
     </fieldset>
+    <fieldset className="beat-slice"><legend>Slice</legend>
+      {beatState === "unavailable" ? <p>Beat slicing unavailable. Use freehand trimming instead.</p> : <>
+        <label>Start beat <select aria-label="Slice start beat" value={startBeatIndex} onChange={(event) => setStartBeatIndex(Number(event.target.value))}>{beatInfo!.beatGrid!.map((beat, index) => <option key={index} value={index}>Beat {index + 1} · {beat} ms</option>)}</select></label>
+        <label>End beat <select aria-label="Slice end beat" value={endBeatIndex} onChange={(event) => setEndBeatIndex(Number(event.target.value))}>{beatInfo!.beatGrid!.map((beat, index) => <option key={index} value={index} disabled={index <= startBeatIndex}>Beat {index + 1} · {beat} ms</option>)}</select></label>
+        <p>Source beats {startBeatIndex + 1}–{endBeatIndex + 1} · {Math.max(0, endBeatIndex - startBeatIndex)} intervals · {selectedSourceDurationMs} ms source / {selectedTimelineDurationMs} ms timeline · {(selectedTimelineDurationMs / beatMs(timing)).toFixed(2)} beats · {(selectedTimelineDurationMs / barMs(timing)).toFixed(2)} bars.</p>
+        <button className="button secondary" disabled={!clip.id || endBeatIndex <= startBeatIndex} onClick={() => void createBeatSlice()}>Create Slice</button>
+      </>}
+    </fieldset>
+    <fieldset className="beat-loop"><legend>Loop</legend>
+      <label>Add repeats <input aria-label="Loop repetitions" type="number" min="1" max="64" value={repetitions} onChange={(event) => setRepetitions(Math.max(1, Math.min(64, Number(event.target.value) || 1)))} /></label>
+      <p>Creates independent clips after this region; each remains individually editable.</p>
+      <button className="button secondary" disabled={!clip.id || !clip.beatSnapEnabled} onClick={() => void createBeatLoop()}>Create Loop</button>
+    </fieldset>
+    {actionError && <p className="notice">{actionError}</p>}
     <label>Fade in (ms)<input type="number" min="0" max={maxFade} value={clip.fadeInMs} onChange={(event) => update((item) => ({ ...item, fadeInMs: Math.min(Math.max(0, Number(event.target.value) || 0), item.durationMs - item.fadeOutMs) }))} /></label>
     <label>Fade out (ms)<input type="number" min="0" max={Math.max(0, clip.durationMs - clip.fadeInMs)} value={clip.fadeOutMs} onChange={(event) => update((item) => ({ ...item, fadeOutMs: Math.min(Math.max(0, Number(event.target.value) || 0), item.durationMs - item.fadeInMs) }))} /></label>
     <div className="inspector-actions">

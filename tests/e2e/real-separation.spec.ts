@@ -795,6 +795,65 @@ test.describe("real Compose separation pipeline", () => {
     expect(beatMedia.status()).toBe(206);
     expect(beatMedia.headers()["content-type"]).toContain("audio/wav");
 
+    // Phase 9 treats beat cuts and repeats as ordinary immutable-stem clips.
+    const sourceBAlignedClip = beatRestored.tracks
+      .find((track: { stemAssetId: string }) => track.stemAssetId === sourceBStem.id)
+      .clips.find((candidate: { beatSnapEnabled: boolean }) => candidate.beatSnapEnabled);
+    expect(sourceBAlignedClip).toBeTruthy();
+    const sliceResponse = await page.request.post(`/api/remixes/${beatRemixId}/clips/slice`, {
+      data: { clipId: sourceBAlignedClip.id, startBeatIndex: 1, endBeatIndex: 3 },
+    });
+    expect(sliceResponse.status()).toBe(201);
+    const slice = (await sliceResponse.json()).clip;
+    const sourceRatio = 96 / completedSourceB.analysis.bpm;
+    expect(slice).toMatchObject({
+      stemAssetId: sourceBStem.id,
+      sourceOffsetMs: completedSourceB.analysis.beatGrid[1],
+      durationMs: Math.round((completedSourceB.analysis.beatGrid[3] - completedSourceB.analysis.beatGrid[1]) / sourceRatio),
+      tempoSyncEnabled: true,
+      keySyncEnabled: false,
+      beatSnapEnabled: true,
+    });
+    const slicedReload = await (await page.request.get(`/api/remixes/${beatRemixId}`)).json();
+    const slicedTrack = slicedReload.tracks.find((track: { stemAssetId: string }) => track.stemAssetId === sourceBStem.id);
+    expect(slicedTrack.clips.map((candidate: { id: string }) => candidate.id)).toContain(slice.id);
+
+    const loopResponse = await page.request.post(`/api/remixes/${beatRemixId}/clips/loop`, {
+      data: { clipId: slice.id, repetitions: 3 },
+    });
+    expect(loopResponse.status()).toBe(201);
+    const loopClips = (await loopResponse.json()).clips as Array<Record<string, unknown>>;
+    expect(loopClips).toHaveLength(3);
+    expect(loopClips.map((candidate) => candidate.timelineStartMs)).toEqual([
+      slice.timelineStartMs + slice.durationMs,
+      slice.timelineStartMs + 2 * slice.durationMs,
+      slice.timelineStartMs + 3 * slice.durationMs,
+    ]);
+    expect(new Set(loopClips.map((candidate) => candidate.id)).size).toBe(3);
+    expect(loopClips).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stemAssetId: sourceBStem.id, sourceOffsetMs: slice.sourceOffsetMs, durationMs: slice.durationMs, tempoSyncEnabled: true, keySyncEnabled: false, beatSnapEnabled: true }),
+    ]));
+
+    const choppedVersion = await page.request.post(`/api/remixes/${beatRemixId}/versions`, {
+      data: { name: "Beat slice and independent loop" },
+    });
+    expect(choppedVersion.status()).toBe(201);
+    const choppedVersionId = (await choppedVersion.json()).version.id as string;
+    const choppedExport = await page.request.post(`/api/remix-versions/${choppedVersionId}/exports`, { data: { format: "wav" } });
+    expect(choppedExport.status()).toBe(201);
+    const choppedExportId = (await choppedExport.json()).job.id as string;
+    await expect.poll(async () => {
+      const body = await (await page.request.get(`/api/exports/${choppedExportId}`)).json();
+      return { status: body.job.status, asset: Boolean(body.asset) };
+    }, { timeout: 180_000, intervals: [1_000, 2_000, 5_000] }).toEqual({ status: "complete", asset: true });
+    const choppedResult = await (await page.request.get(`/api/exports/${choppedExportId}`)).json();
+    expect(choppedResult.asset.remixVersionId).toBe(choppedVersionId);
+    const choppedMedia = await page.request.get(`/api/exports/${choppedExportId}/media`, {
+      headers: { Range: "bytes=0-2047" },
+    });
+    expect(choppedMedia.status()).toBe(206);
+    expect(choppedMedia.headers()["content-type"]).toContain("audio/wav");
+
     await page.reload();
     await expect(
       page
