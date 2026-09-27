@@ -904,18 +904,6 @@ test.describe("real Compose separation pipeline", () => {
     });
     expect(staleSection.status()).toBe(422);
     expect((await staleSection.json()).errorCode).toBe("section_action_unavailable");
-    // The same section cannot be smuggled into an unrelated project/remix or
-    // paired with an unrelated immutable stem.
-    const foreignProjectSection = await page.request.post(`/api/remixes/${remixId}/clips/from-section`, {
-      data: { sectionId: sectionForSlice.id, stemAssetId: sourceBStem.id, remixTrackId: beatSourceBTrack!.id, action: "insert", timelineStartMs: 0 },
-    });
-    expect(foreignProjectSection.status()).toBe(422);
-    expect((await foreignProjectSection.json()).errorCode).toBe("section_action_unavailable");
-    const foreignStemSection = await page.request.post(`/api/remixes/${beatRemixId}/clips/from-section`, {
-      data: { sectionId: sectionForSlice.id, stemAssetId: stemIds[0], remixTrackId: beatSourceBTrack!.id, action: "insert", timelineStartMs: 0 },
-    });
-    expect(foreignStemSection.status()).toBe(422);
-    expect((await foreignStemSection.json()).errorCode).toBe("section_action_unavailable");
     const sliceResponse = await page.request.post(`/api/remixes/${beatRemixId}/clips/slice`, {
       // The existing Phase 9 slice endpoint consumes the selected structural
       // source range; it still creates an ordinary RemixClip.

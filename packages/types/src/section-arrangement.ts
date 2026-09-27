@@ -75,6 +75,40 @@ export function createSectionArrangementClips(
 }
 
 /** Current source/section provenance must agree before a section can drive a clip. */
+/** Project and immutable-source chain used by the server before clip creation. */
+export function sectionActionScopeReason(input: {
+  remixProjectId: string;
+  sectionProjectId: string;
+  sourceProjectId: string;
+  sourceAnalysisProjectId: string;
+  sectionAnalysisProjectId: string;
+  stemProjectId: string;
+  trackRemixSessionId: string;
+  remixId: string;
+  sectionSourceAssetId: string;
+  sourceAssetId: string;
+  analysisSourceAssetId: string;
+  sectionAnalysisSourceAssetId: string;
+  stemSourceAssetId: string;
+  trackStemAssetId: string;
+  stemAssetId: string;
+}): "section_action_unavailable" | null {
+  if (
+    input.sectionProjectId !== input.remixProjectId
+    || input.sourceProjectId !== input.remixProjectId
+    || input.sourceAnalysisProjectId !== input.remixProjectId
+    || input.sectionAnalysisProjectId !== input.remixProjectId
+    || input.stemProjectId !== input.remixProjectId
+    || input.trackRemixSessionId !== input.remixId
+    || input.sectionSourceAssetId !== input.sourceAssetId
+    || input.analysisSourceAssetId !== input.sourceAssetId
+    || input.sectionAnalysisSourceAssetId !== input.sourceAssetId
+    || input.stemSourceAssetId !== input.sourceAssetId
+    || input.trackStemAssetId !== input.stemAssetId
+  ) return "section_action_unavailable";
+  return null;
+}
+
 export function sectionActionProvenanceReason(input: {
   sourceChecksumSha256: string;
   sectionChecksumSha256: string;

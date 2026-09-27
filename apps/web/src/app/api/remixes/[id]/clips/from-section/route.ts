@@ -14,6 +14,7 @@ import {
 import {
   createSectionArrangementClips,
   sectionActionProvenanceReason,
+  sectionActionScopeReason,
   tempoRatioForBpm,
   usableBeatGrid,
   type MusicalClipInput,
@@ -74,14 +75,26 @@ export async function POST(
       db.select().from(stemAssets).where(and(eq(stemAssets.id, stemAssetId), eq(stemAssets.projectId, remix.projectId))).limit(1),
       db.select().from(remixTracks).where(and(eq(remixTracks.id, remixTrackId), eq(remixTracks.remixSessionId, remix.id))).limit(1),
     ]);
-    if (!source || !analysis || !sectionAnalysis || !stem || !track
-      || source.id !== section.sourceAssetId
-      || analysis.sourceAssetId !== source.id
-      || sectionAnalysis.sourceAssetId !== source.id
-      || sectionAnalysis.sourceAnalysisId !== analysis.id
-      || sectionAnalysis.sourceChecksumSha256 !== source.checksumSha256
-      || stem.sourceAssetId !== source.id
-      || track.stemAssetId !== stem.id)
+    if (!source || !analysis || !sectionAnalysis || !stem || !track)
+      return NextResponse.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must belong to one project." }, { status: 422 });
+    const scopeError = sectionActionScopeReason({
+      remixProjectId: remix.projectId,
+      sectionProjectId: section.projectId,
+      sourceProjectId: source.projectId,
+      sourceAnalysisProjectId: analysis.projectId,
+      sectionAnalysisProjectId: sectionAnalysis.projectId,
+      stemProjectId: stem.projectId,
+      trackRemixSessionId: track.remixSessionId,
+      remixId: remix.id,
+      sectionSourceAssetId: section.sourceAssetId,
+      sourceAssetId: source.id,
+      analysisSourceAssetId: analysis.sourceAssetId,
+      sectionAnalysisSourceAssetId: sectionAnalysis.sourceAssetId,
+      stemSourceAssetId: stem.sourceAssetId,
+      trackStemAssetId: track.stemAssetId,
+      stemAssetId: stem.id,
+    });
+    if (scopeError || sectionAnalysis.sourceAnalysisId !== analysis.id || sectionAnalysis.sourceChecksumSha256 !== source.checksumSha256)
       return NextResponse.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must belong to one project." }, { status: 422 });
     if (analysis.status !== "complete")
       return NextResponse.json({ errorCode: "section_action_unavailable", error: "A complete current source beat analysis is required." }, { status: 422 });

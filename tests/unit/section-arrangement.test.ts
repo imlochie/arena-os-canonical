@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createSectionArrangementClips,
   sectionActionProvenanceReason,
+  sectionActionScopeReason,
   type MusicalClipInput,
 } from "@waveyard/types";
 
@@ -79,6 +80,22 @@ describe("section-aware arrangement construction", () => {
     expect(create("loop", 0, 4, 0, 3, 3)).toEqual({ ok: false, reason: "clip_capacity_exceeded" });
     expect(create("loop", 0, 4, 86_399_000, 8, 1)).toEqual({ ok: false, reason: "timeline_bounds_invalid" });
     expect(create("loop", 0, 4, 0, 8, 0)).toEqual({ ok: false, reason: "loop_repetitions_invalid" });
+  });
+
+  it("rejects cross-project/source/stem/track reference chains before construction", () => {
+    const current = {
+      remixProjectId: "project-a", sectionProjectId: "project-a", sourceProjectId: "project-a",
+      sourceAnalysisProjectId: "project-a", sectionAnalysisProjectId: "project-a", stemProjectId: "project-a",
+      trackRemixSessionId: "remix-a", remixId: "remix-a",
+      sectionSourceAssetId: "source-a", sourceAssetId: "source-a", analysisSourceAssetId: "source-a",
+      sectionAnalysisSourceAssetId: "source-a", stemSourceAssetId: "source-a",
+      trackStemAssetId: "stem-a", stemAssetId: "stem-a",
+    };
+    expect(sectionActionScopeReason(current)).toBeNull();
+    expect(sectionActionScopeReason({ ...current, sectionProjectId: "project-b" })).toBe("section_action_unavailable");
+    expect(sectionActionScopeReason({ ...current, stemProjectId: "project-b" })).toBe("section_action_unavailable");
+    expect(sectionActionScopeReason({ ...current, stemSourceAssetId: "source-b" })).toBe("section_action_unavailable");
+    expect(sectionActionScopeReason({ ...current, trackRemixSessionId: "remix-b" })).toBe("section_action_unavailable");
   });
 
   it("requires the current checksum, source analysis, and section engine provenance", () => {
