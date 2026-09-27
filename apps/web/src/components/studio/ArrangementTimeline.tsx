@@ -3,6 +3,7 @@
 import { useMemo, useRef } from "react";
 import { snapSourceWindowToBeats, tempoRatioForBpm } from "@waveyard/types";
 import { moveClip, trimClipLeft, trimClipRight } from "@/lib/arrangement";
+import { clipRangeSelection, toggleClipSelection, trackClipSelection } from "@/lib/clip-selection";
 import { effectiveMuted, type RemixClipInput } from "@/lib/remix";
 import { barMs, beatMs, formatMusicalPosition, snapTimelineMs, type MusicalTiming } from "@/lib/timing";
 import { clock, type Remix } from "./types";
@@ -17,6 +18,8 @@ type DragState = {
   clip: RemixClipInput;
   sourceDurationMs: number;
   tempoRatio: number;
+  clipIds: string[];
+  lastTimelineDeltaMs: number;
   startX: number;
 };
 
@@ -38,12 +41,15 @@ export function ArrangementTimeline({
   timing,
   zoom,
   selection,
+  selectedClipIds,
   sourceDurationById,
   sourceBeatByStemId,
   sourceBpmByStemId,
   onSelection,
+  onSelectedClipIds,
   onPreview,
   onCommit,
+  onBatchCommit,
   onChange,
   onSeek,
   onDuplicateTrack,
@@ -54,12 +60,15 @@ export function ArrangementTimeline({
   timing: MusicalTiming;
   zoom: number;
   selection: ClipSelection;
+  selectedClipIds: string[];
   sourceDurationById: Map<string, number>;
   sourceBeatByStemId: Map<string, { status: string; beatGrid: number[] | null; beatConfidence: number | null }>;
   sourceBpmByStemId: Map<string, number | null>;
   onSelection: (selection: ClipSelection) => void;
+  onSelectedClipIds: (clipIds: string[]) => void;
   onPreview: (next: Remix) => void;
   onCommit: (before: Remix, after: Remix) => void;
+  onBatchCommit: (before: Remix, clipIds: string[], operation: "move" | "nudge" | "duplicate" | "delete", payload?: Record<string, unknown>) => Promise<string | null>;
   onChange: (transform: (current: Remix) => Remix) => void;
   onSeek: (milliseconds: number) => void;
   onDuplicateTrack: (trackId: string) => void;
@@ -85,14 +94,37 @@ export function ArrangementTimeline({
   ) => {
     event.preventDefault();
     event.stopPropagation();
+    const clipId = clip.id;
+    if (!clipId) return;
+    // Modifier clicks never create a persisted group; they only compose the
+    // current UI selection. Shift creates a same-track range, while command /
+    // control adds or removes compatible clips on any owned remix track.
+    if (event.shiftKey) {
+      const first = selection?.trackId === trackId ? selection.clipIndex : clipIndex;
+      const trackClipIds = remix.tracks.find((track) => track.id === trackId)?.clips
+        .map((item) => item.id)
+        .filter((id): id is string => Boolean(id)) ?? [clipId];
+      const range = clipRangeSelection(trackClipIds, first, clipIndex);
+      onSelectedClipIds(range);
+      onSelection({ trackId, clipIndex });
+      return;
+    }
+    if (event.metaKey || event.ctrlKey) {
+      const next = toggleClipSelection(selectedClipIds, clipId);
+      onSelectedClipIds(next);
+      onSelection(next.length ? { trackId, clipIndex } : null);
+      return;
+    }
     const sourceDurationMs = sourceDurationById.get(clip.stemAssetId) ?? clip.sourceOffsetMs + clip.durationMs;
     const sourceBpm = sourceBpmByStemId.get(clip.stemAssetId) ?? null;
     const tempoRatio = clip.tempoSyncEnabled
       ? (tempoRatioForBpm(timing.tempoBpm, sourceBpm ?? Number.NaN) ?? 1)
       : 1;
+    const clipIds = mode === "move" && selectedClipIds.includes(clipId) ? selectedClipIds : [clipId];
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { mode, trackId, clipIndex, original: remix, clip, sourceDurationMs, tempoRatio, startX: event.clientX };
+    drag.current = { mode, trackId, clipIndex, original: remix, clip, sourceDurationMs, tempoRatio, clipIds, lastTimelineDeltaMs: 0, startX: event.clientX };
     draft.current = remix;
+    onSelectedClipIds(clipIds);
     onSelection({ trackId, clipIndex });
   };
 
@@ -115,23 +147,44 @@ export function ArrangementTimeline({
     const active = drag.current;
     if (!active) return;
     const deltaMs = ((event.clientX - active.startX) / zoom) * 1000;
-    let nextClip: RemixClipInput;
-    if (active.mode === "move")
-      nextClip = moveClip(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing));
-    else if (active.mode === "trim-left")
-      nextClip = resolveSourceBeatWindow(trimClipLeft(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing), active.sourceDurationMs, active.tempoRatio));
-    else
-      nextClip = resolveSourceBeatWindow(trimClipRight(active.clip, snapTimelineMs(active.clip.timelineStartMs + active.clip.durationMs + deltaMs, timing), active.sourceDurationMs, active.tempoRatio));
-    const next = replaceClip(active.original, active.trackId, active.clipIndex, nextClip);
+    let next: Remix;
+    if (active.mode === "move") {
+      const snappedAnchor = snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing);
+      const actualDelta = snappedAnchor - active.clip.timelineStartMs;
+      active.lastTimelineDeltaMs = actualDelta;
+      next = {
+        ...active.original,
+        tracks: active.original.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((item) => active.clipIds.includes(item.id ?? "")
+            ? moveClip(item, item.timelineStartMs + actualDelta)
+            : item),
+        })),
+      };
+    } else {
+      const nextClip = active.mode === "trim-left"
+        ? resolveSourceBeatWindow(trimClipLeft(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing), active.sourceDurationMs, active.tempoRatio))
+        : resolveSourceBeatWindow(trimClipRight(active.clip, snapTimelineMs(active.clip.timelineStartMs + active.clip.durationMs + deltaMs, timing), active.sourceDurationMs, active.tempoRatio));
+      next = replaceClip(active.original, active.trackId, active.clipIndex, nextClip);
+    }
     draft.current = next;
     onPreview(next);
   };
 
   const endDrag = () => {
     const active = drag.current;
-    if (active && draft.current) onCommit(active.original, draft.current);
+    if (active && draft.current) {
+      if (active.mode === "move" && active.lastTimelineDeltaMs !== 0)
+        void onBatchCommit(active.original, active.clipIds, "move", { timelineDeltaMs: active.lastTimelineDeltaMs });
+      else if (active.mode !== "move") onCommit(active.original, draft.current);
+      else onPreview(active.original);
+    }
     drag.current = null;
     draft.current = null;
+  };
+  const runGroup = (operation: "nudge" | "duplicate" | "delete", payload: Record<string, unknown> = {}) => {
+    if (!selectedClipIds.length) return;
+    void onBatchCommit(remix, selectedClipIds, operation, payload);
   };
 
   return (
@@ -139,6 +192,7 @@ export function ArrangementTimeline({
       <div className="timeline-toolbar">
         <span className="snap-indicator">{timing.snapEnabled ? `Snap: ${timing.gridDivision}` : "Snap: off"}</span>
         <span>{formatMusicalPosition(positionMs, timing)}</span>
+        <span className="multi-clip-actions" aria-label="Selected clip actions">{selectedClipIds.length ? `${selectedClipIds.length} selected` : "Select clips"}<button className="button secondary" disabled={!selectedClipIds.length} onClick={() => runGroup("nudge", { amount: "1ms", direction: "back" })}>Nudge −</button><button className="button secondary" disabled={!selectedClipIds.length} onClick={() => runGroup("nudge", { amount: "1ms", direction: "forward" })}>Nudge +</button><button className="button secondary" disabled={!selectedClipIds.length} onClick={() => runGroup("duplicate")}>Duplicate</button><button className="button danger" disabled={!selectedClipIds.length} onClick={() => runGroup("delete")}>Delete</button></span>
       </div>
       <div className="timeline-axis">
         0s <span>{clock(timelineEndMs / 1000)}</span>
@@ -163,6 +217,11 @@ export function ArrangementTimeline({
                   <label>Pan <input aria-label={`${track.name} arrangement pan`} type="range" min="-1" max="1" step="0.01" value={track.pan} onChange={(event) => onChange((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id === track.id ? { ...candidate, pan: Number(event.target.value) } : candidate) }))} /></label>
                   <button className={`toggle ${track.muted ? "on" : ""}`} onClick={() => onChange((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id === track.id ? { ...candidate, muted: !candidate.muted } : candidate) }))}>M</button>
                   <button className={`toggle ${track.solo ? "on" : ""}`} onClick={() => onChange((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id === track.id ? { ...candidate, solo: !candidate.solo } : candidate) }))}>S</button>
+                  <button className="button secondary" onClick={() => {
+                    const ids = trackClipSelection(track.clips.map((clip) => clip.id).filter((id): id is string => Boolean(id)));
+                    onSelectedClipIds(ids);
+                    onSelection(ids.length ? { trackId: track.id, clipIndex: 0 } : null);
+                  }}>Select track</button>
                   <button className="button secondary" onClick={() => onDuplicateTrack(track.id)}>Duplicate track</button>
                 </div>
               </header>
@@ -174,8 +233,9 @@ export function ArrangementTimeline({
               >
                 {track.clips.map((clip, index) => {
                   const selected = selection?.trackId === track.id && selection.clipIndex === index;
+                  const groupSelected = Boolean(clip.id && selectedClipIds.includes(clip.id));
                   return <article
-                    className={`clip ${selected ? "selected" : ""}`}
+                    className={`clip ${selected || groupSelected ? "selected" : ""} ${groupSelected ? "multi-selected" : ""}`}
                     key={`${clip.id ?? "new"}-${index}`}
                     style={{ left: `${(clip.timelineStartMs / 1000) * zoom}px`, width: `${Math.max(18, (clip.durationMs / 1000) * zoom)}px` }}
                     onPointerDown={(event) => beginDrag(event, "move", track.id, index, clip)}

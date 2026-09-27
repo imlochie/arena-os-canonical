@@ -89,6 +89,37 @@ export function trimClipRightBy(
   return clipWindowIsValid(next, sourceDurationMs, tempoRatio) ? next : null;
 }
 
+/** Applies one snapped timeline delta to every selected ordinary clip. */
+export function moveEditableClips(
+  clips: MusicalClipInput[],
+  timelineDeltaMs: number,
+): MusicalClipInput[] | null {
+  if (!clips.length || !Number.isFinite(timelineDeltaMs)) return null;
+  const delta = Math.round(timelineDeltaMs);
+  const moved = clips.map((clip) => moveClipTimeline(clip, clip.timelineStartMs + delta));
+  if (moved.some((clip) => clip === null)) return null;
+  return moved as MusicalClipInput[];
+}
+
+/** A group duplicate starts after the selected group and retains all internal spacing. */
+export function duplicateEditableClips(
+  clips: MusicalClipInput[],
+  timelineOffsetMs?: number,
+): MusicalClipInput[] | null {
+  if (!clips.length) return null;
+  const firstStart = Math.min(...clips.map((clip) => clip.timelineStartMs));
+  const finalEnd = Math.max(...clips.map((clip) => clip.timelineStartMs + clip.durationMs));
+  const offset = timelineOffsetMs === undefined ? finalEnd - firstStart : Math.round(timelineOffsetMs);
+  if (!Number.isFinite(offset) || offset <= 0) return null;
+  const duplicates = clips.map((clip) => ({ ...clip, id: undefined, timelineStartMs: clip.timelineStartMs + offset }));
+  return duplicates.every((clip) => clip.timelineStartMs + clip.durationMs <= MAX_TIMELINE_MS) ? duplicates : null;
+}
+
+export function hasClipCapacity(currentCount: number, additions: number, maximum = MAX_CLIPS_PER_TRACK) {
+  return Number.isSafeInteger(currentCount) && Number.isSafeInteger(additions)
+    && currentCount >= 0 && additions >= 0 && currentCount + additions <= maximum;
+}
+
 export function slipClipSource(
   clip: MusicalClipInput,
   sourceOffsetMs: number,

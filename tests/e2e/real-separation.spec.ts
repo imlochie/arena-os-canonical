@@ -1142,6 +1142,41 @@ test.describe("real Compose separation pipeline", () => {
       const phase13Reloaded = await (await context.get(`/api/remixes/${remixId}`)).json();
       expect((phase13Reloaded.tracks[0].clips as Array<Record<string, unknown>>).some((clip) => clip.id === phase13Clip.id)).toBe(false);
       expect(phase13Reloaded.tracks[0].clips).toHaveLength(4);
+
+      // Phase 14 composes IDs only in the UI, but persists each multi-clip
+      // operation atomically. The same delta retains selected-clip spacing.
+      const phase14Ids = (phase13Reloaded.tracks[0].clips as Array<Record<string, unknown>>)
+        .slice(0, 2).map((clip) => String(clip.id));
+      const phase14Starts = (phase13Reloaded.tracks[0].clips as Array<Record<string, unknown>>)
+        .slice(0, 2).map((clip) => Number(clip.timelineStartMs));
+      const groupMove = await context.post(`/api/remixes/${remixId}/clips/batch-edit`, {
+        data: { operation: "move", clipIds: phase14Ids, timelineDeltaMs: 250 },
+      });
+      expect(groupMove.status()).toBe(200);
+      const groupMoveBody = await groupMove.json();
+      const movedStarts = groupMoveBody.clips.map((clip: Record<string, unknown>) => Number(clip.timelineStartMs)).sort((a: number, b: number) => a - b);
+      const expectedMovedStarts = phase14Starts.map((start) => start + 250).sort((a, b) => a - b);
+      expect(movedStarts).toEqual(expectedMovedStarts);
+      expect(movedStarts[1] - movedStarts[0]).toBe(expectedMovedStarts[1] - expectedMovedStarts[0]);
+      const groupDuplicate = await context.post(`/api/remixes/${remixId}/clips/batch-edit`, {
+        data: { operation: "duplicate", clipIds: phase14Ids },
+      });
+      expect(groupDuplicate.status()).toBe(200);
+      const groupDuplicateBody = await groupDuplicate.json();
+      expect(groupDuplicateBody.clips).toHaveLength(2);
+      const invalidGroupMove = await context.post(`/api/remixes/${remixId}/clips/batch-edit`, {
+        data: { operation: "move", clipIds: phase14Ids, timelineDeltaMs: -20_000 },
+      });
+      expect(invalidGroupMove.status()).toBe(422);
+      const afterRejectedGroupMove = await (await context.get(`/api/remixes/${remixId}`)).json();
+      const afterRejectedStarts = (afterRejectedGroupMove.tracks[0].clips as Array<Record<string, unknown>>)
+        .filter((clip) => phase14Ids.includes(String(clip.id))).map((clip) => Number(clip.timelineStartMs));
+      expect(afterRejectedStarts.sort((a, b) => a - b)).toEqual(phase14Starts.map((start) => start + 250).sort((a, b) => a - b));
+      const groupDelete = await context.post(`/api/remixes/${remixId}/clips/batch-edit`, {
+        data: { operation: "delete", clipIds: groupDuplicateBody.clips.map((clip: Record<string, unknown>) => clip.id) },
+      });
+      expect(groupDelete.status()).toBe(200);
+      expect((await groupDelete.json()).removedClipIds).toHaveLength(2);
     } finally {
       await context.dispose();
     }
@@ -1430,6 +1465,11 @@ test.describe("real Compose separation pipeline", () => {
     expect((await viewer.get(`/api/remixes/${remixId}`)).status()).toBe(200);
     expect(
       (await viewer.put(`/api/remixes/${remixId}`, { data: {} })).status(),
+    ).toBe(403);
+    expect(
+      (await viewer.post(`/api/remixes/${remixId}/clips/batch-edit`, {
+        data: { operation: "delete", clipIds: ["00000000-0000-0000-0000-000000000000"] },
+      })).status(),
     ).toBe(403);
     expect(
       (
