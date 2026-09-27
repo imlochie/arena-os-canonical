@@ -15,6 +15,7 @@ import {
   type Remix,
   type RemixVersionSummary,
   type Source,
+  type SourceSection,
   type Stem,
 } from "./studio/types";
 import { useArrangementHistory } from "./studio/useArrangementHistory";
@@ -221,6 +222,50 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     const response = await fetch(`/api/remixes/${remix.id}/versions/${versionId}/restore`, { method: "POST" });
     if (response.ok) await loadRemix(remix.id); else setSaveState("failed");
   };
+  const arrangeSection = useCallback(async (
+    section: SourceSection,
+    action: "add" | "insert" | "loop",
+    repetitions: number,
+  ) => {
+    if (!remix || !selected) return "Create a remix session before arranging a source section.";
+    const selectedTrack = clipSelection
+      ? remix.tracks.find((track) => track.id === clipSelection.trackId && track.stemAssetId === selected.id)
+      : undefined;
+    const targetTrack = selectedTrack ?? remix.tracks.find((track) => track.stemAssetId === selected.id);
+    if (!targetTrack) return "This source stem is not available in the current remix.";
+    const contextClip = clipSelection
+      ? remix.tracks.find((track) => track.id === clipSelection.trackId)?.clips[clipSelection.clipIndex]
+      : undefined;
+    const response = await fetch(`/api/remixes/${remix.id}/clips/from-section`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sectionId: section.id,
+        stemAssetId: selected.id,
+        remixTrackId: targetTrack.id,
+        contextClipId: contextClip?.id,
+        action,
+        timelineStartMs: Math.round(transport.position * 1000),
+        repetitions,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return body.error ?? "Could not add the selected section to the arrangement.";
+    const generated = (body.clips ?? []) as Remix["tracks"][number]["clips"];
+    if (!generated.length) return "The section action created no clips.";
+    // This one server mutation is one history entry, even when it generated a
+    // loop. Undo/redo continue to use the ordinary canonical arrangement state.
+    record(remix);
+    setRemix({
+      ...remix,
+      tracks: remix.tracks.map((track) => track.id === targetTrack.id
+        ? { ...track, clips: [...track.clips, ...generated] }
+        : track),
+    });
+    setClipSelection({ trackId: targetTrack.id, clipIndex: targetTrack.clips.length });
+    setSaveState("saved");
+    return null;
+  }, [clipSelection, record, remix, selected, transport.position]);
 
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
@@ -245,7 +290,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
   return <section className="studio" aria-label="Waveyard Studio">
     <header className="studio-head"><div><span className="eyebrow">Studio core</span><h2>Real stems, one transport.</h2></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
-    {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} />}
+    {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} onArrangementAction={arrangeSection} />}
     <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
     <section className="studio-grid"><StemMixer stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} />}</section>
     <section className="remix-panel">

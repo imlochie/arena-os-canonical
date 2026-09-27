@@ -706,7 +706,7 @@ test.describe("real Compose separation pipeline", () => {
       const source = state.sources.find((candidate: { id: string }) => candidate.id === sourceB.id);
       return { status: source?.sectionAnalysis?.status, ids: source?.sections?.map((section: { id: string }) => section.id) ?? [] };
     }, { timeout: 90_000, intervals: [1_000, 2_000, 5_000] }).toEqual({ status: "complete", ids: sectionBeforeRetry });
-    const sectionForSlice = completedSourceB.sections[0] as { startBeatIndex: number; endBeatIndex: number };
+    const sectionForSlice = completedSourceB.sections[0] as { id: string; startBeatIndex: number; endBeatIndex: number };
     expect(
       (
         await page.request.post(
@@ -841,6 +841,81 @@ test.describe("real Compose separation pipeline", () => {
       .find((track: { stemAssetId: string }) => track.stemAssetId === sourceBStem.id)
       .clips.find((candidate: { beatSnapEnabled: boolean }) => candidate.beatSnapEnabled);
     expect(sourceBAlignedClip).toBeTruthy();
+
+    // Phase 11 turns a current durable SourceSection into ordinary RemixClips.
+    // A compatible selected clip supplies its established transform intent.
+    const sectionInsert = await page.request.post(`/api/remixes/${beatRemixId}/clips/from-section`, {
+      data: {
+        sectionId: sectionForSlice.id,
+        stemAssetId: sourceBStem.id,
+        remixTrackId: beatSourceBTrack!.id,
+        contextClipId: sourceBAlignedClip.id,
+        action: "insert",
+        timelineStartMs: 12_345,
+      },
+    });
+    expect(sectionInsert.status()).toBe(201);
+    const insertedSectionClip = (await sectionInsert.json()).clips[0];
+    const sectionSourceRatio = 96 / completedSourceB.analysis.bpm;
+    expect(insertedSectionClip).toMatchObject({
+      stemAssetId: sourceBStem.id,
+      timelineStartMs: 12_345,
+      sourceOffsetMs: completedSourceB.analysis.beatGrid[sectionForSlice.startBeatIndex],
+      durationMs: Math.round((completedSourceB.analysis.beatGrid[sectionForSlice.endBeatIndex] - completedSourceB.analysis.beatGrid[sectionForSlice.startBeatIndex]) / sectionSourceRatio),
+      tempoSyncEnabled: true,
+      keySyncEnabled: false,
+      beatSnapEnabled: true,
+    });
+    const sectionAdd = await page.request.post(`/api/remixes/${beatRemixId}/clips/from-section`, {
+      data: {
+        sectionId: sectionForSlice.id,
+        stemAssetId: sourceBStem.id,
+        remixTrackId: beatSourceBTrack!.id,
+        action: "add",
+        timelineStartMs: 20_000,
+      },
+    });
+    expect(sectionAdd.status()).toBe(201);
+    const addedSectionClip = (await sectionAdd.json()).clips[0];
+    expect(addedSectionClip).toMatchObject({ timelineStartMs: 20_000, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false });
+    const sectionLoop = await page.request.post(`/api/remixes/${beatRemixId}/clips/from-section`, {
+      data: {
+        sectionId: sectionForSlice.id,
+        stemAssetId: sourceBStem.id,
+        remixTrackId: beatSourceBTrack!.id,
+        contextClipId: sourceBAlignedClip.id,
+        action: "loop",
+        timelineStartMs: 30_000,
+        repetitions: 2,
+      },
+    });
+    expect(sectionLoop.status()).toBe(201);
+    const sectionLoopClips = (await sectionLoop.json()).clips as Array<Record<string, number | string | boolean>>;
+    expect(sectionLoopClips).toHaveLength(3);
+    expect(new Set(sectionLoopClips.map((clip) => clip.id)).size).toBe(3);
+    expect(sectionLoopClips.map((clip) => clip.timelineStartMs)).toEqual([
+      30_000,
+      30_000 + insertedSectionClip.durationMs,
+      30_000 + 2 * insertedSectionClip.durationMs,
+    ]);
+    expect(sectionLoopClips.every((clip) => clip.sourceOffsetMs === insertedSectionClip.sourceOffsetMs && clip.durationMs === insertedSectionClip.durationMs && clip.tempoSyncEnabled === true && clip.beatSnapEnabled === true)).toBe(true);
+    const staleSection = await page.request.post(`/api/remixes/${beatRemixId}/clips/from-section`, {
+      data: { sectionId: sourceASectionIds.values().next().value, stemAssetId: sourceBStem.id, remixTrackId: beatSourceBTrack!.id, action: "insert", timelineStartMs: 0 },
+    });
+    expect(staleSection.status()).toBe(422);
+    expect((await staleSection.json()).errorCode).toBe("section_action_unavailable");
+    // The same section cannot be smuggled into an unrelated project/remix or
+    // paired with an unrelated immutable stem.
+    const foreignProjectSection = await page.request.post(`/api/remixes/${remixId}/clips/from-section`, {
+      data: { sectionId: sectionForSlice.id, stemAssetId: sourceBStem.id, remixTrackId: beatSourceBTrack!.id, action: "insert", timelineStartMs: 0 },
+    });
+    expect(foreignProjectSection.status()).toBe(422);
+    expect((await foreignProjectSection.json()).errorCode).toBe("section_action_unavailable");
+    const foreignStemSection = await page.request.post(`/api/remixes/${beatRemixId}/clips/from-section`, {
+      data: { sectionId: sectionForSlice.id, stemAssetId: stemIds[0], remixTrackId: beatSourceBTrack!.id, action: "insert", timelineStartMs: 0 },
+    });
+    expect(foreignStemSection.status()).toBe(422);
+    expect((await foreignStemSection.json()).errorCode).toBe("section_action_unavailable");
     const sliceResponse = await page.request.post(`/api/remixes/${beatRemixId}/clips/slice`, {
       // The existing Phase 9 slice endpoint consumes the selected structural
       // source range; it still creates an ordinary RemixClip.
@@ -859,7 +934,12 @@ test.describe("real Compose separation pipeline", () => {
     });
     const slicedReload = await (await page.request.get(`/api/remixes/${beatRemixId}`)).json();
     const slicedTrack = slicedReload.tracks.find((track: { stemAssetId: string }) => track.stemAssetId === sourceBStem.id);
-    expect(slicedTrack.clips.map((candidate: { id: string }) => candidate.id)).toContain(slice.id);
+    expect(slicedTrack.clips.map((candidate: { id: string }) => candidate.id)).toEqual(expect.arrayContaining([
+      slice.id,
+      insertedSectionClip.id,
+      addedSectionClip.id,
+      ...sectionLoopClips.map((clip) => clip.id),
+    ]));
 
     const loopResponse = await page.request.post(`/api/remixes/${beatRemixId}/clips/loop`, {
       data: { clipId: slice.id, repetitions: 3 },

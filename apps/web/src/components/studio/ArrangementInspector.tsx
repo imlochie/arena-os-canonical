@@ -179,6 +179,7 @@ export function ArrangementInspector({
     </fieldset>
     <fieldset className="beat-slice"><legend>Slice</legend>
       {beatState === "unavailable" ? <p>Beat slicing unavailable. Use freehand trimming instead.</p> : <>
+        {prefillMatches && <p className="notice">Selected source section is using beats {startBeatIndex}–{endBeatIndex}. Section actions create ordinary clips from this same canonical slice range.</p>}
         <label>Start beat <select aria-label="Slice start beat" value={startBeatIndex} onChange={(event) => { setDismissedPrefill(prefillKey); setStartBeatIndex(Number(event.target.value)); }}>{beatInfo!.beatGrid!.map((beat, index) => <option key={index} value={index}>Beat {index + 1} · {beat} ms</option>)}</select></label>
         <label>End beat <select aria-label="Slice end beat" value={endBeatIndex} onChange={(event) => { setDismissedPrefill(prefillKey); setEndBeatIndex(Number(event.target.value)); }}>{beatInfo!.beatGrid!.map((beat, index) => <option key={index} value={index} disabled={index <= startBeatIndex}>Beat {index + 1} · {beat} ms</option>)}</select></label>
         <p>Source beats {startBeatIndex + 1}–{endBeatIndex + 1} · {Math.max(0, endBeatIndex - startBeatIndex)} intervals · {selectedSourceDurationMs} ms source / {selectedTimelineDurationMs} ms timeline · {(selectedTimelineDurationMs / beatMs(timing)).toFixed(2)} beats · {(selectedTimelineDurationMs / barMs(timing)).toFixed(2)} bars.</p>
