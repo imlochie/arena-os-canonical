@@ -182,9 +182,19 @@ function normaliseSectionEngineResult(value: unknown): SectionEngineResult {
   return { analysisEngine: SOURCE_SECTION_ANALYSIS_ENGINE, analysisEngineVersion: SOURCE_SECTION_ANALYSIS_ENGINE_VERSION, sections, unavailableReason };
 }
 
-function stableSectionId(sourceChecksum: string, startBeatIndex: number, endBeatIndex: number) {
+/**
+ * IDs are deterministic for one immutable source asset, but cannot be derived
+ * from content checksum alone: two separately uploaded sources can intentionally
+ * contain the same audio and must coexist under the global section primary key.
+ */
+export function sourceSectionId(
+  sourceAssetId: string,
+  sourceChecksum: string,
+  startBeatIndex: number,
+  endBeatIndex: number,
+) {
   return `section_${createHash("sha256")
-    .update(`${sourceChecksum}:${SOURCE_SECTION_ANALYSIS_ENGINE}:${SOURCE_SECTION_ANALYSIS_ENGINE_VERSION}:${startBeatIndex}:${endBeatIndex}`)
+    .update(`${sourceAssetId}:${sourceChecksum}:${SOURCE_SECTION_ANALYSIS_ENGINE}:${SOURCE_SECTION_ANALYSIS_ENGINE_VERSION}:${startBeatIndex}:${endBeatIndex}`)
     .digest("hex").slice(0, 32)}`;
 }
 
@@ -232,7 +242,12 @@ export async function processSourceSectionAnalysis(
       analysisEngine: result.analysisEngine,
       analysisEngineVersion: result.analysisEngineVersion,
       sourceChecksumSha256: source.checksumSha256,
-    }, ({ startBeatIndex, endBeatIndex }) => stableSectionId(source.checksumSha256, startBeatIndex, endBeatIndex));
+    }, ({ startBeatIndex, endBeatIndex }) => sourceSectionId(
+      source.id,
+      source.checksumSha256,
+      startBeatIndex,
+      endBeatIndex,
+    ));
     if (!sections.length) {
       await updateSectionAnalysis(job.id, { status: "unavailable", stage: "insufficient-evidence", errorCode: "structural_evidence_invalid", errorMessage: "No valid conservative source sections were produced.", analyzedAt: new Date(), completedAt: new Date() });
       await reportStage("unavailable");

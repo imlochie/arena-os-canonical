@@ -9,6 +9,7 @@ import {
   SOURCE_SECTION_ANALYSIS_ENGINE_VERSION,
   sectionAnalysisIdempotencyKey,
   sectionAnalysisQueuePayload,
+  sourceSectionId,
 } from "../../apps/worker/src/sections";
 
 const grid = Array.from({ length: 25 }, (_, index) => index * 500);
@@ -51,6 +52,14 @@ describe("source-coordinate structural sections", () => {
     expect(sourceSectionStatus("processing", "complete", grid)).toBe("processing");
     expect(sourceSectionStatus("unavailable", "complete", grid)).toBe("unavailable");
     expect(sourceSectionStatus("complete", "failed", grid)).toBe("insufficient_analysis");
+  });
+
+  it("does not collide section identities when separate source assets share a checksum", () => {
+    const first = sourceSectionId("source-a", "same-audio-checksum", 0, 16);
+    const duplicate = sourceSectionId("source-a", "same-audio-checksum", 0, 16);
+    const secondUpload = sourceSectionId("source-b", "same-audio-checksum", 0, 16);
+    expect(first).toBe(duplicate);
+    expect(secondUpload).not.toBe(first);
   });
 
   it("uses stable lifecycle idempotency and queue payload provenance on retry", () => {

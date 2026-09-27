@@ -682,6 +682,12 @@ test.describe("real Compose separation pipeline", () => {
       analysisEngineVersion: "1.0.0",
     });
     expect(completedSourceB.sections.length).toBeGreaterThanOrEqual(2);
+    const completedSourceA = completeState.sources.find((source: { id: string }) => source.id === sourceA.id);
+    expect(completedSourceA.sectionAnalysis).toMatchObject({ status: "complete" });
+    // Both uploads deliberately use byte-identical audio. Their globally keyed
+    // durable rows still need distinct deterministic IDs per source asset.
+    const sourceASectionIds = new Set(completedSourceA.sections.map((section: { id: string }) => section.id));
+    expect(completedSourceB.sections.some((section: { id: string }) => sourceASectionIds.has(section.id))).toBe(false);
     expect(completedSourceB.sections.map((section: { sectionIndex: number }) => section.sectionIndex)).toEqual(
       completedSourceB.sections.map((_: unknown, index: number) => index),
     );
