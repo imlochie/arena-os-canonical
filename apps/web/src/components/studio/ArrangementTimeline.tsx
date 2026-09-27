@@ -16,6 +16,7 @@ type DragState = {
   original: Remix;
   clip: RemixClipInput;
   sourceDurationMs: number;
+  tempoRatio: number;
   startX: number;
 };
 
@@ -85,8 +86,12 @@ export function ArrangementTimeline({
     event.preventDefault();
     event.stopPropagation();
     const sourceDurationMs = sourceDurationById.get(clip.stemAssetId) ?? clip.sourceOffsetMs + clip.durationMs;
+    const sourceBpm = sourceBpmByStemId.get(clip.stemAssetId) ?? null;
+    const tempoRatio = clip.tempoSyncEnabled
+      ? (tempoRatioForBpm(timing.tempoBpm, sourceBpm ?? Number.NaN) ?? 1)
+      : 1;
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { mode, trackId, clipIndex, original: remix, clip, sourceDurationMs, startX: event.clientX };
+    drag.current = { mode, trackId, clipIndex, original: remix, clip, sourceDurationMs, tempoRatio, startX: event.clientX };
     draft.current = remix;
     onSelection({ trackId, clipIndex });
   };
@@ -114,9 +119,9 @@ export function ArrangementTimeline({
     if (active.mode === "move")
       nextClip = moveClip(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing));
     else if (active.mode === "trim-left")
-      nextClip = resolveSourceBeatWindow(trimClipLeft(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing), active.sourceDurationMs));
+      nextClip = resolveSourceBeatWindow(trimClipLeft(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing), active.sourceDurationMs, active.tempoRatio));
     else
-      nextClip = resolveSourceBeatWindow(trimClipRight(active.clip, snapTimelineMs(active.clip.timelineStartMs + active.clip.durationMs + deltaMs, timing), active.sourceDurationMs));
+      nextClip = resolveSourceBeatWindow(trimClipRight(active.clip, snapTimelineMs(active.clip.timelineStartMs + active.clip.durationMs + deltaMs, timing), active.sourceDurationMs, active.tempoRatio));
     const next = replaceClip(active.original, active.trackId, active.clipIndex, nextClip);
     draft.current = next;
     onPreview(next);

@@ -20,7 +20,6 @@ import {
 } from "./studio/types";
 import { useArrangementHistory } from "./studio/useArrangementHistory";
 import { VersionHistory } from "./studio/VersionHistory";
-import { splitClipAt } from "@/lib/arrangement";
 import type { MixerValues } from "@/lib/useStemTransport";
 import { useStemTransport } from "@/lib/useStemTransport";
 import { useArrangementPreview } from "@/lib/useArrangementPreview";
@@ -280,6 +279,57 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     setSaveState("saved");
     return null;
   }, [clipSelection, record, remix, selected, transport.position]);
+  const editClip = useCallback(async (
+    clipId: string,
+    operation: "move" | "nudge" | "trim-left" | "trim-right" | "slip" | "duplicate" | "split",
+    payload: Record<string, unknown>,
+  ) => {
+    if (!remix) return "Create a remix session before editing clips.";
+    const response = await fetch(`/api/remixes/${remix.id}/clips/edit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clipId, operation, ...payload }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return body.error ?? "Could not apply the clip edit.";
+    // Each successful endpoint call is exactly one persisted clip operation and
+    // receives one ordinary arrangement-history snapshot.
+    record(remix);
+    if (operation === "split" && Array.isArray(body.clips)) {
+      const clips = body.clips as Remix["tracks"][number]["clips"];
+      setRemix({
+        ...remix,
+        tracks: remix.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.flatMap((clip) => clip.id === body.replacedClipId ? clips : [clip]),
+        })),
+      });
+      const track = remix.tracks.find((candidate) => candidate.clips.some((clip) => clip.id === body.replacedClipId));
+      if (track) {
+        const priorIndex = track.clips.findIndex((clip) => clip.id === body.replacedClipId);
+        setClipSelection({ trackId: track.id, clipIndex: priorIndex + 1 });
+      }
+    } else if (body.clip) {
+      const edited = body.clip as Remix["tracks"][number]["clips"][number];
+      const isDuplicate = operation === "duplicate";
+      setRemix({
+        ...remix,
+        tracks: remix.tracks.map((track) => ({
+          ...track,
+          clips: isDuplicate && track.clips.some((clip) => clip.id === clipId)
+            ? [...track.clips, edited]
+            : track.clips.map((clip) => clip.id === edited.id ? edited : clip),
+        })),
+      });
+      if (isDuplicate) {
+        const track = remix.tracks.find((candidate) => candidate.clips.some((clip) => clip.id === clipId));
+        if (track) setClipSelection({ trackId: track.id, clipIndex: track.clips.length });
+      }
+    }
+    setSaveState("saved");
+    return null;
+  }, [record, remix]);
+
   const alignClipBeat = useCallback(async (
     clipId: string,
     sourceBeatIndex: number,
@@ -318,15 +368,13 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
       if (event.key.toLowerCase() !== "s" || !clipSelection) return;
       const track = remix.tracks.find((candidate) => candidate.id === clipSelection.trackId);
       const clip = track?.clips[clipSelection.clipIndex];
-      const split = clip && splitClipAt(clip, snapTimelineMs(transport.position * 1000, timing));
-      if (!split) return;
+      if (!clip?.id) return;
       event.preventDefault();
-      changeRemix((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id !== clipSelection.trackId ? candidate : { ...candidate, clips: candidate.clips.flatMap((item, index) => index === clipSelection.clipIndex ? [split.left, split.right] : [item]) }) }));
-      setClipSelection({ trackId: clipSelection.trackId, clipIndex: clipSelection.clipIndex + 1 });
+      void editClip(clip.id, "split", { timelineMs: snapTimelineMs(transport.position * 1000, timing) });
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, [changeRemix, clipSelection, redo, remix, timing, toggleStemPreview, transport, undo]);
+  }, [clipSelection, editClip, redo, remix, timing, toggleStemPreview, transport, undo]);
 
   return <section className="studio" aria-label="Waveyard Studio">
     <header className="studio-head"><div><span className="eyebrow">Studio core</span><h2>Real stems, one transport.</h2></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
@@ -348,7 +396,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
           <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
         </div>
         <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onPreview={previewTimeline} onCommit={commitTimeline} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
-        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} sourceAlignmentByStemId={sourceAlignmentByStemId} comparisonSource={selected ? sourceAlignmentByStemId.get(selected.id) : null} slicePrefill={slicePrefill} onAlignBeat={alignClipBeat} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
+        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} sourceAlignmentByStemId={sourceAlignmentByStemId} comparisonSource={selected ? sourceAlignmentByStemId.get(selected.id) : null} slicePrefill={slicePrefill} onAlignBeat={alignClipBeat} onClipEdit={editClip} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
     </section>

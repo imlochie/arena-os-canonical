@@ -1,66 +1,49 @@
-import { clamp } from "./remix";
+import {
+  moveClipTimeline,
+  splitEditableClip,
+  trimClipLeftBy,
+  trimClipRightBy,
+} from "@waveyard/types";
 import type { RemixClipInput } from "./remix";
 
+/** Client drag previews intentionally reuse the same ordinary-clip math as the API. */
 export function moveClip(clip: RemixClipInput, timelineStartMs: number) {
-  return { ...clip, timelineStartMs: Math.round(Math.max(0, timelineStartMs)) };
+  return moveClipTimeline(clip, timelineStartMs) ?? clip;
 }
 
 export function trimClipLeft(
   clip: RemixClipInput,
   timelineStartMs: number,
   sourceDurationMs: number,
+  tempoRatio = 1,
 ) {
-  const nextStart = Math.round(Math.max(0, timelineStartMs));
-  const delta = nextStart - clip.timelineStartMs;
-  if (delta >= 0) {
-    const trim = Math.min(delta, clip.durationMs - 1);
-    return {
-      ...clip,
-      timelineStartMs: clip.timelineStartMs + trim,
-      sourceOffsetMs: clip.sourceOffsetMs + trim,
-      durationMs: clip.durationMs - trim,
-    };
-  }
-  const extension = Math.min(-delta, clip.sourceOffsetMs, clip.timelineStartMs);
-  return {
-    ...clip,
-    timelineStartMs: clip.timelineStartMs - extension,
-    sourceOffsetMs: clip.sourceOffsetMs - extension,
-    durationMs: Math.min(sourceDurationMs - (clip.sourceOffsetMs - extension), clip.durationMs + extension),
-  };
+  return trimClipLeftBy(
+    clip,
+    Math.round(timelineStartMs) - clip.timelineStartMs,
+    sourceDurationMs,
+    tempoRatio,
+  ) ?? clip;
 }
 
 export function trimClipRight(
   clip: RemixClipInput,
   timelineEndMs: number,
   sourceDurationMs: number,
+  tempoRatio = 1,
 ) {
-  const maximum = sourceDurationMs - clip.sourceOffsetMs;
-  const durationMs = Math.round(
-    clamp(timelineEndMs - clip.timelineStartMs, 1, Math.max(1, maximum)),
-  );
-  return { ...clip, durationMs };
+  return trimClipRightBy(
+    clip,
+    Math.round(timelineEndMs) - clip.timelineStartMs - clip.durationMs,
+    sourceDurationMs,
+    tempoRatio,
+  ) ?? clip;
 }
 
-export function splitClipAt(clip: RemixClipInput, playheadMs: number) {
-  const splitAt = Math.round(playheadMs - clip.timelineStartMs);
-  if (splitAt <= 0 || splitAt >= clip.durationMs) return null;
-  const left = {
-    ...clip,
-    id: undefined,
-    durationMs: splitAt,
-    fadeInMs: Math.min(clip.fadeInMs, splitAt),
-    fadeOutMs: 0,
-  };
-  const rightDuration = clip.durationMs - splitAt;
-  const right = {
-    ...clip,
-    id: undefined,
-    timelineStartMs: clip.timelineStartMs + splitAt,
-    sourceOffsetMs: clip.sourceOffsetMs + splitAt,
-    durationMs: rightDuration,
-    fadeInMs: 0,
-    fadeOutMs: Math.min(clip.fadeOutMs, rightDuration),
-  };
-  return { left, right };
+export function splitClipAt(
+  clip: RemixClipInput,
+  playheadMs: number,
+  sourceDurationMs = Number.MAX_SAFE_INTEGER,
+  tempoRatio = 1,
+) {
+  return splitEditableClip(clip, playheadMs, sourceDurationMs, tempoRatio);
 }

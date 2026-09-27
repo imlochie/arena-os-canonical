@@ -11,7 +11,6 @@ import {
   snapSourceWindowToBeats,
   tempoRatioForBpm,
 } from "@waveyard/types";
-import { splitClipAt } from "@/lib/arrangement";
 import type { RemixClipInput } from "@/lib/remix";
 import { barMs, beatMs, formatMusicalPosition, snapTimelineMs, type MusicalTiming } from "@/lib/timing";
 import type { Remix, SourceAlignmentInfo } from "./types";
@@ -42,6 +41,7 @@ export function ArrangementInspector({
   comparisonSource,
   slicePrefill,
   onAlignBeat,
+  onClipEdit,
   onReload,
 }: {
   remix: Remix;
@@ -58,6 +58,7 @@ export function ArrangementInspector({
   comparisonSource?: SourceAlignmentInfo | null;
   slicePrefill?: { sourceAssetId: string; startBeatIndex: number; endBeatIndex: number; token: string } | null;
   onAlignBeat?: (clipId: string, sourceBeatIndex: number, timelineTargetMs: number) => Promise<string | null>;
+  onClipEdit?: (clipId: string, operation: "move" | "nudge" | "trim-left" | "trim-right" | "slip" | "duplicate" | "split", payload: Record<string, unknown>) => Promise<string | null>;
   onReload: () => void;
 }) {
   const [enteredStartBeatIndex, setStartBeatIndex] = useState(0);
@@ -68,6 +69,9 @@ export function ArrangementInspector({
   const [alignBeatIndex, setAlignBeatIndex] = useState(0);
   const [alignmentMessage, setAlignmentMessage] = useState("");
   const [aligning, setAligning] = useState(false);
+  const [editAmountMs, setEditAmountMs] = useState(100);
+  const [moveSnap, setMoveSnap] = useState<"free" | "beat" | "bar">("free");
+  const [editing, setEditing] = useState(false);
   const track = selection ? remix.tracks.find((candidate) => candidate.id === selection.trackId) : undefined;
   const clip = track && selection ? track.clips[selection.clipIndex] : undefined;
   const prefillKey = slicePrefill ? `${slicePrefill.sourceAssetId}:${slicePrefill.startBeatIndex}:${slicePrefill.endBeatIndex}:${slicePrefill.token}` : null;
@@ -186,21 +190,27 @@ export function ArrangementInspector({
     setAligning(false);
     setAlignmentMessage(message ?? `Source beat ${selectedAlignBeatIndex + 1} aligned to ${formatMusicalPosition(positionMs, timing)}.`);
   };
-  const splitAtPlayhead = () => {
-    const split = splitClipAt(clip, snapTimelineMs(positionMs, timing));
-    if (!split) return;
-    onChange((current) => ({
-      ...current,
-      tracks: current.tracks.map((candidate) => candidate.id !== selection.trackId ? candidate : {
-        ...candidate,
-        clips: candidate.clips.flatMap((item, index) => index === selection.clipIndex ? [split.left, split.right] : [item]),
-      }),
-    }));
-    onSelection({ trackId: selection.trackId, clipIndex: selection.clipIndex + 1 });
+  const applyClipEdit = async (
+    operation: "move" | "nudge" | "trim-left" | "trim-right" | "slip" | "duplicate" | "split",
+    payload: Record<string, unknown>,
+  ) => {
+    if (!clip.id || !onClipEdit || editing) return;
+    setEditing(true);
+    setActionError("");
+    const message = await onClipEdit(clip.id, operation, payload);
+    setEditing(false);
+    if (message) setActionError(message);
   };
+  const splitAtPlayhead = () => void applyClipEdit("split", { timelineMs: snapTimelineMs(positionMs, timing) });
   return <aside className="clip-inspector" aria-label="Arrangement inspector">
     <h3>Arrangement inspector</h3>
     <p><strong>{track.name}</strong> · clip {selection.clipIndex + 1}</p>
+    <fieldset className="clip-edit-tools"><legend>Position · source · edit</legend>
+      <div className="clip-edit-row"><label>Move snap <select aria-label="Clip move snap" value={moveSnap} onChange={(event) => setMoveSnap(event.target.value as "free" | "beat" | "bar")}><option value="free">Free</option><option value="beat">Beat</option><option value="bar">Bar</option></select></label><button className="button secondary" disabled={!clip.id || editing} onClick={() => void applyClipEdit("move", { timelineStartMs: positionMs, snapMode: moveSnap })}>Move to playhead</button></div>
+      <div className="clip-edit-row"><span>Nudge</span>{(["1ms", "10ms", "beat", "bar"] as const).map((amount) => <span className="nudge-pair" key={amount}><button className="button secondary" aria-label={`Nudge ${amount} backward`} disabled={!clip.id || editing} onClick={() => void applyClipEdit("nudge", { amount, direction: "back" })}>−</button><button className="button secondary" aria-label={`Nudge ${amount} forward`} disabled={!clip.id || editing} onClick={() => void applyClipEdit("nudge", { amount, direction: "forward" })}>+ {amount}</button></span>)}</div>
+      <div className="clip-edit-row"><label>Edit ms <input aria-label="Clip edit amount" type="number" min="1" value={editAmountMs} onChange={(event) => setEditAmountMs(Math.max(1, Number(event.target.value) || 1))} /></label><button className="button secondary" disabled={!clip.id || editing} onClick={() => void applyClipEdit("trim-left", { timelineDeltaMs: editAmountMs })}>Trim left</button><button className="button secondary" disabled={!clip.id || editing} onClick={() => void applyClipEdit("trim-right", { timelineDeltaMs: -editAmountMs })}>Trim right</button><button className="button secondary" disabled={!clip.id || editing} onClick={() => void applyClipEdit("slip", { sourceOffsetMs: clip.sourceOffsetMs + editAmountMs })}>Slip source +</button><button className="button secondary" disabled={!clip.id || editing || clip.sourceOffsetMs < editAmountMs} onClick={() => void applyClipEdit("slip", { sourceOffsetMs: clip.sourceOffsetMs - editAmountMs })}>Slip source −</button></div>
+      <p>Timeline moves snap only at the timeline start. Trims and slips keep this ordinary clip&apos;s immutable source window within its source bounds.</p>
+    </fieldset>
     <label>Timeline start (ms)<input type="number" min="0" value={clip.timelineStartMs} onChange={(event) => update((item) => ({ ...item, timelineStartMs: Math.max(0, Number(event.target.value) || 0) }))} /></label>
     <label>Duration (ms)<input type="number" min="1" value={clip.durationMs} onChange={(event) => update((item) => {
       const durationMs = Math.max(1, Number(event.target.value) || 1);
@@ -281,8 +291,8 @@ export function ArrangementInspector({
     <label>Fade in (ms)<input type="number" min="0" max={maxFade} value={clip.fadeInMs} onChange={(event) => update((item) => ({ ...item, fadeInMs: Math.min(Math.max(0, Number(event.target.value) || 0), item.durationMs - item.fadeOutMs) }))} /></label>
     <label>Fade out (ms)<input type="number" min="0" max={Math.max(0, clip.durationMs - clip.fadeInMs)} value={clip.fadeOutMs} onChange={(event) => update((item) => ({ ...item, fadeOutMs: Math.min(Math.max(0, Number(event.target.value) || 0), item.durationMs - item.fadeInMs) }))} /></label>
     <div className="inspector-actions">
-      <button className="button secondary" onClick={splitAtPlayhead}>Split at playhead</button>
-      <button className="button secondary" onClick={() => onChange((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id !== selection.trackId ? candidate : { ...candidate, clips: [...candidate.clips, { ...clip, id: undefined, timelineStartMs: clip.timelineStartMs + clip.durationMs }] }) }))}>Duplicate clip</button>
+      <button className="button secondary" disabled={!clip.id || editing} onClick={splitAtPlayhead}>Split at playhead</button>
+      <button className="button secondary" disabled={!clip.id || editing} onClick={() => void applyClipEdit("duplicate", {})}>Duplicate clip</button>
       <button className="button danger" onClick={() => {
         onChange((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id !== selection.trackId ? candidate : { ...candidate, clips: candidate.clips.filter((_, index) => index !== selection.clipIndex) }) }));
         onSelection(null);
