@@ -1,9 +1,11 @@
+import { tempoRatioForBpm } from "@waveyard/types";
+
 export function tempoRatio(targetBpm: number, sourceBpm: number) {
   if (!Number.isFinite(targetBpm) || targetBpm < 20 || targetBpm > 300)
     throw new Error("Invalid remix BPM.");
   if (!Number.isFinite(sourceBpm) || sourceBpm < 40 || sourceBpm > 300)
     throw new Error("Tempo-sync source BPM is unavailable.");
-  return targetBpm / sourceBpm;
+  return tempoRatioForBpm(targetBpm, sourceBpm)!;
 }
 
 /** FFmpeg atempo permits 0.5–2 per stage; deterministic chaining covers more. */

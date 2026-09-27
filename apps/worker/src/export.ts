@@ -28,6 +28,7 @@ type SnapshotClip = {
   fadeOutMs: number;
   tempoSyncEnabled: boolean;
   keySyncEnabled: boolean;
+  beatSnapEnabled: boolean;
 };
 type SnapshotTrack = {
   stemAssetId: string;
@@ -113,6 +114,8 @@ function parseSnapshot(raw: string): ExportSnapshot {
           tempoSyncEnabled: item.tempoSyncEnabled === true,
           // Historical versions are intentionally rendered without a transform.
           keySyncEnabled: item.keySyncEnabled === true,
+          // Snap is already reflected in persisted clip coordinates; preserve intent in provenance.
+          beatSnapEnabled: item.beatSnapEnabled === true,
         };
       }),
     };

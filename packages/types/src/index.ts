@@ -1,4 +1,5 @@
 export * from "./musical-key";
+export * from "./beat-grid";
 
 export const STEM_TYPES = ["vocals", "drums", "bass", "other"] as const;
 export type StemType = (typeof STEM_TYPES)[number];

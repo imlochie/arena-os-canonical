@@ -86,6 +86,7 @@ export async function POST(
         fadeOutMs: clip.fadeOutMs,
         tempoSyncEnabled: clip.tempoSyncEnabled,
         keySyncEnabled: clip.keySyncEnabled,
+        beatSnapEnabled: clip.beatSnapEnabled,
       })));
       if (clips.length) await tx.insert(remixClips).values(clips);
       await tx.update(remixSessions).set({

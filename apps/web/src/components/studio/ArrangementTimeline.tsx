@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef } from "react";
+import { snapSourceWindowToBeats, tempoRatioForBpm } from "@waveyard/types";
 import { moveClip, trimClipLeft, trimClipRight } from "@/lib/arrangement";
 import { effectiveMuted, type RemixClipInput } from "@/lib/remix";
 import { barMs, beatMs, formatMusicalPosition, snapTimelineMs, type MusicalTiming } from "@/lib/timing";
@@ -37,6 +38,8 @@ export function ArrangementTimeline({
   zoom,
   selection,
   sourceDurationById,
+  sourceBeatByStemId,
+  sourceBpmByStemId,
   onSelection,
   onPreview,
   onCommit,
@@ -51,6 +54,8 @@ export function ArrangementTimeline({
   zoom: number;
   selection: ClipSelection;
   sourceDurationById: Map<string, number>;
+  sourceBeatByStemId: Map<string, { status: string; beatGrid: number[] | null; beatConfidence: number | null }>;
+  sourceBpmByStemId: Map<string, number | null>;
   onSelection: (selection: ClipSelection) => void;
   onPreview: (next: Remix) => void;
   onCommit: (before: Remix, after: Remix) => void;
@@ -86,6 +91,21 @@ export function ArrangementTimeline({
     onSelection({ trackId, clipIndex });
   };
 
+  const resolveSourceBeatWindow = (clip: RemixClipInput) => {
+    if (!clip.beatSnapEnabled) return clip;
+    const beat = sourceBeatByStemId.get(clip.stemAssetId);
+    const sourceBpm = sourceBpmByStemId.get(clip.stemAssetId) ?? null;
+    const ratio = clip.tempoSyncEnabled
+      ? tempoRatioForBpm(timing.tempoBpm, sourceBpm ?? Number.NaN)
+      : 1;
+    const snapped = ratio && beat?.status === "complete"
+      ? snapSourceWindowToBeats(clip.sourceOffsetMs, clip.durationMs, beat.beatGrid, ratio)
+      : null;
+    if (!snapped) return clip;
+    const fadeOutMs = Math.min(clip.fadeOutMs, snapped.durationMs);
+    return { ...clip, ...snapped, fadeOutMs, fadeInMs: Math.min(clip.fadeInMs, snapped.durationMs - fadeOutMs) };
+  };
+
   const updateDrag = (event: React.PointerEvent<HTMLElement>) => {
     const active = drag.current;
     if (!active) return;
@@ -94,9 +114,9 @@ export function ArrangementTimeline({
     if (active.mode === "move")
       nextClip = moveClip(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing));
     else if (active.mode === "trim-left")
-      nextClip = trimClipLeft(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing), active.sourceDurationMs);
+      nextClip = resolveSourceBeatWindow(trimClipLeft(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing), active.sourceDurationMs));
     else
-      nextClip = trimClipRight(active.clip, snapTimelineMs(active.clip.timelineStartMs + active.clip.durationMs + deltaMs, timing), active.sourceDurationMs);
+      nextClip = resolveSourceBeatWindow(trimClipRight(active.clip, snapTimelineMs(active.clip.timelineStartMs + active.clip.durationMs + deltaMs, timing), active.sourceDurationMs));
     const next = replaceClip(active.original, active.trackId, active.clipIndex, nextClip);
     draft.current = next;
     onPreview(next);
@@ -160,7 +180,10 @@ export function ArrangementTimeline({
                   >
                     <span className="trim-handle trim-left" aria-label="Trim clip left" onPointerDown={(event) => beginDrag(event, "trim-left", track.id, index, clip)} />
                     <b>{index + 1}</b>
-                    <label className="legacy-clip-start">Start<input aria-label={`${track.name} clip ${index + 1} start`} type="number" min="0" step="0.01" value={clip.timelineStartMs / 1000} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => onChange((current) => replaceClip(current, track.id, index, { ...clip, timelineStartMs: Math.max(0, Number(event.target.value) || 0) * 1000 }))} /></label>
+                    <label className="legacy-clip-start">Start<input aria-label={`${track.name} clip ${index + 1} start`} type="number" min="0" step="0.01" value={clip.timelineStartMs / 1000} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => onChange((current) => {
+                      const value = Math.max(0, Number(event.target.value) || 0) * 1000;
+                      return replaceClip(current, track.id, index, { ...clip, timelineStartMs: clip.beatSnapEnabled ? snapTimelineMs(value, timing) : value });
+                    })} /></label>
                     <span className="clip-label">{Math.round(clip.durationMs / 1000)}s</span>
                     <span className="trim-handle trim-right" aria-label="Trim clip right" onPointerDown={(event) => beginDrag(event, "trim-right", track.id, index, clip)} />
                   </article>;

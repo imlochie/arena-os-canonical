@@ -1,6 +1,12 @@
 "use client";
 
-import { semitoneShift } from "@waveyard/types";
+import {
+  beatGridAvailability,
+  nearestBeat,
+  semitoneShift,
+  snapSourceWindowToBeats,
+  tempoRatioForBpm,
+} from "@waveyard/types";
 import { splitClipAt } from "@/lib/arrangement";
 import type { RemixClipInput } from "@/lib/remix";
 import { snapTimelineMs, type MusicalTiming } from "@/lib/timing";
@@ -26,6 +32,7 @@ export function ArrangementInspector({
   onSelection,
   sourceBpmByStemId,
   sourceKeyByStemId,
+  sourceBeatByStemId,
 }: {
   remix: Remix;
   selection: ClipSelection;
@@ -35,6 +42,7 @@ export function ArrangementInspector({
   onSelection: (selection: ClipSelection) => void;
   sourceBpmByStemId?: Map<string, number | null>;
   sourceKeyByStemId?: Map<string, string | null>;
+  sourceBeatByStemId?: Map<string, { status: string; beatGrid: number[] | null; beatConfidence: number | null }>;
 }) {
   const track = selection ? remix.tracks.find((candidate) => candidate.id === selection.trackId) : undefined;
   const clip = track && selection ? track.clips[selection.clipIndex] : undefined;
@@ -47,6 +55,30 @@ export function ArrangementInspector({
   const tempoRatio = usableBpm ? remix.tempoBpm / sourceBpm! : null;
   const sourceKey = sourceKeyByStemId?.get(clip.stemAssetId) ?? null;
   const keyShift = sourceKey && remix.targetKey ? semitoneShift(sourceKey, remix.targetKey) : null;
+  const beatInfo = sourceBeatByStemId?.get(clip.stemAssetId);
+  const beatState = beatGridAvailability(beatInfo?.status, beatInfo?.beatGrid, beatInfo?.beatConfidence);
+  const sourceRatio = clip.tempoSyncEnabled
+    ? tempoRatioForBpm(remix.tempoBpm, sourceBpm ?? Number.NaN)
+    : 1;
+  const snapSourceOffset = (item: RemixClipInput, sourceOffsetMs: number) => {
+    const snapped = item.beatSnapEnabled && beatState !== "unavailable"
+      ? nearestBeat(sourceOffsetMs, beatInfo?.beatGrid)
+      : null;
+    return { ...item, sourceOffsetMs: snapped ?? sourceOffsetMs };
+  };
+  const snapSourceWindow = (item: RemixClipInput, durationMs: number) => {
+    const snapped = item.beatSnapEnabled && beatState !== "unavailable" && sourceRatio
+      ? snapSourceWindowToBeats(item.sourceOffsetMs, durationMs, beatInfo?.beatGrid, sourceRatio)
+      : null;
+    if (!snapped) return { ...item, durationMs };
+    const fadeOutMs = Math.min(item.fadeOutMs, snapped.durationMs);
+    return {
+      ...item,
+      ...snapped,
+      fadeOutMs,
+      fadeInMs: Math.min(item.fadeInMs, snapped.durationMs - fadeOutMs),
+    };
+  };
   const splitAtPlayhead = () => {
     const split = splitClipAt(clip, snapTimelineMs(positionMs, timing));
     if (!split) return;
@@ -67,9 +99,9 @@ export function ArrangementInspector({
       const durationMs = Math.max(1, Number(event.target.value) || 1);
       const fadeOutMs = Math.min(item.fadeOutMs, durationMs);
       const fadeInMs = Math.min(item.fadeInMs, durationMs - fadeOutMs);
-      return { ...item, durationMs, fadeInMs, fadeOutMs };
+      return snapSourceWindow({ ...item, fadeInMs, fadeOutMs }, durationMs);
     })} /></label>
-    <label>Source offset (ms)<input type="number" min="0" value={clip.sourceOffsetMs} onChange={(event) => update((item) => ({ ...item, sourceOffsetMs: Math.max(0, Number(event.target.value) || 0) }))} /></label>
+    <label>Source offset (ms)<input type="number" min="0" value={clip.sourceOffsetMs} onChange={(event) => update((item) => snapSourceOffset(item, Math.max(0, Number(event.target.value) || 0)))} /></label>
     <label>Clip gain<input type="range" min="0" max="4" step="0.01" value={clip.gain} onChange={(event) => update((item) => ({ ...item, gain: Number(event.target.value) }))} /><output>{clip.gain.toFixed(2)}×</output></label>
     <fieldset className="tempo-sync"><legend>Tempo sync</legend>
       <label><input aria-label="Tempo sync" type="checkbox" checked={clip.tempoSyncEnabled} onChange={(event) => update((item) => ({ ...item, tempoSyncEnabled: event.target.checked }))} /> {clip.tempoSyncEnabled ? "Sync to remix BPM" : "Off"}</label>
@@ -82,6 +114,18 @@ export function ArrangementInspector({
       {sourceKey && remix.targetKey && keyShift !== null
         ? (clip.keySyncEnabled && <p>Source {sourceKey} → remix {remix.targetKey} · {keyShift >= 0 ? "+" : ""}{keyShift} semitones. Export-only; arrangement preview uses original audio.</p>)
         : <p>{!sourceKey ? "Source key unavailable." : "Target remix key unavailable."} {clip.keySyncEnabled ? "Export will fail until complete key analysis and a target key are available." : "Key sync cannot be rendered until both are available."}</p>}
+    </fieldset>
+    <fieldset className="beat-snap"><legend>Beat Snap</legend>
+      <label><input aria-label="Beat snap" type="checkbox" checked={clip.beatSnapEnabled} onChange={(event) => update((item) => {
+        const enabled = event.target.checked;
+        const snapped = enabled && beatState !== "unavailable"
+          ? nearestBeat(item.sourceOffsetMs, beatInfo?.beatGrid)
+          : null;
+        return { ...item, beatSnapEnabled: enabled, sourceOffsetMs: snapped ?? item.sourceOffsetMs };
+      })} /> {clip.beatSnapEnabled ? "Source Beats" : "Off"}</label>
+      {beatState === "unavailable"
+        ? <p>Beat grid analysis is not available for this source. Free positioning remains available.</p>
+        : <p>Beat grid {beatState === "low-confidence" ? "available with low confidence" : "available"} · {beatInfo!.beatGrid!.length} beats · confidence {beatInfo!.beatConfidence === null ? "unknown" : beatInfo!.beatConfidence.toFixed(2)}. Source beat alignment: {clip.sourceOffsetMs} ms. Source offset and trim boundaries resolve to analyzed beats{clip.tempoSyncEnabled ? " using the existing tempo ratio" : ""}.</p>}
     </fieldset>
     <label>Fade in (ms)<input type="number" min="0" max={maxFade} value={clip.fadeInMs} onChange={(event) => update((item) => ({ ...item, fadeInMs: Math.min(Math.max(0, Number(event.target.value) || 0), item.durationMs - item.fadeOutMs) }))} /></label>
     <label>Fade out (ms)<input type="number" min="0" max={Math.max(0, clip.durationMs - clip.fadeInMs)} value={clip.fadeOutMs} onChange={(event) => update((item) => ({ ...item, fadeOutMs: Math.min(Math.max(0, Number(event.target.value) || 0), item.durationMs - item.fadeInMs) }))} /></label>

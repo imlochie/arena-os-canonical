@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { normaliseMusicalKey, semitoneShift } from "@waveyard/types";
+import {
+  beatGridAvailability,
+  nearestBeat,
+  normaliseMusicalKey,
+  projectSourceBeatToTimelineMs,
+  semitoneShift,
+  snapSourceWindowToBeats,
+  tempoRatioForBpm,
+} from "@waveyard/types";
 import { validateWaveform, waveformPeaksForResolution } from "@waveyard/audio";
 import { pitchFilterChain, pitchRatioForSemitones, resolveKeySync } from "../../apps/worker/src/key";
 import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "../../apps/worker/src/tempo";
@@ -182,6 +190,53 @@ describe("key sync derivation", () => {
   });
 });
 
+describe("beat-aware arrangement", () => {
+  const grid = [1_000, 1_500, 2_000, 2_500];
+
+  it("selects exact and nearest beats deterministically without mutating the grid", () => {
+    const original = [2_000, 1_000, 1_500];
+    expect(nearestBeat(1_500, grid)).toBe(1_500);
+    expect(nearestBeat(1_740, grid)).toBe(1_500);
+    expect(nearestBeat(1_750, grid)).toBe(1_500); // equal-distance chooses earlier
+    expect(nearestBeat(1_760, grid)).toBe(2_000);
+    expect(nearestBeat(1_300, original)).toBe(1_500);
+    expect(original).toEqual([2_000, 1_000, 1_500]);
+  });
+
+  it("clamps before and after the analyzed grid and leaves empty grids unavailable", () => {
+    expect(nearestBeat(10, grid)).toBe(1_000);
+    expect(nearestBeat(9_999, grid)).toBe(2_500);
+    expect(nearestBeat(1_000, [])).toBeNull();
+    expect(beatGridAvailability("complete", [], 0.9)).toBe("unavailable");
+    expect(beatGridAvailability("complete", grid, 0.2)).toBe("low-confidence");
+    expect(beatGridAvailability("complete", grid, 0.8)).toBe("available");
+  });
+
+  it("resolves source windows to beat boundaries and preserves disabled freeform intent", () => {
+    expect(snapSourceWindowToBeats(1_120, 840, grid)).toEqual({ sourceOffsetMs: 1_000, durationMs: 1_000 });
+    expect(snapSourceWindowToBeats(1_120, 840, [])).toBeNull();
+    const legacy = normaliseRemixState({
+      masterVolume: 1, loopStartMs: 0, loopEndMs: null,
+      tracks: [{ id: "t", stemAssetId: "s", name: "Stem", sortOrder: 0, volume: 1, pan: 0, muted: false, solo: false,
+        clips: [{ stemAssetId: "s", timelineStartMs: 111, durationMs: 333, sourceOffsetMs: 127, gain: 1 }] }],
+    });
+    expect(legacy?.tracks[0].clips[0]).toMatchObject({ beatSnapEnabled: false, sourceOffsetMs: 127 });
+  });
+
+  it("keeps timeline snapping on the existing remix musical grid", () => {
+    const timing = { tempoBpm: 120, timeSignatureNumerator: 4, timeSignatureDenominator: 4, gridDivision: "beat" as const, snapEnabled: true };
+    expect(snapTimelineMs(760, timing)).toBe(1_000);
+    expect(snapTimelineMs(760, { ...timing, snapEnabled: false })).toBe(760);
+  });
+
+  it("projects source beats through the existing target/source tempo ratio", () => {
+    const ratio = tempoRatioForBpm(96, 120);
+    expect(ratio).toBe(0.8);
+    expect(projectSourceBeatToTimelineMs(2_000, 1_000, 500, ratio!)).toBe(1_750);
+    expect(projectSourceBeatToTimelineMs(2_000, 1_000, 500, 0)).toBeNull();
+  });
+});
+
 describe("musical timing and clip operations", () => {
   const timing = {
     tempoBpm: 120,
@@ -200,6 +255,7 @@ describe("musical timing and clip operations", () => {
     fadeOutMs: 0,
     tempoSyncEnabled: false,
     keySyncEnabled: false,
+    beatSnapEnabled: false,
   };
 
   it("calculates stable musical positions and snapping", () => {

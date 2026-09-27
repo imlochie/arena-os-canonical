@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { nearestBeat } from "@waveyard/types";
 import {
   expect,
   request as playwrightRequest,
@@ -94,6 +95,7 @@ function remixPayload(state: { remix: Record<string, unknown>; tracks: Array<Rec
         fadeOutMs: clip.fadeOutMs,
         tempoSyncEnabled: clip.tempoSyncEnabled === true,
         keySyncEnabled: clip.keySyncEnabled === true,
+        beatSnapEnabled: clip.beatSnapEnabled === true,
       })),
     })),
   };
@@ -569,9 +571,16 @@ test.describe("real Compose separation pipeline", () => {
     expect(sourceBTrack).toBeTruthy();
     const sourceBClip = sourceBTrack!.clips[0] as Record<string, unknown>;
     sourceBClip.durationMs = 4_000;
-    sourceBClip.sourceOffsetMs = 0;
+    sourceBClip.sourceOffsetMs = 137;
     sourceBClip.tempoSyncEnabled = true;
-    expect((await page.request.put(`/api/remixes/${tempoRemixId}`, { data: tempoPayload })).status()).toBe(200);
+    sourceBClip.beatSnapEnabled = true;
+    const unavailableBeatSave = await page.request.put(`/api/remixes/${tempoRemixId}`, { data: tempoPayload });
+    expect(unavailableBeatSave.status()).toBe(200);
+    const unavailableBeatState = await unavailableBeatSave.json();
+    expect(unavailableBeatState.tracks.find((track: { stemAssetId: string }) => track.stemAssetId === sourceBStem.id).clips[0]).toMatchObject({
+      sourceOffsetMs: 137,
+      beatSnapEnabled: true,
+    });
     const unavailableVersion = await page.request.post(`/api/remixes/${tempoRemixId}/versions`, {
       data: { name: "Sync requires analysis" },
     });
@@ -714,6 +723,78 @@ test.describe("real Compose separation pipeline", () => {
     expect(keySyncedMedia.status()).toBe(206);
     expect(keySyncedMedia.headers()["content-type"]).toContain("audio/wav");
 
+    // Source-space beats resolve at persistence, while a source-A clip left
+    // disabled remains freehand even though its own analysis is complete.
+    expect(completedSourceB.analysis.beatGrid.length).toBeGreaterThan(3);
+    const beatRemixCreate = await page.request.post(`/api/projects/${analysisProjectId}/remixes`, {
+      data: { name: "Beat-aware source B remix" },
+    });
+    expect(beatRemixCreate.status()).toBe(201);
+    const beatRemixId = (await beatRemixCreate.json()).remix.id as string;
+    const beatState = await (await page.request.get(`/api/remixes/${beatRemixId}`)).json();
+    const beatPayload = remixPayload(beatState);
+    beatPayload.tempoBpm = 96;
+    const beatSourceBTrack = beatPayload.tracks.find((track) => track.stemAssetId === sourceBStem.id);
+    const sourceAStem = completeState.stems.find((stem: { sourceAssetId: string }) => stem.sourceAssetId === sourceA.id);
+    const beatSourceATrack = beatPayload.tracks.find((track) => track.stemAssetId === sourceAStem.id);
+    expect(beatSourceBTrack).toBeTruthy();
+    expect(beatSourceATrack).toBeTruthy();
+    const offGridOffset = completedSourceB.analysis.beatGrid[2] + 100;
+    const expectedBeatOffset = nearestBeat(offGridOffset, completedSourceB.analysis.beatGrid);
+    const beatSourceBClip = beatSourceBTrack!.clips[0] as Record<string, unknown>;
+    beatSourceBClip.sourceOffsetMs = offGridOffset;
+    beatSourceBClip.durationMs = 4_000;
+    beatSourceBClip.tempoSyncEnabled = true;
+    beatSourceBClip.beatSnapEnabled = true;
+    const freeformClip = beatSourceATrack!.clips[0] as Record<string, unknown>;
+    freeformClip.sourceOffsetMs = 133;
+    freeformClip.durationMs = 4_000;
+    freeformClip.beatSnapEnabled = false;
+    const beatSaved = await page.request.put(`/api/remixes/${beatRemixId}`, { data: beatPayload });
+    expect(beatSaved.status()).toBe(200);
+    const beatArranged = await beatSaved.json();
+    expect(beatArranged.tracks.find((track: { stemAssetId: string }) => track.stemAssetId === sourceBStem.id).clips[0]).toMatchObject({
+      sourceOffsetMs: expectedBeatOffset,
+      beatSnapEnabled: true,
+      tempoSyncEnabled: true,
+    });
+    expect(beatArranged.tracks.find((track: { stemAssetId: string }) => track.stemAssetId === sourceAStem.id).clips[0]).toMatchObject({
+      sourceOffsetMs: 133,
+      beatSnapEnabled: false,
+    });
+    const beatVersion = await page.request.post(`/api/remixes/${beatRemixId}/versions`, {
+      data: { name: "Source B beat-aligned" },
+    });
+    expect(beatVersion.status()).toBe(201);
+    const beatVersionId = (await beatVersion.json()).version.id as string;
+    // A later freehand edit proves restoring the version preserves its beat-aligned metadata.
+    const beatChanged = structuredClone(beatPayload);
+    const changedSourceBTrack = beatChanged.tracks.find((track) => String(track.stemAssetId) === String(sourceBStem.id));
+    expect(changedSourceBTrack).toBeTruthy();
+    changedSourceBTrack!.clips[0].beatSnapEnabled = false;
+    changedSourceBTrack!.clips[0].sourceOffsetMs = 177;
+    expect((await page.request.put(`/api/remixes/${beatRemixId}`, { data: beatChanged })).status()).toBe(200);
+    expect((await page.request.post(`/api/remixes/${beatRemixId}/versions/${beatVersionId}/restore`)).status()).toBe(200);
+    const beatRestored = await (await page.request.get(`/api/remixes/${beatRemixId}`)).json();
+    expect(beatRestored.tracks.find((track: { stemAssetId: string }) => track.stemAssetId === sourceBStem.id).clips[0]).toMatchObject({
+      sourceOffsetMs: expectedBeatOffset,
+      beatSnapEnabled: true,
+    });
+    const beatExport = await page.request.post(`/api/remix-versions/${beatVersionId}/exports`, { data: { format: "wav" } });
+    expect(beatExport.status()).toBe(201);
+    const beatExportId = (await beatExport.json()).job.id as string;
+    await expect.poll(async () => {
+      const body = await (await page.request.get(`/api/exports/${beatExportId}`)).json();
+      return { status: body.job.status, asset: Boolean(body.asset) };
+    }, { timeout: 180_000, intervals: [1_000, 2_000, 5_000] }).toEqual({ status: "complete", asset: true });
+    const beatExportResult = await (await page.request.get(`/api/exports/${beatExportId}`)).json();
+    expect(beatExportResult.asset.remixVersionId).toBe(beatVersionId);
+    const beatMedia = await page.request.get(`/api/exports/${beatExportId}/media`, {
+      headers: { Range: "bytes=0-2047" },
+    });
+    expect(beatMedia.status()).toBe(206);
+    expect(beatMedia.headers()["content-type"]).toContain("audio/wav");
+
     await page.reload();
     await expect(
       page
@@ -764,19 +845,19 @@ test.describe("real Compose separation pipeline", () => {
       payload.loopEndMs = 9_000;
       for (const track of payload.tracks) {
         const stemAssetId = String(track.stemAssetId);
-        track.clips = [{ stemAssetId, timelineStartMs: 0, durationMs: 8_000, sourceOffsetMs: 0, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false }];
+        track.clips = [{ stemAssetId, timelineStartMs: 0, durationMs: 8_000, sourceOffsetMs: 0, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false }];
       }
       // The first track has two overlapping clips. Equal one-second boundary
       // fades make this the supported deterministic crossfade form.
       payload.tracks[0].clips = [
-        { stemAssetId: String(payload.tracks[0].stemAssetId), timelineStartMs: 0, durationMs: 7_000, sourceOffsetMs: 0, gain: 0.8, fadeInMs: 0, fadeOutMs: 1_000, tempoSyncEnabled: false, keySyncEnabled: false },
-        { stemAssetId: String(payload.tracks[0].stemAssetId), timelineStartMs: 6_000, durationMs: 6_000, sourceOffsetMs: 6_000, gain: 1, fadeInMs: 1_000, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false },
+        { stemAssetId: String(payload.tracks[0].stemAssetId), timelineStartMs: 0, durationMs: 7_000, sourceOffsetMs: 0, gain: 0.8, fadeInMs: 0, fadeOutMs: 1_000, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false },
+        { stemAssetId: String(payload.tracks[0].stemAssetId), timelineStartMs: 6_000, durationMs: 6_000, sourceOffsetMs: 6_000, gain: 1, fadeInMs: 1_000, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false },
       ];
       const saved = await context.put(`/api/remixes/${remixId}`, { data: payload });
       expect(saved.status()).toBe(200);
       const arranged = await saved.json();
       expect(arranged.remix).toMatchObject({ tempoBpm: 96, timeSignatureNumerator: 3, timeSignatureDenominator: 4, gridDivision: "half-beat", snapEnabled: true, loopStartMs: 1_000, loopEndMs: 9_000 });
-      expect(arranged.tracks[0].clips).toMatchObject([{ fadeOutMs: 1_000, tempoSyncEnabled: false, keySyncEnabled: false }, { timelineStartMs: 6_000, fadeInMs: 1_000, tempoSyncEnabled: false, keySyncEnabled: false }]);
+      expect(arranged.tracks[0].clips).toMatchObject([{ fadeOutMs: 1_000, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false }, { timelineStartMs: 6_000, fadeInMs: 1_000, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false }]);
 
       const invalidCrossfade = structuredClone(payload);
       invalidCrossfade.tracks[0].clips[0].fadeOutMs = 500;

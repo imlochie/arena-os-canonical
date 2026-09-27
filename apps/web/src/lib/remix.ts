@@ -19,6 +19,8 @@ export type RemixClipInput = {
   tempoSyncEnabled: boolean;
   // Missing on historical snapshots means preserve the original, untransformed behavior.
   keySyncEnabled: boolean;
+  // Missing on historical snapshots retains freehand source editing.
+  beatSnapEnabled: boolean;
 };
 export type RemixTrackInput = {
   id: string;
@@ -91,6 +93,7 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
         // Missing in historical snapshots preserves prior, untransformed export behavior.
         tempoSyncEnabled: clip.tempoSyncEnabled === true,
         keySyncEnabled: clip.keySyncEnabled === true,
+        beatSnapEnabled: clip.beatSnapEnabled === true,
       });
     }
     tracks.push({

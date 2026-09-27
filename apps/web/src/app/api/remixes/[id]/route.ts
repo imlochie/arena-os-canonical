@@ -1,15 +1,26 @@
 import { NextResponse } from "next/server";
+import { nearestBeat } from "@waveyard/types";
 import { asc, eq, inArray } from "drizzle-orm";
 import {
   getDb,
   remixClips,
   remixSessions,
   remixTracks,
+  sourceAnalyses,
   stemAssets,
 } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
 import { crossfadeError, normaliseRemixState } from "@/lib/remix";
+
+function persistedBeatGrid(value: string | null) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
 
 async function getRemixAccess(
   userId: string,
@@ -102,7 +113,7 @@ export async function PUT(
     const user = await requireUser();
     const { id } = await params;
     const remix = await getRemixAccess(user.id, id, "editor");
-    const input = normaliseRemixState(await request.json());
+    let input = normaliseRemixState(await request.json());
     if (!input)
       return NextResponse.json(
         { error: "Invalid remix arrangement." },
@@ -130,6 +141,7 @@ export async function PUT(
     const projectStems = await db
       .select({
         id: stemAssets.id,
+        sourceAssetId: stemAssets.sourceAssetId,
         durationSeconds: stemAssets.durationSeconds,
       })
       .from(stemAssets)
@@ -137,6 +149,28 @@ export async function PUT(
     const durationByAssetId = new Map(
       projectStems.map((stem) => [stem.id, stem.durationSeconds * 1000]),
     );
+    // Beat snapping resolves source-side metadata at the persistence boundary.
+    // Unavailable analysis deliberately leaves freehand coordinates untouched.
+    const sourceIds = [...new Set(projectStems.map((stem) => stem.sourceAssetId))];
+    const analyses = sourceIds.length
+      ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, sourceIds))
+      : [];
+    const beatGridBySourceId = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
+    const sourceByStemId = new Map(projectStems.map((stem) => [stem.id, stem.sourceAssetId]));
+    input = {
+      ...input,
+      tracks: input.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          if (!clip.beatSnapEnabled) return clip;
+          const analysis = beatGridBySourceId.get(sourceByStemId.get(clip.stemAssetId) ?? "");
+          const snappedOffset = analysis?.status === "complete"
+            ? nearestBeat(clip.sourceOffsetMs, persistedBeatGrid(analysis.beatGrid))
+            : null;
+          return snappedOffset === null ? clip : { ...clip, sourceOffsetMs: snappedOffset };
+        }),
+      })),
+    };
     if (
       input.tracks.some((track) =>
         track.clips.some((clip) => !durationByAssetId.has(clip.stemAssetId)),
@@ -212,6 +246,7 @@ export async function PUT(
           fadeOutMs: clip.fadeOutMs,
           tempoSyncEnabled: clip.tempoSyncEnabled,
           keySyncEnabled: clip.keySyncEnabled,
+          beatSnapEnabled: clip.beatSnapEnabled,
         })),
       );
       if (clips.length) await tx.insert(remixClips).values(clips);

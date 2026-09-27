@@ -66,6 +66,7 @@ export async function POST(
           fadeOutMs: clip.fadeOutMs,
           tempoSyncEnabled: clip.tempoSyncEnabled,
           keySyncEnabled: clip.keySyncEnabled,
+          beatSnapEnabled: clip.beatSnapEnabled,
         })));
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
     });

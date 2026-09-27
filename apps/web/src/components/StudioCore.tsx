@@ -71,6 +71,14 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     const key = analysis?.status === "complete" ? normaliseMusicalKey(analysis.musicalKey) : null;
     return [stem.id, key] as const;
   })), [sourceById, stems]);
+  const sourceBeatByStemId = useMemo(() => new Map(stems.map((stem) => {
+    const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
+    return [stem.id, {
+      status: analysis?.status ?? "unavailable",
+      beatGrid: analysis?.status === "complete" && Array.isArray(analysis.beatGrid) ? analysis.beatGrid : null,
+      beatConfidence: analysis?.beatConfidence ?? null,
+    }] as const;
+  })), [sourceById, stems]);
   const selected = stems.find((stem) => stem.id === selectedId) ?? stems[0];
   const source = selected ? sourceById.get(selected.sourceAssetId) : undefined;
   const selectedSourceBpm = selected ? sourceBpmByStemId.get(selected.id) : null;
@@ -249,8 +257,8 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
           <label><input aria-label="Snap enabled" type="checkbox" checked={remix.snapEnabled} onChange={(event) => changeRemix((current) => ({ ...current, snapEnabled: event.target.checked }))} /> Snap</label>
           <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
         </div>
-        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} sourceDurationById={sourceDurationById} onSelection={setClipSelection} onPreview={previewTimeline} onCommit={commitTimeline} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
-        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} onChange={changeRemix} onSelection={setClipSelection} />
+        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onPreview={previewTimeline} onCommit={commitTimeline} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
+        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} onChange={changeRemix} onSelection={setClipSelection} />
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
     </section>
