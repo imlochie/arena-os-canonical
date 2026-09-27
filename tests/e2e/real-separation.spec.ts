@@ -872,16 +872,16 @@ test.describe("real Compose separation pipeline", () => {
         stemAssetId: sourceBStem.id,
         remixTrackId: beatSourceBTrack!.id,
         action: "add",
-        timelineStartMs: 20_000,
+        timelineStartMs: 14_000,
       },
     });
     expect(sectionAdd.status()).toBe(201);
     const addedSectionClip = (await sectionAdd.json()).clips[0];
-    expect(addedSectionClip).toMatchObject({ timelineStartMs: 20_000, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false });
+    expect(addedSectionClip).toMatchObject({ timelineStartMs: 14_000, gain: 1, fadeInMs: 0, fadeOutMs: 0, tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false });
     // Phase 12 moves only the timeline anchor. It resolves an authoritative
     // Source-B beat server-side and preserves the ordinary clip source window.
     const alignmentBeatIndex = sectionForSlice.startBeatIndex + 1;
-    const alignmentTargetMs = 45_000;
+    const alignmentTargetMs = 12_000;
     const alignResponse = await page.request.post(`/api/remixes/${beatRemixId}/clips/align-beat`, {
       data: { clipId: insertedSectionClip.id, sourceBeatIndex: alignmentBeatIndex, timelineTargetMs: alignmentTargetMs },
     });
@@ -920,7 +920,7 @@ test.describe("real Compose separation pipeline", () => {
         remixTrackId: beatSourceBTrack!.id,
         contextClipId: sourceBAlignedClip.id,
         action: "loop",
-        timelineStartMs: 30_000,
+        timelineStartMs: 16_000,
         repetitions: 2,
       },
     });
@@ -929,9 +929,9 @@ test.describe("real Compose separation pipeline", () => {
     expect(sectionLoopClips).toHaveLength(3);
     expect(new Set(sectionLoopClips.map((clip) => clip.id)).size).toBe(3);
     expect(sectionLoopClips.map((clip) => clip.timelineStartMs)).toEqual([
-      30_000,
-      30_000 + insertedSectionClip.durationMs,
-      30_000 + 2 * insertedSectionClip.durationMs,
+      16_000,
+      16_000 + insertedSectionClip.durationMs,
+      16_000 + 2 * insertedSectionClip.durationMs,
     ]);
     expect(sectionLoopClips.every((clip) => clip.sourceOffsetMs === insertedSectionClip.sourceOffsetMs && clip.durationMs === insertedSectionClip.durationMs && clip.tempoSyncEnabled === true && clip.beatSnapEnabled === true)).toBe(true);
     const staleSection = await page.request.post(`/api/remixes/${beatRemixId}/clips/from-section`, {
