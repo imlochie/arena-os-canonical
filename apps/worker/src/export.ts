@@ -9,11 +9,13 @@ import {
   getDb,
   remixSessions,
   remixVersions,
+  sourceAnalyses,
   stemAssets,
 } from "@waveyard/database";
 import { consumeTestFault } from "@waveyard/queue";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
 import type { ExportJobPayload } from "@waveyard/types";
+import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "./tempo";
 
 type SnapshotClip = {
   stemAssetId: string;
@@ -23,6 +25,7 @@ type SnapshotClip = {
   gain: number;
   fadeInMs: number;
   fadeOutMs: number;
+  tempoSyncEnabled: boolean;
 };
 type SnapshotTrack = {
   stemAssetId: string;
@@ -35,6 +38,7 @@ type SnapshotTrack = {
 };
 type ExportSnapshot = {
   masterVolume: number;
+  tempoBpm: number;
   tracks: SnapshotTrack[];
 };
 
@@ -102,11 +106,17 @@ function parseSnapshot(raw: string): ExportSnapshot {
           gain: finite(item.gain, 0, 4),
           fadeInMs,
           fadeOutMs,
+          // Historical versions are intentionally rendered without a transform.
+          tempoSyncEnabled: item.tempoSyncEnabled === true,
         };
       }),
     };
   });
-  return { masterVolume: finite(value.masterVolume, 0, 2), tracks };
+  return {
+    masterVolume: finite(value.masterVolume, 0, 2),
+    tempoBpm: finite(value.tempoBpm ?? 120, 20, 300),
+    tracks,
+  };
 }
 
 function assertValidCrossfades(tracks: SnapshotTrack[]) {
@@ -257,12 +267,38 @@ export async function processExport(
         "The persisted remix references an unavailable project stem.",
       );
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
-    for (const clip of clips) {
+    const syncedSourceIds = [...new Set(clips
+      .filter((clip) => clip.tempoSyncEnabled)
+      .map((clip) => stemById.get(clip.stemAssetId)!.sourceAssetId))];
+    const analyses = syncedSourceIds.length
+      ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, syncedSourceIds))
+      : [];
+    const analysisBySourceId = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
+    const tempoByClip = new Map<number, { ratio: number; sourceDurationMs: number }>();
+    for (const [index, clip] of clips.entries()) {
       const stem = stemById.get(clip.stemAssetId)!;
-      if (clip.sourceOffsetMs + clip.durationMs > stem.durationSeconds * 1000)
+      let sourceDurationMs = clip.durationMs;
+      if (clip.tempoSyncEnabled) {
+        const analysis = analysisBySourceId.get(stem.sourceAssetId);
+        if (!analysis || analysis.projectId !== job.projectId || analysis.status !== "complete")
+          throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
+        if (!Number.isFinite(analysis.bpm) || analysis.bpm! < 40 || analysis.bpm! > 300)
+          throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
+        const ratio = tempoRatio(snapshot.tempoBpm, analysis.bpm!);
+        sourceDurationMs = requiredSourceDurationMs(clip.durationMs, ratio);
+        tempoByClip.set(index, { ratio, sourceDurationMs });
+      }
+      if (!sourceDurationFits(
+        clip.sourceOffsetMs,
+        clip.durationMs,
+        clip.tempoSyncEnabled ? tempoByClip.get(index)!.ratio : 1,
+        stem.durationSeconds * 1000,
+      ))
         throw new ExportFailure(
           "invalid_snapshot",
-          "A persisted remix clip extends beyond its source stem.",
+          clip.tempoSyncEnabled
+            ? "A tempo-synced clip requires more source audio than its stem contains."
+            : "A persisted remix clip extends beyond its source stem.",
         );
     }
 
@@ -283,6 +319,7 @@ export async function processExport(
       const gains = panGains(clip.track.pan);
       const volume = (clip.track.volume * clip.gain).toFixed(6);
       const delay = Math.round(clip.timelineStartMs);
+      const tempo = tempoByClip.get(index);
       const fades = [
         clip.fadeInMs > 0 ? `afade=t=in:st=0:d=${seconds(clip.fadeInMs)}` : "",
         clip.fadeOutMs > 0
@@ -290,7 +327,11 @@ export async function processExport(
           : "",
       ].filter(Boolean).join(",");
       const fadeSegment = fades ? `,${fades}` : "";
-      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(clip.durationMs)},asetpts=PTS-STARTPTS,aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
+      // The only transform happens here, before clip gain, fades, pan, delay, and mix.
+      const tempoSegment = tempo
+        ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}`
+        : "";
+      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
     });
     const labels = clips.map((_clip, index) => `[clip${index}]`).join("");
     filters.push(

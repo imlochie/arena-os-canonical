@@ -45,7 +45,7 @@ export async function POST(
     const durationByAssetId = new Map(projectStems.map((asset) => [asset.id, asset.durationSeconds * 1000]));
     if (state.tracks.some((track) => !durationByAssetId.has(track.stemAssetId) || track.clips.some((clip) => !durationByAssetId.has(clip.stemAssetId))))
       return NextResponse.json({ error: "This version references a removed asset." }, { status: 409 });
-    if (state.tracks.some((track) => track.clips.some((clip) => clip.sourceOffsetMs + clip.durationMs > durationByAssetId.get(clip.stemAssetId)!)))
+    if (state.tracks.some((track) => track.clips.some((clip) => !clip.tempoSyncEnabled && clip.sourceOffsetMs + clip.durationMs > durationByAssetId.get(clip.stemAssetId)!)))
       return NextResponse.json({ error: "This version extends beyond its source stem." }, { status: 422 });
     const crossfadeMessage = state.tracks.map(crossfadeError).find(Boolean);
     if (crossfadeMessage) return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
@@ -84,6 +84,7 @@ export async function POST(
         gain: clip.gain,
         fadeInMs: clip.fadeInMs,
         fadeOutMs: clip.fadeOutMs,
+        tempoSyncEnabled: clip.tempoSyncEnabled,
       })));
       if (clips.length) await tx.insert(remixClips).values(clips);
       await tx.update(remixSessions).set({

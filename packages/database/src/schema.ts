@@ -222,6 +222,8 @@ export const remixClips = pgTable("remix_clips", {
   gain: real("gain").notNull().default(1),
   fadeInMs: integer("fade_in_ms").notNull().default(0),
   fadeOutMs: integer("fade_out_ms").notNull().default(0),
+  // Intent only. The worker derives source BPM and the effective ratio at render time.
+  tempoSyncEnabled: boolean("tempo_sync_enabled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("remix_clips_track_id_idx").on(table.remixTrackId), index("remix_clips_asset_id_idx").on(table.stemAssetId)]);

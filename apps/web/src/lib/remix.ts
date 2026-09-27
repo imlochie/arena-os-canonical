@@ -14,6 +14,8 @@ export type RemixClipInput = {
   gain: number;
   fadeInMs: number;
   fadeOutMs: number;
+  // Missing on historical snapshots means preserve the original, untransformed behavior.
+  tempoSyncEnabled: boolean;
 };
 export type RemixTrackInput = {
   id: string;
@@ -82,6 +84,8 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
         gain: clamp(clip.gain, 0, 4),
         fadeInMs,
         fadeOutMs,
+        // Missing in historical snapshots preserves prior, untransformed export behavior.
+        tempoSyncEnabled: clip.tempoSyncEnabled === true,
       });
     }
     tracks.push({

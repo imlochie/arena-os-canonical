@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateWaveform, waveformPeaksForResolution } from "@waveyard/audio";
+import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "../../apps/worker/src/tempo";
 import {
   effectiveMuted,
   normaliseRemixState,
@@ -116,6 +117,33 @@ describe("remix arrangement normalisation", () => {
 import { moveClip, splitClipAt, trimClipLeft, trimClipRight } from "../../apps/web/src/lib/arrangement";
 import { barMs, beatMs, musicalPosition, snapTimelineMs } from "../../apps/web/src/lib/timing";
 
+describe("tempo sync derivation", () => {
+  it("defaults legacy clip intent off and preserves explicit boolean intent", () => {
+    const base = {
+      masterVolume: 1, loopStartMs: 0, loopEndMs: null,
+      tracks: [{ id: "t", stemAssetId: "s", name: "Stem", sortOrder: 0, volume: 1, pan: 0, muted: false, solo: false,
+        clips: [{ stemAssetId: "s", timelineStartMs: 0, durationMs: 1000, sourceOffsetMs: 0, gain: 1 }] }],
+    };
+    expect(normaliseRemixState(base)?.tracks[0].clips[0].tempoSyncEnabled).toBe(false);
+    expect(normaliseRemixState({ ...base, tracks: [{ ...base.tracks[0], clips: [{ ...base.tracks[0].clips[0], tempoSyncEnabled: true }] }] })?.tracks[0].clips[0].tempoSyncEnabled).toBe(true);
+  });
+
+  it("derives ratio and deterministic single or chained atempo filters", () => {
+    expect(tempoRatio(150, 100)).toBe(1.5);
+    expect(atempoFilterChain(1.5)).toBe("atempo=1.50000000");
+    expect(atempoFilterChain(8)).toBe("atempo=2.00000000,atempo=2.00000000,atempo=2.00000000");
+    expect(atempoFilterChain(0.125)).toBe("atempo=0.50000000,atempo=0.50000000,atempo=0.50000000");
+    expect(requiredSourceDurationMs(1000, 1.5)).toBe(1500);
+    expect(sourceDurationFits(8_400, 1000, 1.5, 10_000)).toBe(true);
+    expect(sourceDurationFits(8_501, 1000, 1.5, 10_000)).toBe(false);
+  });
+
+  it("rejects unavailable normalized source BPM", () => {
+    expect(() => tempoRatio(120, Number.NaN)).toThrow("unavailable");
+    expect(() => tempoRatio(120, 39)).toThrow("unavailable");
+  });
+});
+
 describe("musical timing and clip operations", () => {
   const timing = {
     tempoBpm: 120,
@@ -132,6 +160,7 @@ describe("musical timing and clip operations", () => {
     gain: 1,
     fadeInMs: 0,
     fadeOutMs: 0,
+    tempoSyncEnabled: false,
   };
 
   it("calculates stable musical positions and snapping", () => {

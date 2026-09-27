@@ -150,7 +150,7 @@ export async function PUT(
       input.tracks.some((track) =>
         track.clips.some(
           (clip) =>
-            clip.sourceOffsetMs + clip.durationMs >
+            !clip.tempoSyncEnabled && clip.sourceOffsetMs + clip.durationMs >
             durationByAssetId.get(clip.stemAssetId)!,
         ),
       )
@@ -209,6 +209,7 @@ export async function PUT(
           gain: clip.gain,
           fadeInMs: clip.fadeInMs,
           fadeOutMs: clip.fadeOutMs,
+          tempoSyncEnabled: clip.tempoSyncEnabled,
         })),
       );
       if (clips.length) await tx.insert(remixClips).values(clips);
