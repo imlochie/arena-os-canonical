@@ -34,6 +34,8 @@ export function ArrangementInspector({
   sourceBpmByStemId,
   sourceKeyByStemId,
   sourceBeatByStemId,
+  sourceAssetIdByStemId,
+  slicePrefill,
   onReload,
 }: {
   remix: Remix;
@@ -45,14 +47,29 @@ export function ArrangementInspector({
   sourceBpmByStemId?: Map<string, number | null>;
   sourceKeyByStemId?: Map<string, string | null>;
   sourceBeatByStemId?: Map<string, { status: string; beatGrid: number[] | null; beatConfidence: number | null }>;
+  sourceAssetIdByStemId?: Map<string, string>;
+  slicePrefill?: { sourceAssetId: string; startBeatIndex: number; endBeatIndex: number; token: string } | null;
   onReload: () => void;
 }) {
-  const [startBeatIndex, setStartBeatIndex] = useState(0);
-  const [endBeatIndex, setEndBeatIndex] = useState(1);
+  const [enteredStartBeatIndex, setStartBeatIndex] = useState(0);
+  const [enteredEndBeatIndex, setEndBeatIndex] = useState(1);
+  const [dismissedPrefill, setDismissedPrefill] = useState<string | null>(null);
   const [repetitions, setRepetitions] = useState(4);
   const [actionError, setActionError] = useState("");
   const track = selection ? remix.tracks.find((candidate) => candidate.id === selection.trackId) : undefined;
   const clip = track && selection ? track.clips[selection.clipIndex] : undefined;
+  const prefillKey = slicePrefill ? `${slicePrefill.sourceAssetId}:${slicePrefill.startBeatIndex}:${slicePrefill.endBeatIndex}:${slicePrefill.token}` : null;
+  const prefillMatches = Boolean(
+    clip && slicePrefill && sourceAssetIdByStemId?.get(clip.stemAssetId) === slicePrefill.sourceAssetId
+    && sourceBeatByStemId?.get(clip.stemAssetId)?.beatGrid
+    && slicePrefill.startBeatIndex >= 0
+    && slicePrefill.endBeatIndex < sourceBeatByStemId!.get(clip.stemAssetId)!.beatGrid!.length
+    && slicePrefill.endBeatIndex > slicePrefill.startBeatIndex,
+  );
+  // Prefill is derived at render time, not a second clip/slicing state. Editing
+  // either select explicitly takes control back to its existing local values.
+  const startBeatIndex = prefillMatches && dismissedPrefill !== prefillKey ? slicePrefill!.startBeatIndex : enteredStartBeatIndex;
+  const endBeatIndex = prefillMatches && dismissedPrefill !== prefillKey ? slicePrefill!.endBeatIndex : enteredEndBeatIndex;
   if (!track || !clip || !selection)
     return <aside className="clip-inspector"><h3>Arrangement inspector</h3><p>Select a clip to edit timing, source offset, gain, fades, or export-only tempo sync.</p></aside>;
   const update = (change: (current: RemixClipInput) => RemixClipInput) => onChange((current) => updateSelected(current, selection, change));
@@ -162,8 +179,8 @@ export function ArrangementInspector({
     </fieldset>
     <fieldset className="beat-slice"><legend>Slice</legend>
       {beatState === "unavailable" ? <p>Beat slicing unavailable. Use freehand trimming instead.</p> : <>
-        <label>Start beat <select aria-label="Slice start beat" value={startBeatIndex} onChange={(event) => setStartBeatIndex(Number(event.target.value))}>{beatInfo!.beatGrid!.map((beat, index) => <option key={index} value={index}>Beat {index + 1} · {beat} ms</option>)}</select></label>
-        <label>End beat <select aria-label="Slice end beat" value={endBeatIndex} onChange={(event) => setEndBeatIndex(Number(event.target.value))}>{beatInfo!.beatGrid!.map((beat, index) => <option key={index} value={index} disabled={index <= startBeatIndex}>Beat {index + 1} · {beat} ms</option>)}</select></label>
+        <label>Start beat <select aria-label="Slice start beat" value={startBeatIndex} onChange={(event) => { setDismissedPrefill(prefillKey); setStartBeatIndex(Number(event.target.value)); }}>{beatInfo!.beatGrid!.map((beat, index) => <option key={index} value={index}>Beat {index + 1} · {beat} ms</option>)}</select></label>
+        <label>End beat <select aria-label="Slice end beat" value={endBeatIndex} onChange={(event) => { setDismissedPrefill(prefillKey); setEndBeatIndex(Number(event.target.value)); }}>{beatInfo!.beatGrid!.map((beat, index) => <option key={index} value={index} disabled={index <= startBeatIndex}>Beat {index + 1} · {beat} ms</option>)}</select></label>
         <p>Source beats {startBeatIndex + 1}–{endBeatIndex + 1} · {Math.max(0, endBeatIndex - startBeatIndex)} intervals · {selectedSourceDurationMs} ms source / {selectedTimelineDurationMs} ms timeline · {(selectedTimelineDurationMs / beatMs(timing)).toFixed(2)} beats · {(selectedTimelineDurationMs / barMs(timing)).toFixed(2)} bars.</p>
         <button className="button secondary" disabled={!clip.id || endBeatIndex <= startBeatIndex} onClick={() => void createBeatSlice()}>Create Slice</button>
       </>}

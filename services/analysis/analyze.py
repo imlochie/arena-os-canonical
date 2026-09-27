@@ -17,6 +17,7 @@ import argparse
 import json
 import math
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -193,6 +194,110 @@ def find_key(spectra: np.ndarray) -> tuple[str | None, float | None]:
     return key, round(clamp((best - runner) / max(abs(best), EPSILON)), 6)
 
 
+def _bar_feature_vectors(samples: np.ndarray, spectra: np.ndarray, onset: np.ndarray, beat_grid_ms: list[int]) -> tuple[list[int], np.ndarray]:
+    """Return 4/4 beat-boundary indices and cheap deterministic bar evidence.
+
+    This is intentionally a conservative structural detector, not a semantic
+    classifier. Energy, spectrum, attack density, and chroma each contribute
+    one locally computed feature family; it never uploads source audio.
+    """
+    final_index = len(beat_grid_ms) - 1
+    boundaries = list(range(0, final_index, 4))
+    if not boundaries or boundaries[-1] != final_index:
+        boundaries.append(final_index)
+    if len(boundaries) < 5:  # fewer than four usable bars is not evidence
+        return boundaries, np.empty((0, 0), dtype=np.float64)
+    frame_ms = np.arange(spectra.shape[0], dtype=np.float64) * HOP_SIZE * 1000.0 / SAMPLE_RATE
+    magnitudes = np.abs(spectra)
+    frequencies = np.fft.rfftfreq(FRAME_SIZE, 1.0 / SAMPLE_RATE)
+    bands = (
+        (frequencies >= 40.0) & (frequencies < 250.0),
+        (frequencies >= 250.0) & (frequencies < 2_000.0),
+        (frequencies >= 2_000.0) & (frequencies <= 8_000.0),
+    )
+    chroma_mask = (frequencies >= 55.0) & (frequencies <= 5_000.0)
+    chroma_midi = np.rint(69.0 + 12.0 * np.log2(frequencies[chroma_mask] / 440.0)).astype(int)
+    features: list[np.ndarray] = []
+    for start_index, end_index in zip(boundaries[:-1], boundaries[1:]):
+        start_ms, end_ms = beat_grid_ms[start_index], beat_grid_ms[end_index]
+        selected = (frame_ms >= start_ms) & (frame_ms < end_ms)
+        if not np.any(selected):
+            continue
+        magnitude = magnitudes[selected]
+        # RMS/energy is derived directly from the same source frames, with a
+        # log scale so a conservative level change does not dominate all data.
+        energy = float(np.sqrt(np.mean(np.square(magnitude))))
+        band_energy = np.array([float(np.mean(magnitude[:, band])) if np.any(band) else 0.0 for band in bands])
+        band_energy /= max(float(np.sum(band_energy)), EPSILON)
+        selected_onset = onset[selected]
+        onset_activity = float(np.mean(selected_onset))
+        chroma = np.zeros(12, dtype=np.float64)
+        np.add.at(chroma, np.mod(chroma_midi, 12), np.sum(magnitude[:, chroma_mask], axis=0))
+        chroma /= max(float(np.linalg.norm(chroma)), EPSILON)
+        features.append(np.concatenate(([math.log1p(energy * 30.0)], band_energy, [onset_activity], chroma)))
+    return boundaries, np.vstack(features) if len(features) == len(boundaries) - 1 else np.empty((0, 0), dtype=np.float64)
+
+
+def detect_sections(samples: np.ndarray, spectra: np.ndarray, onset: np.ndarray, beat_grid_ms: list[int] | None) -> dict[str, object]:
+    """Find measurable, bar-aligned structural changes without semantic claims."""
+    if not beat_grid_ms or len(beat_grid_ms) < 17:
+        return {"sections": [], "unavailableReason": "insufficient_beat_grid"}
+    boundaries, features = _bar_feature_vectors(samples, spectra, onset, beat_grid_ms)
+    if features.size == 0 or features.shape[0] < 4:
+        return {"sections": [], "unavailableReason": "insufficient_bars"}
+    # Per-feature standardization makes the evidence explainable and prevents
+    # chroma's vector dimensionality from silently outweighing energy changes.
+    deviation = np.std(features, axis=0)
+    normalized = (features - np.mean(features, axis=0)) / np.where(deviation > EPSILON, deviation, 1.0)
+    novelty = np.linalg.norm(normalized[1:] - normalized[:-1], axis=1) / math.sqrt(normalized.shape[1])
+    if novelty.size == 0 or float(np.max(novelty)) <= EPSILON:
+        return {"sections": [], "unavailableReason": "structural_evidence_weak"}
+    median = float(np.median(novelty))
+    spread = float(np.std(novelty))
+    threshold = median + max(0.12, 0.35 * spread)
+    ranked = sorted(
+        ((index + 1, float(score)) for index, score in enumerate(novelty) if score >= threshold),
+        key=lambda item: (-item[1], item[0]),
+    )
+    # A section must span at least two complete bars. Picking strongest evidence
+    # first suppresses duplicate boundary clusters deterministically.
+    selected_bars: list[tuple[int, float]] = []
+    for bar_index, score in ranked:
+        if bar_index < 2 or len(boundaries) - 1 - bar_index < 2:
+            continue
+        if all(abs(bar_index - selected) >= 2 for selected, _ in selected_bars):
+            selected_bars.append((bar_index, score))
+    if not selected_bars:
+        return {"sections": [], "unavailableReason": "structural_evidence_weak"}
+    selected_bars.sort(key=lambda item: item[0])
+    edge_bars = [0] + [bar for bar, _ in selected_bars] + [len(boundaries) - 1]
+    score_by_bar = dict(selected_bars)
+    maximum = max(score_by_bar.values())
+    sections = []
+    for start_bar, end_bar in zip(edge_bars[:-1], edge_bars[1:]):
+        supporting = score_by_bar.get(end_bar, score_by_bar.get(start_bar, maximum))
+        sections.append({
+            "startBeatIndex": int(boundaries[start_bar]),
+            "endBeatIndex": int(boundaries[end_bar]),
+            "label": "section",
+            "labelConfidence": 0.0,
+            "structuralConfidence": round(clamp(supporting / max(maximum, EPSILON)), 6),
+        })
+    return {"sections": sections, "unavailableReason": None}
+
+
+def analyze_sections(source: Path, beat_grid_ms: list[int]) -> dict[str, object]:
+    samples = decode_mono(source)
+    spectra = np.fft.rfft(frames_for(samples), axis=1)
+    onset = spectral_flux(spectra)
+    result = detect_sections(samples, spectra, onset, beat_grid_ms)
+    return {
+        "analysisEngine": "waveyard-numpy-structure",
+        "analysisEngineVersion": "1.0.0",
+        **result,
+    }
+
+
 def analyze(source: Path) -> dict[str, object]:
     samples = decode_mono(source)
     spectra = np.fft.rfft(frames_for(samples), axis=1)
@@ -224,11 +329,22 @@ def analyze(source: Path) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
+    parser.add_argument("--sections", action="store_true", help="detect structure from a persisted beat grid")
+    parser.add_argument("--beat-grid", help="JSON array of persisted source beat milliseconds")
     args = parser.parse_args()
     source = Path(args.input).resolve()
     if not source.is_file():
         raise RuntimeError(f"Input does not exist: {source}")
-    print(json.dumps(analyze(source), sort_keys=True))
+    if args.sections:
+        try:
+            beat_grid = json.loads(args.beat_grid or "null")
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Persisted beat grid is not valid JSON.") from error
+        if not isinstance(beat_grid, list) or any(not isinstance(value, int) or value < 0 for value in beat_grid):
+            raise RuntimeError("Persisted beat grid is unavailable or invalid.")
+        print(json.dumps(analyze_sections(source, beat_grid), sort_keys=True))
+    else:
+        print(json.dumps(analyze(source), sort_keys=True))
     return 0
 
 

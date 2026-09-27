@@ -3,7 +3,8 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { StudioCore } from "./StudioCore";
 import { SourceAnalysisSummary } from "./studio/SourceAnalysisSummary";
-import type { Source, SourceAnalysis } from "./studio/types";
+import { SourceSectionSummary } from "./studio/SourceSectionSummary";
+import type { Source, SourceAnalysis, SourceSectionAnalysis } from "./studio/types";
 import { PublicationPanel } from "./PublicationPanel";
 
 type ProjectData = {
@@ -64,7 +65,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         ...(json.jobs ?? []),
         ...(json.waveformJobs ?? []),
         ...(json.sources ?? [])
-          .map((source: { analysis?: { status?: string } | null }) => source.analysis)
+          .flatMap((source: { analysis?: { status?: string } | null; sectionAnalysis?: { status?: string } | null }) => [source.analysis, source.sectionAnalysis])
           .filter(Boolean),
       ].some(
         (job: { status: string }) =>
@@ -115,6 +116,16 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setRetrying(false);
     if (!response.ok)
       setError(json.error ?? "Analysis retry could not be started.");
+    else setRefresh((value) => value + 1);
+  }
+
+  async function retrySectionAnalysis(analysis: SourceSectionAnalysis) {
+    setRetrying(true);
+    setError(null);
+    const response = await fetch(`/api/source-section-analyses/${analysis.id}/retry`, { method: "POST" });
+    const json = await response.json().catch(() => ({}));
+    setRetrying(false);
+    if (!response.ok) setError(json.error ?? "Structural analysis retry could not be started.");
     else setRefresh((value) => value + 1);
   }
 
@@ -214,6 +225,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
               <SourceAnalysisSummary
                 source={source}
                 onRetry={editable ? (analysis) => void retryAnalysis(analysis) : undefined}
+              />
+              <SourceSectionSummary
+                source={source}
+                onRetry={editable ? (analysis) => void retrySectionAnalysis(analysis) : undefined}
               />
             </article>
           );

@@ -1,6 +1,7 @@
 export * from "./musical-key";
 export * from "./beat-grid";
 export * from "./clip-construction";
+export * from "./source-sections";
 
 export const STEM_TYPES = ["vocals", "drums", "bass", "other"] as const;
 export type StemType = (typeof STEM_TYPES)[number];
@@ -39,6 +40,15 @@ export type SourceAnalysisJobPayload = {
   sourceAnalysisId: string;
   projectId: string;
   sourceAssetId: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
+export type SourceSectionAnalysisJobPayload = {
+  sourceSectionAnalysisId: string;
+  projectId: string;
+  sourceAssetId: string;
+  sourceAnalysisId: string;
   analysisEngine: string;
   analysisEngineVersion: string;
 };

@@ -33,6 +33,35 @@ export type SourceAnalysis = {
   analyzedAt: string | null;
 };
 
+export type SourceSectionAnalysis = {
+  id: string;
+  status: "queued" | "preparing" | "processing" | "complete" | "failed" | "unavailable";
+  stage: string;
+  attempts: number;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  analyzedAt: string | null;
+};
+
+export type SourceSection = {
+  id: string;
+  sectionIndex: number;
+  startMs: number;
+  endMs: number;
+  startBeatIndex: number;
+  endBeatIndex: number;
+  startBar: number;
+  endBar: number;
+  label: "section";
+  labelConfidence: number;
+  structuralConfidence: number;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+  sourceChecksumSha256: string;
+};
+
 export type Source = {
   id: string;
   originalFilename: string;
@@ -44,6 +73,8 @@ export type Source = {
   fileSizeBytes: number;
   checksumSha256: string;
   analysis?: SourceAnalysis | null;
+  sectionAnalysis?: SourceSectionAnalysis | null;
+  sections?: SourceSection[];
 };
 
 export type PersistedTrack = RemixTrackInput & {

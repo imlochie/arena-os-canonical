@@ -7,6 +7,7 @@ import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTim
 import { ArrangementInspector } from "./studio/ArrangementInspector";
 import { ClipInspector } from "./studio/ClipInspector";
 import { StemMixer } from "./studio/StemMixer";
+import { SourceSectionMap } from "./studio/SourceSectionMap";
 import { StudioTransport } from "./studio/StudioTransport";
 import {
   remixState,
@@ -46,6 +47,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     [controls, stems],
   );
   const [clipSelection, setClipSelection] = useState<ClipSelection>(null);
+  const [slicePrefill, setSlicePrefill] = useState<{ sourceAssetId: string; startBeatIndex: number; endBeatIndex: number; token: string } | null>(null);
   const [zoom, setZoom] = useState(80);
   const [remix, setRemix] = useState<Remix | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
@@ -61,6 +63,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     () => new Map(sources.map((source) => [source.id, source])),
     [sources],
   );
+  const sourceAssetIdByStemId = useMemo(() => new Map(stems.map((stem) => [stem.id, stem.sourceAssetId])), [stems]);
   const sourceBpmByStemId = useMemo(() => new Map(stems.map((stem) => {
     const analysis = sourceById.get(stem.sourceAssetId)?.analysis;
     const bpm = analysis?.bpm;
@@ -242,6 +245,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
   return <section className="studio" aria-label="Waveyard Studio">
     <header className="studio-head"><div><span className="eyebrow">Studio core</span><h2>Real stems, one transport.</h2></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
+    {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} />}
     <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
     <section className="studio-grid"><StemMixer stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} />}</section>
     <section className="remix-panel">
@@ -258,7 +262,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
           <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
         </div>
         <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onPreview={previewTimeline} onCommit={commitTimeline} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
-        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
+        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} slicePrefill={slicePrefill} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
     </section>

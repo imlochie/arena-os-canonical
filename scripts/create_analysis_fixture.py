@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Create a deterministic original fixture for local musical-analysis checks.
 
-It is a 24-second, 120 BPM F-sharp-minor pulse/chord study. Every sample is
-synthesized here; it contains no sampled or copyrighted audio.
+It is a 24-second, 120 BPM F-sharp-minor pulse/chord study with three
+bar-aligned energy and texture passages. Every sample is synthesized here; it
+contains no sampled or copyrighted audio.
 """
 import math
 import struct
@@ -33,11 +34,17 @@ with wave.open(str(OUT), "w") as stream:
     stream.setframerate(RATE)
     for frame in range(RATE * SECONDS):
         t = frame / RATE
-        chord = sum(level * math.sin(2 * math.pi * frequency * t) for frequency, level in TONES)
+        # 8-second / four-bar passages provide measurable but non-semantic
+        # structure for the local detector while keeping the same key and beat.
+        passage = min(2, int(t // 8))
+        chord_gain = (0.48, 1.00, 0.70)[passage]
+        pulse_gain = (0.55, 1.00, 0.78)[passage]
+        shimmer_gain = (0.00, 0.12, 0.05)[passage]
+        chord = chord_gain * sum(level * math.sin(2 * math.pi * frequency * t) for frequency, level in TONES)
         beat_phase = t % BEAT_SECONDS
         # A short F#-leaning low pulse provides unambiguous beat attacks.
-        pulse = 0.42 * math.exp(-beat_phase * 33) * math.sin(2 * math.pi * 92.5 * t)
-        click = 0.09 * math.exp(-beat_phase * 70) * math.sin(2 * math.pi * 1_850 * t)
+        pulse = pulse_gain * 0.42 * math.exp(-beat_phase * 33) * math.sin(2 * math.pi * 92.5 * t)
+        click = (0.09 + shimmer_gain) * math.exp(-beat_phase * 70) * math.sin(2 * math.pi * 1_850 * t)
         left = max(-0.92, min(0.92, chord + pulse + click))
         right = max(-0.92, min(0.92, chord + pulse - click))
         stream.writeframesraw(struct.pack("<hh", int(left * 32767), int(right * 32767)))

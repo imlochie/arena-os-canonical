@@ -549,6 +549,7 @@ test.describe("real Compose separation pipeline", () => {
       (source: { originalFilename: string }) => source.originalFilename === "analysis-song-b-fsharp-minor.wav",
     );
     expect(sourceB.analysis).toMatchObject({ status: "failed", errorCode: "analysis_failed" });
+    expect(sourceB.sectionAnalysis).toMatchObject({ status: "unavailable", errorCode: "insufficient_analysis" });
 
     // The failure is terminal and explicit: sync is never silently bypassed when
     // its source has no complete BPM analysis. Keep this same two-source remix
@@ -637,6 +638,7 @@ test.describe("real Compose separation pipeline", () => {
       .getByTestId(`project-source-${sourceB.id}`)
       .getByTestId(`source-analysis-${sourceB.id}`);
     await expect(sourceBAnalysis).toContainText("Analysis unavailable");
+    await expect(page.getByTestId(`source-sections-${sourceB.id}`)).toContainText("needs a complete usable beat grid");
     await sourceBAnalysis.getByRole("button", { name: "Retry analysis" }).click();
     await expect
       .poll(
@@ -650,6 +652,14 @@ test.describe("real Compose separation pipeline", () => {
         { timeout: 90_000, intervals: [1_000, 2_000, 5_000] },
       )
       .toBe("complete");
+
+    // Structural analysis is a second durable worker lifecycle over the same
+    // original source and persisted beat coordinates, never over rendered audio.
+    await expect.poll(async () => {
+      const state = await (await page.request.get(`/api/projects/${analysisProjectId}`)).json();
+      const source = state.sources.find((candidate: { id: string }) => candidate.id === sourceB.id);
+      return { status: source?.sectionAnalysis?.status, count: source?.sections?.length ?? 0 };
+    }, { timeout: 90_000, intervals: [1_000, 2_000, 5_000] }).toMatchObject({ status: "complete" });
 
     const completeState = await (
       await page.request.get(`/api/projects/${analysisProjectId}`)
@@ -666,6 +676,31 @@ test.describe("real Compose separation pipeline", () => {
       musicalKey: "F# minor",
     });
     expect(completedSourceB.analysis.attempts).toBeGreaterThanOrEqual(3);
+    expect(completedSourceB.sectionAnalysis).toMatchObject({
+      status: "complete",
+      analysisEngine: "waveyard-numpy-structure",
+      analysisEngineVersion: "1.0.0",
+    });
+    expect(completedSourceB.sections.length).toBeGreaterThanOrEqual(2);
+    expect(completedSourceB.sections.map((section: { sectionIndex: number }) => section.sectionIndex)).toEqual(
+      completedSourceB.sections.map((_: unknown, index: number) => index),
+    );
+    expect(completedSourceB.sections.every((section: { label: string; startBeatIndex: number; endBeatIndex: number; startMs: number; endMs: number; analysisEngine: string; sourceChecksumSha256: string }) =>
+      section.label === "section" && section.endBeatIndex > section.startBeatIndex
+      && section.startMs === completedSourceB.analysis.beatGrid[section.startBeatIndex]
+      && section.endMs === completedSourceB.analysis.beatGrid[section.endBeatIndex]
+      && section.analysisEngine === "waveyard-numpy-structure"
+      && section.sourceChecksumSha256 === completedSourceB.checksumSha256,
+    )).toBe(true);
+    const sectionBeforeRetry = completedSourceB.sections.map((section: { id: string }) => section.id);
+    const sectionRetry = await page.request.post(`/api/source-section-analyses/${completedSourceB.sectionAnalysis.id}/retry`);
+    expect(sectionRetry.status()).toBe(200);
+    await expect.poll(async () => {
+      const state = await (await page.request.get(`/api/projects/${analysisProjectId}`)).json();
+      const source = state.sources.find((candidate: { id: string }) => candidate.id === sourceB.id);
+      return { status: source?.sectionAnalysis?.status, ids: source?.sections?.map((section: { id: string }) => section.id) ?? [] };
+    }, { timeout: 90_000, intervals: [1_000, 2_000, 5_000] }).toEqual({ status: "complete", ids: sectionBeforeRetry });
+    const sectionForSlice = completedSourceB.sections[0] as { startBeatIndex: number; endBeatIndex: number };
     expect(
       (
         await page.request.post(
@@ -801,15 +836,17 @@ test.describe("real Compose separation pipeline", () => {
       .clips.find((candidate: { beatSnapEnabled: boolean }) => candidate.beatSnapEnabled);
     expect(sourceBAlignedClip).toBeTruthy();
     const sliceResponse = await page.request.post(`/api/remixes/${beatRemixId}/clips/slice`, {
-      data: { clipId: sourceBAlignedClip.id, startBeatIndex: 1, endBeatIndex: 3 },
+      // The existing Phase 9 slice endpoint consumes the selected structural
+      // source range; it still creates an ordinary RemixClip.
+      data: { clipId: sourceBAlignedClip.id, startBeatIndex: sectionForSlice.startBeatIndex, endBeatIndex: sectionForSlice.endBeatIndex },
     });
     expect(sliceResponse.status()).toBe(201);
     const slice = (await sliceResponse.json()).clip;
     const sourceRatio = 96 / completedSourceB.analysis.bpm;
     expect(slice).toMatchObject({
       stemAssetId: sourceBStem.id,
-      sourceOffsetMs: completedSourceB.analysis.beatGrid[1],
-      durationMs: Math.round((completedSourceB.analysis.beatGrid[3] - completedSourceB.analysis.beatGrid[1]) / sourceRatio),
+      sourceOffsetMs: completedSourceB.analysis.beatGrid[sectionForSlice.startBeatIndex],
+      durationMs: Math.round((completedSourceB.analysis.beatGrid[sectionForSlice.endBeatIndex] - completedSourceB.analysis.beatGrid[sectionForSlice.startBeatIndex]) / sourceRatio),
       tempoSyncEnabled: true,
       keySyncEnabled: false,
       beatSnapEnabled: true,
@@ -871,6 +908,11 @@ test.describe("real Compose separation pipeline", () => {
       .filter({ hasText: /^analysis-song-b-fsharp-minor\.wav — Vocals/ });
     await expect(sourceBVocalsSelect).toHaveCount(1);
     await sourceBVocalsSelect.click();
+    const sourceSectionMap = page.getByTestId(`source-section-map-${sourceB.id}`);
+    await expect(sourceSectionMap).toContainText("Detected structure");
+    await sourceSectionMap.getByRole("listitem").first().click();
+    await expect(sourceSectionMap).toContainText("Use these beats in Slice");
+    await sourceSectionMap.getByRole("button", { name: "Use these beats in Slice" }).click();
     const selectedSourceAnalysis = page
       .locator(".inspector")
       .getByTestId(`source-analysis-${sourceB.id}`);

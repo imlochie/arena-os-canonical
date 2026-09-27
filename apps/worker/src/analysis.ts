@@ -12,6 +12,7 @@ import {
 } from "@waveyard/queue";
 import { getStorage } from "@waveyard/storage";
 import { normaliseMusicalKey, type SourceAnalysisJobPayload } from "@waveyard/types";
+import { provisionSourceSectionAnalysis } from "./sections";
 
 export const SOURCE_ANALYSIS_ENGINE = "waveyard-numpy-dsp";
 export const SOURCE_ANALYSIS_ENGINE_VERSION = "1.0.0";
@@ -350,6 +351,13 @@ export async function processSourceAnalysis(
       analyzedAt,
       completedAt: analyzedAt,
     });
+    // Structural work is downstream metadata. A queue outage must never turn a
+    // successful authoritative BPM/key/beat analysis into a failed analysis.
+    await provisionSourceSectionAnalysis({
+      ...job,
+      status: "complete",
+      beatGrid: result.beatGridMs ? JSON.stringify(result.beatGridMs) : null,
+    }, source).catch((sectionError) => console.error("could not provision section analysis", sectionError));
     await reportStage("complete");
   } catch (error) {
     const message =
@@ -370,6 +378,10 @@ export async function processSourceAnalysis(
       analyzedAt: null,
       completedAt: new Date(),
     });
+    // Failed or no-grid analysis has an explicit downstream unavailable state;
+    // consumers never have to infer success from an empty sections array.
+    await provisionSourceSectionAnalysis({ ...job, status: "failed", beatGrid: null }, source)
+      .catch((sectionError) => console.error("could not record unavailable section analysis", sectionError));
     throw error;
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });

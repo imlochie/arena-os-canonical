@@ -179,6 +179,59 @@ export const sourceAnalyses = pgTable("source_analyses", {
   index("source_analyses_status_idx").on(table.status),
 ]);
 
+export const sourceSectionAnalyses = pgTable("source_section_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceAnalysisId: uuid("source_analysis_id").notNull().references(() => sourceAnalyses.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_section_analyses_source_asset_unique").on(table.sourceAssetId),
+  uniqueIndex("source_section_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("source_section_analyses_project_id_idx").on(table.projectId),
+  index("source_section_analyses_status_idx").on(table.status),
+]);
+
+// Structural metadata stays in source coordinates and deliberately references
+// the existing analysis rather than duplicating BPM, key, or beat-grid values.
+export const sourceSections = pgTable("source_sections", {
+  id: text("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceAnalysisId: uuid("source_analysis_id").notNull().references(() => sourceAnalyses.id, { onDelete: "cascade" }),
+  sourceSectionAnalysisId: uuid("source_section_analysis_id").notNull().references(() => sourceSectionAnalyses.id, { onDelete: "cascade" }),
+  sectionIndex: integer("section_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  startBeatIndex: integer("start_beat_index").notNull(),
+  endBeatIndex: integer("end_beat_index").notNull(),
+  startBar: integer("start_bar").notNull(),
+  endBar: integer("end_bar").notNull(),
+  label: text("label").notNull().default("section"),
+  labelConfidence: real("label_confidence").notNull().default(0),
+  structuralConfidence: real("structural_confidence").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_sections_source_index_unique").on(table.sourceAssetId, table.sectionIndex),
+  index("source_sections_source_order_idx").on(table.sourceAssetId, table.sectionIndex),
+  index("source_sections_project_id_idx").on(table.projectId),
+]);
+
 // A remix is non-destructive arrangement metadata over existing stems. No clip
 // operation copies or mutates original separated audio.
 export const remixSessions = pgTable("remix_sessions", {
