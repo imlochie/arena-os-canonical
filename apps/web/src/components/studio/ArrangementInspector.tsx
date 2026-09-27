@@ -3,6 +3,7 @@
 import { useState } from "react";
 import {
   beatGridAvailability,
+  evaluateAutomation,
   clipTempoRatio,
   crossSourceAlignmentState,
   nearestBeat,
@@ -42,6 +43,7 @@ export function ArrangementInspector({
   slicePrefill,
   onAlignBeat,
   onClipEdit,
+  onAutomationEdit,
   onReload,
 }: {
   remix: Remix;
@@ -59,6 +61,7 @@ export function ArrangementInspector({
   slicePrefill?: { sourceAssetId: string; startBeatIndex: number; endBeatIndex: number; token: string } | null;
   onAlignBeat?: (clipId: string, sourceBeatIndex: number, timelineTargetMs: number) => Promise<string | null>;
   onClipEdit?: (clipId: string, operation: "move" | "nudge" | "trim-left" | "trim-right" | "slip" | "duplicate" | "split", payload: Record<string, unknown>) => Promise<string | null>;
+  onAutomationEdit?: (operation: "upsert" | "delete", payload: Record<string, unknown>) => Promise<string | null>;
   onReload: () => void;
 }) {
   const [enteredStartBeatIndex, setStartBeatIndex] = useState(0);
@@ -202,6 +205,19 @@ export function ArrangementInspector({
     if (message) setActionError(message);
   };
   const splitAtPlayhead = () => void applyClipEdit("split", { timelineMs: snapTimelineMs(positionMs, timing) });
+  const addAutomationPoint = async (parameter: "volume" | "pan", value: number) => {
+    if (!onAutomationEdit) return;
+    setActionError("");
+    const message = await onAutomationEdit("upsert", {
+      remixTrackId: track.id,
+      parameter,
+      timelineMs: Math.round(positionMs),
+      value,
+    });
+    if (message) setActionError(message);
+  };
+  const volumeLane = remix.automation.find((lane) => lane.remixTrackId === track.id && lane.parameter === "volume")?.points ?? [];
+  const panLane = remix.automation.find((lane) => lane.remixTrackId === track.id && lane.parameter === "pan")?.points ?? [];
   return <aside className="clip-inspector" aria-label="Arrangement inspector">
     <h3>Arrangement inspector</h3>
     <p><strong>{track.name}</strong> · clip {selection.clipIndex + 1}</p>
@@ -210,6 +226,12 @@ export function ArrangementInspector({
       <div className="clip-edit-row"><span>Nudge</span>{(["1ms", "10ms", "beat", "bar"] as const).map((amount) => <span className="nudge-pair" key={amount}><button className="button secondary" aria-label={`Nudge ${amount} backward`} disabled={!clip.id || editing} onClick={() => void applyClipEdit("nudge", { amount, direction: "back" })}>−</button><button className="button secondary" aria-label={`Nudge ${amount} forward`} disabled={!clip.id || editing} onClick={() => void applyClipEdit("nudge", { amount, direction: "forward" })}>+ {amount}</button></span>)}</div>
       <div className="clip-edit-row"><label>Edit ms <input aria-label="Clip edit amount" type="number" min="1" value={editAmountMs} onChange={(event) => setEditAmountMs(Math.max(1, Number(event.target.value) || 1))} /></label><button className="button secondary" disabled={!clip.id || editing} onClick={() => void applyClipEdit("trim-left", { timelineDeltaMs: editAmountMs })}>Trim left</button><button className="button secondary" disabled={!clip.id || editing} onClick={() => void applyClipEdit("trim-right", { timelineDeltaMs: -editAmountMs })}>Trim right</button><button className="button secondary" disabled={!clip.id || editing} onClick={() => void applyClipEdit("slip", { sourceOffsetMs: clip.sourceOffsetMs + editAmountMs })}>Slip source +</button><button className="button secondary" disabled={!clip.id || editing || clip.sourceOffsetMs < editAmountMs} onClick={() => void applyClipEdit("slip", { sourceOffsetMs: clip.sourceOffsetMs - editAmountMs })}>Slip source −</button></div>
       <p>Timeline moves snap only at the timeline start. Trims and slips keep this ordinary clip&apos;s immutable source window within its source bounds.</p>
+    </fieldset>
+    <fieldset className="automation-controls"><legend>Automation V1</legend>
+      <p>Linear, ordered track points at the playhead. Same-timestamp writes replace the existing point; only volume and pan are supported.</p>
+      <div><button className="button secondary" disabled={!onAutomationEdit} onClick={() => void addAutomationPoint("volume", track.volume)}>Add volume point</button><output>{evaluateAutomation(volumeLane, positionMs, track.volume).toFixed(2)}×</output><button className="button secondary" disabled={!onAutomationEdit} onClick={() => void addAutomationPoint("pan", track.pan)}>Add pan point</button><output>{evaluateAutomation(panLane, positionMs, track.pan).toFixed(2)}</output></div>
+      <small>{volumeLane.length} volume / {panLane.length} pan points. Click a lane to add, drag a point to move it, or right-click a point to delete it.</small>
+      <p className="notice">V1 points are saved in remix versions and evaluated in Studio. The current worker export retains its established static track volume/pan boundary; this editor adds no browser renderer or DSP path.</p>
     </fieldset>
     <label>Timeline start (ms)<input type="number" min="0" value={clip.timelineStartMs} onChange={(event) => update((item) => ({ ...item, timelineStartMs: Math.max(0, Number(event.target.value) || 0) }))} /></label>
     <label>Duration (ms)<input type="number" min="1" value={clip.durationMs} onChange={(event) => update((item) => {

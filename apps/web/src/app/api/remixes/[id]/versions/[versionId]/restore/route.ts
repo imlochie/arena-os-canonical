@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { eq, inArray } from "drizzle-orm";
 import {
   getDb,
+  remixAutomationPoints,
   remixClips,
   remixSessions,
   remixTracks,
@@ -75,6 +76,15 @@ export async function POST(
           await tx.update(remixTracks).set(fields).where(eq(remixTracks.id, track.id));
         else await tx.insert(remixTracks).values({ id: track.id, ...fields });
       }
+      await tx.delete(remixAutomationPoints).where(eq(remixAutomationPoints.remixSessionId, remix.id));
+      const automationPoints = (state.automation ?? []).flatMap((lane) => lane.points.map((point) => ({
+        remixSessionId: remix.id,
+        remixTrackId: lane.remixTrackId,
+        parameter: lane.parameter,
+        timelineMs: point.timelineMs,
+        value: point.value,
+      })));
+      if (automationPoints.length) await tx.insert(remixAutomationPoints).values(automationPoints);
       const clips = state.tracks.flatMap((track) => track.clips.map((clip) => ({
         remixTrackId: track.id,
         stemAssetId: clip.stemAssetId,

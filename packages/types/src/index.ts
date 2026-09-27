@@ -5,6 +5,7 @@ export * from "./source-sections";
 export * from "./section-arrangement";
 export * from "./cross-source-alignment";
 export * from "./clip-editing";
+export * from "./arrangement-automation";
 
 export const STEM_TYPES = ["vocals", "drums", "bass", "other"] as const;
 export type StemType = (typeof STEM_TYPES)[number];

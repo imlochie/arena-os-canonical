@@ -1,4 +1,9 @@
-import { normaliseMusicalKey } from "@waveyard/types";
+import {
+  AUTOMATION_PARAMETERS,
+  normaliseAutomationPoints,
+  normaliseMusicalKey,
+  type RemixAutomationLane,
+} from "@waveyard/types";
 import {
   DEFAULT_TIMING,
   GRID_DIVISIONS,
@@ -40,6 +45,9 @@ export type RemixStateInput = MusicalTiming & {
   loopEndMs: number | null;
   targetKey: string | null;
   tracks: RemixTrackInput[];
+  // Omitted by pre-Phase-15 callers so their ordinary arrangement PUTs do not
+  // accidentally erase newly persisted automation.
+  automation?: RemixAutomationLane[];
 };
 
 function finiteNumber(value: unknown, fallback = 0) {
@@ -114,6 +122,25 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
     ? null
     : normaliseMusicalKey(value.targetKey);
   if (value.targetKey !== null && value.targetKey !== undefined && !targetKey) return null;
+  let automation: RemixAutomationLane[] | undefined;
+  if (value.automation !== undefined) {
+    if (!Array.isArray(value.automation)) return null;
+    const laneByTarget = new Map<string, RemixAutomationLane>();
+    for (const lane of value.automation) {
+      if (!lane || typeof lane !== "object" || !tracks.some((track) => track.id === lane.remixTrackId)
+        || !AUTOMATION_PARAMETERS.includes(lane.parameter)) return null;
+      const points = normaliseAutomationPoints(lane.parameter, lane.points);
+      if (!points) return null;
+      // A legacy/malformed snapshot cannot create two independent curves for
+      // one target. Its final lane has deterministic last-write authority.
+      laneByTarget.set(`${lane.remixTrackId}:${lane.parameter}`, {
+        remixTrackId: lane.remixTrackId,
+        parameter: lane.parameter,
+        points,
+      });
+    }
+    automation = [...laneByTarget.values()];
+  }
   return {
     name: value.name ? String(value.name).trim().slice(0, 120) : undefined,
     masterVolume: clamp(value.masterVolume, 0, 2),
@@ -121,6 +148,7 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
     loopEndMs: loopEndCandidate && loopEndCandidate > loopStartMs ? loopEndCandidate : null,
     targetKey,
     tracks,
+    ...(automation === undefined ? {} : { automation }),
     ...normaliseTiming(value),
   };
 }

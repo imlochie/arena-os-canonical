@@ -1177,6 +1177,31 @@ test.describe("real Compose separation pipeline", () => {
       });
       expect(groupDelete.status()).toBe(200);
       expect((await groupDelete.json()).removedClipIds).toHaveLength(2);
+
+      // Phase 15 automation has one project/remix/track scope, survives reload
+      // and a RemixVersion snapshot, and never accepts a sibling-remix track.
+      const automationTrackId = String(phase13Reloaded.tracks[0].id);
+      const addAutomation = (data: Record<string, unknown>) => context.post(`/api/remixes/${remixId}/automation`, { data });
+      expect((await addAutomation({ operation: "upsert", remixTrackId: automationTrackId, parameter: "volume", timelineMs: 0, value: 0.25 })).status()).toBe(200);
+      expect((await addAutomation({ operation: "upsert", remixTrackId: automationTrackId, parameter: "volume", timelineMs: 1_000, value: 1 })).status()).toBe(200);
+      const duplicateTimestamp = await addAutomation({ operation: "upsert", remixTrackId: automationTrackId, parameter: "volume", timelineMs: 1_000, value: 1.25 });
+      expect(duplicateTimestamp.status()).toBe(200);
+      const automationReload = await (await context.get(`/api/remixes/${remixId}`)).json();
+      const volumeLane = automationReload.automation.find((lane: Record<string, unknown>) => lane.remixTrackId === automationTrackId && lane.parameter === "volume");
+      expect(volumeLane.points).toEqual(expect.arrayContaining([{ timelineMs: 0, value: 0.25 }, { timelineMs: 1_000, value: 1.25 }]));
+      const automationVersion = await context.post(`/api/remixes/${remixId}/versions`, { data: { name: "Automation V1 snapshot" } });
+      expect(automationVersion.status()).toBe(201);
+      const automationVersionId = (await automationVersion.json()).version.id as string;
+      const firstPointId = volumeLane.points.find((point: Record<string, unknown>) => point.timelineMs === 0).id as string;
+      expect((await addAutomation({ operation: "delete", remixTrackId: automationTrackId, parameter: "volume", pointId: firstPointId })).status()).toBe(200);
+      expect((await context.post(`/api/remixes/${remixId}/versions/${automationVersionId}/restore`)).status()).toBe(200);
+      const restoredAutomation = await (await context.get(`/api/remixes/${remixId}`)).json();
+      expect(restoredAutomation.automation.find((lane: Record<string, unknown>) => lane.remixTrackId === automationTrackId && lane.parameter === "volume").points).toHaveLength(2);
+      const sibling = await context.post(`/api/projects/${projectId}/remixes`, { data: { name: "Automation isolation sibling" } });
+      expect(sibling.status()).toBe(201);
+      const siblingId = (await sibling.json()).remix.id as string;
+      const siblingState = await (await context.get(`/api/remixes/${siblingId}`)).json();
+      expect((await addAutomation({ operation: "upsert", remixTrackId: siblingState.tracks[0].id, parameter: "pan", timelineMs: 0, value: 0 })).status()).toBe(403);
     } finally {
       await context.dispose();
     }

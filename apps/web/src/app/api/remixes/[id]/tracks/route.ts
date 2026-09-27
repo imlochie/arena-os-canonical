@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { desc, eq, inArray } from "drizzle-orm";
 import {
   getDb,
+  remixAutomationPoints,
   remixClips,
   remixSessions,
   remixTracks,
@@ -16,11 +17,21 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
   const clips = tracks.length
     ? await db.select().from(remixClips).where(inArray(remixClips.remixTrackId, tracks.map((track) => track.id)))
     : [];
+  const automation = await db.select().from(remixAutomationPoints).where(eq(remixAutomationPoints.remixSessionId, remix.id));
   return {
     remix,
     tracks: tracks
       .sort((left, right) => left.sortOrder - right.sortOrder)
       .map((track) => ({ ...track, clips: clips.filter((clip) => clip.remixTrackId === track.id) })),
+    automation: [...new Map(automation.map((point) => [
+      `${point.remixTrackId}:${point.parameter}`,
+      {
+        remixTrackId: point.remixTrackId,
+        parameter: point.parameter,
+        points: automation.filter((candidate) => candidate.remixTrackId === point.remixTrackId && candidate.parameter === point.parameter)
+          .map(({ id: pointId, timelineMs, value }) => ({ id: pointId, timelineMs, value })),
+      },
+    ])).values()],
   };
 }
 

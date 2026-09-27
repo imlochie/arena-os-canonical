@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { asc, eq, inArray } from "drizzle-orm";
-import { getDb, remixClips, remixSessions, remixTracks, remixVersions } from "@waveyard/database";
+import { getDb, remixAutomationPoints, remixClips, remixSessions, remixTracks, remixVersions } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
 
@@ -15,6 +15,7 @@ async function snapshot(remix: typeof remixSessions.$inferSelect) {
   const db = getDb();
   const tracks = await db.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id)).orderBy(asc(remixTracks.sortOrder));
   const clips = tracks.length ? await db.select().from(remixClips).where(inArray(remixClips.remixTrackId, tracks.map((track) => track.id))) : [];
+  const automation = await db.select().from(remixAutomationPoints).where(eq(remixAutomationPoints.remixSessionId, remix.id)).orderBy(asc(remixAutomationPoints.timelineMs));
   return {
     name: remix.name,
     masterVolume: remix.masterVolume,
@@ -27,6 +28,15 @@ async function snapshot(remix: typeof remixSessions.$inferSelect) {
     snapEnabled: remix.snapEnabled,
     targetKey: remix.targetKey,
     tracks: tracks.map((track) => ({ ...track, clips: clips.filter((clip) => clip.remixTrackId === track.id) })),
+    automation: [...new Map(automation.map((point) => [
+      `${point.remixTrackId}:${point.parameter}`,
+      {
+        remixTrackId: point.remixTrackId,
+        parameter: point.parameter,
+        points: automation.filter((candidate) => candidate.remixTrackId === point.remixTrackId && candidate.parameter === point.parameter)
+          .map(({ id: pointId, timelineMs, value }) => ({ id: pointId, timelineMs, value })),
+      },
+    ])).values()],
   };
 }
 

@@ -1,4 +1,5 @@
 import type { RemixStateInput, RemixTrackInput } from "@/lib/remix";
+import type { RemixAutomationLane } from "@waveyard/types";
 import type { GridDivision } from "@/lib/timing";
 
 export type Stem = {
@@ -105,6 +106,7 @@ export type Remix = {
   snapEnabled: boolean;
   targetKey: string | null;
   tracks: PersistedTrack[];
+  automation: RemixAutomationLane[];
 };
 
 export type RemixVersionSummary = { id: string; name: string; createdAt: string };
@@ -127,6 +129,7 @@ export function remixState(remix: Remix): RemixStateInput {
     snapEnabled: remix.snapEnabled,
     targetKey: remix.targetKey,
     tracks: remix.tracks,
+    automation: remix.automation,
   };
 }
 

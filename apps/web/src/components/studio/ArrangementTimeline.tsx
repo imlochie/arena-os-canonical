@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useRef } from "react";
-import { snapSourceWindowToBeats, tempoRatioForBpm } from "@waveyard/types";
+import { useMemo, useRef, useState } from "react";
+import { evaluateAutomation, snapSourceWindowToBeats, tempoRatioForBpm, type AutomationParameter, type AutomationPoint } from "@waveyard/types";
 import { moveClip, trimClipLeft, trimClipRight } from "@/lib/arrangement";
 import { clipRangeSelection, toggleClipSelection, trackClipSelection } from "@/lib/clip-selection";
 import { effectiveMuted, type RemixClipInput } from "@/lib/remix";
@@ -10,6 +10,15 @@ import { clock, type Remix } from "./types";
 
 export type ClipSelection = { trackId: string; clipIndex: number } | null;
 type DragMode = "move" | "trim-left" | "trim-right";
+type AutomationDragState = {
+  point: AutomationPoint;
+  remixTrackId: string;
+  parameter: AutomationParameter;
+  lane: DOMRect;
+  moved: boolean;
+  timelineMs: number;
+  value: number;
+};
 type DragState = {
   mode: DragMode;
   trackId: string;
@@ -50,6 +59,7 @@ export function ArrangementTimeline({
   onPreview,
   onCommit,
   onBatchCommit,
+  onAutomationEdit,
   onChange,
   onSeek,
   onDuplicateTrack,
@@ -69,12 +79,15 @@ export function ArrangementTimeline({
   onPreview: (next: Remix) => void;
   onCommit: (before: Remix, after: Remix) => void;
   onBatchCommit: (before: Remix, clipIds: string[], operation: "move" | "nudge" | "duplicate" | "delete", payload?: Record<string, unknown>) => Promise<string | null>;
+  onAutomationEdit: (before: Remix, operation: "upsert" | "delete", payload: Record<string, unknown>) => Promise<string | null>;
   onChange: (transform: (current: Remix) => Remix) => void;
   onSeek: (milliseconds: number) => void;
   onDuplicateTrack: (trackId: string) => void;
 }) {
   const drag = useRef<DragState | null>(null);
   const draft = useRef<Remix | null>(null);
+  const automationDrag = useRef<AutomationDragState | null>(null);
+  const [selectedAutomationPointId, setSelectedAutomationPointId] = useState<string | null>(null);
   const timelineEndMs = useMemo(
     () => Math.max(
       duration * 1000,
@@ -186,6 +199,47 @@ export function ArrangementTimeline({
     if (!selectedClipIds.length) return;
     void onBatchCommit(remix, selectedClipIds, operation, payload);
   };
+  const automationPosition = (parameter: AutomationParameter, value: number) => parameter === "volume"
+    ? Math.max(0, Math.min(1, value / 2))
+    : Math.max(0, Math.min(1, (value + 1) / 2));
+  const automationAtPointer = (active: AutomationDragState, event: React.PointerEvent<HTMLElement>) => {
+    const timelineMs = Math.max(0, Math.min(86_400_000, Math.round(((event.clientX - active.lane.left) / zoom) * 1000)));
+    const normalised = Math.max(0, Math.min(1, 1 - ((event.clientY - active.lane.top) / active.lane.height)));
+    const value = active.parameter === "volume" ? Number((normalised * 2).toFixed(3)) : Number((normalised * 2 - 1).toFixed(3));
+    return { timelineMs, value };
+  };
+  const beginAutomationDrag = (
+    event: React.PointerEvent<HTMLElement>,
+    remixTrackId: string,
+    parameter: AutomationParameter,
+    point: AutomationPoint,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const lane = event.currentTarget.parentElement?.getBoundingClientRect();
+    if (!lane) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    automationDrag.current = { point, remixTrackId, parameter, lane, moved: false, timelineMs: point.timelineMs, value: point.value };
+    setSelectedAutomationPointId(point.id ?? `${remixTrackId}:${parameter}:${point.timelineMs}`);
+  };
+  const moveAutomationDrag = (event: React.PointerEvent<HTMLElement>) => {
+    const active = automationDrag.current;
+    if (!active) return;
+    active.moved = true;
+    Object.assign(active, automationAtPointer(active, event));
+  };
+  const endAutomationDrag = () => {
+    const active = automationDrag.current;
+    if (active?.moved)
+      void onAutomationEdit(remix, "upsert", {
+        remixTrackId: active.remixTrackId,
+        parameter: active.parameter,
+        pointId: active.point.id,
+        timelineMs: active.timelineMs,
+        value: active.value,
+      });
+    automationDrag.current = null;
+  };
 
   return (
     <>
@@ -253,6 +307,44 @@ export function ArrangementTimeline({
                     <span className="trim-handle trim-right" aria-label="Trim clip right" onPointerDown={(event) => beginDrag(event, "trim-right", track.id, index, clip)} />
                   </article>;
                 })}
+                <div className="automation-lane-stack" aria-label={`${track.name} automation lanes`}>
+                  {(["volume", "pan"] as const).map((parameter) => {
+                    const lane = remix.automation.find((item) => item.remixTrackId === track.id && item.parameter === parameter);
+                    const points = lane?.points ?? [];
+                    const defaultValue = parameter === "volume" ? track.volume : track.pan;
+                    return <div
+                      className={`automation-lane ${parameter}`}
+                      key={parameter}
+                      onPointerDown={(event) => {
+                        if (event.target !== event.currentTarget) return;
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        const timelineMs = Math.max(0, Math.min(86_400_000, Math.round(((event.clientX - rect.left) / zoom) * 1000)));
+                        void onAutomationEdit(remix, "upsert", { remixTrackId: track.id, parameter, timelineMs, value: defaultValue });
+                      }}
+                    >
+                      <span>{parameter === "volume" ? "VOL" : "PAN"}</span>
+                      {points.map((point) => {
+                        const key = point.id ?? `${track.id}:${parameter}:${point.timelineMs}`;
+                        return <button
+                          type="button"
+                          className={`automation-point ${selectedAutomationPointId === key ? "selected" : ""}`}
+                          aria-label={`${track.name} ${parameter} point at ${point.timelineMs} milliseconds`}
+                          key={key}
+                          style={{ left: `${(point.timelineMs / 1000) * zoom}px`, bottom: `${automationPosition(parameter, point.value) * 100}%` }}
+                          onPointerDown={(event) => beginAutomationDrag(event, track.id, parameter, point)}
+                          onPointerMove={moveAutomationDrag}
+                          onPointerUp={endAutomationDrag}
+                          onPointerCancel={endAutomationDrag}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (point.id) void onAutomationEdit(remix, "delete", { remixTrackId: track.id, parameter, pointId: point.id });
+                          }}
+                        />;
+                      })}
+                    </div>;
+                  })}
+                </div>
               </div>
             </div>
           ))}

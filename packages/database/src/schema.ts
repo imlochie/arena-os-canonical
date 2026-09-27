@@ -287,6 +287,21 @@ export const remixClips = pgTable("remix_clips", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("remix_clips_track_id_idx").on(table.remixTrackId), index("remix_clips_asset_id_idx").on(table.stemAssetId)]);
 
+// V1 arrangement automation is deliberately limited to ordered volume/pan points.
+// It is scoped through the remix and track rather than introducing groups or DSP state.
+export const remixAutomationPoints = pgTable("remix_automation_points", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "cascade" }),
+  remixTrackId: uuid("remix_track_id").notNull().references(() => remixTracks.id, { onDelete: "cascade" }),
+  parameter: text("parameter").notNull(),
+  timelineMs: integer("timeline_ms").notNull(),
+  value: real("value").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("remix_automation_points_track_parameter_time_unique").on(table.remixTrackId, table.parameter, table.timelineMs),
+  index("remix_automation_points_session_track_idx").on(table.remixSessionId, table.remixTrackId),
+]);
+
 export const remixVersions = pgTable("remix_versions", {
   id: uuid("id").defaultRandom().primaryKey(),
   remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "cascade" }),

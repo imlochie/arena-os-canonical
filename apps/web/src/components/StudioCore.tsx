@@ -331,6 +331,47 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     return null;
   }, [record]);
 
+  const editAutomation = useCallback(async (
+    before: Remix,
+    operation: "upsert" | "delete",
+    payload: Record<string, unknown>,
+  ) => {
+    const response = await fetch(`/api/remixes/${before.id}/automation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation, ...payload }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setSaveState("failed");
+      return body.error ?? "Could not apply the automation point edit.";
+    }
+    record(before);
+    const removed = new Set<string>(body.removedPointIds ?? []);
+    const point = body.point as { id?: string; remixTrackId: string; parameter: "volume" | "pan"; timelineMs: number; value: number } | undefined;
+    let automation = before.automation.map((lane) => ({
+      ...lane,
+      points: lane.points.filter((item) => !item.id || !removed.has(item.id)),
+    }));
+    if (point) {
+      const laneIndex = automation.findIndex((lane) => lane.remixTrackId === point.remixTrackId && lane.parameter === point.parameter);
+      const pointValue = { id: point.id, timelineMs: point.timelineMs, value: point.value };
+      if (laneIndex >= 0) {
+        const lane = automation[laneIndex];
+        automation = automation.map((item, index) => index === laneIndex ? {
+          ...item,
+          points: [...item.points.filter((itemPoint) => itemPoint.id !== point.id && itemPoint.timelineMs !== point.timelineMs), pointValue]
+            .sort((left, right) => left.timelineMs - right.timelineMs),
+        } : item);
+      } else {
+        automation = [...automation, { remixTrackId: point.remixTrackId, parameter: point.parameter, points: [pointValue] }];
+      }
+    }
+    setRemix({ ...before, automation });
+    setSaveState("saved");
+    return null;
+  }, [record]);
+
   const editClip = useCallback(async (
     clipId: string,
     operation: "move" | "nudge" | "trim-left" | "trim-right" | "slip" | "duplicate" | "split",
@@ -449,8 +490,8 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
           <label><input aria-label="Snap enabled" type="checkbox" checked={remix.snapEnabled} onChange={(event) => changeRemix((current) => ({ ...current, snapEnabled: event.target.checked }))} /> Snap</label>
           <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
         </div>
-        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} selectedClipIds={selectedClipIds} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onSelectedClipIds={setSelectedClipIds} onPreview={previewTimeline} onCommit={commitTimeline} onBatchCommit={batchEditClips} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
-        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} sourceAlignmentByStemId={sourceAlignmentByStemId} comparisonSource={selected ? sourceAlignmentByStemId.get(selected.id) : null} slicePrefill={slicePrefill} onAlignBeat={alignClipBeat} onClipEdit={editClip} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
+        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} selectedClipIds={selectedClipIds} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onSelectedClipIds={setSelectedClipIds} onPreview={previewTimeline} onCommit={commitTimeline} onBatchCommit={batchEditClips} onAutomationEdit={editAutomation} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
+        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} sourceAlignmentByStemId={sourceAlignmentByStemId} comparisonSource={selected ? sourceAlignmentByStemId.get(selected.id) : null} slicePrefill={slicePrefill} onAlignBeat={alignClipBeat} onClipEdit={editClip} onAutomationEdit={(operation, payload) => editAutomation(remix, operation, payload)} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
     </section>

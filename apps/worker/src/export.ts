@@ -14,7 +14,7 @@ import {
 } from "@waveyard/database";
 import { consumeTestFault } from "@waveyard/queue";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
-import { normaliseMusicalKey, type ExportJobPayload } from "@waveyard/types";
+import { AUTOMATION_PARAMETERS, normaliseAutomationPoints, normaliseMusicalKey, type ExportJobPayload, type RemixAutomationLane } from "@waveyard/types";
 import { pitchFilterChain, resolveKeySync } from "./key";
 import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "./tempo";
 
@@ -44,6 +44,9 @@ type ExportSnapshot = {
   tempoBpm: number;
   targetKey: string | null;
   tracks: SnapshotTrack[];
+  // Parsed from the immutable RemixVersion even though V1 deliberately keeps
+  // the existing static FFmpeg track-volume/pan export boundary.
+  automation: RemixAutomationLane[];
 };
 
 class ExportFailure extends Error {
@@ -120,11 +123,29 @@ function parseSnapshot(raw: string): ExportSnapshot {
       }),
     };
   });
+  let automation: RemixAutomationLane[] = [];
+  if (value.automation !== undefined) {
+    if (!Array.isArray(value.automation))
+      throw new ExportFailure("invalid_snapshot", "Persisted automation is invalid.");
+    automation = value.automation.map((lane): RemixAutomationLane => {
+      if (!lane || typeof lane !== "object")
+        throw new ExportFailure("invalid_snapshot", "Persisted automation is invalid.");
+      const candidate = lane as Record<string, unknown>;
+      if (typeof candidate.remixTrackId !== "string" || !AUTOMATION_PARAMETERS.includes(candidate.parameter as typeof AUTOMATION_PARAMETERS[number]))
+        throw new ExportFailure("invalid_snapshot", "Persisted automation is invalid.");
+      const parameter = candidate.parameter as typeof AUTOMATION_PARAMETERS[number];
+      const points = normaliseAutomationPoints(parameter, candidate.points);
+      if (!points)
+        throw new ExportFailure("invalid_snapshot", "Persisted automation is invalid.");
+      return { remixTrackId: candidate.remixTrackId, parameter, points };
+    });
+  }
   return {
     masterVolume: finite(value.masterVolume, 0, 2),
     tempoBpm: finite(value.tempoBpm ?? 120, 20, 300),
     targetKey: normaliseMusicalKey(value.targetKey),
     tracks,
+    automation,
   };
 }
 

@@ -3,6 +3,7 @@ import { nearestBeat } from "@waveyard/types";
 import { asc, eq, inArray } from "drizzle-orm";
 import {
   getDb,
+  remixAutomationPoints,
   remixClips,
   remixSessions,
   remixTracks,
@@ -57,6 +58,11 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
         )
         .orderBy(asc(remixClips.timelineStartMs))
     : [];
+  const automation = await db
+    .select()
+    .from(remixAutomationPoints)
+    .where(eq(remixAutomationPoints.remixSessionId, remix.id))
+    .orderBy(asc(remixAutomationPoints.timelineMs));
   const stems = tracks.length
     ? await db
         .select({
@@ -85,6 +91,15 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
       ...track,
       clips: clips.filter((clip) => clip.remixTrackId === track.id),
     })),
+    automation: [...new Map(automation.map((point) => [
+      `${point.remixTrackId}:${point.parameter}`,
+      {
+        remixTrackId: point.remixTrackId,
+        parameter: point.parameter,
+        points: automation.filter((candidate) => candidate.remixTrackId === point.remixTrackId && candidate.parameter === point.parameter)
+          .map(({ id: pointId, timelineMs, value }) => ({ id: pointId, timelineMs, value })),
+      },
+    ])).values()],
     stems,
   };
 }
@@ -227,6 +242,17 @@ export async function PUT(
             updatedAt: new Date(),
           })
           .where(eq(remixTracks.id, track.id));
+      }
+      if (input.automation !== undefined) {
+        await tx.delete(remixAutomationPoints).where(eq(remixAutomationPoints.remixSessionId, remix.id));
+        const points = input.automation.flatMap((lane) => lane.points.map((point) => ({
+          remixSessionId: remix.id,
+          remixTrackId: lane.remixTrackId,
+          parameter: lane.parameter,
+          timelineMs: point.timelineMs,
+          value: point.value,
+        })));
+        if (points.length) await tx.insert(remixAutomationPoints).values(points);
       }
       await tx.delete(remixClips).where(
         inArray(
