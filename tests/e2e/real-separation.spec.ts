@@ -193,6 +193,8 @@ test.describe("real Compose separation pipeline", () => {
       expect(body.waveform.resolutions["4096"].max).toHaveLength(4096);
     }
 
+    await page.getByRole("button", { name: "Open Studio" }).click();
+
     for (const type of expectedStemTypes)
       await expect(page.getByTestId(`stem-${type}`)).toBeVisible();
     await page.getByTestId("play-all").click();
