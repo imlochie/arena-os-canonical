@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, type AutomaticRemixVariant, type CinematicVisualPreset } from "@waveyard/types";
+import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, type AutomaticRemixVariant, type CinematicVisualPreset, type MusicalMeetingPoint } from "@waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { LivingPlayer, MiniPlayer } from "./player/LivingPlayer";
 import { CinematicVisual } from "./visual/CinematicVisual";
@@ -14,6 +14,7 @@ import { DrumAnalysisPanel } from "./studio/DrumAnalysisPanel";
 import { HarmonyAnalysisPanel } from "./studio/HarmonyAnalysisPanel";
 import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
 import { SourceSectionMap } from "./studio/SourceSectionMap";
+import { MeetingPointsPanel } from "./studio/MeetingPointsPanel";
 import { StudioTransport } from "./studio/StudioTransport";
 import {
   remixState,
@@ -65,6 +66,10 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
   const [buildingAutomaticRemix, setBuildingAutomaticRemix] = useState<AutomaticRemixVariant | null>(null);
   const [automaticRemixMessage, setAutomaticRemixMessage] = useState<string | null>(null);
   const [automaticGeneration, setAutomaticGeneration] = useState<AutomaticRemixGenerationSummary | null>(null);
+  const [meetingPoints, setMeetingPoints] = useState<MusicalMeetingPoint[]>([]);
+  const [meetingContext, setMeetingContext] = useState<{ stemAssetId: string; sourceSectionId: string } | null>(null);
+  const [meetingMessage, setMeetingMessage] = useState<string | null>(null);
+  const [acceptingMeetingPoint, setAcceptingMeetingPoint] = useState<string | null>(null);
   // Presentation is browser-only observation over the same project, selection,
   // transport, and persisted remix state. It never forks musical authority.
   const [presentation, setPresentation] = useState<"studio" | "play" | "visual">("play");
@@ -316,6 +321,31 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     await loadRemix(body.remix.id);
     const notices = Array.isArray(body.plan?.notices) ? body.plan.notices : [];
     setAutomaticRemixMessage(notices[0] ?? `${variant === "hybrid" ? "Hybrid" : "Original"} starting point is ready to play.`);
+  };
+  const findMeetingPoints = async (section: SourceSection) => {
+    if (!remix || !selected) return "Create or open an arrangement before asking where this material fits.";
+    setMeetingMessage(null); setMeetingPoints([]); setMeetingContext({ stemAssetId: selected.id, sourceSectionId: section.id });
+    const response = await fetch(`/api/remixes/${remix.id}/meeting-points`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stemAssetId: selected.id, sourceSectionId: section.id }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) { setMeetingMessage(body.error ?? "Could not find verified placement recommendations."); return body.error ?? "Could not find verified placement recommendations."; }
+    const points = Array.isArray(body.points) ? body.points as MusicalMeetingPoint[] : [];
+    setMeetingPoints(points);
+    setMeetingMessage(points.length ? `${points.length} descriptive placement recommendation${points.length === 1 ? "" : "s"} found.` : "No conservative placement is available for this selected region yet.");
+    return null;
+  };
+  const acceptMeetingPoint = async (point: MusicalMeetingPoint) => {
+    if (!remix || !meetingContext) return;
+    setAcceptingMeetingPoint(point.id); setMeetingMessage(null);
+    const response = await fetch(`/api/remixes/${remix.id}/meeting-points`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ meetingPointId: point.id, ...meetingContext }),
+    });
+    const body = await response.json().catch(() => ({}));
+    setAcceptingMeetingPoint(null);
+    if (!response.ok) { setMeetingMessage(body.error ?? "Could not add this placement."); return; }
+    await loadRemix(remix.id);
+    setMeetingPoints([]); setMeetingMessage("Added as one ordinary arrangement clip. You can refine it in Studio.");
   };
   const duplicateTrack = async (sourceTrackId: string) => {
     if (!remix) return;
@@ -630,7 +660,8 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
       onOpenStudio={() => { setPresentation("studio"); setVisualFullscreen(false); }}
     /> : <>
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
-    {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} onArrangementAction={arrangeSection} onRequestEvents={() => requestSourceEvents(source.id)} />}
+    {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} onArrangementAction={arrangeSection} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
+    <MeetingPointsPanel points={meetingPoints} busyId={acceptingMeetingPoint} message={meetingMessage} onAccept={acceptMeetingPoint} />
     {source && selected && <VocalAnalysisSummary stem={selected} editable onRequestAnalysis={() => requestVocalAnalysis(selected.id)} onExportMidi={selected.stemType === "vocals" ? () => requestMidiExport("vocal", source.id, selected.id) : undefined} />}
     {source && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} onExportMidi={selected.stemType === "drums" || selected.stemType === "percussion" ? () => requestMidiExport("drums", source.id, selected.id) : undefined} />}
     {source && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} onExportMidi={() => requestMidiExport("harmony", source.id)} />}

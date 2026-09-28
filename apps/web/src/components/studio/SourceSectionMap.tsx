@@ -16,18 +16,20 @@ export function SourceSectionMap({
   source,
   onUseForSlice,
   onArrangementAction,
+  onFindMeetingPoints,
   onRequestEvents,
 }: {
   source: Source;
   onUseForSlice: (section: SourceSection) => void;
   onArrangementAction?: (section: SourceSection, action: ArrangementAction, repetitions: number) => Promise<string | null>;
+  onFindMeetingPoints?: (section: SourceSection) => Promise<string | null>;
   onRequestEvents?: () => Promise<string | null>;
 }) {
   const sections = source.sections ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [repetitions, setRepetitions] = useState(4);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [acting, setActing] = useState<ArrangementAction | null>(null);
+  const [acting, setActing] = useState<ArrangementAction | "meeting" | null>(null);
   const [requestingEvents, setRequestingEvents] = useState(false);
   const [eventMessage, setEventMessage] = useState<string | null>(null);
   const events = source.events ?? [];
@@ -59,6 +61,12 @@ export function SourceSectionMap({
     setActing(null);
     setActionMessage(message ?? (action === "loop" ? "Section loop added to the arrangement." : "Section added to the arrangement."));
   };
+  const findMeetingPoints = async () => {
+    if (!selected || !onFindMeetingPoints) return;
+    setActing("meeting"); setActionMessage(null);
+    const message = await onFindMeetingPoints(selected);
+    setActing(null); setActionMessage(message ?? "Placement recommendations updated.");
+  };
   return <section className="source-section-map" aria-label="Source structure markers" data-testid={`source-section-map-${source.id}`}>
     <div className="panel-title"><div><span className="eyebrow">Source-coordinate markers</span><h3>Detected structure</h3></div><span>{sections.length} sections</span></div>
     <div className="source-section-ruler" role="list" aria-label="Detected source sections">
@@ -86,6 +94,7 @@ export function SourceSectionMap({
       <p>Source beats {selected.startBeatIndex}–{selected.endBeatIndex}. This is a generic structural marker, not a semantic chorus or verse claim.</p>
       <div className="section-arrangement-actions">
         <button className="button secondary" onClick={() => onUseForSlice(selected)}>Use these beats in Slice</button>
+        <button className="button" disabled={!onFindMeetingPoints || acting !== null} onClick={() => void findMeetingPoints()}>{acting === "meeting" ? "Finding…" : "Find where this fits"}</button>
         <button className="button" disabled={!onArrangementAction || acting !== null} onClick={() => void act("add")}>{acting === "add" ? "Adding…" : "Add to Arrangement"}</button>
         <button className="button secondary" disabled={!onArrangementAction || acting !== null} onClick={() => void act("insert")}>{acting === "insert" ? "Inserting…" : "Insert at Playhead"}</button>
         <label>Repeat copies <input aria-label="Section loop repetitions" type="number" min="1" max="64" value={repetitions} onChange={(event) => setRepetitions(Math.max(1, Math.min(64, Number(event.target.value) || 1)))} /></label>

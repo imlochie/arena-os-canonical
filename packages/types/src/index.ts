@@ -12,6 +12,7 @@ export * from "./drum-analysis";
 export * from "./harmony-analysis";
 export * from "./midi";
 export * from "./automatic-remix";
+export * from "./musical-meeting-points";
 export * from "./visual-state";
 
 export const STEM_TYPES = ["vocals", "drums", "bass", "other"] as const;
