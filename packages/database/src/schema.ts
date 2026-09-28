@@ -433,6 +433,41 @@ export const remixSessions = pgTable("remix_sessions", {
   ...timestamps,
 }, (table) => [index("remix_sessions_project_id_idx").on(table.projectId), index("remix_sessions_owner_id_idx").on(table.ownerId)]);
 
+// Source acquisition is provenance over a normal SourceAsset. It is never used
+// as audio identity: checksums remain the source-analysis/version identity.
+export const sourceAcquisitions = pgTable("source_acquisitions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  method: text("method").notNull(),
+  sourceUrl: text("source_url"),
+  title: text("title"),
+  artist: text("artist"),
+  resolver: text("resolver"),
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("source_acquisitions_source_unique").on(table.sourceAssetId),
+  index("source_acquisitions_method_idx").on(table.method),
+]);
+
+// A build is orchestration/progress provenance, not a second arrangement. Its
+// completed remix pointer points at ordinary RemixSession/Version state.
+export const projectBuilds = pgTable("project_builds", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  requestedById: uuid("requested_by_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("resolving-sources"),
+  requestedSourceCount: integer("requested_source_count").notNull().default(0),
+  acceptedSourceCount: integer("accepted_source_count").notNull().default(0),
+  failedSourceCount: integer("failed_source_count").notNull().default(0),
+  details: text("details").notNull().default("{}"),
+  remixSessionId: uuid("remix_session_id").references(() => remixSessions.id, { onDelete: "set null" }),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("project_builds_project_updated_idx").on(table.projectId, table.updatedAt)]);
+
 // Explainable provenance for a deterministic automatic starting arrangement.
 // This never owns musical state: RemixTrack/RemixClip remain the sole editable
 // arrangement model and this row only records why they were initially created.

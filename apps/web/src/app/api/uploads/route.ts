@@ -5,7 +5,7 @@ import { join, extname } from "node:path";
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { acceptedAudioFilename, checksumFile, MAX_UPLOAD_BYTES, probeAudio, sanitizedFilename } from "@waveyard/audio";
-import { getDb, processingJobs, sourceAssets, waveformJobs } from "@waveyard/database";
+import { getDb, processingJobs, sourceAcquisitions, sourceAssets, waveformJobs } from "@waveyard/database";
 import { enqueueSeparation, enqueueWaveform } from "@waveyard/queue";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
 import { requireUser } from "@/lib/auth";
@@ -47,6 +47,7 @@ export async function POST(request: Request) {
         durationSeconds: Math.round(metadata.durationSeconds), sampleRate: metadata.sampleRate, channels: metadata.channels,
         codec: metadata.codec, bitrate: metadata.bitrate, fileSizeBytes: metadata.sizeBytes,
       }).returning();
+      await tx.insert(sourceAcquisitions).values({ sourceAssetId: createdSource.id, method: "local-upload", metadata: JSON.stringify({ filename: cleanName }) });
       const [createdJob] = await tx.insert(processingJobs).values({
         projectId, sourceAssetId: createdSource.id, type: "separation", status: "queued", stage: "queued", idempotencyKey: `separation:${createdSource.id}:${requestedModel}`,
         model: requestedModel, requestedDevice,

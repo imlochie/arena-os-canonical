@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { asc, eq } from "drizzle-orm";
-import { drumAnalyses, drumEvents, getDb, harmonyAnalyses, harmonyEvents, processingJobs, sourceAnalyses, sourceAssets, sourceEventAnalyses, sourceEvents, sourceSectionAnalyses, sourceSections, stemAssets, vocalAnalyses, vocalPhrases, vocalPitchFrames, waveformAssets, waveformJobs } from "@waveyard/database";
+import { asc, desc, eq } from "drizzle-orm";
+import { drumAnalyses, drumEvents, getDb, harmonyAnalyses, harmonyEvents, processingJobs, projectBuilds, sourceAcquisitions, sourceAnalyses, sourceAssets, sourceEventAnalyses, sourceEvents, sourceSectionAnalyses, sourceSections, stemAssets, vocalAnalyses, vocalPhrases, vocalPitchFrames, waveformAssets, waveformJobs } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
 
@@ -21,7 +21,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const user = await requireUser(); const { id } = await params;
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     const db = getDb();
-    const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows, harmonyAnalysisRows, harmonyEventRows, drumAnalysisRows, drumEventRows, vocalAnalysisRows, vocalFrameRows, vocalPhraseRows] = await Promise.all([
+    const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows, harmonyAnalysisRows, harmonyEventRows, drumAnalysisRows, drumEventRows, vocalAnalysisRows, vocalFrameRows, vocalPhraseRows, acquisitionRows, buildRows] = await Promise.all([
       db.select().from(sourceAssets).where(eq(sourceAssets.projectId, id)).orderBy(asc(sourceAssets.createdAt)),
       db.select().from(stemAssets).where(eq(stemAssets.projectId, id)).orderBy(asc(stemAssets.createdAt)),
       db.select().from(processingJobs).where(eq(processingJobs.projectId, id)).orderBy(asc(processingJobs.createdAt)),
@@ -39,6 +39,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       db.select().from(vocalAnalyses).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.createdAt)),
       db.select().from(vocalPitchFrames).innerJoin(vocalAnalyses, eq(vocalPitchFrames.vocalAnalysisId, vocalAnalyses.id)).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.stemAssetId), asc(vocalPitchFrames.frameIndex)),
       db.select().from(vocalPhrases).innerJoin(vocalAnalyses, eq(vocalPhrases.vocalAnalysisId, vocalAnalyses.id)).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.stemAssetId), asc(vocalPhrases.phraseIndex)),
+      db.select().from(sourceAcquisitions).innerJoin(sourceAssets, eq(sourceAcquisitions.sourceAssetId, sourceAssets.id)).where(eq(sourceAssets.projectId, id)),
+      db.select().from(projectBuilds).where(eq(projectBuilds.projectId, id)).orderBy(desc(projectBuilds.updatedAt)).limit(1),
     ]);
     const analysisBySource = new Map(
       analysisRows.map((analysis) => [
@@ -47,6 +49,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       ]),
     );
     const sectionAnalysisBySource = new Map(sectionAnalysisRows.map((analysis) => [analysis.sourceAssetId, analysis]));
+    const acquisitionBySource = new Map(acquisitionRows.map((row) => [row.source_acquisitions.sourceAssetId, row.source_acquisitions]));
     const eventAnalysisBySource = new Map(eventAnalysisRows.map((analysis) => [analysis.sourceAssetId, analysis]));
     const eventsBySource = new Map<string, typeof eventRows>();
     for (const event of eventRows) {
@@ -94,9 +97,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({
       project,
       role,
+      build: buildRows[0] ?? null,
       sources: sources.map(({ storageKey: _storageKey, ...source }) => ({
         ...source,
         analysis: analysisBySource.get(source.id) ?? null,
+        acquisition: acquisitionBySource.get(source.id) ?? null,
         sectionAnalysis: sectionAnalysisBySource.get(source.id) ?? null,
         sections: sectionsBySource.get(source.id) ?? [],
         eventAnalysis: eventAnalysisBySource.get(source.id) ?? null,

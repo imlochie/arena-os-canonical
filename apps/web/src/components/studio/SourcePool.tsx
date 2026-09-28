@@ -8,7 +8,7 @@ export function SourcePool({ sources, stems, selectedStemId, onSelectStem }: { s
     <div className="source-pool-grid">{sources.map((source) => {
       const sourceStems = stems.filter((stem) => stem.sourceAssetId === source.id);
       const selected = sourceStems.some((stem) => stem.id === selectedStemId);
-      return <article key={source.id} className={selected ? "selected" : ""}><button type="button" onClick={() => sourceStems[0] && onSelectStem(sourceStems[0].id)}><b>{source.originalFilename}</b><small>{source.analysis?.status === "complete" ? `${source.analysis.bpm?.toFixed(1) ?? "—"} BPM · ${source.analysis.musicalKey ?? "Key unavailable"}` : "Analysis pending"}</small><span>{source.sections?.length ? `${source.sections.length} sections` : "Structure unavailable"} · {sourceStems.map((stem) => stem.stemType).join(" · ") || "Stems pending"}</span></button></article>;
+      return <article key={source.id} className={selected ? "selected" : ""}><button type="button" onClick={() => sourceStems[0] && onSelectStem(sourceStems[0].id)}><b>{source.acquisition?.title ?? source.originalFilename}</b><small>{source.acquisition?.method === "authorized-url" ? "Authorized link" : "Local audio"} · {source.analysis?.status === "complete" ? `${source.analysis.bpm?.toFixed(1) ?? "—"} BPM · ${source.analysis.musicalKey ?? "Key unavailable"}` : "Analysis pending"}</small><span>{source.sections?.length ? `${source.sections.length} sections` : "Structure unavailable"} · {sourceStems.map((stem) => stem.stemType).join(" · ") || "Stems pending"}</span></button></article>;
     })}</div>
   </section>;
 }

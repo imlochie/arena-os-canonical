@@ -171,6 +171,7 @@ export type Source = {
   fileSizeBytes: number;
   checksumSha256: string;
   analysis?: SourceAnalysis | null;
+  acquisition?: { method: string; sourceUrl: string | null; title: string | null; artist: string | null; resolver: string | null; metadata: string; createdAt: string } | null;
   sectionAnalysis?: SourceSectionAnalysis | null;
   sections?: SourceSection[];
   eventAnalysis?: SourceEventAnalysis | null;

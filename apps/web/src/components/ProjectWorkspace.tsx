@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { StudioCore } from "./StudioCore";
 import { SourceAnalysisSummary } from "./studio/SourceAnalysisSummary";
 import { SourceSectionSummary } from "./studio/SourceSectionSummary";
@@ -18,6 +18,7 @@ type ProjectData = {
     moderationStatus: string;
   };
   role: "viewer" | "contributor" | "editor" | "owner";
+  build?: { id: string; status: "processing" | "complete" | "failed"; stage: string; requestedSourceCount: number; acceptedSourceCount: number; failedSourceCount: number; remixSessionId: string | null; errorMessage: string | null } | null;
   stems: Stem[];
   waveforms: any[];
   waveformJobs: Array<{
@@ -49,6 +50,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [addingSource, setAddingSource] = useState(false);
   const [selectedSourceName, setSelectedSourceName] = useState("");
   const [sourceMessage, setSourceMessage] = useState<string | null>(null);
+  const finalizingBuild = useRef<string | null>(null);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -82,6 +84,32 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       if (timer) clearTimeout(timer);
     };
   }, [projectId, refresh]);
+
+  useEffect(() => {
+    const build = data?.build;
+    if (!data || !build || build.status !== "processing" || finalizingBuild.current === build.id) return;
+    const sourceStages = data.sources.map((source) => ({ id: source.id, analysis: source.analysis?.status, sections: source.sectionAnalysis?.status }));
+    const processing = data.jobs.some((job) => ["queued", "preparing", "processing", "finalizing"].includes(job.status));
+    const failedSourceIds = new Set(data.jobs.filter((job) => job.status === "failed").map((job) => job.sourceAssetId));
+    for (const source of sourceStages) if (source.analysis === "failed" || source.sections === "failed") failedSourceIds.add(source.id);
+    const expectedReady = Math.max(0, build.acceptedSourceCount - failedSourceIds.size);
+    const analysisCompleteSources = sourceStages.filter((stage) => stage.analysis === "complete");
+    const completedSources = sourceStages.filter((stage) => stage.analysis === "complete" && stage.sections === "complete");
+    const analysesComplete = analysisCompleteSources.length >= expectedReady && expectedReady > 0;
+    const analysesReady = completedSources.length >= expectedReady && expectedReady > 0;
+    const failedCount = Math.max(build.failedSourceCount, failedSourceIds.size);
+    const stage = processing ? "separating" : !analysesComplete ? "understanding" : !analysesReady ? "finding-structure" : "building";
+    const reportedAccepted = processing ? build.acceptedSourceCount : completedSources.length;
+    if (stage !== build.stage || failedCount !== build.failedSourceCount || reportedAccepted !== build.acceptedSourceCount) void fetch(`/api/projects/${projectId}/builds`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ buildId: build.id, status: expectedReady ? "processing" : "failed", stage: expectedReady ? stage : "failed", acceptedSourceCount: reportedAccepted, failedSourceCount: failedCount, errorMessage: expectedReady ? null : "No source completed the build pipeline." }) });
+    if (!analysesReady) return;
+    finalizingBuild.current = build.id;
+    void (async () => {
+      const automatic = await fetch(`/api/projects/${projectId}/automatic-remixes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variant: "original" }) });
+      const body = await automatic.json().catch(() => ({}));
+      await fetch(`/api/projects/${projectId}/builds`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ buildId: build.id, status: automatic.ok ? "complete" : "failed", stage: automatic.ok ? "ready" : "failed", acceptedSourceCount: build.acceptedSourceCount, failedSourceCount: build.failedSourceCount, remixSessionId: automatic.ok ? body.remix?.id : null, errorMessage: automatic.ok ? null : body.error ?? "Waveyard could not build the initial arrangement." }) });
+      setRefresh((value) => value + 1);
+    })();
+  }, [data, projectId]);
 
   async function retry(jobId: string) {
     setRetrying(true);
@@ -192,7 +220,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           </div>
         )}
       </header>
-      {editable && (
+      {data.build && <section className={`build-progress ${data.build.status}`} aria-label="Build progress" data-testid="build-progress"><span className="eyebrow">Waveyard build</span><h2>{({ "resolving-sources": "Resolving sources", separating: "Separating", understanding: "Understanding", "finding-structure": "Finding structure", building: "Building", ready: "Ready", failed: "Build needs attention" } as Record<string, string>)[data.build.stage] ?? "Building"}</h2><p>{data.build.status === "complete" ? "Your automatic starting arrangement is ready in Play." : data.build.status === "failed" ? data.build.errorMessage ?? "No sources could complete the build." : `${data.build.acceptedSourceCount} source${data.build.acceptedSourceCount === 1 ? "" : "s"} accepted${data.build.failedSourceCount ? ` · ${data.build.failedSourceCount} source failure${data.build.failedSourceCount === 1 ? "" : "s"}` : ""}`}</p><div className="build-progress-steps"><span className={data.build.stage === "resolving-sources" ? "active" : ""}>Sources</span><span className={["separating", "understanding", "finding-structure", "building", "ready"].includes(data.build.stage) ? "active" : ""}>Stems</span><span className={["understanding", "finding-structure", "building", "ready"].includes(data.build.stage) ? "active" : ""}>Structure</span><span className={["building", "ready"].includes(data.build.stage) ? "active" : ""}>Build</span><span className={data.build.stage === "ready" ? "active" : ""}>Play</span></div></section>}
+      {editable && data.build?.status !== "complete" && (
         <section className="add-source-panel" aria-label="Add source audio">
           <div>
             <span className="eyebrow">Two-source workflow</span>
@@ -219,7 +248,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           {sourceMessage && <p className={sourceMessage.startsWith("Queued") ? "notice" : "error"} role="status">{sourceMessage}</p>}
         </section>
       )}
-      <section className="project-sources" aria-label="Project sources">
+      {data.build?.status !== "complete" && <section className="project-sources" aria-label="Project sources">
         <div className="panel-title"><h2>Sources</h2><span>{data.sources.length} private source{data.sources.length === 1 ? "" : "s"}</span></div>
         {data.sources.map((source, index) => {
           const sourceStems = data.stems.filter(
@@ -244,7 +273,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             </article>
           );
         })}
-      </section>
+      </section>}
       {latest?.status === "failed" && (
         <div>
           <p className="error" role="alert">
