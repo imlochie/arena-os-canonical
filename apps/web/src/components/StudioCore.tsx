@@ -15,6 +15,8 @@ import { HarmonyAnalysisPanel } from "./studio/HarmonyAnalysisPanel";
 import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
 import { SourceSectionMap } from "./studio/SourceSectionMap";
 import { MeetingPointsPanel } from "./studio/MeetingPointsPanel";
+import { ExtendedArrangementPanel } from "./studio/ExtendedArrangementPanel";
+import { SourcePool } from "./studio/SourcePool";
 import { StudioTransport } from "./studio/StudioTransport";
 import {
   remixState,
@@ -127,6 +129,9 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
   const selected = stems.find((stem) => stem.id === selectedId) ?? stems[0];
   const source = selected ? sourceById.get(selected.sourceAssetId) : undefined;
   const selectedSourceBpm = selected ? sourceBpmByStemId.get(selected.id) : null;
+  const extensionAnchorClipId = clipSelection && remix
+    ? remix.tracks.find((track) => track.id === clipSelection.trackId)?.clips[clipSelection.clipIndex]?.id ?? null
+    : null;
   // Play and Visual observe one position source. When an arrangement exists,
   // they reuse the established arrangement audition to hear the persisted clips;
   // otherwise they retain the original stem transport.
@@ -659,6 +664,8 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
       onToggleFullscreen={() => setVisualFullscreen((current) => !current)}
       onOpenStudio={() => { setPresentation("studio"); setVisualFullscreen(false); }}
     /> : <>
+    <SourcePool sources={sources} stems={stems} selectedStemId={selectedId} onSelectStem={setSelectedId} />
+    {remix && <ExtendedArrangementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} onApplied={async () => { await loadRemix(remix.id); }} />}
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
     {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} onArrangementAction={arrangeSection} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
     <MeetingPointsPanel points={meetingPoints} busyId={acceptingMeetingPoint} message={meetingMessage} onAccept={acceptMeetingPoint} />
