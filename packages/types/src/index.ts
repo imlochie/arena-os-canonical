@@ -1,0 +1,120 @@
+export * from "./musical-key";
+export * from "./beat-grid";
+export * from "./clip-construction";
+export * from "./source-sections";
+export * from "./section-arrangement";
+export * from "./cross-source-alignment";
+export * from "./clip-editing";
+export * from "./arrangement-automation";
+export * from "./musical-events";
+export * from "./vocal-analysis";
+export * from "./drum-analysis";
+export * from "./harmony-analysis";
+export * from "./midi";
+export * from "./automatic-remix";
+export * from "./musical-meeting-points";
+export * from "./arrangement-extensions";
+export * from "./multi-source-placement";
+export * from "./source-acquisition";
+export * from "./visual-state";
+
+export const STEM_TYPES = ["vocals", "drums", "bass", "other"] as const;
+export type StemType = (typeof STEM_TYPES)[number];
+
+export const JOB_STATUSES = ["queued", "preparing", "processing", "finalizing", "complete", "failed", "cancelled"] as const;
+export type JobStatus = (typeof JOB_STATUSES)[number];
+
+export type SeparationJobPayload = {
+  processingJobId: string;
+  projectId: string;
+  sourceAssetId: string;
+  model: string;
+  requestedDevice: "auto" | "cpu" | "cuda";
+};
+
+export type AudioMetadata = {
+  durationSeconds: number;
+  sampleRate: number;
+  channels: number;
+  codec: string;
+  bitrate: number | null;
+  container: string;
+  sizeBytes: number;
+};
+
+export const WAVEFORM_RESOLUTIONS = [256, 512, 1024, 2048, 4096] as const;
+export type WaveformResolution = (typeof WAVEFORM_RESOLUTIONS)[number];
+export type WaveformJobPayload = {
+  waveformJobId: string;
+  projectId: string;
+  sourceAssetId?: string;
+  stemAssetId?: string;
+};
+
+export type SourceAnalysisJobPayload = {
+  sourceAnalysisId: string;
+  projectId: string;
+  sourceAssetId: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
+export type SourceSectionAnalysisJobPayload = {
+  sourceSectionAnalysisId: string;
+  projectId: string;
+  sourceAssetId: string;
+  sourceAnalysisId: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
+export type SourceEventAnalysisJobPayload = {
+  sourceEventAnalysisId: string;
+  projectId: string;
+  sourceAssetId: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
+export type HarmonyAnalysisJobPayload = {
+  harmonyAnalysisId: string;
+  projectId: string;
+  sourceAssetId: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
+export type DrumAnalysisJobPayload = {
+  drumAnalysisId: string;
+  projectId: string;
+  sourceAssetId: string;
+  stemAssetId: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
+export type VocalAnalysisJobPayload = {
+  vocalAnalysisId: string;
+  projectId: string;
+  sourceAssetId: string;
+  stemAssetId: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
+export type ExportJobPayload = {
+  exportJobId: string;
+  projectId: string;
+  remixSessionId: string;
+  remixVersionId: string;
+  format: "wav" | "midi";
+};
+
+export type WaveformPeaks = { min: number[]; max: number[] };
+export type WaveformDocument = {
+  format: "waveyard-peaks-v1";
+  durationSeconds: number;
+  sampleRate: number;
+  channels: number;
+  resolutions: Record<string, WaveformPeaks>;
+};

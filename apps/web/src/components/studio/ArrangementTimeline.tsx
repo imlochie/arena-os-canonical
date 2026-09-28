@@ -1,0 +1,355 @@
+"use client";
+
+import { useMemo, useRef, useState } from "react";
+import { evaluateAutomation, snapSourceWindowToBeats, tempoRatioForBpm, type AutomationParameter, type AutomationPoint } from "@waveyard/types";
+import { moveClip, trimClipLeft, trimClipRight } from "@/lib/arrangement";
+import { clipRangeSelection, toggleClipSelection, trackClipSelection } from "@/lib/clip-selection";
+import { effectiveMuted, type RemixClipInput } from "@/lib/remix";
+import { barMs, beatMs, formatMusicalPosition, snapTimelineMs, type MusicalTiming } from "@/lib/timing";
+import { clock, type Remix } from "./types";
+
+export type ClipSelection = { trackId: string; clipIndex: number } | null;
+type DragMode = "move" | "trim-left" | "trim-right";
+type AutomationDragState = {
+  point: AutomationPoint;
+  remixTrackId: string;
+  parameter: AutomationParameter;
+  lane: DOMRect;
+  moved: boolean;
+  timelineMs: number;
+  value: number;
+};
+type DragState = {
+  mode: DragMode;
+  trackId: string;
+  clipIndex: number;
+  original: Remix;
+  clip: RemixClipInput;
+  sourceDurationMs: number;
+  tempoRatio: number;
+  clipIds: string[];
+  lastTimelineDeltaMs: number;
+  startX: number;
+};
+
+function replaceClip(remix: Remix, trackId: string, clipIndex: number, clip: RemixClipInput) {
+  return {
+    ...remix,
+    tracks: remix.tracks.map((track) =>
+      track.id === trackId
+        ? { ...track, clips: track.clips.map((item, index) => index === clipIndex ? clip : item) }
+        : track,
+    ),
+  };
+}
+
+export function ArrangementTimeline({
+  remix,
+  duration,
+  positionMs,
+  timing,
+  zoom,
+  selection,
+  selectedClipIds,
+  sourceDurationById,
+  sourceBeatByStemId,
+  sourceBpmByStemId,
+  onSelection,
+  onSelectedClipIds,
+  onPreview,
+  onCommit,
+  onBatchCommit,
+  onAutomationEdit,
+  onChange,
+  onSeek,
+  onDuplicateTrack,
+}: {
+  remix: Remix;
+  duration: number;
+  positionMs: number;
+  timing: MusicalTiming;
+  zoom: number;
+  selection: ClipSelection;
+  selectedClipIds: string[];
+  sourceDurationById: Map<string, number>;
+  sourceBeatByStemId: Map<string, { status: string; beatGrid: number[] | null; beatConfidence: number | null }>;
+  sourceBpmByStemId: Map<string, number | null>;
+  onSelection: (selection: ClipSelection) => void;
+  onSelectedClipIds: (clipIds: string[]) => void;
+  onPreview: (next: Remix) => void;
+  onCommit: (before: Remix, after: Remix) => void;
+  onBatchCommit: (before: Remix, clipIds: string[], operation: "move" | "nudge" | "duplicate" | "delete", payload?: Record<string, unknown>) => Promise<string | null>;
+  onAutomationEdit: (before: Remix, operation: "upsert" | "delete", payload: Record<string, unknown>) => Promise<string | null>;
+  onChange: (transform: (current: Remix) => Remix) => void;
+  onSeek: (milliseconds: number) => void;
+  onDuplicateTrack: (trackId: string) => void;
+}) {
+  const drag = useRef<DragState | null>(null);
+  const draft = useRef<Remix | null>(null);
+  const automationDrag = useRef<AutomationDragState | null>(null);
+  const [selectedAutomationPointId, setSelectedAutomationPointId] = useState<string | null>(null);
+  const timelineEndMs = useMemo(
+    () => Math.max(
+      duration * 1000,
+      ...remix.tracks.flatMap((track) => track.clips.map((clip) => clip.timelineStartMs + clip.durationMs)),
+    ),
+  [duration, remix.tracks]);
+  const timelineWidth = Math.max(720, (timelineEndMs / 1000 + 2) * zoom);
+  const bars = Math.ceil(timelineEndMs / barMs(timing));
+  const beats = Math.ceil(timelineEndMs / beatMs(timing));
+
+  const beginDrag = (
+    event: React.PointerEvent<HTMLElement>,
+    mode: DragMode,
+    trackId: string,
+    clipIndex: number,
+    clip: RemixClipInput,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const clipId = clip.id;
+    if (!clipId) return;
+    // Modifier clicks never create a persisted group; they only compose the
+    // current UI selection. Shift creates a same-track range, while command /
+    // control adds or removes compatible clips on any owned remix track.
+    if (event.shiftKey) {
+      const first = selection?.trackId === trackId ? selection.clipIndex : clipIndex;
+      const trackClipIds = remix.tracks.find((track) => track.id === trackId)?.clips
+        .map((item) => item.id)
+        .filter((id): id is string => Boolean(id)) ?? [clipId];
+      const range = clipRangeSelection(trackClipIds, first, clipIndex);
+      onSelectedClipIds(range);
+      onSelection({ trackId, clipIndex });
+      return;
+    }
+    if (event.metaKey || event.ctrlKey) {
+      const next = toggleClipSelection(selectedClipIds, clipId);
+      onSelectedClipIds(next);
+      onSelection(next.length ? { trackId, clipIndex } : null);
+      return;
+    }
+    const sourceDurationMs = sourceDurationById.get(clip.stemAssetId) ?? clip.sourceOffsetMs + clip.durationMs;
+    const sourceBpm = sourceBpmByStemId.get(clip.stemAssetId) ?? null;
+    const tempoRatio = clip.tempoSyncEnabled
+      ? (tempoRatioForBpm(timing.tempoBpm, sourceBpm ?? Number.NaN) ?? 1)
+      : 1;
+    const clipIds = mode === "move" && selectedClipIds.includes(clipId) ? selectedClipIds : [clipId];
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { mode, trackId, clipIndex, original: remix, clip, sourceDurationMs, tempoRatio, clipIds, lastTimelineDeltaMs: 0, startX: event.clientX };
+    draft.current = remix;
+    onSelectedClipIds(clipIds);
+    onSelection({ trackId, clipIndex });
+  };
+
+  const resolveSourceBeatWindow = (clip: RemixClipInput) => {
+    if (!clip.beatSnapEnabled) return clip;
+    const beat = sourceBeatByStemId.get(clip.stemAssetId);
+    const sourceBpm = sourceBpmByStemId.get(clip.stemAssetId) ?? null;
+    const ratio = clip.tempoSyncEnabled
+      ? tempoRatioForBpm(timing.tempoBpm, sourceBpm ?? Number.NaN)
+      : 1;
+    const snapped = ratio && beat?.status === "complete"
+      ? snapSourceWindowToBeats(clip.sourceOffsetMs, clip.durationMs, beat.beatGrid, ratio)
+      : null;
+    if (!snapped) return clip;
+    const fadeOutMs = Math.min(clip.fadeOutMs, snapped.durationMs);
+    return { ...clip, ...snapped, fadeOutMs, fadeInMs: Math.min(clip.fadeInMs, snapped.durationMs - fadeOutMs) };
+  };
+
+  const updateDrag = (event: React.PointerEvent<HTMLElement>) => {
+    const active = drag.current;
+    if (!active) return;
+    const deltaMs = ((event.clientX - active.startX) / zoom) * 1000;
+    let next: Remix;
+    if (active.mode === "move") {
+      const snappedAnchor = snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing);
+      const actualDelta = snappedAnchor - active.clip.timelineStartMs;
+      active.lastTimelineDeltaMs = actualDelta;
+      next = {
+        ...active.original,
+        tracks: active.original.tracks.map((track) => ({
+          ...track,
+          clips: track.clips.map((item) => active.clipIds.includes(item.id ?? "")
+            ? moveClip(item, item.timelineStartMs + actualDelta)
+            : item),
+        })),
+      };
+    } else {
+      const nextClip = active.mode === "trim-left"
+        ? resolveSourceBeatWindow(trimClipLeft(active.clip, snapTimelineMs(active.clip.timelineStartMs + deltaMs, timing), active.sourceDurationMs, active.tempoRatio))
+        : resolveSourceBeatWindow(trimClipRight(active.clip, snapTimelineMs(active.clip.timelineStartMs + active.clip.durationMs + deltaMs, timing), active.sourceDurationMs, active.tempoRatio));
+      next = replaceClip(active.original, active.trackId, active.clipIndex, nextClip);
+    }
+    draft.current = next;
+    onPreview(next);
+  };
+
+  const endDrag = () => {
+    const active = drag.current;
+    if (active && draft.current) {
+      if (active.mode === "move" && active.lastTimelineDeltaMs !== 0)
+        void onBatchCommit(active.original, active.clipIds, "move", { timelineDeltaMs: active.lastTimelineDeltaMs });
+      else if (active.mode !== "move") onCommit(active.original, draft.current);
+      else onPreview(active.original);
+    }
+    drag.current = null;
+    draft.current = null;
+  };
+  const runGroup = (operation: "nudge" | "duplicate" | "delete", payload: Record<string, unknown> = {}) => {
+    if (!selectedClipIds.length) return;
+    void onBatchCommit(remix, selectedClipIds, operation, payload);
+  };
+  const automationPosition = (parameter: AutomationParameter, value: number) => parameter === "volume"
+    ? Math.max(0, Math.min(1, value / 2))
+    : Math.max(0, Math.min(1, (value + 1) / 2));
+  const automationAtPointer = (active: AutomationDragState, event: React.PointerEvent<HTMLElement>) => {
+    const timelineMs = Math.max(0, Math.min(86_400_000, Math.round(((event.clientX - active.lane.left) / zoom) * 1000)));
+    const normalised = Math.max(0, Math.min(1, 1 - ((event.clientY - active.lane.top) / active.lane.height)));
+    const value = active.parameter === "volume" ? Number((normalised * 2).toFixed(3)) : Number((normalised * 2 - 1).toFixed(3));
+    return { timelineMs, value };
+  };
+  const beginAutomationDrag = (
+    event: React.PointerEvent<HTMLElement>,
+    remixTrackId: string,
+    parameter: AutomationParameter,
+    point: AutomationPoint,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const lane = event.currentTarget.parentElement?.getBoundingClientRect();
+    if (!lane) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    automationDrag.current = { point, remixTrackId, parameter, lane, moved: false, timelineMs: point.timelineMs, value: point.value };
+    setSelectedAutomationPointId(point.id ?? `${remixTrackId}:${parameter}:${point.timelineMs}`);
+  };
+  const moveAutomationDrag = (event: React.PointerEvent<HTMLElement>) => {
+    const active = automationDrag.current;
+    if (!active) return;
+    active.moved = true;
+    Object.assign(active, automationAtPointer(active, event));
+  };
+  const endAutomationDrag = () => {
+    const active = automationDrag.current;
+    if (active?.moved)
+      void onAutomationEdit(remix, "upsert", {
+        remixTrackId: active.remixTrackId,
+        parameter: active.parameter,
+        pointId: active.point.id,
+        timelineMs: active.timelineMs,
+        value: active.value,
+      });
+    automationDrag.current = null;
+  };
+
+  return (
+    <>
+      <div className="timeline-toolbar">
+        <span className="snap-indicator">{timing.snapEnabled ? `Snap: ${timing.gridDivision}` : "Snap: off"}</span>
+        <span>{formatMusicalPosition(positionMs, timing)}</span>
+        <span className="multi-clip-actions" aria-label="Selected clip actions">{selectedClipIds.length ? `${selectedClipIds.length} selected` : "Select clips"}<button className="button secondary" disabled={!selectedClipIds.length} onClick={() => runGroup("nudge", { amount: "1ms", direction: "back" })}>Nudge −</button><button className="button secondary" disabled={!selectedClipIds.length} onClick={() => runGroup("nudge", { amount: "1ms", direction: "forward" })}>Nudge +</button><button className="button secondary" disabled={!selectedClipIds.length} onClick={() => runGroup("duplicate")}>Duplicate</button><button className="button danger" disabled={!selectedClipIds.length} onClick={() => runGroup("delete")}>Delete</button></span>
+      </div>
+      <div className="timeline-axis">
+        0s <span>{clock(timelineEndMs / 1000)}</span>
+        <em>{timing.tempoBpm} BPM · {timing.timeSignatureNumerator}/{timing.timeSignatureDenominator} · {timing.gridDivision}</em>
+      </div>
+      <div className="timeline-scroll">
+        <div className="timeline timeline-direct" style={{ width: timelineWidth }}>
+          <div className="timeline-grid" aria-hidden="true">
+            {Array.from({ length: bars + 1 }, (_, index) => <i className="bar-line" key={`bar-${index}`} style={{ left: `${(index * barMs(timing) / 1000) * zoom}px` }} />)}
+            {Array.from({ length: beats + 1 }, (_, index) => <i className="beat-line" key={`beat-${index}`} style={{ left: `${(index * beatMs(timing) / 1000) * zoom}px` }} />)}
+          </div>
+          <div className="timeline-playhead" style={{ left: `${(positionMs / 1000) * zoom}px` }} aria-hidden="true" />
+          {remix.tracks.map((track) => (
+            <div className="timeline-track" key={track.id}>
+              <header>
+                <div>
+                  <b>{track.name}</b>
+                  <small>{effectiveMuted({ muted: track.muted, solo: track.solo }, remix.tracks.some((candidate) => candidate.solo)) ? "Muted by mixer state" : "Audible"}</small>
+                </div>
+                <div className="timeline-track-controls">
+                  <label>Vol <input aria-label={`${track.name} arrangement volume`} type="range" min="0" max="2" step="0.01" value={track.volume} onChange={(event) => onChange((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id === track.id ? { ...candidate, volume: Number(event.target.value) } : candidate) }))} /></label>
+                  <label>Pan <input aria-label={`${track.name} arrangement pan`} type="range" min="-1" max="1" step="0.01" value={track.pan} onChange={(event) => onChange((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id === track.id ? { ...candidate, pan: Number(event.target.value) } : candidate) }))} /></label>
+                  <button className={`toggle ${track.muted ? "on" : ""}`} onClick={() => onChange((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id === track.id ? { ...candidate, muted: !candidate.muted } : candidate) }))}>M</button>
+                  <button className={`toggle ${track.solo ? "on" : ""}`} onClick={() => onChange((current) => ({ ...current, tracks: current.tracks.map((candidate) => candidate.id === track.id ? { ...candidate, solo: !candidate.solo } : candidate) }))}>S</button>
+                  <button className="button secondary" onClick={() => {
+                    const ids = trackClipSelection(track.clips.map((clip) => clip.id).filter((id): id is string => Boolean(id)));
+                    onSelectedClipIds(ids);
+                    onSelection(ids.length ? { trackId: track.id, clipIndex: 0 } : null);
+                  }}>Select track</button>
+                  <button className="button secondary" onClick={() => onDuplicateTrack(track.id)}>Duplicate track</button>
+                </div>
+              </header>
+              <div
+                className="clip-lane"
+                onPointerDown={(event) => {
+                  if (event.target === event.currentTarget) onSeek(snapTimelineMs(((event.nativeEvent.offsetX / zoom) * 1000), timing));
+                }}
+              >
+                {track.clips.map((clip, index) => {
+                  const selected = selection?.trackId === track.id && selection.clipIndex === index;
+                  const groupSelected = Boolean(clip.id && selectedClipIds.includes(clip.id));
+                  return <article
+                    className={`clip ${selected || groupSelected ? "selected" : ""} ${groupSelected ? "multi-selected" : ""}`}
+                    key={`${clip.id ?? "new"}-${index}`}
+                    style={{ left: `${(clip.timelineStartMs / 1000) * zoom}px`, width: `${Math.max(18, (clip.durationMs / 1000) * zoom)}px` }}
+                    onPointerDown={(event) => beginDrag(event, "move", track.id, index, clip)}
+                    onPointerMove={updateDrag}
+                    onPointerUp={endDrag}
+                    onPointerCancel={endDrag}
+                  >
+                    <span className="trim-handle trim-left" aria-label="Trim clip left" onPointerDown={(event) => beginDrag(event, "trim-left", track.id, index, clip)} />
+                    <b>{index + 1}</b>
+                    <label className="legacy-clip-start">Start<input aria-label={`${track.name} clip ${index + 1} start`} type="number" min="0" step="0.01" value={clip.timelineStartMs / 1000} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => onChange((current) => {
+                      const value = Math.max(0, Number(event.target.value) || 0) * 1000;
+                      return replaceClip(current, track.id, index, { ...clip, timelineStartMs: clip.beatSnapEnabled ? snapTimelineMs(value, timing) : value });
+                    })} /></label>
+                    <span className="clip-label">{Math.round(clip.durationMs / 1000)}s</span>
+                    <span className="trim-handle trim-right" aria-label="Trim clip right" onPointerDown={(event) => beginDrag(event, "trim-right", track.id, index, clip)} />
+                  </article>;
+                })}
+                <div className="automation-lane-stack" aria-label={`${track.name} automation lanes`}>
+                  {(["volume", "pan"] as const).map((parameter) => {
+                    const lane = remix.automation.find((item) => item.remixTrackId === track.id && item.parameter === parameter);
+                    const points = lane?.points ?? [];
+                    const defaultValue = parameter === "volume" ? track.volume : track.pan;
+                    return <div
+                      className={`automation-lane ${parameter}`}
+                      key={parameter}
+                      onPointerDown={(event) => {
+                        if (event.target !== event.currentTarget) return;
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        const timelineMs = Math.max(0, Math.min(86_400_000, Math.round(((event.clientX - rect.left) / zoom) * 1000)));
+                        void onAutomationEdit(remix, "upsert", { remixTrackId: track.id, parameter, timelineMs, value: defaultValue });
+                      }}
+                    >
+                      <span>{parameter === "volume" ? "VOL" : "PAN"}</span>
+                      {points.map((point) => {
+                        const key = point.id ?? `${track.id}:${parameter}:${point.timelineMs}`;
+                        return <button
+                          type="button"
+                          className={`automation-point ${selectedAutomationPointId === key ? "selected" : ""}`}
+                          aria-label={`${track.name} ${parameter} point at ${point.timelineMs} milliseconds`}
+                          key={key}
+                          style={{ left: `${(point.timelineMs / 1000) * zoom}px`, bottom: `${automationPosition(parameter, point.value) * 100}%` }}
+                          onPointerDown={(event) => beginAutomationDrag(event, track.id, parameter, point)}
+                          onPointerMove={moveAutomationDrag}
+                          onPointerUp={endAutomationDrag}
+                          onPointerCancel={endAutomationDrag}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (point.id) void onAutomationEdit(remix, "delete", { remixTrackId: track.id, parameter, pointId: point.id });
+                          }}
+                        />;
+                      })}
+                    </div>;
+                  })}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
