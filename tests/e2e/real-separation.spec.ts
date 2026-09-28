@@ -218,19 +218,29 @@ test.describe("real Compose separation pipeline", () => {
     expect(download.status()).toBe(200);
     expect(download.headers()["content-disposition"]).toContain("attachment");
 
-    const startBlankArrangement = page.getByRole("button", {
-      name: "Start blank arrangement",
-    });
-    if (await startBlankArrangement.isVisible()) {
-      await startBlankArrangement.click();
-    }
-    await expect(
-      page.getByRole("heading", { name: "Remix timeline" }),
-    ).toBeVisible();
+    await expect
+      .poll(
+        async () => {
+          const response = await page.request.get(
+            `/api/projects/${projectId}/remixes`,
+          );
+          if (!response.ok()) return -1;
+          const body = await response.json();
+          return body.remixes?.length ?? 0;
+        },
+        { timeout: 11 * 60 * 1000, intervals: [2_000, 5_000, 10_000] },
+      )
+      .toBe(1);
+
+    await page.reload();
+    await page.getByRole("button", { name: "Open Studio" }).click();
     const vocalsTrack = page
       .locator(".timeline-track")
       .filter({ hasText: "copyright-safe-fixture.wav — Vocals" });
-    await vocalsTrack.locator(".clip").first().click();
+    await expect(vocalsTrack).toBeVisible();
+    const vocalsClips = vocalsTrack.locator(".clip");
+    await expect(vocalsClips).not.toHaveCount(0);
+    await vocalsClips.first().click();
     const vocalsClipStart = page.getByLabel("Timeline start (ms)");
     await expect(vocalsClipStart).toBeVisible();
     await vocalsClipStart.fill("2");
