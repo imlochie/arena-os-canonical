@@ -11,6 +11,7 @@ export * from "./vocal-analysis";
 export * from "./drum-analysis";
 export * from "./harmony-analysis";
 export * from "./midi";
+export * from "./visual-state";
 
 export const STEM_TYPES = ["vocals", "drums", "bass", "other"] as const;
 export type StemType = (typeof STEM_TYPES)[number];

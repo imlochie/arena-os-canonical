@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS } from "@waveyard/types";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS } from "@waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTimeline";
 import { ArrangementInspector } from "./studio/ArrangementInspector";
@@ -27,6 +27,7 @@ import type { MixerValues } from "@/lib/useStemTransport";
 import { useStemTransport } from "@/lib/useStemTransport";
 import { useArrangementPreview } from "@/lib/useArrangementPreview";
 import { snapTimelineMs, type GridDivision } from "@/lib/timing";
+import { useReducedMotion } from "@/lib/useReducedMotion";
 
 function controlsFor(stems: Stem[]) {
   return Object.fromEntries(stems.map((stem) => [stem.id, { volume: 1, pan: 0, muted: false, solo: false }])) as Record<string, MixerValues>;
@@ -57,6 +58,10 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
   const [remix, setRemix] = useState<Remix | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
   const [versions, setVersions] = useState<RemixVersionSummary[]>([]);
+  // Presentation is browser-only observation over the same project, selection,
+  // transport, and persisted remix state. It never forks musical authority.
+  const [presentation, setPresentation] = useState<"studio" | "play">("studio");
+  const reducedMotion = useReducedMotion();
   const arrangementHistory = useArrangementHistory();
   const { history, future, reset, record, undo: historyUndo, redo: historyRedo } = arrangementHistory;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -122,6 +127,16 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     gridDivision: remix.gridDivision,
     snapEnabled: remix.snapEnabled,
   } : { tempoBpm: 120, timeSignatureNumerator: 4, timeSignatureDenominator: 4, gridDivision: "beat" as GridDivision, snapEnabled: true }, [remix]);
+  const visualState = useMemo(() => deriveVisualState({
+    positionMs: Math.round(transport.position * 1000), durationMs: Math.round(duration * 1000), playing: transport.playing,
+    bpm: source?.analysis?.status === "complete" ? source.analysis.bpm : null,
+    beatGridMs: source?.analysis?.status === "complete" ? source.analysis.beatGrid : null,
+    sections: source?.sections ?? [],
+    stems: stems.map((stem) => ({ id: stem.id, ...(mixerControls[stem.id] ?? { volume: 1, muted: false, solo: false }) })),
+    reducedMotion,
+  }), [duration, mixerControls, reducedMotion, source, stems, transport.playing, transport.position]);
+  const visualMotion = motionPolicy(reducedMotion);
+  const environment = artworkEnvironment(`${source?.checksumSha256 ?? projectId}:${source?.originalFilename ?? "waveyard"}`);
 
   useEffect(() => { transport.applyMix(mixerControls); }, [mixerControls, transport]);
   useEffect(() => { if (remix) transport.setMasterVolume(remix.masterVolume); }, [remix, transport]);
@@ -516,8 +531,16 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     return () => window.removeEventListener("keydown", keyboard);
   }, [clipSelection, editClip, redo, remix, timing, toggleStemPreview, transport, undo]);
 
-  return <section className="studio" aria-label="Waveyard Studio">
-    <header className="studio-head"><div><span className="eyebrow">Studio core</span><h2>Real stems, one transport.</h2></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
+  return <section
+    className={`studio waveyard-surface mode-${presentation}`}
+    data-presentation={presentation}
+    data-playing={transport.playing ? "true" : "false"}
+    data-reduced-motion={reducedMotion ? "true" : "false"}
+    aria-label="Waveyard Studio"
+    style={{ "--art-hue": environment.hue, "--art-accent-hue": environment.accentHue, "--art-shadow-hue": environment.shadowHue, "--beat-pulse": visualState.beatPulse, "--bar-pulse": visualState.barPulse, "--motion-ms": `${visualMotion.transitionMs}ms` } as CSSProperties}
+  >
+    <header className="studio-head"><div><span className="eyebrow">{presentation === "studio" ? "Studio" : "Play"} · one musical state</span><h2>{presentation === "studio" ? "Real stems, one transport." : "Music in motion."}</h2></div><div className="presentation-nav" role="tablist" aria-label="Waveyard presentation mode"><button type="button" role="tab" aria-selected={presentation === "play"} data-testid="waveyard-mode-play" className={presentation === "play" ? "active" : ""} onClick={() => setPresentation("play")}>Play</button><button type="button" role="tab" aria-selected={presentation === "studio"} data-testid="waveyard-mode-studio" className={presentation === "studio" ? "active" : ""} onClick={() => setPresentation("studio")}>Studio</button><button type="button" disabled title="Visual mode arrives in the next Waveyard layer">Visual</button></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
+    {presentation === "play" && <p className="presentation-intro" data-testid="play-mode-intro">Play keeps this project’s current transport, selection, and stem controls intact. The living player arrives next.</p>}
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
     {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} onArrangementAction={arrangeSection} onRequestEvents={() => requestSourceEvents(source.id)} />}
     {source && selected && <VocalAnalysisSummary stem={selected} editable onRequestAnalysis={() => requestVocalAnalysis(selected.id)} onExportMidi={selected.stemType === "vocals" ? () => requestMidiExport("vocal", source.id, selected.id) : undefined} />}
