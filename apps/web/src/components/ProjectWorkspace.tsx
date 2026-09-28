@@ -8,6 +8,7 @@ import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
 import type { Source, SourceAnalysis, SourceSectionAnalysis, Stem } from "./studio/types";
 import { PublicationPanel } from "./PublicationPanel";
 import { WaveyardHandoffPanel } from "./arena/WaveyardHandoffPanel";
+import { evaluateAutomaticBuildFinalization } from "@/lib/automatic-build-finalization";
 
 type ProjectData = {
   project: {
@@ -89,20 +90,23 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   useEffect(() => {
     const build = data?.build;
     if (!data || !build || build.status !== "processing" || finalizingBuild.current === build.id) return;
-    const sourceStages = data.sources.map((source) => ({ id: source.id, analysis: source.analysis?.status, sections: source.sectionAnalysis?.status }));
     const processing = data.jobs.some((job) => ["queued", "preparing", "processing", "finalizing"].includes(job.status));
-    const failedSourceIds = new Set(data.jobs.filter((job) => job.status === "failed").map((job) => job.sourceAssetId));
-    for (const source of sourceStages) if (source.analysis === "failed" || source.sections === "failed") failedSourceIds.add(source.id);
-    const expectedReady = Math.max(0, build.acceptedSourceCount - failedSourceIds.size);
-    const analysisCompleteSources = sourceStages.filter((stage) => stage.analysis === "complete");
-    const completedSources = sourceStages.filter((stage) => stage.analysis === "complete" && stage.sections === "complete");
-    const analysesComplete = analysisCompleteSources.length >= expectedReady && expectedReady > 0;
-    const analysesReady = completedSources.length >= expectedReady && expectedReady > 0;
-    const failedCount = Math.max(build.failedSourceCount, failedSourceIds.size);
-    const stage = processing ? "separating" : !analysesComplete ? "understanding" : !analysesReady ? "finding-structure" : "building";
-    const reportedAccepted = processing ? build.acceptedSourceCount : completedSources.length;
-    if (stage !== build.stage || failedCount !== build.failedSourceCount || reportedAccepted !== build.acceptedSourceCount) void fetch(`/api/projects/${projectId}/builds`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ buildId: build.id, status: expectedReady ? "processing" : "failed", stage: expectedReady ? stage : "failed", acceptedSourceCount: reportedAccepted, failedSourceCount: failedCount, errorMessage: expectedReady ? null : "No source completed the build pipeline." }) });
-    if (!analysesReady) return;
+    const finalization = evaluateAutomaticBuildFinalization({
+      acceptedSourceCount: build.acceptedSourceCount,
+      persistedFailedSourceCount: build.failedSourceCount,
+      processing,
+      failedJobSourceIds: data.jobs
+        .filter((job) => job.status === "failed")
+        .map((job) => job.sourceAssetId),
+      sources: data.sources.map((source) => ({
+        id: source.id,
+        analysisStatus: source.analysis?.status,
+        sectionStatus: source.sectionAnalysis?.status,
+        hasRealStems: data.stems.some((stem) => stem.sourceAssetId === source.id),
+      })),
+    });
+    if (finalization.stage !== build.stage || finalization.failedSourceCount !== build.failedSourceCount || finalization.reportedAcceptedSourceCount !== build.acceptedSourceCount) void fetch(`/api/projects/${projectId}/builds`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ buildId: build.id, status: finalization.expectedReadySourceCount ? "processing" : "failed", stage: finalization.expectedReadySourceCount ? finalization.stage : "failed", acceptedSourceCount: finalization.reportedAcceptedSourceCount, failedSourceCount: finalization.failedSourceCount, errorMessage: finalization.expectedReadySourceCount ? null : "No source completed the build pipeline." }) });
+    if (!finalization.canBuildAutomaticRemix) return;
     finalizingBuild.current = build.id;
     void (async () => {
       const automatic = await fetch(`/api/projects/${projectId}/automatic-remixes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variant: "original" }) });
