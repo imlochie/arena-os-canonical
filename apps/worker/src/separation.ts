@@ -26,6 +26,7 @@ import {
 } from "./analysis";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
 import type { SeparationJobPayload, StemType } from "@waveyard/types";
+import { provisionVocalAnalysis } from "./vocal";
 
 const STEMS: StemType[] = ["vocals", "drums", "bass", "other"];
 
@@ -298,6 +299,19 @@ export async function processSeparation(
           })
           .where(eq(waveformJobs.id, waveformJob.id));
       }
+    }
+    // An isolated vocals stem is the only eligible Phase-18 input. Its derived
+    // observation job is independent from separation and can be retried safely.
+    try {
+      const [vocalStem] = await db.select().from(stemAssets).where(and(
+        eq(stemAssets.separationJobId, job.id),
+        eq(stemAssets.projectId, job.projectId),
+        eq(stemAssets.sourceAssetId, source.id),
+        eq(stemAssets.stemType, "vocals"),
+      )).limit(1);
+      if (vocalStem) await provisionVocalAnalysis(vocalStem);
+    } catch (queueError) {
+      console.error("Could not provision isolated-vocal analysis:", queueError);
     }
     completed = true;
     await reportStage("complete");

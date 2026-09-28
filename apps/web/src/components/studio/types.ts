@@ -2,6 +2,30 @@ import type { RemixStateInput, RemixTrackInput } from "@/lib/remix";
 import type { RemixAutomationLane } from "@waveyard/types";
 import type { GridDivision } from "@/lib/timing";
 
+export type VocalAnalysis = {
+  id: string;
+  status: "queued" | "processing" | "complete" | "failed" | "cancelled";
+  stage: string;
+  attempts: number;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  analyzedAt: string | null;
+};
+
+export type VocalPitchFrame = {
+  id: string;
+  timestampMs: number;
+  frequencyHz: number | null;
+  midiFloat: number | null;
+  nearestMidiNote: number | null;
+  confidence: number;
+  voiced: boolean;
+};
+
+export type VocalPhrase = { id: string; startMs: number; endMs: number; confidence: number };
+
 export type Stem = {
   id: string;
   sourceAssetId: string;
@@ -15,6 +39,9 @@ export type Stem = {
   checksumSha256: string;
   model: string;
   modelVersion: string;
+  vocalAnalysis?: VocalAnalysis | null;
+  vocalFrames?: VocalPitchFrame[];
+  vocalPhrases?: VocalPhrase[];
 };
 
 export type SourceAnalysis = {

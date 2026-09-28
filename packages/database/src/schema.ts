@@ -271,6 +271,62 @@ export const sourceEvents = pgTable("source_events", {
   index("source_events_project_id_idx").on(table.projectId),
 ]);
 
+// Stem-scoped V1 vocal evidence never claims that the original mixed source is vocal.
+export const vocalAnalyses = pgTable("vocal_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  stemChecksumSha256: text("stem_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("vocal_analyses_stem_asset_unique").on(table.stemAssetId),
+  uniqueIndex("vocal_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("vocal_analyses_project_id_idx").on(table.projectId),
+  index("vocal_analyses_source_stem_idx").on(table.sourceAssetId, table.stemAssetId),
+]);
+
+export const vocalPitchFrames = pgTable("vocal_pitch_frames", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  vocalAnalysisId: uuid("vocal_analysis_id").notNull().references(() => vocalAnalyses.id, { onDelete: "cascade" }),
+  frameIndex: integer("frame_index").notNull(),
+  timestampMs: integer("timestamp_ms").notNull(),
+  frequencyHz: real("frequency_hz"),
+  midiFloat: real("midi_float"),
+  nearestMidiNote: integer("nearest_midi_note"),
+  confidence: real("confidence").notNull(),
+  voiced: boolean("voiced").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("vocal_pitch_frames_analysis_index_unique").on(table.vocalAnalysisId, table.frameIndex),
+  index("vocal_pitch_frames_analysis_time_idx").on(table.vocalAnalysisId, table.timestampMs),
+]);
+
+export const vocalPhrases = pgTable("vocal_phrases", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  vocalAnalysisId: uuid("vocal_analysis_id").notNull().references(() => vocalAnalyses.id, { onDelete: "cascade" }),
+  phraseIndex: integer("phrase_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  confidence: real("confidence").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("vocal_phrases_analysis_index_unique").on(table.vocalAnalysisId, table.phraseIndex),
+  index("vocal_phrases_analysis_start_idx").on(table.vocalAnalysisId, table.startMs),
+]);
+
 // A remix is non-destructive arrangement metadata over existing stems. No clip
 // operation copies or mutates original separated audio.
 export const remixSessions = pgTable("remix_sessions", {

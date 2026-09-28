@@ -6,6 +6,7 @@ import type {
   SourceAnalysisJobPayload,
   SourceEventAnalysisJobPayload,
   SourceSectionAnalysisJobPayload,
+  VocalAnalysisJobPayload,
   WaveformJobPayload,
 } from "@waveyard/types";
 
@@ -14,6 +15,7 @@ export const WAVEFORM_QUEUE = "waveyard-waveform";
 export const SOURCE_ANALYSIS_QUEUE = "waveyard-source-analysis";
 export const SOURCE_SECTION_ANALYSIS_QUEUE = "waveyard-source-section-analysis";
 export const SOURCE_EVENT_ANALYSIS_QUEUE = "waveyard-source-event-analysis";
+export const VOCAL_ANALYSIS_QUEUE = "waveyard-vocal-analysis";
 export const EXPORT_QUEUE = "waveyard-export";
 export const TEST_FAULTS = [
   "waveform-storage-read",
@@ -35,6 +37,7 @@ let waveformQueue: Queue<WaveformJobPayload> | undefined;
 let sourceAnalysisQueue: Queue<SourceAnalysisJobPayload> | undefined;
 let sourceSectionAnalysisQueue: Queue<SourceSectionAnalysisJobPayload> | undefined;
 let sourceEventAnalysisQueue: Queue<SourceEventAnalysisJobPayload> | undefined;
+let vocalAnalysisQueue: Queue<VocalAnalysisJobPayload> | undefined;
 let exportQueue: Queue<ExportJobPayload> | undefined;
 
 export function getQueueConnection() {
@@ -89,6 +92,14 @@ export function getSourceEventAnalysisQueue() {
   return sourceEventAnalysisQueue;
 }
 
+export function getVocalAnalysisQueue() {
+  if (!vocalAnalysisQueue)
+    vocalAnalysisQueue = new Queue<VocalAnalysisJobPayload>(VOCAL_ANALYSIS_QUEUE, {
+      connection: getQueueConnection(),
+    });
+  return vocalAnalysisQueue;
+}
+
 export function getExportQueue() {
   if (!exportQueue)
     exportQueue = new Queue<ExportJobPayload>(EXPORT_QUEUE, {
@@ -140,6 +151,16 @@ export async function enqueueSourceSectionAnalysis(payload: SourceSectionAnalysi
 export async function enqueueSourceEventAnalysis(payload: SourceEventAnalysisJobPayload) {
   return getSourceEventAnalysisQueue().add("analyze-events", payload, {
     jobId: payload.sourceEventAnalysisId,
+    attempts: 2,
+    backoff: { type: "exponential", delay: 5_000 },
+    removeOnComplete: { age: 60 * 60 * 24, count: 5000 },
+    removeOnFail: { age: 60 * 60 * 24 * 7, count: 5000 },
+  });
+}
+
+export async function enqueueVocalAnalysis(payload: VocalAnalysisJobPayload) {
+  return getVocalAnalysisQueue().add("analyze-vocal", payload, {
+    jobId: payload.vocalAnalysisId,
     attempts: 2,
     backoff: { type: "exponential", delay: 5_000 },
     removeOnComplete: { age: 60 * 60 * 24, count: 5000 },

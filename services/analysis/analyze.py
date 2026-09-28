@@ -35,6 +35,10 @@ PITCH_CLASSES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
 MAJOR_PROFILE = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
 MINOR_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
 EPSILON = 1e-9
+VOCAL_ENGINE = "waveyard-numpy-monophonic-pitch"
+VOCAL_ENGINE_VERSION = "1.0.0"
+VOCAL_MIN_HZ = 50.0
+VOCAL_MAX_HZ = 1200.0
 
 
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -126,6 +130,79 @@ def analyze_events(source: Path) -> dict[str, object]:
         "analysisEngine": "waveyard-numpy-onsets",
         "analysisEngineVersion": "1.0.0",
         "events": detect_events(onset, int(round(samples.size * 1000.0 / SAMPLE_RATE))),
+    }
+
+
+def estimate_vocal_pitch_frames(samples: np.ndarray) -> list[dict[str, object]]:
+    """Conservative deterministic autocorrelation observations for a vocals stem.
+
+    The result deliberately contains no words, notes, singers, or musical labels.
+    An unvoiced frame is explicit rather than a fabricated zero-Hz pitch.
+    """
+    # A fixed 46ms hop maintains an intelligible compact contour while a 93ms
+    # window accommodates the 50Hz lower bound.  Decisions use only local stem
+    # samples and stable NumPy operations.
+    window_size = 2_048
+    hop_size = 1_024
+    if samples.size < window_size:
+        samples = np.pad(samples, (0, window_size - samples.size))
+    remainder = (samples.size - window_size) % hop_size
+    if remainder:
+        samples = np.pad(samples, (0, hop_size - remainder))
+    count = 1 + (samples.size - window_size) // hop_size
+    lag_low = max(1, int(math.floor(SAMPLE_RATE / VOCAL_MAX_HZ)))
+    lag_high = min(window_size - 2, int(math.ceil(SAMPLE_RATE / VOCAL_MIN_HZ)))
+    window = np.hanning(window_size)
+    frames: list[dict[str, object]] = []
+    # Fixed, low amplitude threshold avoids assigning numerical noise a pitch.
+    energy_threshold = 0.003
+    for index in range(count):
+        frame = samples[index * hop_size:index * hop_size + window_size]
+        centered = frame - float(np.mean(frame))
+        rms = float(np.sqrt(np.mean(np.square(centered))))
+        timestamp_ms = int(round(index * hop_size * 1000.0 / SAMPLE_RATE))
+        if rms < energy_threshold:
+            frames.append({"timestampMs": timestamp_ms, "frequencyHz": None, "midiFloat": None, "nearestMidiNote": None, "confidence": 0.0, "voiced": False})
+            continue
+        weighted = centered * window
+        autocorrelation = np.correlate(weighted, weighted, mode="full")[window_size - 1:]
+        zero = float(autocorrelation[0])
+        if zero <= EPSILON:
+            frames.append({"timestampMs": timestamp_ms, "frequencyHz": None, "midiFloat": None, "nearestMidiNote": None, "confidence": 0.0, "voiced": False})
+            continue
+        segment = autocorrelation[lag_low:lag_high + 1] / zero
+        peak_offset = int(np.argmax(segment))
+        peak = float(segment[peak_offset])
+        lag = lag_low + peak_offset
+        frequency = SAMPLE_RATE / lag
+        confidence = clamp((peak - 0.35) / 0.65)
+        if peak < 0.55 or frequency < VOCAL_MIN_HZ or frequency > VOCAL_MAX_HZ:
+            frames.append({"timestampMs": timestamp_ms, "frequencyHz": None, "midiFloat": None, "nearestMidiNote": None, "confidence": round(confidence, 6), "voiced": False})
+            continue
+        midi_float = 69.0 + 12.0 * math.log2(frequency / 440.0)
+        frames.append({
+            "timestampMs": timestamp_ms,
+            "frequencyHz": round(frequency, 6),
+            "midiFloat": round(midi_float, 6),
+            "nearestMidiNote": int(round(midi_float)),
+            "confidence": round(confidence, 6),
+            "voiced": True,
+        })
+    return frames
+
+
+def analyze_vocal(source: Path, persisted_duration_ms: int | None = None) -> dict[str, object]:
+    samples = decode_mono(source)
+    frames = estimate_vocal_pitch_frames(samples)
+    # The durable asset duration is the worker's source-relative boundary. The
+    # decoded file can carry sub-second metadata that is intentionally rounded
+    # in the existing asset model, so never serialize a trailing padded frame.
+    if persisted_duration_ms is not None:
+        frames = [frame for frame in frames if int(frame["timestampMs"]) <= persisted_duration_ms]
+    return {
+        "analysisEngine": VOCAL_ENGINE,
+        "analysisEngineVersion": VOCAL_ENGINE_VERSION,
+        "frames": frames,
     }
 
 
@@ -370,12 +447,20 @@ def main() -> int:
     parser.add_argument("--input", required=True)
     parser.add_argument("--sections", action="store_true", help="detect structure from a persisted beat grid")
     parser.add_argument("--events", action="store_true", help="detect generic source-relative onset events")
+    parser.add_argument("--vocal", action="store_true", help="observe pitch only from an isolated vocals stem")
+    parser.add_argument("--duration-ms", type=int, help="persisted isolated-stem duration boundary")
     parser.add_argument("--beat-grid", help="JSON array of persisted source beat milliseconds")
     args = parser.parse_args()
     source = Path(args.input).resolve()
     if not source.is_file():
         raise RuntimeError(f"Input does not exist: {source}")
-    if args.events:
+    if sum(bool(flag) for flag in (args.events, args.sections, args.vocal)) > 1:
+        raise RuntimeError("Choose only one analysis mode.")
+    if args.duration_ms is not None and (args.duration_ms < 0 or not args.vocal):
+        raise RuntimeError("A non-negative duration boundary is valid only for vocal analysis.")
+    if args.vocal:
+        print(json.dumps(analyze_vocal(source, args.duration_ms), sort_keys=True))
+    elif args.events:
         print(json.dumps(analyze_events(source), sort_keys=True))
     elif args.sections:
         try:

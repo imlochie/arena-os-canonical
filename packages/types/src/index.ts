@@ -7,6 +7,7 @@ export * from "./cross-source-alignment";
 export * from "./clip-editing";
 export * from "./arrangement-automation";
 export * from "./musical-events";
+export * from "./vocal-analysis";
 
 export const STEM_TYPES = ["vocals", "drums", "bass", "other"] as const;
 export type StemType = (typeof STEM_TYPES)[number];
@@ -62,6 +63,15 @@ export type SourceEventAnalysisJobPayload = {
   sourceEventAnalysisId: string;
   projectId: string;
   sourceAssetId: string;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+};
+
+export type VocalAnalysisJobPayload = {
+  vocalAnalysisId: string;
+  projectId: string;
+  sourceAssetId: string;
+  stemAssetId: string;
   analysisEngine: string;
   analysisEngineVersion: string;
 };

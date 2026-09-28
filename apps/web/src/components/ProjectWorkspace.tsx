@@ -4,7 +4,8 @@ import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { StudioCore } from "./StudioCore";
 import { SourceAnalysisSummary } from "./studio/SourceAnalysisSummary";
 import { SourceSectionSummary } from "./studio/SourceSectionSummary";
-import type { Source, SourceAnalysis, SourceSectionAnalysis } from "./studio/types";
+import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
+import type { Source, SourceAnalysis, SourceSectionAnalysis, Stem } from "./studio/types";
 import { PublicationPanel } from "./PublicationPanel";
 
 type ProjectData = {
@@ -17,7 +18,7 @@ type ProjectData = {
     moderationStatus: string;
   };
   role: "viewer" | "contributor" | "editor" | "owner";
-  stems: any[];
+  stems: Stem[];
   waveforms: any[];
   waveformJobs: Array<{
     id: string;
@@ -65,8 +66,9 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         ...(json.jobs ?? []),
         ...(json.waveformJobs ?? []),
         ...(json.sources ?? [])
-          .flatMap((source: { analysis?: { status?: string } | null; sectionAnalysis?: { status?: string } | null }) => [source.analysis, source.sectionAnalysis])
+          .flatMap((source: { analysis?: { status?: string } | null; sectionAnalysis?: { status?: string } | null; eventAnalysis?: { status?: string } | null }) => [source.analysis, source.sectionAnalysis, source.eventAnalysis])
           .filter(Boolean),
+        ...(json.stems ?? []).map((stem: { vocalAnalysis?: { status?: string } | null }) => stem.vocalAnalysis).filter(Boolean),
       ].some(
         (job: { status: string }) =>
           ["queued", "preparing", "processing", "finalizing"].includes(
@@ -127,6 +129,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setRetrying(false);
     if (!response.ok) setError(json.error ?? "Structural analysis retry could not be started.");
     else setRefresh((value) => value + 1);
+  }
+
+  async function requestVocalAnalysis(stemId: string) {
+    const response = await fetch(`/api/stems/${stemId}/vocal-analysis`, { method: "POST" });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok) return json.error ?? "Could not queue isolated-vocal analysis.";
+    setRefresh((value) => value + 1);
+    return null;
   }
 
   async function addSource(event: FormEvent<HTMLFormElement>) {
@@ -230,6 +240,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                 source={source}
                 onRetry={editable ? (analysis) => void retrySectionAnalysis(analysis) : undefined}
               />
+              {sourceStems.filter((stem): stem is Stem => stem.stemType === "vocals").map((stem) => <VocalAnalysisSummary key={stem.id} stem={stem} editable={editable} onRequestAnalysis={() => requestVocalAnalysis(stem.id)} />)}
             </article>
           );
         })}

@@ -510,6 +510,20 @@ test.describe("real Compose separation pipeline", () => {
     const eventsState = await (await page.request.get(`/api/sources/${sourceA.id}/events`)).json();
     expect(eventsState.analysis).toMatchObject({ sourceAssetId: sourceA.id, sourceChecksumSha256: sourceA.checksumSha256, analysisEngine: "waveyard-numpy-onsets", analysisEngineVersion: "1.0.0" });
     expect(eventsState.events).toEqual(expect.arrayContaining([expect.objectContaining({ timestampMs: expect.any(Number), strength: expect.any(Number) })]));
+    await expect.poll(async () => {
+      const state = await (await page.request.get(`/api/projects/${analysisProjectId}`)).json();
+      const vocalStem = state.stems.find((candidate: { sourceAssetId: string; stemType: string }) => candidate.sourceAssetId === sourceA.id && candidate.stemType === "vocals");
+      return { status: vocalStem?.vocalAnalysis?.status, frames: vocalStem?.vocalFrames?.length ?? 0 };
+    }, { timeout: 4 * 60 * 1000, intervals: [1_000, 2_000, 5_000] }).toMatchObject({ status: "complete" });
+    const vocalStem = firstState.stems.find((candidate: { sourceAssetId: string; stemType: string }) => candidate.sourceAssetId === sourceA.id && candidate.stemType === "vocals");
+    expect(vocalStem).toBeTruthy();
+    const vocalState = await (await page.request.get(`/api/stems/${vocalStem.id}/vocal-analysis`)).json();
+    expect(vocalState.analysis).toMatchObject({ sourceAssetId: sourceA.id, stemAssetId: vocalStem.id, sourceChecksumSha256: sourceA.checksumSha256, stemChecksumSha256: vocalStem.checksumSha256, analysisEngine: "waveyard-numpy-monophonic-pitch", analysisEngineVersion: "1.0.0" });
+    expect(vocalState.frames).toEqual(expect.arrayContaining([expect.objectContaining({ timestampMs: expect.any(Number), voiced: expect.any(Boolean), confidence: expect.any(Number) })]));
+    for (const frame of vocalState.frames) {
+      if (frame.voiced) expect(frame).toEqual(expect.objectContaining({ frequencyHz: expect.any(Number), midiFloat: expect.any(Number), nearestMidiNote: expect.any(Number) }));
+      else expect(frame).toMatchObject({ frequencyHz: null, midiFloat: null, nearestMidiNote: null });
+    }
 
     // Two injected worker attempts leave a durable failure. The UI retry must
     // then enqueue the exact same analysis row for a real engine execution.
