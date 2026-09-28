@@ -232,6 +232,45 @@ export const sourceSections = pgTable("source_sections", {
   index("source_sections_project_id_idx").on(table.projectId),
 ]);
 
+// Deterministic onset/event analysis is provenance-bound to a source identity.
+export const sourceEventAnalyses = pgTable("source_event_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_event_analyses_source_asset_unique").on(table.sourceAssetId),
+  uniqueIndex("source_event_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("source_event_analyses_project_id_idx").on(table.projectId),
+]);
+
+export const sourceEvents = pgTable("source_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceEventAnalysisId: uuid("source_event_analysis_id").notNull().references(() => sourceEventAnalyses.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  timestampMs: integer("timestamp_ms").notNull(),
+  strength: real("strength").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_events_analysis_index_unique").on(table.sourceEventAnalysisId, table.eventIndex),
+  index("source_events_source_time_idx").on(table.sourceAssetId, table.timestampMs),
+  index("source_events_project_id_idx").on(table.projectId),
+]);
+
 // A remix is non-destructive arrangement metadata over existing stems. No clip
 // operation copies or mutates original separated audio.
 export const remixSessions = pgTable("remix_sessions", {

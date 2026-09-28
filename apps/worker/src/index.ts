@@ -4,6 +4,7 @@ import {
   getQueueConnection,
   SEPARATION_QUEUE,
   SOURCE_ANALYSIS_QUEUE,
+  SOURCE_EVENT_ANALYSIS_QUEUE,
   SOURCE_SECTION_ANALYSIS_QUEUE,
   WAVEFORM_QUEUE,
 } from "@waveyard/queue";
@@ -11,12 +12,14 @@ import type {
   ExportJobPayload,
   SeparationJobPayload,
   SourceAnalysisJobPayload,
+  SourceEventAnalysisJobPayload,
   SourceSectionAnalysisJobPayload,
   WaveformJobPayload,
 } from "@waveyard/types";
 import { processExport } from "./export";
 import { processSeparation } from "./separation";
 import { processSourceAnalysis } from "./analysis";
+import { processSourceEventAnalysis } from "./events";
 import { processSourceSectionAnalysis } from "./sections";
 import { processWaveform } from "./waveform";
 
@@ -33,11 +36,14 @@ const sourceAnalysisWorker = new Worker<SourceAnalysisJobPayload>(SOURCE_ANALYSI
 const sourceSectionAnalysisWorker = new Worker<SourceSectionAnalysisJobPayload>(SOURCE_SECTION_ANALYSIS_QUEUE, async (job) => {
   await processSourceSectionAnalysis(job.data, async (stage) => { await job.updateProgress({ stage }); });
 }, { connection: getQueueConnection(), concurrency });
+const sourceEventAnalysisWorker = new Worker<SourceEventAnalysisJobPayload>(SOURCE_EVENT_ANALYSIS_QUEUE, async (job) => {
+  await processSourceEventAnalysis(job.data, async (stage) => { await job.updateProgress({ stage }); });
+}, { connection: getQueueConnection(), concurrency });
 const exportWorker = new Worker<ExportJobPayload>(EXPORT_QUEUE, async (job) => {
   await processExport(job.data, async (stage) => { await job.updateProgress({ stage }); });
 }, { connection: getQueueConnection(), concurrency });
 
-for (const [label, worker] of [["separation", separationWorker], ["waveform", waveformWorker], ["source analysis", sourceAnalysisWorker], ["source section analysis", sourceSectionAnalysisWorker], ["export", exportWorker]] as const) {
+for (const [label, worker] of [["separation", separationWorker], ["waveform", waveformWorker], ["source analysis", sourceAnalysisWorker], ["source section analysis", sourceSectionAnalysisWorker], ["source event analysis", sourceEventAnalysisWorker], ["export", exportWorker]] as const) {
   worker.on("ready", () => console.info(`Waveyard ${label} worker ready (concurrency=${concurrency}).`));
   worker.on("completed", (job) => console.info(`${label} job ${job.id} completed.`));
   worker.on("failed", (job, error) => console.error(`${label} job ${job?.id ?? "unknown"} failed: ${error.message}`));
@@ -50,6 +56,7 @@ async function shutdown(signal: string) {
     waveformWorker.close(),
     sourceAnalysisWorker.close(),
     sourceSectionAnalysisWorker.close(),
+    sourceEventAnalysisWorker.close(),
     exportWorker.close(),
   ]);
   process.exit(0);

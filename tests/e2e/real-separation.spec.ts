@@ -502,6 +502,14 @@ test.describe("real Compose separation pipeline", () => {
     const sourceAMedianInterval = [...sourceAIntervals].sort((left, right) => left - right)[Math.floor(sourceAIntervals.length / 2)];
     expect(sourceAMedianInterval).toBeGreaterThanOrEqual(470);
     expect(sourceAMedianInterval).toBeLessThanOrEqual(530);
+    await expect.poll(async () => {
+      const state = await (await page.request.get(`/api/projects/${analysisProjectId}`)).json();
+      const source = state.sources.find((candidate: { id: string }) => candidate.id === sourceA.id);
+      return { status: source?.eventAnalysis?.status, count: source?.events?.length ?? 0 };
+    }, { timeout: 4 * 60 * 1000, intervals: [1_000, 2_000, 5_000] }).toMatchObject({ status: "complete" });
+    const eventsState = await (await page.request.get(`/api/sources/${sourceA.id}/events`)).json();
+    expect(eventsState.analysis).toMatchObject({ sourceAssetId: sourceA.id, sourceChecksumSha256: sourceA.checksumSha256, analysisEngine: "waveyard-numpy-onsets", analysisEngineVersion: "1.0.0" });
+    expect(eventsState.events).toEqual(expect.arrayContaining([expect.objectContaining({ timestampMs: expect.any(Number), strength: expect.any(Number) })]));
 
     // Two injected worker attempts leave a durable failure. The UI retry must
     // then enqueue the exact same analysis row for a real engine execution.

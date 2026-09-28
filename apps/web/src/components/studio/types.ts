@@ -57,6 +57,20 @@ export type SourceAlignmentInfo = {
   sectionAnalysisStatus: string | null;
 };
 
+export type SourceEventAnalysis = {
+  id: string;
+  status: "queued" | "preparing" | "processing" | "complete" | "failed" | "cancelled";
+  stage: string;
+  attempts: number;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  analyzedAt: string | null;
+};
+
+export type SourceEvent = { id: string; timestampMs: number; strength: number };
+
 export type SourceSection = {
   id: string;
   sectionIndex: number;
@@ -87,6 +101,8 @@ export type Source = {
   analysis?: SourceAnalysis | null;
   sectionAnalysis?: SourceSectionAnalysis | null;
   sections?: SourceSection[];
+  eventAnalysis?: SourceEventAnalysis | null;
+  events?: SourceEvent[];
 };
 
 export type PersistedTrack = RemixTrackInput & {

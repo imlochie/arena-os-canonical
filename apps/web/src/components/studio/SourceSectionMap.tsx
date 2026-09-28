@@ -16,17 +16,38 @@ export function SourceSectionMap({
   source,
   onUseForSlice,
   onArrangementAction,
+  onRequestEvents,
 }: {
   source: Source;
   onUseForSlice: (section: SourceSection) => void;
   onArrangementAction?: (section: SourceSection, action: ArrangementAction, repetitions: number) => Promise<string | null>;
+  onRequestEvents?: () => Promise<string | null>;
 }) {
   const sections = source.sections ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [repetitions, setRepetitions] = useState(4);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [acting, setActing] = useState<ArrangementAction | null>(null);
-  if (source.sectionAnalysis?.status !== "complete" || !sections.length) return null;
+  const [requestingEvents, setRequestingEvents] = useState(false);
+  const [eventMessage, setEventMessage] = useState<string | null>(null);
+  const events = source.events ?? [];
+  const eventPanel = <section className="source-events" aria-label="Source musical events">
+    <div><span className="eyebrow">Source-coordinate markers</span><h4>Events</h4></div>
+    {source.eventAnalysis?.status === "complete" ? <>
+      <p>{events.length ? `${events.length} deterministic onset events` : "No onset events met the conservative threshold."}</p>
+      {events.length > 0 && <ol>{events.slice(0, 12).map((event) => {
+        const dots = "●".repeat(Math.max(1, Math.min(3, Math.round(event.strength * 3))));
+        return <li key={event.id}>{sourceTime(event.timestampMs)} <b>{dots}</b></li>;
+      })}</ol>}
+      {events.length > 12 && <small>+ {events.length - 12} more source-relative events</small>}
+    </> : <>
+      <p>{source.eventAnalysis?.status === "failed" ? `Event analysis failed${source.eventAnalysis.errorMessage ? `: ${source.eventAnalysis.errorMessage}` : "."}` : "Events are optional deterministic onset evidence; they do not alter Beat Snap or clips."}</p>
+      {onRequestEvents && <button className="button secondary" disabled={requestingEvents} onClick={() => void (async () => { setRequestingEvents(true); const message = await onRequestEvents(); setRequestingEvents(false); setEventMessage(message ?? "Event analysis queued."); })()}>{requestingEvents ? "Queuing…" : source.eventAnalysis?.status === "processing" || source.eventAnalysis?.status === "queued" ? "Event analysis queued" : "Analyze events"}</button>}
+      {eventMessage && <p className="notice">{eventMessage}</p>}
+    </>}
+    {source.eventAnalysis && <small>Engine {source.eventAnalysis.analysisEngine} {source.eventAnalysis.analysisEngineVersion}</small>}
+  </section>;
+  if (source.sectionAnalysis?.status !== "complete" || !sections.length) return eventPanel;
   const selected = sections.find((section) => section.id === selectedId) ?? null;
   const durationMs = Math.max(1, Math.round(source.durationSeconds * 1000));
   const label = selected ? `Section ${String(selected.sectionIndex + 1).padStart(2, "0")}` : "";
@@ -72,5 +93,6 @@ export function SourceSectionMap({
       </div>
       {actionMessage && <p className="notice" role="status">{actionMessage}</p>}
     </div> : <p className="notice">Select a marker to inspect it, prefill Slice, or deliberately add it to the arrangement.</p>}
+    {eventPanel}
   </section>;
 }

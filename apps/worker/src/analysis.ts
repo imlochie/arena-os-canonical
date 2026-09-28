@@ -13,6 +13,7 @@ import {
 import { getStorage } from "@waveyard/storage";
 import { normaliseMusicalKey, type SourceAnalysisJobPayload } from "@waveyard/types";
 import { provisionSourceSectionAnalysis } from "./sections";
+import { provisionSourceEventAnalysis } from "./events";
 
 export const SOURCE_ANALYSIS_ENGINE = "waveyard-numpy-dsp";
 export const SOURCE_ANALYSIS_ENGINE_VERSION = "1.0.0";
@@ -358,6 +359,10 @@ export async function processSourceAnalysis(
       status: "complete",
       beatGrid: result.beatGridMs ? JSON.stringify(result.beatGridMs) : null,
     }, source).catch((sectionError) => console.error("could not provision section analysis", sectionError));
+    // Generic source events are independent downstream evidence; their queue
+    // availability never changes the completed BPM/key/beat result.
+    await provisionSourceEventAnalysis(source)
+      .catch((eventError) => console.error("could not provision source event analysis", eventError));
     await reportStage("complete");
   } catch (error) {
     const message =

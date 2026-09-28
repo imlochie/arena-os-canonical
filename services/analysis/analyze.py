@@ -90,6 +90,45 @@ def spectral_flux(spectra: np.ndarray) -> np.ndarray:
     return novelty / maximum if maximum > EPSILON else novelty
 
 
+def detect_events(onset: np.ndarray, duration_ms: int) -> list[dict[str, object]]:
+    """Conservative local onset peaks; events remain generic source evidence."""
+    if onset.size < 3 or float(np.max(onset)) <= EPSILON:
+        return []
+    threshold = float(np.median(onset) + max(0.08, 0.75 * np.std(onset)))
+    candidates = [
+        index for index in range(1, onset.size - 1)
+        if onset[index] >= threshold and onset[index] >= onset[index - 1] and onset[index] > onset[index + 1]
+    ]
+    # Peak selection is strength-first with an explicit 50ms refractory window.
+    minimum_distance = max(1, int(round(0.050 * SAMPLE_RATE / HOP_SIZE)))
+    selected: list[int] = []
+    for index in sorted(candidates, key=lambda item: (-float(onset[item]), item)):
+        if all(abs(index - prior) >= minimum_distance for prior in selected):
+            selected.append(index)
+    maximum = max(float(onset[index]) for index in selected) if selected else 0.0
+    events = []
+    for index in sorted(selected):
+        timestamp = int(round(index * HOP_SIZE * 1000.0 / SAMPLE_RATE))
+        if timestamp > duration_ms:
+            continue
+        events.append({
+            "timestampMs": timestamp,
+            "strength": round(clamp(float(onset[index]) / max(maximum, EPSILON)), 6),
+        })
+    return events
+
+
+def analyze_events(source: Path) -> dict[str, object]:
+    samples = decode_mono(source)
+    spectra = np.fft.rfft(frames_for(samples), axis=1)
+    onset = spectral_flux(spectra)
+    return {
+        "analysisEngine": "waveyard-numpy-onsets",
+        "analysisEngineVersion": "1.0.0",
+        "events": detect_events(onset, int(round(samples.size * 1000.0 / SAMPLE_RATE))),
+    }
+
+
 def beat_regularity(grid_ms: list[int]) -> float:
     if len(grid_ms) < 3:
         return 0.0
@@ -330,12 +369,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--sections", action="store_true", help="detect structure from a persisted beat grid")
+    parser.add_argument("--events", action="store_true", help="detect generic source-relative onset events")
     parser.add_argument("--beat-grid", help="JSON array of persisted source beat milliseconds")
     args = parser.parse_args()
     source = Path(args.input).resolve()
     if not source.is_file():
         raise RuntimeError(f"Input does not exist: {source}")
-    if args.sections:
+    if args.events:
+        print(json.dumps(analyze_events(source), sort_keys=True))
+    elif args.sections:
         try:
             beat_grid = json.loads(args.beat_grid or "null")
         except json.JSONDecodeError as error:

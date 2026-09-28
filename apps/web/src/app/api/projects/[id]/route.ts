@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { asc, eq } from "drizzle-orm";
-import { getDb, processingJobs, sourceAnalyses, sourceAssets, sourceSectionAnalyses, sourceSections, stemAssets, waveformAssets, waveformJobs } from "@waveyard/database";
+import { getDb, processingJobs, sourceAnalyses, sourceAssets, sourceEventAnalyses, sourceEvents, sourceSectionAnalyses, sourceSections, stemAssets, waveformAssets, waveformJobs } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
 
@@ -21,7 +21,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const user = await requireUser(); const { id } = await params;
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     const db = getDb();
-    const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows] = await Promise.all([
+    const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows] = await Promise.all([
       db.select().from(sourceAssets).where(eq(sourceAssets.projectId, id)).orderBy(asc(sourceAssets.createdAt)),
       db.select().from(stemAssets).where(eq(stemAssets.projectId, id)).orderBy(asc(stemAssets.createdAt)),
       db.select().from(processingJobs).where(eq(processingJobs.projectId, id)).orderBy(asc(processingJobs.createdAt)),
@@ -30,6 +30,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       db.select().from(sourceAnalyses).where(eq(sourceAnalyses.projectId, id)).orderBy(asc(sourceAnalyses.createdAt)),
       db.select().from(sourceSectionAnalyses).where(eq(sourceSectionAnalyses.projectId, id)).orderBy(asc(sourceSectionAnalyses.createdAt)),
       db.select().from(sourceSections).where(eq(sourceSections.projectId, id)).orderBy(asc(sourceSections.sourceAssetId), asc(sourceSections.sectionIndex)),
+      db.select().from(sourceEventAnalyses).where(eq(sourceEventAnalyses.projectId, id)).orderBy(asc(sourceEventAnalyses.createdAt)),
+      db.select().from(sourceEvents).where(eq(sourceEvents.projectId, id)).orderBy(asc(sourceEvents.sourceAssetId), asc(sourceEvents.timestampMs)),
     ]);
     const analysisBySource = new Map(
       analysisRows.map((analysis) => [
@@ -38,6 +40,13 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       ]),
     );
     const sectionAnalysisBySource = new Map(sectionAnalysisRows.map((analysis) => [analysis.sourceAssetId, analysis]));
+    const eventAnalysisBySource = new Map(eventAnalysisRows.map((analysis) => [analysis.sourceAssetId, analysis]));
+    const eventsBySource = new Map<string, typeof eventRows>();
+    for (const event of eventRows) {
+      const existing = eventsBySource.get(event.sourceAssetId) ?? [];
+      existing.push(event);
+      eventsBySource.set(event.sourceAssetId, existing);
+    }
     const sectionsBySource = new Map<string, typeof sectionRows>();
     for (const section of sectionRows) {
       const existing = sectionsBySource.get(section.sourceAssetId) ?? [];
@@ -52,6 +61,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         analysis: analysisBySource.get(source.id) ?? null,
         sectionAnalysis: sectionAnalysisBySource.get(source.id) ?? null,
         sections: sectionsBySource.get(source.id) ?? [],
+        eventAnalysis: eventAnalysisBySource.get(source.id) ?? null,
+        events: eventsBySource.get(source.id) ?? [],
       })),
       stems: stems.map(({ storageKey: _storageKey, waveformKey: _waveformKey, ...stem }) => stem),
       waveforms: waveformRows.map(({ storageKey: _storageKey, ...waveform }) => waveform),
