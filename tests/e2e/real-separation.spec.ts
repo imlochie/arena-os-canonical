@@ -227,9 +227,11 @@ test.describe("real Compose separation pipeline", () => {
     await expect(
       page.getByRole("heading", { name: "Remix timeline" }),
     ).toBeVisible();
-    const vocalsClipStart = page.getByLabel(
-      "copyright-safe-fixture.wav — Vocals clip 1 start",
-    );
+    const vocalsTrack = page
+      .locator(".timeline-track")
+      .filter({ hasText: "copyright-safe-fixture.wav — Vocals" });
+    await vocalsTrack.locator(".clip").first().click();
+    const vocalsClipStart = page.getByLabel("Timeline start (ms)");
     await expect(vocalsClipStart).toBeVisible();
     await vocalsClipStart.fill("2");
     await page.getByLabel("Tempo BPM").fill("98");
