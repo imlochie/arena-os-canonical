@@ -68,7 +68,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         ...(json.sources ?? [])
           .flatMap((source: { analysis?: { status?: string } | null; sectionAnalysis?: { status?: string } | null; eventAnalysis?: { status?: string } | null }) => [source.analysis, source.sectionAnalysis, source.eventAnalysis])
           .filter(Boolean),
-        ...(json.stems ?? []).map((stem: { vocalAnalysis?: { status?: string } | null }) => stem.vocalAnalysis).filter(Boolean),
+        ...(json.stems ?? []).flatMap((stem: { drumAnalysis?: { status?: string } | null; vocalAnalysis?: { status?: string } | null }) => [stem.drumAnalysis, stem.vocalAnalysis]).filter(Boolean),
       ].some(
         (job: { status: string }) =>
           ["queued", "preparing", "processing", "finalizing"].includes(
@@ -277,6 +277,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           projectId={projectId}
           stems={data.stems}
           sources={data.sources}
+          onDerivedAnalysisRequested={() => setRefresh((value) => value + 1)}
         />
       ) : (
         <div className="hero-card">

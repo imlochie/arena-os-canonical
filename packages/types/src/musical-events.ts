@@ -1,10 +1,43 @@
 export const SOURCE_EVENT_ANALYSIS_ENGINE = "waveyard-numpy-onsets";
 export const SOURCE_EVENT_ANALYSIS_ENGINE_VERSION = "1.0.0";
 
+export const RHYTHMIC_CLASSES = ["kick", "snare", "hat", "other"] as const;
+export type RhythmicClass = (typeof RHYTHMIC_CLASSES)[number];
+
+/** Shared source-relative event evidence. Generic source events deliberately
+ * retain a null class; isolated drum analysis may add only conservative classes. */
 export type SourceEvent = {
   timestampMs: number;
   strength: number;
+  confidence: number;
+  rhythmicClass: RhythmicClass | null;
 };
+
+export type BeatProjection = { nearestBeatIndex: number; beatOffsetMs: number };
+
+function normaliseConfidence(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+    ? Number(value.toFixed(6))
+    : null;
+}
+
+function normaliseRhythmicClass(value: unknown): RhythmicClass | null | undefined {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" && (RHYTHMIC_CLASSES as readonly string[]).includes(value)
+    ? value as RhythmicClass
+    : undefined;
+}
+
+/** Derive display metadata from the existing source grid; never persists a second grid. */
+export function nearestBeatProjection(timestampMs: number, beatGridMs: readonly number[] | null | undefined): BeatProjection | null {
+  if (!Number.isSafeInteger(timestampMs) || timestampMs < 0 || !Array.isArray(beatGridMs) || !beatGridMs.length) return null;
+  let closestIndex = 0;
+  for (let index = 1; index < beatGridMs.length; index += 1) {
+    if (Math.abs(beatGridMs[index] - timestampMs) < Math.abs(beatGridMs[closestIndex] - timestampMs)) closestIndex = index;
+  }
+  const nearest = beatGridMs[closestIndex];
+  return Number.isSafeInteger(nearest) ? { nearestBeatIndex: closestIndex, beatOffsetMs: timestampMs - nearest } : null;
+}
 
 /**
  * Source-relative event sanitation shared by worker persistence and consumers.
@@ -38,11 +71,14 @@ export function normaliseSourceEvents(
     const event = item as Partial<SourceEvent>;
     const timestampMs = event.timestampMs;
     const strength = event.strength;
+    const confidence = event.confidence === undefined ? strength : event.confidence;
+    const rhythmicClass = normaliseRhythmicClass(event.rhythmicClass);
     if (typeof timestampMs !== "number" || typeof strength !== "number"
       || !Number.isSafeInteger(timestampMs) || !Number.isFinite(strength)
-      || timestampMs < 0 || timestampMs > durationMs || strength < 0 || strength > 1)
+      || timestampMs < 0 || timestampMs > durationMs || strength < 0 || strength > 1
+      || normaliseConfidence(confidence) === null || rhythmicClass === undefined)
       return null;
-    raw.push({ timestampMs, strength: Number(strength.toFixed(6)) });
+    raw.push({ timestampMs, strength: Number(strength.toFixed(6)), confidence: normaliseConfidence(confidence)!, rhythmicClass });
   }
   raw.sort((left, right) => left.timestampMs - right.timestampMs || right.strength - left.strength);
   const events: SourceEvent[] = [];

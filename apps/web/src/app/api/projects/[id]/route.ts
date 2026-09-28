@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { asc, eq } from "drizzle-orm";
-import { getDb, processingJobs, sourceAnalyses, sourceAssets, sourceEventAnalyses, sourceEvents, sourceSectionAnalyses, sourceSections, stemAssets, vocalAnalyses, vocalPhrases, vocalPitchFrames, waveformAssets, waveformJobs } from "@waveyard/database";
+import { drumAnalyses, drumEvents, getDb, processingJobs, sourceAnalyses, sourceAssets, sourceEventAnalyses, sourceEvents, sourceSectionAnalyses, sourceSections, stemAssets, vocalAnalyses, vocalPhrases, vocalPitchFrames, waveformAssets, waveformJobs } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
 
@@ -21,7 +21,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const user = await requireUser(); const { id } = await params;
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     const db = getDb();
-    const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows, vocalAnalysisRows, vocalFrameRows, vocalPhraseRows] = await Promise.all([
+    const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows, drumAnalysisRows, drumEventRows, vocalAnalysisRows, vocalFrameRows, vocalPhraseRows] = await Promise.all([
       db.select().from(sourceAssets).where(eq(sourceAssets.projectId, id)).orderBy(asc(sourceAssets.createdAt)),
       db.select().from(stemAssets).where(eq(stemAssets.projectId, id)).orderBy(asc(stemAssets.createdAt)),
       db.select().from(processingJobs).where(eq(processingJobs.projectId, id)).orderBy(asc(processingJobs.createdAt)),
@@ -32,6 +32,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       db.select().from(sourceSections).where(eq(sourceSections.projectId, id)).orderBy(asc(sourceSections.sourceAssetId), asc(sourceSections.sectionIndex)),
       db.select().from(sourceEventAnalyses).where(eq(sourceEventAnalyses.projectId, id)).orderBy(asc(sourceEventAnalyses.createdAt)),
       db.select().from(sourceEvents).where(eq(sourceEvents.projectId, id)).orderBy(asc(sourceEvents.sourceAssetId), asc(sourceEvents.timestampMs)),
+      db.select().from(drumAnalyses).where(eq(drumAnalyses.projectId, id)).orderBy(asc(drumAnalyses.createdAt)),
+      db.select().from(drumEvents).innerJoin(drumAnalyses, eq(drumEvents.drumAnalysisId, drumAnalyses.id)).where(eq(drumAnalyses.projectId, id)).orderBy(asc(drumAnalyses.stemAssetId), asc(drumEvents.eventIndex)),
       db.select().from(vocalAnalyses).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.createdAt)),
       db.select().from(vocalPitchFrames).innerJoin(vocalAnalyses, eq(vocalPitchFrames.vocalAnalysisId, vocalAnalyses.id)).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.stemAssetId), asc(vocalPitchFrames.frameIndex)),
       db.select().from(vocalPhrases).innerJoin(vocalAnalyses, eq(vocalPhrases.vocalAnalysisId, vocalAnalyses.id)).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.stemAssetId), asc(vocalPhrases.phraseIndex)),
@@ -55,6 +57,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       const existing = sectionsBySource.get(section.sourceAssetId) ?? [];
       existing.push(section);
       sectionsBySource.set(section.sourceAssetId, existing);
+    }
+    const drumAnalysisByStem = new Map(drumAnalysisRows.map((analysis) => [analysis.stemAssetId, analysis]));
+    const drumEventsByStem = new Map<string, (typeof drumEventRows)[number]["drum_events"][]>();
+    for (const row of drumEventRows) {
+      const stemId = row.drum_analyses.stemAssetId;
+      const existing = drumEventsByStem.get(stemId) ?? [];
+      existing.push(row.drum_events);
+      drumEventsByStem.set(stemId, existing);
     }
     const vocalAnalysisByStem = new Map(vocalAnalysisRows.map((analysis) => [analysis.stemAssetId, analysis]));
     const framesByStem = new Map<string, (typeof vocalFrameRows)[number]["vocal_pitch_frames"][]>();
@@ -84,6 +94,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       })),
       stems: stems.map(({ storageKey: _storageKey, waveformKey: _waveformKey, ...stem }) => ({
         ...stem,
+        drumAnalysis: drumAnalysisByStem.get(stem.id) ?? null,
+        drumEvents: drumEventsByStem.get(stem.id) ?? [],
         vocalAnalysis: vocalAnalysisByStem.get(stem.id) ?? null,
         vocalFrames: framesByStem.get(stem.id) ?? [],
         vocalPhrases: phrasesByStem.get(stem.id) ?? [],

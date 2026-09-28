@@ -39,6 +39,12 @@ VOCAL_ENGINE = "waveyard-numpy-monophonic-pitch"
 VOCAL_ENGINE_VERSION = "1.0.0"
 VOCAL_MIN_HZ = 50.0
 VOCAL_MAX_HZ = 1200.0
+DRUM_ENGINE = "waveyard-numpy-drum-transients"
+DRUM_ENGINE_VERSION = "1.0.0"
+# V1 classifier thresholds are intentionally conservative, deterministic DSP rules.
+DRUM_KICK_LOW_RATIO = 0.58
+DRUM_HAT_HIGH_RATIO = 0.52
+DRUM_SNARE_MID_RATIO = 0.38
 
 
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -115,9 +121,12 @@ def detect_events(onset: np.ndarray, duration_ms: int) -> list[dict[str, object]
         timestamp = int(round(index * HOP_SIZE * 1000.0 / SAMPLE_RATE))
         if timestamp > duration_ms:
             continue
+        strength = round(clamp(float(onset[index]) / max(maximum, EPSILON)), 6)
         events.append({
             "timestampMs": timestamp,
-            "strength": round(clamp(float(onset[index]) / max(maximum, EPSILON)), 6),
+            "strength": strength,
+            "confidence": strength,
+            "rhythmicClass": None,
         })
     return events
 
@@ -130,6 +139,72 @@ def analyze_events(source: Path) -> dict[str, object]:
         "analysisEngine": "waveyard-numpy-onsets",
         "analysisEngineVersion": "1.0.0",
         "events": detect_events(onset, int(round(samples.size * 1000.0 / SAMPLE_RATE))),
+    }
+
+
+def detect_drum_events(samples: np.ndarray, duration_ms: int) -> list[dict[str, object]]:
+    """Conservative isolated-drum transient features, not drum transcription."""
+    frame_matrix = frames_for(samples)
+    spectra = np.fft.rfft(frame_matrix, axis=1)
+    onset = spectral_flux(spectra)
+    if onset.size < 3 or float(np.max(onset)) <= EPSILON:
+        return []
+    threshold = float(np.median(onset) + max(0.08, 0.75 * np.std(onset)))
+    candidates = [
+        index for index in range(1, onset.size - 1)
+        if onset[index] >= threshold and onset[index] >= onset[index - 1] and onset[index] > onset[index + 1]
+    ]
+    minimum_distance = max(1, int(round(0.050 * SAMPLE_RATE / HOP_SIZE)))
+    selected: list[int] = []
+    for index in sorted(candidates, key=lambda item: (-float(onset[item]), item)):
+        if all(abs(index - prior) >= minimum_distance for prior in selected):
+            selected.append(index)
+    maximum = max((float(onset[index]) for index in selected), default=0.0)
+    frequencies = np.fft.rfftfreq(FRAME_SIZE, 1.0 / SAMPLE_RATE)
+    low_mask = (frequencies >= 35.0) & (frequencies < 180.0)
+    mid_mask = (frequencies >= 180.0) & (frequencies < 2_500.0)
+    high_mask = (frequencies >= 2_500.0) & (frequencies <= 10_000.0)
+    magnitude = np.abs(spectra)
+    events: list[dict[str, object]] = []
+    for index in sorted(selected):
+        timestamp = int(round(index * HOP_SIZE * 1000.0 / SAMPLE_RATE))
+        if timestamp > duration_ms:
+            continue
+        frame = magnitude[index]
+        low = float(np.mean(frame[low_mask])) if np.any(low_mask) else 0.0
+        mid = float(np.mean(frame[mid_mask])) if np.any(mid_mask) else 0.0
+        high = float(np.mean(frame[high_mask])) if np.any(high_mask) else 0.0
+        total = max(low + mid + high, EPSILON)
+        low_ratio, mid_ratio, high_ratio = low / total, mid / total, high / total
+        rhythmic_class: str | None = None
+        # Only emit a class when one simple frequency-band rule clearly wins.
+        if low_ratio >= DRUM_KICK_LOW_RATIO and low_ratio >= mid_ratio * 1.35:
+            rhythmic_class = "kick"
+        elif high_ratio >= DRUM_HAT_HIGH_RATIO and high_ratio >= mid_ratio * 1.30:
+            rhythmic_class = "hat"
+        elif mid_ratio >= DRUM_SNARE_MID_RATIO and mid_ratio >= low_ratio * 0.85 and mid_ratio >= high_ratio * 0.85:
+            rhythmic_class = "snare"
+        strength = round(clamp(float(onset[index]) / max(maximum, EPSILON)), 6)
+        # Confidence is onset evidence weighted by how decisively the selected
+        # band rule dominates; unclassified evidence retains its onset confidence.
+        dominance = max(low_ratio, mid_ratio, high_ratio)
+        confidence = round(clamp(strength * (0.6 + 0.4 * dominance)), 6)
+        events.append({
+            "timestampMs": timestamp,
+            "strength": strength,
+            "confidence": confidence,
+            "rhythmicClass": rhythmic_class,
+        })
+    return events
+
+
+def analyze_drums(source: Path, persisted_duration_ms: int | None = None) -> dict[str, object]:
+    samples = decode_mono(source)
+    duration_ms = persisted_duration_ms if persisted_duration_ms is not None else int(round(samples.size * 1000.0 / SAMPLE_RATE))
+    return {
+        "analysisEngine": DRUM_ENGINE,
+        "analysisEngineVersion": DRUM_ENGINE_VERSION,
+        "events": detect_drum_events(samples, duration_ms),
     }
 
 
@@ -448,18 +523,21 @@ def main() -> int:
     parser.add_argument("--sections", action="store_true", help="detect structure from a persisted beat grid")
     parser.add_argument("--events", action="store_true", help="detect generic source-relative onset events")
     parser.add_argument("--vocal", action="store_true", help="observe pitch only from an isolated vocals stem")
+    parser.add_argument("--drums", action="store_true", help="observe transients only from an isolated drums stem")
     parser.add_argument("--duration-ms", type=int, help="persisted isolated-stem duration boundary")
     parser.add_argument("--beat-grid", help="JSON array of persisted source beat milliseconds")
     args = parser.parse_args()
     source = Path(args.input).resolve()
     if not source.is_file():
         raise RuntimeError(f"Input does not exist: {source}")
-    if sum(bool(flag) for flag in (args.events, args.sections, args.vocal)) > 1:
+    if sum(bool(flag) for flag in (args.events, args.sections, args.vocal, args.drums)) > 1:
         raise RuntimeError("Choose only one analysis mode.")
-    if args.duration_ms is not None and (args.duration_ms < 0 or not args.vocal):
-        raise RuntimeError("A non-negative duration boundary is valid only for vocal analysis.")
+    if args.duration_ms is not None and (args.duration_ms < 0 or not (args.vocal or args.drums)):
+        raise RuntimeError("A non-negative duration boundary is valid only for stem analysis.")
     if args.vocal:
         print(json.dumps(analyze_vocal(source, args.duration_ms), sort_keys=True))
+    elif args.drums:
+        print(json.dumps(analyze_drums(source, args.duration_ms), sort_keys=True))
     elif args.events:
         print(json.dumps(analyze_events(source), sort_keys=True))
     elif args.sections:

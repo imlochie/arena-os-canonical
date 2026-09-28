@@ -524,6 +524,18 @@ test.describe("real Compose separation pipeline", () => {
       if (frame.voiced) expect(frame).toEqual(expect.objectContaining({ frequencyHz: expect.any(Number), midiFloat: expect.any(Number), nearestMidiNote: expect.any(Number) }));
       else expect(frame).toMatchObject({ frequencyHz: null, midiFloat: null, nearestMidiNote: null });
     }
+    await expect.poll(async () => {
+      const state = await (await page.request.get(`/api/projects/${analysisProjectId}`)).json();
+      const drumStem = state.stems.find((candidate: { sourceAssetId: string; stemType: string }) => candidate.sourceAssetId === sourceA.id && candidate.stemType === "drums");
+      return { status: drumStem?.drumAnalysis?.status, events: drumStem?.drumEvents?.length ?? 0 };
+    }, { timeout: 4 * 60 * 1000, intervals: [1_000, 2_000, 5_000] }).toMatchObject({ status: "complete" });
+    const drumStem = firstState.stems.find((candidate: { sourceAssetId: string; stemType: string }) => candidate.sourceAssetId === sourceA.id && candidate.stemType === "drums");
+    const drumState = await (await page.request.get(`/api/stems/${drumStem.id}/drum-analysis`)).json();
+    expect(drumState.analysis).toMatchObject({ sourceAssetId: sourceA.id, stemAssetId: drumStem.id, sourceChecksumSha256: sourceA.checksumSha256, stemChecksumSha256: drumStem.checksumSha256, analysisEngine: "waveyard-numpy-drum-transients", analysisEngineVersion: "1.0.0" });
+    for (const event of drumState.events) {
+      expect(event).toEqual(expect.objectContaining({ timestampMs: expect.any(Number), strength: expect.any(Number), confidence: expect.any(Number) }));
+      expect(["kick", "snare", "hat", "other", null]).toContain(event.rhythmicClass);
+    }
 
     // Two injected worker attempts leave a durable failure. The UI retry must
     // then enqueue the exact same analysis row for a real engine execution.

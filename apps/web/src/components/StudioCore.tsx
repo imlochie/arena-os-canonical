@@ -7,6 +7,7 @@ import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTim
 import { ArrangementInspector } from "./studio/ArrangementInspector";
 import { ClipInspector } from "./studio/ClipInspector";
 import { StemMixer } from "./studio/StemMixer";
+import { DrumAnalysisPanel } from "./studio/DrumAnalysisPanel";
 import { SourceSectionMap } from "./studio/SourceSectionMap";
 import { StudioTransport } from "./studio/StudioTransport";
 import {
@@ -33,7 +34,7 @@ function canHandleShortcut(target: EventTarget | null) {
   return !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable));
 }
 
-export function StudioCore({ projectId, stems, sources }: { projectId: string; stems: Stem[]; sources: Source[] }) {
+export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequested }: { projectId: string; stems: Stem[]; sources: Source[]; onDerivedAnalysisRequested?: () => void }) {
   const ids = useMemo(() => stems.map((stem) => stem.id), [stems]);
   const duration = useMemo(() => Math.max(0, ...stems.map((stem) => stem.durationSeconds)), [stems]);
   const sourceDurationById = useMemo(() => new Map(stems.map((stem) => [stem.id, Math.round(stem.durationSeconds * 1000)])), [stems]);
@@ -200,6 +201,13 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     if (!response.ok) return body.error ?? "Could not queue source event analysis.";
     return null;
   }, []);
+  const requestDrumAnalysis = useCallback(async (stemId: string) => {
+    const response = await fetch(`/api/stems/${stemId}/drum-analysis`, { method: "POST" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return body.error ?? "Could not queue drum analysis.";
+    onDerivedAnalysisRequested?.();
+    return null;
+  }, [onDerivedAnalysisRequested]);
   const createRemix = async () => {
     const response = await fetch(`/api/projects/${projectId}/remixes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "First arrangement" }) });
     const body = await response.json().catch(() => ({}));
@@ -481,6 +489,7 @@ export function StudioCore({ projectId, stems, sources }: { projectId: string; s
     <header className="studio-head"><div><span className="eyebrow">Studio core</span><h2>Real stems, one transport.</h2></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
     {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} onArrangementAction={arrangeSection} onRequestEvents={() => requestSourceEvents(source.id)} />}
+    {source && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} />}
     <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
     <section className="studio-grid"><StemMixer stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} />}</section>
     <section className="remix-panel">

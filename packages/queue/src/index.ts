@@ -4,6 +4,7 @@ import type {
   ExportJobPayload,
   SeparationJobPayload,
   SourceAnalysisJobPayload,
+  DrumAnalysisJobPayload,
   SourceEventAnalysisJobPayload,
   SourceSectionAnalysisJobPayload,
   VocalAnalysisJobPayload,
@@ -15,6 +16,7 @@ export const WAVEFORM_QUEUE = "waveyard-waveform";
 export const SOURCE_ANALYSIS_QUEUE = "waveyard-source-analysis";
 export const SOURCE_SECTION_ANALYSIS_QUEUE = "waveyard-source-section-analysis";
 export const SOURCE_EVENT_ANALYSIS_QUEUE = "waveyard-source-event-analysis";
+export const DRUM_ANALYSIS_QUEUE = "waveyard-drum-analysis";
 export const VOCAL_ANALYSIS_QUEUE = "waveyard-vocal-analysis";
 export const EXPORT_QUEUE = "waveyard-export";
 export const TEST_FAULTS = [
@@ -37,6 +39,7 @@ let waveformQueue: Queue<WaveformJobPayload> | undefined;
 let sourceAnalysisQueue: Queue<SourceAnalysisJobPayload> | undefined;
 let sourceSectionAnalysisQueue: Queue<SourceSectionAnalysisJobPayload> | undefined;
 let sourceEventAnalysisQueue: Queue<SourceEventAnalysisJobPayload> | undefined;
+let drumAnalysisQueue: Queue<DrumAnalysisJobPayload> | undefined;
 let vocalAnalysisQueue: Queue<VocalAnalysisJobPayload> | undefined;
 let exportQueue: Queue<ExportJobPayload> | undefined;
 
@@ -90,6 +93,14 @@ export function getSourceEventAnalysisQueue() {
       { connection: getQueueConnection() },
     );
   return sourceEventAnalysisQueue;
+}
+
+export function getDrumAnalysisQueue() {
+  if (!drumAnalysisQueue)
+    drumAnalysisQueue = new Queue<DrumAnalysisJobPayload>(DRUM_ANALYSIS_QUEUE, {
+      connection: getQueueConnection(),
+    });
+  return drumAnalysisQueue;
 }
 
 export function getVocalAnalysisQueue() {
@@ -151,6 +162,16 @@ export async function enqueueSourceSectionAnalysis(payload: SourceSectionAnalysi
 export async function enqueueSourceEventAnalysis(payload: SourceEventAnalysisJobPayload) {
   return getSourceEventAnalysisQueue().add("analyze-events", payload, {
     jobId: payload.sourceEventAnalysisId,
+    attempts: 2,
+    backoff: { type: "exponential", delay: 5_000 },
+    removeOnComplete: { age: 60 * 60 * 24, count: 5000 },
+    removeOnFail: { age: 60 * 60 * 24 * 7, count: 5000 },
+  });
+}
+
+export async function enqueueDrumAnalysis(payload: DrumAnalysisJobPayload) {
+  return getDrumAnalysisQueue().add("analyze-drums", payload, {
+    jobId: payload.drumAnalysisId,
     attempts: 2,
     backoff: { type: "exponential", delay: 5_000 },
     removeOnComplete: { age: 60 * 60 * 24, count: 5000 },

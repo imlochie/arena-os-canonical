@@ -13,8 +13,8 @@ describe("deterministic source-relative musical events", () => {
       { timestampMs: 90, strength: 0.8 },
       { timestampMs: 500, strength: 0.4 },
     ], 1_000)).toEqual([
-      { timestampMs: 90, strength: 0.8 },
-      { timestampMs: 500, strength: 0.4 },
+      { timestampMs: 90, strength: 0.8, confidence: 0.8, rhythmicClass: null },
+      { timestampMs: 500, strength: 0.4, confidence: 0.4, rhythmicClass: null },
     ]);
   });
 

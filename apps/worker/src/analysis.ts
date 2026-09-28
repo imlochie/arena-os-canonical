@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { getDb, sourceAnalyses, sourceAssets } from "@waveyard/database";
+import { getDb, sourceAnalyses, sourceAssets, stemAssets } from "@waveyard/database";
 import {
   consumeTestFault,
   enqueueSourceAnalysis,
@@ -14,6 +14,7 @@ import { getStorage } from "@waveyard/storage";
 import { normaliseMusicalKey, type SourceAnalysisJobPayload } from "@waveyard/types";
 import { provisionSourceSectionAnalysis } from "./sections";
 import { provisionSourceEventAnalysis } from "./events";
+import { provisionDrumAnalysis } from "./drums";
 
 export const SOURCE_ANALYSIS_ENGINE = "waveyard-numpy-dsp";
 export const SOURCE_ANALYSIS_ENGINE_VERSION = "1.0.0";
@@ -363,6 +364,15 @@ export async function processSourceAnalysis(
     // availability never changes the completed BPM/key/beat result.
     await provisionSourceEventAnalysis(source)
       .catch((eventError) => console.error("could not provision source event analysis", eventError));
+    // Beat projection is only derived after this source's authoritative grid
+    // has completed; it never schedules drum work for arbitrary mixed stems.
+    const [drumStem] = await getDb().select().from(stemAssets).where(and(
+      eq(stemAssets.projectId, source.projectId),
+      eq(stemAssets.sourceAssetId, source.id),
+      eq(stemAssets.stemType, "drums"),
+    )).limit(1);
+    if (drumStem) await provisionDrumAnalysis(drumStem)
+      .catch((drumError) => console.error("could not provision drum analysis", drumError));
     await reportStage("complete");
   } catch (error) {
     const message =

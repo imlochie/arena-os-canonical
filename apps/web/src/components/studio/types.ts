@@ -2,6 +2,28 @@ import type { RemixStateInput, RemixTrackInput } from "@/lib/remix";
 import type { RemixAutomationLane } from "@waveyard/types";
 import type { GridDivision } from "@/lib/timing";
 
+export type DrumAnalysis = {
+  id: string;
+  status: "queued" | "processing" | "complete" | "failed" | "cancelled";
+  stage: string;
+  attempts: number;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  analyzedAt: string | null;
+};
+
+export type DrumEvent = {
+  id: string;
+  timestampMs: number;
+  strength: number;
+  confidence: number;
+  rhythmicClass: "kick" | "snare" | "hat" | "other" | null;
+  nearestBeatIndex: number | null;
+  beatOffsetMs: number | null;
+};
+
 export type VocalAnalysis = {
   id: string;
   status: "queued" | "processing" | "complete" | "failed" | "cancelled";
@@ -39,6 +61,8 @@ export type Stem = {
   checksumSha256: string;
   model: string;
   modelVersion: string;
+  drumAnalysis?: DrumAnalysis | null;
+  drumEvents?: DrumEvent[];
   vocalAnalysis?: VocalAnalysis | null;
   vocalFrames?: VocalPitchFrame[];
   vocalPhrases?: VocalPhrase[];

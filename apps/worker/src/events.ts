@@ -113,6 +113,8 @@ export async function processSourceEventAnalysis(
         eventIndex,
         timestampMs: event.timestampMs,
         strength: event.strength,
+        confidence: event.confidence,
+        rhythmicClass: event.rhythmicClass,
       })));
       await tx.update(sourceEventAnalyses).set({ status: "complete", stage: "complete", analyzedAt, completedAt: analyzedAt, errorCode: null, errorMessage: null, updatedAt: analyzedAt }).where(eq(sourceEventAnalyses.id, job.id));
     });

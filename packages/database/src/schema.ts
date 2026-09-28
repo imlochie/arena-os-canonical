@@ -264,6 +264,8 @@ export const sourceEvents = pgTable("source_events", {
   eventIndex: integer("event_index").notNull(),
   timestampMs: integer("timestamp_ms").notNull(),
   strength: real("strength").notNull(),
+  confidence: real("confidence").notNull().default(0),
+  rhythmicClass: text("rhythmic_class"),
   ...timestamps,
 }, (table) => [
   uniqueIndex("source_events_analysis_index_unique").on(table.sourceEventAnalysisId, table.eventIndex),
@@ -272,6 +274,50 @@ export const sourceEvents = pgTable("source_events", {
 ]);
 
 // Stem-scoped V1 vocal evidence never claims that the original mixed source is vocal.
+// Stem-scoped deterministic drum/percussion transient evidence. This preserves
+// generic source events while enforcing the exact separated stem provenance.
+export const drumAnalyses = pgTable("drum_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  stemChecksumSha256: text("stem_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("drum_analyses_stem_asset_unique").on(table.stemAssetId),
+  uniqueIndex("drum_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("drum_analyses_project_id_idx").on(table.projectId),
+  index("drum_analyses_source_stem_idx").on(table.sourceAssetId, table.stemAssetId),
+]);
+
+export const drumEvents = pgTable("drum_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  drumAnalysisId: uuid("drum_analysis_id").notNull().references(() => drumAnalyses.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  timestampMs: integer("timestamp_ms").notNull(),
+  strength: real("strength").notNull(),
+  confidence: real("confidence").notNull(),
+  rhythmicClass: text("rhythmic_class"),
+  nearestBeatIndex: integer("nearest_beat_index"),
+  beatOffsetMs: integer("beat_offset_ms"),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("drum_events_analysis_index_unique").on(table.drumAnalysisId, table.eventIndex),
+  index("drum_events_analysis_time_idx").on(table.drumAnalysisId, table.timestampMs),
+]);
+
 export const vocalAnalyses = pgTable("vocal_analyses", {
   id: uuid("id").defaultRandom().primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
