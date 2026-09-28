@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, type CinematicVisualPreset } from "@waveyard/types";
+import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, type AutomaticRemixVariant, type CinematicVisualPreset } from "@waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { LivingPlayer, MiniPlayer } from "./player/LivingPlayer";
 import { CinematicVisual } from "./visual/CinematicVisual";
+import { AutomaticRemixPrompt } from "./remix/AutomaticRemixPrompt";
 import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTimeline";
 import { ArrangementInspector } from "./studio/ArrangementInspector";
 import { ClipInspector } from "./studio/ClipInspector";
@@ -19,6 +20,7 @@ import {
   sourceStemLabel,
   type Remix,
   type RemixVersionSummary,
+  type AutomaticRemixGenerationSummary,
   type Source,
   type SourceSection,
   type Stem,
@@ -60,9 +62,12 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
   const [remix, setRemix] = useState<Remix | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
   const [versions, setVersions] = useState<RemixVersionSummary[]>([]);
+  const [buildingAutomaticRemix, setBuildingAutomaticRemix] = useState<AutomaticRemixVariant | null>(null);
+  const [automaticRemixMessage, setAutomaticRemixMessage] = useState<string | null>(null);
+  const [automaticGeneration, setAutomaticGeneration] = useState<AutomaticRemixGenerationSummary | null>(null);
   // Presentation is browser-only observation over the same project, selection,
   // transport, and persisted remix state. It never forks musical authority.
-  const [presentation, setPresentation] = useState<"studio" | "play" | "visual">("studio");
+  const [presentation, setPresentation] = useState<"studio" | "play" | "visual">("play");
   // Visual preferences are browser-only presentation choices; they never
   // mutate the project, RemixVersion, or transport's musical state.
   const [visualPreset, setVisualPreset] = useState<CinematicVisualPreset>("halo");
@@ -117,6 +122,28 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
   const selected = stems.find((stem) => stem.id === selectedId) ?? stems[0];
   const source = selected ? sourceById.get(selected.sourceAssetId) : undefined;
   const selectedSourceBpm = selected ? sourceBpmByStemId.get(selected.id) : null;
+  // Play and Visual observe one position source. When an arrangement exists,
+  // they reuse the established arrangement audition to hear the persisted clips;
+  // otherwise they retain the original stem transport.
+  const observedTransportPlaying = remix ? arrangementPreview.playing : transport.playing;
+  const presentationTransport = useMemo(() => ({
+    playing: observedTransportPlaying,
+    position: transport.position,
+    error: remix ? arrangementPreview.error : transport.error,
+    play: async () => {
+      if (!remix) return transport.play();
+      transport.pause();
+      return arrangementPreview.play(remix, transport.position * 1000);
+    },
+    pause: () => {
+      if (remix) arrangementPreview.pause();
+      else transport.pause();
+    },
+    seek: (seconds: number) => {
+      if (remix && arrangementPreview.playing) arrangementPreview.pause();
+      transport.seek(seconds);
+    },
+  }), [arrangementPreview, observedTransportPlaying, remix, transport]);
   // Track labels are a presentation concern for old sessions too. This makes
   // them source-qualified without writing back to pre-existing records.
   const arrangementRemix = useMemo(() => remix && ({
@@ -136,13 +163,13 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     snapEnabled: remix.snapEnabled,
   } : { tempoBpm: 120, timeSignatureNumerator: 4, timeSignatureDenominator: 4, gridDivision: "beat" as GridDivision, snapEnabled: true }, [remix]);
   const visualState = useMemo(() => deriveVisualState({
-    positionMs: Math.round(transport.position * 1000), durationMs: Math.round(duration * 1000), playing: transport.playing,
+    positionMs: Math.round(transport.position * 1000), durationMs: Math.round(duration * 1000), playing: observedTransportPlaying,
     bpm: source?.analysis?.status === "complete" ? source.analysis.bpm : null,
     beatGridMs: source?.analysis?.status === "complete" ? source.analysis.beatGrid : null,
     sections: source?.sections ?? [],
     stems: stems.map((stem) => ({ id: stem.id, ...(mixerControls[stem.id] ?? { volume: 1, muted: false, solo: false }) })),
     reducedMotion,
-  }), [duration, mixerControls, reducedMotion, source, stems, transport.playing, transport.position]);
+  }), [duration, mixerControls, observedTransportPlaying, reducedMotion, source, stems, transport.position]);
   const visualMotion = motionPolicy(reducedMotion);
   const environment = artworkEnvironment(`${source?.checksumSha256 ?? projectId}:${source?.originalFilename ?? "waveyard"}`);
 
@@ -184,6 +211,7 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     if (!response.ok) { setSaveState("failed"); return; }
     const next: Remix = { ...body.remix, tracks: body.tracks };
     setRemix(next);
+    setAutomaticGeneration(body.generation ?? null);
     setClipSelection(null);
     setSelectedClipIds([]);
     reset();
@@ -272,6 +300,22 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     const body = await response.json().catch(() => ({}));
     if (!response.ok) { setSaveState("failed"); return; }
     await loadRemix(body.remix.id);
+  };
+  const createAutomaticRemix = async (variant: AutomaticRemixVariant) => {
+    setBuildingAutomaticRemix(variant);
+    setAutomaticRemixMessage(null);
+    const response = await fetch(`/api/projects/${projectId}/automatic-remixes`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variant }),
+    });
+    const body = await response.json().catch(() => ({}));
+    setBuildingAutomaticRemix(null);
+    if (!response.ok) {
+      setAutomaticRemixMessage(body.error ?? "Waveyard could not build an automatic arrangement yet.");
+      return;
+    }
+    await loadRemix(body.remix.id);
+    const notices = Array.isArray(body.plan?.notices) ? body.plan.notices : [];
+    setAutomaticRemixMessage(notices[0] ?? `${variant === "hybrid" ? "Hybrid" : "Original"} starting point is ready to play.`);
   };
   const duplicateTrack = async (sourceTrackId: string) => {
     if (!remix) return;
@@ -547,30 +591,34 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
   return <section
     className={`studio waveyard-surface mode-${presentation}`}
     data-presentation={presentation}
-    data-playing={transport.playing ? "true" : "false"}
+    data-playing={observedTransportPlaying ? "true" : "false"}
     data-reduced-motion={reducedMotion ? "true" : "false"}
     aria-label="Waveyard Studio"
     style={{ "--art-hue": environment.hue, "--art-accent-hue": environment.accentHue, "--art-shadow-hue": environment.shadowHue, "--beat-pulse": visualState.beatPulse, "--bar-pulse": visualState.barPulse, "--motion-ms": `${visualMotion.transitionMs}ms` } as CSSProperties}
   >
     <header className="studio-head"><div><span className="eyebrow">{presentation === "studio" ? "Studio" : presentation === "play" ? "Play" : "Visual"} · one musical state</span><h2>{presentation === "studio" ? "Real stems, one transport." : presentation === "play" ? "Music in motion." : "Music, made visible."}</h2></div><div className="presentation-nav" role="tablist" aria-label="Waveyard presentation mode"><button type="button" role="tab" aria-selected={presentation === "play"} data-testid="waveyard-mode-play" className={presentation === "play" ? "active" : ""} onClick={() => { setPresentation("play"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Play</button><button type="button" role="tab" aria-selected={presentation === "studio"} data-testid="waveyard-mode-studio" className={presentation === "studio" ? "active" : ""} onClick={() => { setPresentation("studio"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Studio</button><button type="button" role="tab" aria-selected={presentation === "visual"} data-testid="waveyard-mode-visual" className={presentation === "visual" ? "active" : ""} onClick={() => { setPresentation("visual"); setPlayerFullscreen(false); }}>Visual</button></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
-    {presentation === "play" ? <LivingPlayer
+    {presentation === "play" ? <>
+      {!remix && <AutomaticRemixPrompt building={buildingAutomaticRemix} message={automaticRemixMessage} onBuild={createAutomaticRemix} />}
+      {remix && (automaticRemixMessage || automaticGeneration) && <p className="automatic-remix-banner" role="status">{automaticRemixMessage ?? `Automatic ${automaticGeneration?.variant ?? "original"} arrangement · verified sections, tempo, and key remain explainable in Studio.`}</p>}
+      <LivingPlayer
       source={source}
       stems={stems}
       selectedId={selected?.id ?? ""}
       controls={mixerControls}
       duration={duration}
-      transport={transport}
+      transport={presentationTransport}
       visualState={visualState}
       onSelectStem={setSelectedId}
       onControl={updateControl}
       onOpenStudio={() => setPresentation("studio")}
       fullscreen={playerFullscreen}
       onToggleFullscreen={() => setPlayerFullscreen((current) => !current)}
-    /> : presentation === "visual" ? <CinematicVisual
+    />
+    </> : presentation === "visual" ? <CinematicVisual
       source={source}
       stems={stems}
       controls={mixerControls}
-      transport={transport}
+      transport={presentationTransport}
       visualState={visualState}
       reducedMotion={reducedMotion}
       preset={visualPreset}
@@ -589,7 +637,7 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
     <section className="studio-grid"><StemMixer stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} />}</section>
     <section className="remix-panel">
-      <div className="panel-title"><div><span className="eyebrow">Non-destructive arrangement</span><h3>Remix timeline</h3></div>{!remix ? <button className="button" onClick={() => void createRemix()}>Create remix session</button> : <div className="remix-actions"><button className="button secondary" onClick={() => void createRemix()}>New remix session</button><button className="button secondary" disabled={!history.length} onClick={undo}>Undo</button><button className="button secondary" disabled={!future.length} onClick={redo}>Redo</button><button className="button secondary" onClick={() => void createVersion()}>Save version</button><button className="button" onClick={() => void persist(remix)}>Save now</button></div>}</div>
+      <div className="panel-title"><div><span className="eyebrow">Non-destructive arrangement</span><h3>Remix timeline</h3></div>{!remix ? <div className="remix-actions"><button className="button" disabled={buildingAutomaticRemix !== null} onClick={() => void createAutomaticRemix("original")}>{buildingAutomaticRemix === "original" ? "Building automatic arrangement…" : "Build automatic arrangement"}</button><button className="button secondary" onClick={() => void createRemix()}>Start blank arrangement</button></div> : <div className="remix-actions"><button className="button secondary" onClick={() => void createRemix()}>New remix session</button><button className="button secondary" disabled={!history.length} onClick={undo}>Undo</button><button className="button secondary" disabled={!future.length} onClick={redo}>Redo</button><button className="button secondary" onClick={() => void createVersion()}>Save version</button><button className="button" onClick={() => void persist(remix)}>Save now</button></div>}</div>
       {remix ? <>
         <div className="arrangement-settings" aria-label="Arrangement timing settings">
           <label>BPM <input aria-label="Tempo BPM" type="number" min="20" max="300" value={remix.tempoBpm} onChange={(event) => changeRemix((current) => ({ ...current, tempoBpm: Number(event.target.value) || 120 }))} /></label>
@@ -606,7 +654,7 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
     </section>
-    <MiniPlayer source={source} duration={duration} transport={transport} onOpenPlay={() => setPresentation("play")} />
+    <MiniPlayer source={source} duration={duration} transport={presentationTransport} onOpenPlay={() => setPresentation("play")} />
     </>}
   </section>;
 }

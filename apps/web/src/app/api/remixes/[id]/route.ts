@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { nearestBeat } from "@waveyard/types";
 import { asc, eq, inArray } from "drizzle-orm";
 import {
+  automaticRemixGenerations,
   getDb,
   remixAutomationPoints,
   remixClips,
@@ -63,6 +64,11 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
     .from(remixAutomationPoints)
     .where(eq(remixAutomationPoints.remixSessionId, remix.id))
     .orderBy(asc(remixAutomationPoints.timelineMs));
+  const [generation] = await db
+    .select()
+    .from(automaticRemixGenerations)
+    .where(eq(automaticRemixGenerations.remixSessionId, remix.id))
+    .limit(1);
   const stems = tracks.length
     ? await db
         .select({
@@ -91,6 +97,7 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
       ...track,
       clips: clips.filter((clip) => clip.remixTrackId === track.id),
     })),
+    generation: generation ? { engine: generation.engine, engineVersion: generation.engineVersion, variant: generation.variant, createdAt: generation.createdAt } : null,
     automation: [...new Map(automation.map((point) => [
       `${point.remixTrackId}:${point.parameter}`,
       {

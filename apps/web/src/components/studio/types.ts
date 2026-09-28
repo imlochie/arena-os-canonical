@@ -200,6 +200,7 @@ export type Remix = {
 };
 
 export type RemixVersionSummary = { id: string; name: string; createdAt: string };
+export type AutomaticRemixGenerationSummary = { engine: string; engineVersion: string; variant: "original" | "hybrid"; createdAt: string };
 
 export function sourceStemLabel(source: Source | undefined, stemType: string) {
   const name = source?.originalFilename ?? "Unknown source";

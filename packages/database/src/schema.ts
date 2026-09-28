@@ -433,6 +433,23 @@ export const remixSessions = pgTable("remix_sessions", {
   ...timestamps,
 }, (table) => [index("remix_sessions_project_id_idx").on(table.projectId), index("remix_sessions_owner_id_idx").on(table.ownerId)]);
 
+// Explainable provenance for a deterministic automatic starting arrangement.
+// This never owns musical state: RemixTrack/RemixClip remain the sole editable
+// arrangement model and this row only records why they were initially created.
+export const automaticRemixGenerations = pgTable("automatic_remix_generations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "cascade" }),
+  engine: text("engine").notNull(),
+  engineVersion: text("engine_version").notNull(),
+  variant: text("variant").notNull(),
+  constraints: text("constraints").notNull(),
+  provenance: text("provenance").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("automatic_remix_generations_session_unique").on(table.remixSessionId),
+  index("automatic_remix_generations_session_idx").on(table.remixSessionId),
+]);
+
 export const remixTracks = pgTable("remix_tracks", {
   id: uuid("id").defaultRandom().primaryKey(),
   remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "cascade" }),
