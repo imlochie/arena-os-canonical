@@ -231,7 +231,7 @@ export function ArrangementInspector({
       <p>Linear, ordered track points at the playhead. Same-timestamp writes replace the existing point; only volume and pan are supported.</p>
       <div><button className="button secondary" disabled={!onAutomationEdit} onClick={() => void addAutomationPoint("volume", track.volume)}>Add volume point</button><output>{evaluateAutomation(volumeLane, positionMs, track.volume).toFixed(2)}×</output><button className="button secondary" disabled={!onAutomationEdit} onClick={() => void addAutomationPoint("pan", track.pan)}>Add pan point</button><output>{evaluateAutomation(panLane, positionMs, track.pan).toFixed(2)}</output></div>
       <small>{volumeLane.length} volume / {panLane.length} pan points. Click a lane to add, drag a point to move it, or right-click a point to delete it.</small>
-      <p className="notice">V1 points are saved in remix versions and evaluated in Studio. The current worker export retains its established static track volume/pan boundary; this editor adds no browser renderer or DSP path.</p>
+      <p className="notice">V1 points are saved in immutable remix versions and applied by the authoritative worker export. Studio keeps its existing source-audition preview; it does not become a second render authority.</p>
     </fieldset>
     <label>Timeline start (ms)<input type="number" min="0" value={clip.timelineStartMs} onChange={(event) => update((item) => ({ ...item, timelineStartMs: Math.max(0, Number(event.target.value) || 0) }))} /></label>
     <label>Duration (ms)<input type="number" min="1" value={clip.durationMs} onChange={(event) => update((item) => {

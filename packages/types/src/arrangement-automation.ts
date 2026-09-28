@@ -43,6 +43,24 @@ export function upsertAutomationPoint(
   return points;
 }
 
+export type AutomationLinearSegment = {
+  startMs: number;
+  endMs: number;
+  startValue: number;
+  endValue: number;
+};
+
+/** Canonical V1 linear pieces shared by UI evaluation and authoritative render construction. */
+export function automationLinearSegments(points: AutomationPoint[]) {
+  const ordered = [...points].sort((left, right) => left.timelineMs - right.timelineMs);
+  return ordered.slice(1).map((right, index): AutomationLinearSegment => ({
+    startMs: ordered[index].timelineMs,
+    endMs: right.timelineMs,
+    startValue: ordered[index].value,
+    endValue: right.value,
+  })).filter((segment) => segment.endMs > segment.startMs);
+}
+
 /** Linear interpolation, clamped to the first/last point at both lane boundaries. */
 export function evaluateAutomation(
   points: AutomationPoint[],
@@ -54,9 +72,8 @@ export function evaluateAutomation(
   if (timelineMs <= ordered[0].timelineMs) return ordered[0].value;
   const final = ordered.at(-1)!;
   if (timelineMs >= final.timelineMs) return final.value;
-  const rightIndex = ordered.findIndex((point) => point.timelineMs >= timelineMs);
-  const right = ordered[rightIndex];
-  const left = ordered[rightIndex - 1];
-  const fraction = (timelineMs - left.timelineMs) / (right.timelineMs - left.timelineMs);
-  return left.value + (right.value - left.value) * fraction;
+  const segment = automationLinearSegments(ordered).find((item) => timelineMs <= item.endMs);
+  if (!segment) return final.value;
+  const fraction = (timelineMs - segment.startMs) / (segment.endMs - segment.startMs);
+  return segment.startValue + (segment.endValue - segment.startValue) * fraction;
 }

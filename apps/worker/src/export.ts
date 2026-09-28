@@ -17,6 +17,7 @@ import { getStorage, privateObjectKey } from "@waveyard/storage";
 import { AUTOMATION_PARAMETERS, normaliseAutomationPoints, normaliseMusicalKey, type ExportJobPayload, type RemixAutomationLane } from "@waveyard/types";
 import { pitchFilterChain, resolveKeySync } from "./key";
 import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "./tempo";
+import { automatedTrackBusFilters } from "./automation";
 
 type SnapshotClip = {
   stemAssetId: string;
@@ -31,6 +32,7 @@ type SnapshotClip = {
   beatSnapEnabled: boolean;
 };
 type SnapshotTrack = {
+  id: string | null;
   stemAssetId: string;
   sortOrder: number;
   volume: number;
@@ -65,7 +67,7 @@ function finite(value: unknown, lower: number, upper: number) {
   return number;
 }
 
-function parseSnapshot(raw: string): ExportSnapshot {
+export function parseExportSnapshot(raw: string): ExportSnapshot {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -84,6 +86,7 @@ function parseSnapshot(raw: string): ExportSnapshot {
     if (typeof candidate.stemAssetId !== "string" || !Array.isArray(candidate.clips))
       throw new ExportFailure("invalid_snapshot", "Persisted remix track is invalid.");
     return {
+      id: typeof candidate.id === "string" ? candidate.id : null,
       stemAssetId: candidate.stemAssetId,
       sortOrder: finite(candidate.sortOrder, 0, 99),
       volume: finite(candidate.volume, 0, 2),
@@ -139,6 +142,14 @@ function parseSnapshot(raw: string): ExportSnapshot {
         throw new ExportFailure("invalid_snapshot", "Persisted automation is invalid.");
       return { remixTrackId: candidate.remixTrackId, parameter, points };
     });
+    const trackIds = new Set(tracks.map((track) => track.id).filter((trackId): trackId is string => Boolean(trackId)));
+    const laneKeys = new Set<string>();
+    for (const lane of automation) {
+      const key = `${lane.remixTrackId}:${lane.parameter}`;
+      if (!trackIds.has(lane.remixTrackId) || laneKeys.has(key))
+        throw new ExportFailure("invalid_snapshot", "Persisted automation track identity is invalid.");
+      laneKeys.add(key);
+    }
   }
   return {
     masterVolume: finite(value.masterVolume, 0, 2),
@@ -271,7 +282,7 @@ export async function processExport(
     });
     await reportStage("resolving-remix");
 
-    const snapshot = parseSnapshot(version.snapshot);
+    const snapshot = parseExportSnapshot(version.snapshot);
     assertValidCrossfades(snapshot.tracks);
     const hasSolo = snapshot.tracks.some((track) => track.solo && !track.muted);
     const activeTracks = snapshot.tracks
@@ -362,9 +373,13 @@ export async function processExport(
       throw new ExportFailure("render_failed", "Injected export render failure.");
 
     const inputIndex = new Map(stems.map((stem, index) => [stem.id, index]));
+    const automationByTrackId = new Map(snapshot.automation.map((lane) => [
+      `${lane.remixTrackId}:${lane.parameter}`,
+      lane.points,
+    ]));
+    const automatedTrackIds = new Set(snapshot.automation.map((lane) => lane.remixTrackId));
+    const automatedTrackIndex = new Map(activeTracks.map((track, index) => [track.id, index]));
     const filters = clips.map((clip, index) => {
-      const gains = panGains(clip.track.pan);
-      const volume = (clip.track.volume * clip.gain).toFixed(6);
       const delay = Math.round(clip.timelineStartMs);
       const tempo = tempoByClip.get(index);
       const keyShift = keyShiftByClip.get(index);
@@ -375,21 +390,56 @@ export async function processExport(
           : "",
       ].filter(Boolean).join(",");
       const fadeSegment = fades ? `,${fades}` : "";
-      // Keep the established Phase 6 and unsynced filters byte-for-byte in
-      // their existing order. Key sync adds its transform before the final trim.
+      const automated = Boolean(clip.track.id && automatedTrackIds.has(clip.track.id));
+      if (automated) {
+        // Clip-local transform/gain/fades/delay precede one combined track bus.
+        const tempoSegment = tempo
+          ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}`
+          : "";
+        if (keyShift === undefined)
+          return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
+        const keyTempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)}` : "";
+        return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${keyTempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
+      }
+      const gains = panGains(clip.track.pan);
+      const volume = (clip.track.volume * clip.gain).toFixed(6);
+      // No-automation clips retain the established Phase 6 filter order.
       if (keyShift === undefined) {
         const tempoSegment = tempo
           ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}`
           : "";
         return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
       }
-      // Tempo then pitch precede output trim, gain, fades, pan, delay, and mix.
       const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)}` : "";
       return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
     });
-    const labels = clips.map((_clip, index) => `[clip${index}]`).join("");
+    const trackBusLabels = new Map<string, string>();
+    for (const [trackId, trackIndex] of automatedTrackIndex) {
+      if (!trackId || !automatedTrackIds.has(trackId)) continue;
+      const track = activeTracks[trackIndex];
+      const clipLabels = clips.flatMap((clip, clipIndex) => clip.track.id === trackId ? [`[clip${clipIndex}]`] : []);
+      if (!clipLabels.length) continue;
+      const trackLabel = `track${trackIndex}`;
+      filters.push(...automatedTrackBusFilters(
+        clipLabels,
+        trackLabel,
+        automationByTrackId.get(`${trackId}:volume`) ?? [],
+        automationByTrackId.get(`${trackId}:pan`) ?? [],
+        track.volume,
+        track.pan,
+      ));
+      trackBusLabels.set(trackId, `[${trackLabel}]`);
+    }
+    const labels = clips.flatMap((clip, index) => {
+      if (clip.track.id && trackBusLabels.has(clip.track.id)) {
+        const label = trackBusLabels.get(clip.track.id)!;
+        trackBusLabels.delete(clip.track.id);
+        return [label];
+      }
+      return clip.track.id && automatedTrackIds.has(clip.track.id) ? [] : [`[clip${index}]`];
+    }).join("");
     filters.push(
-      `${labels}amix=inputs=${clips.length}:duration=longest:dropout_transition=0:normalize=0,volume=${snapshot.masterVolume.toFixed(6)}[mix]`,
+      `${labels}amix=inputs=${labels.match(/\[/g)?.length ?? 0}:duration=longest:dropout_transition=0:normalize=0,volume=${snapshot.masterVolume.toFixed(6)}[mix]`,
     );
     const outputPath = join(temporaryDirectory, "export.wav");
     const args = [
