@@ -106,7 +106,7 @@ test.describe("real Compose separation pipeline", () => {
   test("registers, uploads an original fixture, separates it, validates stored stems, and plays them", async ({
     page,
   }) => {
-    await page.goto("/");
+    await page.goto("/waveyard");
     await page.locator('input[name="username"]').fill(owner.username);
     await page.locator('input[name="displayName"]').fill(owner.displayName);
     await page.locator('input[name="email"]').fill(owner.email);
