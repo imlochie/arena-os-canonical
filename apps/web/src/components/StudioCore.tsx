@@ -17,6 +17,8 @@ import { SourceSectionMap } from "./studio/SourceSectionMap";
 import { MeetingPointsPanel } from "./studio/MeetingPointsPanel";
 import { ExtendedArrangementPanel } from "./studio/ExtendedArrangementPanel";
 import { SourcePool } from "./studio/SourcePool";
+import { MultiSourcePlacementPanel } from "./studio/MultiSourcePlacementPanel";
+import { ProjectMusicalWorld } from "./studio/ProjectMusicalWorld";
 import { StudioTransport } from "./studio/StudioTransport";
 import {
   remixState,
@@ -61,6 +63,7 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
   // UI-only selection. RemixClip IDs remain the only persisted arrangement primitive.
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   const [slicePrefill, setSlicePrefill] = useState<{ sourceAssetId: string; startBeatIndex: number; endBeatIndex: number; token: string } | null>(null);
+  const [selectedSourceSectionId, setSelectedSourceSectionId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(80);
   const [remix, setRemix] = useState<Remix | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
@@ -664,10 +667,10 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
       onToggleFullscreen={() => setVisualFullscreen((current) => !current)}
       onOpenStudio={() => { setPresentation("studio"); setVisualFullscreen(false); }}
     /> : <>
-    <SourcePool sources={sources} stems={stems} selectedStemId={selectedId} onSelectStem={setSelectedId} />
-    {remix && <ExtendedArrangementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} onApplied={async () => { await loadRemix(remix.id); }} />}
+    <SourcePool sources={sources} stems={stems} selectedStemId={selectedId} onSelectStem={(stemId) => { setSelectedId(stemId); setSelectedSourceSectionId(null); }} />
+    {remix && <><ProjectMusicalWorld remix={remix} stems={stems} /><ExtendedArrangementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} onApplied={async () => { await loadRemix(remix.id); }} /><MultiSourcePlacementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} stemAssetId={selected?.id ?? ""} sourceSectionId={selectedSourceSectionId} onApplied={async () => { await loadRemix(remix.id); }} /></>}
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
-    {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} onArrangementAction={arrangeSection} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
+    {source && <SourceSectionMap source={source} onUseForSlice={(section) => { setSelectedSourceSectionId(section.id); setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` }); }} onArrangementAction={arrangeSection} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
     <MeetingPointsPanel points={meetingPoints} busyId={acceptingMeetingPoint} message={meetingMessage} onAccept={acceptMeetingPoint} />
     {source && selected && <VocalAnalysisSummary stem={selected} editable onRequestAnalysis={() => requestVocalAnalysis(selected.id)} onExportMidi={selected.stemType === "vocals" ? () => requestMidiExport("vocal", source.id, selected.id) : undefined} />}
     {source && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} onExportMidi={selected.stemType === "drums" || selected.stemType === "percussion" ? () => requestMidiExport("drums", source.id, selected.id) : undefined} />}

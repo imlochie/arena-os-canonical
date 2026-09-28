@@ -14,6 +14,7 @@ export * from "./midi";
 export * from "./automatic-remix";
 export * from "./musical-meeting-points";
 export * from "./arrangement-extensions";
+export * from "./multi-source-placement";
 export * from "./visual-state";
 
 export const STEM_TYPES = ["vocals", "drums", "bass", "other"] as const;
