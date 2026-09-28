@@ -273,6 +273,45 @@ export const sourceEvents = pgTable("source_events", {
   index("source_events_project_id_idx").on(table.projectId),
 ]);
 
+// Source-relative harmonic evidence augments rather than overwrites global source key.
+export const harmonyAnalyses = pgTable("harmony_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("harmony_analyses_source_asset_unique").on(table.sourceAssetId),
+  uniqueIndex("harmony_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("harmony_analyses_project_id_idx").on(table.projectId),
+]);
+
+export const harmonyEvents = pgTable("harmony_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  harmonyAnalysisId: uuid("harmony_analysis_id").notNull().references(() => harmonyAnalyses.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  root: text("root"),
+  quality: text("quality").notNull(),
+  confidence: real("confidence").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("harmony_events_analysis_index_unique").on(table.harmonyAnalysisId, table.eventIndex),
+  index("harmony_events_analysis_start_idx").on(table.harmonyAnalysisId, table.startMs),
+]);
+
 // Stem-scoped V1 vocal evidence never claims that the original mixed source is vocal.
 // Stem-scoped deterministic drum/percussion transient evidence. This preserves
 // generic source events while enforcing the exact separated stem provenance.

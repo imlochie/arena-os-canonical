@@ -2,6 +2,7 @@ import { Worker } from "bullmq";
 import {
   DRUM_ANALYSIS_QUEUE,
   EXPORT_QUEUE,
+  HARMONY_ANALYSIS_QUEUE,
   getQueueConnection,
   SEPARATION_QUEUE,
   SOURCE_ANALYSIS_QUEUE,
@@ -13,6 +14,7 @@ import {
 import type {
   DrumAnalysisJobPayload,
   ExportJobPayload,
+  HarmonyAnalysisJobPayload,
   SeparationJobPayload,
   SourceAnalysisJobPayload,
   SourceEventAnalysisJobPayload,
@@ -22,6 +24,7 @@ import type {
 } from "@waveyard/types";
 import { processDrumAnalysis } from "./drums";
 import { processExport } from "./export";
+import { processHarmonyAnalysis } from "./harmony";
 import { processSeparation } from "./separation";
 import { processSourceAnalysis } from "./analysis";
 import { processSourceEventAnalysis } from "./events";
@@ -48,6 +51,9 @@ const sourceEventAnalysisWorker = new Worker<SourceEventAnalysisJobPayload>(SOUR
 const vocalAnalysisWorker = new Worker<VocalAnalysisJobPayload>(VOCAL_ANALYSIS_QUEUE, async (job) => {
   await processVocalAnalysis(job.data, async (stage) => { await job.updateProgress({ stage }); });
 }, { connection: getQueueConnection(), concurrency });
+const harmonyAnalysisWorker = new Worker<HarmonyAnalysisJobPayload>(HARMONY_ANALYSIS_QUEUE, async (job) => {
+  await processHarmonyAnalysis(job.data, async (stage) => { await job.updateProgress({ stage }); });
+}, { connection: getQueueConnection(), concurrency });
 const drumAnalysisWorker = new Worker<DrumAnalysisJobPayload>(DRUM_ANALYSIS_QUEUE, async (job) => {
   await processDrumAnalysis(job.data, async (stage) => { await job.updateProgress({ stage }); });
 }, { connection: getQueueConnection(), concurrency });
@@ -55,7 +61,7 @@ const exportWorker = new Worker<ExportJobPayload>(EXPORT_QUEUE, async (job) => {
   await processExport(job.data, async (stage) => { await job.updateProgress({ stage }); });
 }, { connection: getQueueConnection(), concurrency });
 
-for (const [label, worker] of [["separation", separationWorker], ["waveform", waveformWorker], ["source analysis", sourceAnalysisWorker], ["source section analysis", sourceSectionAnalysisWorker], ["source event analysis", sourceEventAnalysisWorker], ["drum analysis", drumAnalysisWorker], ["vocal analysis", vocalAnalysisWorker], ["export", exportWorker]] as const) {
+for (const [label, worker] of [["separation", separationWorker], ["waveform", waveformWorker], ["source analysis", sourceAnalysisWorker], ["source section analysis", sourceSectionAnalysisWorker], ["source event analysis", sourceEventAnalysisWorker], ["harmony analysis", harmonyAnalysisWorker], ["drum analysis", drumAnalysisWorker], ["vocal analysis", vocalAnalysisWorker], ["export", exportWorker]] as const) {
   worker.on("ready", () => console.info(`Waveyard ${label} worker ready (concurrency=${concurrency}).`));
   worker.on("completed", (job) => console.info(`${label} job ${job.id} completed.`));
   worker.on("failed", (job, error) => console.error(`${label} job ${job?.id ?? "unknown"} failed: ${error.message}`));
@@ -69,6 +75,7 @@ async function shutdown(signal: string) {
     sourceAnalysisWorker.close(),
     sourceSectionAnalysisWorker.close(),
     sourceEventAnalysisWorker.close(),
+    harmonyAnalysisWorker.close(),
     drumAnalysisWorker.close(),
     vocalAnalysisWorker.close(),
     exportWorker.close(),

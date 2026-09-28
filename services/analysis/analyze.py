@@ -45,6 +45,14 @@ DRUM_ENGINE_VERSION = "1.0.0"
 DRUM_KICK_LOW_RATIO = 0.58
 DRUM_HAT_HIGH_RATIO = 0.52
 DRUM_SNARE_MID_RATIO = 0.38
+HARMONY_ENGINE = "waveyard-numpy-chroma-chords"
+HARMONY_ENGINE_VERSION = "1.0.0"
+HARMONY_WINDOW_MS = 2_000
+CHORD_TEMPLATES = {
+    "major": (0, 4, 7), "minor": (0, 3, 7), "dominant7": (0, 4, 7, 10),
+    "minor7": (0, 3, 7, 10), "major7": (0, 4, 7, 11),
+    "diminished": (0, 3, 6), "augmented": (0, 4, 8),
+}
 
 
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -206,6 +214,64 @@ def analyze_drums(source: Path, persisted_duration_ms: int | None = None) -> dic
         "analysisEngineVersion": DRUM_ENGINE_VERSION,
         "events": detect_drum_events(samples, duration_ms),
     }
+
+
+def chord_candidates(chroma: np.ndarray) -> list[tuple[str, str, float]]:
+    candidates: list[tuple[str, str, float]] = []
+    for root in range(12):
+        for quality, intervals in CHORD_TEMPLATES.items():
+            template = np.zeros(12, dtype=np.float64)
+            template[np.mod(np.array(intervals, dtype=int) + root, 12)] = 1.0
+            template /= max(float(np.linalg.norm(template)), EPSILON)
+            candidates.append((PITCH_CLASSES[root], quality, float(np.dot(chroma, template))))
+    candidates.sort(key=lambda candidate: (-candidate[2], candidate[0], candidate[1]))
+    return candidates
+
+
+def analyze_harmony(source: Path) -> dict[str, object]:
+    """A coarse, fixed-window chroma timeline; uncertain windows stay unknown."""
+    samples = decode_mono(source)
+    duration_ms = int(round(samples.size * 1000.0 / SAMPLE_RATE))
+    spectra = np.fft.rfft(frames_for(samples), axis=1)
+    frequencies = np.fft.rfftfreq(FRAME_SIZE, 1.0 / SAMPLE_RATE)
+    mask = (frequencies >= 55.0) & (frequencies <= 5_000.0)
+    midi = np.rint(69.0 + 12.0 * np.log2(frequencies[mask] / 440.0)).astype(int)
+    frame_ms = np.arange(spectra.shape[0], dtype=np.float64) * HOP_SIZE * 1000.0 / SAMPLE_RATE
+    events: list[dict[str, object]] = []
+    for start_ms in range(0, max(1, duration_ms), HARMONY_WINDOW_MS):
+        end_ms = min(duration_ms, start_ms + HARMONY_WINDOW_MS)
+        if end_ms <= start_ms:
+            continue
+        selected = (frame_ms >= start_ms) & (frame_ms < end_ms)
+        chroma = np.zeros(12, dtype=np.float64)
+        if np.any(selected):
+            np.add.at(chroma, np.mod(midi, 12), np.sum(np.abs(spectra[selected][:, mask]), axis=0))
+        norm = float(np.linalg.norm(chroma))
+        if norm <= EPSILON:
+            events.append({"startMs": start_ms, "endMs": end_ms, "root": None, "quality": "unknown", "confidence": 0.0})
+            continue
+        chroma /= norm
+        candidates = chord_candidates(chroma)
+        root, quality, best = candidates[0]
+        runner = candidates[1][2] if len(candidates) > 1 else 0.0
+        separation = clamp((best - runner) / max(abs(best), EPSILON))
+        confidence = clamp(0.55 * separation + 0.45 * max(0.0, best))
+        # A window must contain a reasonably fitting and distinguishable template.
+        if best < 0.58 or separation < 0.06:
+            events.append({"startMs": start_ms, "endMs": end_ms, "root": None, "quality": "unknown", "confidence": round(confidence, 6)})
+        else:
+            events.append({"startMs": start_ms, "endMs": end_ms, "root": root, "quality": quality, "confidence": round(confidence, 6)})
+    # Adjacent identical candidates form one stable segment. This deterministic
+    # smoothing does not change source key or create any section entities.
+    smoothed: list[dict[str, object]] = []
+    for event in events:
+        prior = smoothed[-1] if smoothed else None
+        if prior and prior["root"] == event["root"] and prior["quality"] == event["quality"]:
+            prior["endMs"] = event["endMs"]
+            prior["confidence"] = round((float(prior["confidence"]) + float(event["confidence"])) / 2.0, 6)
+        else:
+            smoothed.append(event)
+    return {"analysisEngine": HARMONY_ENGINE, "analysisEngineVersion": HARMONY_ENGINE_VERSION, "events": smoothed}
 
 
 def estimate_vocal_pitch_frames(samples: np.ndarray) -> list[dict[str, object]]:
@@ -524,17 +590,20 @@ def main() -> int:
     parser.add_argument("--events", action="store_true", help="detect generic source-relative onset events")
     parser.add_argument("--vocal", action="store_true", help="observe pitch only from an isolated vocals stem")
     parser.add_argument("--drums", action="store_true", help="observe transients only from an isolated drums stem")
+    parser.add_argument("--harmony", action="store_true", help="derive a coarse source-relative harmonic timeline")
     parser.add_argument("--duration-ms", type=int, help="persisted isolated-stem duration boundary")
     parser.add_argument("--beat-grid", help="JSON array of persisted source beat milliseconds")
     args = parser.parse_args()
     source = Path(args.input).resolve()
     if not source.is_file():
         raise RuntimeError(f"Input does not exist: {source}")
-    if sum(bool(flag) for flag in (args.events, args.sections, args.vocal, args.drums)) > 1:
+    if sum(bool(flag) for flag in (args.events, args.sections, args.vocal, args.drums, args.harmony)) > 1:
         raise RuntimeError("Choose only one analysis mode.")
     if args.duration_ms is not None and (args.duration_ms < 0 or not (args.vocal or args.drums)):
         raise RuntimeError("A non-negative duration boundary is valid only for stem analysis.")
-    if args.vocal:
+    if args.harmony:
+        print(json.dumps(analyze_harmony(source), sort_keys=True))
+    elif args.vocal:
         print(json.dumps(analyze_vocal(source, args.duration_ms), sort_keys=True))
     elif args.drums:
         print(json.dumps(analyze_drums(source, args.duration_ms), sort_keys=True))

@@ -66,7 +66,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         ...(json.jobs ?? []),
         ...(json.waveformJobs ?? []),
         ...(json.sources ?? [])
-          .flatMap((source: { analysis?: { status?: string } | null; sectionAnalysis?: { status?: string } | null; eventAnalysis?: { status?: string } | null }) => [source.analysis, source.sectionAnalysis, source.eventAnalysis])
+          .flatMap((source: { analysis?: { status?: string } | null; sectionAnalysis?: { status?: string } | null; eventAnalysis?: { status?: string } | null; harmonyAnalysis?: { status?: string } | null }) => [source.analysis, source.sectionAnalysis, source.eventAnalysis, source.harmonyAnalysis])
           .filter(Boolean),
         ...(json.stems ?? []).flatMap((stem: { drumAnalysis?: { status?: string } | null; vocalAnalysis?: { status?: string } | null }) => [stem.drumAnalysis, stem.vocalAnalysis]).filter(Boolean),
       ].some(

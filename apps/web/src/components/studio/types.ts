@@ -108,6 +108,27 @@ export type SourceAlignmentInfo = {
   sectionAnalysisStatus: string | null;
 };
 
+export type HarmonyAnalysis = {
+  id: string;
+  status: "queued" | "processing" | "complete" | "failed" | "cancelled";
+  stage: string;
+  attempts: number;
+  analysisEngine: string;
+  analysisEngineVersion: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  analyzedAt: string | null;
+};
+
+export type HarmonyEvent = {
+  id: string;
+  startMs: number;
+  endMs: number;
+  root: string | null;
+  quality: "major" | "minor" | "dominant7" | "minor7" | "major7" | "diminished" | "augmented" | "unknown";
+  confidence: number;
+};
+
 export type SourceEventAnalysis = {
   id: string;
   status: "queued" | "preparing" | "processing" | "complete" | "failed" | "cancelled";
@@ -154,6 +175,8 @@ export type Source = {
   sections?: SourceSection[];
   eventAnalysis?: SourceEventAnalysis | null;
   events?: SourceEvent[];
+  harmonyAnalysis?: HarmonyAnalysis | null;
+  harmonyEvents?: HarmonyEvent[];
 };
 
 export type PersistedTrack = RemixTrackInput & {

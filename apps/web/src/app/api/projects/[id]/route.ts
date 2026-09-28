@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { asc, eq } from "drizzle-orm";
-import { drumAnalyses, drumEvents, getDb, processingJobs, sourceAnalyses, sourceAssets, sourceEventAnalyses, sourceEvents, sourceSectionAnalyses, sourceSections, stemAssets, vocalAnalyses, vocalPhrases, vocalPitchFrames, waveformAssets, waveformJobs } from "@waveyard/database";
+import { drumAnalyses, drumEvents, getDb, harmonyAnalyses, harmonyEvents, processingJobs, sourceAnalyses, sourceAssets, sourceEventAnalyses, sourceEvents, sourceSectionAnalyses, sourceSections, stemAssets, vocalAnalyses, vocalPhrases, vocalPitchFrames, waveformAssets, waveformJobs } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
 
@@ -21,7 +21,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const user = await requireUser(); const { id } = await params;
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     const db = getDb();
-    const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows, drumAnalysisRows, drumEventRows, vocalAnalysisRows, vocalFrameRows, vocalPhraseRows] = await Promise.all([
+    const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows, harmonyAnalysisRows, harmonyEventRows, drumAnalysisRows, drumEventRows, vocalAnalysisRows, vocalFrameRows, vocalPhraseRows] = await Promise.all([
       db.select().from(sourceAssets).where(eq(sourceAssets.projectId, id)).orderBy(asc(sourceAssets.createdAt)),
       db.select().from(stemAssets).where(eq(stemAssets.projectId, id)).orderBy(asc(stemAssets.createdAt)),
       db.select().from(processingJobs).where(eq(processingJobs.projectId, id)).orderBy(asc(processingJobs.createdAt)),
@@ -32,6 +32,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       db.select().from(sourceSections).where(eq(sourceSections.projectId, id)).orderBy(asc(sourceSections.sourceAssetId), asc(sourceSections.sectionIndex)),
       db.select().from(sourceEventAnalyses).where(eq(sourceEventAnalyses.projectId, id)).orderBy(asc(sourceEventAnalyses.createdAt)),
       db.select().from(sourceEvents).where(eq(sourceEvents.projectId, id)).orderBy(asc(sourceEvents.sourceAssetId), asc(sourceEvents.timestampMs)),
+      db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.projectId, id)).orderBy(asc(harmonyAnalyses.createdAt)),
+      db.select().from(harmonyEvents).innerJoin(harmonyAnalyses, eq(harmonyEvents.harmonyAnalysisId, harmonyAnalyses.id)).where(eq(harmonyAnalyses.projectId, id)).orderBy(asc(harmonyAnalyses.sourceAssetId), asc(harmonyEvents.eventIndex)),
       db.select().from(drumAnalyses).where(eq(drumAnalyses.projectId, id)).orderBy(asc(drumAnalyses.createdAt)),
       db.select().from(drumEvents).innerJoin(drumAnalyses, eq(drumEvents.drumAnalysisId, drumAnalyses.id)).where(eq(drumAnalyses.projectId, id)).orderBy(asc(drumAnalyses.stemAssetId), asc(drumEvents.eventIndex)),
       db.select().from(vocalAnalyses).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.createdAt)),
@@ -51,6 +53,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       const existing = eventsBySource.get(event.sourceAssetId) ?? [];
       existing.push(event);
       eventsBySource.set(event.sourceAssetId, existing);
+    }
+    const harmonyAnalysisBySource = new Map(harmonyAnalysisRows.map((analysis) => [analysis.sourceAssetId, analysis]));
+    const harmonyEventsBySource = new Map<string, (typeof harmonyEventRows)[number]["harmony_events"][]>();
+    for (const row of harmonyEventRows) {
+      const sourceId = row.harmony_analyses.sourceAssetId;
+      const existing = harmonyEventsBySource.get(sourceId) ?? [];
+      existing.push(row.harmony_events);
+      harmonyEventsBySource.set(sourceId, existing);
     }
     const sectionsBySource = new Map<string, typeof sectionRows>();
     for (const section of sectionRows) {
@@ -91,6 +101,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         sections: sectionsBySource.get(source.id) ?? [],
         eventAnalysis: eventAnalysisBySource.get(source.id) ?? null,
         events: eventsBySource.get(source.id) ?? [],
+        harmonyAnalysis: harmonyAnalysisBySource.get(source.id) ?? null,
+        harmonyEvents: harmonyEventsBySource.get(source.id) ?? [],
       })),
       stems: stems.map(({ storageKey: _storageKey, waveformKey: _waveformKey, ...stem }) => ({
         ...stem,

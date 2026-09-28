@@ -5,6 +5,7 @@ import type {
   SeparationJobPayload,
   SourceAnalysisJobPayload,
   DrumAnalysisJobPayload,
+  HarmonyAnalysisJobPayload,
   SourceEventAnalysisJobPayload,
   SourceSectionAnalysisJobPayload,
   VocalAnalysisJobPayload,
@@ -17,6 +18,7 @@ export const SOURCE_ANALYSIS_QUEUE = "waveyard-source-analysis";
 export const SOURCE_SECTION_ANALYSIS_QUEUE = "waveyard-source-section-analysis";
 export const SOURCE_EVENT_ANALYSIS_QUEUE = "waveyard-source-event-analysis";
 export const DRUM_ANALYSIS_QUEUE = "waveyard-drum-analysis";
+export const HARMONY_ANALYSIS_QUEUE = "waveyard-harmony-analysis";
 export const VOCAL_ANALYSIS_QUEUE = "waveyard-vocal-analysis";
 export const EXPORT_QUEUE = "waveyard-export";
 export const TEST_FAULTS = [
@@ -40,6 +42,7 @@ let sourceAnalysisQueue: Queue<SourceAnalysisJobPayload> | undefined;
 let sourceSectionAnalysisQueue: Queue<SourceSectionAnalysisJobPayload> | undefined;
 let sourceEventAnalysisQueue: Queue<SourceEventAnalysisJobPayload> | undefined;
 let drumAnalysisQueue: Queue<DrumAnalysisJobPayload> | undefined;
+let harmonyAnalysisQueue: Queue<HarmonyAnalysisJobPayload> | undefined;
 let vocalAnalysisQueue: Queue<VocalAnalysisJobPayload> | undefined;
 let exportQueue: Queue<ExportJobPayload> | undefined;
 
@@ -101,6 +104,14 @@ export function getDrumAnalysisQueue() {
       connection: getQueueConnection(),
     });
   return drumAnalysisQueue;
+}
+
+export function getHarmonyAnalysisQueue() {
+  if (!harmonyAnalysisQueue)
+    harmonyAnalysisQueue = new Queue<HarmonyAnalysisJobPayload>(HARMONY_ANALYSIS_QUEUE, {
+      connection: getQueueConnection(),
+    });
+  return harmonyAnalysisQueue;
 }
 
 export function getVocalAnalysisQueue() {
@@ -172,6 +183,16 @@ export async function enqueueSourceEventAnalysis(payload: SourceEventAnalysisJob
 export async function enqueueDrumAnalysis(payload: DrumAnalysisJobPayload) {
   return getDrumAnalysisQueue().add("analyze-drums", payload, {
     jobId: payload.drumAnalysisId,
+    attempts: 2,
+    backoff: { type: "exponential", delay: 5_000 },
+    removeOnComplete: { age: 60 * 60 * 24, count: 5000 },
+    removeOnFail: { age: 60 * 60 * 24 * 7, count: 5000 },
+  });
+}
+
+export async function enqueueHarmonyAnalysis(payload: HarmonyAnalysisJobPayload) {
+  return getHarmonyAnalysisQueue().add("analyze-harmony", payload, {
+    jobId: payload.harmonyAnalysisId,
     attempts: 2,
     backoff: { type: "exponential", delay: 5_000 },
     removeOnComplete: { age: 60 * 60 * 24, count: 5000 },

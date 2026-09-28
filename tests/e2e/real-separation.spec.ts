@@ -536,6 +536,17 @@ test.describe("real Compose separation pipeline", () => {
       expect(event).toEqual(expect.objectContaining({ timestampMs: expect.any(Number), strength: expect.any(Number), confidence: expect.any(Number) }));
       expect(["kick", "snare", "hat", "other", null]).toContain(event.rhythmicClass);
     }
+    await expect.poll(async () => {
+      const state = await (await page.request.get(`/api/projects/${analysisProjectId}`)).json();
+      const candidate = state.sources.find((item: { id: string }) => item.id === sourceA.id);
+      return { status: candidate?.harmonyAnalysis?.status, events: candidate?.harmonyEvents?.length ?? 0 };
+    }, { timeout: 4 * 60 * 1000, intervals: [1_000, 2_000, 5_000] }).toMatchObject({ status: "complete" });
+    const harmonyState = await (await page.request.get(`/api/sources/${sourceA.id}/harmony-analysis`)).json();
+    expect(harmonyState.analysis).toMatchObject({ sourceAssetId: sourceA.id, sourceChecksumSha256: sourceA.checksumSha256, analysisEngine: "waveyard-numpy-chroma-chords", analysisEngineVersion: "1.0.0" });
+    for (const event of harmonyState.events) {
+      expect(event).toEqual(expect.objectContaining({ startMs: expect.any(Number), endMs: expect.any(Number), confidence: expect.any(Number) }));
+      expect(["major", "minor", "dominant7", "minor7", "major7", "diminished", "augmented", "unknown"]).toContain(event.quality);
+    }
 
     // Two injected worker attempts leave a durable failure. The UI retry must
     // then enqueue the exact same analysis row for a real engine execution.

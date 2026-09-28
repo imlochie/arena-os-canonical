@@ -15,6 +15,7 @@ import { normaliseMusicalKey, type SourceAnalysisJobPayload } from "@waveyard/ty
 import { provisionSourceSectionAnalysis } from "./sections";
 import { provisionSourceEventAnalysis } from "./events";
 import { provisionDrumAnalysis } from "./drums";
+import { provisionHarmonyAnalysis } from "./harmony";
 
 export const SOURCE_ANALYSIS_ENGINE = "waveyard-numpy-dsp";
 export const SOURCE_ANALYSIS_ENGINE_VERSION = "1.0.0";
@@ -364,6 +365,8 @@ export async function processSourceAnalysis(
     // availability never changes the completed BPM/key/beat result.
     await provisionSourceEventAnalysis(source)
       .catch((eventError) => console.error("could not provision source event analysis", eventError));
+    await provisionHarmonyAnalysis(source)
+      .catch((harmonyError) => console.error("could not provision harmony analysis", harmonyError));
     // Beat projection is only derived after this source's authoritative grid
     // has completed; it never schedules drum work for arbitrary mixed stems.
     const [drumStem] = await getDb().select().from(stemAssets).where(and(
