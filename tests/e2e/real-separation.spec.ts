@@ -218,13 +218,20 @@ test.describe("real Compose separation pipeline", () => {
     expect(download.status()).toBe(200);
     expect(download.headers()["content-disposition"]).toContain("attachment");
 
-    await page.getByRole("button", { name: "Create remix session" }).click();
+    const startBlankArrangement = page.getByRole("button", {
+      name: "Start blank arrangement",
+    });
+    if (await startBlankArrangement.isVisible()) {
+      await startBlankArrangement.click();
+    }
     await expect(
       page.getByRole("heading", { name: "Remix timeline" }),
     ).toBeVisible();
-    await page
-      .getByLabel("copyright-safe-fixture.wav — Vocals clip 1 start")
-      .fill("2");
+    const vocalsClipStart = page.getByLabel(
+      "copyright-safe-fixture.wav — Vocals clip 1 start",
+    );
+    await expect(vocalsClipStart).toBeVisible();
+    await vocalsClipStart.fill("2");
     await page.getByLabel("Tempo BPM").fill("98");
     await page.getByLabel("Time signature numerator").fill("3");
     await page.getByLabel("Grid division").selectOption("half-beat");
