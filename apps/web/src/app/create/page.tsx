@@ -1,3 +1,5 @@
-import Link from "next/link";
-import { BuildProject } from "@/components/BuildProject";
-export default function CreatePage() { return <main className="shell"><nav className="nav"><Link href="/" className="brand"><i>Waveyard</i><small>open stem studio</small></Link><div className="navlinks"><Link href="/">Home</Link></div></nav><section className="create"><div><span className="eyebrow">Build a first listen</span><h1>Drop audio or paste authorized links.</h1><p className="notice">Both paths create normal private Source Assets, then enter the same separation and analysis pipeline. Only add material you are authorized to use.</p></div><BuildProject /></section></main>; }
+import { redirect } from "next/navigation";
+
+export default function LegacyWaveyardCreateRedirect() {
+  redirect("/waveyard/create");
+}

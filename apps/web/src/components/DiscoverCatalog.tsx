@@ -27,7 +27,7 @@ export function DiscoverCatalog() {
     {error && <p className="error" role="alert">{error}</p>}
     {loading && !items.length && <p className="notice">Loading public projects…</p>}
     {!loading && !error && !items.length && <p className="notice">No public projects match this catalogue search.</p>}
-    <div className="public-grid">{items.map((project) => <article className="public-card" key={project.id}><span className="eyebrow">{project.genre || "Open genre"}</span><h2><Link href={`/p/${project.id}`}>{project.title}</Link></h2><p>{project.description || "No public description yet."}</p><p className="muted">By {project.creatorDisplayName} · {project.licenseCode}</p>{project.tags.length > 0 && <p className="tags">{project.tags.map((tag) => <span key={tag}>#{tag}</span>)}</p>}<Link className="button secondary" href={`/p/${project.id}`}>Open release</Link></article>)}</div>
+    <div className="public-grid">{items.map((project) => <article className="public-card" key={project.id}><span className="eyebrow">{project.genre || "Open genre"}</span><h2><Link href={`/waveyard/p/${project.id}`}>{project.title}</Link></h2><p>{project.description || "No public description yet."}</p><p className="muted">By {project.creatorDisplayName} · {project.licenseCode}</p>{project.tags.length > 0 && <p className="tags">{project.tags.map((tag) => <span key={tag}>#{tag}</span>)}</p>}<Link className="button secondary" href={`/waveyard/p/${project.id}`}>Open release</Link></article>)}</div>
     {cursor && <button className="button secondary" disabled={loading} onClick={() => void load(cursor, true)}>{loading ? "Loading…" : "Load more"}</button>}
   </section>;
 }

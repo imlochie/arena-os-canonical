@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+:root {
+  --arena-bg: #060a17;
+  --arena-panel: rgba(15, 23, 42, 0.82);
+  --arena-line: rgba(148, 163, 184, 0.18);
+  --arena-text: #e6edf8;
+  --arena-muted: #95a3b9;
+  --arena-accent: #8b5cf6;
+}
+
+.arena-application {
+  min-height: 100vh;
+  color: var(--arena-text);
+  background:
+    radial-gradient(900px 460px at 7% -12%, rgba(124, 58, 237, 0.21), transparent 60%),
+    radial-gradient(700px 360px at 95% 5%, rgba(6, 182, 212, 0.12), transparent 58%),
+    var(--arena-bg);
+}
+
+.arena-shell-main { min-height: calc(100vh - 138px); }
+.arena-shell-nav {
+  position: sticky; top: 0; z-index: 50;
+  border-bottom: 1px solid var(--arena-line);
+  background: rgba(6, 10, 23, 0.88);
+  backdrop-filter: blur(18px);
+}
+.arena-shell-inner { max-width: 80rem; margin: 0 auto; padding: .7rem 1rem; }
+.arena-brand { display: inline-flex; align-items: center; gap: .62rem; font-weight: 800; letter-spacing: -.02em; color: #fff; }
+.arena-brand-mark { display: grid; width: 2.25rem; height: 2.25rem; place-items: center; border-radius: .75rem; background: linear-gradient(140deg, #7c3aed, #0891b2); box-shadow: 0 8px 24px rgba(124, 58, 237, .35); }
+.arena-brand-subtitle { display: block; margin-top: .05rem; color: var(--arena-muted); font-size: .66rem; font-weight: 600; letter-spacing: .01em; }
+.arena-nav-links { display: flex; align-items: center; gap: .15rem; overflow-x: auto; padding: .45rem 0 .1rem; scrollbar-width: thin; }
+.arena-nav-link { white-space: nowrap; border-radius: .5rem; padding: .4rem .52rem; color: #bfcbdd; font-size: .76rem; font-weight: 650; }
+.arena-nav-link:hover, .arena-nav-link[aria-current="page"] { color: #fff; background: rgba(139, 92, 246, .2); box-shadow: inset 0 0 0 1px rgba(167, 139, 250, .34); }
+.arena-room-rail { border-bottom: 1px solid var(--arena-line); background: rgba(15, 23, 42, .72); }
+.arena-room-rail p { max-width: 80rem; margin: 0 auto; padding: .45rem 1rem; color: var(--arena-muted); font-size: .72rem; }
+.arena-footer { border-top: 1px solid var(--arena-line); color: var(--arena-muted); font-size: .72rem; }
+.arena-footer p { max-width: 80rem; margin: 0 auto; padding: 1.25rem 1rem; }
+
+@media (min-width: 900px) {
+  .arena-shell-inner { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-top: .78rem; padding-bottom: .78rem; }
+  .arena-nav-links { padding: 0; max-width: 65rem; }
+}

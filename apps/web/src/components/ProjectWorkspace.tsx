@@ -7,6 +7,7 @@ import { SourceSectionSummary } from "./studio/SourceSectionSummary";
 import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
 import type { Source, SourceAnalysis, SourceSectionAnalysis, Stem } from "./studio/types";
 import { PublicationPanel } from "./PublicationPanel";
+import { WaveyardHandoffPanel } from "./arena/WaveyardHandoffPanel";
 
 type ProjectData = {
   project: {
@@ -220,6 +221,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           </div>
         )}
       </header>
+      <WaveyardHandoffPanel
+        waveyardProjectId={projectId}
+        projectTitle={data.project.title}
+        projectDescription={data.project.description}
+        editable={editable}
+      />
       {data.build && <section className={`build-progress ${data.build.status}`} aria-label="Build progress" data-testid="build-progress"><span className="eyebrow">Waveyard build</span><h2>{({ "resolving-sources": "Resolving sources", separating: "Separating", understanding: "Understanding", "finding-structure": "Finding structure", building: "Building", ready: "Ready", failed: "Build needs attention" } as Record<string, string>)[data.build.stage] ?? "Building"}</h2><p>{data.build.status === "complete" ? "Your automatic starting arrangement is ready in Play." : data.build.status === "failed" ? data.build.errorMessage ?? "No sources could complete the build." : `${data.build.acceptedSourceCount} source${data.build.acceptedSourceCount === 1 ? "" : "s"} accepted${data.build.failedSourceCount ? ` · ${data.build.failedSourceCount} source failure${data.build.failedSourceCount === 1 ? "" : "s"}` : ""}`}</p><div className="build-progress-steps"><span className={data.build.stage === "resolving-sources" ? "active" : ""}>Sources</span><span className={["separating", "understanding", "finding-structure", "building", "ready"].includes(data.build.stage) ? "active" : ""}>Stems</span><span className={["understanding", "finding-structure", "building", "ready"].includes(data.build.stage) ? "active" : ""}>Structure</span><span className={["building", "ready"].includes(data.build.stage) ? "active" : ""}>Build</span><span className={data.build.stage === "ready" ? "active" : ""}>Play</span></div></section>}
       {editable && data.build?.status !== "complete" && (
         <section className="add-source-panel" aria-label="Add source audio">

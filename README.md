@@ -1,12 +1,14 @@
-# Waveyard
+# Arena OS
 
-**Waveyard** is a self-hostable creative music laboratory for taking a source track apart with real source separation, inspecting its stems, and building outward into remix, export, sharing, and collaboration.
+**Arena OS** is the parent personal AI hub: models, assistants, workforce roles, cognitive jobs, Projects, memory, artifacts, privacy controls, and explicit handoffs between verified rooms.
 
-It has an original digital-studio/music-archive identity and is not affiliated with or a clone of any commercial stem platform.
+**Waveyard** is an Arena room for music-specific work. It retains its self-hosted source intake, real stem separation, analysis, arrangement/remixing, playback, visual, export, publication, and music-specific moderation pipeline. It has an original digital-studio/music-archive identity and is not affiliated with or a clone of any commercial stem platform.
 
-## Current phase
+See [the recovery audit](docs/RECOVERY_AUDIT.md) for the verified historical contract, the compatibility boundary, and the runtime work still required.
 
-**Phase 2 Studio Core, Phase 3 worker-owned persisted WAV export, and Phase 4 Publication & Discovery are verified in the canonical local Docker Compose gate.** The real path includes worker-derived private waveform artifacts, authenticated waveform delivery, a shared stem audition transport, persistent non-destructive remix sessions, export provenance from a persisted RemixVersion, and an explicit selected-final-render publication boundary. The platform deliberately does **not** claim collaboration, social feeds, recommendations, beat detection, advanced mastering, or a full DAW. Phase 4 passed the expanded seven-test local Compose gate on a Docker-capable host; this is distinct from GitHub Actions CI verification.
+## Waveyard runtime evidence
+
+**Waveyard Phase 2 Studio Core, Phase 3 worker-owned persisted WAV export, and Phase 4 Publication & Discovery are verified in the canonical local Docker Compose gate.** The real path includes worker-derived private waveform artifacts, authenticated waveform delivery, a shared stem audition transport, persistent non-destructive remix sessions, export provenance from a persisted RemixVersion, and an explicit selected-final-render publication boundary. Waveyard deliberately does **not** claim social feeds, recommendations, advanced mastering, or a full DAW. Phase 4 passed the expanded seven-test local Compose gate on a Docker-capable host; this is distinct from GitHub Actions CI verification.
 
 The implemented path is real code, not seeded output:
 

@@ -26,7 +26,7 @@ export function BuildProject() {
     const projectId = created.project.id;
     const buildResponse = await fetch(`/api/projects/${projectId}/builds`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestedSourceCount: intake.requestedCount }) });
     const buildRecord = await buildResponse.json().catch(() => ({}));
-    if (!buildResponse.ok) { setBusy(false); setMessage(buildRecord.error ?? "Project was created but its build could not start."); router.push(`/projects/${projectId}`); return; }
+    if (!buildResponse.ok) { setBusy(false); setMessage(buildRecord.error ?? "Project was created but its build could not start."); router.push(`/waveyard/projects/${projectId}`); return; }
     const failures: string[] = []; let accepted = 0;
     for (const file of files) {
       const payload = new FormData(); payload.set("projectId", projectId); payload.set("file", file); payload.set("model", "htdemucs"); payload.set("device", "auto");
@@ -38,7 +38,7 @@ export function BuildProject() {
       if (response.ok) accepted += 1; else failures.push(`${url}: ${body.error ?? "authorized acquisition failed"}`);
     }
     await fetch(`/api/projects/${projectId}/builds`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ buildId: buildRecord.build.id, status: accepted ? "processing" : "failed", stage: accepted ? "separating" : "failed", acceptedSourceCount: accepted, failedSourceCount: failures.length, errorMessage: accepted ? null : failures.join("\n"), details: { failures } }) });
-    setBusy(false); router.push(`/projects/${projectId}`);
+    setBusy(false); router.push(`/waveyard/projects/${projectId}`);
   }
   return <form className="build-project" onSubmit={build}>
     <input className="build-title" aria-label="Optional project title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Optional project title" />
