@@ -13,10 +13,12 @@ export function VocalAnalysisSummary({
   stem,
   editable = false,
   onRequestAnalysis,
+  onExportMidi,
 }: {
   stem: Stem;
   editable?: boolean;
   onRequestAnalysis?: () => Promise<string | null>;
+  onExportMidi?: () => Promise<string | null>;
 }) {
   const [requesting, setRequesting] = useState(false);
   const [requestMessage, setRequestMessage] = useState<string | null>(null);
@@ -26,6 +28,12 @@ export function VocalAnalysisSummary({
     if (!onRequestAnalysis) return;
     setRequesting(true);
     setRequestMessage(await onRequestAnalysis());
+    setRequesting(false);
+  };
+  const exportMidi = async () => {
+    if (!onExportMidi) return;
+    setRequesting(true);
+    setRequestMessage(await onExportMidi() ?? "MIDI export queued from the immutable version.");
     setRequesting(false);
   };
   if (!analysis) return <section className="vocal-analysis-summary" aria-label="Vocal stem pitch observation">
@@ -52,6 +60,8 @@ export function VocalAnalysisSummary({
     {phrases.length > 0 && <ol>
       {phrases.slice(0, 6).map((phrase, index) => <li key={phrase.id}>Phrase {index + 1}: {clockMs(phrase.startMs)}–{clockMs(phrase.endMs)} · confidence {Math.round(phrase.confidence * 100)}%</li>)}
     </ol>}
-    <p>Source-relative pitch evidence from the isolated vocals stem only. It does not create MIDI, lyrics, corrections, or audio changes.</p>
+    <p>Source-relative pitch evidence from the isolated vocals stem only. It does not correct audio, create lyrics, or generate music.</p>
+    {onExportMidi && <button className="button secondary" disabled={requesting} onClick={() => void exportMidi()}>{requesting ? "Queuing…" : "Export MIDI"}</button>}
+    {requestMessage && <p className="notice">{requestMessage}</p>}
   </section>;
 }

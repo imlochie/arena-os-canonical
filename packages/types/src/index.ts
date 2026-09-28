@@ -10,6 +10,7 @@ export * from "./musical-events";
 export * from "./vocal-analysis";
 export * from "./drum-analysis";
 export * from "./harmony-analysis";
+export * from "./midi";
 
 export const STEM_TYPES = ["vocals", "drums", "bass", "other"] as const;
 export type StemType = (typeof STEM_TYPES)[number];
@@ -100,7 +101,7 @@ export type ExportJobPayload = {
   projectId: string;
   remixSessionId: string;
   remixVersionId: string;
-  format: "wav";
+  format: "wav" | "midi";
 };
 
 export type WaveformPeaks = { min: number[]; max: number[] };

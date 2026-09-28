@@ -1,23 +1,31 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, inArray } from "drizzle-orm";
 import { checksumFile, exec, validateAudio } from "@waveyard/audio";
 import {
+  drumAnalyses,
+  drumEvents,
   exportAssets,
   exportJobs,
   getDb,
+  harmonyAnalyses,
+  harmonyEvents,
   remixSessions,
   remixVersions,
   sourceAnalyses,
+  sourceAssets,
   stemAssets,
+  vocalAnalyses,
+  vocalPitchFrames,
 } from "@waveyard/database";
 import { consumeTestFault } from "@waveyard/queue";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
-import { AUTOMATION_PARAMETERS, normaliseAutomationPoints, normaliseMusicalKey, type ExportJobPayload, type RemixAutomationLane } from "@waveyard/types";
+import { AUTOMATION_PARAMETERS, drumAnalysisProvenanceReason, drumEventsToMidiNotes, harmonyAnalysisProvenanceReason, harmonyEventsToMidiNotes, MIDI_PPQ, normaliseDrumEvents, normaliseHarmonyEvents, normaliseAutomationPoints, normaliseMusicalKey, vocalAnalysisProvenanceReason, vocalFramesToMidiNotes, type ExportJobPayload, type RemixAutomationLane } from "@waveyard/types";
 import { pitchFilterChain, resolveKeySync } from "./key";
 import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "./tempo";
 import { automatedTrackBusFilters } from "./automation";
+import { writeMidiFile } from "./midi";
 
 type SnapshotClip = {
   stemAssetId: string;
@@ -197,7 +205,112 @@ async function updateJob(
     .where(eq(exportJobs.id, id));
 }
 
-/** Worker-owned FFmpeg mixdown of an immutable persisted RemixVersion. */
+async function processMidiExport(
+  job: typeof exportJobs.$inferSelect,
+  version: typeof remixVersions.$inferSelect,
+  reportStage: (stage: string) => Promise<void>,
+) {
+  const db = getDb();
+  if (job.format !== "midi" || !job.midiKind || !job.midiSourceAssetId || !job.midiAnalysisId || !job.midiSourceChecksumSha256 || !job.midiAnalysisEngine || !job.midiAnalysisEngineVersion || job.midiPpq !== MIDI_PPQ)
+    throw new ExportFailure("invalid_midi_export", "MIDI export provenance is incomplete.");
+  const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, job.midiSourceAssetId)).limit(1);
+  if (!source || source.projectId !== job.projectId)
+    throw new ExportFailure("midi_source_missing", "MIDI export source is unavailable in this project.");
+  if (source.checksumSha256 !== job.midiSourceChecksumSha256)
+    throw new ExportFailure("midi_analysis_stale", "MIDI export source checksum no longer matches its analysis snapshot.");
+  const snapshot = parseExportSnapshot(version.snapshot);
+  const snapshotStemIds = [...new Set(snapshot.tracks.map((track) => track.stemAssetId))];
+  const snapshotStems = snapshotStemIds.length ? await db.select().from(stemAssets).where(inArray(stemAssets.id, snapshotStemIds)) : [];
+  if (!snapshotStems.some((stem) => stem.projectId === job.projectId && stem.sourceAssetId === source.id))
+    throw new ExportFailure("midi_version_scope_missing", "The immutable remix version does not contain the requested source.");
+  const [sourceAnalysis] = await db.select().from(sourceAnalyses).where(eq(sourceAnalyses.sourceAssetId, source.id)).limit(1);
+  if (!sourceAnalysis || sourceAnalysis.projectId !== job.projectId || sourceAnalysis.status !== "complete" || !Number.isFinite(sourceAnalysis.bpm) || sourceAnalysis.bpm! < 40 || sourceAnalysis.bpm! > 300)
+    throw new ExportFailure("midi_tempo_missing", "Source-relative MIDI export requires complete source BPM analysis.");
+  await updateJob(job.id, { status: "preparing", stage: "resolving-analysis", attempts: job.attempts + 1, startedAt: new Date(), completedAt: null, errorCode: null, errorMessage: null });
+  await reportStage("resolving-analysis");
+  let notes;
+  if (job.midiKind === "vocal" || job.midiKind === "drums") {
+    if (!job.midiStemAssetId) throw new ExportFailure("midi_stem_missing", "Stem MIDI export requires an isolated source stem.");
+    const [stem] = await db.select().from(stemAssets).where(eq(stemAssets.id, job.midiStemAssetId)).limit(1);
+    if (!stem || stem.projectId !== job.projectId || stem.sourceAssetId !== source.id || !snapshotStemIds.includes(stem.id))
+      throw new ExportFailure("midi_stem_missing", "The immutable remix version does not contain the requested project stem.");
+    if (job.midiKind === "vocal") {
+      if (stem.stemType !== "vocals") throw new ExportFailure("midi_stem_unsupported", "Vocal MIDI requires an isolated vocals stem.");
+      const [analysis] = await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1);
+      const reason = !analysis ? "analysis_missing" : vocalAnalysisProvenanceReason({
+        sourceAssetId: analysis.sourceAssetId, expectedSourceAssetId: source.id, stemAssetId: analysis.stemAssetId, expectedStemAssetId: stem.id,
+        sourceChecksumSha256: analysis.sourceChecksumSha256, expectedSourceChecksumSha256: source.checksumSha256, stemChecksumSha256: analysis.stemChecksumSha256, expectedStemChecksumSha256: stem.checksumSha256,
+        analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion,
+      });
+      if (!analysis || analysis.id !== job.midiAnalysisId || analysis.analysisEngine !== job.midiAnalysisEngine || analysis.analysisEngineVersion !== job.midiAnalysisEngineVersion || analysis.projectId !== job.projectId || analysis.status !== "complete" || reason)
+        throw new ExportFailure("midi_analysis_missing", "Vocal MIDI requires complete current vocal analysis.");
+      const frames = await db.select().from(vocalPitchFrames).where(eq(vocalPitchFrames.vocalAnalysisId, analysis.id)).orderBy(vocalPitchFrames.frameIndex);
+      notes = vocalFramesToMidiNotes(frames);
+    } else {
+      if (stem.stemType !== "drums" && stem.stemType !== "percussion") throw new ExportFailure("midi_stem_unsupported", "Drum MIDI requires an isolated drums/percussion stem.");
+      const [analysis] = await db.select().from(drumAnalyses).where(eq(drumAnalyses.stemAssetId, stem.id)).limit(1);
+      const reason = !analysis ? "analysis_missing" : drumAnalysisProvenanceReason({
+        sourceAssetId: analysis.sourceAssetId, expectedSourceAssetId: source.id, stemAssetId: analysis.stemAssetId, expectedStemAssetId: stem.id,
+        sourceChecksumSha256: analysis.sourceChecksumSha256, expectedSourceChecksumSha256: source.checksumSha256, stemChecksumSha256: analysis.stemChecksumSha256, expectedStemChecksumSha256: stem.checksumSha256,
+        analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion,
+      });
+      if (!analysis || analysis.id !== job.midiAnalysisId || analysis.analysisEngine !== job.midiAnalysisEngine || analysis.analysisEngineVersion !== job.midiAnalysisEngineVersion || analysis.projectId !== job.projectId || analysis.status !== "complete" || reason)
+        throw new ExportFailure("midi_analysis_missing", "Drum MIDI requires complete current drum analysis.");
+      const rows = await db.select().from(drumEvents).where(eq(drumEvents.drumAnalysisId, analysis.id)).orderBy(drumEvents.eventIndex);
+      const events = normaliseDrumEvents(rows, Math.round(stem.durationSeconds * 1000));
+      if (!events) throw new ExportFailure("midi_analysis_invalid", "Drum analysis evidence is invalid.");
+      notes = drumEventsToMidiNotes(events.map((event) => ({ ...event, nearestBeatIndex: null, beatOffsetMs: null })));
+    }
+  } else if (job.midiKind === "harmony") {
+    const [analysis] = await db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.sourceAssetId, source.id)).limit(1);
+    const reason = !analysis ? "analysis_missing" : harmonyAnalysisProvenanceReason({
+      sourceAssetId: analysis.sourceAssetId, expectedSourceAssetId: source.id,
+      sourceChecksumSha256: analysis.sourceChecksumSha256, expectedSourceChecksumSha256: source.checksumSha256,
+      analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion,
+    });
+    if (!analysis || analysis.id !== job.midiAnalysisId || analysis.analysisEngine !== job.midiAnalysisEngine || analysis.analysisEngineVersion !== job.midiAnalysisEngineVersion || analysis.projectId !== job.projectId || analysis.status !== "complete" || reason)
+      throw new ExportFailure("midi_analysis_missing", "Harmony MIDI requires complete current harmony analysis.");
+    const rows = await db.select().from(harmonyEvents).where(eq(harmonyEvents.harmonyAnalysisId, analysis.id)).orderBy(harmonyEvents.eventIndex);
+    const events = normaliseHarmonyEvents(rows, Math.round(source.durationSeconds * 1000));
+    if (!events) throw new ExportFailure("midi_analysis_invalid", "Harmony analysis evidence is invalid.");
+    notes = harmonyEventsToMidiNotes(events);
+  } else throw new ExportFailure("midi_kind_unsupported", "Unsupported MIDI export analysis kind.");
+  if (!notes.length) throw new ExportFailure("midi_no_supported_events", "No sufficiently confident analysis events can be exported as MIDI.");
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "waveyard-midi-export-"));
+  const storage = getStorage();
+  let storedKey: string | undefined;
+  let complete = false;
+  try {
+    await updateJob(job.id, { status: "processing", stage: "encoding-midi" });
+    await reportStage("encoding-midi");
+    const outputPath = join(temporaryDirectory, "analysis.mid");
+    await writeMidiFile(outputPath, notes, sourceAnalysis.bpm!);
+    const checksumSha256 = await checksumFile(outputPath);
+    const metadata = await stat(outputPath);
+    storedKey = privateObjectKey(job.projectId, "export", "mid");
+    await storage.putFile(storedKey, outputPath, "audio/midi");
+    await db.transaction(async (tx) => {
+      await tx.insert(exportAssets).values({
+        projectId: job.projectId, exportJobId: job.id, remixVersionId: version.id, storageKey: storedKey!,
+        filename: `${job.midiKind}-${version.id}.mid`, checksumSha256,
+        durationSeconds: Math.max(1, Math.ceil(Math.max(...notes.map((note) => note.startMs + note.durationMs)) / 1000)),
+        sampleRate: 0, channels: 0, codec: "smf", format: "midi", fileSizeBytes: metadata.size,
+      });
+      await tx.update(exportJobs).set({ status: "complete", stage: "complete", completedAt: new Date(), updatedAt: new Date() }).where(eq(exportJobs.id, job.id));
+    });
+    complete = true;
+    await reportStage("complete");
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown MIDI export failure.";
+    await updateJob(job.id, { status: "failed", stage: "failed", errorCode: error instanceof ExportFailure ? error.code : "midi_export_failed", errorMessage: message, completedAt: new Date() });
+    throw error;
+  } finally {
+    if (!complete && storedKey) await storage.delete(storedKey).catch(() => undefined);
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
+/** Worker-owned export from immutable persisted RemixVersion authority. */
 export async function processExport(
   payload: ExportJobPayload,
   reportStage: (stage: string) => Promise<void>,
@@ -265,6 +378,18 @@ export async function processExport(
     });
     throw new Error("Export remix provenance is unavailable.");
   }
+
+  if (job.format === "midi") {
+    try {
+      await processMidiExport(job, version, reportStage);
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown MIDI export failure.";
+      await updateJob(job.id, { status: "failed", stage: "failed", errorCode: error instanceof ExportFailure ? error.code : "midi_export_failed", errorMessage: message, completedAt: new Date() });
+      throw error;
+    }
+    return;
+  }
+  if (job.format !== "wav") throw new ExportFailure("unsupported_format", "Export format is unsupported.");
 
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "waveyard-export-"));
   const storage = getStorage();

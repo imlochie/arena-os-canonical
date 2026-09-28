@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import {
+  drumAnalyses,
   exportJobs,
   getDb,
+  harmonyAnalyses,
   remixSessions,
   remixVersions,
+  sourceAssets,
+  stemAssets,
+  vocalAnalyses,
 } from "@waveyard/database";
 import { enqueueExport } from "@waveyard/queue";
 import { requireUser } from "@/lib/auth";
@@ -61,14 +66,43 @@ export async function POST(
     const { id } = await params;
     const body = await request.json().catch(() => ({}));
     const format = body.format ?? "wav";
-    if (format !== "wav")
-      return NextResponse.json(
-        { error: "Only WAV export is currently supported." },
-        { status: 422 },
-      );
+    if (format !== "wav" && format !== "midi")
+      return NextResponse.json({ error: "Export format is unsupported." }, { status: 422 });
     const { version, session } = await accessVersion(user.id, id, "editor");
     const db = getDb();
-    const idempotencyKey = `export:${version.id}:wav:44100:2`;
+    let midi: { kind: "vocal" | "drums" | "harmony"; sourceAssetId: string; stemAssetId: string | null; analysisId: string; sourceChecksumSha256: string; analysisEngine: string; analysisEngineVersion: string } | null = null;
+    if (format === "midi") {
+      const kind = body.midiKind;
+      const sourceAssetId = body.sourceAssetId;
+      const stemAssetId = body.stemAssetId;
+      if ((kind !== "vocal" && kind !== "drums" && kind !== "harmony") || typeof sourceAssetId !== "string")
+        return NextResponse.json({ error: "MIDI export requires a supported analysis target." }, { status: 422 });
+      const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, sourceAssetId)).limit(1);
+      if (!source || source.projectId !== session.projectId)
+        return NextResponse.json({ error: "MIDI source is unavailable in this project." }, { status: 404 });
+      if (kind === "harmony") {
+        const [analysis] = await db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.sourceAssetId, source.id)).limit(1);
+        if (!analysis || analysis.projectId !== session.projectId || analysis.status !== "complete")
+          return NextResponse.json({ error: "Complete current harmony analysis is required for MIDI export." }, { status: 409 });
+        midi = { kind, sourceAssetId, stemAssetId: null, analysisId: analysis.id, sourceChecksumSha256: source.checksumSha256, analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion };
+      } else {
+        if (typeof stemAssetId !== "string") return NextResponse.json({ error: "Stem MIDI export requires an isolated stem." }, { status: 422 });
+        const [stem] = await db.select().from(stemAssets).where(eq(stemAssets.id, stemAssetId)).limit(1);
+        if (!stem || stem.projectId !== session.projectId || stem.sourceAssetId !== source.id
+          || (kind === "vocal" && stem.stemType !== "vocals")
+          || (kind === "drums" && stem.stemType !== "drums" && stem.stemType !== "percussion"))
+          return NextResponse.json({ error: "MIDI stem is unavailable or unsupported." }, { status: 422 });
+        const [analysis] = kind === "vocal"
+          ? await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1)
+          : await db.select().from(drumAnalyses).where(eq(drumAnalyses.stemAssetId, stem.id)).limit(1);
+        if (!analysis || analysis.projectId !== session.projectId || analysis.status !== "complete")
+          return NextResponse.json({ error: "Complete current stem analysis is required for MIDI export." }, { status: 409 });
+        midi = { kind, sourceAssetId, stemAssetId, analysisId: analysis.id, sourceChecksumSha256: source.checksumSha256, analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion };
+      }
+    }
+    const idempotencyKey = midi
+      ? `export:${version.id}:midi:${midi.kind}:${midi.sourceAssetId}:${midi.stemAssetId ?? "source"}:${midi.analysisId}:480`
+      : `export:${version.id}:wav:44100:2`;
     const [created] = await db
       .insert(exportJobs)
       .values({
@@ -79,9 +113,17 @@ export async function POST(
         status: "queued",
         stage: "queued",
         idempotencyKey,
-        format: "wav",
-        sampleRate: 44_100,
-        channels: 2,
+        format,
+        midiKind: midi?.kind ?? null,
+        midiSourceAssetId: midi?.sourceAssetId ?? null,
+        midiStemAssetId: midi?.stemAssetId ?? null,
+        midiPpq: midi ? 480 : null,
+        midiAnalysisId: midi?.analysisId ?? null,
+        midiSourceChecksumSha256: midi?.sourceChecksumSha256 ?? null,
+        midiAnalysisEngine: midi?.analysisEngine ?? null,
+        midiAnalysisEngineVersion: midi?.analysisEngineVersion ?? null,
+        sampleRate: midi ? 0 : 44_100,
+        channels: midi ? 0 : 2,
       })
       .onConflictDoNothing({ target: exportJobs.idempotencyKey })
       .returning();
@@ -101,7 +143,7 @@ export async function POST(
         projectId: job.projectId,
         remixSessionId: job.remixSessionId,
         remixVersionId: job.remixVersionId,
-        format: "wav",
+        format: job.format as "wav" | "midi",
       });
     } catch (queueError) {
       await db

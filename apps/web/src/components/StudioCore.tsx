@@ -9,6 +9,7 @@ import { ClipInspector } from "./studio/ClipInspector";
 import { StemMixer } from "./studio/StemMixer";
 import { DrumAnalysisPanel } from "./studio/DrumAnalysisPanel";
 import { HarmonyAnalysisPanel } from "./studio/HarmonyAnalysisPanel";
+import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
 import { SourceSectionMap } from "./studio/SourceSectionMap";
 import { StudioTransport } from "./studio/StudioTransport";
 import {
@@ -209,6 +210,13 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     onDerivedAnalysisRequested?.();
     return null;
   }, [onDerivedAnalysisRequested]);
+  const requestVocalAnalysis = useCallback(async (stemId: string) => {
+    const response = await fetch(`/api/stems/${stemId}/vocal-analysis`, { method: "POST" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return body.error ?? "Could not queue vocal analysis.";
+    onDerivedAnalysisRequested?.();
+    return null;
+  }, [onDerivedAnalysisRequested]);
   const requestHarmonyAnalysis = useCallback(async (sourceId: string) => {
     const response = await fetch(`/api/sources/${sourceId}/harmony-analysis`, { method: "POST" });
     const body = await response.json().catch(() => ({}));
@@ -216,6 +224,21 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     onDerivedAnalysisRequested?.();
     return null;
   }, [onDerivedAnalysisRequested]);
+  const requestMidiExport = useCallback(async (
+    kind: "vocal" | "drums" | "harmony",
+    sourceAssetId: string,
+    stemAssetId?: string,
+  ) => {
+    const versionId = versions.at(-1)?.id;
+    if (!versionId) return "Save an immutable remix version before requesting MIDI export.";
+    const response = await fetch(`/api/remix-versions/${versionId}/exports`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ format: "midi", midiKind: kind, sourceAssetId, stemAssetId }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return body.error ?? "Could not queue MIDI export.";
+    return null;
+  }, [versions]);
   const createRemix = async () => {
     const response = await fetch(`/api/projects/${projectId}/remixes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "First arrangement" }) });
     const body = await response.json().catch(() => ({}));
@@ -497,8 +520,9 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     <header className="studio-head"><div><span className="eyebrow">Studio core</span><h2>Real stems, one transport.</h2></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
     {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} onArrangementAction={arrangeSection} onRequestEvents={() => requestSourceEvents(source.id)} />}
-    {source && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} />}
-    {source && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} />}
+    {source && selected && <VocalAnalysisSummary stem={selected} editable onRequestAnalysis={() => requestVocalAnalysis(selected.id)} onExportMidi={selected.stemType === "vocals" ? () => requestMidiExport("vocal", source.id, selected.id) : undefined} />}
+    {source && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} onExportMidi={selected.stemType === "drums" || selected.stemType === "percussion" ? () => requestMidiExport("drums", source.id, selected.id) : undefined} />}
+    {source && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} onExportMidi={() => requestMidiExport("harmony", source.id)} />}
     <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
     <section className="studio-grid"><StemMixer stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} />}</section>
     <section className="remix-panel">

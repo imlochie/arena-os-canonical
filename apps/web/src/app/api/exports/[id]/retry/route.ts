@@ -86,7 +86,7 @@ export async function POST(
           projectId: job.projectId,
           remixSessionId: job.remixSessionId,
           remixVersionId: job.remixVersionId,
-          format: "wav",
+          format: job.format as "wav" | "midi",
         });
     } catch (queueError) {
       await db

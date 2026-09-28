@@ -13,10 +13,12 @@ export function DrumAnalysisPanel({
   stem,
   source,
   onRequestAnalysis,
+  onExportMidi,
 }: {
   stem: Stem;
   source: Source;
   onRequestAnalysis?: () => Promise<string | null>;
+  onExportMidi?: () => Promise<string | null>;
 }) {
   const [requesting, setRequesting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -27,6 +29,12 @@ export function DrumAnalysisPanel({
     if (!onRequestAnalysis) return;
     setRequesting(true);
     setMessage(await onRequestAnalysis());
+    setRequesting(false);
+  };
+  const exportMidi = async () => {
+    if (!onExportMidi) return;
+    setRequesting(true);
+    setMessage(await onExportMidi() ?? "MIDI export queued from the immutable version.");
     setRequesting(false);
   };
   return <section className="drum-analysis" aria-label="Drum analysis">
@@ -50,6 +58,8 @@ export function DrumAnalysisPanel({
       </div>
       {events.length ? <ol>{events.slice(0, 16).map((event) => <li key={event.id}><b>{event.rhythmicClass?.toUpperCase() ?? "UNKNOWN"}</b> · {sourceTime(event.timestampMs)} · confidence {Math.round(event.confidence * 100)}%{event.nearestBeatIndex !== null ? ` · beat ${event.nearestBeatIndex + 1} ${event.beatOffsetMs! >= 0 ? "+" : ""}${event.beatOffsetMs}ms` : ""}</li>)}</ol> : <p>No transient met the conservative threshold.</p>}
       <small>Classes are conservative frequency-band evidence, not professional drum transcription. Markers are source-relative observations only.</small>
+      {onExportMidi && <button className="button secondary" disabled={requesting} onClick={() => void exportMidi()}>{requesting ? "Queuing…" : "Export MIDI"}</button>}
+      {message && <p className="notice">{message}</p>}
     </>}
   </section>;
 }

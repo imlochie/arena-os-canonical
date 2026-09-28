@@ -10,7 +10,7 @@ function sourceTime(milliseconds: number) {
 }
 
 /** Compact source-coordinate harmonic evidence; it never replaces source key. */
-export function HarmonyAnalysisPanel({ source, onRequestAnalysis }: { source: Source; onRequestAnalysis?: () => Promise<string | null> }) {
+export function HarmonyAnalysisPanel({ source, onRequestAnalysis, onExportMidi }: { source: Source; onRequestAnalysis?: () => Promise<string | null>; onExportMidi?: () => Promise<string | null> }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -20,6 +20,10 @@ export function HarmonyAnalysisPanel({ source, onRequestAnalysis }: { source: So
   const request = async () => {
     if (!onRequestAnalysis) return;
     setRequesting(true); setMessage(await onRequestAnalysis()); setRequesting(false);
+  };
+  const exportMidi = async () => {
+    if (!onExportMidi) return;
+    setRequesting(true); setMessage(await onExportMidi() ?? "MIDI export queued from the immutable version."); setRequesting(false);
   };
   return <section className="harmony-analysis" aria-label="Harmony analysis">
     <div className="panel-title"><div><span className="eyebrow">Source-coordinate evidence</span><h3>Harmony</h3></div>{analysis && <span>{analysis.status}</span>}</div>
@@ -33,6 +37,8 @@ export function HarmonyAnalysisPanel({ source, onRequestAnalysis }: { source: So
       </div>
       {selected ? <dl className="harmony-inspection"><dt>Root</dt><dd>{selected.root ?? "Unknown"}</dd><dt>Quality</dt><dd>{selected.quality}</dd><dt>Confidence</dt><dd>{Math.round(selected.confidence * 100)}%</dd><dt>Source time</dt><dd>{sourceTime(selected.startMs)}–{sourceTime(selected.endMs)}</dd></dl> : <p>Select a chord window to inspect its source time and confidence.</p>}
       <small>Global source key remains separate. Chords are source-relative observations and do not edit clips.</small>
+      {onExportMidi && <button className="button secondary" disabled={requesting} onClick={() => void exportMidi()}>{requesting ? "Queuing…" : "Export MIDI"}</button>}
+      {message && <p className="notice">{message}</p>}
     </>}
   </section>;
 }

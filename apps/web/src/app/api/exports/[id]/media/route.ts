@@ -54,6 +54,7 @@ export async function GET(
       );
     const file = await stat(localPath);
     const range = request.headers.get("range");
+    const contentType = asset.format === "midi" ? "audio/midi" : "audio/wav";
     const disposition: Record<string, string> = download
       ? {
           "Content-Disposition": `attachment; filename="${asset.filename.replace(/[\\"\r\n]/g, "_")}"`,
@@ -79,7 +80,7 @@ export async function GET(
         {
           status: 206,
           headers: {
-            "Content-Type": "audio/wav",
+            "Content-Type": contentType,
             "Content-Length": String(end - start + 1),
             "Content-Range": `bytes ${start}-${end}/${file.size}`,
             "Accept-Ranges": "bytes",
@@ -91,7 +92,7 @@ export async function GET(
     }
     return new Response(Readable.toWeb(createReadStream(localPath)) as ReadableStream, {
       headers: {
-        "Content-Type": "audio/wav",
+        "Content-Type": contentType,
         "Content-Length": String(file.size),
         "Accept-Ranges": "bytes",
         "Cache-Control": "private, no-store",
