@@ -32,6 +32,43 @@ export function motionPolicy(reducedMotion: boolean) {
     : { reducedMotion: false, beatScale: 1, transitionMs: 480, overlayDelayMs: 2800 };
 }
 
+export const CINEMATIC_VISUAL_PRESETS = ["halo", "prism", "tide"] as const;
+export type CinematicVisualPreset = (typeof CINEMATIC_VISUAL_PRESETS)[number];
+
+export type CinematicVisualScene = {
+  preset: CinematicVisualPreset;
+  energy: number;
+  scale: number;
+  rotationDeg: number;
+  accentOpacity: number;
+  activeStemCount: number;
+};
+
+/**
+ * Turns the shared transport-observing visual state into a small CSS scene.
+ * The preset is deliberately display-only and has no project persistence.
+ */
+export function deriveCinematicVisualScene(input: {
+  visualState: WaveyardVisualState;
+  preset: CinematicVisualPreset;
+  reducedMotion: boolean;
+}): CinematicVisualScene {
+  const intensities = Object.values(input.visualState.stemIntensity);
+  const activeStemCount = intensities.filter((value) => value > 0).length;
+  const energy = intensities.length ? clamp(intensities.reduce((sum, value) => sum + value, 0) / intensities.length) : 0;
+  const pulse = input.reducedMotion ? 0 : input.visualState.beatPulse;
+  const presetRotation = input.preset === "halo" ? 0 : input.preset === "prism" ? 32 : -26;
+  const presetOpacity = input.preset === "halo" ? 0.38 : input.preset === "prism" ? 0.52 : 0.31;
+  return {
+    preset: input.preset,
+    energy,
+    scale: 1 + energy * 0.12 + pulse * 0.045,
+    rotationDeg: presetRotation + (input.reducedMotion ? 0 : input.visualState.transportPhase * 22),
+    accentOpacity: clamp(presetOpacity + energy * 0.25 + pulse * 0.1),
+    activeStemCount,
+  };
+}
+
 export function deriveVisualState(input: {
   positionMs: number;
   durationMs: number;

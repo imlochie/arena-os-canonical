@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { artworkEnvironment, deriveVisualState, motionPolicy } from "@waveyard/types";
+import { artworkEnvironment, deriveCinematicVisualScene, deriveVisualState, motionPolicy } from "@waveyard/types";
 
 const base = {
   durationMs: 4_000,
@@ -28,6 +28,19 @@ describe("Waveyard shared visual state", () => {
     expect(deriveVisualState(input)).toEqual(deriveVisualState(input));
     expect(deriveVisualState(input).beatPulse).toBe(0);
     expect(motionPolicy(true)).toMatchObject({ reducedMotion: true, beatScale: 0, transitionMs: 0 });
+  });
+
+  it("turns shared visual state into deterministic, non-persistent cinematic presets", () => {
+    const state = deriveVisualState({ ...base, positionMs: 2_000 });
+    expect(deriveCinematicVisualScene({ visualState: state, preset: "prism", reducedMotion: false })).toEqual(
+      deriveCinematicVisualScene({ visualState: state, preset: "prism", reducedMotion: false }),
+    );
+    expect(deriveCinematicVisualScene({ visualState: state, preset: "halo", reducedMotion: false })).not.toMatchObject(
+      deriveCinematicVisualScene({ visualState: state, preset: "tide", reducedMotion: false }),
+    );
+    const calm = deriveCinematicVisualScene({ visualState: state, preset: "halo", reducedMotion: true });
+    expect(calm.rotationDeg).toBe(0);
+    expect(calm.scale).toBeGreaterThanOrEqual(1);
   });
 
   it("generates stable artwork environments and a deterministic fallback", () => {

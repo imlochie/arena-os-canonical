@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS } from "@waveyard/types";
+import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, type CinematicVisualPreset } from "@waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { LivingPlayer, MiniPlayer } from "./player/LivingPlayer";
+import { CinematicVisual } from "./visual/CinematicVisual";
 import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTimeline";
 import { ArrangementInspector } from "./studio/ArrangementInspector";
 import { ClipInspector } from "./studio/ClipInspector";
@@ -61,8 +62,13 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
   const [versions, setVersions] = useState<RemixVersionSummary[]>([]);
   // Presentation is browser-only observation over the same project, selection,
   // transport, and persisted remix state. It never forks musical authority.
-  const [presentation, setPresentation] = useState<"studio" | "play">("studio");
+  const [presentation, setPresentation] = useState<"studio" | "play" | "visual">("studio");
+  // Visual preferences are browser-only presentation choices; they never
+  // mutate the project, RemixVersion, or transport's musical state.
+  const [visualPreset, setVisualPreset] = useState<CinematicVisualPreset>("halo");
+  const [visualMetadataVisible, setVisualMetadataVisible] = useState(true);
   const [playerFullscreen, setPlayerFullscreen] = useState(false);
+  const [visualFullscreen, setVisualFullscreen] = useState(false);
   const reducedMotion = useReducedMotion();
   const arrangementHistory = useArrangementHistory();
   const { history, future, reset, record, undo: historyUndo, redo: historyRedo } = arrangementHistory;
@@ -153,7 +159,7 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
   }, [loopEndMs, loopStartMs, setLoop]);
   useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
   useEffect(() => {
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setPlayerFullscreen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setPlayerFullscreen(false); setVisualFullscreen(false); } };
     window.addEventListener("keydown", escape);
     return () => window.removeEventListener("keydown", escape);
   }, []);
@@ -546,7 +552,7 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
     aria-label="Waveyard Studio"
     style={{ "--art-hue": environment.hue, "--art-accent-hue": environment.accentHue, "--art-shadow-hue": environment.shadowHue, "--beat-pulse": visualState.beatPulse, "--bar-pulse": visualState.barPulse, "--motion-ms": `${visualMotion.transitionMs}ms` } as CSSProperties}
   >
-    <header className="studio-head"><div><span className="eyebrow">{presentation === "studio" ? "Studio" : "Play"} · one musical state</span><h2>{presentation === "studio" ? "Real stems, one transport." : "Music in motion."}</h2></div><div className="presentation-nav" role="tablist" aria-label="Waveyard presentation mode"><button type="button" role="tab" aria-selected={presentation === "play"} data-testid="waveyard-mode-play" className={presentation === "play" ? "active" : ""} onClick={() => { setPresentation("play"); setPlayerFullscreen(false); }}>Play</button><button type="button" role="tab" aria-selected={presentation === "studio"} data-testid="waveyard-mode-studio" className={presentation === "studio" ? "active" : ""} onClick={() => { setPresentation("studio"); setPlayerFullscreen(false); }}>Studio</button><button type="button" disabled title="Visual mode arrives in the next Waveyard layer">Visual</button></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
+    <header className="studio-head"><div><span className="eyebrow">{presentation === "studio" ? "Studio" : presentation === "play" ? "Play" : "Visual"} · one musical state</span><h2>{presentation === "studio" ? "Real stems, one transport." : presentation === "play" ? "Music in motion." : "Music, made visible."}</h2></div><div className="presentation-nav" role="tablist" aria-label="Waveyard presentation mode"><button type="button" role="tab" aria-selected={presentation === "play"} data-testid="waveyard-mode-play" className={presentation === "play" ? "active" : ""} onClick={() => { setPresentation("play"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Play</button><button type="button" role="tab" aria-selected={presentation === "studio"} data-testid="waveyard-mode-studio" className={presentation === "studio" ? "active" : ""} onClick={() => { setPresentation("studio"); setPlayerFullscreen(false); setVisualFullscreen(false); }}>Studio</button><button type="button" role="tab" aria-selected={presentation === "visual"} data-testid="waveyard-mode-visual" className={presentation === "visual" ? "active" : ""} onClick={() => { setPresentation("visual"); setPlayerFullscreen(false); }}>Visual</button></div><div className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "saving" ? "Saving…" : saveState === "unsaved" ? "Unsaved changes" : "Save failed"}</div></header>
     {presentation === "play" ? <LivingPlayer
       source={source}
       stems={stems}
@@ -560,6 +566,20 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
       onOpenStudio={() => setPresentation("studio")}
       fullscreen={playerFullscreen}
       onToggleFullscreen={() => setPlayerFullscreen((current) => !current)}
+    /> : presentation === "visual" ? <CinematicVisual
+      source={source}
+      stems={stems}
+      controls={mixerControls}
+      transport={transport}
+      visualState={visualState}
+      reducedMotion={reducedMotion}
+      preset={visualPreset}
+      metadataVisible={visualMetadataVisible}
+      fullscreen={visualFullscreen}
+      onPreset={setVisualPreset}
+      onToggleMetadata={() => setVisualMetadataVisible((current) => !current)}
+      onToggleFullscreen={() => setVisualFullscreen((current) => !current)}
+      onOpenStudio={() => { setPresentation("studio"); setVisualFullscreen(false); }}
     /> : <>
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
     {source && <SourceSectionMap source={source} onUseForSlice={(section) => setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` })} onArrangementAction={arrangeSection} onRequestEvents={() => requestSourceEvents(source.id)} />}
