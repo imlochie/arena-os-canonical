@@ -115,10 +115,14 @@ test.describe("real Compose separation pipeline", () => {
     await page.waitForURL("**/create");
 
     await page
-      .locator('input[name="title"]')
+      .getByLabel("Optional project title")
       .fill("Original deterministic fixture");
-    await page.locator('input[type="file"]').setInputFiles(fixture);
-    await page.getByRole("button", { name: "Separate this track" }).click();
+    await page
+      .getByLabel("Local audio files")
+      .setInputFiles(fixture);
+    await page
+      .getByRole("button", { name: "BUILD" })
+      .click();
     await page.waitForURL(/\/projects\/[\w-]+/);
     projectId = page.url().split("/").at(-1) ?? "";
     expect(projectId).not.toBe("");
