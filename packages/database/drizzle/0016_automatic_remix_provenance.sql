@@ -9,7 +9,7 @@ CREATE TABLE "automatic_remix_generations" (
   "constraints" text NOT NULL,
   "provenance" text NOT NULL,
   "created_at" timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT "automatic_remix_generations_variant_valid" CHECK ("variant" IN ('original', 'hybrid')
+  CONSTRAINT "automatic_remix_generations_variant_valid" CHECK ("variant" IN ('original', 'hybrid'))
 );
 CREATE UNIQUE INDEX "automatic_remix_generations_session_unique" ON "automatic_remix_generations" USING btree ("remix_session_id");
 CREATE INDEX "automatic_remix_generations_session_idx" ON "automatic_remix_generations" USING btree ("remix_session_id");
