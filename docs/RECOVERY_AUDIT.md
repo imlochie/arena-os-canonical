@@ -22,6 +22,8 @@ No reset, clean, checkout, force-push, or history rewrite was performed. After t
 
 That checkpoint deliberately keeps `c1c1219` as its parent, so both the pre-recovery Waveyard worktree and the original Arena tree remain recoverable without destructive Git operations.
 
+When the checkpoint was pushed, the remote session branch rejected it as non-fast-forward. A fetch then recovered the previously absent remote lineage, ending at `60aed44`. Its tip tree was byte-for-byte identical to checkpoint `7208173` (`ac72b2b5…`), establishing that the untracked worktree was the canonical Waveyard state rather than a divergent copy. The remote lineage was therefore added with a non-destructive `ours` merge (`361cfc5`): the restored Arena/Waveyard tree stayed unchanged while the full original Waveyard history became an ancestor of this branch.
+
 ## Verified historical Arena contract
 
 The baseline is a Next.js + PostgreSQL personal-AI application with real pages/APIs/components for:
