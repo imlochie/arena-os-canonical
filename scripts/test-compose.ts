@@ -29,8 +29,11 @@ async function waitForHealth() {
 }
 async function main() {
   try { await command("docker", ["version"], false); } catch { throw new Error("Docker is required for real Compose verification and is not available."); }
-  const keep = process.env.WAVEYARD_KEEP_COMPOSE === "1";
   const keepE2eContainer = process.env.WAVEYARD_KEEP_E2E_CONTAINER === "1";
+  // A named E2E container is useful only while its Compose dependencies and
+  // Playwright artifacts remain available, so either diagnostic keep flag
+  // suppresses teardown.
+  const keep = process.env.WAVEYARD_KEEP_COMPOSE === "1" || keepE2eContainer;
   // This secret exists only for the lifetime of the Compose release gate. It
   // enables deterministic, authenticated fault injection without exposing a
   // control route in normal deployments.
@@ -52,9 +55,15 @@ async function main() {
     // The images above are already current for this invocation. Never ask run
     // to rebuild them: this must start the test container, not a second bake.
     const e2eArgs = ["compose", "--profile", "test", "run"];
-    if (keepE2eContainer)
+    if (keepE2eContainer) {
+      // A retained diagnostic run deliberately uses a discoverable name so its
+      // artifacts can be copied after failure. Replace only the prior
+      // diagnostic container with that exact name; never touch project data,
+      // volumes, or unrelated containers.
+      await command("docker", ["container", "rm", "-f", "waveyard-e2e-release-gate"], true, composeEnv)
+        .catch(() => undefined);
       e2eArgs.push("--name", "waveyard-e2e-release-gate");
-    else e2eArgs.push("--rm");
+    } else e2eArgs.push("--rm");
     e2eArgs.push("e2e");
     e2eStarted = true;
     await command("docker", e2eArgs, true, composeEnv);
