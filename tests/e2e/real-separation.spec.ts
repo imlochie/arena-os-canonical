@@ -126,6 +126,28 @@ test.describe("real Compose separation pipeline", () => {
     await page.waitForURL(/\/projects\/[\w-]+/);
     projectId = page.url().split("/").at(-1) ?? "";
     expect(projectId).not.toBe("");
+    const automaticRemixPosts: string[] = [];
+    const automaticRemixResponses: Array<{ status: number; body: unknown }> = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        new URL(request.url()).pathname ===
+          `/api/projects/${projectId}/automatic-remixes`
+      )
+        automaticRemixPosts.push(request.postData() ?? "");
+    });
+    page.on("response", (response) => {
+      if (
+        response.request().method() !== "POST" ||
+        new URL(response.url()).pathname !==
+          `/api/projects/${projectId}/automatic-remixes`
+      )
+        return;
+      void response
+        .json()
+        .then((body) => automaticRemixResponses.push({ status: response.status(), body }))
+        .catch(() => automaticRemixResponses.push({ status: response.status(), body: null }));
+    });
 
     await expect
       .poll(
@@ -229,6 +251,8 @@ test.describe("real Compose separation pipeline", () => {
             return {
               projectHttp: projectResponse.status(),
               remixesHttp: remixesResponse.status(),
+              automaticRemixPostCount: automaticRemixPosts.length,
+              automaticRemixResponses,
             };
           }
           const [projectState, remixState] = await Promise.all([
@@ -239,6 +263,8 @@ test.describe("real Compose separation pipeline", () => {
             projectHttp: projectResponse.status(),
             remixesHttp: remixesResponse.status(),
             remixCount: remixState.remixes?.length ?? 0,
+            automaticRemixPostCount: automaticRemixPosts.length,
+            automaticRemixResponses,
             build: {
               status: projectState.build?.status ?? null,
               stage: projectState.build?.stage ?? null,
@@ -272,6 +298,10 @@ test.describe("real Compose separation pipeline", () => {
         projectHttp: 200,
         remixesHttp: 200,
         remixCount: 1,
+        automaticRemixPostCount: 1,
+        automaticRemixResponses: [
+          expect.objectContaining({ status: 201 }),
+        ],
         build: {
           status: "complete",
           remixSessionId: expect.any(String),
