@@ -18,6 +18,7 @@ import {
 } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
+import { crossfadeError, type RemixClipInput } from "@/lib/remix";
 import { barMs, beatMs, type MusicalTiming } from "@/lib/timing";
 
 const operations = new Set(["move", "nudge", "duplicate", "delete"]);
@@ -59,6 +60,28 @@ function values(clip: Omit<ReturnType<typeof editable>, "id"> & { id?: string })
     beatSnapEnabled: clip.beatSnapEnabled,
     updatedAt: new Date(),
   };
+}
+
+type CrossfadeAddition = { remixTrackId: string; clip: RemixClipInput };
+
+function crossfadeMessageForCandidateTracks(
+  current: Array<typeof remixClips.$inferSelect>,
+  replacements = new Map<string, RemixClipInput>(),
+  removedIds = new Set<string>(),
+  additions: CrossfadeAddition[] = [],
+) {
+  const byTrackId = new Map<string, RemixClipInput[]>();
+  const add = (trackId: string, clip: RemixClipInput) => {
+    byTrackId.set(trackId, [...(byTrackId.get(trackId) ?? []), clip]);
+  };
+  for (const clip of current) {
+    if (removedIds.has(clip.id)) continue;
+    add(clip.remixTrackId, replacements.get(clip.id) ?? editable(clip));
+  }
+  for (const addition of additions) add(addition.remixTrackId, addition.clip);
+  return [...byTrackId.values()]
+    .map((clips) => crossfadeError({ clips }))
+    .find(Boolean) ?? null;
 }
 
 export async function POST(
@@ -112,6 +135,10 @@ export async function POST(
       gridDivision: remix.gridDivision as MusicalTiming["gridDivision"],
       snapEnabled: remix.snapEnabled,
     };
+    const allOnTracks = await db
+      .select()
+      .from(remixClips)
+      .where(inArray(remixClips.remixTrackId, trackIds));
     let updated: ReturnType<typeof editable>[] = [];
     let created: ReturnType<typeof editable>[] = [];
     if (operation === "move" || operation === "nudge") {
@@ -127,6 +154,12 @@ export async function POST(
       const moved = delta === null ? null : moveEditableClips(selected.map(editable), delta);
       if (!moved)
         return NextResponse.json({ error: "This group move would exceed the arrangement timeline." }, { status: 422 });
+      const crossfadeMessage = crossfadeMessageForCandidateTracks(
+        allOnTracks,
+        new Map(moved.map((clip) => [clip.id!, clip])),
+      );
+      if (crossfadeMessage)
+        return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
       updated = await db.transaction(async (tx) => {
         const result = await Promise.all(moved.map(async (clip) => {
           const [row] = await tx.update(remixClips).set(values(clip)).where(eq(remixClips.id, clip.id!)).returning();
@@ -144,9 +177,19 @@ export async function POST(
         return NextResponse.json({ error: "Duplicate placement would exceed the arrangement timeline." }, { status: 422 });
       const selectedPerTrack = new Map<string, number>();
       for (const clip of selected) selectedPerTrack.set(clip.remixTrackId, (selectedPerTrack.get(clip.remixTrackId) ?? 0) + 1);
-      const allOnTracks = await db.select({ remixTrackId: remixClips.remixTrackId }).from(remixClips).where(inArray(remixClips.remixTrackId, trackIds));
       if ([...selectedPerTrack].some(([trackId, additions]) => !hasClipCapacity(allOnTracks.filter((clip) => clip.remixTrackId === trackId).length, additions, MAX_CLIPS_PER_TRACK)))
         return NextResponse.json({ error: `A selected track would exceed the ${MAX_CLIPS_PER_TRACK}-clip limit.` }, { status: 422 });
+      const crossfadeMessage = crossfadeMessageForCandidateTracks(
+        allOnTracks,
+        undefined,
+        undefined,
+        duplicates.map((clip, index) => ({
+          remixTrackId: selected[index].remixTrackId,
+          clip,
+        })),
+      );
+      if (crossfadeMessage)
+        return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
       created = await db.transaction(async (tx) => {
         const rows = await Promise.all(duplicates.map(async (clip, index) => {
           const [row] = await tx.insert(remixClips).values({ remixTrackId: selected[index].remixTrackId, ...values(clip) }).returning();
@@ -156,6 +199,13 @@ export async function POST(
         return rows.map(editable);
       });
     } else {
+      const crossfadeMessage = crossfadeMessageForCandidateTracks(
+        allOnTracks,
+        undefined,
+        new Set(clipIds),
+      );
+      if (crossfadeMessage)
+        return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
       await db.transaction(async (tx) => {
         await tx.delete(remixClips).where(inArray(remixClips.id, clipIds));
         await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));

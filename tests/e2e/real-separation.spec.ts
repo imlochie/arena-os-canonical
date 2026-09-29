@@ -1566,8 +1566,27 @@ test.describe("real Compose separation pipeline", () => {
       invalidCrossfade.tracks[0].clips[0].fadeOutMs = 500;
       const rejected = await context.put(`/api/remixes/${remixId}`, { data: invalidCrossfade });
       expect(rejected.status()).toBe(422);
+      const rejectedClipMove = await context.post(`/api/remixes/${remixId}/clips/edit`, {
+        data: {
+          operation: "move",
+          clipId: arranged.tracks[0].clips[0].id,
+          timelineStartMs: 2_000,
+          snapMode: "free",
+        },
+      });
+      expect(rejectedClipMove.status()).toBe(422);
+      expect((await rejectedClipMove.json()).error).toBe(
+        "Adjacent overlapping clips require matching fade-out, fade-in, and overlap durations.",
+      );
+      const afterRejectedClipMove = await (await context.get(`/api/remixes/${remixId}`)).json();
+      expect(afterRejectedClipMove.tracks[0].clips).toMatchObject([
+        { timelineStartMs: 0, durationMs: 7_000, fadeOutMs: 1_000 },
+        { timelineStartMs: 6_000, durationMs: 6_000, fadeInMs: 1_000 },
+      ]);
 
-      const version = await context.post(`/api/remixes/${remixId}/versions`, { data: { name: "Timed crossfade arrangement" } });
+      const version = await context.post(`/api/remixes/${remixId}/versions`, {
+        data: { name: "Timed crossfade arrangement" },
+      });
       expect(version.status()).toBe(201);
       const arrangementVersionId = (await version.json()).version.id as string;
       const changed = structuredClone(payload);
@@ -1594,15 +1613,22 @@ test.describe("real Compose separation pipeline", () => {
       // provenance and transforms survive each move/nudge/trim/slip/duplicate
       // action, while split replaces the one source-bounded clip transactionally.
       const phase13State = await (await context.get(`/api/remixes/${remixId}`)).json();
-      const phase13Track = phase13State.tracks[0] as Record<string, unknown>;
-      const phase13Clip = (phase13Track.clips as Array<Record<string, unknown>>)[0];
+      // Keep ordinary clip transforms off the separately asserted crossfade
+      // track: each persisted mutation must retain that track's boundary rule.
+      const phase13Track = phase13State.tracks.find(
+        (track: Record<string, unknown>) =>
+          Array.isArray(track.clips) && track.clips.length === 1,
+      ) as Record<string, unknown> | undefined;
+      expect(phase13Track).toBeTruthy();
+      const phase13TrackId = String(phase13Track!.id);
+      const phase13Clip = (phase13Track!.clips as Array<Record<string, unknown>>)[0];
       const edit = async (operation: string, data: Record<string, unknown> = {}) => context.post(
         `/api/remixes/${remixId}/clips/edit`,
         { data: { operation, clipId: phase13Clip.id, ...data } },
       );
       const moved = await edit("move", { timelineStartMs: 2_000, snapMode: "free" });
       expect(moved.status()).toBe(200);
-      expect((await moved.json()).clip).toMatchObject({ timelineStartMs: 2_000, sourceOffsetMs: 0, gain: 0.8 });
+      expect((await moved.json()).clip).toMatchObject({ timelineStartMs: 2_000, sourceOffsetMs: 0, gain: 1 });
       const nudged = await edit("nudge", { amount: "10ms", direction: "forward" });
       expect(nudged.status()).toBe(200);
       expect((await nudged.json()).clip).toMatchObject({ timelineStartMs: 2_010, sourceOffsetMs: 0 });
@@ -1614,28 +1640,32 @@ test.describe("real Compose separation pipeline", () => {
       expect((await rightTrim.json()).clip).toMatchObject({ timelineStartMs: 2_110, sourceOffsetMs: 100, durationMs: 6_800 });
       const slipped = await edit("slip", { sourceOffsetMs: 200 });
       expect(slipped.status()).toBe(200);
-      expect((await slipped.json()).clip).toMatchObject({ timelineStartMs: 2_110, sourceOffsetMs: 200, durationMs: 6_800, gain: 0.8, fadeOutMs: 1_000 });
+      expect((await slipped.json()).clip).toMatchObject({ timelineStartMs: 2_110, sourceOffsetMs: 200, durationMs: 6_800, gain: 1, fadeOutMs: 0 });
       const duplicateClip = await edit("duplicate");
       expect(duplicateClip.status()).toBe(201);
       const duplicateBody = await duplicateClip.json();
-      expect(duplicateBody.clip).toMatchObject({ timelineStartMs: 8_910, sourceOffsetMs: 200, durationMs: 6_800, gain: 0.8, fadeOutMs: 1_000 });
+      expect(duplicateBody.clip).toMatchObject({ timelineStartMs: 8_910, sourceOffsetMs: 200, durationMs: 6_800, gain: 1, fadeOutMs: 0 });
       const split = await edit("split", { timelineMs: 5_000 });
       expect(split.status()).toBe(200);
       const splitBody = await split.json();
       expect(splitBody.clips).toHaveLength(2);
       expect(splitBody.clips).toMatchObject([
-        { timelineStartMs: 2_110, durationMs: 2_890, sourceOffsetMs: 200, gain: 0.8, fadeOutMs: 0 },
-        { timelineStartMs: 5_000, durationMs: 3_910, sourceOffsetMs: 3_090, gain: 0.8, fadeInMs: 0, fadeOutMs: 1_000 },
+        { timelineStartMs: 2_110, durationMs: 2_890, sourceOffsetMs: 200, gain: 1, fadeOutMs: 0 },
+        { timelineStartMs: 5_000, durationMs: 3_910, sourceOffsetMs: 3_090, gain: 1, fadeInMs: 0, fadeOutMs: 0 },
       ]);
       const phase13Reloaded = await (await context.get(`/api/remixes/${remixId}`)).json();
-      expect((phase13Reloaded.tracks[0].clips as Array<Record<string, unknown>>).some((clip) => clip.id === phase13Clip.id)).toBe(false);
-      expect(phase13Reloaded.tracks[0].clips).toHaveLength(4);
+      const phase13ReloadedTrack = phase13Reloaded.tracks.find(
+        (track: Record<string, unknown>) => track.id === phase13TrackId,
+      ) as Record<string, unknown> | undefined;
+      expect(phase13ReloadedTrack).toBeTruthy();
+      expect((phase13ReloadedTrack!.clips as Array<Record<string, unknown>>).some((clip) => clip.id === phase13Clip.id)).toBe(false);
+      expect(phase13ReloadedTrack!.clips).toHaveLength(4);
 
       // Phase 14 composes IDs only in the UI, but persists each multi-clip
       // operation atomically. The same delta retains selected-clip spacing.
-      const phase14Ids = (phase13Reloaded.tracks[0].clips as Array<Record<string, unknown>>)
+      const phase14Ids = (phase13ReloadedTrack!.clips as Array<Record<string, unknown>>)
         .slice(0, 2).map((clip) => String(clip.id));
-      const phase14Starts = (phase13Reloaded.tracks[0].clips as Array<Record<string, unknown>>)
+      const phase14Starts = (phase13ReloadedTrack!.clips as Array<Record<string, unknown>>)
         .slice(0, 2).map((clip) => Number(clip.timelineStartMs));
       const groupMove = await context.post(`/api/remixes/${remixId}/clips/batch-edit`, {
         data: { operation: "move", clipIds: phase14Ids, timelineDeltaMs: 250 },
@@ -1657,7 +1687,11 @@ test.describe("real Compose separation pipeline", () => {
       });
       expect(invalidGroupMove.status()).toBe(422);
       const afterRejectedGroupMove = await (await context.get(`/api/remixes/${remixId}`)).json();
-      const afterRejectedStarts = (afterRejectedGroupMove.tracks[0].clips as Array<Record<string, unknown>>)
+      const afterRejectedGroupTrack = afterRejectedGroupMove.tracks.find(
+        (track: Record<string, unknown>) => track.id === phase13TrackId,
+      ) as Record<string, unknown> | undefined;
+      expect(afterRejectedGroupTrack).toBeTruthy();
+      const afterRejectedStarts = (afterRejectedGroupTrack!.clips as Array<Record<string, unknown>>)
         .filter((clip) => phase14Ids.includes(String(clip.id))).map((clip) => Number(clip.timelineStartMs));
       expect(afterRejectedStarts.sort((a, b) => a - b)).toEqual(phase14Starts.map((start) => start + 250).sort((a, b) => a - b));
       const groupDelete = await context.post(`/api/remixes/${remixId}/clips/batch-edit`, {
@@ -1668,7 +1702,7 @@ test.describe("real Compose separation pipeline", () => {
 
       // Phase 15 automation has one project/remix/track scope, survives reload
       // and a RemixVersion snapshot, and never accepts a sibling-remix track.
-      const automationTrackId = String(phase13Reloaded.tracks[0].id);
+      const automationTrackId = phase13TrackId;
       const addAutomation = (data: Record<string, unknown>) => context.post(`/api/remixes/${remixId}/automation`, { data });
       expect((await addAutomation({ operation: "upsert", remixTrackId: automationTrackId, parameter: "volume", timelineMs: 0, value: 0.25 })).status()).toBe(200);
       expect((await addAutomation({ operation: "upsert", remixTrackId: automationTrackId, parameter: "volume", timelineMs: 1_000, value: 1 })).status()).toBe(200);
@@ -1680,21 +1714,49 @@ test.describe("real Compose separation pipeline", () => {
         expect.objectContaining({ timelineMs: 0, value: 0.25 }),
         expect.objectContaining({ timelineMs: 1_000, value: 1.25 }),
       ]));
+      const crossfadeTrack = automationReload.tracks.find(
+        (track: Record<string, unknown>) =>
+          Array.isArray(track.clips) && track.clips.length === 2,
+      ) as Record<string, unknown> | undefined;
+      expect(crossfadeTrack).toBeTruthy();
+      const crossfadeTrackId = String(crossfadeTrack!.id);
+      const automationSnapshot = {
+        points: volumeLane.points.map((point: Record<string, unknown>) => ({
+          timelineMs: point.timelineMs,
+          value: point.value,
+        })),
+        crossfadeClips: (crossfadeTrack!.clips as Array<Record<string, unknown>>).map((clip) => ({
+          timelineStartMs: clip.timelineStartMs,
+          durationMs: clip.durationMs,
+          fadeInMs: clip.fadeInMs,
+          fadeOutMs: clip.fadeOutMs,
+        })),
+      };
       const automationVersion = await context.post(`/api/remixes/${remixId}/versions`, { data: { name: "Automation V1 snapshot" } });
       expect(automationVersion.status()).toBe(201);
       const automationVersionId = (await automationVersion.json()).version.id as string;
       const firstPointId = volumeLane.points.find((point: Record<string, unknown>) => point.timelineMs === 0).id as string;
       expect((await addAutomation({ operation: "delete", remixTrackId: automationTrackId, parameter: "volume", pointId: firstPointId })).status()).toBe(200);
-      const restoreResponse = await context.post(
-        `/api/remixes/${remixId}/versions/${automationVersionId}/restore`,
-      );
-      const restoreBody = await restoreResponse.text();
-      console.log("=== AUTOMATION VERSION RESTORE RESPONSE BEGIN ===");
-      console.log(JSON.stringify({ status: restoreResponse.status(), body: restoreBody }, null, 2));
-      console.log("=== AUTOMATION VERSION RESTORE RESPONSE END ===");
-      expect(restoreResponse.status(), restoreBody).toBe(200);
+      expect((await context.post(`/api/remixes/${remixId}/versions/${automationVersionId}/restore`)).status()).toBe(200);
       const restoredAutomation = await (await context.get(`/api/remixes/${remixId}`)).json();
-      expect(restoredAutomation.automation.find((lane: Record<string, unknown>) => lane.remixTrackId === automationTrackId && lane.parameter === "volume").points).toHaveLength(2);
+      const restoredVolumeLane = restoredAutomation.automation.find(
+        (lane: Record<string, unknown>) => lane.remixTrackId === automationTrackId && lane.parameter === "volume",
+      );
+      expect(restoredVolumeLane.points).toHaveLength(2);
+      expect(restoredVolumeLane.points).toEqual(expect.arrayContaining(
+        automationSnapshot.points.map((point: Record<string, unknown>) =>
+          expect.objectContaining({ id: expect.any(String), ...point }),
+        ),
+      ));
+      const restoredCrossfadeTrack = restoredAutomation.tracks.find(
+        (track: Record<string, unknown>) => track.id === crossfadeTrackId,
+      ) as Record<string, unknown> | undefined;
+      expect(restoredCrossfadeTrack).toBeTruthy();
+      expect(restoredCrossfadeTrack!.clips).toEqual(expect.arrayContaining(
+        automationSnapshot.crossfadeClips.map((clip: Record<string, unknown>) =>
+          expect.objectContaining(clip),
+        ),
+      ));
       const sibling = await context.post(`/api/projects/${projectId}/remixes`, { data: { name: "Automation isolation sibling" } });
       expect(sibling.status()).toBe(201);
       const siblingId = (await sibling.json()).remix.id as string;

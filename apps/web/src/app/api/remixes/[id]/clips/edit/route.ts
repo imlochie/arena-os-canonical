@@ -21,6 +21,7 @@ import {
 } from "@waveyard/types";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
+import { crossfadeError } from "@/lib/remix";
 import { barMs, beatMs, snapTimelineMs, type MusicalTiming } from "@/lib/timing";
 
 const operations = new Set(["move", "nudge", "trim-left", "trim-right", "slip", "duplicate", "split"]);
@@ -96,6 +97,10 @@ export async function POST(
     if (!tempoRatio)
       return NextResponse.json({ error: "Tempo-synced editing requires usable source BPM analysis." }, { status: 422 });
     const original = { ...clipValues(clip), id: clip.id };
+    const trackClips = await db
+      .select()
+      .from(remixClips)
+      .where(eq(remixClips.remixTrackId, track.id));
     if (!clipWindowIsValid(original, sourceDurationMs, tempoRatio))
       return NextResponse.json({ error: "The existing clip has an invalid source window." }, { status: 422 });
     const timing: MusicalTiming = {
@@ -141,6 +146,11 @@ export async function POST(
       const current = await db.select({ id: remixClips.id }).from(remixClips).where(eq(remixClips.remixTrackId, track.id));
       if (current.length >= MAX_CLIPS_PER_TRACK)
         return NextResponse.json({ error: `This track has reached the ${MAX_CLIPS_PER_TRACK}-clip limit.` }, { status: 422 });
+      const crossfadeMessage = crossfadeError({
+        clips: [...trackClips.map(clipValues), duplicate],
+      });
+      if (crossfadeMessage)
+        return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
       const created = await db.transaction(async (tx) => {
         const [inserted] = await tx.insert(remixClips).values({ remixTrackId: track.id, ...persistedValues(duplicate) }).returning();
         await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
@@ -155,6 +165,15 @@ export async function POST(
       const splitAt = asFinite(body.timelineMs);
       const split = splitAt === null ? null : splitEditableClip(original, splitAt, sourceDurationMs, tempoRatio);
       if (!split) return NextResponse.json({ error: "Split point must fall inside the source-bounded clip." }, { status: 422 });
+      const crossfadeMessage = crossfadeError({
+        clips: [
+          ...trackClips.filter((candidate) => candidate.id !== clip.id).map(clipValues),
+          split.left,
+          split.right,
+        ],
+      });
+      if (crossfadeMessage)
+        return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
       const created = await db.transaction(async (tx) => {
         const [left] = await tx.insert(remixClips).values({ remixTrackId: track.id, ...persistedValues(split.left) }).returning();
         const [right] = await tx.insert(remixClips).values({ remixTrackId: track.id, ...persistedValues(split.right) }).returning();
@@ -166,6 +185,13 @@ export async function POST(
     }
     if (!next || !clipWindowIsValid(next, sourceDurationMs, tempoRatio))
       return NextResponse.json({ error: "This edit falls outside immutable source or timeline bounds." }, { status: 422 });
+    const crossfadeMessage = crossfadeError({
+      clips: trackClips.map((candidate) =>
+        candidate.id === clip.id ? next : clipValues(candidate),
+      ),
+    });
+    if (crossfadeMessage)
+      return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
     const [updated] = await db.transaction(async (tx) => {
       const result = await tx.update(remixClips).set(persistedValues(next)).where(eq(remixClips.id, clip.id)).returning();
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));

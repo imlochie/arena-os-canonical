@@ -15,6 +15,7 @@ import { validateWaveform, waveformPeaksForResolution } from "@waveyard/audio";
 import { pitchFilterChain, pitchRatioForSemitones, resolveKeySync } from "../../apps/worker/src/key";
 import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "../../apps/worker/src/tempo";
 import {
+  crossfadeError,
   effectiveMuted,
   normaliseRemixState,
 } from "../../apps/web/src/lib/remix";
@@ -140,6 +141,25 @@ describe("remix arrangement normalisation", () => {
         tracks: new Array(33).fill(state.tracks[0]),
       }),
     ).toBeNull();
+  });
+
+  it("requires each persisted overlap to match both boundary fades", () => {
+    const first = {
+      stemAssetId: "stem-a", timelineStartMs: 0, durationMs: 7_000,
+      sourceOffsetMs: 0, gain: 1, fadeInMs: 0, fadeOutMs: 1_000,
+      tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false,
+    };
+    const second = {
+      stemAssetId: "stem-a", timelineStartMs: 6_000, durationMs: 6_000,
+      sourceOffsetMs: 6_000, gain: 1, fadeInMs: 1_000, fadeOutMs: 0,
+      tempoSyncEnabled: false, keySyncEnabled: false, beatSnapEnabled: false,
+    };
+    expect(crossfadeError({ clips: [first, second] })).toBeNull();
+    expect(crossfadeError({
+      clips: [{ ...first, timelineStartMs: 2_000 }, second],
+    })).toBe(
+      "Adjacent overlapping clips require matching fade-out, fade-in, and overlap durations.",
+    );
   });
 });
 

@@ -3,6 +3,7 @@ import { asc, eq, inArray } from "drizzle-orm";
 import { getDb, remixAutomationPoints, remixClips, remixSessions, remixTracks, remixVersions } from "@waveyard/database";
 import { requireUser } from "@/lib/auth";
 import { requireProjectRole } from "@/lib/permissions";
+import { crossfadeError, normaliseRemixState } from "@/lib/remix";
 
 async function access(userId: string, id: string, minimum: "viewer" | "editor") {
   const [remix] = await getDb().select().from(remixSessions).where(eq(remixSessions.id, id)).limit(1);
@@ -55,7 +56,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const remix = await access(user.id, id, "editor");
     const body = await request.json().catch(() => ({}));
     const name = String(body.name ?? `Version ${remix.version}`).trim().slice(0, 120) || `Version ${remix.version}`;
-    const [version] = await getDb().insert(remixVersions).values({ remixSessionId: remix.id, createdById: user.id, name, snapshot: JSON.stringify(await snapshot(remix)) }).returning({ id: remixVersions.id, name: remixVersions.name, createdAt: remixVersions.createdAt });
+    const versionSnapshot = await snapshot(remix);
+    const state = normaliseRemixState(versionSnapshot);
+    if (!state)
+      return NextResponse.json({ error: "Current remix state cannot be versioned." }, { status: 422 });
+    const crossfadeMessage = state.tracks.map(crossfadeError).find(Boolean);
+    if (crossfadeMessage)
+      return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
+    const [version] = await getDb().insert(remixVersions).values({
+      remixSessionId: remix.id,
+      createdById: user.id,
+      name,
+      snapshot: JSON.stringify(versionSnapshot),
+    }).returning({ id: remixVersions.id, name: remixVersions.name, createdAt: remixVersions.createdAt });
     return NextResponse.json({ version }, { status: 201 });
   } catch (error) { if (error instanceof Response) return error; console.error("remix version failed", error); return NextResponse.json({ error: "Could not create a remix version." }, { status: 500 }); }
 }
