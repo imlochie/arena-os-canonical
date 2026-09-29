@@ -1685,7 +1685,14 @@ test.describe("real Compose separation pipeline", () => {
       const automationVersionId = (await automationVersion.json()).version.id as string;
       const firstPointId = volumeLane.points.find((point: Record<string, unknown>) => point.timelineMs === 0).id as string;
       expect((await addAutomation({ operation: "delete", remixTrackId: automationTrackId, parameter: "volume", pointId: firstPointId })).status()).toBe(200);
-      expect((await context.post(`/api/remixes/${remixId}/versions/${automationVersionId}/restore`)).status()).toBe(200);
+      const restoreResponse = await context.post(
+        `/api/remixes/${remixId}/versions/${automationVersionId}/restore`,
+      );
+      const restoreBody = await restoreResponse.text();
+      console.log("=== AUTOMATION VERSION RESTORE RESPONSE BEGIN ===");
+      console.log(JSON.stringify({ status: restoreResponse.status(), body: restoreBody }, null, 2));
+      console.log("=== AUTOMATION VERSION RESTORE RESPONSE END ===");
+      expect(restoreResponse.status(), restoreBody).toBe(200);
       const restoredAutomation = await (await context.get(`/api/remixes/${remixId}`)).json();
       expect(restoredAutomation.automation.find((lane: Record<string, unknown>) => lane.remixTrackId === automationTrackId && lane.parameter === "volume").points).toHaveLength(2);
       const sibling = await context.post(`/api/projects/${projectId}/remixes`, { data: { name: "Automation isolation sibling" } });
