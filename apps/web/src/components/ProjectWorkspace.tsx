@@ -66,7 +66,11 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         return;
       }
       setData(json);
-      const active = [
+      const sourcesAwaitingSectionLifecycle = (json.sources ?? []).some(
+        (source: { analysis?: { status?: string } | null; sectionAnalysis?: { status?: string } | null }) =>
+          source.analysis?.status === "complete" && !source.sectionAnalysis,
+      );
+      const active = sourcesAwaitingSectionLifecycle || [
         ...(json.jobs ?? []),
         ...(json.waveformJobs ?? []),
         ...(json.sources ?? [])

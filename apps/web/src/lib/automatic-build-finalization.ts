@@ -22,13 +22,14 @@ export type AutomaticBuildFinalization = {
   canBuildAutomaticRemix: boolean;
 };
 
-const ACTIVE_SECTION_STATUSES = new Set(["queued", "preparing", "processing"]);
+const TERMINAL_SECTION_STATUSES = new Set(["complete", "unavailable", "failed"]);
 
 /**
  * Separation and authoritative source analysis decide whether a source can
- * enter the first automatic arrangement. Structural sections are enrichment:
- * the planner uses them when complete and otherwise creates its established
- * continuous-source fallback.
+ * enter the first automatic arrangement. Structural sections are enrichment,
+ * but the arranger must wait for their durable terminal result: otherwise it
+ * can snapshot the continuous fallback in the short gap between authoritative
+ * analysis completing and the section worker publishing verified windows.
  */
 export function evaluateAutomaticBuildFinalization(
   input: AutomaticBuildFinalizationInput,
@@ -48,17 +49,19 @@ export function evaluateAutomaticBuildFinalization(
   const sourceAnalysisReady =
     expectedReadySourceCount > 0 &&
     eligibleSources.length >= expectedReadySourceCount;
-  const structureRunning = input.sources.some(
-    (source) =>
-      source.analysisStatus === "complete" &&
-      ACTIVE_SECTION_STATUSES.has(source.sectionStatus ?? ""),
+  // A completed source analysis always provisions a durable section-analysis
+  // row. Until that row reaches a terminal state, treating absent/pending
+  // structure as a fallback would race the worker and permanently snapshot a
+  // one-window arrangement even when verified sections arrive moments later.
+  const structurePending = eligibleSources.some(
+    (source) => !TERMINAL_SECTION_STATUSES.has(source.sectionStatus ?? ""),
   );
 
   const stage = input.processing
     ? "separating"
     : !sourceAnalysisReady
       ? "understanding"
-      : structureRunning
+      : structurePending
         ? "finding-structure"
         : "building";
 
@@ -74,6 +77,6 @@ export function evaluateAutomaticBuildFinalization(
     // the next evaluation believe no source can ever become ready.
     reportedAcceptedSourceCount: input.acceptedSourceCount,
     stage,
-    canBuildAutomaticRemix: !input.processing && sourceAnalysisReady,
+    canBuildAutomaticRemix: !input.processing && sourceAnalysisReady && !structurePending,
   };
 }

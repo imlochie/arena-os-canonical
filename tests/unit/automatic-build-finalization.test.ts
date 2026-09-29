@@ -53,7 +53,7 @@ describe("automatic build finalization", () => {
     });
   });
 
-  it("keeps the structural stage visible without blocking automatic construction", () => {
+  it("waits for queued structural analysis before snapshotting an arrangement", () => {
     const result = evaluate({
       sources: [{
         id: "source-a",
@@ -65,7 +65,22 @@ describe("automatic build finalization", () => {
 
     expect(result).toMatchObject({
       stage: "finding-structure",
-      canBuildAutomaticRemix: true,
+      canBuildAutomaticRemix: false,
+    });
+  });
+
+  it("waits for the section lifecycle row to be provisioned", () => {
+    const result = evaluate({
+      sources: [{
+        id: "source-a",
+        analysisStatus: "complete",
+        hasRealStems: true,
+      }],
+    });
+
+    expect(result).toMatchObject({
+      stage: "finding-structure",
+      canBuildAutomaticRemix: false,
     });
   });
 

@@ -292,7 +292,12 @@ test.describe("real Compose separation pipeline", () => {
           status: "complete",
           remixSessionId: expect.any(String),
         },
-        sources: [expect.objectContaining({ analysisStatus: "complete" })],
+        sources: [
+          expect.objectContaining({
+            analysisStatus: "complete",
+            sectionStatus: "complete",
+          }),
+        ],
         separationJobs: [expect.objectContaining({ status: "complete" })],
       });
 
