@@ -1663,7 +1663,8 @@ test.describe("real Compose separation pipeline", () => {
       ) as Record<string, unknown> | undefined;
       expect(phase13ReloadedTrack).toBeTruthy();
       expect((phase13ReloadedTrack!.clips as Array<Record<string, unknown>>).some((clip) => clip.id === phase13Clip.id)).toBe(false);
-      expect(phase13ReloadedTrack!.clips).toHaveLength(4);
+      // Duplicate adds one clip; splitting the original replaces it with two, leaving three.
+      expect(phase13ReloadedTrack!.clips).toHaveLength(3);
 
       // Phase 14 composes IDs only in the UI, but persists each multi-clip
       // operation atomically. The same delta retains selected-clip spacing.
