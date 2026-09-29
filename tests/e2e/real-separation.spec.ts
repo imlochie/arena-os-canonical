@@ -853,7 +853,17 @@ test.describe("real Compose separation pipeline", () => {
     await page
       .getByLabel("song-a.wav — Vocals clip 1 start")
       .fill("2");
+    const compactSave = page.waitForRequest((request) =>
+      request.method() === "PUT" && new URL(request.url()).pathname === `/api/remixes/${twoSourceRemixId}`,
+    );
     await page.getByRole("button", { name: "Save now" }).click();
+    // The compact legacy control is measured in seconds. Verify that its
+    // immediate Save now request serialises the new millisecond coordinate;
+    // the existing post-reload assertion then verifies durable persistence.
+    const submitted = (await compactSave).postDataJSON() as {
+      tracks: Array<{ name: string; clips: Array<{ timelineStartMs: number }> }>;
+    };
+    expect(submitted.tracks.find((track) => track.name === "song-a.wav — Vocals")?.clips[0]?.timelineStartMs).toBe(2_000);
     await page.reload();
     await openStudio(page);
     await expect(

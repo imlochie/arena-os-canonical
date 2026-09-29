@@ -67,6 +67,10 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const [selectedSourceSectionId, setSelectedSourceSectionId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(80);
   const [remix, setRemix] = useState<Remix | null>(null);
+  // Save now can be clicked immediately after an input event, before React has
+  // committed its render. Keep the most recently edited arrangement available
+  // to that explicit persistence boundary.
+  const remixRef = useRef<Remix | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
   const [versions, setVersions] = useState<RemixVersionSummary[]>([]);
   const [buildingAutomaticRemix, setBuildingAutomaticRemix] = useState<AutomaticRemixVariant | null>(null);
@@ -188,6 +192,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const environment = artworkEnvironment(`${source?.checksumSha256 ?? projectId}:${source?.originalFilename ?? "waveyard"}`);
 
   useEffect(() => { transport.applyMix(mixerControls); }, [mixerControls, transport]);
+  useEffect(() => { remixRef.current = remix; }, [remix]);
   useEffect(() => { if (remix) transport.setMasterVolume(remix.masterVolume); }, [remix, transport]);
   const loopStartMs = remix?.loopStartMs ?? 0;
   const loopEndMs = remix?.loopEndMs ?? null;
@@ -205,18 +210,31 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     return () => window.removeEventListener("keydown", escape);
   }, []);
 
-  const persist = useCallback(async (next: Remix) => {
+  const persist = useCallback(async (next = remixRef.current) => {
+    if (!next) return;
     setSaveState("saving");
     const response = await fetch(`/api/remixes/${next.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(remixState(next)) });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) { setSaveState("failed"); return; }
-    setRemix(remixFromResponse(body));
+    const persisted = remixFromResponse(body);
+    remixRef.current = persisted;
+    setRemix(persisted);
     setSaveState("saved");
   }, []);
   const queuePersist = useCallback((next: Remix) => {
     setSaveState("unsaved");
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => void persist(next), 700);
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      void persist(next);
+    }, 700);
+  }, [persist]);
+  const saveNow = useCallback(() => {
+    // An explicit save supersedes the debounce snapshot, which may otherwise
+    // write an older whole-arrangement payload after this request.
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    void persist();
   }, [persist]);
 
   const loadRemix = useCallback(async (id: string) => {
@@ -257,12 +275,14 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   }, [loadRemix, projectId, remixSessionId]);
 
   const changeRemix = useCallback((transform: (current: Remix) => Remix) => {
-    if (!remix) return;
-    const next = transform(remix);
-    record(remix);
+    const current = remixRef.current;
+    if (!current) return;
+    const next = transform(current);
+    remixRef.current = next;
+    record(current);
     setRemix(next);
     queuePersist(next);
-  }, [queuePersist, record, remix]);
+  }, [queuePersist, record]);
   const previewTimeline = useCallback((next: Remix) => { setRemix(next); setSaveState("unsaved"); }, []);
   const commitTimeline = useCallback((before: Remix, after: Remix) => {
     record(before);
@@ -690,7 +710,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
     <section className="studio-grid"><StemMixer stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} />}</section>
     <section className="remix-panel">
-      <div className="panel-title"><div><span className="eyebrow">Non-destructive arrangement</span><h3>Remix timeline</h3></div>{!remix ? <div className="remix-actions"><button className="button" disabled={buildingAutomaticRemix !== null} onClick={() => void createAutomaticRemix("original")}>{buildingAutomaticRemix === "original" ? "Building automatic arrangement…" : "Build automatic arrangement"}</button><button className="button secondary" onClick={() => void createRemix()}>Start blank arrangement</button></div> : <div className="remix-actions"><button className="button secondary" onClick={() => void createRemix()}>New remix session</button><button className="button secondary" disabled={!history.length} onClick={undo}>Undo</button><button className="button secondary" disabled={!future.length} onClick={redo}>Redo</button><button className="button secondary" onClick={() => void createVersion()}>Save version</button><button className="button" onClick={() => void persist(remix)}>Save now</button></div>}</div>
+      <div className="panel-title"><div><span className="eyebrow">Non-destructive arrangement</span><h3>Remix timeline</h3></div>{!remix ? <div className="remix-actions"><button className="button" disabled={buildingAutomaticRemix !== null} onClick={() => void createAutomaticRemix("original")}>{buildingAutomaticRemix === "original" ? "Building automatic arrangement…" : "Build automatic arrangement"}</button><button className="button secondary" onClick={() => void createRemix()}>Start blank arrangement</button></div> : <div className="remix-actions"><button className="button secondary" onClick={() => void createRemix()}>New remix session</button><button className="button secondary" disabled={!history.length} onClick={undo}>Undo</button><button className="button secondary" disabled={!future.length} onClick={redo}>Redo</button><button className="button secondary" onClick={() => void createVersion()}>Save version</button><button className="button" onClick={saveNow}>Save now</button></div>}</div>
       {remix ? <>
         <div className="arrangement-settings" aria-label="Arrangement timing settings">
           <label>BPM <input aria-label="Tempo BPM" type="number" min="20" max="300" value={remix.tempoBpm} onChange={(event) => changeRemix((current) => ({ ...current, tempoBpm: Number(event.target.value) || 120 }))} /></label>
