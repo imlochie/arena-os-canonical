@@ -1631,27 +1631,31 @@ test.describe("real Compose separation pipeline", () => {
       expect((await moved.json()).clip).toMatchObject({ timelineStartMs: 2_000, sourceOffsetMs: 0, gain: 1 });
       const nudged = await edit("nudge", { amount: "10ms", direction: "forward" });
       expect(nudged.status()).toBe(200);
-      expect((await nudged.json()).clip).toMatchObject({ timelineStartMs: 2_010, sourceOffsetMs: 0 });
+      expect((await nudged.json()).clip).toMatchObject({
+        timelineStartMs: 2_010,
+        sourceOffsetMs: 0,
+        durationMs: 8_000,
+      });
       const leftTrim = await edit("trim-left", { timelineDeltaMs: 100 });
       expect(leftTrim.status()).toBe(200);
-      expect((await leftTrim.json()).clip).toMatchObject({ timelineStartMs: 2_110, sourceOffsetMs: 100, durationMs: 6_900 });
+      expect((await leftTrim.json()).clip).toMatchObject({ timelineStartMs: 2_110, sourceOffsetMs: 100, durationMs: 7_900 });
       const rightTrim = await edit("trim-right", { timelineDeltaMs: -100 });
       expect(rightTrim.status()).toBe(200);
-      expect((await rightTrim.json()).clip).toMatchObject({ timelineStartMs: 2_110, sourceOffsetMs: 100, durationMs: 6_800 });
+      expect((await rightTrim.json()).clip).toMatchObject({ timelineStartMs: 2_110, sourceOffsetMs: 100, durationMs: 7_800 });
       const slipped = await edit("slip", { sourceOffsetMs: 200 });
       expect(slipped.status()).toBe(200);
-      expect((await slipped.json()).clip).toMatchObject({ timelineStartMs: 2_110, sourceOffsetMs: 200, durationMs: 6_800, gain: 1, fadeOutMs: 0 });
+      expect((await slipped.json()).clip).toMatchObject({ timelineStartMs: 2_110, sourceOffsetMs: 200, durationMs: 7_800, gain: 1, fadeOutMs: 0 });
       const duplicateClip = await edit("duplicate");
       expect(duplicateClip.status()).toBe(201);
       const duplicateBody = await duplicateClip.json();
-      expect(duplicateBody.clip).toMatchObject({ timelineStartMs: 8_910, sourceOffsetMs: 200, durationMs: 6_800, gain: 1, fadeOutMs: 0 });
+      expect(duplicateBody.clip).toMatchObject({ timelineStartMs: 9_910, sourceOffsetMs: 200, durationMs: 7_800, gain: 1, fadeOutMs: 0 });
       const split = await edit("split", { timelineMs: 5_000 });
       expect(split.status()).toBe(200);
       const splitBody = await split.json();
       expect(splitBody.clips).toHaveLength(2);
       expect(splitBody.clips).toMatchObject([
         { timelineStartMs: 2_110, durationMs: 2_890, sourceOffsetMs: 200, gain: 1, fadeOutMs: 0 },
-        { timelineStartMs: 5_000, durationMs: 3_910, sourceOffsetMs: 3_090, gain: 1, fadeInMs: 0, fadeOutMs: 0 },
+        { timelineStartMs: 5_000, durationMs: 4_910, sourceOffsetMs: 3_090, gain: 1, fadeInMs: 0, fadeOutMs: 0 },
       ]);
       const phase13Reloaded = await (await context.get(`/api/remixes/${remixId}`)).json();
       const phase13ReloadedTrack = phase13Reloaded.tracks.find(
