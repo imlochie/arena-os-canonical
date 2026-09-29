@@ -104,6 +104,22 @@ describe("remix arrangement normalisation", () => {
     });
   });
 
+  it("persists timeline starts as millisecond integers", () => {
+    const result = normaliseRemixState({
+      ...state,
+      tracks: [{
+        ...state.tracks[0],
+        clips: [{
+          ...state.tracks[0].clips[0],
+          timelineStartMs: 2.4,
+          durationMs: 1_000,
+        }],
+      }],
+    });
+
+    expect(result?.tracks[0].clips[0].timelineStartMs).toBe(2);
+  });
+
   it("enforces mute and solo semantics", () => {
     expect(effectiveMuted({ muted: false, solo: false }, false)).toBe(false);
     expect(effectiveMuted({ muted: true, solo: true }, false)).toBe(true);

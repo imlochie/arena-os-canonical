@@ -660,12 +660,14 @@ test.describe("real Compose separation pipeline", () => {
     const savedRemix = await (
       await page.request.get(`/api/remixes/${remixId}`)
     ).json();
+    // ArrangementInspector labels this input in milliseconds and writes its
+    // numeric value directly to the persisted timelineStartMs coordinate.
     expect(
       savedRemix.tracks.find(
         (track: { name: string }) =>
           track.name === "copyright-safe-fixture.wav — Vocals",
       ).clips[0].timelineStartMs,
-    ).toBe(2000);
+    ).toBe(2);
     expect(savedRemix.remix).toMatchObject({
       tempoBpm: 98,
       timeSignatureNumerator: 3,
