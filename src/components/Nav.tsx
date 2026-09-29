@@ -7,10 +7,12 @@ import PrivacyControls from "./PrivacyControls";
 
 const LINKS = [
   { href: "/command", label: "Command", emoji: "🧭" },
+  { href: "/rooms", label: "Rooms", emoji: "" },
   { href: "/", label: "Arena", emoji: "⚔️" },
   { href: "/council", label: "Council", emoji: "🧠" },
   { href: "/collab", label: "Collab", emoji: "🤝" },
   { href: "/projects", label: "Projects", emoji: "📁" },
+  { href: "/handoffs", label: "Handoffs", emoji: "" },
   { href: "/artifacts", label: "Artifacts", emoji: "📦" },
   { href: "/arcade", label: "Arcade", emoji: "🎮" },
   { href: "/chat", label: "Chat", emoji: "💬" },

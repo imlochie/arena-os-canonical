@@ -27,6 +27,9 @@ export default function HomePage() {
           <a href="/command" className="rounded-full bg-violet-600 px-3.5 py-1.5 text-white shadow-[0_6px_20px_rgba(124,58,237,0.5)] hover:bg-violet-500">
             🧭 Enter Command Centre — what are you trying to do? →
           </a>
+          <a href="/rooms" className="rounded-full bg-cyan-500/15 px-3.5 py-1.5 text-cyan-100 ring-1 ring-cyan-400/30 hover:bg-cyan-500/25">
+            Browse the 12 rooms →
+          </a>
           <a href="/collab" className="rounded-full bg-emerald-500/20 px-3.5 py-1.5 text-emerald-200 ring-1 ring-emerald-400/40 hover:bg-emerald-500/30">
             🤝 New: Collab Lab — best result, not just a winner →
           </a>
