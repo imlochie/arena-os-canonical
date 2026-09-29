@@ -86,7 +86,7 @@ describe("automatic build finalization", () => {
     });
   });
 
-  it("waits for authoritative analysis and real stems before construction", () => {
+  it("preserves accepted sources while authoritative analysis is still pending", () => {
     const analysisPending = evaluate({
       sources: [{
         id: "source-a",
@@ -103,14 +103,29 @@ describe("automatic build finalization", () => {
         hasRealStems: false,
       }],
     });
+    const completeAfterPending = evaluate({
+      acceptedSourceCount: analysisPending.reportedAcceptedSourceCount,
+      sources: [{
+        id: "source-a",
+        analysisStatus: "complete",
+        sectionStatus: "unavailable",
+        hasRealStems: true,
+      }],
+    });
 
     expect(analysisPending).toMatchObject({
       stage: "understanding",
+      reportedAcceptedSourceCount: 1,
       canBuildAutomaticRemix: false,
     });
     expect(stemsMissing).toMatchObject({
       stage: "understanding",
+      reportedAcceptedSourceCount: 1,
       canBuildAutomaticRemix: false,
+    });
+    expect(completeAfterPending).toMatchObject({
+      reportedAcceptedSourceCount: 1,
+      canBuildAutomaticRemix: true,
     });
   });
 

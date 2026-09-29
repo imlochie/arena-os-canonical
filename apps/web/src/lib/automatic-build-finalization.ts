@@ -69,9 +69,10 @@ export function evaluateAutomaticBuildFinalization(
       input.persistedFailedSourceCount,
       failedSourceIds.size,
     ),
-    reportedAcceptedSourceCount: input.processing
-      ? input.acceptedSourceCount
-      : eligibleSources.length,
+    // This is the number accepted at intake, not the number whose downstream
+    // analysis has completed. Reducing it while analysis is still queued makes
+    // the next evaluation believe no source can ever become ready.
+    reportedAcceptedSourceCount: input.acceptedSourceCount,
     stage,
     canBuildAutomaticRemix: !input.processing && sourceAnalysisReady,
   };

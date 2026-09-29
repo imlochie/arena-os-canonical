@@ -221,16 +221,64 @@ test.describe("real Compose separation pipeline", () => {
     await expect
       .poll(
         async () => {
-          const response = await page.request.get(
-            `/api/projects/${projectId}/remixes`,
-          );
-          if (!response.ok()) return -1;
-          const body = await response.json();
-          return body.remixes?.length ?? 0;
+          const [projectResponse, remixesResponse] = await Promise.all([
+            page.request.get(`/api/projects/${projectId}`),
+            page.request.get(`/api/projects/${projectId}/remixes`),
+          ]);
+          if (!projectResponse.ok() || !remixesResponse.ok()) {
+            return {
+              projectHttp: projectResponse.status(),
+              remixesHttp: remixesResponse.status(),
+            };
+          }
+          const [projectState, remixState] = await Promise.all([
+            projectResponse.json(),
+            remixesResponse.json(),
+          ]);
+          return {
+            projectHttp: projectResponse.status(),
+            remixesHttp: remixesResponse.status(),
+            remixCount: remixState.remixes?.length ?? 0,
+            build: {
+              status: projectState.build?.status ?? null,
+              stage: projectState.build?.stage ?? null,
+              acceptedSourceCount: projectState.build?.acceptedSourceCount ?? null,
+              failedSourceCount: projectState.build?.failedSourceCount ?? null,
+              remixSessionId: projectState.build?.remixSessionId ?? null,
+            },
+            sources: (projectState.sources ?? []).map(
+              (source: {
+                id: string;
+                analysis?: { status?: string } | null;
+                sectionAnalysis?: { status?: string } | null;
+              }) => ({
+                id: source.id,
+                analysisStatus: source.analysis?.status ?? null,
+                sectionStatus: source.sectionAnalysis?.status ?? null,
+              }),
+            ),
+            separationJobs: (projectState.jobs ?? []).map(
+              (job: { sourceAssetId: string; status: string; stage: string }) => ({
+                sourceAssetId: job.sourceAssetId,
+                status: job.status,
+                stage: job.stage,
+              }),
+            ),
+          };
         },
         { timeout: 11 * 60 * 1000, intervals: [2_000, 5_000, 10_000] },
       )
-      .toBe(1);
+      .toMatchObject({
+        projectHttp: 200,
+        remixesHttp: 200,
+        remixCount: 1,
+        build: {
+          status: "complete",
+          remixSessionId: expect.any(String),
+        },
+        sources: [expect.objectContaining({ analysisStatus: "complete" })],
+        separationJobs: [expect.objectContaining({ status: "complete" })],
+      });
 
     const remixListResponse = await page.request.get(
       `/api/projects/${projectId}/remixes`,
