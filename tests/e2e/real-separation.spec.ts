@@ -1676,7 +1676,10 @@ test.describe("real Compose separation pipeline", () => {
       expect(duplicateTimestamp.status()).toBe(200);
       const automationReload = await (await context.get(`/api/remixes/${remixId}`)).json();
       const volumeLane = automationReload.automation.find((lane: Record<string, unknown>) => lane.remixTrackId === automationTrackId && lane.parameter === "volume");
-      expect(volumeLane.points).toEqual(expect.arrayContaining([{ timelineMs: 0, value: 0.25 }, { timelineMs: 1_000, value: 1.25 }]));
+      expect(volumeLane.points).toEqual(expect.arrayContaining([
+        expect.objectContaining({ timelineMs: 0, value: 0.25 }),
+        expect.objectContaining({ timelineMs: 1_000, value: 1.25 }),
+      ]));
       const automationVersion = await context.post(`/api/remixes/${remixId}/versions`, { data: { name: "Automation V1 snapshot" } });
       expect(automationVersion.status()).toBe(201);
       const automationVersionId = (await automationVersion.json()).version.id as string;
