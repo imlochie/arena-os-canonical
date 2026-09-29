@@ -8,6 +8,7 @@ import {
   test,
   type APIRequestContext,
   type Page,
+  type Request as PlaywrightRequest,
   type TestInfo,
 } from "@playwright/test";
 
@@ -67,6 +68,8 @@ async function faultEvents(context: APIRequestContext, fault: WaveformFault) {
 
 type StudioTransitionRuntime = {
   beforeClick: { url: string; pathname: string; title: string };
+  afterClick: { url: string; pathname: string; title: string } | null;
+  requests: Array<{ method: string; url: string; resourceType: string; isRSC: boolean; isNavigationRequest: boolean; status: number | null; failure: string | null }>;
   pageErrors: Array<{ message: string; stack: string | null }>;
   consoleMessages: Array<{ type: string; text: string; location: { url: string; lineNumber: number; columnNumber: number } }>;
   failedRequests: Array<{ method: string; url: string; resourceType: string; error: string | null }>;
@@ -526,6 +529,8 @@ test.describe("real Compose separation pipeline", () => {
         pathname: new URL(page.url()).pathname,
         title: await page.title(),
       },
+      afterClick: null,
+      requests: [],
       pageErrors: [],
       consoleMessages: [],
       failedRequests: [],
@@ -533,6 +538,24 @@ test.describe("real Compose separation pipeline", () => {
       failedResponses: [],
       mainFrameNavigations: [],
     };
+    const requestEvidence = new Map<
+      PlaywrightRequest,
+      StudioTransitionRuntime["requests"][number]
+    >();
+    page.on("request", (request) => {
+      const headers = request.headers();
+      const signal = {
+        method: request.method(),
+        url: request.url(),
+        resourceType: request.resourceType(),
+        isRSC: Boolean(headers.rsc || headers["next-router-state-tree"]),
+        isNavigationRequest: request.isNavigationRequest(),
+        status: null,
+        failure: null,
+      };
+      runtime.requests.push(signal);
+      requestEvidence.set(request, signal);
+    });
     page.on("pageerror", (error) => {
       runtime.pageErrors.push({
         message: error.message,
@@ -548,11 +571,14 @@ test.describe("real Compose separation pipeline", () => {
       });
     });
     page.on("requestfailed", (request) => {
+      const error = request.failure()?.errorText ?? null;
+      const signal = requestEvidence.get(request);
+      if (signal) signal.failure = error;
       runtime.failedRequests.push({
         method: request.method(),
         url: request.url(),
         resourceType: request.resourceType(),
-        error: request.failure()?.errorText ?? null,
+        error,
       });
     });
     page.on("response", (response) => {
@@ -560,6 +586,8 @@ test.describe("real Compose separation pipeline", () => {
       const requestHeaders = request.headers();
       const rsc = Boolean(requestHeaders.rsc || requestHeaders["next-router-state-tree"]);
       const navigation = request.isNavigationRequest();
+      const requestSignal = requestEvidence.get(request);
+      if (requestSignal) requestSignal.status = response.status();
       const signal = {
         method: request.method(),
         url: response.url(),
@@ -576,11 +604,26 @@ test.describe("real Compose separation pipeline", () => {
       if (frame === page.mainFrame()) runtime.mainFrameNavigations.push(frame.url());
     });
     await page.getByRole("button", { name: "Open Studio" }).click();
+    runtime.afterClick = {
+      url: page.url(),
+      pathname: new URL(page.url()).pathname,
+      title: await page.title(),
+    };
+    console.log("=== STUDIO RUNTIME DIAGNOSTICS BEGIN ===");
+    console.log(JSON.stringify(runtime, null, 2));
+    console.log("=== STUDIO RUNTIME DIAGNOSTICS END ===");
     await captureStudioTransitionEvidence(page, testInfo, runtime);
-    await expect(page.getByTestId("waveyard-mode-studio")).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
+    try {
+      await expect(page.getByTestId("waveyard-mode-studio")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+    } catch (error) {
+      console.log("=== STUDIO RUNTIME DIAGNOSTICS AFTER ASSERTION BEGIN ===");
+      console.log(JSON.stringify(runtime, null, 2));
+      console.log("=== STUDIO RUNTIME DIAGNOSTICS AFTER ASSERTION END ===");
+      throw error;
+    }
     for (const type of expectedStemTypes)
       await expect(page.getByTestId(`stem-${type}`)).toBeVisible();
     await page.getByTestId("play-all").click();

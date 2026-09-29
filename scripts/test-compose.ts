@@ -60,9 +60,14 @@ async function main() {
     await command("docker", e2eArgs, true, composeEnv);
   } catch (error) {
     if (e2eStarted) {
-      console.error("Compose E2E failed; web and worker logs follow for runtime diagnosis.");
-      await command("docker", ["compose", "logs", "--no-color", "--tail", "300", "web", "worker"], true, composeEnv)
+      console.error("=== WEB LOG TAIL BEGIN ===");
+      await command("docker", ["compose", "logs", "--no-color", "--tail", "300", "web"], true, composeEnv)
         .catch(() => undefined);
+      console.error("=== WEB LOG TAIL END ===");
+      console.error("=== WORKER LOG TAIL BEGIN ===");
+      await command("docker", ["compose", "logs", "--no-color", "--tail", "300", "worker"], true, composeEnv)
+        .catch(() => undefined);
+      console.error("=== WORKER LOG TAIL END ===");
     }
     throw error;
   } finally {
