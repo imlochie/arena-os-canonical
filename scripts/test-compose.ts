@@ -41,6 +41,7 @@ async function main() {
     // moderator-only decisions through the same HTTP boundary.
     WAVEYARD_INITIAL_MODERATOR_EMAILS: "moderator@waveyard.test",
   };
+  let e2eStarted = false;
   try {
     // Build every service, including the profile-gated E2E image, exactly once.
     // `compose run --build` would rebuild the worker's large local ML image after
@@ -55,7 +56,15 @@ async function main() {
       e2eArgs.push("--name", "waveyard-e2e-release-gate");
     else e2eArgs.push("--rm");
     e2eArgs.push("e2e");
+    e2eStarted = true;
     await command("docker", e2eArgs, true, composeEnv);
+  } catch (error) {
+    if (e2eStarted) {
+      console.error("Compose E2E failed; web and worker logs follow for runtime diagnosis.");
+      await command("docker", ["compose", "logs", "--no-color", "--tail", "300", "web", "worker"], true, composeEnv)
+        .catch(() => undefined);
+    }
+    throw error;
   } finally {
     if (!keep) await command("docker", ["compose", "down", "--volumes", "--remove-orphans"], true, composeEnv).catch(() => undefined);
   }
