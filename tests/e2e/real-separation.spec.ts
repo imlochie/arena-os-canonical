@@ -215,20 +215,6 @@ test.describe("real Compose separation pipeline", () => {
       expect(body.waveform.resolutions["4096"].max).toHaveLength(4096);
     }
 
-    await page.getByRole("button", { name: "Open Studio" }).click();
-
-    for (const type of expectedStemTypes)
-      await expect(page.getByTestId(`stem-${type}`)).toBeVisible();
-    await page.getByTestId("play-all").click();
-    await expect
-      .poll(async () =>
-        page
-          .locator("audio")
-          .evaluateAll((audio) =>
-            audio.every((element) => !(element as HTMLAudioElement).paused),
-          ),
-      )
-      .toBe(true);
     const partial = await page.request.get(`/api/assets/${stemIds[0]}`, {
       headers: { Range: "bytes=0-2047" },
     });
@@ -433,12 +419,26 @@ test.describe("real Compose separation pipeline", () => {
       })
       .toEqual({ status: "complete", remixSessionId: automaticRemixId });
 
-    // Studio mounted before the automatic build finished. Its build pointer
-    // must hydrate the persisted normal RemixSession without a page reload.
+    // The build has now published its ordinary RemixSession ID. Enter Studio
+    // from this completed state and verify that real source stems and the
+    // automatic arrangement hydrate together without a page reload.
+    await page.getByRole("button", { name: "Open Studio" }).click();
     await expect(page.getByTestId("waveyard-mode-studio")).toHaveAttribute(
       "aria-selected",
       "true",
     );
+    for (const type of expectedStemTypes)
+      await expect(page.getByTestId(`stem-${type}`)).toBeVisible();
+    await page.getByTestId("play-all").click();
+    await expect
+      .poll(async () =>
+        page
+          .locator("audio")
+          .evaluateAll((audio) =>
+            audio.every((element) => !(element as HTMLAudioElement).paused),
+          ),
+      )
+      .toBe(true);
     const vocalsTrack = page
       .locator(".timeline-track")
       .filter({ hasText: "copyright-safe-fixture.wav — Vocals" });
