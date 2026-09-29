@@ -7,6 +7,8 @@ import {
   request as playwrightRequest,
   test,
   type APIRequestContext,
+  type Page,
+  type TestInfo,
 } from "@playwright/test";
 
 const fixture = resolve(
@@ -63,6 +65,86 @@ async function faultEvents(context: APIRequestContext, fault: WaveformFault) {
   }>;
 }
 
+async function captureStudioTransitionEvidence(page: Page, testInfo: TestInfo) {
+  const [
+    url,
+    title,
+    bodyText,
+    buttons,
+    modeControls,
+    studioTextElements,
+    studioRoots,
+    openStudioButtonCount,
+    studioModeControlCount,
+  ] = await Promise.all([
+    page.url(),
+    page.title(),
+    page.locator("body").innerText(),
+    page.locator("button").evaluateAll((elements) =>
+      elements.map((element) => ({
+        text: (element as HTMLElement).innerText.trim(),
+        ariaLabel: element.getAttribute("aria-label"),
+        testId: element.getAttribute("data-testid"),
+        ariaSelected: element.getAttribute("aria-selected"),
+        disabled: (element as HTMLButtonElement).disabled,
+      })),
+    ),
+    page.locator('[data-testid^="waveyard-mode-"]').evaluateAll((elements) =>
+      elements.map((element) => ({
+        tag: element.tagName.toLowerCase(),
+        text: (element as HTMLElement).innerText.trim(),
+        testId: element.getAttribute("data-testid"),
+        ariaSelected: element.getAttribute("aria-selected"),
+        outerHTML: element.outerHTML,
+      })),
+    ),
+    page.locator("body *").evaluateAll((elements) =>
+      elements
+        .filter((element) => element.textContent?.includes("Studio"))
+        .map((element) => ({
+          tag: element.tagName.toLowerCase(),
+          id: element.id || null,
+          className: element.getAttribute("class"),
+          testId: element.getAttribute("data-testid"),
+          role: element.getAttribute("role"),
+          ariaLabel: element.getAttribute("aria-label"),
+          text: (element as HTMLElement).innerText.trim(),
+        })),
+    ),
+    page.locator('[aria-label="Waveyard Studio"], .studio, [data-presentation]').evaluateAll((elements) =>
+      elements.map((element) => ({
+        tag: element.tagName.toLowerCase(),
+        className: element.getAttribute("class"),
+        testId: element.getAttribute("data-testid"),
+        ariaLabel: element.getAttribute("aria-label"),
+        presentation: element.getAttribute("data-presentation"),
+        text: (element as HTMLElement).innerText.trim(),
+        outerHTML: element.outerHTML,
+      })),
+    ),
+    page.getByRole("button", { name: "Open Studio" }).count(),
+    page.getByTestId("waveyard-mode-studio").count(),
+  ]);
+  const screenshotPath = testInfo.outputPath("after-open-studio-click.png");
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+  await testInfo.attach("after-open-studio-click", {
+    path: screenshotPath,
+    contentType: "image/png",
+  });
+  console.info("STUDIO TRANSITION LIVE DOM", JSON.stringify({
+    url,
+    title,
+    bodyText,
+    buttons,
+    modeControls,
+    studioTextElements,
+    studioRoots,
+    openStudioButtonCount,
+    studioModeControlCount,
+    screenshotPath,
+  }, null, 2));
+}
+
 function remixPayload(state: { remix: Record<string, unknown>; tracks: Array<Record<string, unknown>> }) {
   const remix = state.remix;
   return {
@@ -105,7 +187,7 @@ test.describe.configure({ mode: "serial" });
 test.describe("real Compose separation pipeline", () => {
   test("registers, uploads an original fixture, separates it, validates stored stems, and plays them", async ({
     page,
-  }) => {
+  }, testInfo) => {
     await page.goto("/waveyard");
     await page.locator('input[name="username"]').fill(owner.username);
     await page.locator('input[name="displayName"]').fill(owner.displayName);
@@ -428,6 +510,7 @@ test.describe("real Compose separation pipeline", () => {
     // from this completed state and verify that real source stems and the
     // automatic arrangement hydrate together without a page reload.
     await page.getByRole("button", { name: "Open Studio" }).click();
+    await captureStudioTransitionEvidence(page, testInfo);
     await expect(page.getByTestId("waveyard-mode-studio")).toHaveAttribute(
       "aria-selected",
       "true",
