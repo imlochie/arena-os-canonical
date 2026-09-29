@@ -78,6 +78,14 @@ type StudioTransitionRuntime = {
   mainFrameNavigations: string[];
 };
 
+async function openStudio(page: Page) {
+  await page.getByRole("button", { name: "Open Studio" }).click();
+  await expect(page.getByTestId("waveyard-mode-studio")).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+}
+
 async function captureStudioTransitionEvidence(page: Page, testInfo: TestInfo, runtime: StudioTransitionRuntime) {
   const [
     url,
@@ -735,7 +743,9 @@ test.describe("real Compose separation pipeline", () => {
       )
       .toEqual({ sources: 1, stems: 4, waveformJobs: 5 });
 
-    await page.goto(`/projects/${twoSourceProjectId}`);
+    await page.goto(`/waveyard/projects/${twoSourceProjectId}`);
+    await expect(page).toHaveURL(`/waveyard/projects/${twoSourceProjectId}`);
+    await openStudio(page);
     const initialStemGroups = page.locator('[data-testid^="source-stems-"]');
     await expect(initialStemGroups).toHaveCount(1);
     await expect(initialStemGroups).toBeVisible();
@@ -796,6 +806,7 @@ test.describe("real Compose separation pipeline", () => {
     ).toHaveLength(4);
 
     await page.reload();
+    await openStudio(page);
     await expect(page.getByTestId(`source-stems-${sourceA.id}`)).toContainText("song-a.wav");
     await expect(page.getByTestId(`source-stems-${sourceB.id}`)).toContainText("song-b.wav");
     const sourceBVocalsSelect = page
@@ -812,7 +823,7 @@ test.describe("real Compose separation pipeline", () => {
       page.getByLabel("song-b.wav — Vocals audio"),
     ).toHaveCount(1);
 
-    await page.getByRole("button", { name: "Create remix session" }).click();
+    await page.getByRole("button", { name: "Start blank arrangement" }).click();
     await expect(page.locator(".timeline-direct .timeline-track")).toHaveCount(8);
     const remixes = await (
       await page.request.get(`/api/projects/${twoSourceProjectId}/remixes`)
@@ -844,6 +855,7 @@ test.describe("real Compose separation pipeline", () => {
       .fill("2");
     await page.getByRole("button", { name: "Save now" }).click();
     await page.reload();
+    await openStudio(page);
     await expect(
       page.getByLabel("song-a.wav — Vocals clip 1 start"),
     ).toHaveValue("2");
@@ -1107,7 +1119,8 @@ test.describe("real Compose separation pipeline", () => {
       status: "failed", errorCode: "key_sync_analysis_missing",
     });
 
-    await page.goto(`/projects/${analysisProjectId}`);
+    await page.goto(`/waveyard/projects/${analysisProjectId}`);
+    await expect(page).toHaveURL(`/waveyard/projects/${analysisProjectId}`);
     const sourceBAnalysis = page
       .getByTestId(`project-source-${sourceB.id}`)
       .getByTestId(`source-analysis-${sourceB.id}`);
@@ -1490,6 +1503,7 @@ test.describe("real Compose separation pipeline", () => {
         .getByTestId(`project-source-${sourceB.id}`)
         .getByTestId(`source-analysis-${sourceB.id}`),
     ).toContainText("Beat grid");
+    await openStudio(page);
     const sourceBVocalsSelect = page
       .getByTestId(`source-stems-${sourceB.id}`)
       .locator("button.stem-select")
