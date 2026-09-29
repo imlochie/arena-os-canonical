@@ -46,7 +46,7 @@ function canHandleShortcut(target: EventTarget | null) {
   return !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable));
 }
 
-export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequested }: { projectId: string; stems: Stem[]; sources: Source[]; onDerivedAnalysisRequested?: () => void }) {
+export function StudioCore({ projectId, remixSessionId, stems, sources, onDerivedAnalysisRequested }: { projectId: string; remixSessionId?: string | null; stems: Stem[]; sources: Source[]; onDerivedAnalysisRequested?: () => void }) {
   const ids = useMemo(() => stems.map((stem) => stem.id), [stems]);
   const duration = useMemo(() => Math.max(0, ...stems.map((stem) => stem.durationSeconds)), [stems]);
   const sourceDurationById = useMemo(() => new Map(stems.map((stem) => [stem.id, Math.round(stem.durationSeconds * 1000)])), [stems]);
@@ -237,12 +237,23 @@ export function StudioCore({ projectId, stems, sources, onDerivedAnalysisRequest
 
   useEffect(() => {
     let active = true;
-    void fetch(`/api/projects/${projectId}/remixes`, { cache: "no-store" }).then(async (response) => {
-      const body = await response.json().catch(() => ({}));
-      if (active && response.ok && body.remixes?.[0]?.id) await loadRemix(body.remixes[0].id);
-    }).catch(() => undefined);
+    void (async () => {
+      // A completed automatic build publishes this ordinary RemixSession ID on
+      // the project build. Follow that durable handoff when it arrives after
+      // Studio has mounted instead of leaving the editor on its initial empty
+      // remix-list response.
+      let id = remixSessionId;
+      if (!id) {
+        const response = await fetch(`/api/projects/${projectId}/remixes`, {
+          cache: "no-store",
+        });
+        const body = await response.json().catch(() => ({}));
+        id = response.ok ? body.remixes?.[0]?.id : undefined;
+      }
+      if (active && id) await loadRemix(id);
+    })().catch(() => undefined);
     return () => { active = false; };
-  }, [loadRemix, projectId]);
+  }, [loadRemix, projectId, remixSessionId]);
 
   const changeRemix = useCallback((transform: (current: Remix) => Remix) => {
     if (!remix) return;

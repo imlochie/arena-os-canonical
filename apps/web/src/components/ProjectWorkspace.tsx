@@ -315,6 +315,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       {data.stems.length ? (
         <StudioCore
           projectId={projectId}
+          remixSessionId={data.build?.remixSessionId}
           stems={data.stems}
           sources={data.sources}
           onDerivedAnalysisRequested={() => setRefresh((value) => value + 1)}

@@ -232,7 +232,97 @@ test.describe("real Compose separation pipeline", () => {
       )
       .toBe(1);
 
-    await page.reload();
+    const remixListResponse = await page.request.get(
+      `/api/projects/${projectId}/remixes`,
+    );
+    expect(remixListResponse.status()).toBe(200);
+    const remixList = (await remixListResponse.json()) as {
+      remixes: Array<{ id: string }>;
+    };
+    expect(remixList.remixes).toHaveLength(1);
+    const automaticRemixId = remixList.remixes[0].id;
+    const automaticRemixResponse = await page.request.get(
+      `/api/remixes/${automaticRemixId}`,
+    );
+    expect(automaticRemixResponse.status()).toBe(200);
+    const automaticRemix = (await automaticRemixResponse.json()) as {
+      remix: { id: string };
+      tracks: Array<{
+        stemAssetId: string;
+        name: string;
+        clips: Array<{
+          stemAssetId: string;
+          timelineStartMs: number;
+          sourceOffsetMs: number;
+          durationMs: number;
+        }>;
+      }>;
+      stems: Array<{ id: string; sourceAssetId: string }>;
+      generation: { variant: string } | null;
+    };
+    expect(automaticRemix.remix.id).toBe(automaticRemixId);
+    expect(automaticRemix.generation).toMatchObject({ variant: "original" });
+    expect(automaticRemix.tracks).toHaveLength(4);
+    expect(automaticRemix.tracks.flatMap((track) => track.clips)).toHaveLength(4);
+    expect(automaticRemix.stems).toEqual(
+      expect.arrayContaining(
+        project.stems.map((stem: { id: string }) =>
+          expect.objectContaining({
+            id: stem.id,
+            sourceAssetId: project.sources[0].id,
+          }),
+        ),
+      ),
+    );
+    expect(project.sources[0].originalFilename).toBe(
+      "copyright-safe-fixture.wav",
+    );
+    for (const stem of project.stems as Array<{
+      id: string;
+      stemType: string;
+      durationSeconds: number;
+    }>) {
+      const track = automaticRemix.tracks.find(
+        (candidate) => candidate.stemAssetId === stem.id,
+      );
+      const label = stem.stemType === "other"
+        ? "Melody"
+        : `${stem.stemType[0].toUpperCase()}${stem.stemType.slice(1)}`;
+      expect(track).toMatchObject({
+        name: `${project.sources[0].originalFilename} — ${label}`,
+      });
+      expect(track?.clips).toHaveLength(1);
+      expect(track?.clips[0]).toMatchObject({
+        stemAssetId: stem.id,
+        timelineStartMs: 0,
+        sourceOffsetMs: 0,
+        durationMs: stem.durationSeconds * 1000,
+      });
+    }
+    const automaticVersionsResponse = await page.request.get(
+      `/api/remixes/${automaticRemixId}/versions`,
+    );
+    expect(automaticVersionsResponse.status()).toBe(200);
+    const automaticVersions = (await automaticVersionsResponse.json()) as {
+      versions: Array<{ name: string }>;
+    };
+    expect(automaticVersions.versions).toEqual([
+      expect.objectContaining({ name: "Automatic starting point" }),
+    ]);
+    await expect
+      .poll(async () => {
+        const response = await page.request.get(`/api/projects/${projectId}`);
+        if (!response.ok()) return null;
+        const body = await response.json();
+        return {
+          status: body.build?.status,
+          remixSessionId: body.build?.remixSessionId,
+        };
+      })
+      .toEqual({ status: "complete", remixSessionId: automaticRemixId });
+
+    // Studio mounted before the automatic build finished. Its build pointer
+    // must hydrate the persisted normal RemixSession without a page reload.
     await page.getByRole("button", { name: "Open Studio" }).click();
     const vocalsTrack = page
       .locator(".timeline-track")
