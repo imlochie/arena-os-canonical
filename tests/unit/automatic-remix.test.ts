@@ -38,6 +38,29 @@ describe("deterministic automatic remix arranger", () => {
     expect(result.plan.provenance).toMatchObject({ engine: AUTOMATIC_REMIX_ENGINE, variant: "original", anchorSourceId: "a", targetBpm: 120, targetKey: "C major" });
   });
 
+  it("maps every verified structural section into contiguous clips", () => {
+    const result = buildAutomaticRemixPlan([source({
+      id: "a",
+      sections: [
+        { id: "a-a", sectionIndex: 0, startMs: 200, endMs: 8_000 },
+        { id: "a-b", sectionIndex: 1, startMs: 8_000, endMs: 12_500 },
+        { id: "a-c", sectionIndex: 2, startMs: 12_500, endMs: 15_800 },
+      ],
+    })]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const expectedWindows = [
+      { timelineStartMs: 0, durationMs: 7_800, sourceOffsetMs: 200 },
+      { timelineStartMs: 7_800, durationMs: 4_500, sourceOffsetMs: 8_000 },
+      { timelineStartMs: 12_300, durationMs: 3_300, sourceOffsetMs: 12_500 },
+    ];
+    expect(result.plan.tracks).toHaveLength(4);
+    for (const track of result.plan.tracks)
+      expect(track.clips).toEqual(
+        expectedWindows.map((window) => expect.objectContaining(window)),
+      );
+  });
+
   it("creates the same explainable plan for the same authoritative inputs", () => {
     const inputs = [source({ id: "a" }), source({ id: "b" })];
     expect(buildAutomaticRemixPlan(inputs, { variant: "hybrid" })).toEqual(buildAutomaticRemixPlan(inputs, { variant: "hybrid" }));

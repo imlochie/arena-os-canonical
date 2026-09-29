@@ -341,7 +341,6 @@ test.describe("real Compose separation pipeline", () => {
     expect(automaticRemix.remix.id).toBe(automaticRemixId);
     expect(automaticRemix.generation).toMatchObject({ variant: "original" });
     expect(automaticRemix.tracks).toHaveLength(4);
-    expect(automaticRemix.tracks.flatMap((track) => track.clips)).toHaveLength(4);
     expect(automaticRemix.stems).toEqual(
       expect.arrayContaining(
         project.stems.map((stem: { id: string }) =>
@@ -355,10 +354,40 @@ test.describe("real Compose separation pipeline", () => {
     expect(project.sources[0].originalFilename).toBe(
       "copyright-safe-fixture.wav",
     );
+    const completedProjectResponse = await page.request.get(
+      `/api/projects/${projectId}`,
+    );
+    expect(completedProjectResponse.status()).toBe(200);
+    const completedProject = (await completedProjectResponse.json()) as {
+      sources: Array<{
+        id: string;
+        durationSeconds: number;
+        sectionAnalysis?: { status: string } | null;
+        sections?: Array<{ sectionIndex: number; startMs: number; endMs: number }>;
+      }>;
+    };
+    const completedSource = completedProject.sources.find(
+      (source) => source.id === project.sources[0].id,
+    );
+    expect(completedSource).toBeDefined();
+    const sections = [...(completedSource?.sections ?? [])].sort(
+      (left, right) => left.sectionIndex - right.sectionIndex,
+    );
+    const structured = completedSource?.sectionAnalysis?.status === "complete"
+      && sections.length > 0;
+    const expectedWindows = structured
+      ? sections.map((section) => ({
+          sourceOffsetMs: section.startMs,
+          durationMs: section.endMs - section.startMs,
+        }))
+      : [{
+          sourceOffsetMs: 0,
+          durationMs: Math.round((completedSource?.durationSeconds ?? 0) * 1000),
+        }];
+    expect(expectedWindows.length).toBeGreaterThan(0);
     for (const stem of project.stems as Array<{
       id: string;
       stemType: string;
-      durationSeconds: number;
     }>) {
       const track = automaticRemix.tracks.find(
         (candidate) => candidate.stemAssetId === stem.id,
@@ -369,13 +398,18 @@ test.describe("real Compose separation pipeline", () => {
       expect(track).toMatchObject({
         name: `${project.sources[0].originalFilename} — ${label}`,
       });
-      expect(track?.clips).toHaveLength(1);
-      expect(track?.clips[0]).toMatchObject({
-        stemAssetId: stem.id,
-        timelineStartMs: 0,
-        sourceOffsetMs: 0,
-        durationMs: stem.durationSeconds * 1000,
-      });
+      expect(track?.clips).toHaveLength(expectedWindows.length);
+      let timelineStartMs = 0;
+      for (const [index, window] of expectedWindows.entries()) {
+        const clip = track?.clips[index];
+        expect(clip).toMatchObject({
+          stemAssetId: stem.id,
+          timelineStartMs,
+          sourceOffsetMs: window.sourceOffsetMs,
+          durationMs: window.durationMs,
+        });
+        timelineStartMs += window.durationMs;
+      }
     }
     const automaticVersionsResponse = await page.request.get(
       `/api/remixes/${automaticRemixId}/versions`,
