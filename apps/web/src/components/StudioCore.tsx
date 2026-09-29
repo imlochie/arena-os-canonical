@@ -30,6 +30,7 @@ import {
   type SourceSection,
   type Stem,
 } from "./studio/types";
+import { remixFromResponse } from "./studio/remix-response";
 import { useArrangementHistory } from "./studio/useArrangementHistory";
 import { VersionHistory } from "./studio/VersionHistory";
 import type { MixerValues } from "@/lib/useStemTransport";
@@ -209,7 +210,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     const response = await fetch(`/api/remixes/${next.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(remixState(next)) });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) { setSaveState("failed"); return; }
-    setRemix({ ...body.remix, tracks: body.tracks });
+    setRemix(remixFromResponse(body));
     setSaveState("saved");
   }, []);
   const queuePersist = useCallback((next: Remix) => {
@@ -222,7 +223,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     const response = await fetch(`/api/remixes/${id}`, { cache: "no-store" });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) { setSaveState("failed"); return; }
-    const next: Remix = { ...body.remix, tracks: body.tracks };
+    const next = remixFromResponse(body);
     setRemix(next);
     setAutomaticGeneration(body.generation ?? null);
     setClipSelection(null);
@@ -371,7 +372,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     const response = await fetch(`/api/remixes/${remix.id}/tracks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceTrackId }) });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) { setSaveState("failed"); return; }
-    const next = { ...body.remix, tracks: body.tracks } as Remix;
+    const next = remixFromResponse(body);
     // Track creation is an explicit server-side operation; reset history so an
     // old PUT cannot accidentally reconcile away the newly duplicated track.
     reset();
