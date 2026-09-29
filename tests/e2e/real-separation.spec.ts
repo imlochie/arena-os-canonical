@@ -65,7 +65,17 @@ async function faultEvents(context: APIRequestContext, fault: WaveformFault) {
   }>;
 }
 
-async function captureStudioTransitionEvidence(page: Page, testInfo: TestInfo) {
+type StudioTransitionRuntime = {
+  beforeClick: { url: string; pathname: string; title: string };
+  pageErrors: Array<{ message: string; stack: string | null }>;
+  consoleMessages: Array<{ type: string; text: string; location: { url: string; lineNumber: number; columnNumber: number } }>;
+  failedRequests: Array<{ method: string; url: string; resourceType: string; error: string | null }>;
+  routeResponses: Array<{ method: string; url: string; resourceType: string; status: number; rsc: boolean; navigation: boolean; location: string | null }>;
+  failedResponses: Array<{ method: string; url: string; resourceType: string; status: number; rsc: boolean; location: string | null }>;
+  mainFrameNavigations: string[];
+};
+
+async function captureStudioTransitionEvidence(page: Page, testInfo: TestInfo, runtime: StudioTransitionRuntime) {
   const [
     url,
     title,
@@ -132,6 +142,7 @@ async function captureStudioTransitionEvidence(page: Page, testInfo: TestInfo) {
     contentType: "image/png",
   });
   console.info("STUDIO TRANSITION LIVE DOM", JSON.stringify({
+    runtime,
     url,
     title,
     bodyText,
@@ -509,8 +520,63 @@ test.describe("real Compose separation pipeline", () => {
     // The build has now published its ordinary RemixSession ID. Enter Studio
     // from this completed state and verify that real source stems and the
     // automatic arrangement hydrate together without a page reload.
+    const runtime: StudioTransitionRuntime = {
+      beforeClick: {
+        url: page.url(),
+        pathname: new URL(page.url()).pathname,
+        title: await page.title(),
+      },
+      pageErrors: [],
+      consoleMessages: [],
+      failedRequests: [],
+      routeResponses: [],
+      failedResponses: [],
+      mainFrameNavigations: [],
+    };
+    page.on("pageerror", (error) => {
+      runtime.pageErrors.push({
+        message: error.message,
+        stack: error.stack ?? null,
+      });
+    });
+    page.on("console", (message) => {
+      if (!["error", "warning"].includes(message.type())) return;
+      runtime.consoleMessages.push({
+        type: message.type(),
+        text: message.text(),
+        location: message.location(),
+      });
+    });
+    page.on("requestfailed", (request) => {
+      runtime.failedRequests.push({
+        method: request.method(),
+        url: request.url(),
+        resourceType: request.resourceType(),
+        error: request.failure()?.errorText ?? null,
+      });
+    });
+    page.on("response", (response) => {
+      const request = response.request();
+      const requestHeaders = request.headers();
+      const rsc = Boolean(requestHeaders.rsc || requestHeaders["next-router-state-tree"]);
+      const navigation = request.isNavigationRequest();
+      const signal = {
+        method: request.method(),
+        url: response.url(),
+        resourceType: request.resourceType(),
+        status: response.status(),
+        rsc,
+        navigation,
+        location: response.headers().location ?? null,
+      };
+      if (rsc || navigation) runtime.routeResponses.push(signal);
+      if (response.status() >= 400) runtime.failedResponses.push(signal);
+    });
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) runtime.mainFrameNavigations.push(frame.url());
+    });
     await page.getByRole("button", { name: "Open Studio" }).click();
-    await captureStudioTransitionEvidence(page, testInfo);
+    await captureStudioTransitionEvidence(page, testInfo, runtime);
     await expect(page.getByTestId("waveyard-mode-studio")).toHaveAttribute(
       "aria-selected",
       "true",
