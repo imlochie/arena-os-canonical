@@ -435,7 +435,10 @@ test.describe("real Compose separation pipeline", () => {
 
     // Studio mounted before the automatic build finished. Its build pointer
     // must hydrate the persisted normal RemixSession without a page reload.
-    await page.getByRole("button", { name: "Open Studio" }).click();
+    await expect(page.getByTestId("waveyard-mode-studio")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     const vocalsTrack = page
       .locator(".timeline-track")
       .filter({ hasText: "copyright-safe-fixture.wav — Vocals" });
