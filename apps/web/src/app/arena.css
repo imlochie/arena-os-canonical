@@ -41,3 +41,386 @@
   .arena-shell-inner { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-top: .78rem; padding-bottom: .78rem; }
   .arena-nav-links { padding: 0; max-width: 65rem; }
 }
+
+/* Rooms are an Arena discovery layer. They use the shell palette and remain
+   separate from Waveyard's specialised Studio styling and contracts. */
+.arena-rooms-page,
+.arena-room-detail,
+.arena-handoff-ledger {
+  width: min(100% - 2rem, 80rem);
+  margin: 0 auto;
+  padding: 2rem 0 3.5rem;
+}
+
+.arena-rooms-hero,
+.arena-room-overview,
+.arena-draft-form,
+.arena-ledger-empty,
+.arena-draft-card {
+  border: 1px solid var(--arena-line);
+  background: var(--arena-panel);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, .16);
+}
+
+.arena-rooms-hero {
+  padding: clamp(1.5rem, 4vw, 3.5rem);
+  background: linear-gradient(125deg, rgba(91, 33, 182, .24), rgba(15, 23, 42, .82) 58%, rgba(8, 145, 178, .15));
+}
+
+.arena-rooms-kicker {
+  margin: 0;
+  color: #a5b4fc;
+  font-size: .7rem;
+  font-weight: 800;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+
+.arena-rooms-hero h1,
+.arena-room-overview h1,
+.arena-handoff-ledger h1 {
+  max-width: 16ch;
+  margin: .55rem 0 1rem;
+  color: #fff;
+  font-size: clamp(2rem, 5vw, 4.2rem);
+  line-height: 1;
+  letter-spacing: -.055em;
+}
+
+.arena-rooms-hero > p:not(.arena-rooms-kicker),
+.arena-handoff-ledger header > div > p:last-child {
+  max-width: 46rem;
+  margin: 0;
+  color: var(--arena-muted);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.arena-rooms-summary,
+.arena-draft-actions,
+.arena-ledger-header-actions,
+.arena-ledger-toolbar,
+.arena-draft-card-header,
+.arena-draft-card-buttons,
+.arena-draft-payload > div,
+.arena-draft-route,
+.arena-draft-next-step {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+}
+
+.arena-rooms-summary {
+  flex-wrap: wrap;
+  margin-top: 1.5rem;
+  color: #cbd5e1;
+  font-size: .78rem;
+  font-weight: 700;
+}
+
+.arena-rooms-summary span,
+.arena-rooms-summary a {
+  border: 1px solid var(--arena-line);
+  padding: .48rem .7rem;
+  background: rgba(255, 255, 255, .05);
+}
+
+.arena-rooms-summary a,
+.arena-draft-actions a,
+.arena-ledger-header-actions a,
+.arena-ledger-empty a,
+.arena-draft-next-step a { color: #a5f3fc; }
+
+.arena-rooms-heading,
+.arena-ledger-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 2rem 0 1rem;
+}
+
+.arena-rooms-heading h2,
+.arena-draft-form h2,
+.arena-ledger-empty h2,
+.arena-draft-card h2 {
+  margin: .35rem 0 0;
+  color: #fff;
+  font-size: 1.35rem;
+  letter-spacing: -.025em;
+}
+
+.arena-rooms-heading > p {
+  max-width: 23rem;
+  margin: 0;
+  color: var(--arena-muted);
+  font-size: .82rem;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.arena-room-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
+  gap: .8rem;
+}
+
+.arena-room-card {
+  display: flex;
+  min-height: 16rem;
+  flex-direction: column;
+  border: 1px solid var(--arena-line);
+  padding: 1rem;
+  background: rgba(15, 23, 42, .72);
+  transition: transform .15s ease, border-color .15s ease, background .15s ease;
+}
+
+.arena-room-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(165, 180, 252, .65);
+  background: rgba(30, 41, 59, .88);
+}
+
+.arena-room-card-top {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: .7rem;
+}
+
+.arena-room-emoji { font-size: 1.5rem; }
+
+.arena-room-state,
+.arena-draft-badges span {
+  border: 1px solid;
+  padding: .26rem .45rem;
+  font-size: .62rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.arena-room-state.operational,
+.arena-draft-badges .operational {
+  border-color: rgba(103, 232, 249, .34);
+  color: #a5f3fc;
+  background: rgba(6, 182, 212, .1);
+}
+
+.arena-room-state.planning,
+.arena-draft-badges .planning {
+  border-color: rgba(251, 191, 36, .35);
+  color: #fde68a;
+  background: rgba(245, 158, 11, .1);
+}
+
+.arena-room-card h3 {
+  margin: .25rem 0 .55rem;
+  color: #fff;
+  font-size: 1.3rem;
+  letter-spacing: -.025em;
+}
+
+.arena-room-card > p:not(.arena-rooms-kicker) {
+  margin: 0;
+  color: var(--arena-muted);
+  font-size: .82rem;
+  line-height: 1.5;
+}
+
+.arena-room-card-action {
+  margin-top: auto;
+  padding-top: 1rem;
+  color: #c4b5fd;
+  font-size: .78rem;
+  font-weight: 800;
+}
+
+.arena-room-back {
+  display: inline-block;
+  margin-bottom: 1.25rem;
+  color: #cbd5e1;
+  font-size: .8rem;
+  font-weight: 700;
+}
+
+.arena-room-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(19rem, .8fr);
+  gap: 1rem;
+}
+
+.arena-room-overview,
+.arena-draft-form { padding: clamp(1.2rem, 3vw, 2rem); }
+
+.arena-room-overview-title {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+}
+
+.arena-room-overview-title > span { font-size: 2rem; }
+.arena-room-overview h1 { margin: .6rem 0; }
+
+.arena-room-description {
+  max-width: 43rem;
+  margin: 0;
+  color: var(--arena-muted);
+  line-height: 1.6;
+}
+
+.arena-room-status,
+.arena-room-boundary {
+  margin-top: 1.5rem;
+  border-left: 3px solid;
+  padding: 1rem;
+}
+
+.arena-room-status strong,
+.arena-room-boundary strong { color: #fff; font-size: .86rem; }
+
+.arena-room-status p,
+.arena-room-boundary p {
+  margin: .4rem 0 .7rem;
+  color: var(--arena-muted);
+  font-size: .82rem;
+  line-height: 1.55;
+}
+
+.arena-room-status.operational { border-color: #67e8f9; background: rgba(6, 182, 212, .07); }
+.arena-room-status.planning { border-color: #fbbf24; background: rgba(245, 158, 11, .07); }
+.arena-room-status a { color: #a5f3fc; font-size: .82rem; font-weight: 800; }
+.arena-room-boundary { border-color: #c4b5fd; background: rgba(139, 92, 246, .1); }
+
+.arena-room-principles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: .65rem;
+  margin-top: 1.5rem;
+}
+
+.arena-room-principles div {
+  border: 1px solid var(--arena-line);
+  padding: .8rem;
+  background: rgba(255, 255, 255, .025);
+}
+
+.arena-room-principles strong,
+.arena-room-principles span { display: block; }
+.arena-room-principles strong { color: #e2e8f0; font-size: .72rem; }
+.arena-room-principles span { margin-top: .35rem; color: var(--arena-muted); font-size: .72rem; line-height: 1.4; }
+
+.arena-draft-form {
+  display: grid;
+  align-content: start;
+  gap: .9rem;
+}
+
+.arena-draft-form > p {
+  margin: 0;
+  color: var(--arena-muted);
+  font-size: .8rem;
+  line-height: 1.5;
+}
+
+.arena-draft-form label {
+  display: grid;
+  gap: .35rem;
+  color: #e2e8f0;
+  font-size: .78rem;
+  font-weight: 750;
+}
+
+.arena-draft-form label small { color: var(--arena-muted); font-weight: 500; }
+
+.arena-draft-form input,
+.arena-draft-form select,
+.arena-draft-form textarea,
+.arena-draft-form output {
+  width: 100%;
+  border: 1px solid var(--arena-line);
+  padding: .68rem .75rem;
+  background: rgba(2, 6, 23, .55);
+  color: #f8fafc;
+  font: inherit;
+  font-size: .82rem;
+}
+
+.arena-draft-form output { color: #cbd5e1; }
+.arena-draft-form textarea { resize: vertical; line-height: 1.45; }
+.arena-draft-inline-note { color: #fde68a; font-size: .72rem; font-weight: 500; line-height: 1.4; }
+.arena-draft-actions { flex-wrap: wrap; }
+
+.arena-draft-actions button,
+.arena-ledger-header-actions button,
+.arena-ledger-toolbar button,
+.arena-draft-card-buttons button,
+.arena-draft-payload button {
+  border: 1px solid rgba(165, 180, 252, .45);
+  padding: .52rem .7rem;
+  background: rgba(99, 102, 241, .18);
+  color: #fff;
+  font-size: .74rem;
+  font-weight: 800;
+}
+
+.arena-draft-actions a,
+.arena-ledger-header-actions a,
+.arena-ledger-empty a,
+.arena-draft-next-step a { font-size: .78rem; font-weight: 800; }
+
+.arena-draft-message {
+  margin: 0;
+  border-left: 3px solid #67e8f9;
+  padding: .65rem .75rem;
+  background: rgba(6, 182, 212, .08);
+  color: #cffafe;
+  font-size: .76rem;
+  line-height: 1.4;
+}
+
+.arena-draft-message.error { border-color: #fca5a5; background: rgba(239, 68, 68, .08); color: #fecaca; }
+.arena-ledger-header { align-items: start; border-bottom: 1px solid var(--arena-line); padding-bottom: 1.4rem; }
+.arena-ledger-header h1 { margin: .45rem 0 .8rem; }
+.arena-ledger-header-actions { flex-wrap: wrap; justify-content: flex-end; }
+.arena-ledger-header-actions button:disabled { opacity: .45; }
+.arena-ledger-toolbar { justify-content: space-between; margin: 1rem 0; }
+.arena-ledger-toolbar > div { display: flex; flex-wrap: wrap; gap: .4rem; }
+.arena-ledger-toolbar button[aria-pressed="true"] { border-color: #67e8f9; background: rgba(6, 182, 212, .16); }
+
+.arena-ledger-empty { margin-top: 1rem; padding: 2.25rem; text-align: center; }
+.arena-ledger-empty h2 { margin: 0; }
+.arena-ledger-empty p { max-width: 33rem; margin: .65rem auto 1rem; color: var(--arena-muted); font-size: .85rem; line-height: 1.5; }
+.arena-draft-list { display: grid; gap: .8rem; margin-top: 1rem; }
+.arena-draft-card { padding: 1rem; }
+.arena-draft-card-header { align-items: start; justify-content: space-between; }
+.arena-draft-card h2 { margin: .45rem 0 .25rem; }
+.arena-draft-card-header p { margin: 0; color: var(--arena-muted); font-size: .72rem; }
+.arena-draft-badges { display: flex; flex-wrap: wrap; gap: .4rem; }
+.arena-draft-badges .queued { border-color: rgba(251, 191, 36, .35); color: #fde68a; background: rgba(245, 158, 11, .1); }
+.arena-draft-badges .reviewed { border-color: rgba(110, 231, 183, .35); color: #a7f3d0; background: rgba(16, 185, 129, .1); }
+.arena-draft-card-buttons { flex-wrap: wrap; justify-content: flex-end; }
+.arena-draft-card-buttons button:last-child { border-color: rgba(252, 165, 165, .35); background: rgba(239, 68, 68, .1); }
+
+.arena-draft-route { flex-wrap: wrap; margin-top: 1rem; color: var(--arena-muted); font-size: .76rem; }
+.arena-draft-route a { color: #c4b5fd; font-weight: 800; }
+.arena-draft-route a:last-of-type,
+.arena-draft-route > span:last-child { border: 1px solid var(--arena-line); padding: .25rem .4rem; color: #cbd5e1; }
+
+.arena-draft-payload { margin-top: 1rem; border: 1px solid var(--arena-line); padding: .8rem; background: rgba(2, 6, 23, .45); }
+.arena-draft-payload > div { justify-content: space-between; }
+.arena-draft-payload strong { color: var(--arena-muted); font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; }
+.arena-draft-payload button { border-color: rgba(103, 232, 249, .35); padding: .32rem .5rem; background: transparent; color: #a5f3fc; }
+.arena-draft-payload pre { max-height: 12rem; margin: .7rem 0 0; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; color: #dbeafe; font: .75rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.arena-draft-next-step { margin-top: .8rem; color: #fde68a; font-size: .76rem; line-height: 1.4; }
+
+@media (max-width: 760px) {
+  .arena-rooms-heading,
+  .arena-ledger-header { align-items: start; flex-direction: column; }
+  .arena-rooms-heading > p { text-align: left; }
+  .arena-room-detail-grid,
+  .arena-room-principles { grid-template-columns: 1fr; }
+  .arena-draft-card-header { flex-direction: column; }
+  .arena-draft-card-buttons { justify-content: flex-start; }
+  .arena-ledger-toolbar { align-items: start; flex-direction: column; }
+}

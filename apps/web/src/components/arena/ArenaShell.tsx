@@ -3,23 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
-
-const rooms = [
-  { href: "/command", label: "Command", emoji: "🧭" },
-  { href: "/", label: "Arena", emoji: "⚔️" },
-  { href: "/council", label: "Council", emoji: "🧠" },
-  { href: "/collab", label: "Collab", emoji: "🤝" },
-  { href: "/projects", label: "Projects", emoji: "📁" },
-  { href: "/artifacts", label: "Artifacts", emoji: "📦" },
-  { href: "/chat", label: "Chat", emoji: "💬" },
-  { href: "/assistants", label: "Assistants", emoji: "🧬" },
-  { href: "/arcade", label: "Arcade", emoji: "🎮" },
-  { href: "/image", label: "Image", emoji: "🖼️" },
-  { href: "/leaderboard", label: "Board", emoji: "🏆" },
-  { href: "/guide", label: "Guide", emoji: "📖" },
-  { href: "/privacy", label: "Privacy", emoji: "🛡️" },
-  { href: "/waveyard", label: "Waveyard", emoji: "〰️" },
-] as const;
+import { ARENA_NAVIGATION_ROOMS } from "@/lib/arena-rooms";
 
 function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
@@ -41,12 +25,12 @@ export function ArenaShell({ children }: { children: ReactNode }) {
             </span>
           </Link>
           <nav className="arena-nav-links" aria-label="Arena rooms">
-            {rooms.map((room) => (
+            {ARENA_NAVIGATION_ROOMS.map((room) => (
               <Link
-                key={room.href}
+                key={room.id}
                 className="arena-nav-link"
-                href={room.href}
-                aria-current={isActive(pathname, room.href) ? "page" : undefined}
+                href={room.href!}
+                aria-current={isActive(pathname, room.href!) ? "page" : undefined}
               >
                 <span aria-hidden>{room.emoji}</span> {room.label}
               </Link>
