@@ -390,7 +390,38 @@ REQUIRED** (this audit recommends the light baseline and mounting Waveyard secon
 
 ---
 
-## Appendix A — verification log (commands and key outputs)
+---
+
+## 7. Owner ratification and close-out (append-only; 2026-10-05)
+
+Recorded the same session the audit was produced, from the owner's explicit
+selections:
+
+| Decision | Ratified |
+|---|---|
+| **Canonical Arena baseline** | `arena-rooms-handoffs` @ `1077e3a` — the hub plus the owner's rooms map and draft handoff ledger. This is the tree that goes on the laptop. |
+| **`main` fast-forward** | **DEFERRED.** The baseline runs from its branch on the laptop first; `main` is fast-forwarded only once the usage threshold has actually been crossed. `main` stays pinned at `c1c1219` until then. |
+| **Usage-threshold clock** | Starts when the baseline is running on the laptop. Threshold per §5.3: 7 consecutive days of daily use, or 3 real tasks completed — whichever comes first. |
+| **Merry-go-round rule** | In force from ratification: no new parallel session branches off `main` for features; new work mounts on the baseline (rooms, handoffs, small merged PRs) or waits. |
+
+Adjusted next moves, in order:
+
+1. ~~Ratify the baseline~~ — **done** (this section).
+2. **Get the baseline onto the laptop** (§5.4 runbook; checkout `arena-rooms-handoffs`).
+3. Start the usage-threshold clock.
+4. When the threshold is crossed, fast-forward `main` from the laptop — the exact
+   command, lossless by construction:
+
+   ```bash
+   git checkout main && git merge --ff-only arena-rooms-handoffs && git push origin main
+   ```
+
+5. Then the §6 order stands: tag the slices, settle PR #1, fold in the portable
+   discipline (503 health rule, migration runner), and mount Waveyard as the first
+   real room once its recovery gates close.
+
+**No branch was deleted, rebased, or rewritten. The only refs changed by this audit
+session are its own record branch (`arena/01a10c30-arena-os-canonical`, this document).**
 
 - `git ls-remote --heads origin` — tips match §1 table exactly.
 - `git fetch origin 'refs/heads/*:refs/remotes/origin/*' --prune` — all refs fetched.
