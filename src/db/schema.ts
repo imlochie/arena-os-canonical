@@ -230,6 +230,18 @@ export const arcadeGames = pgTable("arcade_games", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// A space's persistent agent fleet: each agent has a role and a runtime.
+export const spaceAgents = pgTable("space_agents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  role: text("role").notNull().default("worker"),
+  modelId: text("model_id").notNull().default("local-engine"),
+  systemPrompt: text("system_prompt").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export type SpaceAgentRow = typeof spaceAgents.$inferSelect;
+
 // ---- Direct chats ----
 export const chats = pgTable("chats", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -315,6 +327,9 @@ export const spaces = pgTable("spaces", {
 export const spaceRuns = pgTable("space_runs", {
   id: uuid("id").primaryKey().defaultRandom(),
   spaceId: uuid("space_id").notNull(),
+  // Fleet runs: which agent produced this row (null = solo loop or synthesis).
+  agentId: uuid("agent_id"),
+  agentName: text("agent_name"),
   status: text("status").notNull().default("ok"), // ok | error
   output: text("output").notNull().default(""),
   via: text("via").notNull().default(""),

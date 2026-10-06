@@ -5,9 +5,11 @@
 import { buildPacman } from "./pacman";
 import { buildInvaders } from "./invaders";
 import { buildSnake, buildBreakout, buildPong } from "./classics";
+import { buildTetris } from "./tetris";
+import { build2048 } from "./twenty48";
 import { buildArena, themeFromPrompt } from "./arena";
 
-export type GameType = "pacman" | "invaders" | "snake" | "breakout" | "pong" | "arena";
+export type GameType = "pacman" | "invaders" | "snake" | "breakout" | "pong" | "tetris" | "2048" | "arena";
 export type GameEngine = "verified" | "remix" | "on-device-ai";
 
 export interface GameMeta {
@@ -23,6 +25,8 @@ export const GAME_TYPES: GameMeta[] = [
   { id: "snake", name: "Snake", emoji: "🐍", desc: "Eat, grow, don't bite yourself" },
   { id: "breakout", name: "Breakout", emoji: "🧱", desc: "Bricks, angles, 2-hit armored rows" },
   { id: "pong", name: "Pong", emoji: "🏓", desc: "You vs the machine, first to 7" },
+  { id: "tetris", name: "Falling Blocks", emoji: "🧱", desc: "Tetris-classic: 7-bag, hold, ghost, levels" },
+  { id: "2048", name: "Merge Numbers", emoji: "🔢", desc: "2048-classic: slide, merge, reach the target" },
   { id: "arena", name: "Neon Arena", emoji: "🚀", desc: "Parametric survival — themed from ANY words" },
 ];
 
@@ -34,6 +38,8 @@ export function detectGameType(prompt: string): GameType {
   if (has("snake", "worm", "slither", "nokia")) return "snake";
   if (has("breakout", "brick", "breaker", "arkanoid", "paddle ball")) return "breakout";
   if (has("pong", "table tennis", "ping pong")) return "pong";
+  if (has("tetris", "falling block", "falling piece", "block stack", "stacking block", "stack blocks")) return "tetris";
+  if (has("2048", "twenty forty", "merge number", "merge tiles", "powers of two", "power of 2")) return "2048";
   if (has("shooter", "shoot", "alien", "space", "invad")) return "invaders";
   if (has("maze", "chase", "ghost", "eat the dots", "dots")) return "pacman";
   if (has("paddle", "bounce", "blocks")) return "breakout";
@@ -151,6 +157,24 @@ export function generateGameOffline(prompt: string, forceType?: GameType): Offli
         accent: mods.accent,
       });
       title = "Pong";
+      break;
+    case "tetris":
+      code = buildTetris({
+        gravityMs: Math.round(850 / s),
+        startLevel: mods.difficulty === "hard" ? Math.min(15, 5) : mods.difficulty === "easy" ? 1 : 1,
+        hold: !/no hold/.test(prompt.toLowerCase()) || undefined,
+        ghost: !/no ghost/.test(prompt.toLowerCase()) || undefined,
+        accent: mods.accent,
+      });
+      title = "Falling Blocks";
+      break;
+    case "2048":
+      code = build2048({
+        size: mods.difficulty === "easy" ? 5 : mods.difficulty === "hard" ? 3 : 4,
+        target: /4096/.test(prompt) ? 4096 : /1024/.test(prompt) ? 1024 : /512/.test(prompt) ? 512 : 2048,
+        accent: mods.accent,
+      });
+      title = "Merge Numbers";
       break;
     case "arena": {
       const theme = themeFromPrompt(prompt);

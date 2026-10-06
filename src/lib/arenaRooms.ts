@@ -63,7 +63,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
     handoffTarget: "operational",
     name: "Spaces",
     eyebrow: "Organize",
-    description: "A recurring agent workbench — money-work templates and multi-window organization over projects, artifacts, and memory.",
+    description: "A multi-agent work environment: give a space a standing task, staff it with an agent fleet (role + runtime per agent), run all agents concurrently, and get a synthesized deliverable with per-agent runtime provenance.",
     state: "available",
     destination: { href: "/spaces", label: "Open Spaces" },
     secondaryDestination: { href: "/projects", label: "Open Projects" },

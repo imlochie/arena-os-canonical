@@ -475,6 +475,8 @@ function SpaceWindow({
           )}
         </div>
 
+        <AgentFleet spaceId={space.id} models={models} />
+
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           <button
             onClick={onRunNow}
@@ -516,6 +518,228 @@ function SpaceWindow({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------- agent fleet panel ----------------
+
+interface FleetAgent {
+  id: string;
+  name: string;
+  role: string;
+  modelId: string;
+  systemPrompt: string;
+}
+
+interface FleetRunResult {
+  agent: { id: string; name: string; role: string; modelId: string };
+  ok: boolean;
+  output: string;
+  via: string;
+  ms: number;
+  runtime?: { backend?: string; via?: string; fallback?: boolean; fallbackReason?: string } | null;
+}
+
+function runtimeBadge(r: FleetRunResult["runtime"]): string {
+  if (!r) return "";
+  const fb = r.fallback ? " · fallback" : "";
+  return (r.backend ?? r.via ?? "?") + fb;
+}
+
+function AgentFleet({ spaceId, models }: { spaceId: string; models: ModelInfo[] }) {
+  const [agents, setAgents] = useState<FleetAgent[]>([]);
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("worker");
+  const [modelId, setModelId] = useState("local-engine");
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [results, setResults] = useState<FleetRunResult[]>([]);
+  const [synthesis, setSynthesis] = useState<FleetRunResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/spaces/${spaceId}/agents`, { cache: "no-store" });
+      const body = await res.json();
+      if (Array.isArray(body.agents)) setAgents(body.agents);
+    } catch {
+      /* offline — panel shows the honest error on action */
+    }
+  }, [spaceId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function addAgent() {
+    setError(null);
+    if (!name.trim()) {
+      setError("Give the agent a name.");
+      return;
+    }
+    const res = await fetch(`/api/spaces/${spaceId}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, role, modelId, systemPrompt }),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      setError(body.error ?? "agent could not be added");
+      return;
+    }
+    setName("");
+    setSystemPrompt("");
+    setShowForm(false);
+    await load();
+  }
+
+  async function removeAgent(id: string) {
+    await fetch(`/api/spaces/${spaceId}/agents/${id}`, { method: "DELETE" });
+    await load();
+  }
+
+  async function runFleet() {
+    setRunning(true);
+    setError(null);
+    setResults([]);
+    setSynthesis(null);
+    try {
+      const res = await fetch(`/api/spaces/${spaceId}/fleet`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body.error ?? "fleet run failed");
+        return;
+      }
+      setResults(body.results ?? []);
+      setSynthesis(body.synthesis ?? null);
+    } catch {
+      setError("fleet run failed");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-violet-200/70">
+          Agent fleet · {agents.length}
+        </span>
+        <button
+          onClick={runFleet}
+          disabled={running || !agents.length}
+          className="rounded-lg bg-violet-500/15 px-2.5 py-1 text-xs font-bold text-violet-200 ring-1 ring-violet-400/30 hover:bg-violet-500/25 disabled:opacity-40"
+          title={agents.length ? "Run every agent concurrently, then synthesize" : "Add agents first"}
+        >
+          {running ? "Running…" : "🚀 Run fleet"}
+        </button>
+        <button
+          onClick={() => setShowForm((v) => !v)}
+          className="rounded-lg bg-white/5 px-2.5 py-1 text-xs font-bold text-slate-300 ring-1 ring-white/10 hover:bg-white/10"
+        >
+          {showForm ? "× Cancel" : "+ Agent"}
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Name (e.g. Researcher)"
+            className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-slate-600"
+          />
+          <input
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+            placeholder="Role (worker, critic, planner…)"
+            className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-slate-600"
+          />
+          <select
+            value={modelId}
+            onChange={(e) => setModelId(e.target.value)}
+            className="rounded-lg border border-white/10 bg-[#0c1428] px-2.5 py-1.5 text-xs text-white outline-none"
+          >
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+          <input
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            placeholder="System prompt (optional)"
+            className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-slate-600"
+          />
+          <button
+            onClick={addAgent}
+            className="rounded-lg bg-violet-500/25 px-2.5 py-1.5 text-xs font-bold text-violet-100 ring-1 ring-violet-400/30 hover:bg-violet-500/35"
+          >
+            Add agent
+          </button>
+        </div>
+      )}
+
+      {agents.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {agents.map((a) => (
+            <span
+              key={a.id}
+              className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300"
+              title={a.systemPrompt || a.role}
+            >
+              <b className="text-white">{a.name}</b>
+              <span className="text-slate-500">{a.role}</span>
+              <span className="text-cyan-300/70">{models.find((m) => m.id === a.modelId)?.name ?? a.modelId}</span>
+              <button
+                onClick={() => removeAgent(a.id)}
+                className="text-red-300/60 hover:text-red-300"
+                title="Remove agent"
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {error && <p className="mt-2 text-xs text-amber-300">{error}</p>}
+
+      {(results.length > 0 || synthesis) && (
+        <div className="scroll-thin mt-2.5 max-h-72 space-y-2 overflow-y-auto">
+          {results.map((r) => (
+            <div key={r.agent.id} className="rounded-lg bg-black/30 p-2.5 ring-1 ring-white/5">
+              <p className="flex flex-wrap items-center gap-2 text-[11px]">
+                <b className="text-white">{r.agent.name}</b>
+                <span className="text-slate-500">{r.agent.role}</span>
+                <span className="text-emerald-300/80">{runtimeBadge(r.runtime)}</span>
+                <span className="text-slate-600">{r.ms}ms</span>
+              </p>
+              <div className="mt-1 text-xs">
+                <Markdown text={r.output} />
+              </div>
+            </div>
+          ))}
+          {synthesis && (
+            <div className="rounded-lg bg-violet-500/10 p-2.5 ring-1 ring-violet-400/20">
+              <p className="flex flex-wrap items-center gap-2 text-[11px]">
+                <b className="text-violet-100">🧵 Synthesis</b>
+                <span className="text-emerald-300/80">{runtimeBadge(synthesis.runtime)}</span>
+              </p>
+              <div className="mt-1 text-xs">
+                <Markdown text={synthesis.output} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -969,3 +969,42 @@ failed/queue_unavailable → public/moderation/discover/home pages 200 →
 `npm test` **218/218** (167 prior + 51 waveyard domain tests) · production
 build clean (22 pages) · `db:setup` applied (29 new tables) · E2E data
 cleaned up afterwards.
+
+---
+
+## Arcade game forge + Spaces agent fleets (2026-10-06)
+
+**Arcade** — the forge's template library gained two real engines:
+- **Falling Blocks (Tetris)**: complete single-file implementation — 7 pieces
+  × 4 rotations with wall kicks, 7-bag randomizer, hold, ghost piece, hard
+  drop, next queue, line-clear scoring (100/300/500/800 × level), levels,
+  persistent high score, touch controls. Parameterized: board size, start
+  level, gravity curve, hold/ghost toggles, theme.
+- **Merge Numbers (2048)**: full merge logic, win-with-continue, dead-end
+  detection, grid size as a real difficulty axis (3×3 brutal / 4×4 classic /
+  5×5 roomy), target tile configurable.
+Prompt routing recognizes both ("tetris", "falling blocks", "2048",
+"merge numbers", …); mods (turbo/hard/easy/theme) produce labeled remixes.
+6 new contract tests (src/lib/games/forge.test.ts): routing, validator pass,
+required subsystems, mods-change-output, and a parse-only JS syntax gate on
+the emitted code. Live: "tetris but turbo and hard mode" → 13.8KB playable
+remix, persisted; "2048 hard mode" → 3×3 grid.
+
+**Spaces** — from a single-model cron loop to a real multi-agent work
+environment:
+- New `space_agents` table (name, role, modelId, systemPrompt per agent) and
+  per-agent attribution on `space_runs` (agent_id, agent_name).
+- `runFleet` executes every agent **concurrently** against the same standing
+  task (each with its own runtime — Local Engine offline, or any configured
+  model), persists each contribution with its own honest runtime metadata,
+  then synthesizes one deliverable (same fallback chain as everything else).
+- API: /api/spaces/[id]/agents (list/add), /agents/[agentId] (delete),
+  /fleet (run now). UI: AgentFleet panel inside every space window — staff
+  the fleet, run it, see per-agent outputs with runtime badges + synthesis.
+- The role brief leads each agent's message so even the deterministic Local
+  Engine produces genuinely different, role-shaped contributions (verified:
+  3 agents → 3 distinct outputs, different focus and angle) — never
+  disguised as an LLM; every output carries the honest engine label.
+
+Gates: tsc clean · **224/224 tests** · production build clean · live E2E for
+both rooms verified on the running server.

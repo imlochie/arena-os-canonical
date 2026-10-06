@@ -12,8 +12,8 @@
 // workbench page and each popped-out window poll it while visible.
 
 import { db } from "@/db";
-import { spaceRuns, spaces } from "@/db/schema";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { spaceAgents, spaceRuns, spaces } from "@/db/schema";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { generate } from "@/lib/ai";
 import { getModel } from "@/lib/models";
 
@@ -45,6 +45,9 @@ interface SpaceRowLike {
 
 export interface SpaceRun {
   id: string;
+  /** Fleet runs: the producing agent (null = solo loop or synthesis). */
+  agentId?: string | null;
+  agentName?: string | null;
   status: string;
   output: string;
   via: string;
@@ -199,6 +202,8 @@ async function insertRun(spaceId: string, run: Omit<SpaceRun, "id" | "createdAt"
     if (!dbHealthy) return;
     await db.insert(spaceRuns).values({
       spaceId,
+      agentId: full.agentId ?? null,
+      agentName: full.agentName ?? null,
       status: full.status,
       output: full.output.slice(0, 12000),
       via: full.via,
@@ -250,6 +255,8 @@ export async function getSpaceRuns(id: string, limit = 25): Promise<SpaceRun[]> 
         .limit(limit);
       return rows.map((r) => ({
         id: r.id,
+        agentId: (r as any).agentId ?? null,
+        agentName: (r as any).agentName ?? null,
         status: r.status,
         output: r.output,
         via: r.via,
@@ -453,4 +460,150 @@ export async function tickSpaces(
     }
   }
   return { ran, spaces: await listSpaces() };
+}
+
+// ---------------- agent fleet ----------------
+
+export interface SpaceAgent {
+  id: string;
+  spaceId: string;
+  name: string;
+  role: string;
+  modelId: string;
+  systemPrompt: string;
+  createdAt: string;
+}
+
+function publicAgent(row: typeof spaceAgents.$inferSelect): SpaceAgent {
+  return {
+    id: row.id,
+    spaceId: row.spaceId,
+    name: row.name,
+    role: row.role,
+    modelId: row.modelId,
+    systemPrompt: row.systemPrompt,
+    createdAt: (row.createdAt instanceof Date ? row.createdAt : new Date()).toISOString(),
+  };
+}
+
+export async function listAgents(spaceId: string): Promise<SpaceAgent[]> {
+  try {
+    const rows = await db.select().from(spaceAgents).where(eq(spaceAgents.spaceId, spaceId)).orderBy(asc(spaceAgents.createdAt));
+    return rows.map(publicAgent);
+  } catch {
+    dbHealthy = false;
+    return [];
+  }
+}
+
+export async function createAgent(spaceId: string, input: { name?: string; role?: string; modelId?: string; systemPrompt?: string }): Promise<SpaceAgent | null> {
+  const space = await loadSpace(spaceId);
+  if (!space) return null;
+  const name = (input.name ?? "").trim().slice(0, 60) || "Agent";
+  const [row] = await db.insert(spaceAgents).values({
+    spaceId,
+    name,
+    role: (input.role ?? "worker").trim().slice(0, 60) || "worker",
+    modelId: (input.modelId ?? "local-engine").trim().slice(0, 80),
+    systemPrompt: (input.systemPrompt ?? "").slice(0, 4000),
+  }).returning();
+  return publicAgent(row);
+}
+
+export async function deleteAgent(spaceId: string, agentId: string): Promise<boolean> {
+  const rows = await db.delete(spaceAgents).where(and(eq(spaceAgents.id, agentId), eq(spaceAgents.spaceId, spaceId))).returning();
+  return rows.length > 0;
+}
+
+export interface FleetResult {
+  agent: SpaceAgent;
+  ok: boolean;
+  output: string;
+  via: string;
+  ms: number;
+  runtime?: unknown;
+}
+
+/**
+ * Runs every agent in the space concurrently against the same work prompt,
+ * then synthesizes the contributions into one deliverable. Each agent row is
+ * persisted with its OWN runtime metadata — what executed is what is shown.
+ */
+export async function runFleet(
+  id: string,
+  opts: SpaceGenOpts,
+): Promise<{ space: SpaceState; results: FleetResult[]; synthesis: FleetResult | null } | null> {
+  const row = await loadSpace(id);
+  if (!row) return null;
+  const agents = await listAgents(id);
+
+  const workPrompt =
+    runUserPrompt(row) +
+    "\n\nFleet context — you are one of several agents working this task in parallel. Do YOUR part; the synthesizer combines all contributions.";
+
+  const results: FleetResult[] = await Promise.all(
+    agents.map(async (agent): Promise<FleetResult> => {
+      const t0 = Date.now();
+      try {
+        // The role brief leads the message: the deterministic Local Engine
+        // seeds its structure from the prompt's opening, so each agent's
+        // output genuinely reflects its position in the fleet.
+        const roleBrief =
+          "You are " + agent.name + ", the " + agent.role + " agent of this fleet." +
+          (agent.systemPrompt ? " Mandate: " + agent.systemPrompt : "") +
+          "\n\n" + workPrompt;
+        const result = await generate({
+          modelId: agent.modelId,
+          messages: [{ role: "user", content: roleBrief }],
+          system:
+            (agent.systemPrompt && agent.systemPrompt.trim() + "\n\n") +
+            "You are " + agent.name + ", the " + agent.role + " agent of this space's fleet. " +
+            "Produce concrete, immediately usable output for your role. Never pretend to have taken real-world actions — you draft, the human acts.",
+          keys: opts.localOnly ? undefined : opts.keys,
+          localOnly: opts.localOnly,
+        });
+        const output = result.text.slice(0, 12000);
+        await insertRun(id, { agentId: agent.id, agentName: agent.name, status: "ok", output, via: result.via ?? "", ms: Date.now() - t0, runtime: result });
+        return { agent, ok: true, output, via: result.via ?? "", ms: Date.now() - t0, runtime: result };
+      } catch (e) {
+        const output = e instanceof Error ? e.message.slice(0, 500) : "agent failed";
+        await insertRun(id, { agentId: agent.id, agentName: agent.name, status: "error", output, via: "", ms: Date.now() - t0 });
+        return { agent, ok: false, output, via: "", ms: Date.now() - t0 };
+      }
+    }),
+  );
+
+  // Synthesis: combine the fleet's work. Uses the space's configured model,
+  // with the same honest fallback chain as everything else.
+  let synthesis: FleetResult | null = null;
+  if (results.length) {
+    const t1 = Date.now();
+    try {
+      const digest =
+        "Space task: " + row.prompt.slice(0, 2000) +
+        "\n\nAgent contributions:\n" +
+        results.map((r) => "## " + r.agent.name + " (" + r.agent.role + ", ran " + (r.runtime as any)?.backend + ")\n" + r.output.slice(0, 3000)).join("\n\n");
+      const result = await generate({
+        modelId: row.modelId,
+        messages: [{ role: "user", content: digest + "\n\nSynthesize these contributions into ONE deliverable: decisions made, disagreements, and the single next action. Be concise." }],
+        system: "You synthesize parallel agent work into one actionable deliverable. Attribute disagreements honestly.",
+        keys: opts.localOnly ? undefined : opts.keys,
+        localOnly: opts.localOnly,
+      });
+      const output = result.text.slice(0, 12000);
+      await insertRun(id, { agentId: null, agentName: "synthesis", status: "ok", output, via: result.via ?? "", ms: Date.now() - t1, runtime: result });
+      synthesis = { agent: { id: "synthesis", spaceId: id, name: "Synthesis", role: "synthesizer", modelId: row.modelId, systemPrompt: "", createdAt: "" }, ok: true, output, via: result.via ?? "", ms: Date.now() - t1, runtime: result };
+      row.lastOutput = output;
+    } catch (e) {
+      const output = e instanceof Error ? e.message.slice(0, 500) : "synthesis failed";
+      await insertRun(id, { agentId: null, agentName: "synthesis", status: "error", output, via: "", ms: Date.now() - t1 });
+    }
+  }
+
+  row.runCount += 1;
+  row.okCount += results.filter((r) => r.ok).length ? 1 : 0;
+  row.lastRunAt = new Date().toISOString();
+  row.nextRunAt = new Date(Date.now() + row.intervalMinutes * 60_000).toISOString();
+  await persistSpace(row);
+  return { space: publicSpace(row), results, synthesis };
 }
