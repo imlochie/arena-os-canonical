@@ -23,7 +23,7 @@ export function BuildProject() {
     setBusy(true);
     const createdResponse = await fetch("/api/waveyard/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: title.trim() || "Waveyard build", description: "", licenseCode: "all-rights-reserved" }) });
     const created = await createdResponse.json().catch(() => ({}));
-    if (!createdResponse.ok) { setBusy(false); setMessage(created.error ?? "Sign in before building a project."); return; }
+    if (!createdResponse.ok) { setBusy(false); setMessage(created.error ?? "The project could not be created."); return; }
     const projectId = created.project.id;
     const buildResponse = await fetch(`/api/waveyard/projects/${projectId}/builds`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestedSourceCount: intake.requestedCount }) });
     const buildRecord = await buildResponse.json().catch(() => ({}));
