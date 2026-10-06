@@ -228,3 +228,52 @@ Neural execution (RVC/so-vits-svc conversion, autotune rendering) lands
 with the worker/desktop phases — the capability surface reports it as
 unavailable today, never fake. Gates: tsc 0 · **360/360** · build clean ·
 desktop compiles · live E2E verified above.
+
+---
+
+## Part 7 — Finalization increment (2026-10-07): Phase 0 audit + Phase 1 fixes + console UI + real meters
+
+**Phase 0 audit result:** zero TODO/FIXME/stub/noop/"coming soon" markers
+in the entire Waveyard surface (lib, components, routes) — the only
+matches are legitimate HTML input placeholders. Real findings were the
+integration gaps below, categorized P0/P1 and fixed in this increment.
+
+**Fixed — Phase 1.1 (P0, temp-file leak):** the arrangement-layer route
+left temp WAVs behind on every non-happy path. All temp handling now runs
+through a `finally` block — success, validation failure, storage failure,
+render failure, and thrown exceptions all clean up. Live-verified: 0
+`arena-layer-*` files in /tmp after generation.
+
+**Fixed — Phase 1.2 (P1, durable layers):** generated layers were
+reconstructible from storage keys only. New `arrangement_layers` table
+(migration 0011) persists the full record: original prompt, validated
+instruction, instrument/mood/density/register/sections/level/seed, note
+events, realization + interpretation notes, storage key, renderer,
+sample rate, duration, provenance. GET lists durably; DELETE removes row
++ derived WAV (source untouched). **Live-verified surviving a full server
+restart** (same layer id, same audio), plus real WAV serve (2 MB,
+−3.2 dBFS peak) and honest 409s.
+
+**Phase 2/3 (P1, console + real meters):** StemMixer (slider row)
+superseded by MixerConsole — SOURCE-grouped STEM strips + MASTER strip;
+fader (dB-labelled), pan, mute, solo, **real phase inversion (negative
+gain)** and **mono monitoring (explicit 1-channel downmix)** per channel;
+**real meters from AnalyserNode taps** — per-channel peak/RMS/clip-hold,
+master L/R + clip + live stereo correlation — polled from the actual
+audio graph only while audio flows (no fabricated animation). Every
+control modifies the graph; nothing decorative is rendered. Transport
+gained per-channel analyser taps + master splitter (L/R) without breaking
+the existing API. GeneratedLayers panel (compose prompt → list → play →
+inspect notes → delete, with honest empty state) wired into StudioCore.
+
+**Honest remainder (next increments, in priority order):** insert-rack UI
+wired to channel persistence (engine + registry exist; needs
+remix-track-level insert columns); cleanup SCAN/PREVIEW/APPLY UI over the
+real scanner (engine exists); AI provider adapters consuming the packet +
+proposal UI (contracts exist); sound-design preset builder; reference/
+mastering workflow; automation lane editing UI (engine + persistence
+exist).
+
+Gates: tsc 0 · **362/362 tests** · production build clean · live E2E:
+generate → 0 temp files → durable across server restart → WAV serve →
+delete → honest 409.

@@ -1,23 +1,30 @@
 /**
- * Arrangement layer generation — prompt → real composed + rendered audio.
+ * Arrangement layer generation + durable listing — prompt → real composed
+ * and rendered audio, PERSISTED as project metadata.
  *
  * POST /api/waveyard/projects/[id]/arrangement-layers
  *   body: { prompt: string } | { instruction: ArrangementInstruction }
+ *   → composes from authoritative analysis, renders real PCM, stores the
+ *     WAV, and persists the full layer metadata (prompt, instruction,
+ *     events, notes, provenance) in arrangement_layers. Temp files are
+ *   removed on every path (finally). Layers survive reload/restart.
  *
- * Uses ONLY authoritative analysis evidence (key, tempo, beat grid,
- * sections) for the project's primary source. Composes deterministically,
- * renders real PCM through the synth engine, stores the WAV under the
- * project's storage namespace, and returns note events + interpretation +
- * provenance. The layer is a derived artifact: the source is never
- * touched, and every response says exactly what was placed and why.
+ * GET  → durable layer list for the project (survives page reload,
+ *   browser restart, server restart, project reopen).
+ *
+ * The source is never touched; layers are derived artifacts.
  */
 
 import { NextResponse } from "next/server";
 import { asc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import { rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { db } from "@/db";
 import {
+  arrangementLayers,
   sourceAnalyses,
   sourceAssets,
   sourceSections,
@@ -53,7 +60,50 @@ function parsedBeatGrid(value: string | null): number[] | null {
   }
 }
 
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await requireUser();
+    const { id: projectId } = await params;
+    await requireProjectRole(user.id, projectId, "viewer");
+    const rows = await db
+      .select()
+      .from(arrangementLayers)
+      .where(eq(arrangementLayers.projectId, projectId))
+      .orderBy(asc(arrangementLayers.createdAt));
+    return NextResponse.json({ layers: rows.map(layerRowToResponse) }, { status: 200 });
+  } catch (error) {
+    if (error instanceof Response) return error;
+    console.error("arrangement layer listing failed", error);
+    return NextResponse.json({ error: "Could not list arrangement layers." }, { status: 500 });
+  }
+}
+
+/** Pure row → API shape (unit-tested). */
+export function layerRowToResponse(row: typeof arrangementLayers.$inferSelect) {
+  return {
+    id: row.id,
+    instrument: row.instrument,
+    mood: row.mood,
+    density: row.density,
+    register: row.registerKind,
+    targetSections: JSON.parse(row.targetSections) as "all" | number[],
+    level: row.level,
+    seed: row.seed,
+    originalPrompt: row.originalPrompt,
+    events: JSON.parse(row.events),
+    notes: JSON.parse(row.notes),
+    storageKey: row.storageKey,
+    renderer: row.renderer,
+    sampleRate: row.sampleRate,
+    durationSeconds: row.durationSeconds,
+    provenance: JSON.parse(row.provenance),
+    createdAt: row.createdAt,
+    audioUrl: `/api/waveyard/projects/${row.projectId}/arrangement-layers/${row.id}`,
+  };
+}
+
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  let tempPath: string | null = null;
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
@@ -121,6 +171,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // --- Instruction: explicit or from prompt ------------------------------
     let instruction: ArrangementInstruction | null = null;
     let interpretation: string[] = [];
+    let originalPrompt = "";
     if (body.instruction !== undefined) {
       instruction = validateArrangementInstruction(body.instruction);
       if (instruction === null)
@@ -136,6 +187,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           { error: "Provide a prompt or an instruction.", errorCode: "INPUT_INVALID" },
           { status: 400 },
         );
+      originalPrompt = prompt;
       const parsed = parsePromptToInstruction(prompt, { sectionCount: sections.length });
       instruction = parsed.instruction;
       interpretation = parsed.interpretation;
@@ -161,43 +213,79 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const layerId = randomUUID();
     const storageKey = `projects/${projectId}/generated/${layerId}.wav`;
 
-    const storage = getStorage();
-    // putBuffer takes string data; WAV bytes go through putFile via a temp
-    // write to keep binary exact.
-    const { writeFile } = await import("node:fs/promises");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const tempPath = join(tmpdir(), `arena-layer-${layerId}.wav`);
+    // Temp file is always removed in the finally block below — success,
+    // storage failure, render failure, or any thrown exception.
+    tempPath = join(tmpdir(), `arena-layer-${layerId}.wav`);
     await writeFile(tempPath, wav);
-    await storage.putFile(storageKey, tempPath);
+    await getStorage().putFile(storageKey, tempPath);
 
-    return NextResponse.json(
-      {
-        layer: {
-          id: layerId,
-          instrument: layer.instrument,
-          events: layer.events,
-          realizationNotes: layer.realizationNotes,
-          interpretation,
-          storageKey,
-          format: layer.format,
-        },
-        provenance: {
+    // --- Persist durable metadata -------------------------------------------
+    const [row] = await db
+      .insert(arrangementLayers)
+      .values({
+        id: layerId,
+        projectId,
+        sourceAssetId: source.asset.id,
+        sourceChecksumSha256: source.asset.checksumSha256,
+        originalPrompt,
+        instruction: JSON.stringify(instruction),
+        instrument: layer.instrument,
+        mood: instruction.mood,
+        density: instruction.density,
+        registerKind: instruction.register,
+        targetSections: JSON.stringify(instruction.targetSections),
+        level: instruction.level,
+        seed: instruction.seed,
+        events: JSON.stringify(layer.events),
+        notes: JSON.stringify({ realization: layer.realizationNotes, interpretation }),
+        storageKey,
+        renderer: "waveyard-synth-v1",
+        sampleRate: RENDER_SAMPLE_RATE,
+        durationSeconds,
+        provenance: JSON.stringify({
           kind: "generated-arrangement-layer",
           sourceAssetId: source.asset.id,
           sourceChecksumSha256: source.asset.checksumSha256,
           engine: "waveyard-composer-v1",
           renderer: "waveyard-synth-v1",
-          sampleRate: RENDER_SAMPLE_RATE,
-          createdAt: new Date().toISOString(),
           requestedBy: user.id,
-        },
-      },
-      { status: 201 },
-    );
+        }),
+      })
+      .returning();
+
+    return NextResponse.json({ layer: layerRowToResponse(row) }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("arrangement layer generation failed", error);
     return NextResponse.json({ error: "Could not generate the arrangement layer." }, { status: 500 });
+  } finally {
+    if (tempPath !== null) {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+    }
+  }
+}
+
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await requireUser();
+    const { id: projectId } = await params;
+    await requireProjectRole(user.id, projectId, "editor");
+    const url = new URL(request.url);
+    const layerId = url.searchParams.get("layerId") ?? "";
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(layerId))
+      return NextResponse.json({ error: "Invalid layer id." }, { status: 400 });
+    const deleted = await db
+      .delete(arrangementLayers)
+      .where(eq(arrangementLayers.id, layerId))
+      .returning({ id: arrangementLayers.id, storageKey: arrangementLayers.storageKey });
+    if (deleted.length === 0)
+      return NextResponse.json({ error: "Layer not found." }, { status: 404 });
+    // Remove the derived WAV too; the source asset is never touched.
+    await getStorage().delete(deleted[0].storageKey).catch(() => undefined);
+    return NextResponse.json({ deleted: deleted[0].id }, { status: 200 });
+  } catch (error) {
+    if (error instanceof Response) return error;
+    console.error("arrangement layer deletion failed", error);
+    return NextResponse.json({ error: "Could not delete the layer." }, { status: 500 });
   }
 }

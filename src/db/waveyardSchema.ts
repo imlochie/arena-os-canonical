@@ -399,6 +399,39 @@ export const vocalPhrases = pgTable("vocal_phrases", {
 
 // A remix is non-destructive arrangement metadata over existing stems. No clip
 // operation copies or mutates original separated audio.
+
+export const arrangementLayers = pgTable("arrangement_layers", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  /** The user's original prompt (empty when an explicit instruction was sent). */
+  originalPrompt: text("original_prompt").notNull().default(""),
+  /** Validated ArrangementInstruction JSON (waveyard-arrangement-instruction-v1). */
+  instruction: text("instruction").notNull(),
+  instrument: text("instrument").notNull(),
+  mood: text("mood").notNull(),
+  density: text("density").notNull(),
+  registerKind: text("register_kind").notNull(),
+  targetSections: text("target_sections").notNull(),
+  level: real("level").notNull(),
+  seed: integer("seed").notNull(),
+  /** Composed note events JSON (the actual musical content). */
+  events: text("events").notNull(),
+  /** Realization + interpretation notes JSON. */
+  notes: text("notes").notNull(),
+  storageKey: text("storage_key").notNull(),
+  renderer: text("renderer").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  durationSeconds: real("duration_seconds").notNull(),
+  /** Full provenance JSON (engine, renderer, requestedBy, createdAt). */
+  provenance: text("provenance").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("arrangement_layers_project_idx").on(table.projectId),
+  uniqueIndex("arrangement_layers_storage_key_unique").on(table.storageKey),
+]);
+
 export const remixSessions = pgTable("remix_sessions", {
   id: uuid("id").defaultRandom().primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
