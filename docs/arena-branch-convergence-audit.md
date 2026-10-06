@@ -499,6 +499,99 @@ cd /home/user/arena-os-canonical && npm start -- -H 0.0.0.0 -p 3000
 
 ---
 
+## 9. Rooms runtime status (append-only; 2026-10-06, second session)
+
+Owner question: *"Is Waveyard still functioning alongside Arena? I never got to test
+it since it was stuck behind a fake sign-up page. How far along is LUMA / the other
+rooms?"* This section records what was actually run, not what is claimed.
+
+### W1 — Waveyard is running alongside Arena (verified live)
+
+The `bebf` monorepo (`b690d99`) was stood up from scratch in the sandbox as a second
+live preview (web on :3001; the ratified baseline hub remains on :3000):
+
+| Piece | Status |
+|---|---|
+| PostgreSQL 17.10 | ✅ running (npm-packaged binaries, unprivileged) |
+| Redis 7.4.1 | ✅ compiled from source (all binary hosts blocked; gcc was available) |
+| Storage | ✅ `STORAGE_PROVIDER=local` — the monorepo ships a filesystem driver; no MinIO needed |
+| Migrations | ✅ all 19 applied; **52 tables**: `arena_*` namespaced hub + full Waveyard domain + `arena_room_handoffs` |
+| Web (production build) | ✅ Next 16.3.5, `/waveyard/*` + Arena hub + rooms + handoffs all 200 |
+| Worker | ✅ **doctor 9/9 PASS** (ffmpeg, python, storage, redis, postgres, numpy, analysis, torch, demucs) |
+
+### W2 — The "fake sign-up page" was never fake: root cause found and fixed
+
+The Waveyard auth form (on `/waveyard`, component `AuthForm`) is a **real**
+implementation: zod-validated registration, `node:crypto` password hashing, DB insert
+with unique-constraint handling (23505 → "already registered"), and an immediate
+session cookie — no email verification gate.
+
+Reproduced live this session: when the web server runs **without `DATABASE_URL`**, the
+page renders perfectly but every registration returns a generic
+`{"error":"Account could not be created."}` (500). Server log, verbatim:
+`registration failed Error: DATABASE_URL is required to access Waveyard data.`
+**That is the "fake sign-up page": a real form against an unconfigured stack.** With
+env set, the same form registered a real account (201, user persisted, session works).
+
+### W3 — End-to-end pipeline results (real evidence)
+
+| Step | Result |
+|---|---|
+| Register → session | ✅ 201, cookie, persisted |
+| Create project | ✅ (field is `title`, not `name`) |
+| Upload 30s WAV | ✅ server-validated (ffprobe metadata, sha256 checksum, size limit), stored via local provider, separation + waveform jobs queued transactionally |
+| Waveform job | ✅ **complete** (ffmpeg) — the Studio player has a real source waveform |
+| Separation job | ❌ **fails honestly**: `separation_failed` — htdemucs weights unreachable from this sandbox |
+| Stems | 0 (never invented — by design) |
+
+**Model weights note:** `htdemucs` (`955717e8-8726e21a.th`, 80MB) is hosted only on
+`dl.fbaipublicfiles.com`, which this sandbox blocks (as are HuggingFace, jsdelivr, raw
+GitHub, GitHub release assets, Docker registries, Anaconda). Every reachable channel
+(PyPI, npm, GitHub git/codeload + API search, source compilation of Redis) was used
+where possible; no package or repo vendors the checkpoint. **On the owner's laptop the
+first separation simply downloads the model (~80MB, one time)** — the README's
+documented behavior. The failure here is environmental, not a Waveyard defect, and the
+system treated it exactly as its doctrine requires.
+
+**Deployment addendum (learned live):** `packages/audio` requires **both `ffmpeg` and
+`ffprobe` on PATH** (uploads fail with "could not be decoded as supported audio"
+without ffprobe). In this sandbox: ffmpeg via PyPI `imageio-ffmpeg`, ffprobe via PyPI
+`ffprobe-binaries-only`. The Docker Compose stack provides both already.
+
+### W4 — LUMA status (`bdc9` @ `c6b4527`)
+
+Standalone Expo/React Native/TypeScript camera-first photography app, 84 files:
+5 tab screens (camera/create/edit/settings + index), editor, licenses, privacy pages;
+52 `src/` files (CameraSelector, PhotoRenderer, PresetCarousel, LayerView, …);
+**14 test/spec files with jest configured**; 6 docs. Commit trail: V1 camera app →
+Camera V2 (swipeable cameras) + Cameras/Looks reframe → deterministic adaptive look
+resolver → thumbnail-analysis-driven adaptive export → device readiness fixes →
+explicit Arena/media boundary ("Independent by design. No Arena account is required").
+**Integration with Arena: none beyond the hub's `/luma` page, which links out to it.**
+Not runnable in this sandbox (needs a device/simulator); untested on-device here.
+Verdict: a self-contained, structured, test-configured mobile app at roughly
+"V1 + Camera V2 + looks" maturity; mounting it into Arena is a future decision, not
+existing wiring.
+
+### W5 — Other rooms, one line each (as of this session)
+
+| Room (rooms-map state) | Reality |
+|---|---|
+| Assistant / Orchestrator / Council / Spaces / Archive Assistant / Classroom(→guide) / Studio(→collab) / LUMA(→image) / Device Security(→privacy) | `available` — existing hub surfaces in the baseline (:3000), all 200 |
+| Waveyard | **NOW RUNNING** on :3001 (monorepo): auth, projects, validated upload, waveforms real; separation pending reachable model download (laptop-fine) |
+| Congress, Cut Lab | `local` — code exists only on `a9b7` (unmounted slice; see §2) |
+| Studio (full multimodal) | `a9b7` code; the baseline's rooms map deliberately points Studio at existing `/collab` instead |
+| Classroom (real tutor runtime) | superseded by the College (`bb55`), a separate product concept (§2) |
+| Archive Assistant (AI seam) | `b544` — blocked on external AA Q1–Q4 by design (§2) |
+
+### W6 — Related discovery
+
+`imlochie/arena-os-local-first` (261KB, last updated 2026-09-12 — one day before
+`arena-os-canonical`'s initial commit, no description): a pre-canonical experiment.
+Flagged for a future audit pass; does not affect the baseline decision (§7).
+
+---
+
 ## Appendix A — verification log (commands and key outputs)
 
 - `git ls-remote --heads origin` — tips match §1 table exactly.
