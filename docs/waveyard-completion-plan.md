@@ -175,3 +175,56 @@ guarantees the final peak when the clipper runs LAST.
 Next (P1 console): the UI half — channel strips, buses, meters from real
 AnalyserNode taps, phase/mono in the transport, cleanup SCAN/PREVIEW/
 APPLY, then the AI adapters consuming the packet + proposal contract.
+
+---
+
+## Part 6 — Prompt-driven arrangement generation + Voice Studio contracts (2026-10-07)
+
+Two flagship capabilities from the user's request, built on the honesty
+discipline (real engine work now; model-gated parts report exactly what
+they are):
+
+### Arrangement generation — REAL end-to-end, live-verified
+"add some sinister sounding strings on this eminem beat" →
+POST /api/waveyard/projects/[id]/arrangement-layers → strings + sinister,
+12 chord placements, every start on the analyzed 90 BPM beat grid, every
+note diatonic to the analyzed A minor, rendered through the new synth
+engine to a real 44.1 kHz WAV (2 MB, peak −3.2 dBFS) in project storage,
+with full provenance. GET …/arrangement-layers/[layerId] serves it.
+
+- `mixer/synth.ts` — subtractive synthesis (strings/pad/pluck/choir/
+  sub-bass: detuned ensembles, envelopes, per-note filter state, vibrato)
+  + 16-bit WAV encode/decode. Tests: silence outside notes, instrument
+  envelope differences, velocity scaling, ceiling protection, WAV
+  round-trip.
+- `arrangement/composer.ts` — ArrangementInstruction (zod) → note events
+  from ONLY real evidence (key/tempo/beat grid/sections); refuses to
+  compose without them. Mood biases documented (sinister ⇒ parallel
+  minor, density ⇒ chords/bar); register anchor snaps to the key tonic;
+  seeded deterministic RNG. Tests: diatonic, on-grid, section-scoped,
+  density levels, determinism, honest-refusal paths.
+- `arrangement/prompt.ts` — deterministic lexicon parser (instrument/
+  mood/density/register/section/level words) reporting interpretation +
+  used defaults + unmapped phrases; strict AI-instruction validator
+  (models emit the same contract; malformed ⇒ rejected, never repaired).
+- Route enforces: analysis must be complete (else 409 ANALYSIS_MISSING
+  naming what's missing), storage under projects/{id}/generated/, source
+  never touched, provenance on every response.
+
+### Voice Studio — contracts + consent gate (execution is model-gated)
+- `voicestudio/consent.ts` — ConsentRegistry: identity cloning REQUIRES a
+  consent record (own-voice attestation or licensed with concrete rights
+  evidence); revocation re-locks instantly; fingerprints for provenance.
+- `voicestudio/capability.ts` — honest capability resolution: identity
+  conversion (consent + worker + models), style transfer (delivery
+  character, identity preserved — no consent needed), pitch correction,
+  unavailable (with the exact reason). Exact UI labels.
+- `voicestudio/job.ts` — voice-conversion job contract (queue name, model
+  kinds, transpose/strength ranges, provenance with consent fingerprint);
+  jobs are unbuildable without consent — downstream is safe by
+  construction.
+
+Neural execution (RVC/so-vits-svc conversion, autotune rendering) lands
+with the worker/desktop phases — the capability surface reports it as
+unavailable today, never fake. Gates: tsc 0 · **360/360** · build clean ·
+desktop compiles · live E2E verified above.
