@@ -423,6 +423,84 @@ Adjusted next moves, in order:
 **No branch was deleted, rebased, or rewritten. The only refs changed by this audit
 session are its own record branch (`arena/01a10c30-arena-os-canonical`, this document).**
 
+---
+
+## 8. Erratum and runtime verification (append-only; 2026-10-06)
+
+### E1 — Baseline defect: undeclared `lucide-react` dependency
+
+Found by doing exactly what §5.4 prescribed on a clean machine: `npm ci` then
+`npm run build` **fails**. The baseline commit `1077e3a` adds
+`ArenaRoomsDirectory`, `ArenaRoomDetail`, and `ArenaHandoffsLedger`, all of which
+import `lucide-react` — but `package.json` (unchanged from `main`, which never used
+the module) does not declare it, and no lockfile entry exists. The baseline only ever
+ran on machines that already had `lucide-react` in `node_modules` from other work.
+
+- **Fix:** `e3ef522` on this session branch (`fix: declare the missing lucide-react
+  dependency…`). After it, a clean install builds and runs.
+- **Consequence for §7:** when the usage threshold is crossed, `main` must **not**
+  fast-forward `arena-rooms-handoffs` alone — that would carry the defect. Fast-forward
+  to a ref that includes the fix: merge this session branch
+  (`arena/01a10c30-arena-os-canonical`, which is baseline + fix + this record). The
+  §7 ff-only command is amended to:
+
+  ```bash
+  git checkout main && git merge --ff-only arena/01a10c30-arena-os-canonical && git push origin main
+  ```
+
+  (valid because this session branch now contains `1077e3a` as an ancestor).
+- The §5.4 runbook is otherwise unchanged and now works as written on a fresh machine.
+
+### R1 — Runtime verification record (2026-10-06, clean install)
+
+Environment: Node 22.22.3 · PostgreSQL 17.10 (unprivileged, loopback) · production
+build, all from a clean `npm ci` after `e3ef522`:
+
+| Check | Result |
+|---|---|
+| `npm run build` | ✅ 22 routes compiled (static + dynamic) |
+| Pages (`/`, `/rooms`, `/rooms/[roomId]`, `/handoffs`, `/command`, `/council`, `/chat`, `/projects`, `/artifacts`, `/privacy`, `/guide`, …) | ✅ all 200 |
+| Rooms directory honesty | ✅ renders "Existing app surface" / "No service connected" / "Approval required" states; the Waveyard room states "Audio services are not connected. No audio is generated or processed." |
+| `GET /api/health` | ✅ `{"ok":true}` (real DB round-trip) |
+| `GET /api/models` | ✅ model registry populated (local + free-provider paths) |
+| `GET /api/stats` | ✅ live stats (Bradley–Terry board at seed ELO 1200) |
+| Write path: `POST /api/projects` → list → `POST /api/projects/[id]/memory` | ✅ 201 + persisted + retrieved |
+| `POST /api/chat` (default model, no keys) | ✅ responds in hub local mode ("local mode — no internet used") — the $0-local-first path by design; provider quality needs BYOK/free-provider egress |
+| Database | ✅ `drizzle-kit push` clean; 18 tables in `app_db` |
+
+The baseline's open items from here are only what §2 always said: provider egress for
+non-local model quality, and the other rooms' services (Waveyard topology, Congress,
+Cut Lab) — which the rooms map already states honestly.
+
+### R2 — Sandbox runtime note (for restarting this preview after a sandbox rebuild)
+
+PostgreSQL runs unprivileged from npm-packaged binaries (apt is blocked in this
+sandbox); the data dir persists at `/home/user/pgdata`:
+
+```bash
+# one-time per sandbox: fetch binaries and create missing soname symlinks
+mkdir -p /tmp/pgdist && cd /tmp/pgdist && \
+  npm pack @embedded-postgres/linux-x64@17.10.0-beta.17 --silent && \
+  tar xzf embedded-postgres-linux-x64-*.tgz && rm *.tgz && \
+  cd package/native/lib && for f in *.so.*; do case "$f" in *.a) ;; \
+    *) b=$(echo "$f" | sed -E 's/^(.*\.so\.[0-9]+).*/\1/'); \
+       [ "$b" != "$f" ] && [ ! -e "$b" ] && ln -s "$f" "$b";; esac; done
+
+# if /home/user/pgdata is missing: initdb first (scram, user postgres, password postgres)
+# then, as two background processes:
+LD_LIBRARY_PATH=/tmp/pgdist/package/native/lib \
+  /tmp/pgdist/package/native/bin/postgres -D /home/user/pgdata \
+  -c listen_addresses=127.0.0.1 -p 5432
+cd /home/user/arena-os-canonical && npm start -- -H 0.0.0.0 -p 3000
+```
+
+`.env` (gitignored) holds
+`DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db`.
+
+---
+
+## Appendix A — verification log (commands and key outputs)
+
 - `git ls-remote --heads origin` — tips match §1 table exactly.
 - `git fetch origin 'refs/heads/*:refs/remotes/origin/*' --prune` — all refs fetched.
 - Merge-base matrix over all 28 branch pairs — **every pair resolves to `c1c1219`**.
