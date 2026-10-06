@@ -1,0 +1,18 @@
+# Keep the web image build context small and reproducible.
+node_modules
+.next
+.data
+.env
+.env.local
+.env.*.local
+.git
+.gitignore
+*.log
+tsconfig.tsbuildinfo
+
+# The worker image builds from ./waveyard-worker with its own context; the
+# web app does not need the worker sources.
+waveyard-worker
+
+# Never bake user media into an image
+uploads

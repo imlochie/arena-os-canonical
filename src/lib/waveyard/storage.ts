@@ -122,7 +122,13 @@ let provider: StorageProvider | undefined;
 
 export function getStorage(): StorageProvider {
   if (!provider) {
-    const root = process.env.WAVEYARD_STORAGE_DIR ?? ".data/waveyard-storage";
+    // WAVEYARD_STORAGE_DIR is Arena's name; LOCAL_STORAGE_PATH is the
+    // original worker's name. Accept either so web and worker containers
+    // can be pointed at one shared directory.
+    const root =
+      process.env.WAVEYARD_STORAGE_DIR ??
+      process.env.LOCAL_STORAGE_PATH ??
+      ".data/waveyard-storage";
     provider = new LocalStorageProvider(resolve(process.cwd(), root));
   }
   return provider;

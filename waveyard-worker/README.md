@@ -24,11 +24,22 @@ worker is what makes stems, analysis, waveforms, and exports real when it runs.
   domain tests also run inside Arena's own suite under
   `src/lib/waveyard/types/__tests__/`).
 
-## Running it (where Redis + ffmpeg + Python exist)
+## Running it
+
+**Easiest (recommended):** the repo root ships a `docker-compose.yml` that
+builds and runs this worker together with the app, Postgres, and Redis:
+
+```bash
+docker compose up --build   # from the repo root
+```
+
+See `docs/waveyard-full-stack.md` for expectations and health checks.
+
+**Manually (where Redis + ffmpeg + Python already exist):**
 
 ```bash
 cd waveyard-worker
-npm install                # workspace install (root package.json is the original monorepo's)
+npm install                # workspace install (self-contained package.json + lockfile)
 npm run worker             # apps/worker
 npm run worker:doctor      # capability report — honest, no guesswork
 ```

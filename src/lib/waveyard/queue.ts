@@ -2,20 +2,19 @@
  * Waveyard queue — honest enqueue boundary.
  *
  * The original Waveyard web app enqueues processing work directly onto Redis
- * (BullMQ) for the Waveyard worker to execute. Arena OS does not ship bullmq
- * or assume a running Redis: enqueue functions therefore
- *
- *   - enqueue for real when REDIS_URL is set AND bullmq is installed, and
- *   - throw a plain "queue unavailable" error otherwise — which the ported
- *     ingest/analysis code already handles by marking the job row
- *     `failed / queue_unavailable` with the reason, surfaced honestly in the
- *     UI. Nothing is faked: a job that was not enqueued says so.
+ * (BullMQ) for the Waveyard worker to execute. Arena OS does the same when
+ * REDIS_URL is set; without it, enqueue functions throw a plain
+ * "queue unavailable" error — which the ported ingest/analysis code handles
+ * by marking the job row `failed / queue_unavailable` with the reason,
+ * surfaced honestly in the UI. Nothing is faked: a job that was not enqueued
+ * says so.
  *
  * Queue names and payload shapes are identical to the original
- * packages/queue, so a deployed worker (waveyard-worker/) consumes the exact
- * same jobs.
+ * packages/queue, so the waveyard-worker container (or any worker pointed at
+ * the same Redis) consumes the exact same jobs.
  */
 
+import type IORedis from "ioredis";
 import type {
   ExportJobPayload,
   SeparationJobPayload,
@@ -45,21 +44,23 @@ export function queueConfigured() {
 function queueUnavailable(): Error {
   return new Error(
     process.env.REDIS_URL
-      ? "Queue unavailable: bullmq is not installed in this app install (worker runtime missing)."
+      ? "Queue unavailable: Redis is not reachable."
       : "Queue unavailable: REDIS_URL is not set — the Waveyard worker is not configured.",
   );
 }
 
-/** bullmq is an optional runtime (present only when the worker is deployed),
- *  so it is imported dynamically and typed loosely. */
-async function getBull(): Promise<any> {
+/** bullmq and ioredis are real dependencies; they are loaded lazily so the
+ *  module never touches Redis unless a call is actually made. */
+async function getBull(): Promise<typeof import("bullmq")> {
   if (!process.env.REDIS_URL) throw queueUnavailable();
-  try {
-    const specifier = "bullmq";
-    return await import(/* webpackIgnore: true */ specifier);
-  } catch {
-    throw queueUnavailable();
-  }
+  return import("bullmq");
+}
+
+async function getConnection(): Promise<IORedis> {
+  const { default: Redis } = await import("ioredis");
+  return new Redis(process.env.REDIS_URL!, {
+    maxRetriesPerRequest: null,
+  });
 }
 
 export type QueueJobLike = {
@@ -74,13 +75,12 @@ export type QueueLike = {
   close(): Promise<void>;
 };
 
-type QueueHandle = { queue: any; connection: { disconnect(): void } };
+type QueueHandle = { queue: import("bullmq").Queue; connection: IORedis };
 
 async function openQueue(queueName: string): Promise<QueueHandle> {
   const bullmq = await getBull();
-  const IORedis = (bullmq as any).IORedis as new (url: string, opts: Record<string, unknown>) => { disconnect(): void };
-  const connection = new IORedis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
-  const queue = new (bullmq as any).Queue(queueName, { connection });
+  const connection = await getConnection();
+  const queue = new bullmq.Queue(queueName, { connection });
   return { queue, connection };
 }
 

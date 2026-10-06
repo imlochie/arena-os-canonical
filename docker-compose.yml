@@ -1,0 +1,121 @@
+# Arena OS — full Waveyard stack.
+#
+# The one-command way to run Waveyard with REAL separation, analysis,
+# waveforms and exports (the things that are honestly unavailable when only
+# the web app runs). Ported from the original Waveyard docker-compose and
+# adapted to this repo's layout:
+#
+#   - postgres + redis  : the two backing services
+#   - setup (one-shot)  : creates the schema (drizzle push)
+#   - web               : the Arena OS app (all rooms, including /waveyard)
+#   - worker            : the real Waveyard worker (Demucs, ffmpeg, analysis)
+#
+# The original used MinIO (S3) so web and worker could share files across
+# containers. This port keeps the web app's local-first storage provider and
+# shares one named volume at /app/.data/waveyard-storage instead — simpler,
+# no S3 credentials, same files.
+#
+# Usage:
+#   docker compose up --build
+#   → http://localhost:3000/waveyard
+#
+# First run notes (honest expectations):
+#   - The worker image installs PyTorch (CPU) + Demucs: the build takes a
+#     while and downloads a few hundred MB.
+#   - The FIRST separation on a model also downloads that model's weights
+#     (~80 MB for htdemucs) from the internet.
+#   - CPU separation of a 3-minute track typically takes several minutes.
+#     Set STEM_DEVICE=linux-cuda + a CUDA-capable runtime for GPU speed.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: app_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  setup:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    command: npm run db:setup
+    environment: &arena_env
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/app_db
+      REDIS_URL: redis://redis:6379
+      WAVEYARD_STORAGE_DIR: /app/.data/waveyard-storage
+      LOCAL_STORAGE_PATH: /app/.data/waveyard-storage
+      SEPARATION_MODEL: ${SEPARATION_MODEL:-htdemucs}
+      STEM_DEVICE: ${STEM_DEVICE:-cpu}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - wy_storage:/app/.data/waveyard-storage
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *arena_env
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - wy_storage:/app/.data/waveyard-storage
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/api/studio/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  worker:
+    build:
+      context: ./waveyard-worker
+    restart: on-failure
+    environment:
+      <<: *arena_env
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - wy_storage:/app/.data/waveyard-storage
+    # The doctor reports the worker's honest runtime capability (ffmpeg,
+    # python, models, redis, storage, database).
+    healthcheck:
+      test: ["CMD-SHELL", "npm run worker:doctor"]
+      interval: 30s
+      timeout: 30s
+      retries: 10
+      start_period: 60s
+
+volumes:
+  postgres_data:
+  redis_data:
+  wy_storage:
