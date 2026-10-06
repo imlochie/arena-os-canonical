@@ -3,6 +3,7 @@ import { battles, battleMessages, assistants } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
 import { generate, type ChatMsg } from "@/lib/ai";
 import { getModel } from "@/lib/models";
+import { battleRateable, executionsSameEngine } from "@/lib/runtime";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 90;
@@ -71,9 +72,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // Keep latest exchange on the battle row (vote context + ratings diagnostics)
     await db
       .update(battles)
-      .set({ responseA: rA.text, responseB: rB.text, latencyA: rA.ms, latencyB: rB.ms })
+      .set({ responseA: rA.text, responseB: rB.text, latencyA: rA.ms, latencyB: rB.ms, runtimeA: rA, runtimeB: rB, rated: battleRateable(rA, rB) })
       .where(eq(battles.id, id));
 
+    const sameEngine = executionsSameEngine(rA, rB);
     return Response.json({
       turn: userTurns + 1,
       responseA: rA.text,
@@ -82,6 +84,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       latencyB: rB.ms,
       viaA: rA.via,
       viaB: rB.via,
+      runtimeA: rA,
+      runtimeB: rB,
+      sameEngine,
+      sameEngineNotice: sameEngine
+        ? "Both fighters executed on the Arena Local Engine (selection or fallback) — this is not a model comparison."
+        : undefined,
     });
   } catch (e) {
     console.error(e);

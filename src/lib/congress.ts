@@ -62,6 +62,8 @@ export interface CongressTurn {
   content: string;
   kind: string;
   createdAt: string;
+  /** What actually generated this turn (GenerateResult metadata). */
+  runtime?: unknown;
 }
 
 export interface CongressState {
@@ -135,8 +137,12 @@ async function ensureTables(): Promise<void> {
         "model_id" text DEFAULT '' NOT NULL,
         "content" text NOT NULL,
         "kind" text DEFAULT 'speech' NOT NULL,
-        "created_at" timestamp DEFAULT now() NOT NULL
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "runtime" jsonb
       );
+    `);
+    await db.execute(sql`
+      ALTER TABLE "congress_turns" ADD COLUMN IF NOT EXISTS "runtime" jsonb;
     `);
     tableReady = true;
     dbHealthy = true;
@@ -200,6 +206,7 @@ async function loadTurns(sessionId: string, limit = 400): Promise<CongressTurn[]
         content: t.content,
         kind: t.kind,
         createdAt: new Date(t.createdAt ?? new Date()).toISOString(),
+        runtime: (t as any).runtime ?? undefined,
       }));
     }
   } catch {
@@ -245,6 +252,7 @@ async function insertTurn(sessionId: string, turn: Omit<CongressTurn, "id" | "cr
       modelId: full.modelId,
       content: full.content,
       kind: full.kind,
+      runtime: (full.runtime as any) ?? null,
     });
   } catch {
     dbHealthy = false;
@@ -558,6 +566,7 @@ export async function advanceCongress(id: string, opts: CongressGenOpts): Promis
       modelId: seat.modelId,
       content: result.text.slice(0, 6000),
       kind: "speech",
+      runtime: result,
     });
     row.turnCount += 1;
     row.nextSeat = (seatIndex + 1) % seats.length;
@@ -591,6 +600,7 @@ async function closeWithAct(row: SessionRow, seats: CongressSeat[], opts: Congre
     modelId: row.synthesisModel,
     content: act,
     kind: "act",
+    runtime: result,
   });
 
   // Durable results: artifact + project memory (best-effort; never fatal).

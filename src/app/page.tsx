@@ -17,11 +17,12 @@ export default function HomePage() {
           </span>
         </h1>
         <p className="mx-auto mt-3 max-w-2xl text-[15px] leading-relaxed text-slate-300">
-          Three modes: <strong className="text-white">⚔️ Battle</strong> — two anonymous models compete, you crown
-          the winner blind. <strong className="text-white">🤝 Collab</strong> — minds draft in parallel and
-          synthesize one best result. <strong className="text-white">🧠 Council</strong> — name the cognitive
-          job and get disagreeing perspectives forged into a usable artifact. Votes build your personal
-          ELO; everything runs free.
+          Three AI execution levels: <strong className="text-white">⚙️ Level 0 — Arena Local Engine</strong>{" "}
+          (deterministic, offline, works immediately, not an LLM) ·{" "}
+          <strong className="text-white">💻 Level 1 — On-Device LLM</strong> (real models running on your
+          machine) · <strong className="text-white">☁️ Level 2 — Remote Models</strong> (provider-backed,
+          network required). Battle them blind, benchmark them side by side, and every answer says what
+          actually ran. Votes build ELO only from genuine executions.
         </p>
         <div className="mx-auto mt-4 flex max-w-2xl flex-wrap items-center justify-center gap-2 text-[11px] font-bold">
           <a href="/command" className="rounded-full bg-violet-600 px-3.5 py-1.5 text-white shadow-[0_6px_20px_rgba(124,58,237,0.5)] hover:bg-violet-500">

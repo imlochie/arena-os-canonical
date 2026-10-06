@@ -20,7 +20,7 @@ async function replyFor(
     if (model.pollinationsId.startsWith("__webllm__")) {
       return {
         text: body.clientReply,
-        runtimeTier: "local-llm",
+        runtimeLevel: "on-device",
         backend: "webllm",
         modelId: model.id,
         via: "webllm",
@@ -88,7 +88,7 @@ export async function POST(req: Request) {
         localOnly,
       });
       await logPrivacyEvent("ephemeral_chat", `localOnly=${localOnly}`);
-      return Response.json({ ephemeral: true, reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { tier: result.runtimeTier, backend: result.backend, modelId: result.modelId, via: result.via, ms: result.ms, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, note: result.note ?? null } }, { status: 201 });
+      return Response.json({ ephemeral: true, reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { level: result.runtimeLevel, backend: result.backend, provider: result.provider, modelId: result.modelId, requestedModelId: result.requestedModelId ?? null, via: result.via, ms: result.ms, latencyMs: result.latencyMs ?? result.ms, firstTokenMs: result.firstTokenMs ?? null, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, fallbackReason: result.fallbackReason ?? null, note: result.note ?? null } }, { status: 201 });
     }
 
     if (mode === "create" || (!body.chatId && body.message)) {
@@ -120,7 +120,7 @@ export async function POST(req: Request) {
       const result = await replyFor(body, { modelId: effectiveModel, messages: history, system, temperature: temp, keys: genKeys, localOnly });
       await db.insert(chatMessages).values({ chatId: chat.id, role: "assistant", content: result.text });
 
-      return Response.json({ chat, reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { tier: result.runtimeTier, backend: result.backend, modelId: result.modelId, via: result.via, ms: result.ms, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, note: result.note ?? null } }, { status: 201 });
+      return Response.json({ chat, reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { level: result.runtimeLevel, backend: result.backend, provider: result.provider, modelId: result.modelId, requestedModelId: result.requestedModelId ?? null, via: result.via, ms: result.ms, latencyMs: result.latencyMs ?? result.ms, firstTokenMs: result.firstTokenMs ?? null, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, fallbackReason: result.fallbackReason ?? null, note: result.note ?? null } }, { status: 201 });
     }
 
     // mode === 'message'
@@ -154,7 +154,7 @@ export async function POST(req: Request) {
       localOnly,
     });
     await db.insert(chatMessages).values({ chatId, role: "assistant", content: result.text });
-    return Response.json({ reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { tier: result.runtimeTier, backend: result.backend, modelId: result.modelId, via: result.via, ms: result.ms, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, note: result.note ?? null } });
+    return Response.json({ reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { level: result.runtimeLevel, backend: result.backend, provider: result.provider, modelId: result.modelId, requestedModelId: result.requestedModelId ?? null, via: result.via, ms: result.ms, latencyMs: result.latencyMs ?? result.ms, firstTokenMs: result.firstTokenMs ?? null, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, fallbackReason: result.fallbackReason ?? null, note: result.note ?? null } });
   } catch (e) {
     console.error(e);
     return Response.json({ error: "chat failed" }, { status: 500 });

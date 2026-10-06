@@ -1,5 +1,7 @@
 "use client";
 
+import PoweredBy from "./PoweredBy";
+
 // Collaboration Orchestrator — structured multi-participant AI collaboration.
 //
 // A session holds a goal, shared context, and participants (arena models,
@@ -804,6 +806,7 @@ export default function OrchestratorWorkbench() {
                         <Badge text={r.classification} style={CLASSIFICATION_STYLE[r.classification]} />
                         <Badge text={r.status} style={STATUS_STYLE[r.status] ?? STATUS_STYLE.pending} />
                         {r.via && <span className="font-mono text-[9px] text-slate-500">via {r.via}</span>}
+                        {(r as any).runtime ? <PoweredBy runtime={(r as any).runtime as any} /> : null}
                       </div>
                       <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{r.request}</div>
                       {r.response && (

@@ -29,6 +29,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     await db.update(battles).set({ winner }).where(eq(battles.id, id));
 
+    // ELO honesty: if either side did not genuinely execute its selected model
+    // (visible fallback, or an Arena Local Engine side), the vote still counts
+    // for the record — but no model rating moves.
+    if (battle.rated === false) {
+      return Response.json({ battle, alreadyVoted: false, unrated: true, reason: "fallback or local-engine execution — ELO unchanged" });
+    }
+
     if (rowA) {
       await db
         .update(models)

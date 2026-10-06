@@ -50,6 +50,8 @@ export interface SpaceRun {
   via: string;
   ms: number;
   createdAt: string;
+  /** What actually executed this run (GenerateResult metadata). */
+  runtime?: unknown;
 }
 
 export interface SpaceState {
@@ -201,6 +203,7 @@ async function insertRun(spaceId: string, run: Omit<SpaceRun, "id" | "createdAt"
       output: full.output.slice(0, 12000),
       via: full.via,
       ms: full.ms,
+      runtime: (full.runtime as any) ?? null,
     });
   } catch {
     dbHealthy = false;
@@ -252,6 +255,7 @@ export async function getSpaceRuns(id: string, limit = 25): Promise<SpaceRun[]> 
         via: r.via,
         ms: r.ms,
         createdAt: new Date(r.createdAt ?? new Date()).toISOString(),
+        runtime: (r as any).runtime ?? undefined,
       }));
     }
   } catch {
@@ -415,7 +419,7 @@ export async function runSpace(id: string, opts: SpaceGenOpts): Promise<SpaceSta
     row.lastRunAt = new Date().toISOString();
     row.nextRunAt = new Date(Date.now() + row.intervalMinutes * 60_000).toISOString();
     await persistSpace(row);
-    await insertRun(id, { status: "ok", output: row.lastOutput, via: result.via, ms: Date.now() - started });
+    await insertRun(id, { status: "ok", output: row.lastOutput, via: result.via, ms: Date.now() - started, runtime: result });
   } catch (e) {
     row.runCount += 1;
     row.lastRunAt = new Date().toISOString();

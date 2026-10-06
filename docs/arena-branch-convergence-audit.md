@@ -782,3 +782,64 @@ machine the remote tier answers for real — same code path, no changes needed.
 
 **Tests:** 12 new contract tests in `src/lib/runtime.test.ts`; suite 67/67
 (55 baseline + 12); typecheck clean; production build clean.
+
+---
+
+## Part B completion — rooms made real (2026-10-06)
+
+Ported from the unmounted canonical branches (selective ports, no merges) into
+`src/lib/*`, `src/components/*`, `src/app/*`. The rooms directory now marks a
+room AVAILABLE only when its primary workflow actually runs.
+
+### Studio (media generation) — `/studio`
+Procedural demo backend always works offline (image/audio/video synthesis →
+real SVG/WAV/MP4 artifacts served from the job store); WanGP / ComfyUI /
+DashScope report live online status and are honestly offline when not running.
+
+### Cut Lab (video editing) — `/cut`
+Browser-native editor: real timeline with clips, procedural clip generation,
+`MediaRecorder` export to a downloadable video file; projects persist via
+`/api/cut` (POST/GET/DELETE verified live).
+
+### Waveyard (music) — `/waveyard`
+Project → audio source upload (multipart; browser-side `decodeAudioData` +
+real min/max peak buckets) → on-disk bytes under `.data/waveyard/` →
+`/api/waveyard/sources/{id}/audio` round-trip → arrangement versions with
+clip sourceId validation (invalid → 400). Cascade delete verified. Stem
+separation / tempo / key detection require the Waveyard worker and are shown
+as honestly unavailable — no fake fallbacks.
+
+### LUMA (photography) — `/luma`
+The real LUMA engine port: adjustments / color pipeline (4×5 color matrix) /
+adaptive presets / history / layers / camera catalog — pure math, identical
+recipes to the native app. Web backend is `CanvasProcessingEngine` (same
+`ProcessingEngine` interface); projects persist to localStorage. **Photography
+of YOUR images — no text-to-image.** The original 86-test LUMA suite now runs
+in this repo (node:test + a small jest-compat expect shim) — suite 162/162.
+
+### Device Security — `/device-security`
+Browser-observable checks only (secure context, transport, WebCrypto, WebGPU,
+storage quota, permissions, JS heap) with explicit "not observable from the
+browser" for OS/AV/firewall claims. Separate from Privacy controls, linked.
+
+### Live E2E matrix (sandbox, egress blocked — honest results)
+- Pages: 26/26 → 200 (`/`, `/rooms`, `/luma`, `/waveyard`, `/studio`, `/cut`,
+  `/device-security`, `/benchmark`, `/council`, `/congress`, `/collab`,
+  `/orchestrator`, `/classroom`, `/spaces`, `/chat`, `/image`, `/privacy`,
+  `/runtime`, `/command`, `/projects`, `/artifacts`, `/arcade`, `/guide`,
+  `/handoffs`, `/leaderboard`, `/assistants`).
+- Rooms directory: studio / cut-lab / waveyard / luma / device-security all
+  render AVAILABLE with working destinations.
+- Assistant chat: Local Engine reply with honest runtime metadata
+  (`via: offline-fallback`, `fallbackFrom: pollinations/openai`, reason).
+- Battles: `local-engine` vs `local-engine` → 409 `sameEngine:true`;
+  fallback battles persist real `runtimeA`/`runtimeB` (backend, via, reason).
+- Studio: demo job full lifecycle running → completed, media fetchable
+  (200, image/svg+xml); `/api/studio/health` shows wangp/comfyui offline.
+- Waveyard: create → upload (peaks stored) → audio bytes round-trip →
+  version save → invalid clip 400 → cascade delete.
+- Cut Lab: POST/GET/DELETE project round-trip.
+- Archive Assistant: honest `archive_assistant_not_configured` (GET-only
+  bridge preserved, no localhost fallback).
+- Gates: `tsc --noEmit` clean · `npm test` 162/162 · `npm run build` clean ·
+  `db:setup` applied.

@@ -6,6 +6,7 @@ import {
   real,
   timestamp,
   uuid,
+  jsonb,
   primaryKey,
 } from "drizzle-orm/pg-core";
 
@@ -68,6 +69,12 @@ export const battles = pgTable("battles", {
   judgeResult: text("judge_result"), // JSON: {suggestion, reasoning, raw, at}
   projectId: uuid("project_id"),
   createdAt: timestamp("created_at").defaultNow(),
+  // What ACTUALLY executed each side (full GenerateResult contract). ELO only
+  // moves on rated battles — no fallback or Local-Engine execution may ever
+  // move a model's rating.
+  runtimeA: jsonb("runtime_a"),
+  runtimeB: jsonb("runtime_b"),
+  rated: boolean("rated").notNull().default(true),
 });
 
 // ---- Multi-turn battle threads (LMArena-style conversation voting) ----
@@ -136,6 +143,9 @@ export const councilRuns = pgTable("council_runs", {
   latencyMs: integer("latency_ms").notNull().default(0),
   projectId: uuid("project_id"),
   createdAt: timestamp("created_at").defaultNow(),
+  runtimeA: jsonb("runtime_a"),
+  runtimeB: jsonb("runtime_b"),
+  runtimeSynthesis: jsonb("runtime_synthesis"),
 });
 
 export const councilArtifacts = pgTable("council_artifacts", {
@@ -274,6 +284,7 @@ export const congressTurns = pgTable("congress_turns", {
   modelId: text("model_id").notNull().default(""),
   content: text("content").notNull(),
   kind: text("kind").notNull().default("speech"), // speech | system | act
+  runtime: jsonb("runtime"), // what actually generated this turn
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -307,6 +318,7 @@ export const spaceRuns = pgTable("space_runs", {
   output: text("output").notNull().default(""),
   via: text("via").notNull().default(""),
   ms: integer("ms").notNull().default(0),
+  runtime: jsonb("runtime"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -394,6 +406,7 @@ export const collaborationRelays = pgTable("collaboration_relays", {
   status: text("status").notNull().default("pending"), // pending | responded | cancelled | failed
   response: text("response"),
   via: text("via").notNull().default(""),
+  runtime: jsonb("runtime"), // what actually executed the relay response
   note: text("note").notNull().default(""), // blocked/failed reason
   toolUse: integer("tool_use").notNull().default(0), // relay may invoke read-only tools
   steps: text("steps").notNull().default("[]"), // JSON trace of tool calls made during dispatch
@@ -443,3 +456,81 @@ export const eduMemory = pgTable("edu_memory", {
 
 export type ClassOccurrenceRow = typeof classOccurrences.$inferSelect;
 export type EduMemoryRow = typeof eduMemory.$inferSelect;
+
+// ---- Studio: multimodal generation jobs (ported from arena/01a0a9b7) ----
+// Backends: wangp | comfyui | dashscope | demo (demo = local procedural,
+// offline-safe — the always-available vertical; GPU backends show honest
+// "not connected" status until configured).
+export const studioJobs = pgTable("studio_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  backend: text("backend").notNull(), // wangp | comfyui | dashscope | demo
+  externalId: text("external_id"),
+  modelType: text("model_type").notNull(),
+  modelName: text("model_name").notNull().default(""),
+  modality: text("modality").notNull().default("video"), // video | image | audio
+  prompt: text("prompt").notNull(),
+  negativePrompt: text("negative_prompt").notNull().default(""),
+  settings: text("settings").notNull().default("{}"), // JSON — full generation settings
+  status: text("status").notNull().default("queued"), // queued | running | completed | failed | cancelled
+  phase: text("phase").notNull().default(""),
+  progress: real("progress").notNull().default(0),
+  files: text("files").notNull().default("[]"), // JSON: [{name, mediaType, kind, size, backendUrl, subfolder}]
+  preview: text("preview"),
+  error: text("error"),
+  seed: integer("seed"),
+  projectId: uuid("project_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ---- Cut Lab: saved editing projects (browser-side editing, server-side metadata; ported from arena/01a0a9b7) ----
+export const cutProjects = pgTable("cut_projects", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled cut"),
+  aspect: text("aspect").notNull().default("16:9"), // 16:9 | 9:16 | 1:1
+  clips: text("clips").notNull().default("[]"), // JSON: [{id,name,kind,src,seed,duration,trimStart,trimEnd,volume,unlinked}]
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ---- Waveyard: music workspace (ported from the arena/01a0bebf monorepo) ----
+// Scope honestly mounted in canonical: project flow, audio asset flow,
+// waveform infrastructure (peaks computed in-browser via Web Audio, persisted),
+// arrangement versions. Stem separation / source analysis require the Waveyard
+// worker + models — surfaced as unavailable, never faked.
+export const wyProjects = pgTable("wy_projects", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull().default("Untitled project"),
+  notes: text("notes").notNull().default(""),
+  bpm: integer("bpm"),
+  musicalKey: text("musical_key"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const wySources = pgTable("wy_sources", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull(),
+  name: text("name").notNull(),
+  mediaType: text("media_type").notNull().default("audio/mpeg"),
+  storageKey: text("storage_key").notNull(), // .data/waveyard/<id>.<ext>
+  bytes: integer("bytes").notNull().default(0),
+  durationMs: integer("duration_ms").notNull().default(0),
+  checksum: text("checksum").notNull().default(""),
+  peaks: jsonb("peaks"), // [{min,max}] — computed in-browser (Web Audio), persisted here
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const wyVersions = pgTable("wy_versions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  projectId: uuid("project_id").notNull(),
+  name: text("name").notNull().default("Version 1"),
+  arrangement: jsonb("arrangement").notNull(), // {tracks:[{id,label,clipIds}],clips:[{id,sourceId,startMs,endMs,trackIndex,gain}],bpm}
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type StudioJobRow = typeof studioJobs.$inferSelect;
+export type CutProjectRow = typeof cutProjects.$inferSelect;
+export type WyProjectRow = typeof wyProjects.$inferSelect;
+export type WySourceRow = typeof wySources.$inferSelect;
+export type WyVersionRow = typeof wyVersions.$inferSelect;

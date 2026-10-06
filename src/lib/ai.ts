@@ -3,7 +3,7 @@
  *
  * Every result states WHAT ACTUALLY EXECUTED:
  *
- *   { text, runtimeTier, backend, modelId, via, ms, fallback, fallbackFrom?, note? }
+ *   { text, runtimeLevel, backend, provider, modelId, requestedModelId, via, ms/latencyMs, firstTokenMs?, fallback, fallbackFrom?, fallbackReason?, note? }
  *
  * Tiers (lib/runtime.ts):
  *   local-engine — deterministic offline engine (NOT an LLM). No network.
@@ -18,11 +18,11 @@
  */
 
 import { getModel } from "./models";
-import { LOCAL_ENGINE_ID, type Backend, type RuntimeTier } from "./models";
+import { LOCAL_ENGINE_ID, type Backend, type RuntimeLevel } from "./models";
 import { localImageDataURI, localTextReply } from "./localEngine";
 import { NO_TRAIN_HEADERS } from "./privacy";
 import type { GenerateResult, RuntimeExecution } from "./runtime";
-import { localEngineResult } from "./runtime";
+import { BACKEND_PROVIDER, localEngineResult } from "./runtime";
 
 export interface ChatMsg {
   role: "system" | "user" | "assistant";
@@ -63,8 +63,8 @@ export type { GenerateResult };
 const FALLBACK_NOTICE = (requested: string, reason: string) =>
   `\n\n---\n⚠️ **Fallback: Local Engine** — ${requested} was unavailable (${reason}). The answer above is deterministic offline output, **not** model output.`;
 
-function requestedExecution(modelId: string, backend: Backend, tier: RuntimeTier): RuntimeExecution {
-  return { runtimeTier: tier, backend, modelId };
+function requestedExecution(modelId: string, backend: Backend, level: RuntimeLevel): RuntimeExecution {
+  return { runtimeLevel: level, backend, modelId };
 }
 
 async function tryTurboAgent(
@@ -233,7 +233,7 @@ function localImage(
   };
 }
 
-export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Promise<GenerateResult> {
+async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promise<GenerateResult> {
   const started = Date.now();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const model = getModel(opts.modelId);
@@ -256,7 +256,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
       extra,
     );
 
-  if (model.tier === "local-engine") {
+  if (model.level === "arena-local") {
     if (model.kind === "image") {
       const { text } = localImage(model.id, opts, "flux");
       return localEngineResult(text, "local:image", ms());
@@ -271,7 +271,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
       const { text } = localImage(model.id, opts, style);
       return localEngineResult(text, "offline-fallback", ms(), {
         fallback: true,
-        fallbackFrom: requestedExecution(model.id, model.backend, model.tier),
+        fallbackFrom: requestedExecution(model.id, model.backend, model.level),
         note: "Local Mode is on — remote image generation was not attempted.",
       });
     }
@@ -282,7 +282,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
       ms(),
       {
         fallback: true,
-        fallbackFrom: requestedExecution(model.id, model.backend, model.tier),
+        fallbackFrom: requestedExecution(model.id, model.backend, model.level),
         note: "Local Mode forces the offline engine.",
       },
     );
@@ -302,7 +302,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
     )}?model=${imgModel}&width=${w}&height=${h}&nologo=true&enhance=true&seed=${seed}`;
     return {
       text: `![generated image](${url})\n\n*🎨 ${model.name} · ☁ remote free tier · seed ${seed}*`,
-      runtimeTier: "remote-free",
+      runtimeLevel: "remote",
       backend: "pollinations",
       modelId: model.id,
       via: `pollinations-image:${imgModel}`,
@@ -315,13 +315,13 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
   if (model.backend === "turboagent") {
     const hfId = decodeURIComponent(model.pollinationsId.split(":")[1] || "Qwen/Qwen2.5-32B-Instruct");
     const url = opts.keys?.turboagent?.trim() || process.env.TURBOAGENT_URL || "";
-    const wanted = requestedExecution(model.id, model.backend, model.tier);
+    const wanted = requestedExecution(model.id, model.backend, model.level);
     if (url) {
       try {
         const text = await tryTurboAgent(fetchImpl, url, hfId, fullMessages, temperature);
         return {
           text,
-          runtimeTier: "local-llm",
+          runtimeLevel: "on-device",
           backend: "turboagent",
           modelId: model.id,
           via: `turboagent:${hfId}`,
@@ -350,13 +350,13 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
 
   if (model.backend === "webllm") {
     const mlcId = decodeURIComponent(model.pollinationsId.split(":")[1] ?? "");
-    const wanted = requestedExecution(model.id, model.backend, model.tier);
+    const wanted = requestedExecution(model.id, model.backend, model.level);
     if (deps.webllmExecutor) {
       try {
         const text = await deps.webllmExecutor(mlcId, fullMessages, temperature);
         return {
           text,
-          runtimeTier: "local-llm",
+          runtimeLevel: "on-device",
           backend: "webllm",
           modelId: model.id,
           via: `webllm:${mlcId}`,
@@ -386,7 +386,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
   }
 
   // ---------------- REMOTE FREE (tier 3) ----------------
-  const wanted = requestedExecution(model.id, "pollinations", "remote-free");
+  const wanted = requestedExecution(model.id, "pollinations", "remote");
   const lastUser = [...fullMessages].reverse().find((m) => m.role === "user")?.content ?? "Hello";
 
   // BYOK providers first (still remote-free tier; keys user-supplied).
@@ -395,7 +395,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
       const text = await tryOpenRouter(fetchImpl, opts.keys.openrouter, fullMessages, temperature);
       return {
         text,
-        runtimeTier: "remote-free",
+        runtimeLevel: "remote",
         backend: "openrouter",
         modelId: model.id,
         via: "openrouter:free",
@@ -411,7 +411,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
       const text = await tryGroq(fetchImpl, opts.keys.groq, fullMessages, temperature);
       return {
         text,
-        runtimeTier: "remote-free",
+        runtimeLevel: "remote",
         backend: "groq",
         modelId: model.id,
         via: "groq:free",
@@ -430,7 +430,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
     const text = await tryPollinationsOpenAI(fetchImpl, model.pollinationsId, fullMessages, temperature);
     return {
       text,
-      runtimeTier: "remote-free",
+      runtimeLevel: "remote",
       backend: "pollinations",
       modelId: model.id,
       via: `pollinations:${model.pollinationsId}`,
@@ -445,7 +445,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
     const text = await tryPollinationsGet(fetchImpl, convo || lastUser, model.pollinationsId, system);
     return {
       text,
-      runtimeTier: "remote-free",
+      runtimeLevel: "remote",
       backend: "pollinations",
       modelId: model.id,
       via: `pollinations-get:${model.pollinationsId}`,
@@ -460,7 +460,7 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
       const text = await tryPollinationsOpenAI(fetchImpl, "openai", fullMessages, temperature, 30000);
       return {
         text,
-        runtimeTier: "remote-free",
+        runtimeLevel: "remote",
         backend: "pollinations",
         modelId: model.id,
         via: "pollinations:openai-fallback",
@@ -481,4 +481,22 @@ export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Pro
     ms(),
     { fallback: true, fallbackFrom: wanted, note: `Remote unavailable: ${lastReason}` },
   );
+}
+
+/**
+ * The public generation seam. Wraps generateExec so EVERY result — from every
+ * backend, every fallback path — carries the full contract: provider identity,
+ * what was requested, measured latency (ms + latencyMs alias), and a
+ * machine-usable fallbackReason. Callers can rely on these fields existing.
+ */
+export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Promise<GenerateResult> {
+  const r = await generateExec(opts, deps);
+  const enriched: GenerateResult = {
+    ...r,
+    provider: r.provider ?? BACKEND_PROVIDER[r.backend],
+    requestedModelId: r.requestedModelId ?? opts.modelId,
+    latencyMs: r.ms,
+    fallbackReason: r.fallback ? (r.fallbackReason ?? r.note ?? "unavailable") : undefined,
+  };
+  return enriched;
 }

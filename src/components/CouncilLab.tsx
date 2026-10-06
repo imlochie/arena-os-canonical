@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import PoweredBy from "./PoweredBy";
 import Markdown from "./Markdown";
 import { loadKeys } from "./KeysBar";
 import PrivacyControls from "./PrivacyControls";
@@ -368,12 +369,13 @@ export default function CouncilLab() {
               </p>
               <div className="grid items-start gap-3 md:grid-cols-2">
                 {[
-                  { label: run.roleALabel, body: run.perspectiveA },
-                  { label: run.roleBLabel, body: run.perspectiveB },
+                  { label: run.roleALabel, body: run.perspectiveA, runtime: run.runtimeA },
+                  { label: run.roleBLabel, body: run.perspectiveB, runtime: run.runtimeB },
                 ].map((p, i) => (
                   <div key={i} className="glass overflow-hidden rounded-2xl">
                     <div className="border-b border-white/10 px-3 py-2.5">
                       <p className="truncate text-xs font-extrabold text-white">{p.label}</p>
+                      {p.runtime ? <PoweredBy runtime={p.runtime as any} /> : null}
                     </div>
                     <div className="scroll-thin max-h-80 overflow-y-auto p-3">
                       <Markdown text={p.body} />
@@ -409,6 +411,7 @@ export default function CouncilLab() {
                 <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-cyan-500 to-violet-500 text-lg">💎</span>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-extrabold text-white">Higher-order synthesis</p>
+                  {run.runtimeSynthesis ? <PoweredBy runtime={run.runtimeSynthesis as any} /> : null}
                   <p className="text-[11px] text-slate-400">What survived scrutiny, merged into one best result</p>
                 </div>
                 <button onClick={() => copy("synth", run.synthesis)} className="rounded-lg bg-white/5 px-2.5 py-1.5 text-xs font-bold hover:bg-white/15">

@@ -30,7 +30,26 @@ export async function POST(req: Request) {
       keys: localOnly ? undefined : keys,
       localOnly,
     });
-    return Response.json({ ...result, requestedModelId: modelId, localOnly });
+    return Response.json({
+      ...result,
+      requestedModelId: modelId,
+      localOnly,
+      runtime: {
+        level: result.runtimeLevel,
+        backend: result.backend,
+        provider: result.provider,
+        modelId: result.modelId,
+        requestedModelId: modelId,
+        via: result.via,
+        ms: result.ms,
+        latencyMs: result.latencyMs ?? result.ms,
+        firstTokenMs: result.firstTokenMs ?? null,
+        fallback: result.fallback,
+        fallbackFrom: result.fallbackFrom ?? null,
+        fallbackReason: result.fallbackReason ?? null,
+        note: result.note ?? null,
+      },
+    });
   } catch (e) {
     console.error("chat error");
     return Response.json({ error: "generation failed" }, { status: 500 });

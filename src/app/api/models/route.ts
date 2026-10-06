@@ -1,15 +1,15 @@
 import { db } from "@/db";
 import { models } from "@/db/schema";
 import { FREE_MODELS, LOCAL_ENGINE_ID } from "@/lib/models";
-import { TIER_DESCRIPTIONS, TIER_LABELS } from "@/lib/runtime";
+import { LEVEL_DESCRIPTIONS, LEVEL_LABELS, LEVEL_NUMBER } from "@/lib/runtime";
 import { ensureSeeded } from "@/lib/seed";
 
 export const dynamic = "force-dynamic";
 
-const tierSummary = [
-  { tier: "local-engine" as const, label: TIER_LABELS["local-engine"], description: TIER_DESCRIPTIONS["local-engine"], readyByDefault: true, requiresNetwork: false, defaultModelId: LOCAL_ENGINE_ID },
-  { tier: "local-llm" as const, label: TIER_LABELS["local-llm"], description: TIER_DESCRIPTIONS["local-llm"], readyByDefault: false, requiresNetwork: false, defaultModelId: null },
-  { tier: "remote-free" as const, label: TIER_LABELS["remote-free"], description: TIER_DESCRIPTIONS["remote-free"], readyByDefault: false, requiresNetwork: true, defaultModelId: null },
+const levelSummary = [
+  { level: "arena-local" as const, number: LEVEL_NUMBER["arena-local"], label: LEVEL_LABELS["arena-local"], description: LEVEL_DESCRIPTIONS["arena-local"], readyByDefault: true, requiresNetwork: false, defaultModelId: LOCAL_ENGINE_ID },
+  { level: "on-device" as const, number: LEVEL_NUMBER["on-device"], label: LEVEL_LABELS["on-device"], description: LEVEL_DESCRIPTIONS["on-device"], readyByDefault: false, requiresNetwork: false, defaultModelId: null },
+  { level: "remote" as const, number: LEVEL_NUMBER["remote"], label: LEVEL_LABELS["remote"], description: LEVEL_DESCRIPTIONS["remote"], readyByDefault: false, requiresNetwork: true, defaultModelId: null },
 ];
 
 export async function GET() {
@@ -27,11 +27,11 @@ export async function GET() {
         ties: dbRow?.ties ?? 0,
       };
     });
-    return Response.json({ models: merged, tiers: tierSummary });
+    return Response.json({ models: merged, levels: levelSummary });
   } catch {
     return Response.json({
       models: FREE_MODELS.map((m) => ({ ...m, elo: 1200, battles: 0, wins: 0, ties: 0 })),
-      tiers: tierSummary,
+      levels: levelSummary,
     });
   }
 }

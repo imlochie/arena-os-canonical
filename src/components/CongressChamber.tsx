@@ -1,5 +1,7 @@
 "use client";
 
+import PoweredBy from "./PoweredBy";
+
 // Congress — multiple AI collaborators sit together for a set amount of time
 // and produce durable results: live deliberation on the floor, an Act
 // (resolution document) drafted by the Clerk when the clock runs out, saved
@@ -689,6 +691,9 @@ export default function CongressChamber() {
                         <p className="text-xs font-black uppercase tracking-wider text-amber-300">
                           📜 The Act of the Congress
                         </p>
+                        {"runtime" in turn && turn.runtime ? (
+                          <div className="mt-1"><PoweredBy runtime={turn.runtime as any} /></div>
+                        ) : null}
                         <div className="mt-2">
                           <Markdown text={turn.content} />
                         </div>
@@ -709,6 +714,9 @@ export default function CongressChamber() {
                             {models.find((m) => m.id === turn.modelId)?.name ?? turn.modelId}
                           </span>
                         </p>
+                        {"runtime" in turn && turn.runtime ? (
+                          <PoweredBy runtime={turn.runtime as any} />
+                        ) : null}
                         <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-slate-200">
                           {turn.content}
                         </p>

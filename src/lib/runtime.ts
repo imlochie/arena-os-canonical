@@ -1,19 +1,21 @@
 /**
- * Arena AI runtime abstraction.
+ * Arena AI runtime abstraction — the multi-level execution contract.
  *
- * Three tiers, never to be confused with one another:
+ * Three LEVELS, never to be confused with one another. A level describes HOW
+ * an answer is produced — it is NOT an intelligence ranking:
  *
- *   local-engine  — the built-in deterministic offline engine. NOT an LLM.
- *                   Zero config, zero network, instant, private.
- *   local-llm     — REAL model inference on the user's machine
- *                   (WebLLM in-browser, TurboAgent local server). Weights
- *                   and a runtime are required.
- *   remote-free   — REAL provider-backed inference over the network
- *                   (Pollinations keyless, OpenRouter/Groq BYOK). Requests
- *                   may leave this machine.
+ *   LEVEL 0  "arena-local"  — the built-in deterministic offline engine.
+ *                            NOT an LLM. Zero config, zero network, instant,
+ *                            private, always available. The Arena baseline.
+ *   LEVEL 1  "on-device"    — REAL model inference on the user's machine
+ *                            (WebLLM in-browser via WebGPU, TurboAgent local
+ *                            server). Weights and a runtime are required.
+ *   LEVEL 2  "remote"       — REAL provider-backed inference over the network
+ *                            (Pollinations keyless, OpenRouter/Groq BYOK).
+ *                            Requests leave this machine.
  *
- * A model can never claim a backend it does not actually use: the catalog
- * in models.ts assigns each entry its tier and backend, and generate()
+ * A model can never claim a backend it does not actually use: the catalog in
+ * models.ts assigns each entry its level and backend, and generate()
  * (lib/ai.ts) returns what ACTUALLY executed, including fallback chains.
  */
 
@@ -23,40 +25,55 @@ import {
   MODEL_ALIASES,
   type Backend,
   type FreeModel,
-  type RuntimeTier,
+  type RuntimeLevel,
 } from "./models";
 
-export type { Backend, RuntimeTier };
+export type { Backend, RuntimeLevel };
 
-
-
-export const TIER_LABELS: Record<RuntimeTier, string> = {
-  "local-engine": "Local Engine",
-  "local-llm": "Local LLM",
-  "remote-free": "Remote Free Models",
+/** LEVEL 0/1/2 numbering for UI display. */
+export const LEVEL_NUMBER: Record<RuntimeLevel, 0 | 1 | 2> = {
+  "arena-local": 0,
+  "on-device": 1,
+  remote: 2,
 };
 
-export const TIER_DESCRIPTIONS: Record<RuntimeTier, string> = {
-  "local-engine":
-    "Deterministic offline engine. Not an LLM — structured heuristic responses, no model download, no API key, no network, instant, private.",
-  "local-llm":
+export const LEVEL_LABELS: Record<RuntimeLevel, string> = {
+  "arena-local": "Arena Local Engine",
+  "on-device": "On-Device LLM",
+  remote: "Remote Model",
+};
+
+export const LEVEL_DESCRIPTIONS: Record<RuntimeLevel, string> = {
+  "arena-local":
+    "Deterministic offline reasoning layer. Not an LLM — heuristic templates, term extraction, synthesis. No model download, no API key, no network. Instant, private, always available.",
+  "on-device":
     "Real model inference on your device. Model weights required, uses your hardware, no cloud API required.",
-  "remote-free":
-    "Real provider-backed models over the network. Your request may leave this machine.",
+  remote:
+    "Real provider-backed models over the network. Your request may leave this machine. Free/keyless where marked; BYOK providers where configured.",
 };
 
-/** Which backends may appear in which tier. A model outside its tier's
+/** Which backends may appear in which level. A model outside its level's
  *  backend set is a catalog bug — tests assert this never happens. */
-export const TIER_BACKENDS: Record<RuntimeTier, readonly Backend[]> = {
-  "local-engine": ["arena-local-engine"],
-  "local-llm": ["webllm", "turboagent"],
-  "remote-free": ["pollinations", "openrouter", "groq"],
+export const LEVEL_BACKENDS: Record<RuntimeLevel, readonly Backend[]> = {
+  "arena-local": ["arena-local-engine"],
+  "on-device": ["webllm", "turboagent"],
+  remote: ["pollinations", "openrouter", "groq"],
+};
+
+/** The provider identity behind a backend (who actually serves the model). */
+export const BACKEND_PROVIDER: Record<Backend, string> = {
+  "arena-local-engine": "arena",
+  webllm: "webllm",
+  turboagent: "turboagent",
+  pollinations: "pollinations",
+  openrouter: "openrouter",
+  groq: "groq",
 };
 
 export interface RuntimeModelInfo {
   id: string;
   displayName: string;
-  tier: RuntimeTier;
+  level: RuntimeLevel;
   backend: Backend;
   kind: "text" | "image";
   capabilities: string[];
@@ -83,13 +100,13 @@ export function describeRuntimeModel(model: FreeModel): RuntimeModelInfo {
   const common = {
     id: model.id,
     displayName: model.name,
-    tier: model.tier,
+    level: model.level,
     backend: model.backend,
     kind: model.kind,
     capabilities: model.strengths,
     speedExpectation: `Expected ${model.speed} (unmeasured)`,
   };
-  if (model.tier === "local-engine") {
+  if (model.level === "arena-local") {
     return {
       ...common,
       speedExpectation: "Instant (deterministic)",
@@ -103,10 +120,10 @@ export function describeRuntimeModel(model: FreeModel): RuntimeModelInfo {
           : "Deterministic offline engine · not an LLM · no network · no key",
     };
   }
-  if (model.tier === "local-llm") {
+  if (model.level === "on-device") {
     return {
       ...common,
-      qualityExpectation: `Expected quality ${model.quality}/5 (provider claim)`,
+      qualityExpectation: `Expected quality ${model.quality}/5 (catalog estimate, unmeasured)`,
       requiresNetwork: false,
       requiresKey: false,
       requiresDownload: model.backend === "webllm",
@@ -118,38 +135,79 @@ export function describeRuntimeModel(model: FreeModel): RuntimeModelInfo {
   }
   return {
     ...common,
-    qualityExpectation: `Expected quality ${model.quality}/5 (provider claim)`,
+    qualityExpectation: `Expected quality ${model.quality}/5 (catalog estimate, unmeasured)`,
     requiresNetwork: true,
-    requiresKey: model.backend === "openrouter" || model.backend === "groq",
+    requiresKey: false,
     requiresDownload: false,
     honesty: `☁ ${model.provider} — your request may leave this machine`,
   };
 }
 
-/** What actually executed a generation. Returned by generate(). */
+// ---------------------------------------------------------------------------
+// Unified execution status (runtime-detected, never inferred from catalog)
+// ---------------------------------------------------------------------------
+
+export type ExecutionStatus =
+  | "ready" // level 0 always; configured + verified level 1/2
+  | "loading" // model weights loading into memory
+  | "download-required" // weights not present locally
+  | "connecting" // probe in flight
+  | "connected" // server/provider reachable (level 1/2 backends)
+  | "api-key-required" // BYOK provider selected without a key
+  | "network-unavailable" // egress to the provider failed
+  | "webgpu-unavailable" // browser cannot run WebLLM
+  | "server-unavailable" // TurboAgent (or other local server) unreachable
+  | "provider-error" // provider responded with an error
+  | "unavailable" // generic: cannot run right now
+  | "error";
+
+/** Is a status good enough to attempt generation? (Attempts are still honest:
+ *  failures fall back visibly — this is UI affordance, not a guarantee.) */
+export function statusAttemptable(status: ExecutionStatus): boolean {
+  return status === "ready" || status === "connected";
+}
+
+// ---------------------------------------------------------------------------
+// The generation contract — every generation returns what actually ran
+// ---------------------------------------------------------------------------
+
+/** What actually executed a generation. */
 export interface RuntimeExecution {
-  runtimeTier: RuntimeTier;
+  runtimeLevel: RuntimeLevel;
   backend: Backend;
   modelId: string;
 }
 
 export interface GenerateResult {
   text: string;
-  runtimeTier: RuntimeTier;
+  runtimeLevel: RuntimeLevel;
   backend: Backend;
+  /** The provider identity that served the execution.
+   *  Optional at internal construction sites; the public generate() seam
+   *  ALWAYS sets it (BACKEND_PROVIDER). */
+  provider?: string;
   /** The catalog id that actually produced the text (local-engine on fallback). */
   modelId: string;
+  /** What the user asked for (before alias resolution / fallback). */
+  requestedModelId?: string;
   via: string;
+  /** Measured total generation latency (ms). */
   ms: number;
+  /** Alias of ms — the spec's canonical name. */
+  latencyMs?: number;
+  /** Measured time to first token (ms), where streaming is available. */
+  firstTokenMs?: number;
   fallback: boolean;
   /** What the user asked for, when it differs from what ran. */
   fallbackFrom?: RuntimeExecution;
-  /** Human-readable reason for a fallback or unavailable tier. */
+  /** Machine-ish reason for a fallback. */
+  fallbackReason?: string;
+  /** Human-readable note for a fallback or unavailable tier. */
   note?: string;
 }
 
 export const LOCAL_ENGINE_EXECUTION: RuntimeExecution = {
-  runtimeTier: "local-engine",
+  runtimeLevel: "arena-local",
   backend: "arena-local-engine",
   modelId: LOCAL_ENGINE_ID,
 };
@@ -158,17 +216,27 @@ export function localEngineResult(
   text: string,
   via: string,
   ms: number,
-  extra?: { fallback?: boolean; fallbackFrom?: RuntimeExecution; note?: string },
+  extra?: {
+    fallback?: boolean;
+    fallbackFrom?: RuntimeExecution;
+    note?: string;
+    fallbackReason?: string;
+    requestedModelId?: string;
+  },
 ): GenerateResult {
   return {
     text,
-    runtimeTier: "local-engine",
+    runtimeLevel: "arena-local",
     backend: "arena-local-engine",
+    provider: "arena",
     modelId: LOCAL_ENGINE_ID,
+    requestedModelId: extra?.requestedModelId,
     via,
     ms,
+    latencyMs: ms,
     fallback: extra?.fallback ?? false,
     fallbackFrom: extra?.fallbackFrom,
+    fallbackReason: extra?.fallbackReason,
     note: extra?.note,
   };
 }
@@ -184,8 +252,8 @@ export interface ComparisonVerdict {
 
 /**
  * A model comparison is only meaningful between genuinely different
- * execution targets. Two selections that both resolve to the Local Engine
- * are the same engine — comparing them proves nothing about models.
+ * execution targets. Two selections that both resolve to the Arena Local
+ * Engine are the same engine — comparing them proves nothing about models.
  */
 export function comparisonVerdict(aModelId: string, bModelId: string): ComparisonVerdict {
   const a = getRuntimeModel(aModelId);
@@ -196,7 +264,7 @@ export function comparisonVerdict(aModelId: string, bModelId: string): Compariso
     return {
       allowed: false,
       reason:
-        "These are the same execution engine. Model comparison is unavailable in Local Engine mode — select a Local LLM or a Remote Free Model for at least one side.",
+        "These selections resolve to the same execution engine (Arena Local Engine). They cannot form a genuine model battle. Select an On-Device or Remote model for at least one side.",
     };
   }
   return { allowed: true };
@@ -212,26 +280,49 @@ export function executionsSameEngine(
   return a.backend === "arena-local-engine" && b.backend === "arena-local-engine";
 }
 
+/**
+ * ELO honesty: a battle is only rateable when BOTH sides genuinely executed
+ * the model they claim. A fallback execution answering under a remote model's
+ * name must never move that model's ELO, and the Arena Local Engine is the
+ * baseline — it does not compete as a foundation model.
+ */
+export function battleRateable(
+  a: Pick<GenerateResult, "backend" | "fallback"> | null,
+  b: Pick<GenerateResult, "backend" | "fallback"> | null,
+): boolean {
+  if (!a || !b) return false;
+  if (a.fallback || b.fallback) return false;
+  if (a.backend === "arena-local-engine" || b.backend === "arena-local-engine") return false;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // UI helpers (single source of truth for labels)
 // ---------------------------------------------------------------------------
 
-export function runtimeBadge(result: Pick<GenerateResult, "runtimeTier" | "backend">): string {
-  if (result.runtimeTier === "local-engine") return "🔒 Local Engine · no network";
-  if (result.runtimeTier === "local-llm") return "💻 Local LLM · on device";
-  return "☁ Remote · network required";
+export function runtimeBadge(result: Pick<GenerateResult, "runtimeLevel" | "backend">): string {
+  if (result.runtimeLevel === "arena-local") return "🔒 LEVEL 0 · Arena Local Engine · no network";
+  if (result.runtimeLevel === "on-device") return "💻 LEVEL 1 · On-Device LLM";
+  return "☁ LEVEL 2 · Remote Model · network required";
 }
 
 export function runtimeLine(result: GenerateResult): string {
   const base =
-    result.runtimeTier === "local-engine"
-      ? "Local Engine — deterministic offline engine"
-      : result.runtimeTier === "local-llm"
-        ? `Local LLM — ${result.modelId} via ${result.backend}`
-        : `Remote Free Model — ${result.modelId} via ${result.backend}`;
+    result.runtimeLevel === "arena-local"
+      ? "Arena Local Engine — deterministic offline engine"
+      : result.runtimeLevel === "on-device"
+        ? `On-Device LLM — ${result.modelId} via ${result.backend}`
+        : `Remote Model — ${result.modelId} via ${result.backend}`;
   if (result.fallback && result.fallbackFrom) {
     const from = result.fallbackFrom;
-    return `${base} (fallback: ${from.modelId} / ${from.backend} was unavailable)`;
+    return `${base} (fallback: ${from.modelId} / ${from.backend} was unavailable — ${result.fallbackReason ?? result.note ?? "unavailable"})`;
   }
   return base;
+}
+
+/** Short "Powered by" line for room surfaces. */
+export function poweredBy(result: Pick<GenerateResult, "runtimeLevel" | "backend" | "modelId" | "fallback">): string {
+  if (result.fallback) return "Arena Local Engine (fallback)";
+  if (result.runtimeLevel === "arena-local") return "Arena Local Engine";
+  return `${result.modelId} · ${result.backend}`;
 }

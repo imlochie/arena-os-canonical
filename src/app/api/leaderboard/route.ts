@@ -12,11 +12,14 @@ export async function GET(req: Request) {
   const category = (url.searchParams.get("category") ?? "overall").toString();
   try {
     if (category === "overall") {
+      // The Arena Local Engine is the baseline — it never competes as a
+      // foundation model and never appears on model leaderboards.
       const rows = await db.select().from(models).orderBy(desc(models.elo));
+      const ranked = rows.filter((r) => r.id !== "local-engine");
       const top = rows[0]?.elo ?? 1200;
       return Response.json({
         category: "overall",
-        leaderboard: rows.map((r) => ({
+        leaderboard: ranked.map((r) => ({
           ...r,
           ci: eloCIHalfWidth(r.battles ?? 0),
           provisional: isProvisional(r.battles ?? 0),

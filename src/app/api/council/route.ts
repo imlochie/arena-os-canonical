@@ -172,8 +172,11 @@ export async function POST(req: Request) {
           latencyMs: ms,
           createdAt: new Date().toISOString(),
           localOnly,
+          runtimeA: pA,
+          runtimeB: pB,
+          runtimeSynthesis: synth,
         },
-        artifact: { id: "eph-artifact", kind, title, body: art.text },
+        artifact: { id: "eph-artifact", kind, title, body: art.text, runtime: art },
         ms,
         localOnly,
       });
@@ -196,6 +199,9 @@ export async function POST(req: Request) {
         synthesis: synth.text,
         latencyMs: ms,
         projectId,
+        runtimeA: pA,
+        runtimeB: pB,
+        runtimeSynthesis: synth,
       })
       .returning();
 

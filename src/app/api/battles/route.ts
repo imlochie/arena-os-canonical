@@ -2,7 +2,7 @@ import { db } from "@/db";
 import { battles, battleMessages } from "@/db/schema";
 import { desc } from "drizzle-orm";
 import { generate } from "@/lib/ai";
-import { comparisonVerdict, executionsSameEngine } from "@/lib/runtime";
+import { battleRateable, comparisonVerdict, executionsSameEngine } from "@/lib/runtime";
 import { assignSides, resolveFighters } from "@/lib/battleSetup";
 import { isEphemeralBody, isLocalOnlyBody, logPrivacyEvent, sealReveal } from "@/lib/privacy";
 import { getProjectContext, withProjectContext } from "@/lib/projectContext";
@@ -125,6 +125,9 @@ export async function POST(req: Request) {
         latencyA: rA.ms,
         latencyB: rB.ms,
         projectId,
+        runtimeA: rA,
+        runtimeB: rB,
+        rated: battleRateable(rA, rB),
       })
       .returning();
     if (projectId) {

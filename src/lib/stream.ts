@@ -61,6 +61,7 @@ export async function* generateStream(opts: GenerateStreamOpts): AsyncGenerator<
     const streamStart = Date.now();
 
     const reader = res.body.getReader();
+    let firstTokenAt = 0;
     const decoder = new TextDecoder();
     let buf = "";
     let yielded = false;
@@ -80,6 +81,7 @@ export async function* generateStream(opts: GenerateStreamOpts): AsyncGenerator<
           const delta: string =
             json?.choices?.[0]?.delta?.content ?? json?.choices?.[0]?.message?.content ?? "";
           if (delta) {
+            if (!firstTokenAt) firstTokenAt = Date.now();
             yielded = true;
             yield delta;
           }
@@ -92,11 +94,13 @@ export async function* generateStream(opts: GenerateStreamOpts): AsyncGenerator<
     if (!yielded) throw new Error("empty stream");
     onResult?.({
       text: "",
-      runtimeTier: model.tier,
+      runtimeLevel: model.level,
       backend: "pollinations",
+      provider: "pollinations",
       modelId: model.id,
       via: "pollinations-stream",
       ms: Date.now() - streamStart,
+      firstTokenMs: firstTokenAt ? firstTokenAt - streamStart : undefined,
       fallback: false,
     });
   } catch {

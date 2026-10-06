@@ -1,5 +1,7 @@
 "use client";
 
+import PoweredBy from "./PoweredBy";
+
 // Space detail — the popped-out window view (/spaces/[id]). Shows everything
 // about one agent space: full output, briefcase editor, run history, controls.
 // While this window is open it keeps its agent ticking.
@@ -234,6 +236,7 @@ export default function SpaceDetail({ id }: { id: string }) {
                       {r.status === "ok" ? "✅" : "❌"} {new Date(r.createdAt).toLocaleString()} · {r.ms}ms · {r.via || "—"}
                     </summary>
                     <div className="mt-2 text-xs text-slate-200">
+                      <PoweredBy runtime={(r as any).runtime as any} />
                       <Markdown text={r.output} />
                     </div>
                   </details>

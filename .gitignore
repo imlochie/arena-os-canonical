@@ -1,7 +1,8 @@
-node_modules/
-.next/
-.arena-data/
-.env
-.env.local
-.env.*.local
 *.log
+.arena-data/
+.data/
+.env
+.env.*.local
+.env.local
+.next/
+node_modules/

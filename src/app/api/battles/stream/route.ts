@@ -3,7 +3,7 @@ import { battles, battleMessages } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { assignSides, resolveFighters } from "@/lib/battleSetup";
 import { generateStream } from "@/lib/stream";
-import { comparisonVerdict, executionsSameEngine } from "@/lib/runtime";
+import { battleRateable, comparisonVerdict, executionsSameEngine } from "@/lib/runtime";
 import type { GenerateResult } from "@/lib/ai";
 import { ensureSeeded } from "@/lib/seed";
 
@@ -109,7 +109,7 @@ export async function POST(req: Request) {
         const totalMs = Date.now() - started;
         await db
           .update(battles)
-          .set({ responseA: fullA, responseB: fullB, latencyA: totalMs, latencyB: totalMs })
+          .set({ responseA: fullA, responseB: fullB, latencyA: totalMs, latencyB: totalMs, runtimeA: rA, runtimeB: rB, rated: battleRateable(rA, rB) })
           .where(eq(battles.id, battle.id));
         await db.insert(battleMessages).values([
           { battleId: battle.id, role: "a", content: fullA },

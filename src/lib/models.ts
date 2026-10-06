@@ -1,14 +1,14 @@
 // Central AI runtime catalog.
 //
 // Every entry states its execution truth:
-//   tier    "local-engine" (deterministic offline engine — NOT an LLM)
-//          "local-llm"    (real on-device model inference)
-//          "remote-free"  (real provider-backed inference over the network)
+//   level   "arena-local" (deterministic offline engine — NOT an LLM)
+//          "on-device"    (real on-device model inference)
+//          "remote"       (real provider-backed inference over the network)
 //   backend the execution path that actually runs when it is selected.
 //
 // A model can never claim a backend it does not use. See lib/runtime.ts.
 
-export type RuntimeTier = "local-engine" | "local-llm" | "remote-free";
+export type RuntimeLevel = "arena-local" | "on-device" | "remote";
 export type Backend =
   | "arena-local-engine"
   | "webllm"
@@ -27,7 +27,7 @@ export interface FreeModel {
   speed: "instant" | "fast" | "medium";
   /** Provider/expectation claim, not a measurement. */
   quality: number;
-  tier: RuntimeTier;
+  level: RuntimeLevel;
   backend: Backend;
   requiresNetwork: boolean;
   requiresKey: boolean;
@@ -61,7 +61,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Offline", "Instant", "Private", "Deterministic"],
     speed: "instant",
     quality: 0,
-    tier: "local-engine",
+    level: "arena-local",
     backend: "arena-local-engine",
     requiresNetwork: false,
     requiresKey: false,
@@ -80,7 +80,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Offline", "Instant", "Private"],
     speed: "instant",
     quality: 0,
-    tier: "local-engine",
+    level: "arena-local",
     backend: "arena-local-engine",
     requiresNetwork: false,
     requiresKey: false,
@@ -103,7 +103,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["General", "Coding", "Reasoning"],
     speed: "fast",
     quality: 5,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -122,7 +122,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Speed", "Summaries", "Multilingual"],
     speed: "fast",
     quality: 4,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -141,7 +141,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Coding", "Math", "Reasoning"],
     speed: "medium",
     quality: 5,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -160,7 +160,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Writing", "Analysis", "Safety"],
     speed: "medium",
     quality: 5,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -179,7 +179,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Long context", "Research", "Creative"],
     speed: "fast",
     quality: 4,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -198,7 +198,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Chat", "Open weights", "Versatile"],
     speed: "fast",
     quality: 4,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -217,7 +217,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Coding", "Tools", "Math"],
     speed: "fast",
     quality: 4,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -236,7 +236,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Humor", "Current events", "Chat"],
     speed: "fast",
     quality: 4,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -255,7 +255,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Reasoning", "Value", "Long context"],
     speed: "medium",
     quality: 4,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -278,7 +278,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Real inference", "On device", "Code-tuned"],
     speed: "fast",
     quality: 3,
-    tier: "local-llm",
+    level: "on-device",
     backend: "webllm",
     requiresNetwork: false,
     requiresKey: false,
@@ -297,7 +297,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Real inference", "On device", "Reasoning"],
     speed: "medium",
     quality: 4,
-    tier: "local-llm",
+    level: "on-device",
     backend: "webllm",
     requiresNetwork: false,
     requiresKey: false,
@@ -316,7 +316,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Real inference", "Long context", "Private"],
     speed: "medium",
     quality: 5,
-    tier: "local-llm",
+    level: "on-device",
     backend: "turboagent",
     requiresNetwork: false,
     requiresKey: false,
@@ -335,7 +335,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Real inference", "Fast", "Private"],
     speed: "fast",
     quality: 4,
-    tier: "local-llm",
+    level: "on-device",
     backend: "turboagent",
     requiresNetwork: false,
     requiresKey: false,
@@ -358,7 +358,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Detail", "Photos", "Art"],
     speed: "medium",
     quality: 5,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -377,7 +377,7 @@ export const FREE_MODELS: FreeModel[] = [
     strengths: ["Speed", "Anime", "Drafts"],
     speed: "fast",
     quality: 4,
-    tier: "remote-free",
+    level: "remote",
     backend: "pollinations",
     requiresNetwork: true,
     requiresKey: false,
@@ -406,7 +406,7 @@ export function imageModels(): FreeModel[] {
  *  Local Engine entries, and by default real models only. */
 export function randomPair(): [FreeModel, FreeModel] {
   const pool = FREE_MODELS.filter(
-    (m) => m.kind === "text" && m.tier !== "local-engine" && !m.id.includes("webllm"),
+    (m) => m.kind === "text" && m.level !== "arena-local" && !m.id.includes("webllm"),
   );
   const a = pool[Math.floor(Math.random() * pool.length)];
   let b = pool[Math.floor(Math.random() * pool.length)];
@@ -418,7 +418,7 @@ export function randomPair(): [FreeModel, FreeModel] {
 }
 
 export function randomImagePair(): [FreeModel, FreeModel] {
-  const pool = imageModels().filter((m) => m.tier !== "local-engine");
+  const pool = imageModels().filter((m) => m.level !== "arena-local");
   if (pool.length >= 2) {
     const a = pool[Math.floor(Math.random() * pool.length)];
     let b = pool[Math.floor(Math.random() * pool.length)];

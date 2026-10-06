@@ -85,6 +85,8 @@ export interface Relay {
   toolUse: boolean;
   steps: RelayToolStep[];
   createdAt: string;
+  /** What actually executed the response (GenerateResult metadata). */
+  runtime?: unknown;
 }
 
 export interface Collaboration {
@@ -215,6 +217,9 @@ async function ensureTables(): Promise<void> {
         "updated_at" timestamp DEFAULT now() NOT NULL
       );
     `);
+    await db.execute(sql`
+      ALTER TABLE "collaboration_relays" ADD COLUMN IF NOT EXISTS "runtime" jsonb;
+    `);
     tableReady = true;
     dbHealthy = true;
   } catch {
@@ -288,6 +293,7 @@ function relayFromRow(r: typeof collaborationRelays.$inferSelect): Relay {
     toolUse: Boolean(r.toolUse),
     steps: parseSteps(r.steps),
     createdAt: new Date(r.createdAt ?? new Date()).toISOString(),
+    runtime: (r as any).runtime ?? undefined,
   };
 }
 
@@ -575,6 +581,7 @@ async function updateRelay(relayId: string, patch: Partial<Relay>): Promise<void
           ...(patch.via !== undefined ? { via: patch.via } : {}),
           ...(patch.note !== undefined ? { note: patch.note } : {}),
           ...(patch.steps !== undefined ? { steps: JSON.stringify(patch.steps) } : {}),
+          ...(patch.runtime !== undefined ? { runtime: patch.runtime as any } : {}),
           updatedAt: new Date(),
         })
         .where(eq(collaborationRelays.id, relayId));
@@ -747,7 +754,7 @@ async function dispatchWithTools(
   target: Participant,
   envelope: string,
   opts: { keys?: OrchestratorKeys; localOnly?: boolean }
-): Promise<{ text: string; via: string; steps: RelayToolStep[] }> {
+): Promise<{ text: string; via: string; steps: RelayToolStep[]; runtime?: unknown }> {
   const system =
     dispatchSystemPrompt(target) +
     "\n\nTOOL PROTOCOL — you may inspect the workspace through read-only tools. To call one, reply with ONLY a fenced JSON block:\n" +
@@ -757,6 +764,7 @@ async function dispatchWithTools(
   const convo: { role: "user" | "assistant"; content: string }[] = [{ role: "user", content: envelope }];
   const steps: RelayToolStep[] = [];
   let via = "";
+  let lastRuntime: unknown;
   for (let i = 0; i < 5; i++) {
     const gen = await generate({
       modelId: target.modelId ?? "openai",
@@ -767,10 +775,11 @@ async function dispatchWithTools(
       localOnly: opts.localOnly,
     });
     via = gen.via;
+    lastRuntime = gen;
     const text = gen.text.trim();
     const call = parseRelayToolCall(text);
-    if (!call) return { text, via, steps };
-    if (isOfflineVia(via)) return { text, via, steps };
+    if (!call) return { text, via, steps, runtime: lastRuntime };
+    if (isOfflineVia(via)) return { text, via, steps, runtime: lastRuntime };
     if (steps.length >= 3) {
       convo.push({ role: "assistant", content: text });
       convo.push({ role: "user", content: "Tool budget exhausted — answer now with what you have (plain text, no JSON)." });
@@ -919,7 +928,7 @@ export async function advanceCollaboration(
   const envelope = await buildEnvelope(collab, pending, target);
 
   try {
-    let result: { text: string; via: string };
+    let result: { text: string; via: string; runtime?: unknown };
     let steps: RelayToolStep[] = [];
     if (target.kind === "external") {
       if (!target.adapterUrl) throw new Error("external participant has no adapter URL configured");
@@ -932,7 +941,7 @@ export async function advanceCollaboration(
       );
     } else if (pending.toolUse) {
       const loop = await dispatchWithTools(target, envelope, opts);
-      result = { text: loop.text, via: loop.via };
+      result = { text: loop.text, via: loop.via, runtime: loop.runtime };
       steps = loop.steps;
     } else {
       const gen = await generate({
@@ -943,13 +952,14 @@ export async function advanceCollaboration(
         keys: opts.localOnly ? undefined : opts.keys,
         localOnly: opts.localOnly,
       });
-      result = { text: gen.text, via: gen.via };
+      result = { text: gen.text, via: gen.via, runtime: gen };
     }
     await updateRelay(pending.id, {
       status: "responded",
       response: result.text.slice(0, 12000),
       via: result.via,
       ...(steps.length ? { steps } : {}),
+      ...(result.runtime ? { runtime: result.runtime } : {}),
     });
     await touch(id, "running");
     const refreshed = (await getCollaboration(id))!;

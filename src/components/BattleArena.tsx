@@ -10,6 +10,17 @@ import { privacyFlags, usePrivacySettings } from "@/lib/privacyClient";
 import { localJudge } from "@/lib/localEngine";
 import { CATEGORIES } from "@/lib/models";
 
+interface BattleRuntime {
+  runtimeLevel: "arena-local" | "on-device" | "remote";
+  backend: string;
+  provider: string;
+  modelId: string;
+  via: string;
+  ms: number;
+  fallback: boolean;
+  fallbackFrom?: { runtimeLevel: string; backend: string; modelId: string } | null;
+  fallbackReason?: string | null;
+}
 interface ModelInfo {
   id: string;
   name: string;
@@ -18,7 +29,8 @@ interface ModelInfo {
   description: string;
   kind: string;
   elo: number;
-  tier?: "local-engine" | "local-llm" | "remote-free";
+  level?: "arena-local" | "on-device" | "remote";
+  backend?: string;
 }
 interface AssistantInfo {
   id: string;
@@ -37,6 +49,8 @@ interface Turn {
   prompt: string;
   a: string;
   b: string;
+  runtimeA?: BattleRuntime | null;
+  runtimeB?: BattleRuntime | null;
 }
 interface Revealed {
   modelAId: string;
@@ -190,7 +204,7 @@ export default function BattleArena() {
       if (!r.ok) throw new Error(j.error ?? "battle failed");
       setBattleId(j.battle.id);
       if (j.battle.ephemeral) setEphToken(j.battle.revealToken ?? null);
-      setTurns([{ prompt: q, a: j.battle.responseA, b: j.battle.responseB }]);
+      setTurns([{ prompt: q, a: j.battle.responseA, b: j.battle.responseB, runtimeA: j.battle.runtimeA, runtimeB: j.battle.runtimeB }]);
       setSameEngineNotice(j.battle.sameEngineNotice ?? null);
     };
     try {
@@ -260,6 +274,13 @@ export default function BattleArena() {
           accA = evt.battle.responseA;
           accB = evt.battle.responseB;
           setSameEngineNotice(evt.battle.sameEngineNotice ?? null);
+          setTurns((t) => {
+            if (!t.length) return t;
+            const next = [...t];
+            const last = next[next.length - 1];
+            next[next.length - 1] = { ...last, a: accA, b: accB, runtimeA: evt.battle.runtimeA, runtimeB: evt.battle.runtimeB };
+            return next;
+          });
           apply();
         } else if (evt.type === "error") throw new Error(evt.error ?? "stream failed");
       }
@@ -283,7 +304,7 @@ export default function BattleArena() {
       if (!r.ok) throw new Error(j.error ?? "followup failed");
       setTurns((t) => {
         const next = [...t];
-        next[next.length - 1] = { prompt: msg, a: j.responseA, b: j.responseB };
+        next[next.length - 1] = { prompt: msg, a: j.responseA, b: j.responseB, runtimeA: j.runtimeA, runtimeB: j.runtimeB };
         setSameEngineNotice(j.sameEngineNotice ?? null);
         return next;
       });
@@ -575,6 +596,7 @@ export default function BattleArena() {
                     won={revealed?.winner === "a"}
                     tied={revealed?.winner === "tie"}
                     isLatest={i === turns.length - 1}
+                    runtime={t.runtimeA}
                   />
                   <FighterPanel
                     side="B"
@@ -585,6 +607,7 @@ export default function BattleArena() {
                     won={revealed?.winner === "b"}
                     tied={revealed?.winner === "tie"}
                     isLatest={i === turns.length - 1}
+                    runtime={t.runtimeB}
                   />
                 </div>
               </div>
@@ -797,19 +820,19 @@ function FighterSelect({
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm font-semibold text-white focus:border-violet-500 focus:outline-none"
       >
-        <optgroup label="⚙️ Local Engine — offline, not an LLM">
-          {models.filter((m) => m.tier === "local-engine").map((m) => (
+        <optgroup label="LEVEL 0 · Arena Local Engine — offline, not an LLM (baseline, not a model battle)">
+          {models.filter((m) => m.level === "arena-local").map((m) => (
             <option key={m.id} value={`model:${m.id}`}>{m.emoji} {m.name}</option>
           ))}
         </optgroup>
-        <optgroup label="💻 Local LLM — real model on your device">
-          {models.filter((m) => m.tier === "local-llm").map((m) => (
-            <option key={m.id} value={`model:${m.id}`}>{m.emoji} {m.name}</option>
+        <optgroup label="LEVEL 1 · On-Device LLM — WebLLM / TurboAgent">
+          {models.filter((m) => m.level === "on-device").map((m) => (
+            <option key={m.id} value={`model:${m.id}`}>{m.emoji} {m.name} ({m.backend === "webllm" ? "download + WebGPU" : "server required"})</option>
           ))}
         </optgroup>
-        <optgroup label="☁️ Remote Free Models — network required">
-          {models.filter((m) => m.tier === "remote-free").map((m) => (
-            <option key={m.id} value={`model:${m.id}`}>{m.emoji} {m.name}</option>
+        <optgroup label="LEVEL 2 · Remote Models — network required">
+          {models.filter((m) => m.level === "remote").map((m) => (
+            <option key={m.id} value={`model:${m.id}`}>{m.emoji} {m.name} (☁ free/keyless)</option>
           ))}
         </optgroup>
         {assistants.length > 0 && (
@@ -825,7 +848,7 @@ function FighterSelect({
 }
 
 function FighterPanel({
-  side, text, streaming, revealed, modelName, won, tied, isLatest,
+  side, text, streaming, revealed, modelName, won, tied, isLatest, runtime,
 }: {
   side: string;
   text: string;
@@ -835,7 +858,31 @@ function FighterPanel({
   won?: boolean;
   tied?: boolean;
   isLatest?: boolean;
+  runtime?: BattleRuntime | null;
 }) {
+  const runtimeCard = runtime ? (
+    <div
+      className={`mt-2 rounded-xl border p-2.5 text-[11px] leading-4 ${
+        runtime.runtimeLevel === "arena-local"
+          ? "border-emerald-400/25 bg-emerald-400/[0.08] text-emerald-100"
+          : runtime.runtimeLevel === "on-device"
+            ? "border-sky-400/25 bg-sky-400/[0.08] text-sky-100"
+            : "border-amber-400/25 bg-amber-400/[0.08] text-amber-100"
+      }`}
+      data-testid="battle-runtime-card"
+    >
+      <p className="font-black uppercase tracking-wide opacity-80">
+        {runtime.runtimeLevel === "arena-local" ? "🔒 LEVEL 0 · ARENA LOCAL" : runtime.runtimeLevel === "on-device" ? "💻 LEVEL 1 · ON-DEVICE" : "☁ LEVEL 2 · REMOTE"}
+      </p>
+      <p className="mt-0.5 font-bold">
+        {runtime.fallback ? "Arena Local Engine (fallback)" : `${runtime.modelId}`}
+        <span className="opacity-70"> · backend {runtime.backend} · provider {runtime.provider ?? runtime.backend}</span>
+      </p>
+      <p className="opacity-70">
+        {runtime.ms}ms measured{runtime.fallback ? ` · ${runtime.fallbackFrom?.modelId ?? "requested"} unavailable (${runtime.fallbackReason ?? "unavailable"})` : ""}
+      </p>
+    </div>
+  ) : null;
   const [copied, setCopied] = useState(false);
   const [speaking, setSpeaking] = useState(false);
 
@@ -890,7 +937,7 @@ function FighterPanel({
             <p className="text-sm font-extrabold text-white">🎭 Anonymous fighter</p>
           )}
           <p className="text-[11px] text-slate-400">
-            {streaming ? "streaming…" : text ? `${words} words · free tier` : "waiting…"}
+            {streaming ? "streaming…" : text ? `${words} words` : "waiting…"}
           </p>
         </div>
         {revealed && won && <span className="text-xl">🏆</span>}
@@ -927,6 +974,7 @@ function FighterPanel({
           <p className="text-sm text-slate-500">…</p>
         )}
       </div>
+      {runtimeCard}
     </div>
   );
 }

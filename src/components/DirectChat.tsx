@@ -16,7 +16,7 @@ interface ModelInfo {
   emoji: string;
   description: string;
   pollinationsId?: string;
-  tier?: "local-engine" | "local-llm" | "remote-free";
+  level?: "arena-local" | "on-device" | "remote";
 }
 interface Assistant {
   id: string;
@@ -30,25 +30,18 @@ interface Msg {
   content: string;
   via?: string;
   runtime?: {
-    tier: "local-engine" | "local-llm" | "remote-free";
-    backend:
-      | "arena-local-engine"
-      | "webllm"
-      | "turboagent"
-      | "pollinations"
-      | "openrouter"
-      | "groq";
+    level: "arena-local" | "on-device" | "remote";
+    backend: string;
+    provider: string;
     modelId: string;
+    requestedModelId: string | null;
     via: string;
     ms: number;
+    latencyMs: number;
+    firstTokenMs: number | null;
     fallback: boolean;
-    fallbackFrom:
-      | {
-          runtimeTier: "local-engine" | "local-llm" | "remote-free";
-          backend: "arena-local-engine" | "webllm" | "turboagent" | "pollinations" | "openrouter" | "groq";
-          modelId: string;
-        }
-      | null;
+    fallbackFrom: { runtimeLevel: string; backend: string; modelId: string } | null;
+    fallbackReason: string | null;
     note: string | null;
   };
 }
@@ -286,13 +279,15 @@ export default function DirectChat() {
                     {m.runtime ? (
                       <ActiveRuntime
                         result={{
-                          runtimeTier: m.runtime.tier,
-                          backend: m.runtime.backend,
+                          runtimeLevel: m.runtime.level,
+                          backend: m.runtime.backend as any,
+                          provider: m.runtime.provider,
                           modelId: m.runtime.modelId,
                           via: m.runtime.via,
                           ms: m.runtime.ms,
                           fallback: m.runtime.fallback,
-                          fallbackFrom: m.runtime.fallbackFrom ?? undefined,
+                          fallbackFrom: (m.runtime.fallbackFrom as any) ?? undefined,
+                          fallbackReason: m.runtime.fallbackReason ?? undefined,
                           note: m.runtime.note ?? undefined,
                         }}
                         compact
