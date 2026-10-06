@@ -1008,3 +1008,49 @@ environment:
 
 Gates: tsc clean · **224/224 tests** · production build clean · live E2E for
 both rooms verified on the running server.
+
+---
+
+## Generative Arcade + Space missions, watchers, GitHub (2026-10-06)
+
+**Arcade — generative forge (any game).** New `/api/arcade/forge` +
+`✨ Generate any game` button: a construction-knowledge prompt (game loop,
+input, collision/physics, states, scoring, enemy AI, juice, audio,
+persistence, robustness — the full single-file game checklist) turns any
+reachable model into a game builder. Pipeline: generate → extract →
+validate → ONE repair round with the validator's real complaints → persist
+(engine `ai-codegen`). Honesty gates: if the request falls back to the
+deterministic Local Engine it returns 503 explaining exactly what to connect
+(free Groq/OpenRouter key, on-device WebLLM, TurboAgent) instead of
+pretending prose is a game. The template forge remains the instant offline
+floor (now 8 engines incl. Tetris + 2048).
+
+**Spaces — build missions (the mini-computer).** Each space gets a real
+workspace directory (`.data/space-workspaces/<id>/`). A mission = goal +
+time budget + agent pipeline (the space's fleet, or Planner → Builder →
+Reviewer by default). Agents emit JSON action turns; the runner executes
+them through a journaled tool surface: `write_file/read_file/list_files/
+delete_file`, `run_command` (allowlist: node/npm/npx/git/python3/ls/cat,
+20s timeout, cwd = workspace), `fetch_url` (capped), and `github_publish`
+(blobs→tree→commit→ref via the GitHub REST API — no git binary; token from
+the request or GITHUB_TOKEN; honest "not connected" otherwise). Time budget
+hit → `checkpointed` with the current handoff; Resume continues at the next
+agent. Every turn is journaled (tool, input, real output, ms) and persisted
+(space_missions table, DB-first with memory fallback). Local Engine agents
+plan but cannot emit actions — the mission says exactly that in its status.
+
+**Spaces — watchers (recurring real observation).** A space can watch a
+YouTube channel or playlist: every tick fetches the channel's RSS feed
+(free — no API key, no quota), diffs against the seen set, and feeds new
+titles + descriptions into the run's prompt, appending durable notes to the
+briefcase. @handles resolve best-effort from the channel page. Fetch
+failures are recorded verbatim as the run's output (verified live: sandbox
+network blocks youtube.com → `watch failed: fetch failed`, honestly).
+
+**Verified live:** mission machinery end-to-end (3-agent plan, 9 journal
+steps, honest no-action failure with Local Engine; full action loop proven
+by a scripted-model test — files land on disk, `node hello.js` executes,
+github_publish honestly disconnected, artifacts + handoffs recorded);
+generative forge 503 honest in-sandbox; watcher space persists config and
+records real fetch results. Gates: tsc clean · **233/233 tests** · build
+clean.

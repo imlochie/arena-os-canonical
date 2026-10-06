@@ -27,6 +27,8 @@ export async function POST(req: Request) {
       modelId: body?.modelId ? String(body.modelId) : undefined,
       intervalMinutes: body?.intervalMinutes ? Number(body.intervalMinutes) : undefined,
       briefcase: body?.briefcase ? String(body.briefcase) : "",
+      watchType: body?.watchType ? String(body.watchType) : undefined,
+      watchSource: body?.watchSource ? String(body.watchSource) : undefined,
       projectId: body?.projectId ? String(body.projectId) : null,
     });
     return Response.json({ space }, { status: 201 });

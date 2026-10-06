@@ -63,6 +63,8 @@ export default function SpacesWorkbench() {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   // new-space form (seeded from the default template via lazy initial state)
+  const [watchType, setWatchType] = useState("");
+  const [watchSource, setWatchSource] = useState("");
   const [templateId, setTemplateId] = useState("youtube-copilot");
   const [title, setTitle] = useState(() => getSpaceTemplate("youtube-copilot")?.name ?? "");
   const [prompt, setPrompt] = useState(() => getSpaceTemplate("youtube-copilot")?.prompt ?? "");
@@ -167,7 +169,7 @@ export default function SpacesWorkbench() {
       const res = await fetch("/api/spaces", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, prompt, briefcase, modelId, intervalMinutes }),
+        body: JSON.stringify({ title, prompt, briefcase, modelId, intervalMinutes, watchType: watchType || undefined, watchSource: watchSource || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "create failed");
@@ -352,6 +354,29 @@ export default function SpacesWorkbench() {
             </label>
           </div>
 
+          <div className="mt-2 grid gap-1.5">
+            <select
+              value={watchType}
+              onChange={(e) => setWatchType(e.target.value)}
+              className="w-full rounded-lg border border-white/10 bg-[#0c1428] px-2.5 py-2 text-xs text-white outline-none"
+              title="Optionally let this space watch a real source on every run"
+            >
+              <option value="">No watcher — agent space only</option>
+              <option value="youtube-channel">▶ Watch YouTube channel</option>
+              <option value="youtube-playlist">▶ Watch YouTube playlist</option>
+            </select>
+            <input
+              value={watchSource}
+              onChange={(e) => setWatchSource(e.target.value)}
+              placeholder={watchType ? "channel id (UC…), @handle, or playlist id (PL…)" : "—"}
+              disabled={!watchType}
+              className="w-full rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-xs text-white outline-none placeholder:text-slate-600 disabled:opacity-40"
+            />
+            <p className="text-[10px] leading-snug text-slate-600">
+              A watcher fetches the real feed every run (free — no YouTube API key) and feeds new titles + descriptions to the space as notes.
+            </p>
+          </div>
+
           <button
             onClick={create}
             disabled={creating}
@@ -476,6 +501,7 @@ function SpaceWindow({
         </div>
 
         <AgentFleet spaceId={space.id} models={models} />
+        <MissionPanel spaceId={space.id} />
 
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           <button
@@ -737,6 +763,201 @@ function AgentFleet({ spaceId, models }: { spaceId: string; models: ModelInfo[] 
                 <Markdown text={synthesis.output} />
               </div>
             </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------- mission panel ----------------
+
+interface MissionStepLite {
+  agent: string;
+  turn: number;
+  thought: string;
+  done: boolean;
+  actions: { tool: string; ok: boolean; output: string; input: Record<string, unknown> }[];
+  runtime?: { backend?: string; modelId?: string; fallback?: boolean };
+  ms: number;
+}
+
+interface MissionLite {
+  id: string;
+  goal: string;
+  status: string;
+  statusDetail: string;
+  timeBudgetMs: number;
+  agentPlan: { name: string; role: string }[];
+  journal: MissionStepLite[];
+  artifacts: { path: string; bytes: number }[];
+  handoff: string;
+}
+
+function MissionPanel({ spaceId }: { spaceId: string }) {
+  const [goal, setGoal] = useState("");
+  const [budget, setBudget] = useState(5);
+  const [githubToken, setGithubToken] = useState("");
+  const [showGit, setShowGit] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [mission, setMission] = useState<MissionLite | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/spaces/${spaceId}/mission`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((b) => { if (alive && b.mission) setMission(b.mission); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [spaceId]);
+
+  async function start(continueMission: boolean) {
+    setRunning(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/spaces/${spaceId}/mission`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          continueMission
+            ? { githubToken: githubToken || undefined }
+            : { goal, timeBudgetMinutes: budget, githubToken: githubToken || undefined },
+        ),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body.error ?? "mission failed");
+        return;
+      }
+      setMission(body.mission);
+    } catch {
+      setError("mission failed");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const checkpointed = mission?.status === "checkpointed";
+
+  return (
+    <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-200/70">Build mission</span>
+        {mission && (
+          <span
+            className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+              mission.status === "done"
+                ? "bg-emerald-400/10 text-emerald-300"
+                : mission.status === "checkpointed"
+                  ? "bg-amber-400/10 text-amber-300"
+                  : mission.status === "failed"
+                    ? "bg-red-400/10 text-red-300"
+                    : "bg-white/5 text-slate-300"
+            }`}
+            title={mission.statusDetail}
+          >
+            {mission.status}
+          </span>
+        )}
+        <button
+          onClick={() => setShowGit((v) => !v)}
+          className="rounded-lg bg-white/5 px-2 py-1 text-[11px] font-bold text-slate-400 ring-1 ring-white/10 hover:bg-white/10"
+          title="Connect GitHub (token stays in this browser)"
+        >
+          {showGit ? "× GitHub" : "🐙 GitHub"}
+        </button>
+      </div>
+
+      {showGit && (
+        <input
+          value={githubToken}
+          onChange={(e) => setGithubToken(e.target.value)}
+          type="password"
+          placeholder="GitHub PAT (repo scope) — used for github_publish during missions"
+          className="mt-2 w-full rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-slate-600"
+        />
+      )}
+
+      <div className="mt-2 grid gap-1.5 sm:grid-cols-[1fr_90px_auto]">
+        <input
+          value={goal}
+          onChange={(e) => setGoal(e.target.value)}
+          placeholder={checkpointed ? `resume: ${mission?.goal.slice(0, 60)}…` : "Mission goal — e.g. 'build tetris in index.html, publish to my repo'"}
+          className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-slate-600"
+        />
+        <select
+          value={budget}
+          onChange={(e) => setBudget(Number(e.target.value))}
+          className="rounded-lg border border-white/10 bg-[#0c1428] px-2 py-1.5 text-xs text-white outline-none"
+          title="Time budget — the mission checkpoints and can be resumed"
+        >
+          {[1, 2, 5, 10, 20, 60].map((m) => (
+            <option key={m} value={m}>
+              {m} min
+            </option>
+          ))}
+        </select>
+        {checkpointed ? (
+          <button
+            onClick={() => start(true)}
+            disabled={running}
+            className="rounded-lg bg-amber-500/20 px-3 py-1.5 text-xs font-bold text-amber-200 ring-1 ring-amber-400/30 hover:bg-amber-500/30 disabled:opacity-40"
+          >
+            {running ? "Resuming…" : "▶ Resume"}
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              if (!goal.trim()) {
+                setError("Give the mission a goal.");
+                return;
+              }
+              start(false);
+            }}
+            disabled={running}
+            className="rounded-lg bg-cyan-500/15 px-3 py-1.5 text-xs font-bold text-cyan-200 ring-1 ring-cyan-400/30 hover:bg-cyan-500/25 disabled:opacity-40"
+            title="Agents get a real workspace: files, allowlisted commands, fetch, and GitHub publish — journaled, time-budgeted, checkpointable"
+          >
+            {running ? "Running…" : "🚀 Run mission"}
+          </button>
+        )}
+      </div>
+
+      {error && <p className="mt-2 text-xs text-amber-300">{error}</p>}
+
+      {mission && (
+        <div className="scroll-thin mt-2.5 max-h-72 space-y-2 overflow-y-auto">
+          <p className="text-[11px] text-slate-500">
+            plan: {mission.agentPlan.map((a) => `${a.name} (${a.role})`).join(" → ") || "—"} · budget{" "}
+            {Math.round(mission.timeBudgetMs / 60000)}m
+          </p>
+          {mission.journal.map((s, i) => (
+            <div key={i} className="rounded-lg bg-black/30 p-2.5 ring-1 ring-white/5">
+              <p className="flex flex-wrap items-center gap-2 text-[11px]">
+                <b className="text-white">{s.agent}</b>
+                <span className="text-slate-600">turn {s.turn}</span>
+                <span className="text-emerald-300/80">{s.runtime?.backend ?? "?"}</span>
+                <span className="text-slate-600">{s.ms}ms</span>
+                {s.done && <span className="text-emerald-300">done</span>}
+              </p>
+              <p className="mt-1 text-[11px] italic text-slate-400">{s.thought}</p>
+              {s.actions.map((a, j) => (
+                <p key={j} className={`mt-1 break-all font-mono text-[10px] ${a.ok ? "text-slate-400" : "text-red-300/80"}`}>
+                  {a.ok ? "✓" : "✗"} {a.tool} {JSON.stringify(a.input).slice(0, 90)} → {a.output.slice(0, 140)}
+                </p>
+              ))}
+            </div>
+          ))}
+          {mission.artifacts.length > 0 && (
+            <p className="text-[11px] text-slate-500">
+              workspace: {mission.artifacts.map((a) => a.path).join(", ")}
+            </p>
+          )}
+          {mission.handoff && (
+            <p className="rounded-lg bg-white/[0.03] p-2 text-[11px] text-slate-400 ring-1 ring-white/5">
+              <b className="text-slate-300">handoff:</b> {mission.handoff.slice(0, 300)}
+            </p>
           )}
         </div>
       )}

@@ -242,6 +242,25 @@ export const spaceAgents = pgTable("space_agents", {
 });
 export type SpaceAgentRow = typeof spaceAgents.$inferSelect;
 
+// A mission: a bounded multi-agent build/automation run inside the space's
+// real workspace directory. Time-budgeted, journaled, checkpointable.
+export const spaceMissions = pgTable("space_missions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "cascade" }),
+  goal: text("goal").notNull(),
+  status: text("status").notNull().default("running"), // running | checkpointed | done | failed
+  statusDetail: text("status_detail").notNull().default(""),
+  timeBudgetMs: integer("time_budget_ms").notNull().default(600000),
+  agentPlan: jsonb("agent_plan"), // [{ name, role, modelId, systemPrompt }]
+  journal: jsonb("journal"), // [{ agent, tool, input, output, ok, ms }]
+  artifacts: jsonb("artifacts"), // [{ path, bytes }]
+  handoff: text("handoff").notNull().default(""), // context for the next agent
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  endedAt: timestamp("ended_at"),
+});
+export type SpaceMissionRow = typeof spaceMissions.$inferSelect;
+
 // ---- Direct chats ----
 export const chats = pgTable("chats", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -318,6 +337,11 @@ export const spaces = pgTable("spaces", {
   lastRunAt: timestamp("last_run_at"),
   nextRunAt: timestamp("next_run_at"),
   runCount: integer("run_count").notNull().default(0),
+  // Watcher (recurring observation) config — e.g. a YouTube channel whose
+  // feed this space watches on every tick. null = plain agent space.
+  watchType: text("watch_type"), // youtube-channel | youtube-playlist | null
+  watchSource: text("watch_source"), // channel id / playlist id / @handle
+  watchState: jsonb("watch_state"), // { seenIds: string[], lastCheckedAt }
   okCount: integer("ok_count").notNull().default(0),
   projectId: uuid("project_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

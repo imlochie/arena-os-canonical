@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import PrivacyControls from "./PrivacyControls";
 import { privacyFlags, usePrivacySettings } from "@/lib/privacyClient";
+import { loadKeys } from "./KeysBar";
 import {
   GAME_TYPES,
   detectGameType,
@@ -146,6 +147,29 @@ export default function ArcadeForge() {
       fetchHistory();
     }
     setNotice(`⚡ ${g.title} forged in ${ms}ms (${g.engine}) — validated, ${(g.code.length / 1024).toFixed(1)}KB single file.`);
+  }
+
+  async function runServerAI(p: string) {
+    // Generative path: ANY game, built by a real model with the construction
+    // knowledge base. Works with free keys (Groq/OpenRouter), BYOK, or a
+    // TurboAgent local server. Honest 503 when nothing is reachable.
+    setPhase("✨ AI writing your game (server)…");
+    const res = await fetch("/api/arcade/forge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: p, keys: loadKeys(), ...privacyFlags() }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setNotice(`✨ Generative forge unavailable — ${body.error ?? "no model reachable"}. The offline forge below still delivers instantly.`);
+      return;
+    }
+    const rt = body.runtime ?? {};
+    setGame({ ...(body.game ?? {}), code: body.code, engine: "ai-codegen", genMs: rt.ms });
+    fetchHistory();
+    setNotice(
+      `✨ ${body.title} built by AI (${rt.backend ?? "?"}${rt.fallback ? " · fallback" : ""}) — validated${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. This is generated code, not a template.`
+    );
   }
 
   async function runAI(p: string, parentId?: string, priorCode?: string) {
@@ -427,6 +451,19 @@ export default function ArcadeForge() {
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button onClick={() => run()} disabled={busy || !prompt.trim()} className="btn-arena rounded-xl px-6 py-2.5 text-sm font-extrabold text-white">
               {busy ? `🎮 ${phase || "Forging…"}` : "🎮 Forge game"}
+            </button>
+            <button
+              onClick={async () => {
+                const q = prompt.trim();
+                if (!q || busy) return;
+                setBusy(true); setError(null); setNotice(null); setGame(null); setTab("play"); setPhase("✨ AI writing your game (server)…");
+                try { await runServerAI(q); } catch (e: any) { setError(e.message ?? "generative forge failed"); } finally { setBusy(false); setPhase(""); }
+              }}
+              disabled={busy || !prompt.trim()}
+              className="rounded-xl bg-gradient-to-r from-violet-500/80 to-fuchsia-500/80 px-6 py-2.5 text-sm font-extrabold text-white ring-1 ring-violet-300/40 hover:from-violet-500 hover:to-fuchsia-500 disabled:opacity-50"
+              title="Generative: a real model writes any game you describe (free keys work). Falls back honestly if no model is reachable."
+            >
+              ✨ Generate any game
             </button>
             {busy && strategy !== "instant" && (
               <button

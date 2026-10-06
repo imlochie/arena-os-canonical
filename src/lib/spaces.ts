@@ -39,6 +39,9 @@ interface SpaceRowLike {
   runCount: number;
   okCount: number;
   projectId: string | null;
+  watchType: string | null;
+  watchSource: string | null;
+  watchState: { seenIds: string[]; lastCheckedAt?: string } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -72,6 +75,8 @@ export interface SpaceState {
   runCount: number;
   okCount: number;
   projectId: string | null;
+  watchType: string | null;
+  watchSource: string | null;
   createdAt: string;
   updatedAt: string;
   due: boolean; // nextRunAt <= now
@@ -146,6 +151,9 @@ function rowFromDb(r: typeof spaces.$inferSelect): SpaceRowLike {
     runCount: r.runCount,
     okCount: r.okCount,
     projectId: r.projectId ?? null,
+    watchType: (r as any).watchType ?? null,
+    watchSource: (r as any).watchSource ?? null,
+    watchState: (r as any).watchState ?? null,
     createdAt: new Date(r.createdAt ?? new Date()).toISOString(),
     updatedAt: new Date(r.updatedAt ?? new Date()).toISOString(),
   };
@@ -185,6 +193,9 @@ async function persistSpace(row: SpaceRowLike): Promise<void> {
         nextRunAt: row.nextRunAt ? new Date(row.nextRunAt) : null,
         runCount: row.runCount,
         okCount: row.okCount,
+        watchType: row.watchType,
+        watchSource: row.watchSource,
+        watchState: row.watchState as any,
         updatedAt: new Date(),
       })
       .where(eq(spaces.id, row.id));
@@ -274,6 +285,8 @@ export async function getSpaceRuns(id: string, limit = 25): Promise<SpaceRun[]> 
 // ---------------- create / update / delete ----------------
 
 export interface CreateSpaceInput {
+  watchType?: string;
+  watchSource?: string;
   title: string;
   emoji?: string;
   prompt: string;
@@ -312,6 +325,9 @@ export async function createSpace(input: CreateSpaceInput): Promise<SpaceState> 
     runCount: 0,
     okCount: 0,
     projectId: input.projectId ? String(input.projectId) : null,
+    watchType: input.watchType === "youtube-channel" || input.watchType === "youtube-playlist" ? input.watchType : null,
+    watchSource: input.watchSource ? String(input.watchSource).slice(0, 200) : null,
+    watchState: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -329,6 +345,8 @@ export async function createSpace(input: CreateSpaceInput): Promise<SpaceState> 
         intervalMinutes: row.intervalMinutes,
         briefcase: row.briefcase,
         projectId: row.projectId,
+        watchType: row.watchType,
+        watchSource: row.watchSource,
       });
     }
   } catch {
@@ -338,6 +356,8 @@ export async function createSpace(input: CreateSpaceInput): Promise<SpaceState> 
 }
 
 export interface UpdateSpaceInput {
+  watchType?: string | null;
+  watchSource?: string | null;
   title?: string;
   emoji?: string;
   prompt?: string;
@@ -359,6 +379,11 @@ export async function updateSpace(id: string, patch: UpdateSpaceInput): Promise<
   }
   if (patch.status !== undefined) row.status = patch.status === "paused" ? "paused" : "running";
   if (patch.briefcase !== undefined) row.briefcase = patch.briefcase.slice(0, 8000);
+  if (patch.watchType !== undefined) {
+    row.watchType = patch.watchType === "youtube-channel" || patch.watchType === "youtube-playlist" ? patch.watchType : null;
+    if (!row.watchType) row.watchSource = null;
+  }
+  if (patch.watchSource !== undefined) row.watchSource = patch.watchSource ? String(patch.watchSource).slice(0, 200) : null;
   await persistSpace(row);
   return publicSpace(row);
 }
@@ -399,10 +424,38 @@ export async function runSpace(id: string, opts: SpaceGenOpts): Promise<SpaceSta
   const row = await loadSpace(id);
   if (!row) return null;
   const started = Date.now();
+
+  // Watcher pass: fetch REAL data first (e.g. the YouTube channel feed),
+  // diff it, and feed the new material into this run's prompt. A fetch
+  // failure is recorded honestly as this run's output.
+  let watchNotes = "";
+  if (row.watchType && row.watchSource) {
+    const { runWatchPass } = await import("./spaces/watchers");
+    const pass = await runWatchPass(row.watchType, row.watchSource, row.watchState ?? { seenIds: [] });
+    row.watchState = pass.state;
+    if (!pass.ok) {
+      row.runCount += 1;
+      row.lastRunAt = new Date().toISOString();
+      row.nextRunAt = new Date(Date.now() + row.intervalMinutes * 60_000).toISOString();
+      row.lastOutput = `watch failed: ${pass.error ?? "unknown error"}`;
+      await persistSpace(row);
+      await insertRun(id, { status: "error", output: row.lastOutput, via: "watcher", ms: Date.now() - started });
+      return publicSpace(row);
+    }
+    if (pass.newEntries.length) {
+      watchNotes =
+        `NEW DATA from the watcher (${row.watchType} ${row.watchSource}) — ${pass.newEntries.length} new item(s), fetched just now:\n\n` +
+        pass.notes.slice(0, 6000) + "\n\n";
+      // Notes also land in the briefcase — the durable record.
+      const stamp = new Date().toISOString().slice(0, 10);
+      row.briefcase = (row.briefcase + `\n\n## Watch notes ${stamp}\n\n` + pass.notes).slice(-8000);
+    }
+  }
+
   try {
     const result = await generate({
       modelId: row.modelId,
-      messages: [{ role: "user", content: runUserPrompt(row) }],
+      messages: [{ role: "user", content: watchNotes + runUserPrompt(row) }],
       system:
         "You are a diligent automation agent running one iteration of a small recurring task inside the human's workspace. " +
         "Produce output the human can use immediately. Never pretend to have taken actions (posting, sending, buying) — you draft, the human acts.",

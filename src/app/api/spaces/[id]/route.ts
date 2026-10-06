@@ -33,6 +33,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       intervalMinutes: body?.intervalMinutes !== undefined ? Number(body.intervalMinutes) : undefined,
       status: body?.status === "paused" || body?.status === "running" ? body.status : undefined,
       briefcase: body?.briefcase !== undefined ? String(body.briefcase) : undefined,
+      watchType: body?.watchType !== undefined ? (body.watchType ? String(body.watchType) : null) : undefined,
+      watchSource: body?.watchSource !== undefined ? (body.watchSource ? String(body.watchSource) : null) : undefined,
     });
     if (!space) return Response.json({ error: "space not found" }, { status: 404 });
     return Response.json({ space });
