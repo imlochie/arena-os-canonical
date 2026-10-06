@@ -1195,3 +1195,41 @@ pass; zero features or code removed:
 Verified live: all 24 routes 200, pointer-cursor + focus-ring CSS in the
 served stylesheet, nav chunk contains every destination, home renders the
 new hero/quick-launch. Gates: tsc clean · 249/249 tests · build clean.
+
+---
+
+## Windows field-report fixes (2026-10-07, from the user's machine)
+
+First real run on Windows surfaced three issues — all fixed:
+
+1. **`spawn npm ENOENT` (real product bug on Windows)** — npm/npx on
+   Windows are `.cmd` shims; Node's spawn cannot execute them without a
+   shell. `run_command`/`run_tests` now spawn with `shell: true` on win32
+   only (posix behavior unchanged, no shell). The syntax guardrail's
+   `spawnSync("node", …)` became `spawnSync(process.execPath, …)` — the
+   absolute node binary running the app, correct on every platform with no
+   PATH lookup.
+2. **Turbopack build warnings** — gone: the "Can't resolve ('--check')"…
+   warning disappeared with the non-literal execPath form, and the
+   NFT whole-project trace warning is fixed with the documented
+   `/*turbopackIgnore: true*/` comments on the dynamic `process.cwd()`
+   resolutions in spaces/tools.ts and waveyard/storage.ts. Fresh build:
+   zero warnings.
+3. **Stale `.next/dev/types/validator.ts` breaking `tsc --noEmit`** —
+   dev-server typegen artifacts (corrupted by interrupted runs/branch
+   switches) were inside tsconfig's include. `npm run typecheck` is now a
+   self-healing script (scripts/typecheck.mjs): removes `.next/dev/types`
+   (the dev server regenerates it) then runs the project tsc.
+
+Also: **security bumps from the user's npm audit** — next 16.2.6 → 16.3.8
++ eslint-config-next 16.3.8 + postcss 8.5.29. The critical (Next.js
+middleware bypass / Server Actions DoS & SSRF, GHSA-6gpp-xcg3-4w24 et al.)
+is eliminated: audit went from 14 (1 critical) → 10 (0 critical; remaining
+are dev-tooling transitive deps whose forced fix is a breaking
+eslint-config-next downgrade — deliberately not taken).
+
+Gates on Next 16.3.8: tsc clean · 249/249 tests · build clean with zero
+warnings · live smoke (pages, studio health, space create/delete) green.
+Note: the Windows ENOENT fix itself is verified by construction + the
+documented Node behavior for .cmd shims — the sandbox is Linux, so the
+user's `npm test` on Windows is the true confirmation.

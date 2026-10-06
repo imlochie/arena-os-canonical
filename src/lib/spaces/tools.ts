@@ -21,7 +21,14 @@ import { spawn } from "node:child_process";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-export const WORKSPACE_ROOT = path.resolve(process.cwd(), ".data/space-workspaces");
+export const WORKSPACE_ROOT = path.resolve(
+  /*turbopackIgnore: true*/ process.cwd(),
+  ".data/space-workspaces",
+);
+
+/** Windows: npm/npx/py launchers are .cmd shims — spawn() needs a shell to
+ *  execute them (raw spawn dies with ENOENT). posix: no shell, unchanged. */
+const IS_WINDOWS = process.platform === "win32";
 
 export function workspaceDir(spaceId: string): string {
   if (!/^[a-zA-Z0-9-]+$/.test(spaceId)) throw new Error("bad space id");
@@ -124,7 +131,7 @@ export async function toolRunCommand(dir: string, cmd: string, timeoutMs = 20_00
     // child processes (a nested `node --test` would otherwise no-op).
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
-    const child = spawn(parts[0], parts.slice(1), { cwd: dir, timeout: timeoutMs, env });
+    const child = spawn(parts[0], parts.slice(1), { cwd: dir, timeout: timeoutMs, env, shell: IS_WINDOWS });
     let out = "";
     const cap = (s: string) => {
       if (out.length < 8000) out += s;
@@ -194,7 +201,9 @@ export async function syntaxCheck(
       const dir = await mkdtemp(path.join(tmpdir(), "wy-check-"));
       tmp = path.join(dir, "check" + lower.slice(lower.lastIndexOf(".")));
       await writeFile(tmp, content, "utf8");
-      const res = spawnSync("node", ["--check", tmp], { timeout: 15_000, encoding: "utf8" });
+      const nodeBin = process.execPath;
+      const checkArgs = ["--check", tmp];
+      const res = spawnSync(nodeBin, checkArgs, { timeout: 15_000, encoding: "utf8" });
       if (res.status === 0) return { ok: true, checked: true };
       return { ok: false, checked: true, error: String(res.stderr || "syntax check failed").slice(0, 500) };
     } catch (e) {

@@ -129,7 +129,9 @@ export function getStorage(): StorageProvider {
       process.env.WAVEYARD_STORAGE_DIR ??
       process.env.LOCAL_STORAGE_PATH ??
       ".data/waveyard-storage";
-    provider = new LocalStorageProvider(resolve(process.cwd(), root));
+    provider = new LocalStorageProvider(
+      resolve(/*turbopackIgnore: true*/ process.cwd(), root),
+    );
   }
   return provider;
 }
