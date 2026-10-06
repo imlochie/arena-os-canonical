@@ -18,6 +18,7 @@ interface ModelInfo {
   description: string;
   kind: string;
   elo: number;
+  tier?: "local-engine" | "local-llm" | "remote-free";
 }
 interface AssistantInfo {
   id: string;
@@ -68,6 +69,7 @@ export default function BattleArena() {
   const [streaming, setStreaming] = useState(false);
   const [battleId, setBattleId] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [sameEngineNotice, setSameEngineNotice] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Revealed | null>(null);
   const [voting, setVoting] = useState<string | null>(null);
   const [followup, setFollowup] = useState("");
@@ -189,6 +191,7 @@ export default function BattleArena() {
       setBattleId(j.battle.id);
       if (j.battle.ephemeral) setEphToken(j.battle.revealToken ?? null);
       setTurns([{ prompt: q, a: j.battle.responseA, b: j.battle.responseB }]);
+      setSameEngineNotice(j.battle.sameEngineNotice ?? null);
     };
     try {
       if (flags.ephemeral) {
@@ -256,6 +259,7 @@ export default function BattleArena() {
         } else if (evt.type === "battle") {
           accA = evt.battle.responseA;
           accB = evt.battle.responseB;
+          setSameEngineNotice(evt.battle.sameEngineNotice ?? null);
           apply();
         } else if (evt.type === "error") throw new Error(evt.error ?? "stream failed");
       }
@@ -280,6 +284,7 @@ export default function BattleArena() {
       setTurns((t) => {
         const next = [...t];
         next[next.length - 1] = { prompt: msg, a: j.responseA, b: j.responseB };
+        setSameEngineNotice(j.sameEngineNotice ?? null);
         return next;
       });
     } catch (e: any) {
@@ -533,6 +538,11 @@ export default function BattleArena() {
           </div>
 
           {error && <p className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">⚠️ {error}</p>}
+          {sameEngineNotice && (
+            <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm font-semibold text-amber-200" data-testid="same-engine-notice">
+              ⚖️ {sameEngineNotice}
+            </p>
+          )}
         </div>
 
         {/* Thread */}
@@ -787,8 +797,18 @@ function FighterSelect({
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm font-semibold text-white focus:border-violet-500 focus:outline-none"
       >
-        <optgroup label="🤖 Models">
-          {models.map((m) => (
+        <optgroup label="⚙️ Local Engine — offline, not an LLM">
+          {models.filter((m) => m.tier === "local-engine").map((m) => (
+            <option key={m.id} value={`model:${m.id}`}>{m.emoji} {m.name}</option>
+          ))}
+        </optgroup>
+        <optgroup label="💻 Local LLM — real model on your device">
+          {models.filter((m) => m.tier === "local-llm").map((m) => (
+            <option key={m.id} value={`model:${m.id}`}>{m.emoji} {m.name}</option>
+          ))}
+        </optgroup>
+        <optgroup label="☁️ Remote Free Models — network required">
+          {models.filter((m) => m.tier === "remote-free").map((m) => (
             <option key={m.id} value={`model:${m.id}`}>{m.emoji} {m.name}</option>
           ))}
         </optgroup>

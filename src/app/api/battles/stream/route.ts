@@ -3,6 +3,8 @@ import { battles, battleMessages } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { assignSides, resolveFighters } from "@/lib/battleSetup";
 import { generateStream } from "@/lib/stream";
+import { comparisonVerdict, executionsSameEngine } from "@/lib/runtime";
+import type { GenerateResult } from "@/lib/ai";
 import { ensureSeeded } from "@/lib/seed";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +37,12 @@ export async function POST(req: Request) {
     return Response.json({ error: "setup failed" }, { status: 500 });
   }
   const { left, right } = assignSides(setup);
+
+  // Same-engine battles are refused: no meaningful comparison is possible.
+  const verdict = comparisonVerdict(left.modelId, right.modelId);
+  if (!verdict.allowed) {
+    return Response.json({ error: verdict.reason, sameEngine: true }, { status: 409 });
+  }
 
   const [battle] = await db
     .insert(battles)
@@ -75,21 +83,24 @@ export async function POST(req: Request) {
           acc: { t: string }
         ) => {
           const t0 = Date.now();
+          let executed: GenerateResult | null = null;
           for await (const chunk of generateStream({
             modelId,
             messages: [{ role: "user", content: prompt }],
             system: sys,
             keys: genKeys,
             localOnly,
+            onResult: (r) => { executed = r; },
           })) {
             acc.t += chunk;
             send({ type: "delta", side, delta: chunk });
           }
           send({ type: "done", side, ms: Date.now() - t0 });
+          return executed;
         };
         const accA = { t: "" };
         const accB = { t: "" };
-        await Promise.all([
+        const [rA, rB] = await Promise.all([
           runSide("a", left.modelId, left.sys, accA),
           runSide("b", right.modelId, right.sys, accB),
         ]);
@@ -118,6 +129,12 @@ export async function POST(req: Request) {
             createdAt: final.createdAt,
             sampling: setup.sampling,
             positionRandomized: true,
+            runtimeA: rA,
+            runtimeB: rB,
+            sameEngine: executionsSameEngine(rA, rB),
+            sameEngineNotice: executionsSameEngine(rA, rB)
+              ? "Both fighters executed on the Local Engine (selection or fallback) — this is not a model comparison."
+              : undefined,
           },
         });
       } catch (e) {

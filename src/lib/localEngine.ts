@@ -101,7 +101,7 @@ export function localTextReply(
   const angle = anglePick[Math.floor(rnd() * anglePick.length)];
 
   const lines: string[] = [];
-  lines.push(`**${model.emoji} ${model.name}** · *local mode — no internet used*`);
+  lines.push(`**⚙️ Local Engine** · *deterministic offline engine — not an LLM*`);
   lines.push(``);
   lines.push(`> ${voice.opener}, focused on: **${focus}**. Angle: _${angle}_.`);
   lines.push(``);

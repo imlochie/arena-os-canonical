@@ -3,12 +3,14 @@
 import { useEffect, useState } from "react";
 
 // Optional BYOK bar — free keys boost quality. Stored in localStorage only.
+// Also carries the TurboAgent URL (Local LLM tier, opt-in).
 export function loadKeys() {
   if (typeof window === "undefined") return {};
   try {
     return {
       openrouter: localStorage.getItem("af_key_openrouter") || undefined,
       groq: localStorage.getItem("af_key_groq") || undefined,
+      turboagent: localStorage.getItem("af_url_turboagent") || undefined,
     };
   } catch {
     return {};
@@ -19,12 +21,14 @@ export default function KeysBar() {
   const [open, setOpen] = useState(false);
   const [orKey, setOrKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
+  const [taUrl, setTaUrl] = useState("");
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     try {
       setOrKey(localStorage.getItem("af_key_openrouter") ?? "");
       setGroqKey(localStorage.getItem("af_key_groq") ?? "");
+      setTaUrl(localStorage.getItem("af_url_turboagent") ?? "");
     } catch {}
   }, []);
 
@@ -34,6 +38,8 @@ export default function KeysBar() {
       else localStorage.removeItem("af_key_openrouter");
       if (groqKey.trim()) localStorage.setItem("af_key_groq", groqKey.trim());
       else localStorage.removeItem("af_key_groq");
+      if (taUrl.trim()) localStorage.setItem("af_url_turboagent", taUrl.trim());
+      else localStorage.removeItem("af_url_turboagent");
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {}
@@ -86,6 +92,18 @@ export default function KeysBar() {
               value={groqKey}
               onChange={(e) => setGroqKey(e.target.value)}
               placeholder="gsk_…"
+              className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:border-violet-500 focus:outline-none"
+            />
+          </label>
+          <label className="block sm:col-span-2">
+            <span className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              TurboAgent URL (Local LLM tier — your own server)
+            </span>
+            <input
+              type="text"
+              value={taUrl}
+              onChange={(e) => setTaUrl(e.target.value)}
+              placeholder="http://127.0.0.1:7860"
               className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:border-violet-500 focus:outline-none"
             />
           </label>

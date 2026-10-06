@@ -165,3 +165,34 @@ export async function generateCode(opts: GenOpts): Promise<{ text: string; token
   const ms = Date.now() - started;
   return { text, tokens: count, ms, tokps: ms > 0 ? Math.round((count / ms) * 1000 * 10) / 10 : 0 };
 }
+
+export interface ChatMsgLike {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/**
+ * General chat completion over the loaded engine (message array, not just
+ * system+user). Used by the AI Runtime WebLLM hookup in the browser.
+ */
+export async function generateChat(
+  messages: ChatMsgLike[],
+  opts?: { temperature?: number; maxTokens?: number },
+): Promise<string> {
+  if (!engine) throw new Error("engine not loaded");
+  try {
+    await engine.resetChat?.();
+  } catch {}
+  const stream = await engine.chat.completions.create({
+    messages,
+    temperature: opts?.temperature ?? 0.7,
+    max_tokens: opts?.maxTokens ?? 2048,
+    stream: true,
+  });
+  let text = "";
+  for await (const chunk of stream) {
+    const delta: string = chunk?.choices?.[0]?.delta?.content ?? "";
+    if (delta) text += delta;
+  }
+  return text;
+}

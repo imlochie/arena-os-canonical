@@ -1,4 +1,4 @@
-import { generate, type ChatMsg, type GenerateOpts } from "./ai";
+import { generate, type ChatMsg, type GenerateOpts, type GenerateResult } from "./ai";
 import { getModel } from "./models";
 import { NO_TRAIN_HEADERS } from "./privacy";
 
@@ -7,12 +7,19 @@ import { NO_TRAIN_HEADERS } from "./privacy";
 // Falls back to the full non-streaming cascade (which never throws),
 // so callers always get at least one chunk.
 
-export async function* generateStream(opts: GenerateOpts): AsyncGenerator<string> {
+export type GenerateStreamOpts = GenerateOpts & {
+  /** Reports what actually executed for this stream (called exactly once, before the generator finishes). */
+  onResult?: (r: GenerateResult) => void;
+};
+
+export async function* generateStream(opts: GenerateStreamOpts): AsyncGenerator<string> {
+  const { onResult, ...genOpts } = opts;
   const model = getModel(opts.modelId);
 
   // Local Mode: chunk the local answer so UI streams identically offline.
   if (opts.localOnly) {
-    const r = await generate(opts);
+    const r = await generate(genOpts);
+    onResult?.(r);
     const chunk = 90;
     for (let i = 0; i < r.text.length; i += chunk) {
       yield r.text.slice(i, i + chunk);
@@ -21,9 +28,11 @@ export async function* generateStream(opts: GenerateOpts): AsyncGenerator<string
     return;
   }
 
-  // Image + offline models resolve instantly — single chunk
-  if (model.pollinationsId.startsWith("__image__") || model.pollinationsId === "__offline__") {
-    const r = await generate(opts);
+  // Non-Pollinations targets (local engine, local canvas, WebLLM, TurboAgent)
+  // resolve through the honest generate() cascade — single chunk.
+  if (model.pollinationsId.startsWith("__")) {
+    const r = await generate(genOpts);
+    onResult?.(r);
     yield r.text;
     return;
   }
@@ -49,6 +58,7 @@ export async function* generateStream(opts: GenerateOpts): AsyncGenerator<string
       signal: ctrl.signal,
     });
     if (!res.ok || !res.body) throw new Error(`stream status ${res.status}`);
+    const streamStart = Date.now();
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -80,9 +90,19 @@ export async function* generateStream(opts: GenerateOpts): AsyncGenerator<string
     }
     clearTimeout(timer);
     if (!yielded) throw new Error("empty stream");
+    onResult?.({
+      text: "",
+      runtimeTier: model.tier,
+      backend: "pollinations",
+      modelId: model.id,
+      via: "pollinations-stream",
+      ms: Date.now() - streamStart,
+      fallback: false,
+    });
   } catch {
     // Fallback: full cascade (BYOK → keyless → GET → offline), one chunk
-    const r = await generate(opts);
+    const r = await generate(genOpts);
+    onResult?.(r);
     yield r.text;
   }
 }

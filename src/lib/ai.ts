@@ -1,6 +1,28 @@
+/**
+ * Generation seam with an explicit runtime contract.
+ *
+ * Every result states WHAT ACTUALLY EXECUTED:
+ *
+ *   { text, runtimeTier, backend, modelId, via, ms, fallback, fallbackFrom?, note? }
+ *
+ * Tiers (lib/runtime.ts):
+ *   local-engine — deterministic offline engine (NOT an LLM). No network.
+ *   local-llm    — real on-device inference (TurboAgent server; WebLLM runs
+ *                  in the browser and cannot be executed by server routes).
+ *   remote-free  — real provider-backed inference over the network.
+ *
+ * Fallbacks are never invisible: when a selected runtime cannot run, the
+ * Local Engine answers with fallback=true, fallbackFrom naming the request,
+ * and a visible notice appended to the text. Remote output is never
+ * displayed under a Local Engine badge and vice versa.
+ */
+
 import { getModel } from "./models";
+import { LOCAL_ENGINE_ID, type Backend, type RuntimeTier } from "./models";
 import { localImageDataURI, localTextReply } from "./localEngine";
 import { NO_TRAIN_HEADERS } from "./privacy";
+import type { GenerateResult, RuntimeExecution } from "./runtime";
+import { localEngineResult } from "./runtime";
 
 export interface ChatMsg {
   role: "system" | "user" | "assistant";
@@ -14,33 +36,50 @@ export interface GenerateOpts {
   system?: string;
   imageSize?: string; // e.g. "768x768" for image-kind models
   category?: string;
-  // Privacy: localOnly forces the on-device engine (zero network egress).
-  // No request content leaves the machine when true.
+  // Privacy: localOnly forces the offline engine (zero network egress).
+  // If the selected model is NOT the Local Engine, the result is an honest,
+  // clearly-labelled fallback.
   localOnly?: boolean;
   // Optional user-supplied keys (BYOK) — sent from client, never stored
   keys?: {
     openrouter?: string;
     groq?: string;
     gemini?: string;
-    // TurboAgent local server URL (OpenAI-compatible) — http://127.0.0.1:8000
     turboagent?: string;
   };
 }
 
-// Local TurboAgent server (https://github.com/TurboAgentAI/turboagent, MIT):
-// OpenAI-compatible FastAPI server started with `turboagent serve --model …`.
+/** Injectable execution dependencies — tests use these to exercise each
+ *  backend without real network access. */
+export interface GenerateDeps {
+  fetchImpl?: typeof fetch;
+  // WebLLM executes in the browser (WebGPU). Server routes cannot run it;
+  // an injected executor lets clients/tests prove the contract.
+  webllmExecutor?: (mlcModelId: string, messages: ChatMsg[], temperature: number) => Promise<string>;
+}
+
+export type { GenerateResult };
+
+const FALLBACK_NOTICE = (requested: string, reason: string) =>
+  `\n\n---\n⚠️ **Fallback: Local Engine** — ${requested} was unavailable (${reason}). The answer above is deterministic offline output, **not** model output.`;
+
+function requestedExecution(modelId: string, backend: Backend, tier: RuntimeTier): RuntimeExecution {
+  return { runtimeTier: tier, backend, modelId };
+}
+
 async function tryTurboAgent(
+  fetchImpl: typeof fetch,
   url: string,
   modelId: string,
   messages: ChatMsg[],
   temperature: number,
-  timeoutMs = 60000
+  timeoutMs = 60000,
 ): Promise<string> {
   const base = url.replace(/\/$/, "");
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${base}/v1/chat/completions`, {
+    const res = await fetchImpl(`${base}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...NO_TRAIN_HEADERS },
       body: JSON.stringify({
@@ -63,15 +102,16 @@ async function tryTurboAgent(
 }
 
 async function tryPollinationsOpenAI(
+  fetchImpl: typeof fetch,
   pollinationsId: string,
   messages: ChatMsg[],
   temperature: number,
-  timeoutMs = 45000
+  timeoutMs = 45000,
 ): Promise<string> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch("https://text.pollinations.ai/openai", {
+    const res = await fetchImpl("https://text.pollinations.ai/openai", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...NO_TRAIN_HEADERS },
       body: JSON.stringify({
@@ -96,10 +136,11 @@ async function tryPollinationsOpenAI(
 }
 
 async function tryPollinationsGet(
+  fetchImpl: typeof fetch,
   prompt: string,
   pollinationsId: string,
   system: string | undefined,
-  timeoutMs = 45000
+  timeoutMs = 45000,
 ): Promise<string> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -107,7 +148,7 @@ async function tryPollinationsGet(
     const url = new URL(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`);
     url.searchParams.set("model", pollinationsId);
     if (system) url.searchParams.set("system", system);
-    const res = await fetch(url.toString(), {
+    const res = await fetchImpl(url.toString(), {
       signal: ctrl.signal,
       headers: { ...NO_TRAIN_HEADERS },
     });
@@ -121,11 +162,12 @@ async function tryPollinationsGet(
 }
 
 async function tryOpenRouter(
+  fetchImpl: typeof fetch,
   key: string,
   messages: ChatMsg[],
-  temperature: number
+  temperature: number,
 ): Promise<string> {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetchImpl("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -147,8 +189,13 @@ async function tryOpenRouter(
   return String(text);
 }
 
-async function tryGroq(key: string, messages: ChatMsg[], temperature: number): Promise<string> {
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+async function tryGroq(
+  fetchImpl: typeof fetch,
+  key: string,
+  messages: ChatMsg[],
+  temperature: number,
+): Promise<string> {
+  const res = await fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -168,150 +215,270 @@ async function tryGroq(key: string, messages: ChatMsg[], temperature: number): P
   return String(text);
 }
 
-export async function generate(opts: GenerateOpts): Promise<{ text: string; via: string; ms: number }> {
+function localImage(
+  modelId: string,
+  opts: GenerateOpts,
+  style: "flux" | "turbo",
+): { text: string; seed: number } {
+  const lastUser =
+    [...opts.messages].reverse().find((m) => m.role === "user")?.content ?? "a beautiful landscape";
+  const [w, h] = (opts.imageSize ?? "768x768")
+    .split("x")
+    .map((n) => Math.min(1280, Math.max(256, Number(n) || 768)));
+  const seed = Math.floor(Math.random() * 999999);
+  const uri = localImageDataURI(lastUser.slice(0, 200), seed, w, h, style);
+  return {
+    text: `![local procedural image](${uri})\n\n*🎨 Local Canvas · 🔒 deterministic offline art (not model generation) · seed ${seed}*`,
+    seed,
+  };
+}
+
+export async function generate(opts: GenerateOpts, deps: GenerateDeps = {}): Promise<GenerateResult> {
   const started = Date.now();
+  const fetchImpl = deps.fetchImpl ?? fetch;
   const model = getModel(opts.modelId);
   const temperature = opts.temperature ?? 0.7;
   const system = opts.system?.trim();
-
-  // ---------- LOCAL MODE: zero egress ----------
-  if (opts.localOnly) {
-    if (model.pollinationsId.startsWith("__image__")) {
-      const style = model.pollinationsId.split(":")[1] === "turbo" ? "turbo" : "flux";
-      const lastUser =
-        [...opts.messages].reverse().find((m) => m.role === "user")?.content ?? "a beautiful landscape";
-      const [w, h] = (opts.imageSize ?? "768x768")
-        .split("x")
-        .map((n) => Math.min(1280, Math.max(256, Number(n) || 768)));
-      const seed = Math.floor(Math.random() * 999999);
-      const uri = localImageDataURI(lastUser.slice(0, 200), seed, w, h, style);
-      return {
-        text: `![local procedural image](${uri})\n\n*🎨 ${model.name} · 🔒 local canvas (offline procedural art) · seed ${seed}*`,
-        via: "local:image",
-        ms: Date.now() - started,
-      };
-    }
-    const fullMessages: ChatMsg[] = system
-      ? [{ role: "system", content: system }, ...opts.messages.filter((m) => m.role !== "system")]
-      : opts.messages;
-    return {
-      text: localTextReply(opts.modelId, fullMessages, system, opts.category ?? "general"),
-      via: "local:text",
-      ms: Date.now() - started,
-    };
-  }
-
-  // Image-kind models → URL-built generation (browser renders the image async).
-  // Free, keyless, instant — powers the Image Arena.
-  if (model.pollinationsId.startsWith("__image__")) {
-    const imgModel = model.pollinationsId.split(":")[1] || "flux";
-    const lastUser =
-      [...opts.messages].reverse().find((m) => m.role === "user")?.content ?? "a beautiful landscape";
-    const [w, h] = (opts.imageSize ?? "768x768")
-      .split("x")
-      .map((n) => Math.min(1280, Math.max(256, Number(n) || 768)));
-    const seed = Math.floor(Math.random() * 999999);
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-      lastUser.slice(0, 600)
-    )}?model=${imgModel}&width=${w}&height=${h}&nologo=true&enhance=true&seed=${seed}`;
-    return {
-      text: `![generated image](${url})\n\n*🎨 ${model.name} · free tier · seed ${seed}*`,
-      via: `pollinations-image:${imgModel}`,
-      ms: Date.now() - started,
-    };
-  }
+  const ms = () => Date.now() - started;
 
   const fullMessages: ChatMsg[] = system
     ? [{ role: "system", content: system }, ...opts.messages.filter((m) => m.role !== "system")]
     : opts.messages;
 
-  // Offline model → straight to local generator
-  if (model.pollinationsId === "__offline__") {
+  // ---------------- LOCAL ENGINE (tier 1) ----------------
+  // The built-in deterministic engine. Selected directly, or reached as the
+  // honest fallback for localOnly requests that named another runtime.
+  const runLocalEngine = (via: string, extra?: Parameters<typeof localEngineResult>[3]) =>
+    localEngineResult(
+      localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general"),
+      via,
+      ms(),
+      extra,
+    );
+
+  if (model.tier === "local-engine") {
+    if (model.kind === "image") {
+      const { text } = localImage(model.id, opts, "flux");
+      return localEngineResult(text, "local:image", ms());
+    }
+    return runLocalEngine(opts.localOnly ? "offline" : "offline");
+  }
+
+  // localOnly + a non-local-engine selection → forced, visible fallback.
+  if (opts.localOnly) {
+    if (model.kind === "image") {
+      const style = model.pollinationsId.split(":")[1] === "turbo" ? "turbo" : "flux";
+      const { text } = localImage(model.id, opts, style);
+      return localEngineResult(text, "offline-fallback", ms(), {
+        fallback: true,
+        fallbackFrom: requestedExecution(model.id, model.backend, model.tier),
+        note: "Local Mode is on — remote image generation was not attempted.",
+      });
+    }
+    return localEngineResult(
+      localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
+        FALLBACK_NOTICE(model.name, "Local Mode is on — no network egress is allowed"),
+      "offline-fallback",
+      ms(),
+      {
+        fallback: true,
+        fallbackFrom: requestedExecution(model.id, model.backend, model.tier),
+        note: "Local Mode forces the offline engine.",
+      },
+    );
+  }
+
+  // ---------------- IMAGE models (remote) ----------------
+  if (model.pollinationsId.startsWith("__image__")) {
+    const imgModel = model.pollinationsId.split(":")[1] || "flux";
+    const lastUser =
+      [...fullMessages].reverse().find((m) => m.role === "user")?.content ?? "a beautiful landscape";
+    const [w, h] = (opts.imageSize ?? "768x768")
+      .split("x")
+      .map((n) => Math.min(1280, Math.max(256, Number(n) || 768)));
+    const seed = Math.floor(Math.random() * 999999);
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
+      lastUser.slice(0, 600),
+    )}?model=${imgModel}&width=${w}&height=${h}&nologo=true&enhance=true&seed=${seed}`;
     return {
-      text: localTextReply(opts.modelId, fullMessages, system, opts.category ?? "general"),
-      via: "offline",
-      ms: Date.now() - started,
+      text: `![generated image](${url})\n\n*🎨 ${model.name} · ☁ remote free tier · seed ${seed}*`,
+      runtimeTier: "remote-free",
+      backend: "pollinations",
+      modelId: model.id,
+      via: `pollinations-image:${imgModel}`,
+      ms: ms(),
+      fallback: false,
     };
   }
 
-  // TurboAgent local server (GPU-poor long context: NF4 + TurboQuant KV).
-  // No server configured / unreachable → offline fallback with a setup hint,
-  // so battles and chat never hard-fail.
-  if (model.pollinationsId.startsWith("__turboagent__")) {
+  // ---------------- LOCAL LLM (tier 2) ----------------
+  if (model.backend === "turboagent") {
     const hfId = decodeURIComponent(model.pollinationsId.split(":")[1] || "Qwen/Qwen2.5-32B-Instruct");
     const url = opts.keys?.turboagent?.trim() || process.env.TURBOAGENT_URL || "";
+    const wanted = requestedExecution(model.id, model.backend, model.tier);
     if (url) {
       try {
-        const text = await tryTurboAgent(url, hfId, fullMessages, temperature);
-        return { text, via: `turboagent:${hfId}`, ms: Date.now() - started };
-      } catch {
-        /* fall through to local reply */
+        const text = await tryTurboAgent(fetchImpl, url, hfId, fullMessages, temperature);
+        return {
+          text,
+          runtimeTier: "local-llm",
+          backend: "turboagent",
+          modelId: model.id,
+          via: `turboagent:${hfId}`,
+          ms: ms(),
+          fallback: false,
+        };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "unreachable";
+        return localEngineResult(
+          localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
+            FALLBACK_NOTICE(`${model.name} (${url})`, reason),
+          "offline-fallback",
+          ms(),
+          { fallback: true, fallbackFrom: wanted, note: `TurboAgent unreachable: ${reason}` },
+        );
       }
-      return {
-        text: `${localTextReply(opts.modelId, fullMessages, system, opts.category ?? "general")}\n\n> ⚡ TurboAgent server at \`${url}\` didn't answer — is \`turboagent serve\` still running?`,
-        via: "turboagent:unreachable",
-        ms: Date.now() - started,
-      };
     }
-    return {
-      text: `${localTextReply(opts.modelId, fullMessages, system, opts.category ?? "general")}\n\n> ⚡ This model runs on your own GPU through a local **TurboAgent** server — start one with \`turboagent serve --model ${hfId}\` and paste its URL in the 🔑 keys bar (e.g. http://127.0.0.1:8000).`,
-      via: "turboagent:not-configured",
-      ms: Date.now() - started,
-    };
+    return localEngineResult(
+      localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
+        FALLBACK_NOTICE(model.name, "no TurboAgent server configured — start one with `turboagent serve` and add its URL in AI Runtime"),
+      "offline-fallback",
+      ms(),
+      { fallback: true, fallbackFrom: wanted, note: "TurboAgent not configured." },
+    );
   }
 
+  if (model.backend === "webllm") {
+    const mlcId = decodeURIComponent(model.pollinationsId.split(":")[1] ?? "");
+    const wanted = requestedExecution(model.id, model.backend, model.tier);
+    if (deps.webllmExecutor) {
+      try {
+        const text = await deps.webllmExecutor(mlcId, fullMessages, temperature);
+        return {
+          text,
+          runtimeTier: "local-llm",
+          backend: "webllm",
+          modelId: model.id,
+          via: `webllm:${mlcId}`,
+          ms: ms(),
+          fallback: false,
+        };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "execution failed";
+        return localEngineResult(
+          localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
+            FALLBACK_NOTICE(model.name, reason),
+          "offline-fallback",
+          ms(),
+          { fallback: true, fallbackFrom: wanted, note: `WebLLM failed: ${reason}` },
+        );
+      }
+    }
+    // WebLLM runs in the browser (WebGPU); server-side routes cannot load
+    // weights. Say so honestly instead of pretending.
+    return localEngineResult(
+      localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
+        FALLBACK_NOTICE(model.name, "WebLLM executes in your browser (WebGPU) — server-side routes cannot run it"),
+      "offline-fallback",
+      ms(),
+      { fallback: true, fallbackFrom: wanted, note: "WebLLM is browser-only." },
+    );
+  }
+
+  // ---------------- REMOTE FREE (tier 3) ----------------
+  const wanted = requestedExecution(model.id, "pollinations", "remote-free");
   const lastUser = [...fullMessages].reverse().find((m) => m.role === "user")?.content ?? "Hello";
 
-  // 1) BYOK providers first (better quality if user pasted a free key).
-  // NOTE: third-party free tiers may log for abuse-prevention; Local Mode avoids them entirely.
+  // BYOK providers first (still remote-free tier; keys user-supplied).
   if (opts.keys?.openrouter) {
     try {
-      const text = await tryOpenRouter(opts.keys.openrouter, fullMessages, temperature);
-      return { text, via: "openrouter:free", ms: Date.now() - started };
+      const text = await tryOpenRouter(fetchImpl, opts.keys.openrouter, fullMessages, temperature);
+      return {
+        text,
+        runtimeTier: "remote-free",
+        backend: "openrouter",
+        modelId: model.id,
+        via: "openrouter:free",
+        ms: ms(),
+        fallback: false,
+      };
     } catch {
       /* fall through */
     }
   }
   if (opts.keys?.groq) {
     try {
-      const text = await tryGroq(opts.keys.groq, fullMessages, temperature);
-      return { text, via: "groq:free", ms: Date.now() - started };
+      const text = await tryGroq(fetchImpl, opts.keys.groq, fullMessages, temperature);
+      return {
+        text,
+        runtimeTier: "remote-free",
+        backend: "groq",
+        modelId: model.id,
+        via: "groq:free",
+        ms: ms(),
+        fallback: false,
+      };
     } catch {
       /* fall through */
     }
   }
 
-  // 2) Pollinations OpenAI-compatible endpoint
+  // Pollinations OpenAI-compatible endpoint, then GET style, then the
+  // most-reliable alias. Every failure is recorded for the honest fallback.
+  let lastReason = "no route succeeded";
   try {
-    const text = await tryPollinationsOpenAI(model.pollinationsId, fullMessages, temperature);
-    return { text, via: `pollinations:${model.pollinationsId}`, ms: Date.now() - started };
-  } catch {
-    /* fall through to GET style */
+    const text = await tryPollinationsOpenAI(fetchImpl, model.pollinationsId, fullMessages, temperature);
+    return {
+      text,
+      runtimeTier: "remote-free",
+      backend: "pollinations",
+      modelId: model.id,
+      via: `pollinations:${model.pollinationsId}`,
+      ms: ms(),
+      fallback: false,
+    };
+  } catch (error) {
+    lastReason = error instanceof Error ? error.message : "openai route failed";
   }
-
-  // 3) Pollinations GET style (most compatible)
   try {
     const convo = fullMessages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
-    const text = await tryPollinationsGet(convo || lastUser, model.pollinationsId, system);
-    return { text, via: `pollinations-get:${model.pollinationsId}`, ms: Date.now() - started };
-  } catch {
-    /* fall through */
+    const text = await tryPollinationsGet(fetchImpl, convo || lastUser, model.pollinationsId, system);
+    return {
+      text,
+      runtimeTier: "remote-free",
+      backend: "pollinations",
+      modelId: model.id,
+      via: `pollinations-get:${model.pollinationsId}`,
+      ms: ms(),
+      fallback: false,
+    };
+  } catch (error) {
+    lastReason = error instanceof Error ? error.message : lastReason;
   }
-
-  // 4) Try plain 'openai' alias as last cloud attempt (most reliable)
   if (model.pollinationsId !== "openai") {
     try {
-      const text = await tryPollinationsOpenAI("openai", fullMessages, temperature, 30000);
-      return { text, via: "pollinations:openai-fallback", ms: Date.now() - started };
-    } catch {
-      /* fall through */
+      const text = await tryPollinationsOpenAI(fetchImpl, "openai", fullMessages, temperature, 30000);
+      return {
+        text,
+        runtimeTier: "remote-free",
+        backend: "pollinations",
+        modelId: model.id,
+        via: "pollinations:openai-fallback",
+        ms: ms(),
+        fallback: false,
+        note: "Requested model was unavailable; answered by the provider's openai route.",
+      };
+    } catch (error) {
+      lastReason = error instanceof Error ? error.message : lastReason;
     }
   }
 
-  // 5) Guaranteed offline answer — app never hard-fails
-  return {
-    text: localTextReply(opts.modelId, fullMessages, system, opts.category ?? "general"),
-    via: "offline-fallback",
-    ms: Date.now() - started,
-  };
+  // Guaranteed offline answer — visible, labelled, never branded as the model.
+  return localEngineResult(
+    localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
+      FALLBACK_NOTICE(model.name, lastReason),
+    "offline-fallback",
+    ms(),
+    { fallback: true, fallbackFrom: wanted, note: `Remote unavailable: ${lastReason}` },
+  );
 }

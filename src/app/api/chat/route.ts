@@ -30,7 +30,7 @@ export async function POST(req: Request) {
       keys: localOnly ? undefined : keys,
       localOnly,
     });
-    return Response.json({ ...result, modelId, localOnly });
+    return Response.json({ ...result, requestedModelId: modelId, localOnly });
   } catch (e) {
     console.error("chat error");
     return Response.json({ error: "generation failed" }, { status: 500 });

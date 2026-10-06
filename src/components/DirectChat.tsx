@@ -4,6 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import Markdown from "./Markdown";
 import { loadKeys } from "./KeysBar";
 import PrivacyControls from "./PrivacyControls";
+import RuntimeSelector from "./RuntimeSelector";
+import ActiveRuntime from "./ActiveRuntime";
+import { LOCAL_ENGINE_ID } from "@/lib/models";
+import { loadEngine, generateChat } from "@/lib/webllm";
 import { privacyFlags, usePrivacySettings } from "@/lib/privacyClient";
 
 interface ModelInfo {
@@ -11,6 +15,8 @@ interface ModelInfo {
   name: string;
   emoji: string;
   description: string;
+  pollinationsId?: string;
+  tier?: "local-engine" | "local-llm" | "remote-free";
 }
 interface Assistant {
   id: string;
@@ -23,6 +29,28 @@ interface Msg {
   role: "user" | "assistant";
   content: string;
   via?: string;
+  runtime?: {
+    tier: "local-engine" | "local-llm" | "remote-free";
+    backend:
+      | "arena-local-engine"
+      | "webllm"
+      | "turboagent"
+      | "pollinations"
+      | "openrouter"
+      | "groq";
+    modelId: string;
+    via: string;
+    ms: number;
+    fallback: boolean;
+    fallbackFrom:
+      | {
+          runtimeTier: "local-engine" | "local-llm" | "remote-free";
+          backend: "arena-local-engine" | "webllm" | "turboagent" | "pollinations" | "openrouter" | "groq";
+          modelId: string;
+        }
+      | null;
+    note: string | null;
+  };
 }
 
 export default function DirectChat() {
@@ -30,7 +58,7 @@ export default function DirectChat() {
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [chats, setChats] = useState<any[]>([]);
   const [chatId, setChatId] = useState<string | null>(null);
-  const [modelId, setModelId] = useState("openai");
+  const [modelId, setModelId] = useState(LOCAL_ENGINE_ID);
   const [assistantId, setAssistantId] = useState<string>("");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -62,7 +90,7 @@ export default function DirectChat() {
       setChatId(id);
       setMsgs((j.messages ?? []).map((m: any) => ({ role: m.role, content: m.content })));
       if (j.chat) {
-        setModelId(j.chat.modelId ?? "openai");
+        setModelId(j.chat.modelId ?? LOCAL_ENGINE_ID);
         setAssistantId(j.chat.assistantId ?? "");
       }
     } catch {}
@@ -76,6 +104,28 @@ export default function DirectChat() {
     setInput("");
     setMsgs((m) => [...m, { role: "user", content: text }]);
     setBusy(true);
+
+    // WebLLM models execute in THIS browser via WebGPU — server routes cannot
+    // run them. On failure we send nothing and the server responds with an
+    // honest labelled fallback instead.
+    let clientReply: string | undefined;
+    let clientRuntime: { backend: "webllm"; ms: number } | undefined;
+    const sel = models.find((m) => m.id === modelId);
+    if (!flags.localOnly && !assistantId && typeof sel?.pollinationsId === "string" && sel.pollinationsId.startsWith("__webllm__:")) {
+      try {
+        const mlcId = sel.pollinationsId.slice("__webllm__:".length);
+        await loadEngine(mlcId);
+        const t0 = Date.now();
+        clientReply = await generateChat(
+          withUser.slice(-20).map((m) => ({ role: m.role as "system" | "user" | "assistant", content: m.content })),
+          { temperature: 0.7 },
+        );
+        clientRuntime = { backend: "webllm", ms: Date.now() - t0 };
+      } catch {
+        clientReply = undefined; // → server-side honest fallback path
+      }
+    }
+
     try {
       // Ephemeral: stateless — transcript travels with the request, nothing stored.
       const payload: any = flags.ephemeral
@@ -84,16 +134,18 @@ export default function DirectChat() {
             modelId,
             assistantId: assistantId || undefined,
             keys: loadKeys(),
+            ...(clientReply ? { clientReply, clientRuntime } : {}),
             ...flags,
           }
         : chatId
-          ? { mode: "message", chatId, message: text, keys: loadKeys(), ...flags }
+          ? { mode: "message", chatId, message: text, keys: loadKeys(), ...(clientReply ? { clientReply, clientRuntime } : {}), ...flags }
           : {
               mode: "create",
               message: text,
               modelId,
               assistantId: assistantId || undefined,
               keys: loadKeys(),
+              ...(clientReply ? { clientReply, clientRuntime } : {}),
               ...flags,
             };
       const r = await fetch("/api/chats", {
@@ -107,7 +159,7 @@ export default function DirectChat() {
         setChatId(j.chat.id);
         refreshChats();
       }
-      setMsgs((m) => [...m, { role: "assistant", content: j.reply, via: j.via }]);
+      setMsgs((m) => [...m, { role: "assistant", content: j.reply, via: j.via, runtime: j.runtime }]);
     } catch {
       setMsgs((m) => [...m, { role: "assistant", content: "⚠️ That request failed. Try again — the offline fallback will kick in if the free cloud is busy." }]);
     } finally {
@@ -139,16 +191,8 @@ export default function DirectChat() {
           ＋ New chat
         </button>
 
-        <p className="mb-1.5 mt-4 text-[11px] font-bold uppercase tracking-wider text-slate-400">Model</p>
-        <select
-          value={modelId}
-          onChange={(e) => setModelId(e.target.value)}
-          className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm font-semibold text-white focus:border-violet-500 focus:outline-none"
-        >
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>{m.emoji} {m.name}</option>
-          ))}
-        </select>
+        <p className="mb-1.5 mt-4 text-[11px] font-bold uppercase tracking-wider text-slate-400">AI runtime</p>
+        <RuntimeSelector value={modelId} onChange={setModelId} />
 
         <p className="mb-1.5 mt-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">Persona (optional)</p>
         <select
@@ -239,7 +283,23 @@ export default function DirectChat() {
                 ) : (
                   <>
                     <Markdown text={m.content} />
-                    {m.via && <p className="mt-2 text-[10px] text-slate-500">via {m.via} · free</p>}
+                    {m.runtime ? (
+                      <ActiveRuntime
+                        result={{
+                          runtimeTier: m.runtime.tier,
+                          backend: m.runtime.backend,
+                          modelId: m.runtime.modelId,
+                          via: m.runtime.via,
+                          ms: m.runtime.ms,
+                          fallback: m.runtime.fallback,
+                          fallbackFrom: m.runtime.fallbackFrom ?? undefined,
+                          note: m.runtime.note ?? undefined,
+                        }}
+                        compact
+                      />
+                    ) : (
+                      m.via && <p className="mt-2 text-[10px] text-slate-500">via {m.via}</p>
+                    )}
                   </>
                 )}
               </div>

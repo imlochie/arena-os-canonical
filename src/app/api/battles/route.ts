@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { battles, battleMessages } from "@/db/schema";
 import { desc } from "drizzle-orm";
 import { generate } from "@/lib/ai";
+import { comparisonVerdict, executionsSameEngine } from "@/lib/runtime";
 import { assignSides, resolveFighters } from "@/lib/battleSetup";
 import { isEphemeralBody, isLocalOnlyBody, logPrivacyEvent, sealReveal } from "@/lib/privacy";
 import { getProjectContext, withProjectContext } from "@/lib/projectContext";
@@ -49,6 +50,15 @@ export async function POST(req: Request) {
 
     const setup = await resolveFighters(body);
     const { left, right } = assignSides(setup);
+
+    // Honesty guard: a model comparison is only meaningful between genuinely
+    // different execution targets. Two Local Engine selections are the same
+    // engine — refuse instead of staging a heuristic-vs-heuristic "battle".
+    const verdict = comparisonVerdict(left.modelId, right.modelId);
+    if (!verdict.allowed) {
+      return Response.json({ error: verdict.reason, sameEngine: true }, { status: 409 });
+    }
+
     const genKeys = localOnly ? undefined : keys;
     const projectId = body.projectId ? String(body.projectId) : null;
     const ctx = await getProjectContext(projectId);
@@ -58,6 +68,16 @@ export async function POST(req: Request) {
       generate({ modelId: left.modelId, messages: [{ role: "user", content: effectivePrompt }], system: left.sys, keys: genKeys, imageSize, category: setup.category, localOnly }),
       generate({ modelId: right.modelId, messages: [{ role: "user", content: effectivePrompt }], system: right.sys, keys: genKeys, imageSize, category: setup.category, localOnly }),
     ]);
+
+    const sameEngine = executionsSameEngine(rA, rB);
+    const runtimeMeta = {
+      runtimeA: rA,
+      runtimeB: rB,
+      sameEngine,
+      sameEngineNotice: sameEngine
+        ? "Both fighters executed on the Local Engine (selection or fallback) — this is not a model comparison."
+        : undefined,
+    };
 
     if (ephemeral) {
       // Nothing touches the database. Blindness preserved via sealed token.
@@ -86,6 +106,7 @@ export async function POST(req: Request) {
           sampling: setup.sampling,
           positionRandomized: true,
           localOnly,
+          ...runtimeMeta,
         },
       });
     }
@@ -134,6 +155,7 @@ export async function POST(req: Request) {
         sampling: setup.sampling,
         positionRandomized: true,
         localOnly,
+        ...runtimeMeta,
       },
     });
   } catch (e) {

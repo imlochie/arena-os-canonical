@@ -1,8 +1,37 @@
 import { db } from "@/db";
 import { chats, chatMessages, assistants } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
-import { generate, type ChatMsg } from "@/lib/ai";
+import { generate, type ChatMsg, type GenerateResult } from "@/lib/ai";
 import { getModel } from "@/lib/models";
+
+/**
+ * WebLLM runs only in a WebGPU-capable browser. When the client executes a
+ * WebLLM model itself, it sends what actually executed; the server persists
+ * exactly that (marked honestly) instead of re-running the cascade, which
+ * could only fall back. localOnly stays authoritative: server-side generate
+ * decides in that case.
+ */
+async function replyFor(
+  body: any,
+  opts: { modelId: string; messages: ChatMsg[]; system?: string; temperature?: number; keys?: any; localOnly: boolean },
+): Promise<GenerateResult> {
+  if (!opts.localOnly && typeof body.clientReply === "string" && body.clientReply && body.clientRuntime?.backend === "webllm") {
+    const model = getModel(opts.modelId);
+    if (model.pollinationsId.startsWith("__webllm__")) {
+      return {
+        text: body.clientReply,
+        runtimeTier: "local-llm",
+        backend: "webllm",
+        modelId: model.id,
+        via: "webllm",
+        ms: Number(body.clientRuntime.ms) || 0,
+        fallback: false,
+        note: "executed in your browser via WebGPU",
+      };
+    }
+  }
+  return generate(opts);
+}
 import { isEphemeralBody, isLocalOnlyBody, logPrivacyEvent } from "@/lib/privacy";
 
 export const dynamic = "force-dynamic";
@@ -50,7 +79,7 @@ export async function POST(req: Request) {
         }
       }
       const full: ChatMsg[] = [...history.slice(-20), ...(message ? [{ role: "user" as const, content: message }] : [])];
-      const result = await generate({
+      const result = await replyFor(body, {
         modelId: effectiveModel,
         messages: full,
         system,
@@ -59,7 +88,7 @@ export async function POST(req: Request) {
         localOnly,
       });
       await logPrivacyEvent("ephemeral_chat", `localOnly=${localOnly}`);
-      return Response.json({ ephemeral: true, reply: result.text, via: result.via, ms: result.ms, localOnly }, { status: 201 });
+      return Response.json({ ephemeral: true, reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { tier: result.runtimeTier, backend: result.backend, modelId: result.modelId, via: result.via, ms: result.ms, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, note: result.note ?? null } }, { status: 201 });
     }
 
     if (mode === "create" || (!body.chatId && body.message)) {
@@ -88,10 +117,10 @@ export async function POST(req: Request) {
 
       const history: ChatMsg[] = [{ role: "user", content: message }];
       const temp = body.temperature ?? 0.7;
-      const result = await generate({ modelId: effectiveModel, messages: history, system, temperature: temp, keys: genKeys, localOnly });
+      const result = await replyFor(body, { modelId: effectiveModel, messages: history, system, temperature: temp, keys: genKeys, localOnly });
       await db.insert(chatMessages).values({ chatId: chat.id, role: "assistant", content: result.text });
 
-      return Response.json({ chat, reply: result.text, via: result.via, ms: result.ms, localOnly }, { status: 201 });
+      return Response.json({ chat, reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { tier: result.runtimeTier, backend: result.backend, modelId: result.modelId, via: result.via, ms: result.ms, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, note: result.note ?? null } }, { status: 201 });
     }
 
     // mode === 'message'
@@ -116,7 +145,7 @@ export async function POST(req: Request) {
       .slice(-20)
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
-    const result = await generate({
+    const result = await replyFor(body, {
       modelId: chat.modelId,
       messages: history,
       system,
@@ -125,7 +154,7 @@ export async function POST(req: Request) {
       localOnly,
     });
     await db.insert(chatMessages).values({ chatId, role: "assistant", content: result.text });
-    return Response.json({ reply: result.text, via: result.via, ms: result.ms, localOnly });
+    return Response.json({ reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { tier: result.runtimeTier, backend: result.backend, modelId: result.modelId, via: result.via, ms: result.ms, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, note: result.note ?? null } });
   } catch (e) {
     console.error(e);
     return Response.json({ error: "chat failed" }, { status: 500 });

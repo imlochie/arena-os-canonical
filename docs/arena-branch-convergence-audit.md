@@ -741,3 +741,44 @@ rooms.
 
 **No branch is deleted, rebased, or rewritten by this audit. Everything is preserved;
 the only change proposed is *which one we call the product*.**
+
+---
+
+## W10 — AI Runtime three-tier refactor (2026-10-06)
+
+**The dishonesty removed:** the model list presented Forge-branded names (GPT,
+Mistral, DeepSeek, …) as *local* models, all secretly served by the deterministic
+offline engine. Every tier now says what it is.
+
+**The contract (src/lib/runtime.ts):**
+- Tiers: `local-engine` (deterministic, NOT an LLM, zero config, always ready) ·
+  `local-llm` (WebLLM in-browser via WebGPU; TurboAgent local server) ·
+  `remote-free` (Pollinations keyless; OpenRouter/Groq BYOK; network required).
+- `generate()` returns what ACTUALLY executed:
+  `{text, runtimeTier, backend, modelId, via, ms, fallback, fallbackFrom?, note?}`.
+- Fallbacks append a visible `⚠️ **Fallback: Local Engine**` notice naming the
+  requested model and the failure reason — never invisible, never rebranded.
+- Battles between two Local-Engine-backed selections → HTTP 409 `{sameEngine:true}`;
+  fallback-induced sameness post-execution → `sameEngine:true` + notice in the payload.
+- `battleSetup` resolves legacy aliases (`offline-sage` → `local-engine`) and no
+  longer silently re-rolls same-engine picks into a random cloud pair.
+
+**UI:** tiered `RuntimeSelector` (chat), tiered `FighterSelect` groups (battles),
+`ActiveRuntime` badge on every chat reply (from returned metadata, not selection),
+`/runtime` config page (WebGPU status, WebLLM download/cache, TurboAgent URL test,
+Pollinations reachability test, BYOK keys). Nav gains ⚙️ Runtime.
+
+**Browser WebLLM:** DirectChat executes `__webllm__` models in-browser (WebGPU) and
+the server persists exactly what ran (`clientReply` marked `via webllm`,
+note "executed in your browser"); server-side WebLLM requests return the honest
+browser-only fallback. TurboAgent URL travels via `loadKeys().turboagent`.
+
+**Verified live (sandbox, network-blocked):** Tier 1 executed directly (0 ms, no
+fallback); Tier 2 executed honestly as labelled fallbacks (WebLLM browser-only;
+TurboAgent not configured); Tier 3 attempted real network calls, failed (egress
+blocked), and fell back visibly with the reason. All three 409 same-engine guards
+fire; mixed-tier battles run with per-side runtime metadata. On a networked
+machine the remote tier answers for real — same code path, no changes needed.
+
+**Tests:** 12 new contract tests in `src/lib/runtime.test.ts`; suite 67/67
+(55 baseline + 12); typecheck clean; production build clean.
