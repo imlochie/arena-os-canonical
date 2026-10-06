@@ -667,6 +667,41 @@ fast-forward after the Waveyard turn). The session branch remains a descendant;
 the amended §8 ff command still applies and now carries the README, rooms-honesty
 fixes, and this bridge mount.
 
+### W9 — Rooms become usable content, zero AI configuration (2026-10-06, fifth session)
+
+Owner direction: *"integrate the rooms background work into actual usable content;
+I shouldn't have to configure any AI either."* Mounted the AI-driven room surfaces
+from `a9b7` onto the baseline (selective mount, not merge — a9b7 predates the rooms
+work and would have deleted it):
+
+| Room | What is now real | Verification (sandbox, live) |
+|---|---|---|
+| **Congress** | `/congress` — timed multi-seat deliberation, durable resumable turns | session created, proposer/skeptic/chair spoke in local mode ("no internet used"), turns persisted |
+| **Classroom** | `/classroom` — the executable teaching loop over the real Lochie Life College content (semester resolved by date, memory, checkpoints) | class started `localOnly`, College state machine resolved today's occurrence |
+| **Orchestrator** | `/orchestrator` — multi-participant collaboration bus: relays, perspectives, best-interest deliberation, tool-capable participants | collaboration created with 2 participants; deliberation round run |
+| **Spaces** | `/spaces` — recurring agent workbench with money-work templates | space created, run executed in local mode, recurring tick endpoint live |
+
+Zero AI configuration: every room calls the same `generate()` seam, which defaults
+to the offline local engine (deterministic, zero egress) — verified with NO provider
+keys in the environment. Quality upgrade paths stay optional and documented
+(browser on-device WebLLM via Arcade, BYOK free-tier/providers, or a local
+TurboAgent server — ai.ts now supports all three, ported from a9b7).
+
+Mount details: libs (congress, congressRoles, orchestrator, spaces, spaceTemplates,
+classroom, college, preferences, assistantTools, archive, ai.ts, models.ts),
+components, pages, API routes; schema.ts extended with exactly the mounted rooms'
+tables (studioJobs/cutProjects deliberately trimmed — Studio/Cut Lab remain honestly
+closed pending their engines); migrations renumbered 0009–0014 (congress, spaces,
+collaborations, preferences, college, archive) following baseline 0008.
+
+Rooms map after this session: **9 open** (Assistant, Orchestrator, Council,
+Congress, Spaces, Classroom, Archive Assistant bridge, LUMA→closed see W7,
+Device Security) — precisely: open = Assistant, Orchestrator, Council, Congress,
+Spaces, Classroom, Archive Assistant, Device Security; closed = Studio, Cut Lab,
+Waveyard (branch `bebf`), LUMA (branch `bdc9`). Nav extended with the four new
+rooms.
+
+
 ---
 
 ## Appendix A — verification log (commands and key outputs)

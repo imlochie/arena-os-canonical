@@ -48,11 +48,22 @@ Notes:
 `/rooms` is the honest map of what is connected. Each room states its own
 status; believe it.
 
-- **Available** (existing app surfaces): Assistant, Orchestrator (Command),
-  Council, Spaces (Projects), Archive Assistant (Artifacts), Classroom
-  (Guide), Studio (Collab), LUMA (Image), Device Security (Privacy).
-- **No service connected**: Congress, Cut Lab, **Waveyard** — these have no
-  routes on this branch. `GET /waveyard` here is a 404 by design, not a bug.
+- **Available**: Assistant, Orchestrator (`/orchestrator` — multi-participant
+  collaboration bus), Council, **Congress** (`/congress` — timed multi-seat
+  deliberation with durable records), **Spaces** (`/spaces` — recurring agent
+  workbench), **Classroom** (`/classroom` — executable teaching loop over the
+  Lochie Life College curriculum), **Archive Assistant** (live read-only bridge
+  to the Archive Assistant app — see below), Device Security (Privacy).
+- **No service connected**: Studio, Cut Lab (media engines on unmounted
+  branches), **Waveyard** (lives on `arena/01a0bebf-arena-os-canonical` —
+  `GET /waveyard` here is a 404 by design, not a bug), LUMA (standalone app on
+  `arena/01a0bdc9-arena-os-canonical`).
+
+**No AI configuration is required.** Every AI surface (chat, battles, council,
+congress, classroom, orchestrator, spaces) runs on the offline local engine by
+default — deterministic, zero egress, zero keys. Optional quality upgrades when
+you want them: provider keys in the UI, the browser on-device engine (Arcade),
+or a local TurboAgent server.
 
 ### Archive Assistant (bridge to the archive app)
 
