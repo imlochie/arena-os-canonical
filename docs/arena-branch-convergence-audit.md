@@ -584,7 +584,31 @@ existing wiring.
 | Classroom (real tutor runtime) | superseded by the College (`bb55`), a separate product concept (§2) |
 | Archive Assistant (AI seam) | `b544` — blocked on external AA Q1–Q4 by design (§2) |
 
-### W6 — Related discovery
+### W7 — Rooms-map honesty fix (2026-10-06, third session)
+
+Owner finding by usage: rooms marked open led to semantically wrong surfaces —
+Classroom ("Learn") → `/guide` (app documentation), LUMA ("See") → `/image` (AI
+text-to-image generation), Studio ("Make") → `/collab` (iterative multi-model work).
+The map was honest about *service states* but dishonest about *name–surface fit*.
+
+Rule applied (same doctrine as the rooms map itself): **a room may only be "open"
+if the surface behind it is what the room's name promises.** Changes:
+
+- Classroom, Studio, LUMA: `available` → `local`; destinations removed; descriptions
+  now say what is missing, where the real thing lives (unmounted branch), and that
+  the similarly-named surface is a *different thing*. The real services: teaching
+  runtime = the College (`bb55`), multimodal Studio (`a9b7`), LUMA camera app (`bdc9`).
+- Archive Assistant → renamed **"Archive"** (id unchanged, so existing handoffs keep
+  referencing it): the surface is the artifacts browser; the name no longer promises
+  an assistant the room does not have.
+- No surface lost: Guide, Collab, and Image remain in the top nav as themselves.
+- Six rooms open (Assistant, Orchestrator, Council, Spaces, Archive, Device
+  Security), six honestly closed (Congress, Classroom, Studio, Cut Lab, Waveyard,
+  LUMA).
+- Not applied to the `bebf` monorepo's own rooms copy (preserved slice): when
+  Waveyard mounts onto the baseline it inherits the corrected map.
+
+
 
 `imlochie/arena-os-local-first` (261KB, last updated 2026-09-12 — one day before
 `arena-os-canonical`'s initial commit, no description): a pre-canonical experiment.
