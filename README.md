@@ -13,10 +13,15 @@ Requirements: Node 22+, PostgreSQL 16+.
 
 ```bash
 npm install
-cp .env.example .env       # edit if your local Postgres differs
-npx drizzle-kit push       # creates the 18 tables (first run)
-npm run dev                # http://localhost:3000
+npm run dev               # .env is auto-created from .env.example on first run
+npm run db:setup          # creates app_db (if missing) + applies the schema
 ```
+
+`npm run build` also self-provisions `.env` — a fresh clone builds without
+manual steps. The database only needs to be reachable for the API routes;
+pages render regardless. If your local PostgreSQL credentials differ from
+the default (`postgres:postgres@127.0.0.1:5432`), edit `.env` — the drizzle
+config reads the same `DATABASE_URL`, so there is exactly one place to change.
 
 Production build:
 
