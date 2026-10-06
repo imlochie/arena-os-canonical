@@ -65,6 +65,9 @@ export const ARENA_ROOMS: ArenaRoom[] = [
     eyebrow: "Bridge",
     description: "A live, read-only bridge to the Archive Assistant app — overview, workload, reconciliation, and provider state, fetched fresh when you open the room. Arena can read, never act.",
     state: "available",
+    // The bridge itself is this room's working surface: the [roomId] page
+    // resolves the server-side connection probe and renders the live client.
+    destination: { href: "/rooms/archive-assistant", label: "Open live bridge" },
   },
   {
     id: "classroom",

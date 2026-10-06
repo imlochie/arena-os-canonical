@@ -843,3 +843,42 @@ browser" for OS/AV/firewall claims. Separate from Privacy controls, linked.
   bridge preserved, no localhost fallback).
 - Gates: `tsc --noEmit` clean · `npm test` 162/162 · `npm run build` clean ·
   `db:setup` applied.
+
+---
+
+## Rooms directory routing fix (2026-10-06, follow-up to ad86c3b)
+
+**Bug:** room cards in `ArenaRoomsDirectory` linked every room to the generic
+detail shim `/rooms/{id}` instead of its real working surface, and the
+Archive Assistant room had no `destination` at all — the directory showed it
+as "Address only" even though its live bridge page is its working surface.
+The surfaces themselves (/studio, /cut, /waveyard, /luma, /device-security)
+were fine; the navigation layer in front of them was not.
+
+**Fix:**
+- Cards now link directly to `room.destination.href` (fallback to the detail
+  page only for rooms with no destination — none today).
+- Archive Assistant gets an explicit destination:
+  `/rooms/archive-assistant` ("Open live bridge") — the [roomId] page is where
+  the server-side connection probe resolves and the bridge renders; it is the
+  room's real surface, not an address-only entry.
+- All 12 rooms now have destinations; zero "Address only" cards.
+
+**Regression guard** — `src/lib/arenaRooms.test.ts` (5 tests): fixed 12-room
+inventory; every available room must have a destination; the exact href
+matrix; **every destination href must resolve to a real `page.tsx` route under
+`src/app`** (filesystem scan with dynamic-segment matching) — this fails the
+suite if any card ever points at a route no page serves.
+
+**Live 12-room navigation matrix (all pass):**
+assistant → /assistants · orchestrator → /command · council → /council ·
+congress → /congress · spaces → /spaces · archive-assistant →
+/rooms/archive-assistant · classroom → /classroom · studio → /studio ·
+cut-lab → /cut · waveyard → /waveyard · luma → /luma · device-security →
+/device-security — 12/12 hrefs correct, 12/12 HTTP 200, real UI content
+confirmed on every surface, secondary destinations (/chat, /projects,
+/privacy) 200, bridge page shows the honest unconfigured state, and a
+Waveyard create → upload → fetch → delete round-trip passes on the live
+database.
+
+Gates: tsc clean · 167/167 tests · production build clean.

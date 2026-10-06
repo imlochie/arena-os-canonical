@@ -139,7 +139,10 @@ export default function ArenaRoomsDirectory() {
           return (
             <Link
               key={room.id}
-              href={`/rooms/${room.id}`}
+              // Cards open the room's real working surface directly. Rooms
+              // without a destination (none today) fall back to their detail
+              // page, which is honestly address-and-handoff only.
+              href={room.destination?.href ?? `/rooms/${room.id}`}
               className={`glass card-hover group rounded-2xl p-5 ${
                 isAnchor ? "sm:col-span-2 lg:col-span-1 lg:row-span-2 lg:p-6" : ""
               }`}
