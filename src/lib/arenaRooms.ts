@@ -97,9 +97,8 @@ export const ARENA_ROOMS: ArenaRoom[] = [
     id: "luma",
     name: "LUMA",
     eyebrow: "See",
-    description: "Open the existing image workflow. Generation starts only after you submit there.",
-    state: "available",
-    destination: { href: "/image", label: "Open Image" },
+    description: "The LUMA camera app is a standalone offline photography tool and is not connected to Arena. Image is a different surface — text-to-image generation, not photography.",
+    state: "local",
   },
   {
     id: "device-security",
