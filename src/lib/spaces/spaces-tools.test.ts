@@ -205,3 +205,136 @@ test("mission runner executes real tool actions from agent turns", async () => {
     await rm(path.resolve(process.cwd(), ".data/space-workspaces", spaceId), { recursive: true, force: true });
   }
 });
+
+// ---------------- search_code + run_tests + feedback loop (turn 4 upgrades) ----------------
+
+test("search_code finds matches with file:line across nested files", async () => {
+  const { toolWriteFile, toolSearchCode } = await import("./tools");
+  const dir = await mkdtemp(path.join(tmpdir(), "wy-srch-"));
+  try {
+    await toolWriteFile(dir, "src/a.js", "function alpha() { return 1; }\n// TODO: fix alpha\n");
+    await toolWriteFile(dir, "src/deep/b.js", "const beta = alpha();\n");
+    const out = await toolSearchCode(dir, { pattern: "alpha" });
+    assert.match(out, /src\/a\.js:1/);
+    assert.match(out, /src\/deep\/b\.js:1/);
+    assert.match(out, /3 match/);
+    const none = await toolSearchCode(dir, { pattern: "zzz-not-there" });
+    assert.match(none, /no matches/);
+    const re = await toolSearchCode(dir, { pattern: "TODO: fix alpha" });
+    assert.match(re, /src\/a\.js:2/);
+    // glob filter
+    const globbed = await toolSearchCode(dir, { pattern: "alpha", glob: "b.js" });
+    assert.match(globbed, /deep\/b\.js/);
+    assert.ok(!/src\/a\.js:1/.test(globbed));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("run_tests auto-detects node --test and reports real failures", async () => {
+  const { toolWriteFile, toolRunTests } = await import("./tools");
+  const dir = await mkdtemp(path.join(tmpdir(), "wy-test-"));
+  try {
+    await toolWriteFile(dir, "math.test.js", [
+      "const test = require('node:test');",
+      "const assert = require('node:assert');",
+      "test('adds', () => { assert.equal(1 + 1, 3); });", // deliberately failing
+      "",
+    ].join("\n"));
+    const out = await toolRunTests(dir, {});
+    assert.match(out, /node --test/);
+    assert.match(out, /exit 1/);
+    assert.match(out, /1 !== 3|AssertionError|failing/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("run_tests prefers npm test when package.json has one; honest when nothing to run", async () => {
+  const { toolWriteFile, toolRunTests } = await import("./tools");
+  const dir = await mkdtemp(path.join(tmpdir(), "wy-test2-"));
+  try {
+    await toolWriteFile(dir, "package.json", JSON.stringify({ name: "t", scripts: { test: "node -e \"console.log('npm-test-ran')\"" } }));
+    const out = await toolRunTests(dir, {});
+    assert.match(out, /npm test/);
+    assert.match(out, /npm-test-ran/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  const empty = await mkdtemp(path.join(tmpdir(), "wy-test3-"));
+  try {
+    const out = await toolRunTests(empty, {});
+    assert.match(out, /no tests found/);
+  } finally {
+    await rm(empty, { recursive: true, force: true });
+  }
+});
+
+test("extra command allowlist is opt-in and scoped to the mission", async () => {
+  const { toolRunCommand } = await import("./tools");
+  const dir = await mkdtemp(path.join(tmpdir(), "wy-xtr-"));
+  try {
+    const refused = await toolRunCommand(dir, "python --version", 5000, []);
+    assert.match(refused, /refused/);
+    const allowed = await toolRunCommand(dir, "python3 --version", 5000, []); // base list has python3
+    assert.match(allowed, /exit 0/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("MISSION FEEDBACK LOOP: agents see tool outputs and use them next turn", async () => {
+  const { runMission } = await import("./mission");
+  const { rm } = await import("node:fs/promises");
+  const pathMod = await import("node:path");
+  const spaceId = "mission-feedback-" + Date.now();
+
+  const seenPrompts: string[] = [];
+  let turn = 0;
+  const scripted = (async (opts: any) => {
+    seenPrompts.push(opts.messages[0].content);
+    assert.equal(opts.maxTokens, 8_000, "mission calls must cap output tokens explicitly");
+    turn++;
+    if (turn === 1) {
+      return {
+        text: JSON.stringify({ thought: "write failing test", actions: [{ tool: "write_file", args: { path: "x.test.js", content: "const test=require('node:test');const assert=require('node:assert');test('t',()=>{assert.equal(2+2,5)});" } }, { tool: "run_tests", args: {} }], handoff: "", done: false }),
+        backend: "scripted", modelId: "s", via: "t", fallback: false,
+      } as any;
+    }
+    // Turn 2: the observation MUST contain the failure output from turn 1.
+    const sawFailure = seenPrompts[1].includes("OBSERVATIONS") && seenPrompts[1].includes("assert.equal(2+2,5") || seenPrompts[1].includes("failing") || seenPrompts[1].includes("AssertionError");
+    if (!sawFailure) throw new Error("agent did not receive tool output observations");
+    return {
+      text: JSON.stringify({ thought: "fix the test to 2+2=4", actions: [{ tool: "write_file", args: { path: "x.test.js", content: "const test=require('node:test');const assert=require('node:assert');test('t',()=>{assert.equal(2+2,4)});" } }, { tool: "run_tests", args: {} }], handoff: "fixed and green", done: true }),
+      backend: "scripted", modelId: "s", via: "t", fallback: false,
+    } as any;
+  }) as any;
+
+  const plan = [{ name: "Solo", role: "worker", modelId: "local-engine" }];
+  const mission = await runMission(spaceId, { goal: "make the test pass", timeBudgetMs: 60_000, maxTurnsPerAgent: 3 }, { generate: scripted });
+  try {
+    assert.equal(mission.status, "done");
+    const testRuns = mission.journal.flatMap((s) => s.actions.filter((a) => a.tool === "run_tests"));
+    assert.ok(testRuns.length >= 2, "test must have run at least twice (fail → fix → pass)");
+    assert.match(testRuns[testRuns.length - 1].output, /exit 0|pass 1/);
+    assert.match(mission.handoff, /green/);
+  } finally {
+    await rm(pathMod.resolve(process.cwd(), ".data/space-workspaces", spaceId), { recursive: true, force: true });
+  }
+});
+
+test("forge-ai passes an explicit 16k token cap (no silent truncation of games)", async () => {
+  const { forgeGameWithAI } = await import("@/lib/games/forge-ai");
+  const captured: any[] = [];
+  const fakeGen = (async (opts: any) => {
+    captured.push(opts);
+    return {
+      text: "<!DOCTYPE html><html><body><canvas id=g></canvas><script>" + "/* " + "x".repeat(1700) + " */" + "requestAnimationFrame(function(){});addEventListener('keydown',function(){});var score=0;__hud(score,'x');</script></body></html>",
+      backend: "scripted", modelId: "s", via: "t", fallback: false,
+    } as any;
+  }) as any;
+  const result = await forgeGameWithAI("a tiny game", {}, { generate: fakeGen });
+  assert.equal(captured[0].maxTokens, 16_000);
+  assert.ok(result.code.includes("<canvas"));
+  assert.equal(result.engine, "ai-codegen");
+});

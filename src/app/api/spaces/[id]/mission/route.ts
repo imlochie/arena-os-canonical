@@ -39,6 +39,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       keys: localOnly ? undefined : body?.keys,
       localOnly,
       githubToken: body?.githubToken || undefined,
+      maxTurnsPerAgent: body?.maxTurnsPerAgent ? Math.round(Number(body.maxTurnsPerAgent)) : undefined,
+      maxActionsPerTurn: body?.maxActionsPerTurn ? Math.round(Number(body.maxActionsPerTurn)) : undefined,
+      extraCommands: Array.isArray(body?.extraCommands)
+        ? body.extraCommands.map((c: unknown) => String(c)).slice(0, 12)
+        : undefined,
     });
     return Response.json({ mission });
   } catch (e) {

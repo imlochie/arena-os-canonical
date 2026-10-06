@@ -76,6 +76,7 @@ export async function forgeGameWithAI(
       messages: [{ role: "user", content: extra ? userPrompt + "\n\n" + extra : userPrompt }],
       system: KNOWLEDGE,
       temperature: 0.4,
+      maxTokens: 16_000,
       keys: opts.localOnly ? undefined : opts.keys,
       localOnly: opts.localOnly,
     });

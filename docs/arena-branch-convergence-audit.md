@@ -1089,3 +1089,36 @@ Verified live: fake-Groq-key fleet run shows the honest chain
 routed, network-blocked in sandbox, honestly labeled; a real key on a real
 machine runs groq:free). DB persistence confirmed post-schema-push.
 Gates: tsc clean · 238/238 tests · build clean.
+
+---
+
+## Mission capability upgrades — closing the coding-agent gap (2026-10-06)
+
+Four upgrades targeting the honest gaps vs. Copilot/Replit-class coding agents:
+
+1. **maxTokens plumbing** — `GenerateOpts.maxTokens` now flows to every
+   provider body (Groq, OpenRouter, Pollinations-OpenAI, TurboAgent) as
+   `max_tokens`. Missions call with an explicit 8k cap; the generative game
+   forge with 16k. No more silent truncation of long code.
+2. **search_code tool** — recursive regex (or literal-fallback) search
+   across the workspace with file:line results, glob filter, capped
+   matches; pure Node, skips .git/node_modules. Agents can now explore
+   existing codebases ("modify my app" tasks become possible).
+3. **run_tests tool + the observation loop** — auto-detects `npm test` or
+   Node's built-in `node --test` (60s budget; custom command still
+   allowlist-checked). THE structural fix: mission context now includes
+   OBSERVATIONS — the actual outputs of the last two steps' tool calls —
+   so agents see test failures and command output and fix their work.
+   Proven by a scripted-model test: write failing test → run (fail, output
+   fed back) → fix → run (green), handoff "fixed and green". Also:
+   `run_command`/`run_tests` children run with a sanitized env (no leaked
+   NODE_TEST_CONTEXT — nested `node --test` would silently no-op).
+4. **Configurable budgets + opt-in wider allowlist** — missions accept
+   `maxTurnsPerAgent` (up to 16), `maxActionsPerTurn` (up to 12), and
+   `extraCommands` (extra allowlisted binaries, opt-in only, name-validated).
+   MissionPanel exposes turns selector + extra-commands input (⚙).
+
+Gates: tsc clean · **244/244 tests** (15 in the spaces suite: +6 new —
+search, run_tests×2, extra-allowlist, feedback loop, forge 16k cap) ·
+build clean · live route checks (knobs accepted + clamped, honest Local
+Engine status, pages 200).

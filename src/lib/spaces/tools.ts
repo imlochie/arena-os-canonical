@@ -84,18 +84,23 @@ export async function toolDeleteFile(dir: string, p: string): Promise<string> {
 
 const COMMAND_ALLOWLIST = ["node", "npm", "npx", "git", "python3", "ls", "cat"] as const;
 
-export function commandAllowed(cmd: string): boolean {
+/** Extra binaries a mission explicitly opted into (never a default). */
+export function commandAllowed(cmd: string, extraAllow: string[] = []): boolean {
   const base = cmd.trim().split(/\s+/)[0];
-  return (COMMAND_ALLOWLIST as readonly string[]).includes(base);
+  return (COMMAND_ALLOWLIST as readonly string[]).includes(base) || extraAllow.includes(base);
 }
 
-export async function toolRunCommand(dir: string, cmd: string, timeoutMs = 20_000): Promise<string> {
-  if (!commandAllowed(cmd)) {
-    return `refused: "${cmd.trim().split(/\s+/)[0]}" is not on the tool allowlist (${COMMAND_ALLOWLIST.join(", ")})`;
+export async function toolRunCommand(dir: string, cmd: string, timeoutMs = 20_000, extraAllow: string[] = []): Promise<string> {
+  if (!commandAllowed(cmd, extraAllow)) {
+    return `refused: "${cmd.trim().split(/\s+/)[0]}" is not on the tool allowlist (${COMMAND_ALLOWLIST.join(", ")}${extraAllow.length ? " + " + extraAllow.join(", ") : ""})`;
   }
   return new Promise((resolve) => {
     const parts = cmd.trim().split(/\s+/);
-    const child = spawn(parts[0], parts.slice(1), { cwd: dir, timeout: timeoutMs });
+    // Clean env: never leak the host process's test-runner context into
+    // child processes (a nested `node --test` would otherwise no-op).
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const child = spawn(parts[0], parts.slice(1), { cwd: dir, timeout: timeoutMs, env });
     let out = "";
     const cap = (s: string) => {
       if (out.length < 8000) out += s;
@@ -132,6 +137,88 @@ export async function toolFetchUrl(url: string, timeoutMs = 15_000): Promise<str
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ---------------- search tool ----------------
+
+/** Recursive code search across the workspace: regex (or literal fallback),
+ *  file:line matches, capped. Pure Node — no grep binary needed. */
+export async function toolSearchCode(
+  dir: string,
+  args: { pattern: string; glob?: string; maxResults?: number },
+): Promise<string> {
+  const pattern = String(args.pattern ?? "").trim();
+  if (!pattern) return "error: pattern is required";
+  const glob = args.glob ? String(args.glob).toLowerCase() : undefined;
+  const maxResults = Math.min(200, Math.max(1, Number(args.maxResults) || 50));
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern, "i");
+  } catch {
+    re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  }
+  const hits: string[] = [];
+  const walk = async (d: string, prefix: string): Promise<void> => {
+    if (hits.length >= maxResults) return;
+    for (const e of await readdir(d, { withFileTypes: true }).catch(() => [])) {
+      if (e.name === ".git" || e.name === "node_modules") continue;
+      const rel = prefix ? prefix + "/" + e.name : e.name;
+      if (e.isDirectory()) {
+        await walk(path.join(d, e.name), rel);
+      } else {
+        if (glob && !rel.toLowerCase().endsWith(glob.replace(/\*/g, "")) && !new RegExp("^" + glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$", "i").test(rel)) continue;
+        const content = await readFile(path.join(d, e.name), "utf8").catch(() => "");
+        if (!content) continue;
+        const lines = content.split("\n");
+        for (let i = 0; i < lines.length && hits.length < maxResults; i++) {
+          if (re.test(lines[i])) {
+            hits.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+          }
+        }
+      }
+    }
+  };
+  await walk(dir, "");
+  return hits.length ? `${hits.length} match(es):\n` + hits.join("\n") : "no matches";
+}
+
+// ---------------- test tool ----------------
+
+/**
+ * Run the workspace's tests. Auto-detects: `npm test` when a package.json
+ * with a test script exists, else the Node built-in runner (`node --test`)
+ * when *.test.{js,mjs,cjs,ts} files exist. A custom command may be given
+ * (still allowlist-checked). 60s budget — tests are slower than commands.
+ */
+export async function toolRunTests(dir: string, args: { command?: string }, extraAllow: string[] = []): Promise<string> {
+  const hasPkg = await readFile(path.join(dir, "package.json"), "utf8").catch(() => "");
+  let cmd = String(args.command ?? "").trim();
+  if (!cmd) {
+    if (hasPkg) {
+      try {
+        const pkg = JSON.parse(hasPkg);
+        if (pkg?.scripts?.test) cmd = "npm test";
+      } catch {
+        /* fall through */
+      }
+    }
+    if (!cmd) {
+      const files: string[] = [];
+      const walk = async (d: string, prefix: string) => {
+        for (const e of await readdir(d, { withFileTypes: true }).catch(() => [])) {
+          if (e.name === "node_modules" || e.name === ".git") continue;
+          const rel = prefix ? prefix + "/" + e.name : e.name;
+          if (e.isDirectory()) await walk(path.join(d, e.name), rel);
+          else if (/\.test\.(js|mjs|cjs|ts)$/.test(e.name)) files.push(rel);
+        }
+      };
+      await walk(dir, "");
+      if (files.length) cmd = "node --test";
+      else return "no tests found — write *.test.js files or add a package.json test script first";
+    }
+  }
+  const out = await toolRunCommand(dir, cmd, 60_000, extraAllow);
+  return `[${cmd}]\n${out}`;
 }
 
 // ---------------- GitHub tool ----------------
@@ -238,7 +325,7 @@ export interface ToolOutcome {
 export async function executeTool(
   spaceId: string,
   action: ToolAction,
-  opts: { githubToken?: string } = {}
+  opts: { githubToken?: string; extraAllow?: string[] } = {}
 ): Promise<ToolOutcome> {
   const dir = await ensureWorkspace(spaceId);
   const t0 = Date.now();
@@ -253,7 +340,15 @@ export async function executeTool(
       case "delete_file":
         return toolDeleteFile(dir, String(action.args.path ?? ""));
       case "run_command":
-        return toolRunCommand(dir, String(action.args.command ?? ""));
+        return toolRunCommand(dir, String(action.args.command ?? ""), 20_000, opts.extraAllow ?? []);
+      case "search_code":
+        return toolSearchCode(dir, {
+          pattern: String(action.args.pattern ?? ""),
+          glob: action.args.glob ? String(action.args.glob) : undefined,
+          maxResults: action.args.maxResults ? Number(action.args.maxResults) : undefined,
+        });
+      case "run_tests":
+        return toolRunTests(dir, { command: action.args.command ? String(action.args.command) : undefined }, opts.extraAllow ?? []);
       case "fetch_url":
         return toolFetchUrl(String(action.args.url ?? ""));
       case "github_publish":

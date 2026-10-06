@@ -800,6 +800,9 @@ interface MissionLite {
 function MissionPanel({ spaceId }: { spaceId: string }) {
   const [goal, setGoal] = useState("");
   const [budget, setBudget] = useState(5);
+  const [turns, setTurns] = useState(3);
+  const [extraCommands, setExtraCommands] = useState("");
+  const [showAdv, setShowAdv] = useState(false);
   const [githubToken, setGithubToken] = useState("");
   const [showGit, setShowGit] = useState(false);
   const [running, setRunning] = useState(false);
@@ -826,6 +829,12 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
           keys: loadKeys(),
           ...privacyFlags(),
           githubToken: githubToken || undefined,
+          maxTurnsPerAgent: turns,
+          extraCommands: extraCommands
+            .split(",")
+            .map((c) => c.trim())
+            .filter(Boolean)
+            .slice(0, 12),
           ...(continueMission ? {} : { goal, timeBudgetMinutes: budget }),
         }),
       });
@@ -871,7 +880,38 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
         >
           {showGit ? "× GitHub" : "🐙 GitHub"}
         </button>
+        <button
+          onClick={() => setShowAdv((v) => !v)}
+          className="rounded-lg bg-white/5 px-2 py-1 text-[11px] font-bold text-slate-400 ring-1 ring-white/10 hover:bg-white/10"
+          title="Agent iteration budget + extra command allowlist"
+        >
+          {showAdv ? "× ⚙" : "⚙"}
+        </button>
       </div>
+
+      {showAdv && (
+        <div className="mt-2 grid gap-1.5 sm:grid-cols-[110px_1fr]">
+          <select
+            value={turns}
+            onChange={(e) => setTurns(Number(e.target.value))}
+            className="rounded-lg border border-white/10 bg-[#0c1428] px-2 py-1.5 text-xs text-white outline-none"
+            title="Turns per agent — more turns = more fix-fail-verify loops"
+          >
+            {[1, 3, 5, 8, 12, 16].map((t) => (
+              <option key={t} value={t}>
+                {t} turns
+              </option>
+            ))}
+          </select>
+          <input
+            value={extraCommands}
+            onChange={(e) => setExtraCommands(e.target.value)}
+            placeholder="extra commands: python, pip, make… (opt-in only)"
+            className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-slate-600"
+            title="Comma-separated extra binaries agents may run (beyond node, npm, npx, git, python3, ls, cat)"
+          />
+        </div>
+      )}
 
       {showGit && (
         <input

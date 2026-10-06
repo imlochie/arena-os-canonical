@@ -34,6 +34,9 @@ export interface GenerateOpts {
   messages: ChatMsg[];
   temperature?: number;
   system?: string;
+  /** Output cap for text completions. Providers that support it pass it
+   *  through as max_tokens — prevents silent truncation of long code. */
+  maxTokens?: number;
   imageSize?: string; // e.g. "768x768" for image-kind models
   category?: string;
   // Privacy: localOnly forces the offline engine (zero network egress).
@@ -73,6 +76,7 @@ async function tryTurboAgent(
   modelId: string,
   messages: ChatMsg[],
   temperature: number,
+  maxTokens?: number,
   timeoutMs = 60000,
 ): Promise<string> {
   const base = url.replace(/\/$/, "");
@@ -86,7 +90,7 @@ async function tryTurboAgent(
         model: modelId,
         messages,
         temperature,
-        max_tokens: 2048,
+        max_tokens: maxTokens ?? 2048,
         stream: false,
       }),
       signal: ctrl.signal,
@@ -106,6 +110,7 @@ async function tryPollinationsOpenAI(
   pollinationsId: string,
   messages: ChatMsg[],
   temperature: number,
+  maxTokens?: number,
   timeoutMs = 45000,
 ): Promise<string> {
   const ctrl = new AbortController();
@@ -118,6 +123,7 @@ async function tryPollinationsOpenAI(
         model: pollinationsId,
         messages,
         temperature,
+        ...(maxTokens ? { max_tokens: maxTokens } : {}),
         stream: false,
       }),
       signal: ctrl.signal,
@@ -166,6 +172,7 @@ async function tryOpenRouter(
   key: string,
   messages: ChatMsg[],
   temperature: number,
+  maxTokens?: number,
 ): Promise<string> {
   const res = await fetchImpl("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -180,6 +187,7 @@ async function tryOpenRouter(
       model: "meta-llama/llama-3.3-70b-instruct:free",
       messages,
       temperature,
+      ...(maxTokens ? { max_tokens: maxTokens } : {}),
     }),
   });
   if (!res.ok) throw new Error(`openrouter ${res.status}`);
@@ -194,6 +202,7 @@ async function tryGroq(
   key: string,
   messages: ChatMsg[],
   temperature: number,
+  maxTokens?: number,
 ): Promise<string> {
   const res = await fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -206,6 +215,7 @@ async function tryGroq(
       model: "llama-3.3-70b-versatile",
       messages,
       temperature,
+      ...(maxTokens ? { max_tokens: maxTokens } : {}),
     }),
   });
   if (!res.ok) throw new Error(`groq ${res.status}`);
@@ -318,7 +328,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
     const wanted = requestedExecution(model.id, model.backend, model.level);
     if (url) {
       try {
-        const text = await tryTurboAgent(fetchImpl, url, hfId, fullMessages, temperature);
+        const text = await tryTurboAgent(fetchImpl, url, hfId, fullMessages, temperature, opts.maxTokens);
         return {
           text,
           runtimeLevel: "on-device",
@@ -392,7 +402,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
   // BYOK providers first (still remote-free tier; keys user-supplied).
   if (opts.keys?.openrouter) {
     try {
-      const text = await tryOpenRouter(fetchImpl, opts.keys.openrouter, fullMessages, temperature);
+      const text = await tryOpenRouter(fetchImpl, opts.keys.openrouter, fullMessages, temperature, opts.maxTokens);
       return {
         text,
         runtimeLevel: "remote",
@@ -408,7 +418,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
   }
   if (opts.keys?.groq) {
     try {
-      const text = await tryGroq(fetchImpl, opts.keys.groq, fullMessages, temperature);
+      const text = await tryGroq(fetchImpl, opts.keys.groq, fullMessages, temperature, opts.maxTokens);
       return {
         text,
         runtimeLevel: "remote",
@@ -427,7 +437,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
   // most-reliable alias. Every failure is recorded for the honest fallback.
   let lastReason = "no route succeeded";
   try {
-    const text = await tryPollinationsOpenAI(fetchImpl, model.pollinationsId, fullMessages, temperature);
+    const text = await tryPollinationsOpenAI(fetchImpl, model.pollinationsId, fullMessages, temperature, opts.maxTokens);
     return {
       text,
       runtimeLevel: "remote",

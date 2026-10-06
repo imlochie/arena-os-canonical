@@ -74,6 +74,9 @@ export interface MissionOpts {
   localOnly?: boolean;
   githubToken?: string;
   maxTurnsPerAgent?: number;
+  maxActionsPerTurn?: number;
+  /** Extra command binaries this mission opts into (beyond the base allowlist). */
+  extraCommands?: string[];
 }
 
 export interface MissionDeps {
@@ -86,6 +89,8 @@ const TOOL_DOC = `Available tools (emit actions as JSON):
 - list_files {}                     list the workspace tree
 - delete_file {path}
 - run_command {command}             allowlisted: node, npm, npx, git, python3, ls, cat (20s timeout)
+- search_code {pattern, glob?}      regex search across the workspace — file:line results (use this to explore existing code)
+- run_tests {command?}              run the workspace's tests (auto-detects npm test / node --test); 60s budget — use it to verify your work
 - fetch_url {url}                   GET a URL (this is how you read feeds/pages)
 - github_publish {repo, message, files:[{path,content}], branch?}  commit+push to GitHub (needs a connected token)
 
@@ -173,7 +178,12 @@ export async function runMission(
 ): Promise<MissionSummary> {
   const gen = deps.generate ?? generate;
   const timeBudgetMs = Math.min(3_600_000, Math.max(30_000, opts.timeBudgetMs ?? 600_000));
-  const maxTurns = Math.min(8, Math.max(1, opts.maxTurnsPerAgent ?? 3));
+  const maxTurns = Math.min(16, Math.max(1, opts.maxTurnsPerAgent ?? 3));
+  const maxActions = Math.min(12, Math.max(1, opts.maxActionsPerTurn ?? 4));
+  const extraAllow = (opts.extraCommands ?? [])
+    .map((c) => String(c).trim().split(/\s+/)[0])
+    .filter((c) => /^[a-z0-9_.@-]+$/i.test(c) && c.length <= 30)
+    .slice(0, 12);
 
   // Plan: explicit > the space's fleet > default three-role pipeline.
   const fleet = await listAgents(spaceId).catch(() => []);
@@ -277,10 +287,20 @@ export async function runMission(
         break agentLoop;
       }
 
+      // Observations: what the tools ACTUALLY returned recently — this is
+      // how agents see test failures and command output and fix their work.
+      const observations = steps
+        .slice(-2)
+        .flatMap((s) =>
+          s.actions.map((a) => `${s.agent} → ${a.tool}: ${a.output.slice(0, 1200)}`),
+        )
+        .slice(-6)
+        .join("\n---\n");
       const context =
         (handoff ? `Handoff from the previous agent:\n${handoff}\n\n` : "") +
         `Mission goal: ${mission.goal}\nYou are agent ${ai + 1}/${plan.length}: ${agent.name} (${agent.role}).` +
-        (steps.length ? `\n\nRecent journal (most recent last):\n${steps.slice(-4).map((s) => `${s.agent}: ${s.thought} [${s.actions.map((a) => a.tool + (a.ok ? "✓" : "✗")).join(", ")}]`).join("\n")}` : "");
+        (steps.length ? `\n\nRecent journal (most recent last):\n${steps.slice(-4).map((s) => `${s.agent}: ${s.thought} [${s.actions.map((a) => a.tool + (a.ok ? "✓" : "✗")).join(", ")}]`).join("\n")}` : "") +
+        (observations ? `\n\nOBSERVATIONS — actual tool outputs from your recent turns (read them; fix what failed):\n${observations}` : "");
 
       let result: GenerateResult;
       const t0 = Date.now();
@@ -296,6 +316,7 @@ export async function runMission(
               "Never claim an action you did not emit. " +
               TOOL_DOC,
             temperature: 0.3,
+            maxTokens: 8_000,
             keys: opts.localOnly ? undefined : opts.keys,
             localOnly: opts.localOnly,
           },
@@ -312,7 +333,7 @@ export async function runMission(
       }
 
       const parsed = parseAgentJson(result.text);
-      const actions = Array.isArray(parsed?.actions) ? parsed!.actions!.slice(0, 4) : [];
+      const actions = Array.isArray(parsed?.actions) ? parsed!.actions!.slice(0, maxActions) : [];
       const outcomes: ToolOutcome[] = [];
       for (const a of actions) {
         if (Date.now() >= deadline) {
@@ -320,7 +341,7 @@ export async function runMission(
           statusDetail = `time budget hit mid-turn while ${agent.name} was acting — resume to continue`;
           break;
         }
-        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken }));
+        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow }));
       }
 
       const step: MissionStep = {
