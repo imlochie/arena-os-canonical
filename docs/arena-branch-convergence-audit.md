@@ -1162,3 +1162,36 @@ not-found/ambiguous refusals, guardrail rejection+revert for broken
 JS/JSON writes and edits, windowed viewer, and map+memory injection across
 two sequential scripted missions (lesson written in mission 1 is present in
 mission 2's context). Live: API surface green, honest statuses, pages 200.
+
+---
+
+## Navigation & presentation overhaul (2026-10-07)
+
+User complaint: decision paralysis — 22 same-weight nav links, walls of text,
+ambiguous affordances ("hard to tell what's a button"). Presentation-only
+pass; zero features or code removed:
+
+- **Affordance layer (globals.css)**: Tailwind v4 preflight sets buttons to
+  cursor:default — restored pointer cursors on all interactive elements
+  app-wide, plus press feedback (active:translateY) and focus-visible rings
+  on everything (links, buttons, inputs, selects). Added `.btn` base class
+  and `.section-label` micro-label token for consistent hierarchy.
+- **Nav rebuilt**: a 3-item primary rail (Arena · Chat · Spaces) + one
+  "Rooms" launcher button opening a grouped, type-to-filter menu
+  (Start here / Agents & teams / Create / Work & study / Results & records /
+  System) with one-line descriptions. Ctrl/⌘+K toggles it anywhere; Enter
+  opens the first match; Esc/click-outside closes; the rail shows the
+  current room's identity when you're deeper in the app. All 23
+  destinations verified present in the shipped chunk; mobile uses the same
+  grouped launcher. Bonus: Cut Lab (/cut) was previously unreachable from
+  the nav — now listed.
+- **Home rebuilt around one decision**: 8-word subtitle (was ~70), one
+  primary CTA (Command) + one secondary (Browse rooms); the 9-pill pile
+  replaced by a Quick-launch grid (8 cards, one line each, "New" badges on
+  Arcade/Collab); the 3-levels explainer demoted to a single quiet link to
+  /runtime. KeysBar, BattleArena, and value cards unchanged.
+- **Footer**: one quiet line with the same links (Privacy, Principles).
+
+Verified live: all 24 routes 200, pointer-cursor + focus-ring CSS in the
+served stylesheet, nav chunk contains every destination, home renders the
+new hero/quick-launch. Gates: tsc clean · 249/249 tests · build clean.

@@ -3,47 +3,63 @@ import KeysBar from "@/components/KeysBar";
 
 export const dynamic = "force-dynamic";
 
+const QUICK_LAUNCH = [
+  { href: "/chat", emoji: "💬", name: "Chat", desc: "Talk to the brain you pick" },
+  { href: "/spaces", emoji: "🧩", name: "Spaces", desc: "Agent fleets & missions" },
+  { href: "/command", emoji: "🧭", name: "Command", desc: "Not sure? Start here" },
+  { href: "/waveyard", emoji: "🎚️", name: "Waveyard", desc: "Music studio — stems, remixes" },
+  { href: "/arcade", emoji: "🎮", name: "Arcade", desc: "Forge any game", badge: "New" },
+  { href: "/collab", emoji: "🤝", name: "Collab", desc: "Models build one answer", badge: "New" },
+  { href: "/image", emoji: "🖼️", name: "Image", desc: "Generate pictures" },
+  { href: "/projects", emoji: "📁", name: "Projects", desc: "Long-lived work" },
+];
+
 export default function HomePage() {
   return (
     <div>
-      <section className="mb-6 text-center">
-        <p className="inline-flex items-center gap-2 rounded-full border border-violet-500/30 bg-violet-600/15 px-4 py-1.5 text-xs font-bold text-violet-200">
-          ✨ One OS: 🧭 Command → 🧠 Council → ⚔️ Arena → 🤝 Collab → 📦 Artifacts → 📁 Projects
-        </p>
-        <h1 className="text-glow mx-auto mt-4 max-w-3xl text-4xl font-black leading-[1.05] tracking-tight text-white sm:text-5xl">
+      {/* Hero: one sentence, one decision. */}
+      <section className="mb-8 text-center">
+        <h1 className="text-glow mx-auto mt-2 max-w-3xl text-4xl font-black leading-[1.05] tracking-tight text-white sm:text-5xl">
           Your private AI arena.{" "}
           <span className="bg-gradient-to-r from-violet-400 via-fuchsia-300 to-cyan-300 bg-clip-text text-transparent">
             Zero cost. Full quality.
           </span>
         </h1>
-        <p className="mx-auto mt-3 max-w-2xl text-[15px] leading-relaxed text-slate-300">
-          Three AI execution levels: <strong className="text-white">⚙️ Level 0 — Arena Local Engine</strong>{" "}
-          (deterministic, offline, works immediately, not an LLM) ·{" "}
-          <strong className="text-white">💻 Level 1 — On-Device LLM</strong> (real models running on your
-          machine) · <strong className="text-white">☁️ Level 2 — Remote Models</strong> (provider-backed,
-          network required). Battle them blind, benchmark them side by side, and every answer says what
-          actually ran. Votes build ELO only from genuine executions.
+        <p className="mx-auto mt-3 max-w-xl text-[15px] text-slate-300">
+          Battle models blind, vote honestly, and keep everything — rankings, files, agents — on your machine.
         </p>
-        <div className="mx-auto mt-4 flex max-w-2xl flex-wrap items-center justify-center gap-2 text-[11px] font-bold">
-          <a href="/command" className="rounded-full bg-violet-600 px-3.5 py-1.5 text-white shadow-[0_6px_20px_rgba(124,58,237,0.5)] hover:bg-violet-500">
-            🧭 Enter Command Centre — what are you trying to do? →
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+          <a href="/command" className="btn rounded-xl bg-violet-600 px-6 py-3 text-sm text-white shadow-[0_10px_30px_rgba(124,58,237,0.45)] hover:bg-violet-500">
+            🧭 What do you want to do?
           </a>
-          <a href="/rooms" className="rounded-full bg-cyan-500/15 px-3.5 py-1.5 text-cyan-100 ring-1 ring-cyan-400/30 hover:bg-cyan-500/25">
-            Browse the 12 rooms →
+          <a href="/rooms" className="btn rounded-xl bg-white/5 px-5 py-3 text-sm text-slate-200 ring-1 ring-white/15 hover:bg-white/10">
+            🗺️ Browse all rooms
           </a>
-          <a href="/collab" className="rounded-full bg-emerald-500/20 px-3.5 py-1.5 text-emerald-200 ring-1 ring-emerald-400/40 hover:bg-emerald-500/30">
-            🤝 New: Collab Lab — best result, not just a winner →
-          </a>
-          <a href="/privacy" className="rounded-full bg-emerald-500/20 px-3.5 py-1.5 text-emerald-200 ring-1 ring-emerald-400/40 hover:bg-emerald-500/30">
-            🛡️ Never trained on · offline Local Mode →
-          </a>
-          <a href="/arcade" className="rounded-full bg-fuchsia-500/20 px-3.5 py-1.5 text-fuchsia-200 ring-1 ring-fuchsia-400/40 hover:bg-fuchsia-500/30">
-            🎮 New: Arcade Forge — Pac-Man & Invaders, 100% offline →
-          </a>
-          {["🎭 Blind battles", "🏆 Personal ELO", "🧬 Custom assistants", "$0 forever"].map((t) => (
-            <span key={t} className="rounded-full bg-white/5 px-3 py-1.5 text-slate-300 ring-1 ring-white/10">
-              {t}
-            </span>
+        </div>
+        <p className="mt-3 text-[11px] text-slate-600">
+          Three execution levels — <a href="/runtime" className="text-slate-400 underline decoration-dotted hover:text-slate-200">offline engine · on-device LLM · remote models</a> — every answer says what actually ran.
+        </p>
+      </section>
+
+      {/* Quick launch: the eight most-used doors, one line each. */}
+      <section className="mb-5">
+        <p className="section-label mb-2">Quick launch</p>
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+          {QUICK_LAUNCH.map((q) => (
+            <a
+              key={q.href}
+              href={q.href}
+              className="glass card-hover group relative rounded-xl p-3.5"
+            >
+              {q.badge && (
+                <span className="absolute right-2.5 top-2.5 rounded-full bg-fuchsia-500/20 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-fuchsia-200 ring-1 ring-fuchsia-400/30">
+                  {q.badge}
+                </span>
+              )}
+              <p className="text-xl">{q.emoji}</p>
+              <p className="mt-1.5 text-sm font-extrabold text-white group-hover:text-cyan-200">{q.name}</p>
+              <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{q.desc}</p>
+            </a>
           ))}
         </div>
       </section>
@@ -59,17 +75,17 @@ export default function HomePage() {
           {
             emoji: "🆓",
             title: "Free without the catch",
-            body: "Primary engine is the Pollinations free tier — no key, no signup, no card. Optional Groq / OpenRouter free keys add headroom. Offline Sage guarantees the app never breaks.",
+            body: "The primary engine needs no key, signup, or card. Optional free keys (Groq / OpenRouter) add headroom, and the offline engine guarantees the app never breaks.",
           },
           {
             emoji: "🎯",
             title: "Personal, not crowdsourced",
-            body: "Public arenas rank models by everyone's taste. Yours ranks by yours. Create assistants with your own system prompts and battle them for your actual work.",
+            body: "Public arenas rank models by everyone's taste. Yours ranks by yours — create assistants with your own prompts and battle them for your actual work.",
           },
           {
             emoji: "📦",
             title: "Fully duplicable",
-            body: "This whole app is a standard Next.js + Postgres stack. The Clone Guide shows you how to fork the concept, self-host for $0, and keep quality high.",
+            body: "A standard Next.js + Postgres stack. The Guide shows how to fork the concept, self-host for $0, and keep quality high.",
           },
         ].map((c) => (
           <div key={c.title} className="glass card-hover rounded-2xl p-5">

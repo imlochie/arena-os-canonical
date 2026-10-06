@@ -8,6 +8,57 @@ html, body {
   min-height: 100%;
 }
 
+/* ---- Affordance layer: things you can press should look pressable ----
+   Tailwind v4 preflight sets buttons to cursor:default — restore pointer
+   everywhere, give every interactive element press feedback + focus rings. */
+button:not(:disabled),
+[role="button"]:not(:disabled),
+summary,
+label[for],
+select:not(:disabled) {
+  cursor: pointer;
+}
+button:not(:disabled):active,
+[role="button"]:not(:disabled):active {
+  transform: translateY(1px);
+}
+a:focus-visible,
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(139, 92, 246, 0.7);
+  outline-offset: 2px;
+}
+
+/* ---- Button system: one visual grammar for every action ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.65rem 1.1rem;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.12s ease, filter 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+}
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Section micro-label: quiet, uppercase, gives pages a clear hierarchy
+   without adding more words competing for attention. */
+.section-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.75);
+}
+
 body {
   background: #060a17;
   color: #e8edf7;

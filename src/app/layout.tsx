@@ -23,16 +23,16 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <OfflineBanner />
         <Nav />
         <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-6 sm:px-6">{children}</main>
-        <footer className="border-t border-white/10 py-6">
-          <p className="mx-auto max-w-7xl px-4 text-center text-xs text-slate-500 sm:px-6">
-            ⚔️ ArenaForge Personal · blind battles · ELO-ranked · 100% free tier · your votes train{" "}
-            <em>your</em> leaderboard — not someone else&apos;s ·{" "}
+        <footer className="border-t border-white/10 py-5">
+          <p className="mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 text-center text-xs text-slate-500 sm:px-6">
+            <span>ArenaForge Personal · your votes train <em>your</em> leaderboard · $0 forever</span>
+            <span className="text-slate-700">·</span>
             <a href="/privacy" className="font-bold text-emerald-300/80 hover:underline">
-              🛡️ never trained on · local-first · offline-ready
-            </a>{" "}
-            ·{" "}
+              🛡️ Privacy — never trained on, local-first
+            </a>
+            <span className="text-slate-700">·</span>
             <a href="/principles" className="font-bold text-slate-400 hover:underline">
-              📜 use principles
+              📜 Principles
             </a>
           </p>
         </footer>
