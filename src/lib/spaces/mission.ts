@@ -182,7 +182,7 @@ export async function runMission(
       ? opts.agentPlan
       : fleet.length
         ? fleet.map((a: { name: string; role: string; modelId: string; systemPrompt: string }) => ({ name: a.name, role: a.role, modelId: a.modelId, systemPrompt: a.systemPrompt }))
-        : defaultPlan("local-engine");
+        : defaultPlan("openai"); // any text alias: routes via Groq/OpenRouter key when sent, else keyless pollinations, else honest local fallback
 
   await ensureWorkspace(spaceId);
 

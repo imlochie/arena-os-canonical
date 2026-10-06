@@ -10,6 +10,8 @@ import Markdown from "@/components/Markdown";
 import { loadKeys } from "@/components/KeysBar";
 import { privacyFlags } from "@/lib/privacyClient";
 import { SPACE_TEMPLATES, SPACE_TEMPLATE_GROUPS, getSpaceTemplate } from "@/lib/spaceTemplates";
+import BrainCard from "@/components/BrainCard";
+import { readBrain } from "@/lib/connectedBrain";
 
 interface SpaceState {
   id: string;
@@ -265,7 +267,8 @@ export default function SpacesWorkbench() {
       <div className="mt-6 grid gap-5 lg:grid-cols-[330px_1fr]">
         {/* ---- left: new space ---- */}
         <div className="glass h-fit rounded-2xl p-4">
-          <h2 className="text-sm font-extrabold text-white">➕ New space</h2>
+          <BrainCard context="spaces" />
+          <h2 className="mt-3 text-sm font-extrabold text-white">➕ New space</h2>
           <div className="mt-3 space-y-2.5">
             {SPACE_TEMPLATE_GROUPS.map((g) => (
               <div key={g.id}>
@@ -577,7 +580,7 @@ function AgentFleet({ spaceId, models }: { spaceId: string; models: ModelInfo[] 
   const [agents, setAgents] = useState<FleetAgent[]>([]);
   const [name, setName] = useState("");
   const [role, setRole] = useState("worker");
-  const [modelId, setModelId] = useState("local-engine");
+  const [modelId, setModelId] = useState(() => readBrain().modelId);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [running, setRunning] = useState(false);
@@ -635,7 +638,7 @@ function AgentFleet({ spaceId, models }: { spaceId: string; models: ModelInfo[] 
       const res = await fetch(`/api/spaces/${spaceId}/fleet`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ keys: loadKeys(), ...privacyFlags() }),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -819,11 +822,12 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
       const res = await fetch(`/api/spaces/${spaceId}/mission`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          continueMission
-            ? { githubToken: githubToken || undefined }
-            : { goal, timeBudgetMinutes: budget, githubToken: githubToken || undefined },
-        ),
+        body: JSON.stringify({
+          keys: loadKeys(),
+          ...privacyFlags(),
+          githubToken: githubToken || undefined,
+          ...(continueMission ? {} : { goal, timeBudgetMinutes: budget }),
+        }),
       });
       const body = await res.json();
       if (!res.ok) {

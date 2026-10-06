@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import PrivacyControls from "./PrivacyControls";
 import { privacyFlags, usePrivacySettings } from "@/lib/privacyClient";
 import { loadKeys } from "./KeysBar";
+import BrainCard from "@/components/BrainCard";
 import {
   GAME_TYPES,
   detectGameType,
@@ -360,6 +361,8 @@ export default function ArcadeForge() {
               ⚡ Cores: instant, always
             </span>
           </div>
+
+          <BrainCard context="arcade" />
 
           {/* Model loader */}
           <div className="mt-3 flex flex-col gap-2 rounded-xl border border-white/5 bg-black/20 p-3 sm:flex-row sm:items-center">

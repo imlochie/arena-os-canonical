@@ -1054,3 +1054,38 @@ github_publish honestly disconnected, artifacts + handoffs recorded);
 generative forge 503 honest in-sandbox; watcher space persists config and
 records real fetch results. Gates: tsc clean · **233/233 tests** · build
 clean.
+
+---
+
+## Pre-wired free brain (2026-10-06)
+
+The model layer already routes any text alias through the best connected
+provider (Groq key → groq:free → OpenRouter free → TurboAgent → keyless
+Pollinations → honest Local Engine). What was missing was making that
+discoverable and actually used:
+
+- **lib/connectedBrain.ts** — pure `pickBrain(keys)` resolution (groq →
+  openrouter → turboagent → local) + client readers; 5 unit tests incl.
+  precedence and blank-key handling.
+- **BrainCard component** — mounted in Spaces (above the new-space form)
+  and Arcade (above the model loader): shows which brain will actually run
+  right now; when nothing is connected, an inline 3-step Groq walk-through
+  (console.groq.com/keys → create key → paste; key stored in localStorage
+  only) with alternatives (OpenRouter, TurboAgent, on-device WebLLM). After
+  connecting: "agents, missions, and generation now run on Groq's free
+  tier."
+- **The real gap, fixed: keys now travel with every space call.** Fleet
+  runs and mission runs previously sent no keys — agents silently degraded
+  to the Local Engine even with a key connected. Both now send
+  `keys + privacyFlags`; Run Now and tick already did. Mission default
+  agent plans use a real alias (not local-engine) so a connected key — or
+  keyless Pollinations where reachable — powers them; offline they degrade
+  with honest labels.
+- AgentFleet's default model for new agents now resolves from the
+  connected brain instead of hardcoding local-engine.
+
+Verified live: fake-Groq-key fleet run shows the honest chain
+(`backend=arena-local-engine via=offline-fallback fallback=true` — key
+routed, network-blocked in sandbox, honestly labeled; a real key on a real
+machine runs groq:free). DB persistence confirmed post-schema-push.
+Gates: tsc clean · 238/238 tests · build clean.
