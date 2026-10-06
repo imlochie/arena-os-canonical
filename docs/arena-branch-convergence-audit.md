@@ -1233,3 +1233,37 @@ warnings · live smoke (pages, studio health, space create/delete) green.
 Note: the Windows ENOENT fix itself is verified by construction + the
 documented Node behavior for .cmd shims — the sandbox is Linux, so the
 user's `npm test` on Windows is the true confirmation.
+
+---
+
+## Windows upload bug — safeLocalPath separator check (2026-10-07)
+
+User's Windows run surfaced "Upload failed before processing started." —
+diagnosed (by the user, correctly) as a real Windows portability bug in the
+Waveyard storage port: `safeLocalPath` checked containment with
+`target.startsWith(resolvedRoot + "/")`. Windows `resolve()` returns
+backslash paths, so every VALID upload was rejected as "Unsafe storage
+key." while the entire suite stayed green on Linux.
+
+Fix (as prescribed): containment now uses `relative(resolvedRoot, target)`
+with `..`/`..${sep}`/`isAbsolute` checks — platform-correct, traversal
+protection preserved. Verified before editing via path.win32 simulation:
+old check rejects valid win32 paths (the smoking gun), new algorithm
+accepts them and still rejects `..\..\Windows\…` and different-drive
+escapes.
+
+Also added the missing test coverage that let this through: a win32-
+semantics regression test (runs on ANY platform — this is what would have
+caught the bug on Linux CI), plus native-platform containment tests and a
+storage provider round-trip. To make the module testable under Node's
+strip-only mode, LocalStorageProvider's constructor parameter property was
+refactored to an explicit field (no behavior change) and both
+safeLocalPath + the class are exported.
+
+Swept the codebase for sibling bugs: the only other containment check
+(spaces/tools.ts safePath) already used path.sep — correct.
+
+Gates: tsc clean · **253/253 tests** · build clean · live upload E2E
+through the fixed path (source stored, file on disk in
+projects/{id}/source/, no storage-key rejection; 503 queue-unavailable is
+the honest no-worker response).

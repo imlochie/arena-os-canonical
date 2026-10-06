@@ -12,7 +12,14 @@
 
 import { createReadStream, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
-import { dirname, normalize, resolve } from "node:path";
+import {
+  dirname,
+  isAbsolute,
+  normalize,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { randomUUID } from "node:crypto";
 
 export type StorageRead = { stream: Readable; size: number; start: number; end: number };
@@ -46,18 +53,29 @@ export function privateObjectKey(
   return `projects/${projectId}/${category}/${randomUUID()}.${safeExtension}`;
 }
 
-function safeLocalPath(root: string, key: string) {
+export function safeLocalPath(root: string, key: string) {
   const normalized = normalize(key).replace(/^([/\\])+/, "");
-  const target = resolve(root, normalized);
   const resolvedRoot = resolve(root);
-  if (!target.startsWith(`${resolvedRoot}/`) && target !== resolvedRoot)
+  const target = resolve(resolvedRoot, normalized);
+  const relativePath = relative(resolvedRoot, target);
+
+  if (
+    relativePath === ".." ||
+    relativePath.startsWith(`..${sep}`) ||
+    isAbsolute(relativePath)
+  ) {
     throw new Error("Unsafe storage key.");
+  }
+
   return target;
 }
 
-class LocalStorageProvider implements StorageProvider {
+export class LocalStorageProvider implements StorageProvider {
   readonly kind = "local" as const;
-  constructor(private readonly root: string) {}
+  private readonly root: string;
+  constructor(root: string) {
+    this.root = root;
+  }
   async putFile(key: string, localPath: string) {
     const destination = safeLocalPath(this.root, key);
     await fs.mkdir(dirname(destination), { recursive: true });
