@@ -59,11 +59,10 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "archive-assistant",
-    name: "Archive",
-    eyebrow: "Recall",
-    description: "Browse saved artifacts from projects and battles. The AI archive assistant is not connected from this room.",
+    name: "Archive Assistant",
+    eyebrow: "Bridge",
+    description: "A live, read-only bridge to the Archive Assistant app — overview, workload, reconciliation, and provider state, fetched fresh when you open the room. Arena can read, never act.",
     state: "available",
-    destination: { href: "/artifacts", label: "Browse Artifacts" },
   },
   {
     id: "classroom",

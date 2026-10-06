@@ -6,7 +6,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import ./scripts/register-src-loader.mjs --test \"src/**/*.test.ts\"",
+    "smoke:archive": "node --import ./scripts/register-src-loader.mjs scripts/archive-context-smoke.ts"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.85",

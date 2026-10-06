@@ -41,7 +41,13 @@ function makeHandoffId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export default function ArenaRoomDetail({ room }: { room: ArenaRoom }) {
+export default function ArenaRoomDetail({
+  room,
+  children,
+}: {
+  room: ArenaRoom;
+  children?: React.ReactNode;
+}) {
   const [title, setTitle] = useState("");
   const [destinationId, setDestinationId] = useState("");
   const [projectId, setProjectId] = useState("");
@@ -158,8 +164,11 @@ export default function ArenaRoomDetail({ room }: { room: ArenaRoom }) {
             {room.description}
           </p>
 
-          {room.destination ? (
-            <div className="mt-8 rounded-2xl border border-emerald-300/15 bg-emerald-300/[0.06] p-4">
+          {children
+            ? children
+            : room.destination
+              ? (
+                <div className="mt-8 rounded-2xl border border-emerald-300/15 bg-emerald-300/[0.06] p-4">
               <div className="flex items-start gap-3">
                 <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-200" size={18} aria-hidden="true" />
                 <div>

@@ -607,12 +607,65 @@ if the surface behind it is what the room's name promises.** Changes:
   LUMA).
 - Not applied to the `bebf` monorepo's own rooms copy (preserved slice): when
   Waveyard mounts onto the baseline it inherits the corrected map.
+  *(W7's Archive rename is superseded by W8 below: the room is the AA bridge.)*
 
-
+### W6 — Related discovery
 
 `imlochie/arena-os-local-first` (261KB, last updated 2026-09-12 — one day before
 `arena-os-canonical`'s initial commit, no description): a pre-canonical experiment.
 Flagged for a future audit pass; does not affect the baseline decision (§7).
+
+### W8 — The Archive Assistant room is a real bridge (2026-10-06, fourth session)
+
+Owner correction: *"Archive Assistant is supposed to be a real connection to my other
+app."* The W7 rename to "Archive" (artifacts browser) flattened the room's meaning.
+Investigation and remount, all verified live:
+
+**What the connection actually is** (`b544`, docs/archive-assistant-integration.md):
+a server-only, read-only client to the Archive Assistant app
+(`imlochie/SomeSafePortablesoftware`) over a six-operation GET contract —
+overview, workload, reconciliation summary, finding lineage, provider refresh
+state + history — validated against an auto-generated OpenAPI snapshot, feeding
+`GET /api/archive/context`. Arena can never approve, reject, execute, move, or
+sync anything in AA. 55/55 seam tests pass on the baseline after mounting.
+
+**Provenance discovered live:** the contract's true source is the AA **branch**
+`arena/01a0a0d9-somesafeportablesoftware` (per the generated contract header) —
+NOT AA main. AA's main tip serves none of the `/assistant/*` routes, and the
+personalisation endpoints pinned at `1a2200b` are also absent from main's tip.
+Both Arena-side seams therefore pin AA states that main-tip AA no longer carries;
+the arena bridge branch is where the six-operation API lives. (AA main's PG layer
+is an empty scaffold; its real data plane is SQLite via `node:sqlite`.)
+
+**Mounted on the baseline this session:**
+
+- `src/lib/archive-assistant/*` (15 files: client, config, context, contract,
+  validator, errors, fixtures, prompt + tests), `src/lib/contract-validation.ts`,
+  `src/app/api/archive/*` (context + finding-lineage routes + route tests),
+  smoke/mock scripts + node test loader, `npm test` / `npm run smoke:archive`.
+- New `bridge-status.ts` server probe + `ArchiveAssistantBridge` panel: the room
+  page shows the REAL state — unconfigured / bearer-configured / unreachable /
+  auth-required / contract-mismatch / connected with live facts.
+- Room entry: name restored to **Archive Assistant**, eyebrow "Bridge", open,
+  no substitute destination — the room page itself is the surface.
+
+**Live verification (sandbox):** AA booted from the arena bridge branch
+(`AUTH_MODE=local`, `node:sqlite`, port 8080); Arena configured with
+`ARCHIVE_ASSISTANT_API_URL=http://127.0.0.1:8080/api`,
+`ARCHIVE_ASSISTANT_AUTH_MODE=local`, `ARCHIVE_ASSISTANT_OWNER_ID=__local__`.
+The room renders **Connected to Archive Assistant** with real overview facts;
+`/api/archive/context` returns the full bounded context from the real app.
+Failure paths fail closed (covered by the 55-test suite).
+
+**Not mounted (deliberately):** the Gate-7 reasoning lattice and the Gate-8
+personalisation seam remain on `b544` — the first is the interpretation layer
+(chat integration), the second is held pending AA-side surfaces per the ratified
+lab-004 record. Mounting the bridge was the owner-stated minimum for this room.
+
+**Also this session:** `origin/main` was found moved to `e2d280a` (owner
+fast-forward after the Waveyard turn). The session branch remains a descendant;
+the amended §8 ff command still applies and now carries the README, rooms-honesty
+fixes, and this bridge mount.
 
 ---
 
