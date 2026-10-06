@@ -31,7 +31,9 @@ test("workspace file tools round-trip inside a directory", async () => {
   try {
     const wrote = await toolWriteFile(dir, "src/game.js", "console.log('hi')");
     assert.match(wrote, /wrote src\/game\.js/);
-    assert.equal(await toolReadFile(dir, "src/game.js"), "console.log('hi')");
+    const viewed = await toolReadFile(dir, "src/game.js");
+    assert.match(viewed, /console\.log\('hi'\)/);
+    assert.match(viewed, /line\(s\)/);
     const listing = await toolListFiles(dir);
     assert.match(listing, /src\/game\.js/);
     await toolDeleteFile(dir, "src/game.js");
@@ -337,4 +339,114 @@ test("forge-ai passes an explicit 16k token cap (no silent truncation of games)"
   assert.equal(captured[0].maxTokens, 16_000);
   assert.ok(result.code.includes("<canvas"));
   assert.equal(result.engine, "ai-codegen");
+});
+
+// ---------------- intelligence additions: edit_file, guardrails, map+memory ----------------
+
+test("edit_file applies a unique search/replace and redisplays with line numbers", async () => {
+  const { toolWriteFile, toolEditFile } = await import("./tools");
+  const dir = await mkdtemp(path.join(tmpdir(), "wy-edit-"));
+  try {
+    await toolWriteFile(dir, "app.js", "function greet() {\n  return 'hello';\n}\nmodule.exports = greet;\n");
+    const out = await toolEditFile(dir, { path: "app.js", old_text: "return 'hello';", new_text: "return 'hi there';" });
+    assert.match(out, /edited app\.js/);
+    assert.match(out, /syntax/);
+    assert.match(out, /return 'hi there';/);
+    assert.match(out, /\|/); // numbered redisplay
+    const content = await readFile(path.join(dir, "app.js"), "utf8");
+    assert.match(content, /hi there/);
+    assert.ok(!content.includes("'hello'"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("edit_file refuses not-found and ambiguous matches honestly", async () => {
+  const { toolWriteFile, toolEditFile } = await import("./tools");
+  const dir = await mkdtemp(path.join(tmpdir(), "wy-edit2-"));
+  try {
+    await toolWriteFile(dir, "a.js", "const x = 1;\nconst y = 2;\nconst x2 = 1;\n");
+    const notFound = await toolEditFile(dir, { path: "a.js", old_text: "NOT PRESENT", new_text: "z" });
+    assert.match(notFound, /error: old_text not found/);
+    assert.match(notFound, /NOT applied/);
+    const dup = await toolWriteFile(dir, "dup.js", "log();\nlog();\n");
+    assert.match(dup, /syntax/);
+    const ambiguous = await toolEditFile(dir, { path: "dup.js", old_text: "log();", new_text: "other();" });
+    assert.match(ambiguous, /matches 2 locations/);
+    const content = await readFile(path.join(dir, "dup.js"), "utf8");
+    assert.ok(content.includes("log();"), "ambiguous edit must not be applied");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("syntax guardrail rejects broken JS/JSON writes and broken edits (reverted)", async () => {
+  const { toolWriteFile, toolEditFile } = await import("./tools");
+  const dir = await mkdtemp(path.join(tmpdir(), "wy-guard-"));
+  try {
+    const badJs = await toolWriteFile(dir, "broken.js", "function f( { return 1; ");
+    assert.match(badJs, /error: broken\.js has syntax errors — NOT written/);
+    await assert.rejects(() => readFile(path.join(dir, "broken.js")));
+    const badJson = await toolWriteFile(dir, "bad.json", "{ not json");
+    assert.match(badJson, /NOT written/);
+    await toolWriteFile(dir, "good.js", "const a = 1;\n");
+    const brokenEdit = await toolEditFile(dir, { path: "good.js", old_text: "const a = 1;", new_text: "const a = ;" });
+    assert.match(brokenEdit, /REJECTED and NOT applied/);
+    const still = await readFile(path.join(dir, "good.js"), "utf8");
+    assert.match(still, /const a = 1;/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("read_file is a windowed, line-numbered viewer", async () => {
+  const { toolWriteFile, toolReadFile } = await import("./tools");
+  const dir = await mkdtemp(path.join(tmpdir(), "wy-view-"));
+  try {
+    const lines = [];
+    for (let i = 1; i <= 150; i++) lines.push("line " + i);
+    await toolWriteFile(dir, "big.txt", lines.join("\n") + "\n");
+    const first = await toolReadFile(dir, "big.txt");
+    assert.match(first, /1\| line 1/);
+    assert.match(first, /100\| line 100/);
+    assert.match(first, /more lines/);
+    const window = await toolReadFile(dir, "big.txt", { startLine: 140, endLine: 150 });
+    assert.match(window, /140\| line 140/);
+    assert.match(window, /150\| line 150/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("missions inject WORKSPACE MAP and MEMORY, and lessons persist via AGENT_NOTES.md", async () => {
+  const { runMission } = await import("./mission");
+  const { existsSync } = await import("node:fs");
+  const pathMod = await import("node:path");
+  const spaceId = "mission-smart-" + Date.now();
+  const prompts: string[] = [];
+  const systems: string[] = [];
+  const scripted = (async (opts: any) => {
+    prompts.push(opts.messages[0].content);
+    systems.push(opts.system);
+    return {
+      text: JSON.stringify({ thought: "work + remember", actions: [{ tool: "write_file", args: { path: "AGENT_NOTES.md", content: "## mission notes\n- prefer edit_file for surgical changes" } }, { tool: "write_file", args: { path: "PLAN.md", content: "# plan" } }], handoff: "done", done: true }),
+      backend: "scripted", modelId: "s", via: "t", fallback: false,
+    } as any;
+  }) as any;
+  await runMission(spaceId, { goal: "build something", timeBudgetMs: 60_000 }, { generate: scripted });
+  try {
+    assert.ok(systems[0].includes("WORK DISCIPLINE"), "knowledge base must be in the system prompt");
+    assert.ok(!prompts[0].includes("WORKSPACE MAP"), "empty workspace: no map yet");
+    // second mission: map + memory must now appear
+    prompts.length = 0;
+    await runMission(spaceId, { goal: "follow up", timeBudgetMs: 60_000 }, { generate: scripted });
+    const p1 = prompts[0];
+    assert.ok(p1.includes("WORKSPACE MAP"), "map of existing files must be injected");
+    assert.ok(p1.includes("PLAN.md"), "map should list files from the previous mission");
+    assert.ok(p1.includes("MEMORY"), "reflection memory must be injected");
+    assert.ok(p1.includes("surgical changes"), "the actual lesson content must be present");
+    assert.ok(existsSync(pathMod.join(process.cwd(), ".data/space-workspaces", spaceId, "AGENT_NOTES.md")));
+  } finally {
+    await rm(pathMod.resolve(process.cwd(), ".data/space-workspaces", spaceId), { recursive: true, force: true });
+  }
 });

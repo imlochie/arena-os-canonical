@@ -20,6 +20,8 @@
  * status detail rather than pretending.
  */
 
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { spaceMissions } from "@/db/schema";
@@ -83,9 +85,18 @@ export interface MissionDeps {
   generate?: typeof generate;
 }
 
+const AGENT_KNOWLEDGE = `WORK DISCIPLINE (how strong coding agents operate):
+- PLAN before acting: your first turn should map the approach (and for multi-file work, write PLAN.md).
+- SURGICAL EDITS: use edit_file with a unique old_text snippet for changes to existing files; write_file only for new files or full rewrites. Never rewrite a large file to change a few lines.
+- VERIFY EVERY CHANGE: after writing or editing code, run it (run_command) or test it (run_tests). Never claim something works unverified.
+- SELF-CORRECT, don't retry: when something fails, read the OBSERVATIONS, form a hypothesis about WHY, then apply a targeted fix. Blind repetition of a failed action is a bug.
+- SMALL STEPS: one concern per turn; land it, verify, move on.
+- At the end, append 1-3 concise lessons to AGENT_NOTES.md ("## <goal in 6 words>\n- lesson") — future missions in this space read them.`;
+
 const TOOL_DOC = `Available tools (emit actions as JSON):
-- write_file {path, content}        write a file in the workspace
-- read_file {path}                  read a file back (8KB cap)
+- write_file {path, content}        create/overwrite a file (new files, or full rewrites of small files)
+- edit_file {path, old_text, new_text}  SURGICAL edit of an existing file (Aider-style): old_text must match EXACTLY ONE location — copy it from read_file output; verified + syntax-checked
+- read_file {path, startLine?, endLine?}  numbered, windowed view (default first 100 lines)
 - list_files {}                     list the workspace tree
 - delete_file {path}
 - run_command {command}             allowlisted: node, npm, npx, git, python3, ls, cat (20s timeout)
@@ -296,8 +307,26 @@ export async function runMission(
         )
         .slice(-6)
         .join("\n---\n");
+      // Workspace map (Aider-style repo map): cheap, high-signal orientation.
+      let map = "";
+      try {
+        map = (await toolListFiles(wsDir(spaceId))).slice(0, 1500);
+      } catch {
+        /* empty workspace */
+      }
+      // Reflection memory (Reflexion): lessons from previous missions in
+      // this space persist in AGENT_NOTES.md and are injected here.
+      let memory = "";
+      try {
+        const notes = await readFile(path.join(wsDir(spaceId), "AGENT_NOTES.md"), "utf8").catch(() => "");
+        if (notes.trim()) memory = notes.slice(0, 1500);
+      } catch {
+        /* no memory yet */
+      }
       const context =
         (handoff ? `Handoff from the previous agent:\n${handoff}\n\n` : "") +
+        (memory ? `MEMORY — lessons from previous missions in this space:\n${memory}\n\n` : "") +
+        (map && map !== "(workspace is empty)" ? `WORKSPACE MAP (current files):\n${map}\n\n` : "") +
         `Mission goal: ${mission.goal}\nYou are agent ${ai + 1}/${plan.length}: ${agent.name} (${agent.role}).` +
         (steps.length ? `\n\nRecent journal (most recent last):\n${steps.slice(-4).map((s) => `${s.agent}: ${s.thought} [${s.actions.map((a) => a.tool + (a.ok ? "✓" : "✗")).join(", ")}]`).join("\n")}` : "") +
         (observations ? `\n\nOBSERVATIONS — actual tool outputs from your recent turns (read them; fix what failed):\n${observations}` : "");
@@ -314,6 +343,7 @@ export async function runMission(
               `You are ${agent.name}, the ${agent.role} agent of a build mission with REAL tool execution. ` +
               "You draft actions; the runner executes them and shows you what actually happened. " +
               "Never claim an action you did not emit. " +
+              AGENT_KNOWLEDGE + "\n\n" +
               TOOL_DOC,
             temperature: 0.3,
             maxTokens: 8_000,

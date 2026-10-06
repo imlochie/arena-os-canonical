@@ -1122,3 +1122,43 @@ Gates: tsc clean · **244/244 tests** (15 in the spaces suite: +6 new —
 search, run_tests×2, extra-allowlist, feedback loop, forge 16k cap) ·
 build clean · live route checks (knobs accepted + clamped, honest Local
 Engine status, pages 200).
+
+---
+
+## Mission intelligence additions — research-grounded (2026-10-07)
+
+Researched current coding-agent practice (Aider edit formats & benchmarks,
+SWE-agent's Agent-Computer Interface paper, Reflexion) and implemented the
+five findings with the strongest evidence:
+
+1. **`edit_file` — Aider-style SEARCH/REPLACE** (files >~400 lines use ~10×
+   fewer tokens than whole-file rewrites). Guards against the documented
+   failure modes: unique-match enforcement (ambiguous matches refuse with
+   "include more surrounding lines"), CRLF/whitespace-drift tolerance,
+   exact-text guidance, honest per-edit results — never "applied 0 of N
+   edits" reported as success. Post-edit redisplay: numbered window around
+   the changed region (SWE-agent's "edit command redisplays the update").
+2. **Syntax guardrails** (SWE-agent: removing linting costs ~3 pts;
+   guardrails stop cascading edits). write_file and edit_file on
+   .js/.mjs/.cjs run `node --check`; .json parses; broken writes are NOT
+   written, broken edits are REVERTED and reported with the real parse
+   error. Other types honestly report "not checked".
+3. **Windowed file viewer** (SWE-agent ACI: bounded views beat unbounded).
+   read_file is now line-numbered with startLine/endLine windows (default
+   first 100 lines) + "N more lines" hints — compact, information-dense
+   feedback instead of 8KB dumps.
+4. **Workspace map** (Aider's highest-praised context abstraction): every
+   agent turn now carries the workspace file tree — orientation without
+   scanning every file.
+5. **Reflection memory** (Reflexion: stored lessons from failures carried
+   forward): agents append lessons to AGENT_NOTES.md at mission end;
+   subsequent missions in the same space get a MEMORY section injected.
+   Plus an AGENT_KNOWLEDGE system-prompt base: plan→act→verify discipline,
+   surgical edits, "self-correct with a hypothesis, don't blind-retry",
+   never claim unverified work.
+
+Tests: 249/249 — 5 new suites: edit_file apply/redisplay, honest
+not-found/ambiguous refusals, guardrail rejection+revert for broken
+JS/JSON writes and edits, windowed viewer, and map+memory injection across
+two sequential scripted missions (lesson written in mission 1 is present in
+mission 2's context). Live: API surface green, honest statuses, pages 200.
