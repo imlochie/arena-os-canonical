@@ -1,0 +1,57 @@
+{
+  "name": "waveyard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Waveyard worker subsystem (preserved from the original Waveyard monorepo) \u2014 run this where Redis/ffmpeg/Python exist to make stems, analysis, waveforms and exports real.",
+  "workspaces": [
+    "apps/worker",
+    "packages/*"
+  ],
+  "scripts": {
+    "worker": "npm run start --workspace=@waveyard/worker",
+    "worker:doctor": "npm run doctor --workspace=@waveyard/worker",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate --config packages/database/drizzle.config.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "prove:demucs": "tsx scripts/prove-demucs.ts",
+    "test:e2e": "playwright test",
+    "test:compose": "tsx scripts/test-compose.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.19.15",
+    "@types/pg": "^8.15.6",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.3.5",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.840.0",
+    "@aws-sdk/s3-request-presigner": "^3.840.0",
+    "@mlc-ai/web-llm": "^0.2.85",
+    "bcryptjs": "^3.0.2",
+    "bullmq": "^5.58.8",
+    "drizzle-orm": "^0.45.2",
+    "ioredis": "^5.7.0",
+    "next": "^16.3.5",
+    "pg": "^8.16.3",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "zod": "^4.0.17"
+  }
+}

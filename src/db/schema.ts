@@ -1,13 +1,14 @@
 import {
-  pgTable,
-  text,
-  integer,
   boolean,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  primaryKey,
   real,
+  text,
   timestamp,
   uuid,
-  jsonb,
-  primaryKey,
 } from "drizzle-orm/pg-core";
 
 // ---- Model registry (ELO tracked) ----
@@ -493,44 +494,29 @@ export const cutProjects = pgTable("cut_projects", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-// ---- Waveyard: music workspace (ported from the arena/01a0bebf monorepo) ----
-// Scope honestly mounted in canonical: project flow, audio asset flow,
-// waveform infrastructure (peaks computed in-browser via Web Audio, persisted),
-// arrangement versions. Stem separation / source analysis require the Waveyard
-// worker + models — surfaced as unavailable, never faked.
-export const wyProjects = pgTable("wy_projects", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  title: text("title").notNull().default("Untitled project"),
-  notes: text("notes").notNull().default(""),
-  bpm: integer("bpm"),
-  musicalKey: text("musical_key"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
 
-export const wySources = pgTable("wy_sources", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  projectId: uuid("project_id").notNull(),
-  name: text("name").notNull(),
-  mediaType: text("media_type").notNull().default("audio/mpeg"),
-  storageKey: text("storage_key").notNull(), // .data/waveyard/<id>.<ext>
-  bytes: integer("bytes").notNull().default(0),
-  durationMs: integer("duration_ms").notNull().default(0),
-  checksum: text("checksum").notNull().default(""),
-  peaks: jsonb("peaks"), // [{min,max}] — computed in-browser (Web Audio), persisted here
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
 
-export const wyVersions = pgTable("wy_versions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  projectId: uuid("project_id").notNull(),
-  name: text("name").notNull().default("Version 1"),
-  arrangement: jsonb("arrangement").notNull(), // {tracks:[{id,label,clipIds}],clips:[{id,sourceId,startMs,endMs,trackIndex,gain}],bpm}
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
 
 export type StudioJobRow = typeof studioJobs.$inferSelect;
 export type CutProjectRow = typeof cutProjects.$inferSelect;
-export type WyProjectRow = typeof wyProjects.$inferSelect;
-export type WySourceRow = typeof wySources.$inferSelect;
-export type WyVersionRow = typeof wyVersions.$inferSelect;
+
+// ---- Waveyard ⇄ Arena bridge: persisted cross-room handoff records ----
+// Ported from the original Waveyard migration 0019_arena_room_handoffs.
+// No foreign keys into any room: room data/media stays independently owned
+// and can only be reached through a verified room integration.
+export const roomHandoffs = pgTable("arena_room_handoffs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  arenaProjectId: uuid("arena_project_id").notNull(),
+  room: text("room").notNull(),
+  roomProjectId: text("room_project_id").notNull(),
+  sourceId: text("source_id"),
+  kind: text("kind").notNull(),
+  title: text("title").notNull().default("Untitled room handoff"),
+  summary: text("summary").notNull().default(""),
+  payload: text("payload").notNull().default("{}"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("arena_room_handoffs_project_created_idx").on(table.arenaProjectId, table.createdAt),
+  index("arena_room_handoffs_room_project_idx").on(table.room, table.roomProjectId),
+]);
+export type RoomHandoffRow = typeof roomHandoffs.$inferSelect;

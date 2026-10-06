@@ -1,0 +1,23 @@
+import Link from "next/link";
+import { BuildProject } from "@/components/waveyard/BuildProject";
+
+export const metadata = { title: "Create · Waveyard" };
+
+export default function CreatePage() {
+  return (
+    <main className="shell">
+      <nav className="nav">
+        <Link href="/waveyard" className="brand"><i>Waveyard</i><small>open stem studio</small></Link>
+        <div className="navlinks"><Link href="/waveyard">Home</Link></div>
+      </nav>
+      <section className="create">
+        <div>
+          <span className="eyebrow">Build a first listen</span>
+          <h1>Drop audio or paste authorized links.</h1>
+          <p className="notice">Both paths create normal private Source Assets, then enter the same separation and analysis pipeline. Only add material you are authorized to use.</p>
+        </div>
+        <BuildProject />
+      </section>
+    </main>
+  );
+}

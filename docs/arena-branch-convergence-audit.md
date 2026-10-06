@@ -882,3 +882,90 @@ Waveyard create → upload → fetch → delete round-trip passes on the live
 database.
 
 Gates: tsc clean · 167/167 tests · production build clean.
+
+---
+
+## Waveyard: full studio port (2026-10-06, replaces the thin first pass)
+
+The first Waveyard mount was a ~900-line sketch (project/upload/4-track
+timeline). It has been **replaced by the real Waveyard implementation**, ported
+selectively from the original Waveyard project on branch
+`arena/01a0bebf-arena-os-canonical` (monorepo: apps/web + apps/worker +
+packages/* + services/*). No branch merges; every file was ported and adapted.
+
+### Ported (verbatim unless noted)
+- **Domain package** `@waveyard/types` (19 modules, ~2,100 lines): musical key,
+  beat grids, clip construction/editing, source sections, section arrangement,
+  cross-source alignment, arrangement automation + extensions, musical events,
+  drum/harmony/vocal analysis, MIDI, meeting points, multi-source placement,
+  automatic remix, source acquisition, visual state. → `src/lib/waveyard/types/`
+- **24 original domain unit tests** now run in the repo suite (node:test +
+  jest-compat shim extended with toMatchObject/objectContaining/any).
+- **Schema**: 29 tables ported to `src/db/waveyardSchema.ts` (source/stem/
+  waveform assets + jobs, five analysis families, remix sessions/tracks/clips/
+  automation/versions, exports, builds, acquisitions, audit events). `projects`
+  is table `wy_projects`; users/sessions/project_members dropped (Arena is a
+  local-first single-owner app — actor columns record LOCAL_OWNER_ID).
+  drizzle.config points at both schema files. The Waveyard→Arena bridge table
+  `arena_room_handoffs` (migration 0019) is ported into `src/db/schema.ts`.
+- **45 API routes** — uploads (multipart + honest client-probe fallback),
+  assets (range streaming + waveform delivery), remixes (state/tracks/versions/
+  restore/meeting-points/placements/automation/extensions/clips:
+  edit/batch/from-section/loop/slice/align-beat), remix-versions/exports,
+  sources (events/harmony), stems (drum/vocal), analyses retries,
+  waveform-jobs, jobs, publication, moderation, public catalogue, and the
+  arena-handoff bridge (creates a real Arena project + artifact + handoff row).
+- **Studio UI** (33 components, ~4,600 lines): StudioCore (733), 20 studio
+  panels (timeline, transport, stem mixer, clip inspector, section maps,
+  analysis summaries, meeting points, version history…), ProjectWorkspace,
+  BuildProject, LivingPlayer + player-state, CinematicVisual,
+  AutomaticRemixPrompt, WaveformCanvas, DiscoverCatalog, ModeratorReview,
+  PublicProject, PublicationPanel, WaveyardHandoffPanel. →
+  `src/components/waveyard/`. Original stylesheets ported to
+  `src/app/waveyard/waveyard.css` (route-scoped, no class collisions).
+- **Six pages**: /waveyard (home + intake), /create, /discover, /moderation,
+  /p/[id] (public release), /projects/[id] (workspace → StudioCore).
+- **Worker subsystem preserved** at `waveyard-worker/` (runnable where
+  Redis/ffmpeg/Python exist): apps/worker (15 BullMQ modules + doctor),
+  services (separation/analysis python), packages (types/queue/storage/
+  database/audio), original vitest tests, README. NOT part of the web build
+  (excluded from root tsconfig; own workspace).
+
+### Honest-offline adaptations (each labeled, none fake)
+- **Queue**: web-app enqueue is real when REDIS_URL + bullmq exist; otherwise
+  it throws and jobs persist as `failed / queue_unavailable` with the reason —
+  surfaced in the UI, retryable. Never a fake progress state.
+- **Client-probe fallback**: when the server has no ffprobe, the browser's
+  Web Audio decode (real duration/sampleRate/channels) may stand in; recorded
+  as `probeSource: "client-webaudio"` in the acquisition metadata.
+- **Browser-computed waveforms**: real `waveyard-peaks-v1` peaks (44.1 kHz
+  mono canonical format) computed in-browser, validated by the same
+  `validateWaveform()` as worker output, stored with job stage
+  `browser-computed`.
+- **Unseparated-source bridge**: arrangement tracks bind to stems; without
+  separation the user can explicitly add the full, unseparated source as a
+  track — stem row `engine: passthrough-unseparated`, `stemType: "source"`,
+  linked to the failed separation job. The automatic-remix engine then builds
+  its honest no-analysis fallback ("preserved the source as one continuous
+  arrangement").
+- Publication requires a completed worker export before a project can go
+  public — unchanged from the original; nothing publishes unrendered audio.
+- Meeting-point discovery requires verified structural analysis — honest 4xx
+  offline, unchanged.
+
+### Live E2E (sandbox: no redis, no ffmpeg, no worker — all results honest)
+project create → build record → upload (client-probe, 503 queue-unavailable
+with source+waveformJobId) → browser waveform stored+served at all 5
+resolutions → passthrough stem streams source bytes (200, 60000 B) →
+automatic remix builds session + "track.mp3 — Source" track + full-length clip
+→ clip edit PUT (vol 0.7, dur 2000 ms) → versions save/list → arena handoff
+creates Arena project + artifact + handoff row → export honestly 503 →
+publication honestly requires a completed export → jobs show
+failed/queue_unavailable → public/moderation/discover/home pages 200 →
+12-room navigation matrix still 12/12.
+
+### Gates
+`tsc --noEmit` clean (root; waveyard-worker has its own workspace tsconfig) ·
+`npm test` **218/218** (167 prior + 51 waveyard domain tests) · production
+build clean (22 pages) · `db:setup` applied (29 new tables) · E2E data
+cleaned up afterwards.

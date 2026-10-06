@@ -1,0 +1,261 @@
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createReadStream, existsSync, promises as fs } from "node:fs";
+import { Readable } from "node:stream";
+import { dirname, join, normalize, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+
+export type StorageRead = { stream: Readable; size: number; start: number; end: number };
+
+export interface StorageProvider {
+  readonly kind: "local" | "s3";
+  putFile(key: string, localPath: string, contentType?: string): Promise<void>;
+  getToFile(key: string, localPath: string): Promise<void>;
+  // Bounded derived metadata (waveforms), never large audio delivery.
+  getBuffer(key: string, maxBytes: number): Promise<Buffer>;
+  exists(key: string): Promise<boolean>;
+  delete(key: string): Promise<void>;
+  createDownloadUrl(
+    key: string,
+    expiresInSeconds: number,
+    downloadName?: string,
+  ): Promise<string | null>;
+  getLocalPath(key: string): string | null;
+  openReadStream(key: string, range?: { start: number; end: number }): Promise<StorageRead>;
+  healthcheck(): Promise<void>;
+}
+
+export function privateObjectKey(
+  projectId: string,
+  category: "source" | "stem" | "waveform" | "export",
+  extension: string,
+) {
+  const safeExtension =
+    extension.replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "bin";
+  return `projects/${projectId}/${category}/${randomUUID()}.${safeExtension}`;
+}
+
+function safeLocalPath(root: string, key: string) {
+  const normalized = normalize(key).replace(/^([/\\])+/, "");
+  const target = resolve(root, normalized);
+  const resolvedRoot = resolve(root);
+  if (!target.startsWith(`${resolvedRoot}/`) && target !== resolvedRoot)
+    throw new Error("Unsafe storage key.");
+  return target;
+}
+
+class LocalStorageProvider implements StorageProvider {
+  readonly kind = "local" as const;
+  constructor(private readonly root: string) {}
+  async putFile(key: string, localPath: string) {
+    const destination = safeLocalPath(this.root, key);
+    await fs.mkdir(dirname(destination), { recursive: true });
+    await fs.copyFile(localPath, destination);
+  }
+  async getToFile(key: string, localPath: string) {
+    await fs.mkdir(dirname(localPath), { recursive: true });
+    await fs.copyFile(safeLocalPath(this.root, key), localPath);
+  }
+  async getBuffer(key: string, maxBytes: number) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+      throw new Error("A positive metadata read limit is required.");
+    const location = safeLocalPath(this.root, key);
+    const details = await fs.stat(location);
+    if (details.size > maxBytes)
+      throw new Error("Derived metadata exceeds the allowed read size.");
+    return fs.readFile(location);
+  }
+  async exists(key: string) {
+    try {
+      await fs.access(safeLocalPath(this.root, key));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async delete(key: string) {
+    await fs.rm(safeLocalPath(this.root, key), { force: true });
+  }
+  async createDownloadUrl(
+    _key: string,
+    _expiresInSeconds: number,
+    _downloadName?: string,
+  ) {
+    return null;
+  }
+  getLocalPath(key: string) {
+    return safeLocalPath(this.root, key);
+  }
+  async openReadStream(key: string, range?: { start: number; end: number }) {
+    const location = safeLocalPath(this.root, key);
+    const details = await fs.stat(location);
+    const start = range?.start ?? 0;
+    const end = range?.end ?? details.size - 1;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= details.size)
+      throw new Error("Invalid object byte range.");
+    return { stream: createReadStream(location, { start, end }), size: details.size, start, end };
+  }
+  async healthcheck() {
+    await fs.mkdir(this.root, { recursive: true });
+    await fs.access(this.root);
+  }
+}
+
+class S3StorageProvider implements StorageProvider {
+  readonly kind = "s3" as const;
+  private readonly client: S3Client;
+  constructor(private readonly bucket: string) {
+    this.client = new S3Client({
+      region: process.env.S3_REGION ?? "us-east-1",
+      endpoint: process.env.S3_ENDPOINT,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === "true",
+      credentials: {
+        accessKeyId: required("S3_ACCESS_KEY"),
+        secretAccessKey: required("S3_SECRET_KEY"),
+      },
+    });
+  }
+  async putFile(key: string, localPath: string, contentType?: string) {
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: createReadStream(localPath),
+        ContentType: contentType,
+      }),
+    );
+  }
+  async getToFile(key: string, localPath: string) {
+    const response = await this.client.send(
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+    if (!response.Body || !("transformToByteArray" in response.Body))
+      throw new Error("Storage object body is unavailable.");
+    await fs.mkdir(dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, await response.Body.transformToByteArray());
+  }
+  async getBuffer(key: string, maxBytes: number) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+      throw new Error("A positive metadata read limit is required.");
+    // Request at most limit + 1 bytes. Reading an unbounded S3 body before
+    // checking its length would let malformed derived metadata consume memory.
+    const response = await this.client.send(
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Range: `bytes=0-${maxBytes}`,
+      }),
+    );
+    if (!response.Body || !("transformToByteArray" in response.Body))
+      throw new Error("Storage object body is unavailable.");
+    const bytes = Buffer.from(await response.Body.transformToByteArray());
+    if (bytes.byteLength > maxBytes)
+      throw new Error("Derived metadata exceeds the allowed read size.");
+    return bytes;
+  }
+  async exists(key: string) {
+    try {
+      await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      return true;
+    } catch (error) {
+      const status = (error as { $metadata?: { httpStatusCode?: number } })
+        .$metadata?.httpStatusCode;
+      if (status === 404) return false;
+      throw error;
+    }
+  }
+  async delete(key: string) {
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+  }
+  async createDownloadUrl(
+    key: string,
+    expiresInSeconds: number,
+    downloadName?: string,
+  ) {
+    return getSignedUrl(
+      this.client,
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ResponseContentDisposition: downloadName
+          ? `attachment; filename="${downloadName.replace(/[\\"\r\n]/g, "_")}"`
+          : undefined,
+      }),
+      { expiresIn: expiresInSeconds },
+    );
+  }
+  getLocalPath() {
+    return null;
+  }
+  async openReadStream(key: string, range?: { start: number; end: number }) {
+    const head = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+    const size = Number(head.ContentLength ?? 0);
+    const start = range?.start ?? 0;
+    const end = range?.end ?? size - 1;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= size)
+      throw new Error("Invalid object byte range.");
+    const response = await this.client.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      Range: `bytes=${start}-${end}`,
+    }));
+    if (!response.Body || !(response.Body instanceof Readable))
+      throw new Error("Storage object body is unavailable.");
+    return { stream: response.Body, size, start, end };
+  }
+  async healthcheck() {
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: ".waveyard-healthcheck",
+        Body: "ok",
+      }),
+    );
+    await this.client.send(
+      new DeleteObjectCommand({
+        Bucket: this.bucket,
+        Key: ".waveyard-healthcheck",
+      }),
+    );
+  }
+}
+
+function required(name: string) {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is required for S3 storage.`);
+  return value;
+}
+
+let provider: StorageProvider | undefined;
+function repositoryRoot() {
+  const current = process.cwd();
+  if (process.env.WAVEYARD_ROOT) return resolve(process.env.WAVEYARD_ROOT);
+  return existsSync(join(current, "apps"))
+    ? current
+    : resolve(current, "../..");
+}
+
+export function getStorage(): StorageProvider {
+  if (provider) return provider;
+  const kind = process.env.STORAGE_PROVIDER ?? "local";
+  provider =
+    kind === "local"
+      ? new LocalStorageProvider(
+          resolve(
+            /* turbopackIgnore: true */ process.env.LOCAL_STORAGE_PATH ??
+              join(repositoryRoot(), ".waveyard-data/objects"),
+          ),
+        )
+      : new S3StorageProvider(required("S3_BUCKET"));
+  return provider;
+}

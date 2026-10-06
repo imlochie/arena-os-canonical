@@ -1,22 +1,35 @@
-import WaveyardStudio from "@/components/WaveyardStudio";
+import Link from "next/link";
+import { BuildProject } from "@/components/waveyard/BuildProject";
 
 export const metadata = { title: "Waveyard · Arena" };
 
-export default function WaveyardPage() {
+export default function WaveyardHome() {
+  // Single-owner local app: the original's sign-in gate is intentionally gone.
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8">
-      <section className="rounded-3xl border border-cyan-400/20 bg-gradient-to-br from-[#061a22] via-[#0a0f1e] to-[#0c0714] p-6 shadow-[0_24px_80px_rgba(34,211,238,0.08)] sm:p-8">
-        <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-300">Arena room · Music</p>
-        <h1 className="mt-3 text-4xl font-black tracking-tight text-white sm:text-5xl">Waveyard</h1>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-          A real music workspace: upload audio (decoded and peak-analyzed in your browser), arrange clips
-          across tracks, play back through Web Audio, and persist arrangement versions. Stem separation and
-          automated analysis need the Waveyard worker — honestly unavailable until one is connected.
-        </p>
+    <main className="shell">
+      <nav className="nav">
+        <Link href="/waveyard" className="brand"><i>Waveyard</i><small>open stem studio</small></Link>
+        <div className="navlinks">
+          <Link href="#how">How it works</Link>
+          <Link href="/waveyard/discover">Discover</Link>
+          <Link href="/waveyard/create">Create</Link>
+        </div>
+      </nav>
+      <section className="hero build-hero">
+        <div>
+          <span className="eyebrow">Give Waveyard music</span>
+          <h1>Build the first<br />good version.</h1>
+          <p>Local audio and authorized source links enter one private source pool. Waveyard separates, understands, and builds an initial listen before Studio asks for detail.</p>
+        </div>
+        <aside className="hero-card build-card">
+          <BuildProject />
+        </aside>
       </section>
-      <div className="mt-6">
-        <WaveyardStudio />
-      </div>
-    </div>
+      <section id="how" className="steps">
+        <article><b>01 / SOURCE</b><h3>Bring a track.</h3><p>Upload an audio file. The server probes its real codec, duration, sample rate, channels and checksum before it can enter the studio.</p></article>
+        <article><b>02 / STEMS</b><h3>Separate for real.</h3><p>A dedicated worker runs the configured Demucs model on CPU or CUDA, validates each emitted stem, and stores only actual output. Without the worker, separation is reported as unavailable — never faked.</p></article>
+        <article><b>03 / SESSION</b><h3>Listen with intent.</h3><p>Open the project workspace and audition synchronized stems from private storage. Remix and publication layers follow this truthful foundation.</p></article>
+      </section>
+    </main>
   );
 }

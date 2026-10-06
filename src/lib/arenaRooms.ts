@@ -1,7 +1,11 @@
 export type ArenaRoomState = "available" | "local" | "approval";
 
+export type ArenaHandoffTargetKind = "operational" | "planning" | "none";
+
 export interface ArenaRoom {
   id: string;
+  /** Whether this room can receive a Waveyard/Arena handoff draft. */
+  handoffTarget: ArenaHandoffTargetKind;
   name: string;
   eyebrow: string;
   description: string;
@@ -19,6 +23,7 @@ export interface ArenaRoom {
 export const ARENA_ROOMS: ArenaRoom[] = [
   {
     id: "assistant",
+    handoffTarget: "operational",
     name: "Assistant",
     eyebrow: "Think",
     description: "Design personal assistants and open a direct chat when you choose.",
@@ -28,6 +33,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "orchestrator",
+    handoffTarget: "operational",
     name: "Orchestrator",
     eyebrow: "Route",
     description: "Choose an existing workflow for the work. Nothing launches automatically.",
@@ -36,6 +42,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "council",
+    handoffTarget: "operational",
     name: "Council",
     eyebrow: "Compare",
     description: "Compare perspectives and synthesize a result after you submit a request.",
@@ -44,6 +51,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "congress",
+    handoffTarget: "operational",
     name: "Congress",
     eyebrow: "Decide",
     description: "Timed multi-seat AI deliberation with durable, resumable records. Each seat speaks in turn; you call the question. Runs locally, no keys.",
@@ -52,6 +60,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "spaces",
+    handoffTarget: "operational",
     name: "Spaces",
     eyebrow: "Organize",
     description: "A recurring agent workbench — money-work templates and multi-window organization over projects, artifacts, and memory.",
@@ -61,6 +70,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "archive-assistant",
+    handoffTarget: "operational",
     name: "Archive Assistant",
     eyebrow: "Bridge",
     description: "A live, read-only bridge to the Archive Assistant app — overview, workload, reconciliation, and provider state, fetched fresh when you open the room. Arena can read, never act.",
@@ -71,6 +81,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "classroom",
+    handoffTarget: "operational",
     name: "Classroom",
     eyebrow: "Learn",
     description: "An executable teaching loop — lessons with memory, checks, and progression. AI instruction runs locally, no keys.",
@@ -79,6 +90,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "studio",
+    handoffTarget: "operational",
     name: "Studio",
     eyebrow: "Make",
     description: "Multimedia generation jobs. The procedural demo engine works offline end-to-end (video/image/audio); WanGP, ComfyUI and DashScope backends show live connection status and never fake output.",
@@ -87,6 +99,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "cut-lab",
+    handoffTarget: "operational",
     name: "Cut Lab",
     eyebrow: "Edit",
     description: "Browser-native video editing: import media or generate procedural clips, cut a timeline, and export a real video file (MediaRecorder). Projects persist.",
@@ -95,6 +108,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "waveyard",
+    handoffTarget: "operational",
     name: "Waveyard",
     eyebrow: "Listen",
     description: "A music workspace: upload audio (waveform peaks computed in your browser), arrange clips across tracks, play back via Web Audio, and save arrangement versions. Stem/analysis worker features report honestly as unavailable.",
@@ -103,6 +117,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "luma",
+    handoffTarget: "operational",
     name: "LUMA",
     eyebrow: "See",
     description: "Photography: capture or import YOUR photos, apply non-destructive looks through the real LUMA color pipeline, and export image files. No text-to-image — that is the separate Image surface.",
@@ -111,6 +126,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
   },
   {
     id: "device-security",
+    handoffTarget: "none",
     name: "Device Security",
     eyebrow: "Protect",
     description: "Browser-observable security and runtime posture: secure context, transport, WebCrypto, WebGPU, storage, and permissions — measured live, with explicit 'not observable' limits. Privacy controls remain a separate surface.",

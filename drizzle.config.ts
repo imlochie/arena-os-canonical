@@ -14,6 +14,6 @@ const url =
 
 export default defineConfig({
   dialect: "postgresql",
-  schema: "./src/db/schema.ts",
+  schema: ["./src/db/schema.ts", "./src/db/waveyardSchema.ts"],
   dbCredentials: { url },
 });

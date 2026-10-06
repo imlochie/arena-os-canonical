@@ -1,27 +1,27 @@
-import { createWaveyardProject, listWaveyardProjects } from "@/lib/waveyard";
+import { NextResponse } from "next/server";
+import { desc, eq } from "drizzle-orm";
+import { z } from "zod";
+import { db } from "@/db";
+import { projects } from "@/db/waveyardSchema";
+import { requireUser } from "@/lib/waveyard/local-context";
 
-export const dynamic = "force-dynamic";
-
-// GET → list projects · POST → create project
+const createSchema = z.object({ title: z.string().trim().min(1).max(160), description: z.string().trim().max(4000).optional(), genre: z.string().trim().max(80).optional(), licenseCode: z.string().trim().max(80).optional() });
 export async function GET() {
   try {
-    return Response.json({ projects: await listWaveyardProjects() });
-  } catch {
-    return Response.json({ projects: [] });
-  }
+    const user = await requireUser();
+    // Single-owner local app: no project_members table — the local owner owns
+    // every project, so the role is always "owner".
+    const rows = await db.select().from(projects).where(eq(projects.ownerId, user.id)).orderBy(desc(projects.updatedAt)).limit(50);
+    return NextResponse.json({ projects: rows.map((row) => ({ ...row, role: "owner" })) });
+  } catch (error) { if (error instanceof Response) return error; throw error; }
 }
-
-export async function POST(req: Request) {
+export async function POST(request: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const project = await createWaveyardProject({
-      title: body.title,
-      notes: body.notes,
-      bpm: body.bpm != null ? Number(body.bpm) : null,
-      musicalKey: body.musicalKey,
-    });
-    return Response.json({ project }, { status: 201 });
-  } catch {
-    return Response.json({ error: "could not create project" }, { status: 500 });
-  }
+    const user = await requireUser();
+    const parsed = createSchema.safeParse(await request.json().catch(() => null));
+    if (!parsed.success) return NextResponse.json({ error: "A project title is required." }, { status: 400 });
+    
+    const [project] = await db.insert(projects).values({ ownerId: user.id, title: parsed.data.title, description: parsed.data.description ?? "", genre: parsed.data.genre || null, licenseCode: parsed.data.licenseCode || "all-rights-reserved" }).returning();
+    return NextResponse.json({ project }, { status: 201 });
+  } catch (error) { if (error instanceof Response) return error; throw error; }
 }
