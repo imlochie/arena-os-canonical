@@ -11,8 +11,11 @@
     "lint": "eslint .",
     "db:setup": "node scripts/db-setup.mjs",
     "typecheck": "node scripts/typecheck.mjs",
-    "test": "node --import ./scripts/register-src-loader.mjs --test \"src/**/*.test.ts\"",
-    "smoke:archive": "node --import ./scripts/register-src-loader.mjs scripts/archive-context-smoke.ts"
+    "test": "node --import ./scripts/register-src-loader.mjs --test \"src/**/*.test.ts\" \"desktop/**/*.test.ts\"",
+    "smoke:archive": "node --import ./scripts/register-src-loader.mjs scripts/archive-context-smoke.ts",
+    "desktop:compile": "tsc -p desktop/tsconfig.json",
+    "desktop": "npm run desktop:compile && electron .",
+    "desktop:smoke": "node scripts/desktop-smoke.mjs"
   },
   "dependencies": {
     "@mlc-ai/web-llm": "^0.2.85",
@@ -35,10 +38,12 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "drizzle-kit": "0.31.10",
+    "electron": "^44.5.1",
     "eslint": "9.39.4",
     "eslint-config-next": "^16.3.8",
     "postcss": "^8.5.29",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3"
-  }
+  },
+  "main": "desktop/dist/main.js"
 }

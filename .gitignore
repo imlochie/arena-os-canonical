@@ -6,3 +6,6 @@
 .env.local
 .next/
 node_modules/
+
+# Electron desktop shell build output
+desktop/dist/
