@@ -20,6 +20,13 @@ const nextConfig: NextConfig =
             "./electron-builder.yml",
             "./desktop-migrations/**",
             "./drizzle/**",
+            // Build outputs — CRITICAL: when these directories exist under
+            // the repo root, Turbopack's output file tracing recursively
+            // includes them in the standalone server (proven: any file, any
+            // depth). A previous desktop-release/win-unpacked would then be
+            // packaged INSIDE the next installer — recursive self-packaging.
+            "./desktop-release/**",
+            "./desktop-package/**",
           ],
         },
       }

@@ -43,6 +43,7 @@ const logs = []; // module scope so the crash report can include captured logs
 
 async function main() {
   const { resolveRuntimeConfig, ArenaRuntimeSupervisor } = await import("../desktop/runtime/index.ts");
+  const { findPackagingContamination } = await import("../scripts/lib/staged-tree-guard.mjs");
   const { removeDirWithRetry } = await import("../desktop/runtime/fs-cleanup.ts");
   const { resolveArenaDataDirs } = await import("../desktop/paths.ts");
 
@@ -87,6 +88,13 @@ async function main() {
     walk(path.join(appRoot, "server"));
     step("staged server tree is self-contained (no symlinks escape the package)", escaping.length === 0, {
       info: escaping.length ? escaping.join("; ").slice(0, 200) : "no escaping symlinks",
+    });
+    // Regression (recursive self-packaging): the staged tree must contain no
+    // build output — a previous desktop-release/win-unpacked once shipped
+    // INSIDE the installer via Turbopack's repo-root directory sweep.
+    const contamination = findPackagingContamination(path.join(appRoot, "server"));
+    step("staged tree contains no packaging output (no recursive self-packaging)", contamination.length === 0, {
+      info: contamination.length ? contamination.map((v) => v.reason).join("; ").slice(0, 200) : "clean",
     });
   }
   step("packaged ffmpeg resolved", config.ffmpegPath !== null && config.ffmpegPath.startsWith(appRoot), { info: config.ffmpegPath });

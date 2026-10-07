@@ -557,7 +557,7 @@ export async function runDesktopAcceptance(inputs: AcceptanceInputs): Promise<Ac
         path.join(inputs.appRoot, "licenses", "FFMPEG-LICENSE.txt"),
       ];
       s.step("FFmpeg GPL license notice shipped", licenses.some((candidate) => existsSync(candidate)));
-      const junk = [".env", ".env.local", "desktop-release", ".git"].filter((name) => existsSync(path.join(inputs.appRoot, name)) || existsSync(path.join(inputs.appRoot, "server", name)));
+      const junk = [".env", ".env.local", "desktop-release", "desktop-package", "win-unpacked", ".git"].filter((name) => existsSync(path.join(inputs.appRoot, name)) || existsSync(path.join(inputs.appRoot, "server", name)));
       s.step("no secrets or repo junk in the app tree", junk.length === 0, junk.length > 0 ? junk.join(", ") : "clean");
       const sizeOf = (dir: string): number => {
         let total = 0;

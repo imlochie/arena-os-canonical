@@ -388,7 +388,7 @@ function auditInstallTree(dir) {
 
   // No repo junk / secrets.
   const junk = [];
-  for (const name of [".env", ".env.local", "desktop-release", ".git", "test", "fixtures", "__tests__"]) {
+  for (const name of [".env", ".env.local", "desktop-release", "desktop-package", "win-unpacked", ".git", "test", "fixtures", "__tests__"]) {
     if (exists(name)) junk.push(name);
     if (exists(`resources\\app\\${name}`) || exists(`resources/app/${name}`)) junk.push(`resources/app/${name}`);
   }

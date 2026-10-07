@@ -120,6 +120,31 @@ After the automated run, with the app installed and launched normally:
   chains (incl. the esbuild dev-server advisory). Nothing vulnerable is
   shipped in the installer; no dependency was mutated (pinned ecosystem).
 
+## Recursive self-packaging — fixed, with a staging invariant
+
+**Defect (found on the real Windows machine):** after the first successful
+`desktop:dist`, the repo root contains `desktop-release/win-unpacked` (the
+entire previous build). Turbopack's output file tracing **recursively
+includes repo-root directories that exist at build time** (proven: any file,
+any depth — a text probe, a `.bin`, a `.exe` all landed in
+`.next/standalone`) unless they are listed in `outputFileTracingExcludes`.
+The next build therefore staged the previous installer's full contents
+inside `desktop-package/server/desktop-release/...` and electron-builder
+signed the same binaries twice — once normally, once under
+`resources/app/server/desktop-release/...` — before dying in icon-tool.
+
+**Fix (both layers):**
+1. `next.config.ts` excludes `./desktop-release/**` and
+   `./desktop-package/**` from desktop output tracing (verified with a
+   control group: excluded dir vanishes, unexcluded probe dir still swept).
+2. `scripts/lib/staged-tree-guard.mjs` — staging REJECTS any tree
+   containing packaging output (`desktop-release`, `desktop-package`,
+   `win-unpacked`/`linux-unpacked`/`mac-unpacked`, or a nested
+   `resources/app` layout) at any depth; `desktop-prepare-server` runs it
+   on every staging, and also starts from a fresh `.next/standalone`.
+   `desktop:e2e` asserts the same invariant on the staged tree, and the
+   acceptance runner's packaging audit flags the same names.
+
 ## Offline tool seeding (NSIS) — for networks where github downloads hang up
 
 electron-builder downloads its NSIS toolchain at BUILD time from

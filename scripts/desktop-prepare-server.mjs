@@ -14,12 +14,18 @@
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { assertStagedTreeClean } from "./lib/staged-tree-guard.mjs";
 import path from "node:path";
 import process from "node:process";
 
 const root = process.cwd();
 const out = path.join(root, "desktop-package");
 rmSync(out, { recursive: true, force: true });
+
+// Deterministic staging starts from a FRESH standalone tree: a stale
+// `.next/standalone` from an interrupted build must never leak into the
+// staged package.
+rmSync(path.join(root, ".next", "standalone"), { recursive: true, force: true });
 
 console.log("[desktop:prepare-server] building standalone Next server…");
 // Page-data collection imports route modules, which validate DATABASE_URL
@@ -157,6 +163,12 @@ function assertSelfContained(dir, stagedRoot) {
 for (const staged of ["server", "desktop-migrations", "bin", "embedded-postgres"]) {
   assertSelfContained(path.join(out, staged), out);
 }
+
+// Recursive self-packaging guard: the staged server must contain NO build
+// output (a previous desktop-release/win-unpacked traced into the standalone
+// tree once shipped the entire previous build INSIDE the installer — see
+// scripts/lib/staged-tree-guard.mjs and next.config.ts excludes).
+assertStagedTreeClean(path.join(out, "server"));
 
 // Env-file guard (defense in depth for the removal above): the staged server
 // root must never contain .env* — spec §15: no secrets, no repo junk.
