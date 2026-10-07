@@ -80,9 +80,30 @@ if (problems.length > 0) {
 }
 
 console.log(`[desktop:dist] using local Electron ${installedVersion} from ${distDir}`);
+
+// Invoke electron-builder through its JS entry with Node directly. The .bin
+// shim is a .cmd file on Windows, and Node (CVE-2024-27980 hardening)
+// refuses to spawn .cmd without a shell — a silent EINVAL that produced
+// exactly the "nothing after the preflight line" failure on the first real
+// Windows build attempt. The JS entry sidesteps shims entirely.
+let builderEntry = null;
+try {
+  const bin = JSON.parse(readFileSync(path.join(root, "node_modules", "electron-builder", "package.json"), "utf8"))?.bin?.["electron-builder"];
+  if (typeof bin === "string") builderEntry = path.join(root, "node_modules", "electron-builder", bin);
+} catch {
+  // handled below with an actionable error
+}
+if (builderEntry === null || !existsSync(builderEntry)) {
+  console.error(`[desktop:dist] electron-builder JS entry not found (looked for node_modules/electron-builder/cli.js) — is electron-builder installed?`);
+  process.exit(1);
+}
 const build = spawnSync(
-  path.join(root, "node_modules", ".bin", process.platform === "win32" ? "electron-builder.cmd" : "electron-builder"),
-  ["--win", "--config", "electron-builder.yml", `--config.electronDist=${distDir}`],
+  process.execPath,
+  [builderEntry, "--win", "--config", "electron-builder.yml", `--config.electronDist=${distDir}`],
   { cwd: root, stdio: "inherit" },
 );
+if (build.error !== undefined) {
+  console.error(`[desktop:dist] electron-builder could not be started: ${String(build.error)}`);
+  process.exit(1);
+}
 process.exit(build.status ?? 1);

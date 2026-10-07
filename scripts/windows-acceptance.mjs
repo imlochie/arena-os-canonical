@@ -38,6 +38,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { repoRootFromMeta } from "./lib/repo-root.mjs";
+import { runNpmSync } from "./lib/run-command.mjs";
 
 const root = repoRootFromMeta(import.meta.url);
 const args = process.argv.slice(2);
@@ -87,41 +88,78 @@ try {
     process.exit(audit.steps.every((entry) => entry.ok) ? 0 : 1);
   }
 
-  // ---------------------------------------------------------------- platform
-  if (process.platform !== "win32") {
-    console.error(
-      "[windows-acceptance] this orchestrator must run on Windows.\n" +
-        "Pre-flight the runner on any OS with: npm run desktop:acceptance-headless\n" +
-        "Audit a staged/install tree anywhere with: node scripts/windows-acceptance.mjs --audit-only <dir>",
-    );
-    process.exit(1);
-  }
-
   // ---------------------------------------------------------------- gates
   if (flag("--gates")) {
     const results = [];
-    for (const [name, command, commandArgs] of [
-      ["typecheck", "npm.cmd", ["run", "typecheck"]],
-      ["tests", "npm.cmd", ["run", "test"]],
-      ["build", "npm.cmd", ["run", "build"]],
-      ["desktop:e2e", "npm.cmd", ["run", "desktop:e2e"]],
+    for (const [name, npmArgs] of [
+      ["typecheck", ["run", "typecheck"]],
+      ["tests", ["run", "test"]],
+      ["build", ["run", "build"]],
+      ["desktop:e2e", ["run", "desktop:e2e"]],
     ]) {
       console.log(`[windows-acceptance] gate: ${name}`);
-      const run = spawnSync(command, commandArgs, { cwd: root, stdio: "inherit", timeout: 30 * 60_000 });
-      results.push({ name, ok: run.status === 0 });
-      if (run.status !== 0) {
-        mark("AUTOMATED_TESTS", false, `gate "${name}" failed — see output above`);
+      // Output is captured AND echoed — a failing gate must never be silent.
+      // (The first Windows run died here spawning npm.cmd without a shell:
+      // a silent EINVAL with status null and zero output.)
+      const run = runNpmSync(npmArgs, {
+        cwd: root,
+        timeout: 30 * 60_000,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      if (run.error !== undefined) console.error(`[windows-acceptance] gate process error: ${String(run.error)}`);
+      const output = `${run.stdout ?? ""}\n${run.stderr ?? ""}`.trim();
+      if (output.length > 0) console.log(output);
+      const ok = run.error === undefined && run.status === 0;
+      const counts = /# tests (\d+)[\s\S]*?# pass (\d+)[\s\S]*?# fail (\d+)/.exec(output);
+      results.push({
+        name,
+        ok,
+        counts: counts === null ? undefined : { tests: counts[1], pass: counts[2], fail: counts[3] },
+        outputTail: output.slice(-2000),
+      });
+      if (!ok) {
+        report.detail.gates = results;
+        mark(
+          "AUTOMATED_TESTS",
+          false,
+          `gate "${name}" failed${run.error !== undefined ? ` — process error: ${String(run.error)}` : ` — exit ${String(run.status)} (full output above and in the report)`}`,
+        );
         throw new Error(`gate ${name} failed`);
       }
     }
-    pass("AUTOMATED_TESTS", results.map((entry) => entry.name).join(" + ") + " all green (exact counts in CI log)");
+    report.detail.gates = results;
+    const testCounts = results.find((entry) => entry.name === "tests")?.counts;
+    pass(
+      "AUTOMATED_TESTS",
+      `typecheck + build + desktop:e2e green${testCounts !== undefined ? `; tests ${testCounts.pass}/${testCounts.tests} pass, ${testCounts.fail} fail` : "; tests green"}`,
+    );
   }
 
   // ---------------------------------------------------------------- build
   if (flag("--build")) {
     console.log("[windows-acceptance] building the installer (npm run desktop:dist)…");
-    const build = spawnSync("npm.cmd", ["run", "desktop:dist"], { cwd: root, stdio: "inherit", timeout: 40 * 60_000 });
-    if (build.status !== 0) throw new Error("desktop:dist failed");
+    const build = runNpmSync(["run", "desktop:dist"], { cwd: root, stdio: "inherit", timeout: 40 * 60_000 });
+    if (build.error !== undefined || build.status !== 0) {
+      throw new Error(
+        `desktop:dist failed${build.error !== undefined ? ` — process error: ${String(build.error)}` : ` — exit ${String(build.status)}`}`,
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------- platform
+  // (Gates and the installer build are cross-platform; everything from the
+  // silent install onward needs Windows.)
+  if (process.platform !== "win32") {
+    console.error(
+      "[windows-acceptance] " +
+        (flag("--gates") ? "gates ran; the installed-app acceptance itself must run on Windows.\n" : "this orchestrator must run on Windows.\n") +
+        "Pre-flight the runner on any OS with: npm run desktop:acceptance-headless\n" +
+        "Audit a staged/install tree anywhere with: node scripts/windows-acceptance.mjs --audit-only <dir>",
+    );
+    // Throw (not exit) so the mandated report — including any gate results —
+    // is still written before the process ends.
+    throw new Error("the installed-app acceptance requires Windows (gates + --audit-only work on any OS)");
   }
 
   // ---------------------------------------------------------------- installer
