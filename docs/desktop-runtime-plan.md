@@ -269,3 +269,27 @@ packaging decisions came out of that attempt and are recorded here:
 | Electron startup/supervision/window | unit-level only | **required** |
 | NSIS installer, %LOCALAPPDATA% data | n/a | **required** |
 | Windows process tree shutdown | logic unit-tested | **required** |
+
+## 9. Completion record (Phase 2 — Arena Windows desktop runtime)
+
+Commits on `arena/01a10c30-arena-os-canonical`:
+
+- `5c616be` — supervised local runtime (embedded PG, migrations, local
+  worker, FFmpeg resolution, diagnostics, packaging prep)
+- `a61fc05` — staged-server self-containment fix (Turbopack pg symlink
+  materialized + staging/E2E guards; see §7)
+- `0a6b4f4` — packaging config completion (version metadata, icon,
+  npmRebuild rationale, smoke spawn fix)
+
+Gates at completion: `npm run typecheck` clean · `npm test` **423/423** ·
+`npm run test:desktop` **43/43** · `npm run build` (web) clean ·
+`npm run desktop:compile` clean · `npm run desktop:e2e` **36/36 green**,
+including a run with the repo's `.next` deleted to prove the staged tree
+is self-contained. `desktop:dist` proceeds through staging, config
+validation, and rebuild-skip, then fails only at the Electron binary
+download (github.com TLS — §7).
+
+Expected artifact (build on a networked Windows machine):
+`desktop-release/Arena Setup 0.1.0.exe` (NSIS x64). NOT produced in this
+sandbox; producing it requires no code changes — `npm install` (allows
+the Electron postinstall) then `npm run desktop:dist`.
