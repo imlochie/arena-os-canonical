@@ -120,6 +120,39 @@ After the automated run, with the app installed and launched normally:
   chains (incl. the esbuild dev-server advisory). Nothing vulnerable is
   shipped in the installer; no dependency was mutated (pinned ecosystem).
 
+## Offline tool seeding (NSIS) — for networks where github downloads hang up
+
+electron-builder downloads its NSIS toolchain at BUILD time from
+github.com (`nsis-3.0.4.1.7z`, `nsis-resources-3.4.1.7z`). If those
+transfers die mid-flight (`socket hang up`) the installer cannot be built,
+even though the Electron runtime and signing tools are already local.
+
+The supported offline path: electron-builder checks a **predictable
+archive cache before any network access**
+(`<cache>\<releaseName>\<filename>`, verified against the checksums
+app-builder-lib itself enforces, then unpacked by its own machinery —
+nothing is bypassed). Seed it once:
+
+```bat
+:: 1. Download BOTH archives once — a BROWSER usually succeeds where
+::    Node's fetch is cut off (any machine with access works, then copy):
+::    https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-3.0.4.1/nsis-3.0.4.1.7z
+::    https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-resources-3.4.1/nsis-resources-3.4.1.7z
+::
+:: 2. Verify + place them (SHA-256 checked against the installed
+::    app-builder-lib; truncated downloads are rejected):
+node scripts\desktop-seed-builder-tools.mjs "%USERPROFILE%\Downloads\nsis-3.0.4.1.7z" "%USERPROFILE%\Downloads\nsis-resources-3.4.1.7z"
+::
+:: 3. Re-run the build — no github.com access needed for tools anymore:
+npm run desktop:dist
+```
+
+`node scripts\desktop-seed-builder-tools.mjs --status` shows the cache
+root and which tools are seeded/extracted (`winCodeSign-2.6.0` is usually
+already cached once signing has run once). Seeded archives survive across
+builds; the seed script refuses to place anything whose checksum does not
+match the installed app-builder-lib's expectations.
+
 ## Honest expectations
 
 - The installer cannot be built inside the development sandbox

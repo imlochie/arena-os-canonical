@@ -106,4 +106,15 @@ if (build.error !== undefined) {
   console.error(`[desktop:dist] electron-builder could not be started: ${String(build.error)}`);
   process.exit(1);
 }
-process.exit(build.status ?? 1);
+if (build.status !== 0) {
+  console.error("");
+  console.error("[desktop:dist] electron-builder failed. If the output above shows a toolset download");
+  console.error('failure (nsis-*.7z / winCodeSign-*.7z / "socket hang up"), the build machine network');
+  console.error("cannot fetch them — seed the tools once from local files and re-run:");
+  console.error("  node scripts/desktop-seed-builder-tools.mjs --status");
+  console.error("  node scripts/desktop-seed-builder-tools.mjs <nsis-3.0.4.1.7z> [nsis-resources-3.4.1.7z]");
+  console.error("Archive URLs for a browser download are printed by --status / --help.");
+  console.error("(Docs: docs/windows-acceptance.md — Offline tool seeding.)");
+  process.exit(build.status ?? 1);
+}
+process.exit(0);
