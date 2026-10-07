@@ -36,8 +36,10 @@ import { isAllowedFrameUrl, type FramePolicy } from "./security";
 import { ArenaRuntimeSupervisor, resolveRuntimeConfig, type RuntimeStatus } from "./runtime";
 
 const smokePath = process.env.ARENA_DESKTOP_SMOKE;
+/** Windows acceptance-test mode: run the installed-app E2E and exit. */
+const acceptancePath = process.env.ARENA_DESKTOP_ACCEPTANCE;
 
-if (smokePath) app.disableHardwareAcceleration();
+if (smokePath || acceptancePath) app.disableHardwareAcceleration();
 app.setName("Arena");
 app.setAppUserModelId("ai.arena.os");
 
@@ -130,8 +132,12 @@ async function bootstrap(): Promise<void> {
   mainWindow.webContents.once("did-finish-load", () => {
     if (smokePath) void runSmokeCheck();
   });
+  if (acceptancePath) {
+    armAcceptanceWatchdog();
+    void runInstalledAcceptance();
+  }
 
-  if (!smokePath) {
+  if (!smokePath && !acceptancePath) {
     // The real lifecycle: DB → migrations → server → health → window.
     try {
       const config = await resolveRuntimeConfig({
@@ -524,4 +530,57 @@ async function runSmokeCheck(): Promise<void> {
   void logger?.info("smoke", "smoke check finished", { ok: result.ok });
   writeSmokeResult(result);
   app.exit(result.ok === true ? 0 : 1);
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance mode: the installed-app E2E (Windows acceptance mandate).
+// Same runner the headless pre-flight uses — see desktop/acceptance.ts.
+// ---------------------------------------------------------------------------
+
+function armAcceptanceWatchdog(): void {
+  const watchdog = setTimeout(() => {
+    try {
+      mkdirSync(path.dirname(acceptancePath!), { recursive: true });
+      writeFileSync(
+        acceptancePath!,
+        JSON.stringify({ ok: false, error: "acceptance watchdog timeout (20 min)" }, null, 2),
+        "utf8",
+      );
+    } catch {
+      /* the harness treats a missing file as failure */
+    }
+    app.exit(1);
+  }, 20 * 60_000);
+  watchdog.unref?.();
+}
+
+async function runInstalledAcceptance(): Promise<void> {
+  const { runDesktopAcceptance } = await import("./acceptance");
+  let report;
+  try {
+    report = await runDesktopAcceptance({
+      appRoot: resolveAppRoot(),
+      dirs: dirs!,
+      nodeBinary: process.execPath,
+      serverMode: app.isPackaged ? "packaged" : "dev",
+      platform: process.platform,
+      resultPath: acceptancePath!,
+      logger: loggerAdapter(),
+      env: process.env,
+      appInfo: {
+        version: app.getVersion(),
+        electron: process.versions.electron ?? "",
+        packaged: app.isPackaged,
+        windowCreated: mainWindow !== undefined && !mainWindow.isDestroyed(),
+        portable: dirs?.portable ?? false,
+      },
+      childCount: () => childProcesses.size,
+    });
+  } catch (error) {
+    void logger?.error("acceptance", "runner crashed", { error: String(error) });
+    app.exit(1);
+    return;
+  }
+  void logger?.info("acceptance", "acceptance run finished", { ok: report.ok });
+  app.exit(report.ok ? 0 : 1);
 }

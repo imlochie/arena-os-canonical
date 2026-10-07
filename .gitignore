@@ -14,3 +14,6 @@ desktop-package/
 desktop-release/
 desktop-e2e-report.json
 tsconfig.tsbuildinfo
+
+desktop-acceptance-headless-report.json
+desktop-windows-acceptance-report.json

@@ -148,6 +148,14 @@ for (const staged of ["server", "desktop-migrations", "bin", "embedded-postgres"
   assertSelfContained(path.join(out, staged), out);
 }
 
+// The staged tree mirrors the installed resources layout; the license also
+// goes to desktop/build/licenses for electron-builder's extraResources.
+mkdirSync(path.join(out, "licenses"), { recursive: true });
+cpSync(
+  path.join(root, "desktop", "build", "licenses", "FFMPEG-LICENSE.txt"),
+  path.join(out, "licenses", "FFMPEG-LICENSE.txt"),
+);
+
 console.log("[desktop:prepare-server] staged:");
 console.log("  server/            (Next standalone + traced deps + static + public)");
 console.log("  desktop-migrations/");
