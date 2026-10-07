@@ -231,9 +231,18 @@ const InsertSchema = z.object({
   params: z.record(z.string(), z.number()),
 });
 
-export function serializeInserts(chain: InsertChain): string {
+export function serializeInserts(chain: readonly MinimalInsertLike[]): string {
   return JSON.stringify({ format: INSERTS_FORMAT, inserts: chain });
 }
+
+/** Structural shape accepted by serializeInserts (parse revalidates on read). */
+export type MinimalInsertLike = {
+  id: string;
+  processor: string;
+  enabled: boolean;
+  wet: number;
+  params: Record<string, number>;
+};
 
 export function parseInserts(raw: unknown): InsertChain | null {
   if (raw === null || typeof raw !== "object") return null;

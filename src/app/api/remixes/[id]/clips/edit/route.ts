@@ -64,6 +64,8 @@ function persistedValues(clip: ReturnType<typeof clipValues>) {
   };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -80,6 +82,8 @@ export async function POST(
     const [remix] = await db.select().from(remixSessions).where(eq(remixSessions.id, id)).limit(1);
     if (!remix) return NextResponse.json({ error: "Remix session not found." }, { status: 404 });
     await requireProjectRole(user.id, remix.projectId, "editor");
+    if (!UUID_RE.test(clipId))
+      return NextResponse.json({ error: "Clip not found." }, { status: 404 });
     const [clip] = await db.select().from(remixClips).where(eq(remixClips.id, clipId)).limit(1);
     if (!clip) return NextResponse.json({ error: "Clip not found." }, { status: 404 });
     const [track] = await db.select().from(remixTracks).where(eq(remixTracks.id, clip.remixTrackId)).limit(1);

@@ -94,7 +94,8 @@ export async function POST(
     const body = await request.json().catch(() => ({}));
     const operation = String(body.operation ?? "") as Operation;
     const rawClipIds: unknown[] = Array.isArray(body.clipIds) ? body.clipIds as unknown[] : [];
-    const clipIds = [...new Set(rawClipIds.filter((clipId): clipId is string => typeof clipId === "string" && clipId.length > 0))];
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const clipIds = [...new Set(rawClipIds.filter((clipId): clipId is string => typeof clipId === "string" && UUID_RE.test(clipId)))];
     if (!operations.has(operation) || !clipIds.length)
       return NextResponse.json({ error: "A supported group operation and one or more clips are required." }, { status: 400 });
     

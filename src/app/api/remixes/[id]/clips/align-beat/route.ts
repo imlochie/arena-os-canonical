@@ -28,6 +28,8 @@ function parsedBeatGrid(value: string | null) {
 }
 
 /** Aligns one authoritative source beat to a chosen remix-time position. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -37,6 +39,8 @@ export async function POST(
     const { id } = await params;
     const body = await request.json().catch(() => ({}));
     const clipId = String(body.clipId ?? "");
+    if (!UUID_RE.test(clipId))
+      return NextResponse.json({ error: "Clip not found." }, { status: 404 });
     const sourceBeatIndex = Number(body.sourceBeatIndex);
     const rawTarget = Number(body.timelineTargetMs);
     const timelineTargetMs = Number.isFinite(rawTarget) ? Math.round(rawTarget) : Number.NaN;

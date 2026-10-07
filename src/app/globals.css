@@ -218,3 +218,32 @@ body {
 .ai-analysis-text { white-space: pre-wrap; font-family: inherit; margin: 0.3rem 0; max-height: 22rem; overflow-y: auto; }
 .ai-unavailable, .ai-rejected { border-left: 3px solid #d0a040; padding-left: 0.6rem; }
 .ai-proposal table { margin: 0.4rem 0; }
+
+/* ---- clip editor (Waveyard Block 2 P4) ---- */
+.clip-editor { border-top: 1px solid var(--border, #2a2a33); margin-top: 0.6rem; padding-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.clip-editor select { width: 100%; }
+.clip-controls { display: flex; flex-direction: column; gap: 0.3rem; }
+.clip-controls label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; color: var(--muted, #9a9aad); }
+.clip-controls input[type="range"] { flex: 1; min-width: 0; }
+.clip-controls output { min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; }
+.clip-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.25rem; }
+
+/* ---- sound design studio (Waveyard Block 2 P5) ---- */
+.sounddesign-studio { border: 1px solid var(--border, #2a2a33); border-radius: 8px; padding: 0.9rem 1rem; margin: 1rem 0; }
+.sounddesign-studio header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem; }
+.sounddesign-studio h3 { margin: 0; }
+.sd-controls { display: flex; flex-wrap: wrap; gap: 0.7rem; margin: 0.5rem 0; align-items: flex-end; }
+.sd-controls label { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.78rem; color: var(--muted, #9a9aad); min-width: 9rem; }
+.sd-assets { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; margin: 0.4rem 0 0; }
+.sd-assets li { display: flex; gap: 0.55rem; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--border, #2a2a33); padding-top: 0.4rem; }
+.sd-assets li.muted-asset .sd-asset-info, .sd-assets li.muted-asset audio { opacity: 0.45; }
+.sd-asset-info { flex: 1 1 16rem; display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.sd-asset-info small { overflow-wrap: anywhere; }
+.sd-assets audio { width: 18rem; max-width: 100%; }
+
+/* ---- master studio (Waveyard Block 2 P6) ---- */
+.master-studio { border: 1px solid var(--border, #2a2a33); border-radius: 8px; padding: 0.9rem 1rem; margin: 1rem 0; }
+.master-studio header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem; }
+.master-studio h3, .master-studio h4 { margin: 0; }
+.master-studio h4 { margin: 0.7rem 0 0.3rem; }
+.master-export-state { border-top: 1px solid var(--border, #2a2a33); padding-top: 0.5rem; margin-top: 0.6rem; }

@@ -433,6 +433,24 @@ export const arrangementLayers = pgTable("arrangement_layers", {
 ]);
 
 
+
+export const soundDesignAssets = pgTable("sound_design_assets", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  /** Full recipe JSON (waveyard-sound-design-v1) — the provenance record. */
+  recipe: text("recipe").notNull(),
+  storageKey: text("storage_key").notNull(),
+  durationSeconds: real("duration_seconds").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  /** Playback mute flag (persisted, not React-only). */
+  muted: boolean("muted").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("sound_design_project_idx").on(table.projectId),
+  uniqueIndex("sound_design_storage_key_unique").on(table.storageKey),
+]);
+
 export const cleanupVersions = pgTable("cleanup_versions", {
   id: uuid("id").primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
