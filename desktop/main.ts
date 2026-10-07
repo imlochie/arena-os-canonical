@@ -319,7 +319,10 @@ function createWindow(startupPolicy: FramePolicy): BrowserWindow {
 }
 
 function resolveIcon(): string | undefined {
-  const icon = path.join(__dirname, "..", "..", "assets", "icon.png");
+  // desktop/build/icon.png is packed into the asar (electron-builder `files`)
+  // and, in dev, sits beside the compiled shell — the same relative path
+  // resolves in both layouts. Missing icon is non-fatal (Electron default).
+  const icon = path.join(__dirname, "..", "build", "icon.png");
   return existsSync(icon) ? icon : undefined;
 }
 

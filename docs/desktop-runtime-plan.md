@@ -227,6 +227,34 @@ committed (`npm run desktop:dist` on a networked Windows machine);
 building it requires a machine with github.com access. This is documented
 rather than faked.
 
+`npm run desktop:dist` was ATTEMPTED in this sandbox to establish the
+exact boundary: staging + electron-builder config validation + rebuild-skip
+all succeed; the run fails only at the Electron runtime zip download
+(`⨯ unable to verify the first certificate`, github.com TLS). Two
+packaging decisions came out of that attempt and are recorded here:
+
+- **Turbopack standalone emits `pg` as a symlink.** The Next standalone
+  output contains `.next/node_modules/pg-<hash>` — a symlink to
+  `../../node_modules/pg`. Node's `cpSync` `dereference: true` does NOT
+  dereference symlinks nested inside a copied directory (and the default
+  rewrites the link to an absolute path into the repo build tree), so a
+  naive copy ships a tree that 500s every DB route the moment the repo's
+  `.next` is rebuilt — i.e. "works on the build machine, broken for every
+  user". `desktop-prepare-server.mjs` therefore materializes every symlink
+  under `server/` into a real copy and enforces a self-containment guard
+  (staging fails if any staged symlink resolves outside `desktop-package/`).
+  `desktop-e2e.mjs` re-asserts the invariant, and the E2E was run green
+  with the repo's `.next` directory deleted to prove the staged tree is
+  genuinely standalone.
+- **`npmRebuild: false`** (electron-builder): the asar contains only the
+  compiled desktop shell, which imports zero native modules (node builtins
+  + zod + local code). The heavy runtime ships as extraResources and runs
+  in a separate `ELECTRON_RUN_AS_NODE` process, not inside Electron, so
+  rebuilding native modules against Electron's ABI is unnecessary — and
+  impossible to cross-compile from Linux anyway. The native modules that
+  do run server-side (sharp, msgpackr-extract) use N-API prebuilds, which
+  are ABI-stable across Node and Electron.
+
 ## 8. Verification map (headless proof vs Windows proof)
 
 | Claim | Headless E2E (this repo, Linux) | Windows packaged app |
@@ -236,6 +264,7 @@ rather than faked.
 | local worker queues (4) | ✅ | required (same code) |
 | upload/waveform/analysis/sections/export | ✅ | required |
 | persistence + restart | ✅ | required |
+| staged tree self-containment (no repo deps) | ✅ (E2E with `.next` deleted) | n/a (guaranteed by staging) |
 | FFmpeg bundled-binary discovery | ✅ (staged tree) | required (win32 paths) |
 | Electron startup/supervision/window | unit-level only | **required** |
 | NSIS installer, %LOCALAPPDATA% data | n/a | **required** |

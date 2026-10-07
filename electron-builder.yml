@@ -53,6 +53,16 @@ asar: true
 asarUnpack:
   - "**/*.exe"
 
+# The Electron app package (asar) contains ONLY the compiled desktop shell,
+# which imports zero native modules (node builtins + zod + local code). The
+# heavy runtime — Next server, pg, bullmq — ships as extraResources and runs
+# in a SEPARATE process via ELECTRON_RUN_AS_NODE, not inside Electron, so
+# rebuilding native modules for Electron's ABI is both unnecessary and (on a
+# Linux/macOS host) impossible: node-gyp cannot cross-compile. The native
+# modules that do run (sharp, msgpackr-extract) are N-API prebuilds, which
+# are ABI-stable across Node and Electron runtimes.
+npmRebuild: false
+
 win:
   target:
     - target: nsis

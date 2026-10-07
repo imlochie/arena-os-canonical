@@ -28,7 +28,7 @@ const resultPath = join(
 
 console.log("[smoke] compiling desktop shell…");
 const compile = spawnSync(process.execPath, [
-  "node_modules", "typescript", "bin", "tsc",
+  join("node_modules", "typescript", "bin", "tsc"),
   "-p", "desktop/tsconfig.json",
 ], { stdio: "inherit" });
 if (compile.status !== 0) {

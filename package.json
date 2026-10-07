@@ -1,5 +1,8 @@
 {
   "name": "nextjs-postgresql-template",
+  "version": "0.1.0",
+  "description": "Arena — local-first music production workspace",
+  "author": "Arena",
   "private": true,
   "scripts": {
     "predev": "node scripts/ensure-env.mjs",
