@@ -293,3 +293,16 @@ Expected artifact (build on a networked Windows machine):
 `desktop-release/Arena Setup 0.1.0.exe` (NSIS x64). NOT produced in this
 sandbox; producing it requires no code changes — `npm install` (allows
 the Electron postinstall) then `npm run desktop:dist`.
+
+## 10. Windows acceptance phase (installed-app E2E — machinery complete)
+
+`dddfeb3` adds the installed-app acceptance runner (`desktop/acceptance.ts`,
+executed by the real installed app under `ARENA_DESKTOP_ACCEPTANCE`) and
+the one-command Windows orchestrator (`npm run windows:acceptance` — see
+`docs/windows-acceptance.md` for the full mandate mapping). The runner is
+pre-flighted headless on Linux against the staged tree:
+`npm run desktop:acceptance-headless` — 62 steps / 8 sections green at
+time of commit. The Windows-machine execution (build → install →
+acceptance → orphan/abnormal checks → mandated PASS/FAIL report) is
+pending a real Windows host; nothing in this sandbox can substitute for
+it, and the report format refuses to claim otherwise.
