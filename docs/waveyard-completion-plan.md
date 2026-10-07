@@ -277,3 +277,104 @@ exist).
 Gates: tsc 0 · **362/362 tests** · production build clean · live E2E:
 generate → 0 temp files → durable across server restart → WAV serve →
 delete → honest 409.
+
+---
+
+## Part 8 — Block 2 completion & product freeze (2026-10-07, @ 3b4ea88)
+
+**Verdict recorded:** the Waveyard web product is integration-complete and
+**frozen** at `3b4ea88`. Further work moves to the Arena Windows desktop
+phase (see `docs/windows-desktop-architecture.md`), which absorbs the
+remaining runtime dependencies rather than adding web features.
+
+### What Block 2 delivered (all live-verified, restart-verified)
+
+- **P1 — Insert rack:** per-STEM + MASTER chains persisted in
+  `remix_tracks.inserts` / `remix_sessions.master_inserts`
+  (waveyard-inserts-v1), validated at the persistence boundary (absent =
+  keep, null/[] = clear, invalid = 400); InsertRack UI drives the live Web
+  Audio subgraphs (`applyInserts`; gate honestly render-path-only) and the
+  persisted chain; mixer presets appendable. Phase inversion (Ø) persisted
+  (`remix_tracks.phase_inverted`, 0015); mono monitoring is live-only and
+  labelled as such.
+- **P2 — Cleanup:** SCAN (measured findings + evidence) → REVIEW
+  (recommendations mapped only to real processors, each citing its
+  measurement) → PREVIEW (real processed WAV + before/after
+  AudioMeasurements, A/B players) → APPLY (derived `cleanup_versions`
+  row + WAV, original untouched, undo = delete). Stage chips
+  Detected/Recommended/Previewed/Applied make the state explicit; nothing
+  implies a repair before Apply.
+- **P3 — AI:** 16 workflows; OpenAI-compatible + Anthropic adapters
+  (call-time env, honest 503 `PROVIDER_UNAVAILABLE` with the exact reason,
+  no canned fallback); prompts state the model did NOT receive audio and
+  embed the measured analysis packet; proposals validated by the contract
+  (validator is the authority, clamps recorded), applied transactionally
+  onto remix persistence with `ai-`-prefixed ids so racks badge AI vs
+  manual inserts. ACCEPT re-validates server-side.
+- **P4 — Clip editing:** timeline drag/trim/nudge/duplicate/delete +
+  inspector clip picker, gain/fade sliders, split-at-playhead, duplicate,
+  delete — all persisted paths; inspector follows timeline selection.
+- **P5 — Sound design:** 11 deterministic recipes over the real synth +
+  insert engines (incl. sample-level reverse/stutter), persisted with full
+  recipe provenance, persisted mute, storage-backed WAVs.
+- **P6 — Master studio:** measured analysis (LUFS/peak/true-peak/crest/
+  correlation/bands + headroom), recommendations only where a measurement
+  justifies one (bounded ±12 dB gain — no limiter claims), real-chain
+  preview with before/after tables, apply persists the session master
+  chain.
+
+### Integration bugs found by the E2E and fixed with regression tests
+
+These are the reason the E2E exists — none surfaced in unit tests:
+
+1. Version snapshots dropped `masterInserts` (track inserts survived via
+   row spread; the master chain did not). Fixed via the extracted
+   `remix-versioning.ts` contract + 5 regression tests covering TRACK /
+   MASTER / combination / save→restore→re-save→export.
+2. The AI bridge parsed remix rows with the envelope format while rows
+   store the bare-array canonical form → pre-existing chains read as `[]`
+   and AI applies REPLACED manual work. Fixed + regression test asserting
+   AI applies APPEND.
+3. AI provenance re-ided the whole chain (manual inserts badged AI); now
+   only inserts created by the apply get the `ai-` prefix.
+4. Phase invert was live-only (non-persisting feature = incomplete); now a
+   real persisted column end-to-end.
+5. Non-UUID clip ids reached PostgreSQL as 22P02 → 500; now clean 404s in
+   clips/edit, clips/align-beat, and filtered in batch-edit.
+6. Restore dropped both insert chains (fields listed explicitly); restore
+   now writes them via the shared contract mapping.
+
+### Final gates at freeze
+
+tsc clean (fresh cache) · **400/400 tests** · production build clean ·
+35-step live E2E green (project→import→play→mixer→inserts→persist→scan→
+preview→apply→layers→AI (honest 503)→proposal→apply→clip→automation→
+master→version→restore→export (honest worker gate)→restart→all state
+survived) · render engine signal-verified (hum −34.8 dB @ 50 Hz while the
+220 Hz signal moved −0.0 dB; DC 1.50%→−0.00%).
+
+### Roadmap caveat — pinned deliberately
+
+**BUS routing is not persisted as a real subsystem.** The architecture
+envisioned SOURCE → STEM → BUS → MASTER; the mixer engine
+(`mixer/state.ts`) has the channel kinds and `addBus()`, but the persisted
+model is **STEM + MASTER** (strips, inserts, phase, automation, clips,
+master chain) and the live transport wires stems → master only. There is
+no persisted bus graph, no bus routing table, and no bus-level insert
+persistence. Any future bus work is a **deliberate new subsystem** — not a
+bug, not a quick fix — and must not be forgotten when the desktop phase
+revisits the routing story.
+
+### Runtime dependencies at freeze (honest, not bugs)
+
+- **Redis + waveyard-worker** — export/separation/analysis rendering is
+  worker-gated; API returns honest 503 + `queue-unavailable` job rows.
+- **ffmpeg** — native 16-bit WAV decode needs nothing; compressed formats
+  return 424 `DEPENDENCY_MISSING` naming the exact gap.
+- **AI provider keys** — none configured; 503 with the exact reason, zero
+  fake fallback, all non-AI features unaffected.
+
+The Windows desktop phase (Arena.exe supervising the Next UI, embedded
+Postgres, bundled FFmpeg/FFprobe, a supervised local worker, optional AI
+providers, offline-capable core) is the intended answer to all three —
+not more web-side feature work.

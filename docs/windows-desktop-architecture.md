@@ -3,6 +3,15 @@
 Status: **Phase 1 implemented; this plan is the contract for the phases that follow.**
 Companion to `docs/arena-branch-convergence-audit.md` (implementation log).
 
+> **Waveyard web product frozen at `3b4ea88`** (Block 2 complete — see
+> `docs/waveyard-completion-plan.md` Part 8: 400/400 tests, 35-step live
+> E2E, restart persistence verified). The desktop phase now owns the
+> remaining runtime dependencies: bundled FFmpeg/FFprobe, the supervised
+> local worker (Redis replacement or embedded), embedded Postgres, and
+> optional AI providers. One product caveat travels forward from the
+> freeze: **bus routing is not a persisted subsystem** (STEM + MASTER
+> only) — see Part 8 before touching the routing story.
+
 The goal is not "it launches." The goal is: *I installed Arena on a Windows PC
 and it behaves like Arena is actually a Windows application.* The browser
 application remains first-class and unchanged; the desktop is an additive
