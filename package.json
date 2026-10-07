@@ -15,9 +15,15 @@
     "smoke:archive": "node --import ./scripts/register-src-loader.mjs scripts/archive-context-smoke.ts",
     "desktop:compile": "tsc -p desktop/tsconfig.json",
     "desktop": "npm run desktop:compile && electron .",
-    "desktop:smoke": "node scripts/desktop-smoke.mjs"
+    "desktop:smoke": "node scripts/desktop-smoke.mjs",
+    "desktop:prepare-server": "node scripts/desktop-prepare-server.mjs",
+    "desktop:dist": "npm run desktop:prepare-server && electron-builder --win --config electron-builder.yml",
+    "desktop:e2e": "node --import ./scripts/register-src-loader.mjs scripts/desktop-e2e.mjs",
+    "test:desktop": "node --import ./scripts/register-src-loader.mjs --test \"desktop/**/*.test.ts\" \"src/lib/waveyard/worker-local/*.test.ts\""
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "@mlc-ai/web-llm": "^0.2.85",
     "bullmq": "^6.3.11",
     "dotenv": "17.3.1",
@@ -39,11 +45,16 @@
     "@types/react-dom": "19.2.3",
     "drizzle-kit": "0.31.10",
     "electron": "^44.5.1",
+    "electron-builder": "^26.0.12",
     "eslint": "9.39.4",
     "eslint-config-next": "^16.3.8",
     "postcss": "^8.5.29",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3"
   },
-  "main": "desktop/dist/main.js"
+  "main": "desktop/dist/main.js",
+  "optionalDependencies": {
+    "@embedded-postgres/linux-x64": "^16.14.0-beta.17",
+    "@embedded-postgres/windows-x64": "^16.14.0-beta.17"
+  }
 }

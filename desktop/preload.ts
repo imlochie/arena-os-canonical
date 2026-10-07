@@ -8,12 +8,15 @@
 
 import { contextBridge, ipcRenderer } from "electron";
 
-import type { DesktopAppInfo } from "./contracts";
+import type { DesktopAppInfo, DesktopDiagnostics } from "./contracts";
 
 const api = {
   /** App identity + runtime info (see DesktopAppInfo in contracts.ts). */
   getInfo: (): Promise<DesktopAppInfo> =>
     ipcRenderer.invoke("app:getInfo") as Promise<DesktopAppInfo>,
+  /** Live runtime + subsystem diagnostics (real checks, spec §9). */
+  getDiagnostics: (): Promise<DesktopDiagnostics> =>
+    ipcRenderer.invoke("app:getDiagnostics") as Promise<DesktopDiagnostics>,
 };
 
 export type ArenaDesktopApi = typeof api;

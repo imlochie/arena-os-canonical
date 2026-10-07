@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { DesktopAppInfoSchema, IPC_CHANNELS, DESKTOP_INFO_CHANNEL, isIpcChannel } from "./contracts";
+import { DesktopAppInfoSchema, IPC_CHANNELS, DESKTOP_INFO_CHANNEL, DESKTOP_DIAGNOSTICS_CHANNEL, isIpcChannel } from "./contracts";
 
 const validInfo = {
   name: "Arena",
@@ -29,8 +29,9 @@ test("DesktopAppInfo rejects wrong types and unknown channels", () => {
 });
 
 test("the IPC allowlist is exactly the declared channels", () => {
-  assert.deepEqual([...IPC_CHANNELS], [DESKTOP_INFO_CHANNEL]);
+  assert.deepEqual([...IPC_CHANNELS], [DESKTOP_INFO_CHANNEL, DESKTOP_DIAGNOSTICS_CHANNEL]);
   assert.equal(isIpcChannel("app:getInfo"), true);
+  assert.equal(isIpcChannel("app:getDiagnostics"), true);
   assert.equal(isIpcChannel("shell:executeAnything"), false);
   assert.equal(isIpcChannel("child_process:spawn"), false);
   assert.equal(isIpcChannel(42), false);

@@ -17,18 +17,23 @@ import {
   shell,
   type MenuItemConstructorOptions,
 } from "electron";
+import { z } from "zod";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import {
   DesktopAppInfoSchema,
+  DesktopDiagnosticsSchema,
+  DESKTOP_DIAGNOSTICS_CHANNEL,
   DESKTOP_INFO_CHANNEL,
   type DesktopAppInfo,
+  type DesktopDiagnostics,
 } from "./contracts";
 import { ArenaLogger } from "./log";
 import { resolveArenaDataDirs, type ArenaDataDirs } from "./paths";
 import { ChildProcessRegistry } from "./processes";
 import { isAllowedFrameUrl, type FramePolicy } from "./security";
+import { ArenaRuntimeSupervisor, resolveRuntimeConfig, type RuntimeStatus } from "./runtime";
 
 const smokePath = process.env.ARENA_DESKTOP_SMOKE;
 
@@ -39,6 +44,9 @@ app.setAppUserModelId("ai.arena.os");
 let logger: ArenaLogger | undefined;
 let mainWindow: BrowserWindow | undefined;
 let dirs: ArenaDataDirs | undefined;
+let supervisor: ArenaRuntimeSupervisor | undefined;
+let runtimeServerUrl: string | undefined;
+let quitting = false;
 
 /** Every child process the shell ever spawns is tracked here. */
 const childProcesses = new ChildProcessRegistry();
@@ -108,15 +116,14 @@ async function bootstrap(): Promise<void> {
   }
 
   await ready;
-  mainWindow = createWindow();
   Menu.setApplicationMenu(buildMenu());
-
-  if (smokePath) armSmokeWatchdog();
-
+  // The local Arena server origin is added once the runtime is healthy.
+  const allowedOrigins: string[] = [];
   const framePolicy: FramePolicy = {
-    allowedOrigins: [], // Phase 2 adds the local Arena server origin.
+    allowedOrigins,
     allowFileUrls: true, // Splash only, during startup.
   };
+  mainWindow = createWindow(framePolicy);
   void mainWindow.loadFile(
     path.join(__dirname, "..", "splash", "index.html"),
   );
@@ -124,17 +131,59 @@ async function bootstrap(): Promise<void> {
     if (smokePath) void runSmokeCheck();
   });
 
+  if (!smokePath) {
+    // The real lifecycle: DB → migrations → server → health → window.
+    try {
+      const config = await resolveRuntimeConfig({
+        dirs,
+        appRoot: resolveAppRoot(),
+        nodeBinary: process.execPath,
+        serverMode: app.isPackaged ? "packaged" : "dev",
+      });
+      supervisor = new ArenaRuntimeSupervisor(config, { logger: loggerAdapter() });
+      runtimeServerUrl = await supervisor.start();
+      const origin = new URL(runtimeServerUrl).origin;
+      allowedOrigins.push(origin);
+      await logger?.info("runtime", "server healthy; loading Arena UI", { url: runtimeServerUrl });
+      if (mainWindow !== undefined && !mainWindow.isDestroyed()) {
+        await mainWindow.loadURL(runtimeServerUrl);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await logger?.error("runtime", "runtime startup failed", { error: message });
+      showStartupFailure(message);
+    }
+  }
+
   app.on("window-all-closed", () => {
     app.quit();
   });
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
+    // Re-open on the healthy server URL when it exists, else the splash.
+    if (BrowserWindow.getAllWindows().length === 0) {
+      mainWindow = createWindow({
+        allowedOrigins: runtimeServerUrl !== undefined ? [new URL(runtimeServerUrl).origin] : [],
+        allowFileUrls: true,
+      });
+      if (runtimeServerUrl !== undefined) void mainWindow.loadURL(runtimeServerUrl);
+      else void mainWindow.loadFile(path.join(__dirname, "..", "splash", "index.html"));
+    }
   });
-  app.on("before-quit", () => {
-    void logger?.info("boot", "shutting down; stopping tracked children", {
-      children: childProcesses.size,
-    });
-    void childProcesses.shutdownAll(4000);
+  app.on("before-quit", (event) => {
+    if (quitting) return;
+    quitting = true;
+    event.preventDefault();
+    void (async () => {
+      try {
+        await logger?.info("boot", "shutting down; ordered runtime stop", {
+          children: childProcesses.size,
+        });
+        await supervisor?.stop(); // server first, then Postgres
+        await childProcesses.shutdownAll(4000);
+      } finally {
+        app.quit();
+      }
+    })();
   });
 }
 
@@ -205,7 +254,7 @@ async function handleFatal(kind: string, error: Error): Promise<void> {
 // Window + security wiring
 // ---------------------------------------------------------------------------
 
-function createWindow(): BrowserWindow {
+function createWindow(startupPolicy: FramePolicy): BrowserWindow {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -226,7 +275,7 @@ function createWindow(): BrowserWindow {
 
   win.once("ready-to-show", () => win.show());
 
-  const policy: FramePolicy = { allowedOrigins: [], allowFileUrls: true };
+  const policy = startupPolicy;
   win.webContents.on("will-navigate", (event, url) => {
     if (!isAllowedFrameUrl(url, policy)) {
       event.preventDefault();
@@ -304,6 +353,66 @@ function buildAppInfo(): DesktopAppInfo {
 
 function registerIpc(): void {
   ipcMain.handle(DESKTOP_INFO_CHANNEL, () => buildAppInfo());
+  ipcMain.handle(DESKTOP_DIAGNOSTICS_CHANNEL, () => collectDiagnostics());
+}
+
+
+// ---------------------------------------------------------------------------
+// Runtime supervisor helpers
+// ---------------------------------------------------------------------------
+
+/** Packaged: resources/app root (extraResources target); dev: repo root. */
+function resolveAppRoot(): string {
+  if (app.isPackaged) {
+    // extraResources are resolved relative to the executable's resources dir
+    return path.join(path.dirname(app.getPath("exe")), "resources", "app");
+  }
+  // dev: desktop/ is compiled in place — repo root is two levels up
+  return path.join(__dirname, "..", "..");
+}
+
+/** ArenaLogger → supervisor logger adapter (scope-first signatures). */
+function loggerAdapter() {
+  return {
+    info: (scope: string, message: string, detail?: Record<string, unknown>) => void logger?.info(scope, message, detail),
+    warn: (scope: string, message: string, detail?: Record<string, unknown>) => void logger?.warn(scope, message, detail),
+    error: (scope: string, message: string, detail?: Record<string, unknown>) => void logger?.error(scope, message, detail),
+  };
+}
+
+function showStartupFailure(message: string): void {
+  if (mainWindow === undefined || mainWindow.isDestroyed()) return;
+  const html = `data:text/html,${encodeURIComponent(
+    `<!doctype html><html><head><meta charset="utf-8"><title>Arena — startup failed</title>` +
+      `<style>body{font:14px system-ui;background:#0b0d12;color:#e8eaf0;padding:40px;max-width:640px;margin:auto}` +
+      `h1{font-size:18px}pre{white-space:pre-wrap;background:#14171f;padding:12px;border-radius:8px;color:#ff9d9d}</style></head>` +
+      `<body><h1>Arena could not start its local runtime</h1>` +
+      `<p>The application server, database, or worker did not become healthy. Nothing was skipped or faked:</p>` +
+      `<pre>${message.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c)}</pre>` +
+      `<p>Details are in the logs folder (File → Open Logs Folder). The app will close when you close this window.</p></body></html>`,
+  )}`;
+  void mainWindow.loadURL(html);
+}
+
+async function collectDiagnostics(): Promise<DesktopDiagnostics> {
+  const runtime: RuntimeStatus | null = supervisor?.status ?? null;
+  let subsystems: DesktopDiagnostics["subsystems"] = null;
+  if (runtimeServerUrl !== undefined) {
+    try {
+      const response = await fetch(`${runtimeServerUrl}/api/desktop/diagnostics`, { signal: AbortSignal.timeout(10_000) });
+      if (response.ok) {
+        const parsed = z.object({ overall: z.enum(["READY", "DEGRADED", "UNAVAILABLE"]), components: z.record(z.string(), z.any()), checkedAt: z.string() }).safeParse(await response.json());
+        if (parsed.success) subsystems = parsed.data;
+      }
+    } catch {
+      // server unreachable: report honestly below
+    }
+  }
+  return DesktopDiagnosticsSchema.parse({
+    runtime: runtime ?? { phase: "idle", serverUrl: null, stages: [], postgres: null, lastError: null },
+    subsystems,
+    source: subsystems === null ? "main-process-server-unreachable" : "main-process",
+  });
 }
 
 // ---------------------------------------------------------------------------

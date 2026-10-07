@@ -1,0 +1,71 @@
+# Arena Windows desktop packaging (electron-builder).
+#
+# Producing the NSIS artifact requires a networked Windows (or cross-build)
+# machine: electron + electron-builder download Electron binaries from
+# github.com, which this sandbox cannot reach. The configuration is complete
+# and committed; run `npm run desktop:dist` on a machine with access.
+#
+# What ships (spec §15: no repo junk, caches, secrets, or fixtures):
+#   - Electron + compiled desktop shell + splash
+#   - Next standalone server (server.js + minimal node_modules)
+#   - .next/static + public/
+#   - desktop-migrations/ (canonical schema)
+#   - FFmpeg + FFprobe binaries (@ffmpeg-installer builds, GPL — see
+#     build/licenses/FFMPEG-LICENSE.txt)
+#   - Embedded PostgreSQL windows-x64 binaries
+
+appId: ai.arena.os
+productName: Arena
+copyright: Copyright © Arena
+
+directories:
+  output: desktop-release
+  buildResources: desktop/build
+
+files:
+  - desktop/dist/**
+  - desktop/splash/**
+  - desktop/build/icon.png
+  - package.json
+  - "!**/*.test.*"
+  - "!**/__tests__/**"
+
+extraResources:
+  # Next standalone server (built by desktop:prepare-server)
+  - from: desktop-package/server
+    to: app/server
+  # Static assets Next expects beside the server (staged inside server/)
+  # (kept for clarity; desktop-prepare-server stages .next/static + public
+  #  INSIDE the server tree, matching the standalone layout)
+  # Canonical SQL migrations
+  - from: desktop-package/desktop-migrations
+    to: app/desktop-migrations
+  # FFmpeg/FFprobe (GPL builds — license file included)
+  - from: desktop-package/bin
+    to: app/bin
+  - from: desktop/build/licenses
+    to: licenses
+  # Embedded PostgreSQL binaries (platform npm package, extracted at packaging)
+  - from: desktop-package/embedded-postgres
+    to: app/embedded-postgres
+
+asar: true
+asarUnpack:
+  - "**/*.exe"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: desktop/build/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Arena
+  # No auto-updater claims (spec §14): version infrastructure only.
+  deleteAppDataOnUninstall: false

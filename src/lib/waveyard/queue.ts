@@ -15,6 +15,7 @@
  */
 
 import type IORedis from "ioredis";
+import { getLocalJobBroker, localWorkerActive } from "./worker-local/broker";
 import type {
   ExportJobPayload,
   SeparationJobPayload,
@@ -38,6 +39,7 @@ export const VOCAL_ANALYSIS_QUEUE = "waveyard-vocal-analysis";
 export const EXPORT_QUEUE = "waveyard-export";
 
 export function queueConfigured() {
+  if (localWorkerActive()) return true; // the desktop's in-process executor
   return Boolean(process.env.REDIS_URL);
 }
 
@@ -96,7 +98,24 @@ function closeQueue(handle: QueueHandle) {
 
 /** Direct queue access for retry routes. Throws when the worker is not
  *  configured — ported routes catch that and answer honestly (503). */
+/**
+ * Desktop transport: with ARENA_DESKTOP_MODE=1 and no REDIS_URL, enqueue and
+ * queue-API calls route to the in-process LocalJobBroker instead of BullMQ
+ * (docs/desktop-runtime-plan.md §5). Job rows keep their exact lifecycle; a
+ * queue with no local executor rejects honestly.
+ */
+function localQueueApi(queueName: string): QueueLike {
+  const broker = getLocalJobBroker();
+  return {
+    getJob: async () => undefined,
+    add: async (_jobName: string, payload: Record<string, unknown>, options: Record<string, unknown>) =>
+      broker.submit(queueName, String(options.jobId ?? ""), payload),
+    close: async () => undefined,
+  };
+}
+
 export async function makeQueueApi(queueName: string): Promise<QueueLike> {
+  if (localWorkerActive()) return localQueueApi(queueName);
   const handle = await openQueue(queueName);
   return {
     getJob: (id: string) => handle.queue.getJob(id),
@@ -143,6 +162,7 @@ export async function getExportQueue(): Promise<QueueLike> {
 }
 
 async function enqueue(queueName: string, jobName: string, payload: Record<string, unknown>, jobId: string) {
+  if (localWorkerActive()) return getLocalJobBroker().submit(queueName, jobId, payload);
   const handle = await openQueue(queueName);
   try {
     return await handle.queue.add(jobName, payload, {

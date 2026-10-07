@@ -9,3 +9,8 @@ node_modules/
 
 # Electron desktop shell build output
 desktop/dist/
+
+desktop-package/
+desktop-release/
+desktop-e2e-report.json
+tsconfig.tsbuildinfo

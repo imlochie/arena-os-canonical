@@ -3,6 +3,8 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { extname } from "node:path";
 import { spawn } from "node:child_process";
+
+import { requireTool } from "./ffmpeg";
 import {
   WAVEFORM_RESOLUTIONS,
   type AudioMetadata,
@@ -87,7 +89,7 @@ async function exec(
 }
 
 export async function probeAudio(path: string): Promise<AudioMetadata> {
-  const { stdout } = await exec("ffprobe", [
+  const { stdout } = await exec((await requireTool("ffprobe")).path, [
     "-v",
     "error",
     "-show_entries",
@@ -137,7 +139,7 @@ export async function probeAudio(path: string): Promise<AudioMetadata> {
 }
 
 export async function assertNonZeroSignal(path: string): Promise<void> {
-  const { stderr } = await exec("ffmpeg", [
+  const { stderr } = await exec((await requireTool("ffmpeg")).path, [
     "-v",
     "info",
     "-i",
@@ -255,7 +257,7 @@ export async function generateWaveform(
   ) {
     throw new Error("Audio is too long to derive a bounded waveform artifact.");
   }
-  await exec("ffmpeg", [
+  await exec((await requireTool("ffmpeg")).path, [
     "-v",
     "error",
     "-i",

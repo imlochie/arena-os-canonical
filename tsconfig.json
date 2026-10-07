@@ -38,6 +38,8 @@
   ],
   "exclude": [
     "node_modules",
-    "waveyard-worker"
+    "waveyard-worker",
+    "desktop-package",
+    "desktop-release"
   ]
 }
