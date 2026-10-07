@@ -34,13 +34,17 @@ test("builderCacheRoot mirrors app-builder-lib on win32 / POSIX / override", () 
     "ELECTRON_BUILDER_CACHE (absolute) wins",
   );
 
+  // POSIX/Linux expectations MUST use path.posix: the implementation follows
+  // the TARGET platform's semantics (path.posix.join), so on a Windows test
+  // host a host-path expectation would wrongly demand backslashes
+  // ("\tmp\xdg\..." vs the correct "/tmp/xdg/...").
   assert.equal(
     builderCacheRoot({ platform: "linux", env: { XDG_CACHE_HOME: "/tmp/xdg" } }),
-    path.join("/tmp/xdg", "electron-builder"),
+    path.posix.join("/tmp/xdg", "electron-builder"),
   );
   assert.equal(
     builderCacheRoot({ platform: "linux", env: { HOME: "/home/dev" } }),
-    path.join("/home/dev", ".cache", "electron-builder"),
+    path.posix.join("/home/dev", ".cache", "electron-builder"),
   );
 });
 
