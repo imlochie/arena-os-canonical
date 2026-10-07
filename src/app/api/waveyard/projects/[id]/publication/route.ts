@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -64,6 +65,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     const editable = role === "editor" || role === "owner";
     return NextResponse.json({
@@ -89,6 +91,7 @@ export async function PUT(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project } = await requireProjectRole(user.id, id, "editor");
     const parsed = publicationSchema.safeParse(
       await request.json().catch(() => null),

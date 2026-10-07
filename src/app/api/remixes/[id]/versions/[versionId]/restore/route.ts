@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
@@ -21,6 +22,7 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id, versionId } = await params;
+    if (!isUuid(id) || !isUuid(versionId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     
     const [remix] = await db
       .select()

@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 /**
  * AI assist route — REQUEST → ANALYSIS → PROPOSAL → REVIEW → APPLY.
  *
@@ -94,6 +95,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
+    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     const session = await loadSessionView(projectId);
     const channelMenu = session === null
@@ -124,6 +126,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
+    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const action = String(body.action ?? "");

@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 /**
  * Serve a sound-design asset WAV from project storage.
  * Ids are validated UUIDs and re-checked against the DB row — containment
@@ -24,6 +25,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id: projectId, assetId } = await params;
+    if (!isUuid(projectId) || !isUuid(assetId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     if (!UUID_RE.test(assetId))
       return NextResponse.json({ error: "Invalid asset id." }, { status: 400 });

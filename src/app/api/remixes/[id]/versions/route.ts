@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { asc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
@@ -34,6 +35,7 @@ function snapshot(remix: typeof remixSessions.$inferSelect) {
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await access(user.id, id, "viewer");
     const versions = await db.select({ id: remixVersions.id, name: remixVersions.name, createdAt: remixVersions.createdAt, createdById: remixVersions.createdById }).from(remixVersions).where(eq(remixVersions.remixSessionId, id)).orderBy(asc(remixVersions.createdAt));
     return NextResponse.json({ versions });
@@ -43,6 +45,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "editor");
     const body = await request.json().catch(() => ({}));
     const name = String(body.name ?? `Version ${remix.version}`).trim().slice(0, 120) || `Version ${remix.version}`;

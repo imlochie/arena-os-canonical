@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 /**
  * Serve a generated arrangement layer WAV from project storage.
  * GET /api/waveyard/projects/[id]/arrangement-layers/[layerId]
@@ -23,6 +24,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id: projectId, layerId } = await params;
+    if (!isUuid(projectId) || !isUuid(layerId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     if (!UUID_RE.test(layerId))
       return NextResponse.json({ error: "Invalid layer id." }, { status: 400 });

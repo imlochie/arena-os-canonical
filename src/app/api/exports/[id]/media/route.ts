@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -21,6 +22,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     
     const [job] = await db
       .select()

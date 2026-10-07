@@ -33,6 +33,7 @@ export default function LumaStudio() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
+  const objectUrlRef = useRef<string | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
@@ -45,6 +46,23 @@ export default function LumaStudio() {
     store.registerPresets(BUILT_IN_PRESETS);
     repo.list().then(setProjects).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Never leak the camera or the imported image blob: stop tracks and revoke
+  // the object URL when the studio unmounts (navigation away mid-session).
+  useEffect(() => {
+    // Capture the element at setup (React lint rule): the cleanup must not
+    // read a possibly-stale ref.
+    const video = videoRef.current;
+    return () => {
+      const stream = video?.srcObject as MediaStream | null;
+      stream?.getTracks().forEach((t) => t.stop());
+      if (video) video.srcObject = null;
+      if (objectUrlRef.current !== null) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
   }, []);
 
   // ---- preview render (derives from source + recipe, never mutates) ----
@@ -85,6 +103,11 @@ export default function LumaStudio() {
     if (!file) return;
     if (!file.type.startsWith("image/")) return;
     const uri = URL.createObjectURL(file);
+    // One live object URL at a time; the previous one is revoked on replace
+    // and the last one on unmount (see the cleanup effect above).
+    if (objectUrlRef.current !== null) URL.revokeObjectURL(objectUrlRef.current);
+    objectUrlRef.current = uri;
+    e.target.value = ""; // allow re-importing the same file after undo, etc.
     await adoptImage(uri, 0, 0);
   }
 

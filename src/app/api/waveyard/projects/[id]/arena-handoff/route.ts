@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { requireUser } from "@/lib/waveyard/local-context";
@@ -63,6 +64,7 @@ export async function GET(_request: Request, { params }: Params) {
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, id, "viewer");
     const link = await findRoomProjectLink(id);
     if (!link) return NextResponse.json({ linked: false });
@@ -79,6 +81,7 @@ export async function POST(request: Request, { params }: Params) {
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project } = await requireProjectRole(user.id, id, "editor");
     const body = await request.json().catch(() => ({})) as { action?: string; title?: unknown; summary?: unknown };
     const attachment = await attachRoomProject(project);

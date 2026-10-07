@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -16,6 +17,7 @@ export const runtime = "nodejs";
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params; 
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const [stem] = await db.select().from(stemAssets).where(eq(stemAssets.id, id)).limit(1);
     const [source] = stem ? [undefined] : await db.select().from(sourceAssets).where(eq(sourceAssets.id, id)).limit(1);
     const asset = stem ?? source;

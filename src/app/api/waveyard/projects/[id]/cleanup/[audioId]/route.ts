@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 /**
  * Serve cleanup audio (preview or applied version) from project storage.
  * Keys are reconstructed from validated ids — containment by construction.
@@ -24,6 +25,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id: projectId, audioId } = await params;
+    if (!isUuid(projectId) || !isUuid(audioId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
 
     let storageKey: string | null = null;

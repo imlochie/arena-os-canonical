@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -18,6 +19,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   let directory: string | undefined;
   try {
     const user = await requireUser(); const { id: projectId } = await params;
+    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const sourceUrl = validateAuthorizedSourceUrl(String(body.url ?? ""));

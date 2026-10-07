@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 /**
  * Serve master preview WAVs from project storage. Ids are validated by
  * construction (preview-UUID format) and confined to the project prefix.
@@ -20,6 +21,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id: projectId, audioId } = await params;
+    if (!isUuid(projectId) || !isUuid(audioId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     if (!PREVIEW_RE.test(audioId))
       return NextResponse.json({ error: "Invalid audio id." }, { status: 400 });

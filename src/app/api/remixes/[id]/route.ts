@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { nearestBeat } from "@/lib/waveyard/types";
 import { asc, eq, inArray } from "drizzle-orm";
@@ -119,6 +120,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     return NextResponse.json(
       await stateFor(await getRemixAccess(user.id, id, "viewer")),
     );
@@ -146,6 +148,7 @@ export async function PUT(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await getRemixAccess(user.id, id, "editor");
     let input = normaliseRemixState(await request.json());
     if (!input)

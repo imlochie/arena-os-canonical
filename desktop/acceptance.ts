@@ -475,6 +475,13 @@ export async function runDesktopAcceptance(inputs: AcceptanceInputs): Promise<Ac
       const missing = await api(`/api/waveyard/projects/00000000-0000-4000-8000-000000000000`);
       s.step("missing project returns 404 (no fabricated data)", missing.status === 404, `status ${missing.status}`);
 
+      // 2b. malformed ids are rejected BEFORE any database query — a raw uuid
+      // column comparison would raise 22P02 and surface as a 500.
+      const malformed = await api(`/api/waveyard/projects/not-a-uuid`);
+      s.step("malformed id returns 400 (no 500 from the database)", malformed.status === 400, `status ${malformed.status}`);
+      const malformedExport = await api(`/api/remix-versions/junk/exports`);
+      s.step("malformed nested id returns 400 (no 500)", malformedExport.status === 400, `status ${malformedExport.status}`);
+
       // 3. AI without credentials → DEGRADED with a real reason
       const diagnostics = await api("/api/desktop/diagnostics");
       const ai = rec(rec(rec(diagnostics.body).components).ai);
