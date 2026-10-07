@@ -432,12 +432,31 @@ export const arrangementLayers = pgTable("arrangement_layers", {
   uniqueIndex("arrangement_layers_storage_key_unique").on(table.storageKey),
 ]);
 
+
+export const cleanupVersions = pgTable("cleanup_versions", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  /** Applied operations JSON (processor + params + reason per op). */
+  operations: text("operations").notNull(),
+  storageKey: text("storage_key").notNull(),
+  /** Measured before/after JSON — the honest proof the repair did something. */
+  measurementsBefore: text("measurements_before").notNull(),
+  measurementsAfter: text("measurements_after").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("cleanup_versions_project_idx").on(table.projectId),
+  uniqueIndex("cleanup_versions_storage_key_unique").on(table.storageKey),
+]);
+
 export const remixSessions = pgTable("remix_sessions", {
   id: uuid("id").defaultRandom().primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   ownerId: uuid("owner_id").notNull(),
   name: text("name").notNull(),
   masterVolume: real("master_volume").notNull().default(1),
+  /** Master insert chain JSON (waveyard-inserts-v1). */
+  masterInserts: text("master_inserts").notNull().default("[]"),
   loopStartMs: integer("loop_start_ms").notNull().default(0),
   loopEndMs: integer("loop_end_ms"),
   tempoBpm: real("tempo_bpm").notNull().default(120),
@@ -513,6 +532,8 @@ export const remixTracks = pgTable("remix_tracks", {
   pan: real("pan").notNull().default(0),
   muted: boolean("muted").notNull().default(false),
   solo: boolean("solo").notNull().default(false),
+  /** Insert chain JSON (waveyard-inserts-v1) — validated at the persistence boundary. */
+  inserts: text("inserts").notNull().default("[]"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("remix_tracks_session_id_idx").on(table.remixSessionId), index("remix_tracks_session_stem_idx").on(table.remixSessionId, table.stemAssetId)]);

@@ -20,6 +20,9 @@ import {
   type AudioMeasurements,
   CLIP_THRESHOLD,
 } from "../mixer/meters";
+
+export { measureAudio };
+export type { AudioMeasurements } from "../mixer/meters";
 import type { StereoBuffer } from "../mixer/dsp";
 import { dspGainToDb } from "../mixer/dsp";
 

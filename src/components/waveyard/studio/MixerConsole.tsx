@@ -16,6 +16,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { clock, sourceStemLabel, type Source, type Stem } from "./types";
+import { InsertRack } from "./InsertRack";
+import type { InsertChain } from "@/lib/waveyard/mixer/inserts";
 import type { MixerValues, MeterSnapshot, useStemTransport } from "@/lib/waveyard/useStemTransport";
 
 type Transport = ReturnType<typeof useStemTransport>;
@@ -57,6 +59,10 @@ export function MixerConsole({
   transport,
   onSelect,
   onControl,
+  inserts,
+  onInserts,
+  masterInserts,
+  onMasterInserts,
 }: {
   stems: Stem[];
   sources: Source[];
@@ -66,6 +72,10 @@ export function MixerConsole({
   transport: Transport;
   onSelect: (id: string) => void;
   onControl: (id: string, patch: Partial<MixerValues>) => void;
+  inserts: Record<string, InsertChain>;
+  onInserts: (stemAssetId: string, chain: InsertChain) => void;
+  masterInserts: InsertChain;
+  onMasterInserts: (chain: InsertChain) => void;
 }) {
   const [meters, setMeters] = useState<MeterSnapshot | null>(null);
   const rafId = useRef<number | null>(null);
@@ -181,6 +191,11 @@ export function MixerConsole({
                       onClick={() => onControl(stem.id, { monoMonitor: !control.monoMonitor })}
                     >M①</button>
                   </div>
+                  <InsertRack
+                    channelLabel={label}
+                    chain={inserts[stem.id] ?? []}
+                    onChange={(chain) => onInserts(stem.id, chain)}
+                  />
                   <audio aria-label={`${label} audio`} ref={(element) => transport.register(stem.id, element)} src={`/api/assets/${stem.id}`} preload="auto" />
                 </article>
               );
@@ -215,6 +230,7 @@ export function MixerConsole({
                 <button className="toggle" disabled aria-label="Master not clipping" title="No clipping">—</button>
               )}
             </div>
+            <InsertRack channelLabel="master" chain={masterInserts} onChange={onMasterInserts} />
           </article>
         </section>
       </div>

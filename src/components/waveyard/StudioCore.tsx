@@ -10,6 +10,8 @@ import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTim
 import { ArrangementInspector } from "./studio/ArrangementInspector";
 import { ClipInspector } from "./studio/ClipInspector";
 import { MixerConsole } from "./studio/MixerConsole";
+import { CleanupStudio } from "./studio/CleanupStudio";
+import type { InsertChain } from "@/lib/waveyard/mixer/inserts";
 import { GeneratedLayers } from "./studio/GeneratedLayers";
 import { DrumAnalysisPanel } from "./studio/DrumAnalysisPanel";
 import { HarmonyAnalysisPanel } from "./studio/HarmonyAnalysisPanel";
@@ -193,6 +195,16 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const environment = artworkEnvironment(`${source?.checksumSha256 ?? projectId}:${source?.originalFilename ?? "waveyard"}`);
 
   useEffect(() => { transport.applyMix(mixerControls); }, [mixerControls, transport]);
+  // Insert chains are canonical remix state; the live graph follows them.
+  const chainsByStem = useMemo(() => {
+    const record: Record<string, InsertChain> = {};
+    for (const track of remix?.tracks ?? []) record[track.stemAssetId] = track.inserts ?? [];
+    return record;
+  }, [remix]);
+  useEffect(() => {
+    if (!remix) return;
+    transport.applyInserts(chainsByStem, remix.masterInserts ?? []);
+  }, [chainsByStem, remix, transport]);
   useEffect(() => { remixRef.current = remix; }, [remix]);
   useEffect(() => { if (remix) transport.setMasterVolume(remix.masterVolume); }, [remix, transport]);
   const loopStartMs = remix?.loopStartMs ?? 0;
@@ -291,6 +303,15 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     queuePersist(after);
   }, [queuePersist, record]);
 
+  const updateInserts = (id: string, chain: InsertChain) => {
+    changeRemix((current) => ({
+      ...current,
+      tracks: current.tracks.map((track) => track.stemAssetId === id ? { ...track, inserts: chain } : track),
+    }));
+  };
+  const updateMasterInserts = (chain: InsertChain) => {
+    changeRemix((current) => ({ ...current, masterInserts: chain }));
+  };
   const updateControl = (id: string, patch: Partial<MixerValues>) => {
     setControls((current) => ({
       ...current,
@@ -709,7 +730,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     {source && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} onExportMidi={selected.stemType === "drums" || selected.stemType === "percussion" ? () => requestMidiExport("drums", source.id, selected.id) : undefined} />}
     {source && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} onExportMidi={() => requestMidiExport("harmony", source.id)} />}
     <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
-    <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} />}</section><GeneratedLayers projectId={projectId} canEdit />
+    <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} inserts={chainsByStem} onInserts={updateInserts} masterInserts={remix?.masterInserts ?? []} onMasterInserts={updateMasterInserts} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} />}</section><CleanupStudio projectId={projectId} /><GeneratedLayers projectId={projectId} canEdit />
     <section className="remix-panel">
       <div className="panel-title"><div><span className="eyebrow">Non-destructive arrangement</span><h3>Remix timeline</h3></div>{!remix ? <div className="remix-actions"><button className="button" disabled={buildingAutomaticRemix !== null} onClick={() => void createAutomaticRemix("original")}>{buildingAutomaticRemix === "original" ? "Building automatic arrangement…" : "Build automatic arrangement"}</button><button className="button secondary" onClick={() => void createRemix()}>Start blank arrangement</button></div> : <div className="remix-actions"><button className="button secondary" onClick={() => void createRemix()}>New remix session</button><button className="button secondary" disabled={!history.length} onClick={undo}>Undo</button><button className="button secondary" disabled={!future.length} onClick={redo}>Redo</button><button className="button secondary" onClick={() => void createVersion()}>Save version</button><button className="button" onClick={saveNow}>Save now</button></div>}</div>
       {remix ? <>

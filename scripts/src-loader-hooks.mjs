@@ -37,7 +37,12 @@ export async function resolve(specifier, context, nextResolve) {
     try {
       return await nextResolve(specifier, context);
     } catch (error) {
-      if (error && (error.code === "ERR_MODULE_NOT_FOUND" || error.code === "ERR_UNKNOWN_FILE_EXTENSION")) {
+      if (
+        error &&
+        (error.code === "ERR_MODULE_NOT_FOUND" ||
+          error.code === "ERR_UNKNOWN_FILE_EXTENSION" ||
+          error.code === "ERR_UNSUPPORTED_DIR_IMPORT")
+      ) {
         const parentDir = dirname(fileURLToPath(context.parentURL));
         const found = withExtension(resolvePath(parentDir, specifier));
         if (found) return { url: pathToFileURL(found).href, shortCircuit: true };

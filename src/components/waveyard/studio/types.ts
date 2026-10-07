@@ -188,6 +188,8 @@ export type Remix = {
   id: string;
   name: string;
   masterVolume: number;
+  /** Master insert chain (waveyard-inserts-v1); absent on historical sessions. */
+  masterInserts?: import("@/lib/waveyard/mixer/inserts").InsertChain;
   loopStartMs: number;
   loopEndMs: number | null;
   tempoBpm: number;
@@ -212,6 +214,7 @@ export function remixState(remix: Remix): RemixStateInput {
   return {
     name: remix.name,
     masterVolume: remix.masterVolume,
+    ...(remix.masterInserts !== undefined ? { masterInserts: remix.masterInserts } : {}),
     loopStartMs: remix.loopStartMs,
     loopEndMs: remix.loopEndMs,
     tempoBpm: remix.tempoBpm,

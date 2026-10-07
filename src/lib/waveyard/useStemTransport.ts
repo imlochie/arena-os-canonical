@@ -19,9 +19,170 @@ type AudioGraph = {
   /** Explicit-channel-count downmix node: 1 = mono monitor, 2 = stereo. */
   mono: GainNode;
   analyser: AnalyserNode;
+  /** Live insert subgraph between pan and mono; rebuilt on chain change. */
+  inserts: InsertSubgraph | null;
+  /** The tail node feeding mono (pan or gain). */
+  tail: AudioNode;
 };
 
 export type ChannelMeter = { peak: number; rms: number; clipped: boolean };
+
+// ---------------------------------------------------------------------------
+// Live insert chains — every processor maps to REAL Web Audio nodes.
+// gate has no native node and is honestly excluded from live monitoring
+// (it applies on cleanup previews/renders — the render path).
+// ---------------------------------------------------------------------------
+
+type InsertChain = Array<{
+  id: string;
+  processor: string;
+  enabled: boolean;
+  wet: number;
+  params: Record<string, number>;
+}>;
+
+type InsertSubgraph = { input: AudioNode; output: AudioNode };
+
+function dbToGainLinear(db: number): number {
+  return Math.pow(10, db / 20);
+}
+
+function tanhCurve(drive: number): Float32Array<ArrayBuffer> {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const norm = 1 / Math.tanh(drive);
+  for (let i = 0; i < n; i += 1) {
+    const x = (i / (n - 1)) * 2 - 1;
+    curve[i] = norm * Math.tanh(drive * x);
+  }
+  return curve;
+}
+
+function softClipCurve(ceiling: number): Float32Array<ArrayBuffer> {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const knee = ceiling * 0.85;
+  for (let i = 0; i < n; i += 1) {
+    const x = (i / (n - 1)) * 2 - 1; // -1..1 input domain
+    const scaled = x * ceiling;      // compare in ceiling domain
+    const absScaled = Math.abs(scaled);
+    const sign = scaled < 0 ? -1 : 1;
+    const y =
+      absScaled <= knee
+        ? scaled
+        : sign * (knee + (ceiling - knee) * Math.tanh((absScaled - knee) / Math.max(1e-9, ceiling - knee)));
+    curve[i] = Math.max(-1, Math.min(1, y / ceiling)); // back to -1..1
+  }
+  return curve;
+}
+
+function buildInsertNodes(ctx: AudioContext, insert: InsertChain[number]): InsertSubgraph | null {
+  const p = insert.params;
+  switch (insert.processor) {
+    case "gain": {
+      const g = ctx.createGain();
+      g.gain.value = dbToGainLinear(p.gainDb);
+      return { input: g, output: g };
+    }
+    case "highpass":
+    case "lowpass":
+    case "notch":
+    case "eq-band": {
+      const f = ctx.createBiquadFilter();
+      f.type =
+        insert.processor === "eq-band" ? "peaking"
+        : insert.processor === "notch" ? "notch"
+        : insert.processor;
+      f.frequency.value = p.freqHz ?? p.cutoffHz;
+      if (p.q !== undefined) f.Q.value = p.q;
+      if (p.gainDb !== undefined) f.gain.value = p.gainDb;
+      return { input: f, output: f };
+    }
+    case "compressor": {
+      const c = ctx.createDynamicsCompressor();
+      c.threshold.value = p.thresholdDb;
+      c.ratio.value = p.ratio;
+      c.attack.value = p.attackMs / 1000;
+      c.release.value = p.releaseMs / 1000;
+      c.knee.value = 6;
+      const makeup = ctx.createGain();
+      makeup.gain.value = dbToGainLinear(p.makeupDb);
+      c.connect(makeup);
+      return { input: c, output: makeup };
+    }
+    case "saturator": {
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = tanhCurve(p.drive);
+      shaper.oversample = "2x";
+      return { input: shaper, output: shaper };
+    }
+    case "softclip": {
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = softClipCurve(dbToGainLinear(p.ceilingDb));
+      shaper.oversample = "2x";
+      return { input: shaper, output: shaper };
+    }
+    case "width": {
+      // Real mid/side matrix from native nodes.
+      const splitter = ctx.createChannelSplitter(2);
+      const merger = ctx.createChannelMerger(2);
+      const midL = ctx.createGain(); midL.gain.value = 0.5;
+      const midR = ctx.createGain(); midR.gain.value = 0.5;
+      const sideL = ctx.createGain(); sideL.gain.value = 0.5;
+      const sideR = ctx.createGain(); sideR.gain.value = -0.5;
+      const mid = ctx.createGain();
+      const side = ctx.createGain(); side.gain.value = p.width;
+      const outLpos = ctx.createGain(); outLpos.gain.value = 1;
+      const outRpos = ctx.createGain(); outRpos.gain.value = 1;
+      const outRneg = ctx.createGain(); outRneg.gain.value = -1;
+      splitter.connect(midL, 0); splitter.connect(midR, 1);
+      splitter.connect(sideL, 0); splitter.connect(sideR, 1);
+      midL.connect(mid); midR.connect(mid);
+      sideL.connect(side); sideR.connect(side);
+      mid.connect(outLpos); side.connect(outLpos);
+      mid.connect(outRpos); side.connect(outRneg);
+      outLpos.connect(merger, 0, 0);
+      outRpos.connect(merger, 0, 1);
+      outRneg.connect(merger, 0, 1);
+      return { input: splitter, output: merger };
+    }
+    case "delay": {
+      const input = ctx.createGain();
+      const output = ctx.createGain();
+      const dry = ctx.createGain(); dry.gain.value = 1 - p.mix;
+      const wet = ctx.createGain(); wet.gain.value = p.mix;
+      const delay = ctx.createDelay(2.0);
+      delay.delayTime.value = p.delayMs / 1000;
+      const feedback = ctx.createGain(); feedback.gain.value = p.feedback;
+      input.connect(dry); dry.connect(output);
+      input.connect(delay); delay.connect(wet); wet.connect(output);
+      delay.connect(feedback); feedback.connect(delay);
+      return { input, output };
+    }
+    default:
+      return null; // gate and anything unknown: not live-monitorable
+  }
+}
+
+function buildChainSubgraph(ctx: AudioContext, chain: InsertChain): InsertSubgraph {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  let cursor: AudioNode = input;
+  for (const insert of chain) {
+    if (!insert.enabled) continue;
+    const nodes = buildInsertNodes(ctx, insert);
+    if (nodes === null) continue;
+    // Per-insert dry/wet (real parallel paths).
+    const merge = ctx.createGain();
+    const dry = ctx.createGain(); dry.gain.value = 1 - insert.wet;
+    const wet = ctx.createGain(); wet.gain.value = insert.wet;
+    cursor.connect(dry); dry.connect(merge);
+    cursor.connect(nodes.input); nodes.output.connect(wet); wet.connect(merge);
+    cursor = merge;
+  }
+  cursor.connect(output);
+  return { input, output };
+}
 export type MeterSnapshot = {
   channels: Record<string, ChannelMeter>;
   master: ChannelMeter & { left: number; right: number; correlation: number | null };
@@ -42,6 +203,9 @@ export function useStemTransport(ids: string[], duration: number) {
   const context = useRef<AudioContext | null>(null);
   const masterGain = useRef<GainNode | null>(null);
   const masterAnalyser = useRef<AnalyserNode | null>(null);
+  const insertChains = useRef<Record<string, InsertChain>>({});
+  const masterChain = useRef<InsertChain>([]);
+  const masterInsertsSubgraph = useRef<InsertSubgraph | null>(null);
   const masterLeft = useRef<AnalyserNode | null>(null);
   const masterRight = useRef<AnalyserNode | null>(null);
   const clipHold = useRef<Record<string, number>>({});
@@ -87,13 +251,20 @@ export function useStemTransport(ids: string[], duration: number) {
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
       source.connect(gain);
-      if (pan) {
-        gain.connect(pan);
-        pan.connect(mono);
-      } else gain.connect(mono);
+      const tail: AudioNode = pan ?? gain;
+      if (pan) gain.connect(pan);
+      let insertSubgraph: InsertSubgraph | null = null;
+      const chain = insertChains.current[id];
+      if (chain !== undefined && chain.length > 0) {
+        insertSubgraph = buildChainSubgraph(ctx, chain);
+        tail.connect(insertSubgraph.input);
+        insertSubgraph.output.connect(mono);
+      } else {
+        tail.connect(mono);
+      }
       mono.connect(analyser);
       analyser.connect(masterGain.current!);
-      graphs.current[id] = { source, gain, pan, mono, analyser };
+      graphs.current[id] = { source, gain, pan, mono, analyser, inserts: insertSubgraph, tail };
     }
     return graphs.current[id];
   }, []);
@@ -118,6 +289,52 @@ export function useStemTransport(ids: string[], duration: number) {
       setPosition(next);
     },
     [duration, ids],
+  );
+
+  /** Apply insert chains (live): rebuilds the subgraph of every playing graph. */
+  const applyInserts = useCallback(
+    (chains: Record<string, InsertChain>, master: InsertChain) => {
+      insertChains.current = chains;
+      masterChain.current = master;
+      for (const [id, graph] of Object.entries(graphs.current)) {
+        const chain = chains[id];
+        if (graph.inserts !== null) {
+          try { graph.inserts.input.disconnect(); graph.inserts.output.disconnect(); } catch {}
+          try { graph.tail.disconnect(); } catch {}
+          graph.inserts = null;
+          try { graph.tail.connect(graph.mono); } catch {}
+        }
+        if (chain !== undefined && chain.length > 0) {
+          const sub = buildChainSubgraph(context.current!, chain);
+          try { graph.tail.disconnect(); } catch {}
+          graph.tail.connect(sub.input);
+          sub.output.connect(graph.mono);
+          graph.inserts = sub;
+        }
+      }
+      // Master chain sits between masterGain and its analyser/splitter/destination.
+      if (context.current && masterGain.current && masterAnalyser.current) {
+        try { masterGain.current.disconnect(); } catch {}
+        let head: AudioNode = masterGain.current;
+        if (master.length > 0) {
+          const sub = buildChainSubgraph(context.current, master);
+          head.connect(sub.input);
+          head = sub.output;
+          masterInsertsSubgraph.current = sub;
+        } else {
+          masterInsertsSubgraph.current = null;
+        }
+        head.connect(masterAnalyser.current);
+        head.connect(context.current.destination);
+        // The L/R splitter taps re-attach after the chain so correlation
+        // reflects the processed master.
+        const splitter = context.current.createChannelSplitter(2);
+        head.connect(splitter);
+        splitter.connect(masterLeft.current!, 0);
+        splitter.connect(masterRight.current!, 1);
+      }
+    },
+    [],
   );
 
   // Recording mixer intent is safe before a user gesture. We intentionally do
@@ -288,6 +505,7 @@ export function useStemTransport(ids: string[], duration: number) {
   return {
     register,
     readMeters,
+    applyInserts,
     playing,
     position,
     duration,

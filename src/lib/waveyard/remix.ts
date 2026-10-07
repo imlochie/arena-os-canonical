@@ -4,6 +4,7 @@ import {
   normaliseMusicalKey,
   type RemixAutomationLane,
 } from "./types";
+import { INSERTS_FORMAT, parseInserts, type InsertChain } from "./mixer/inserts";
 import {
   DEFAULT_TIMING,
   GRID_DIVISIONS,
@@ -37,6 +38,8 @@ export type RemixTrackInput = {
   muted: boolean;
   solo: boolean;
   clips: RemixClipInput[];
+  /** Insert chain (waveyard-inserts-v1); undefined = leave persisted chain untouched. */
+  inserts?: InsertChain;
 };
 export type RemixStateInput = MusicalTiming & {
   name?: string;
@@ -45,10 +48,30 @@ export type RemixStateInput = MusicalTiming & {
   loopEndMs: number | null;
   targetKey: string | null;
   tracks: RemixTrackInput[];
+  /** Master insert chain; undefined = leave the persisted chain untouched. */
+  masterInserts?: InsertChain;
   // Omitted by pre-Phase-15 callers so their ordinary arrangement PUTs do not
   // accidentally erase newly persisted automation.
   automation?: RemixAutomationLane[];
 };
+
+/**
+ * Insert chains arrive as untrusted JSON. A present-but-invalid chain
+ * rejects the whole state (strict, like every other field): the validator
+ * is the authority. undefined = field not sent (legacy callers) = keep.
+ */
+function normaliseInserts(raw: unknown): InsertChain | undefined | null {
+  if (raw === undefined) return undefined;
+  if (raw === null) return [];
+  if (typeof raw === "string") {
+    try {
+      return normaliseInserts(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+  return parseInserts({ format: INSERTS_FORMAT, inserts: raw });
+}
 
 function finiteNumber(value: unknown, fallback = 0) {
   const number = Number(value);
@@ -80,6 +103,8 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
   const tracks: RemixTrackInput[] = [];
   for (const [trackIndex, input] of value.tracks.entries()) {
     if (!input || typeof input !== "object" || !input.id || !input.stemAssetId || !Array.isArray(input.clips) || input.clips.length > 256) return null;
+    const trackInserts = normaliseInserts(input.inserts);
+    if (trackInserts === null) return null;
     const clips: RemixClipInput[] = [];
     for (const clip of input.clips) {
       if (!clip || typeof clip !== "object" || !clip.stemAssetId) return null;
@@ -114,8 +139,11 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
       muted: input.muted === true,
       solo: input.solo === true,
       clips,
+      ...(trackInserts !== undefined ? { inserts: trackInserts } : {}),
     });
   }
+  const masterInserts = normaliseInserts(value.masterInserts);
+  if (masterInserts === null) return null;
   const loopStartMs = Math.round(clamp(value.loopStartMs, 0, 86_400_000));
   const loopEndCandidate = value.loopEndMs === null || value.loopEndMs === undefined ? null : Math.round(clamp(value.loopEndMs, 0, 86_400_000));
   const targetKey = value.targetKey === null || value.targetKey === undefined
@@ -147,6 +175,7 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
     loopStartMs,
     loopEndMs: loopEndCandidate && loopEndCandidate > loopStartMs ? loopEndCandidate : null,
     targetKey,
+    ...(masterInserts !== undefined ? { masterInserts } : {}),
     tracks,
     ...(automation === undefined ? {} : { automation }),
     ...normaliseTiming(value),

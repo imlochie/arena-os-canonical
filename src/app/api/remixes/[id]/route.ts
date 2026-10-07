@@ -95,6 +95,7 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
     remix,
     tracks: tracks.map((track) => ({
       ...track,
+      inserts: parseStoredInserts(track.inserts),
       clips: clips.filter((clip) => clip.remixTrackId === track.id),
     })),
     generation: generation ? { engine: generation.engine, engineVersion: generation.engineVersion, variant: generation.variant, createdAt: generation.createdAt } : null,
@@ -124,6 +125,17 @@ export async function GET(
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;
+  }
+}
+
+/** Stored insert-chain JSON → parsed chain; corrupt data degrades to empty, never 500s a GET. */
+function parseStoredInserts(raw: string | null | undefined): unknown[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 }
 
@@ -232,6 +244,9 @@ export async function PUT(
           gridDivision: input.gridDivision,
           snapEnabled: input.snapEnabled,
           targetKey: input.targetKey,
+          ...(input.masterInserts !== undefined
+            ? { masterInserts: JSON.stringify(input.masterInserts) }
+            : {}),
           version: remix.version + 1,
           updatedAt: new Date(),
         })
@@ -246,6 +261,9 @@ export async function PUT(
             pan: track.pan,
             muted: track.muted,
             solo: track.solo,
+            ...(track.inserts !== undefined
+              ? { inserts: JSON.stringify(track.inserts) }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(remixTracks.id, track.id));
