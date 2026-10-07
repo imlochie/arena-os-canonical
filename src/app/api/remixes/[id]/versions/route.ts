@@ -10,6 +10,7 @@ import {
 } from "@/db/waveyardSchema";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
+import { buildVersionSnapshot } from "@/lib/waveyard/remix-versioning";
 import { crossfadeError, normaliseRemixState } from "@/lib/waveyard/remix";
 
 async function access(userId: string, id: string, minimum: "viewer" | "editor") {
@@ -19,33 +20,15 @@ async function access(userId: string, id: string, minimum: "viewer" | "editor") 
   return remix;
 }
 
-async function snapshot(remix: typeof remixSessions.$inferSelect) {
-  
-  const tracks = await db.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id)).orderBy(asc(remixTracks.sortOrder));
-  const clips = tracks.length ? await db.select().from(remixClips).where(inArray(remixClips.remixTrackId, tracks.map((track) => track.id))) : [];
-  const automation = await db.select().from(remixAutomationPoints).where(eq(remixAutomationPoints.remixSessionId, remix.id)).orderBy(asc(remixAutomationPoints.timelineMs));
-  return {
-    name: remix.name,
-    masterVolume: remix.masterVolume,
-    loopStartMs: remix.loopStartMs,
-    loopEndMs: remix.loopEndMs,
-    tempoBpm: remix.tempoBpm,
-    timeSignatureNumerator: remix.timeSignatureNumerator,
-    timeSignatureDenominator: remix.timeSignatureDenominator,
-    gridDivision: remix.gridDivision,
-    snapEnabled: remix.snapEnabled,
-    targetKey: remix.targetKey,
-    tracks: tracks.map((track) => ({ ...track, clips: clips.filter((clip) => clip.remixTrackId === track.id) })),
-    automation: [...new Map(automation.map((point) => [
-      `${point.remixTrackId}:${point.parameter}`,
-      {
-        remixTrackId: point.remixTrackId,
-        parameter: point.parameter,
-        points: automation.filter((candidate) => candidate.remixTrackId === point.remixTrackId && candidate.parameter === point.parameter)
-          .map(({ id: pointId, timelineMs, value }) => ({ id: pointId, timelineMs, value })),
-      },
-    ])).values()],
-  };
+// The snapshot mapping lives in lib (remix-versioning) so its persistence
+// contract — including insert chains — is covered by regression tests.
+function snapshot(remix: typeof remixSessions.$inferSelect) {
+  return (async () => {
+    const tracks = await db.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id)).orderBy(asc(remixTracks.sortOrder));
+    const clips = tracks.length ? await db.select().from(remixClips).where(inArray(remixClips.remixTrackId, tracks.map((track) => track.id))) : [];
+    const automation = await db.select().from(remixAutomationPoints).where(eq(remixAutomationPoints.remixSessionId, remix.id)).orderBy(asc(remixAutomationPoints.timelineMs));
+    return buildVersionSnapshot({ remix, tracks, clips, automation });
+  })();
 }
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {

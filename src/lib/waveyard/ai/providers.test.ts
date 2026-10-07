@@ -245,6 +245,36 @@ test("bridge maps remix rows to mixer channels and back with volume/pan fidelity
   assert.equal(round.masterInserts.length, 1);
 });
 
+test("bridge preserves pre-existing chains across an AI apply (bare-array storage form)", () => {
+  // Regression: the bridge used to parse remix rows with the envelope form,
+  // so bare-array stored chains read as [] and AI applies REPLACED manual work.
+  const manual = [
+    { id: "fx-1", processor: "notch", enabled: true, wet: 1, params: { freqHz: 50, q: 18 } },
+    { id: "fx-2", processor: "eq-band", enabled: true, wet: 0.8, params: { freqHz: 3000, gainDb: 2, q: 0.9 } },
+  ];
+  const session: RemixSessionView = {
+    masterVolume: 1,
+    masterInsertsRaw: JSON.stringify([{ id: "m-1", processor: "softclip", enabled: true, wet: 1, params: { ceilingDb: -1 } }]),
+    tracks: [{ id: "track-1", stemAssetId: "stem-1", name: "Lead", volume: 1, pan: 0, muted: false, solo: false, insertsRaw: JSON.stringify(manual) }],
+  };
+  const state = mixerStateFromRemix(session);
+  const stem = state.channels.find((channel) => channel.id === "stem:stem-1")!;
+  assert.equal(stem.inserts.length, 2, "stored bare-array chain must load (not read as empty)");
+  const master = state.channels.find((channel) => channel.kind === "master")!;
+  assert.equal(master.inserts.length, 1);
+
+  const application = applyProposal(state, {
+    rationale: "tighten low end",
+    changes: [{ targetChannelId: "stem:stem-1", processor: "highpass", parameters: { cutoffHz: 45, q: 0.7071 }, reason: "measured sub energy" }],
+  });
+  assert.equal(application.status, "applied");
+  const update = remixUpdateFromMixerState(session, application.next!);
+  assert.equal(update.tracks[0].inserts.length, 3, "AI apply must APPEND to the manual chain, not replace it");
+  assert.equal(update.tracks[0].inserts[0].processor, "notch");
+  assert.equal(update.tracks[0].inserts[2].processor, "highpass");
+  assert.equal(update.masterInserts.length, 1, "untouched master chain must survive");
+});
+
 test("providerStatus reports availability when a key exists", () => {
   process.env.ANTHROPIC_API_KEY = "k";
   const status = providerStatus("anthropic");

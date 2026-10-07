@@ -552,6 +552,8 @@ export const remixTracks = pgTable("remix_tracks", {
   solo: boolean("solo").notNull().default(false),
   /** Insert chain JSON (waveyard-inserts-v1) — validated at the persistence boundary. */
   inserts: text("inserts").notNull().default("[]"),
+  /** Persisted polarity inversion per channel (drives the live Ø flip). */
+  phaseInverted: boolean("phase_inverted").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("remix_tracks_session_id_idx").on(table.remixSessionId), index("remix_tracks_session_stem_idx").on(table.remixSessionId, table.stemAssetId)]);

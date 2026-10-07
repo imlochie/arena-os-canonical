@@ -156,7 +156,7 @@ export function AIStudio({ projectId }: { projectId: string }) {
       setError(String(data.error ?? "Apply failed.") + (Array.isArray(data.errors) ? " " + data.errors.join("; ") : ""));
       return;
     }
-    setResult({ kind: "analysis", text: `Applied ${data.applied.length} change(s) to the remix session. The mixer now carries them; use the mixer's history to undo.`, model: result.model, capabilityDetail: "" });
+    setResult({ kind: "analysis", text: `Applied ${data.applied.length} change(s) to the remix session — inserts applied by the AI are badged · AI in the mixer's FX racks. Play to audition; the mixer's undo history reverts.`, model: result.model, capabilityDetail: "" });
   }, [projectId, result, workflowId]);
 
   const selectedWorkflow = workflows.find((workflow) => workflow.id === workflowId);
@@ -168,6 +168,13 @@ export function AIStudio({ projectId }: { projectId: string }) {
         <h3>AI</h3>
         <p className="muted">{capabilityLabels["audio-derived"] ?? "AI reasoning: derived audio analysis"}</p>
       </header>
+
+      <ol className="workflow-stages" aria-label="AI workflow stages">
+        <li className={result === null ? "current" : "done"}>1 · Request</li>
+        <li className={result !== null ? "current" : ""}>2 · Analysis / Proposal</li>
+        <li className={result?.kind === "proposal" ? "current" : ""}>3 · Review</li>
+        <li className={phase === "applying" ? "current" : ""}>4 · Apply</li>
+      </ol>
 
       <div className="ai-controls">
         <label>
@@ -233,7 +240,7 @@ export function AIStudio({ projectId }: { projectId: string }) {
 
       {result !== null && result.kind === "proposal" && (
         <div className="ai-result ai-proposal" data-testid="ai-proposal">
-          <h4>Proposed changes</h4>
+          <h4><span className="stage-chip recommended">Review</span> Exactly what the AI wants to change — channel by channel</h4>
           <p>{result.rationale}</p>
           <table className="cleanup-measurements">
             <thead>
@@ -257,7 +264,7 @@ export function AIStudio({ projectId }: { projectId: string }) {
           )}
           <div className="cleanup-actions">
             <button onClick={accept} disabled={phase === "applying"}>
-              {phase === "applying" ? "Applying…" : "Accept — apply to session"}
+              {phase === "applying" ? "Applying…" : "Apply to session (undo via mixer history)" }
             </button>
             <button onClick={() => setResult(null)}>Reject</button>
           </div>

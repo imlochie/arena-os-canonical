@@ -12,6 +12,7 @@ import {
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 import { crossfadeError, normaliseRemixState } from "@/lib/waveyard/remix";
+import { restoredSessionFields, restoredTrackFields } from "@/lib/waveyard/remix-versioning";
 
 export async function POST(
   _request: Request,
@@ -61,17 +62,7 @@ export async function POST(
       if (removedIds.length)
         await tx.delete(remixTracks).where(inArray(remixTracks.id, removedIds));
       for (const track of state.tracks) {
-        const fields = {
-          remixSessionId: remix.id,
-          stemAssetId: track.stemAssetId,
-          name: track.name,
-          sortOrder: track.sortOrder,
-          volume: track.volume,
-          pan: track.pan,
-          muted: track.muted,
-          solo: track.solo,
-          updatedAt: new Date(),
-        };
+        const fields = restoredTrackFields(remix.id, track);
         if (currentIds.has(track.id))
           await tx.update(remixTracks).set(fields).where(eq(remixTracks.id, track.id));
         else await tx.insert(remixTracks).values({ id: track.id, ...fields });
@@ -99,20 +90,7 @@ export async function POST(
         beatSnapEnabled: clip.beatSnapEnabled,
       })));
       if (clips.length) await tx.insert(remixClips).values(clips);
-      await tx.update(remixSessions).set({
-        name: state.name || remix.name,
-        masterVolume: state.masterVolume,
-        loopStartMs: state.loopStartMs,
-        loopEndMs: state.loopEndMs,
-        tempoBpm: state.tempoBpm,
-        timeSignatureNumerator: state.timeSignatureNumerator,
-        timeSignatureDenominator: state.timeSignatureDenominator,
-        gridDivision: state.gridDivision,
-        snapEnabled: state.snapEnabled,
-        targetKey: state.targetKey,
-        version: remix.version + 1,
-        updatedAt: new Date(),
-      }).where(eq(remixSessions.id, remix.id));
+      await tx.update(remixSessions).set(restoredSessionFields(state, remix)).where(eq(remixSessions.id, remix.id));
     });
     return NextResponse.json({ ok: true });
   } catch (error) {

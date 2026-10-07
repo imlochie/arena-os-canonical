@@ -220,6 +220,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         );
       }
       const update = remixUpdateFromMixerState(session.view, application.next);
+      // Provenance: ONLY the inserts this apply created get the ai- id prefix
+      // (the mixer rack badges them · AI). Pre-existing manual inserts keep
+      // their ids and their manual provenance.
+      const beforeIds = new Set<string>();
+      for (const channel of state.channels) {
+        for (const insert of channel.inserts) beforeIds.add(insert.id);
+      }
+      const tagApplied = <T extends { id: string }>(insert: T): T =>
+        beforeIds.has(insert.id) || insert.id.startsWith("ai-") ? insert : { ...insert, id: `ai-${insert.id}` };
+      for (const track of update.tracks) {
+        track.inserts = track.inserts.map(tagApplied);
+      }
+      update.masterInserts = update.masterInserts.map(tagApplied);
       await db.transaction(async (tx) => {
         for (const track of update.tracks) {
           await tx

@@ -150,6 +150,7 @@ export function MixerConsole({
                     <b>STEM · {label}</b>
                     <small>{clock(stem.durationSeconds)} · {stem.sampleRate} Hz · {dbLabel(control.volume)} dB</small>
                   </button>
+                  <small className="routing-hint" title="Signal flow: stem → inserts → pan → master">stem → inserts → master</small>
                   <MeterBar meter={meter ?? { peak: 0, rms: 0, clipped: false }} />
                   <label className="console-fader">
                     Fader
@@ -187,7 +188,7 @@ export function MixerConsole({
                     <button
                       className={`toggle ${control.monoMonitor ? "on" : ""}`}
                       aria-label={`Monitor ${label} in mono`} aria-pressed={control.monoMonitor ?? false}
-                      title="Mono monitoring"
+                      title="Mono monitoring (monitor only — not rendered or exported)"
                       onClick={() => onControl(stem.id, { monoMonitor: !control.monoMonitor })}
                     >M①</button>
                   </div>

@@ -50,8 +50,8 @@ export function InsertRack({
   return (
     <details className="insert-rack" data-testid={`insert-rack-${channelLabel}`}>
       <summary>
-        FX <b>{chain.length}</b>
-        <small>{chain.filter((insert) => insert.enabled).length} active</small>
+        FX rack <b>{chain.length}</b>
+        <small>{chain.filter((insert) => insert.enabled).length} on</small>
       </summary>
       <div className="insert-controls">
         <label>
@@ -96,7 +96,7 @@ export function InsertRack({
           return (
             <li key={insert.id} className={`insert-item ${insert.enabled ? "" : "bypassed"}`}>
               <div className="insert-head">
-                <b>{index + 1}. {INSERT_PROCESSOR_LABELS[insert.processor as InsertProcessorId] ?? insert.processor}</b>
+                <b>{index + 1}. {INSERT_PROCESSOR_LABELS[insert.processor as InsertProcessorId] ?? insert.processor}{insert.id.startsWith("ai-") ? " · AI" : ""}</b>
                 {RENDER_ONLY.has(insert.processor as InsertProcessorId) && (
                   <small title="No native live node — applied on cleanup previews/renders">render path only</small>
                 )}

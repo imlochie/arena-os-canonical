@@ -110,7 +110,7 @@ export function SoundDesignStudio({ projectId }: { projectId: string }) {
     <section className="sounddesign-studio" aria-label="Sound design">
       <header>
         <h3>Design</h3>
-        <p className="muted">Procedural sound design — real synthesis, real processors, full provenance. No AI, no sample packs.</p>
+        <p className="muted">Procedural sound design — real synthesis, real processors, full provenance. Layers are project content: preview, mute, delete like any other asset. No AI, no sample packs.</p>
       </header>
       <div className="sd-controls">
         <label>
@@ -164,7 +164,7 @@ export function SoundDesignStudio({ projectId }: { projectId: string }) {
           {assets.map((asset) => (
             <li key={asset.id} className={asset.muted ? "muted-asset" : ""}>
               <div className="sd-asset-info">
-                <b>{asset.kind}</b>
+                <b>SD · {asset.kind}</b>
                 <small className="muted">{asset.description}</small>
               </div>
               <audio controls preload="none" src={asset.audioUrl} />

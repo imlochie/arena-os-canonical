@@ -264,6 +264,9 @@ export async function PUT(
             ...(track.inserts !== undefined
               ? { inserts: JSON.stringify(track.inserts) }
               : {}),
+            ...(track.phaseInverted !== undefined
+              ? { phaseInverted: track.phaseInverted }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(remixTracks.id, track.id));

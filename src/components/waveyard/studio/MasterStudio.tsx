@@ -33,6 +33,7 @@ const MEASUREMENT_ROWS: Array<[string, (m: AudioMeasurements) => number | null]>
   ["integrated LUFS", (m) => m.lufsIntegrated],
   ["peak dBFS", (m) => m.peakDb],
   ["true peak dBFS", (m) => m.truePeakDb],
+  ["headroom to 0 dBFS (dB)", (m) => -m.truePeakDb],
   ["RMS dB", (m) => m.rmsDb],
   ["crest dB", (m) => m.crestDb],
   ["correlation", (m) => m.stereoCorrelation],

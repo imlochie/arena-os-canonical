@@ -6,7 +6,7 @@
  * or the remix PUT), never React-only state.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { WaveformCanvas } from "../WaveformCanvas";
 import type { useStemTransport } from "@/lib/waveyard/useStemTransport";
@@ -22,6 +22,7 @@ export function ClipInspector({
   duration,
   transport,
   remix,
+  activeClipId,
   onClipPatch,
   onSplitClip,
   onDuplicateClip,
@@ -32,6 +33,8 @@ export function ClipInspector({
   duration: number;
   transport: Transport;
   remix: Remix | null;
+  /** Clip currently selected in the arrangement timeline (kept in sync). */
+  activeClipId?: string | null;
   /** Persisted clip property update (gain / fades) via the remix PUT path. */
   onClipPatch: (clipId: string, patch: Partial<Pick<Clip, "gain" | "fadeInMs" | "fadeOutMs">>) => void;
   onSplitClip: (clipId: string, positionMs: number) => void;
@@ -42,6 +45,13 @@ export function ClipInspector({
   const track = remix?.tracks.find((candidate) => candidate.stemAssetId === stem.id);
   const clips = track?.clips ?? [];
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  // The inspector follows the timeline selection — it can never silently edit
+  // a different clip than the one the user sees highlighted.
+  useEffect(() => {
+    if (activeClipId != null && clips.some((clip) => clip.id === activeClipId)) {
+      setSelectedClipId(activeClipId);
+    }
+  }, [activeClipId, clips]);
   const selectedClip = clips.find((clip) => clip.id === selectedClipId) ?? clips[0] ?? null;
 
   return (

@@ -40,6 +40,8 @@ export type RemixTrackInput = {
   clips: RemixClipInput[];
   /** Insert chain (waveyard-inserts-v1); undefined = leave persisted chain untouched. */
   inserts?: InsertChain;
+  /** Polarity inversion; undefined = leave the persisted flag untouched. */
+  phaseInverted?: boolean;
 };
 export type RemixStateInput = MusicalTiming & {
   name?: string;
@@ -140,6 +142,7 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
       solo: input.solo === true,
       clips,
       ...(trackInserts !== undefined ? { inserts: trackInserts } : {}),
+      ...(input.phaseInverted !== undefined ? { phaseInverted: input.phaseInverted === true } : {}),
     });
   }
   const masterInserts = normaliseInserts(value.masterInserts);

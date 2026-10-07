@@ -13,7 +13,7 @@ import {
   type StemInput,
 } from "../mixer/state";
 import { dbToGain, gainToDb } from "../mixer/gain";
-import { parseInserts, type InsertChain } from "../mixer/inserts";
+import { INSERTS_FORMAT, parseInserts } from "../mixer/inserts";
 import type { MinimalInsert } from "../mixer/types";
 import type { MixerState } from "../mixer/types";
 import { MASTER_CHANNEL_ID } from "../mixer/state";
@@ -66,8 +66,19 @@ export function mixerStateFromRemix(session: RemixSessionView): MixerState {
 
 function parseStoredChain(raw: string): MinimalInsert[] {
   try {
-    const parsed = parseInserts(JSON.parse(raw));
-    return parsed ?? [];
+    const parsed = JSON.parse(raw);
+    // remix_tracks.inserts / remix_sessions.masterInserts persist the
+    // BARE-ARRAY canonical form; the {format, inserts} envelope appears in
+    // exports/tests. Accept both, validate every insert, degrade to [] only
+    // on genuinely corrupt data.
+    const inserts = Array.isArray(parsed)
+      ? parsed
+      : parsed !== null && typeof parsed === "object" && Array.isArray((parsed as { inserts?: unknown }).inserts)
+        ? (parsed as { inserts: unknown[] }).inserts
+        : null;
+    if (inserts === null) return [];
+    const chain = parseInserts({ format: INSERTS_FORMAT, inserts });
+    return chain ?? [];
   } catch {
     return [];
   }

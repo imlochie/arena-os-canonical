@@ -247,3 +247,15 @@ body {
 .master-studio h3, .master-studio h4 { margin: 0; }
 .master-studio h4 { margin: 0.7rem 0 0.3rem; }
 .master-export-state { border-top: 1px solid var(--border, #2a2a33); padding-top: 0.5rem; margin-top: 0.6rem; }
+
+/* ---- workflow stages + routing hints (Waveyard final UX pass) ---- */
+.workflow-stages { list-style: none; display: flex; gap: 0.4rem; padding: 0; margin: 0.4rem 0; flex-wrap: wrap; font-size: 0.72rem; }
+.workflow-stages li { border: 1px solid var(--border, #2a2a33); border-radius: 999px; padding: 0.1rem 0.55rem; color: var(--muted, #9a9aad); }
+.workflow-stages li.current { border-color: var(--accent, #7aa2f7); color: var(--accent, #7aa2f7); }
+.workflow-stages li.done { color: var(--fg, #e0e0ea); border-color: var(--fg-soft, #555); }
+.stage-chip { display: inline-block; font-size: 0.66rem; letter-spacing: 0.06em; text-transform: uppercase; border-radius: 3px; padding: 0.05rem 0.35rem; margin-right: 0.35rem; vertical-align: 1px; }
+.stage-chip.detected { background: #d0505033; color: #e08080; }
+.stage-chip.recommended { background: #d0a04033; color: #d0b060; }
+.stage-chip.previewed { background: #5080c033; color: #80a0e0; }
+.stage-chip.applied { background: #40a07033; color: #70c090; }
+.routing-hint { display: block; color: var(--muted, #9a9aad); font-size: 0.66rem; margin: 0.1rem 0 0.15rem; opacity: 0.85; }

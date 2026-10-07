@@ -143,17 +143,23 @@ export function CleanupStudio({ projectId }: { projectId: string }) {
     <section className="cleanup-studio" aria-label="Audio cleanup">
       <header>
         <h3>Clean</h3>
-        <p className="muted">Scan the source for measured problems, preview real repairs, keep the original.</p>
+        <p className="muted">Scan the source for measured problems, preview real repairs, keep the original. The original file is never modified — Apply creates a new derived version.</p>
         <button onClick={scan} disabled={phase === "scanning" || phase === "applying" || phase === "previewing"}>
-          {phase === "scanning" ? "Scanning…" : "Scan source"}
+          {phase === "scanning" ? "Scanning…" : report === null ? "Scan source" : "Re-scan"}
         </button>
       </header>
+      <ol className="workflow-stages" aria-label="Cleanup workflow stages">
+        <li className={report !== null ? "done" : "current"}>1 · Scan</li>
+        <li className={report === null ? "" : preview !== null ? "done" : report !== null ? "current" : ""}>2 · Review</li>
+        <li className={preview !== null ? "current" : versions.length > 0 ? "done" : ""}>3 · Preview</li>
+        <li className={versions.length > 0 ? "current" : ""}>4 · Applied</li>
+      </ol>
 
       {error !== null && <p className="error-message" role="alert">{error}</p>}
 
       {report !== null && (
         <div className="cleanup-findings" data-testid="cleanup-findings">
-          <h4>Findings ({findings.length})</h4>
+          <h4><span className="stage-chip detected">Detected</span> Findings ({findings.length}) — measured, not guessed</h4>
           {findings.length === 0 && <p className="muted">No problems measured above thresholds.</p>}
           {findings.map((finding, index) => (
             <div key={index} className={`finding severity-${finding.severity}`}>
@@ -166,7 +172,7 @@ export function CleanupStudio({ projectId }: { projectId: string }) {
             </div>
           ))}
 
-          <h4>Repairs (real processors only)</h4>
+          <h4><span className="stage-chip recommended">Recommended</span> Repairs (real processors only) — nothing is repaired until you Apply</h4>
           {recommendations.length === 0 && (
             <p className="muted">No honest single-pass repair maps to the findings above — they are reported, not masked.</p>
           )}
@@ -200,7 +206,7 @@ export function CleanupStudio({ projectId }: { projectId: string }) {
 
       {preview !== null && (
         <div className="cleanup-preview" data-testid="cleanup-preview">
-          <h4>Preview — compare, then decide</h4>
+          <h4><span className="stage-chip previewed">Previewed</span> Compare, then decide — this is a rendered preview, not an applied repair</h4>
           <div className="cleanup-ab">
             <figure>
               <figcaption>Original</figcaption>
@@ -238,7 +244,7 @@ export function CleanupStudio({ projectId }: { projectId: string }) {
 
       {versions.length > 0 && (
         <div className="cleanup-versions" data-testid="cleanup-versions">
-          <h4>Cleanup versions ({versions.length})</h4>
+          <h4><span className="stage-chip applied">Applied</span> Cleanup versions ({versions.length})</h4>
           <ul>
             {versions.map((version) => (
               <li key={version.id}>
