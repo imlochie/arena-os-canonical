@@ -72,6 +72,15 @@ const mark = (key, ok, detail) => {
 };
 const pass = (key, detail) => mark(key, true, detail);
 
+// Module state for the acceptance result files. Declared BEFORE the
+// top-level execution block on purpose: the main path calls
+// runInstalledAcceptance() → resultFilePath() while the module is still
+// executing top-level statements, and a `let` declared further down would
+// still be in its temporal dead zone at that point (the exact crash of the
+// first real Windows acceptance run: "Cannot access 'resultDirCache'
+// before initialization").
+let resultDirCache = null;
+
 try {
   report.FINAL_COMMIT = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout?.trim() ?? "unknown";
 
@@ -292,7 +301,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-let resultDirCache = null;
 function resultFilePath(name) {
   resultDirCache ??= mkdtempSync(path.join(tmpdir(), "arena-win-acceptance-"));
   return path.join(resultDirCache, name);
