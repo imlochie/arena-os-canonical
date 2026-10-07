@@ -1,0 +1,8 @@
+Arena bundles FFmpeg and FFprobe static builds distributed by the
+@ffmpeg-installer / @ffprobe-installer npm packages.
+
+These builds are licensed under the GNU General Public License (GPL).
+Source code for FFmpeg is available at https://ffmpeg.org.
+
+FFmpeg is a trademark of Fabrice Bellard, orig. author of FFmpeg.
+This product is not affiliated with the FFmpeg project.

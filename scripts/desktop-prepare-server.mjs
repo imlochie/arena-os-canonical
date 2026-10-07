@@ -12,7 +12,7 @@
  * Nothing from the repo root (caches, fixtures, .env, test data) is staged.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
@@ -42,7 +42,32 @@ console.log("[desktop:prepare-server] staging into desktop-package/…");
 mkdirSync(out, { recursive: true });
 
 // 1. The standalone server tree (server.js + traced node_modules).
+//
+// Turbopack emits server-external packages (pg) under hashed keys in
+// `.next/node_modules/` as SYMLINKS (e.g. pg-<hash> → ../../node_modules/pg).
+// Node's cpSync has a quirk here: `dereference: true` is ignored for symlinks
+// nested inside a copied directory, and the default rewrites relative links
+// to ABSOLUTE paths into the repo build tree — either way the "self-contained"
+// staged tree would break the moment the repo's .next is rebuilt (exactly
+// what the installer would ship). So: copy, then MATERIALIZE every symlink
+// under server/ into a real copy of its resolved target.
 cpSync(standalone, path.join(out, "server"), { recursive: true });
+function materializeSymlinks(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) {
+      const resolved = path.resolve(path.dirname(full), readlinkSync(full));
+      if (!existsSync(resolved)) {
+        throw new Error(`Staging found a dangling symlink: ${full} → ${resolved}`);
+      }
+      rmSync(full, { recursive: true, force: true });
+      cpSync(resolved, full, { recursive: true, dereference: true });
+    } else if (entry.isDirectory()) {
+      materializeSymlinks(full);
+    }
+  }
+}
+materializeSymlinks(path.join(out, "server"));
 
 // 2. Static assets Next serves from beside server.js (inside the staged tree).
 mkdirSync(path.join(out, "server", ".next"), { recursive: true });
@@ -101,6 +126,27 @@ writeFileSync(
   ].join("\n"),
   "utf8",
 );
+
+// Self-containment invariant: the staged tree must run on a machine where the
+// repo (and this build directory) does not exist. Any symlink whose target
+// resolves outside desktop-package/ would break there. Allowed: symlinks that
+// stay inside the staged tree (e.g. embedded-postgres soname links).
+function assertSelfContained(dir, stagedRoot) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) {
+      const target = readlinkSync(full);
+      const resolved = path.resolve(path.dirname(full), target);
+      if (!resolved.startsWith(stagedRoot + path.sep)) {
+        throw new Error(`Staged tree is not self-contained: ${full} → ${target} escapes ${stagedRoot}`);
+      }
+    }
+    if (entry.isDirectory()) assertSelfContained(full, stagedRoot);
+  }
+}
+for (const staged of ["server", "desktop-migrations", "bin", "embedded-postgres"]) {
+  assertSelfContained(path.join(out, staged), out);
+}
 
 console.log("[desktop:prepare-server] staged:");
 console.log("  server/            (Next standalone + traced deps + static + public)");

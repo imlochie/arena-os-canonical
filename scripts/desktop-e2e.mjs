@@ -20,7 +20,7 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -36,6 +36,9 @@ function step(name, ok, detail = {}) {
   if (!ok) failed = true;
 }
 
+let activeSupervisor = null; // hardened catch: never leak the runtime on a crash
+const logs = []; // module scope so the crash report can include captured logs
+
 async function main() {
   const { resolveRuntimeConfig, ArenaRuntimeSupervisor } = await import("../desktop/runtime/index.ts");
   const { resolveArenaDataDirs } = await import("../desktop/paths.ts");
@@ -48,7 +51,7 @@ async function main() {
     fileExists: existsSync,
   });
   const appRoot = path.join(root, "desktop-package"); // the staged installer tree
-  const logs = [];
+
   const logger = {
     info: (scope, message, detail) => logs.push(`${new Date().toISOString()} INFO ${scope} ${message} ${detail ? JSON.stringify(detail) : ""}`),
     warn: (scope, message, detail) => logs.push(`${new Date().toISOString()} WARN ${scope} ${message} ${detail ? JSON.stringify(detail) : ""}`),
@@ -64,11 +67,31 @@ async function main() {
   step("config resolves the staged package tree", existsSync(config.server.kind === "packaged" ? config.server.serverScript : ""), {
     info: `db port ${config.database.port}, server port ${config.port}`,
   });
+  // Regression guard: Turbopack emits pg under a hashed key as a SYMLINK into
+  // the repo's .next/standalone — if staging ever copies it verbatim again,
+  // the packaged app breaks on any machine without the repo build directory.
+  {
+    const escaping = [];
+    const walk = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isSymbolicLink()) {
+          const resolved = path.resolve(path.dirname(full), readlinkSync(full));
+          if (!resolved.startsWith(appRoot + path.sep)) escaping.push(`${full} → ${resolved}`);
+        } else if (entry.isDirectory()) walk(full);
+      }
+    };
+    walk(path.join(appRoot, "server"));
+    step("staged server tree is self-contained (no symlinks escape the package)", escaping.length === 0, {
+      info: escaping.length ? escaping.join("; ").slice(0, 200) : "no escaping symlinks",
+    });
+  }
   step("packaged ffmpeg resolved", config.ffmpegPath !== null && config.ffmpegPath.startsWith(appRoot), { info: config.ffmpegPath });
   step("packaged ffprobe resolved", config.ffprobePath !== null && config.ffprobePath.startsWith(appRoot), { info: config.ffprobePath });
   step("packaged embedded postgres resolved", config.postgres.postgres.startsWith(appRoot), { info: config.postgres.postgres });
 
   let supervisor = new ArenaRuntimeSupervisor(config, { logger });
+  activeSupervisor = supervisor;
   let url;
   try {
     url = await supervisor.start();
@@ -267,6 +290,7 @@ async function main() {
 
   // --- restart: persistence + migration skip ------------------------------------
   supervisor = new ArenaRuntimeSupervisor(config, { logger });
+  activeSupervisor = supervisor;
   url = await supervisor.start();
   const restartStatus = supervisor.status;
   step("restart reaches ready", restartStatus.phase === "ready");
@@ -289,8 +313,17 @@ async function main() {
   process.exitCode = failed ? 1 : 0;
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   step("E2E crashed", false, { info: String(error?.stack ?? error) });
-  writeFileSync(reportPath, JSON.stringify({ ok: false, steps, error: String(error?.stack ?? error) }, null, 2));
-  process.exitCode = 1;
+  // Never leak the runtime: stop the supervisor (ordered: server → postgres)
+  if (activeSupervisor) {
+    try {
+      await activeSupervisor.stop();
+    } catch (stopError) {
+      console.error("[e2e] supervisor stop after crash failed:", String(stopError));
+    }
+  }
+  writeFileSync(reportPath, JSON.stringify({ ok: false, steps, error: String(error?.stack ?? error), logs: logs.slice(-200) }, null, 2));
+  console.error(`E2E CRASHED — report: ${reportPath}`);
+  process.exit(1); // hard exit: no lingering handles, no silent pass-through
 });
