@@ -39,6 +39,7 @@ import process from "node:process";
 
 import { repoRootFromMeta } from "./lib/repo-root.mjs";
 import { runNpmSync } from "./lib/run-command.mjs";
+import { evaluateRecovery } from "./lib/recovery-verdict.mjs";
 
 const root = repoRootFromMeta(import.meta.url);
 const args = process.argv.slice(2);
@@ -260,11 +261,23 @@ try {
     console.log("[windows-acceptance] recovery launch after abnormal shutdown…");
     const recovery = await runInstalledAcceptance(path.join(installDir, "Arena.exe"), "recovery.json", 25 * 60_000);
     printAcceptance(recovery.body);
+    // Recovery is judged by RECOVERY requirements, not body.ok: the recovery
+    // launch runs the same in-app acceptance against an ALREADY-INITIALIZED
+    // database, so firstLaunch necessarily fails the first-ever-launch
+    // invariant (firstRun=false on purpose). evaluateRecovery requires
+    // supervisor ready + health + every other firstLaunch step + every other
+    // section, and fails on cluster re-initialisation (data loss). The
+    // normal launch above still requires the FULL firstLaunch section.
+    const recoveryResult = evaluateRecovery(recovery.body);
     report.detail.RECOVERY_AFTER_ABNORMAL = {
-      ok: recovery.body?.ok === true,
+      ok: recoveryResult.ok,
       sections: Object.fromEntries(Object.entries(recovery.body?.sections ?? {}).map(([name, section]) => [name, section.ok])),
+      failures: recoveryResult.failures,
+      exempted: recoveryResult.exempted,
     };
-    if (recovery.body?.ok !== true) mark("PROCESS CLEANUP", false, "app did not fully recover after an abnormal shutdown");
+    if (!recoveryResult.ok) {
+      mark("PROCESS CLEANUP", false, `app did not fully recover after an abnormal shutdown — ${recoveryResult.failures.join("; ")}`);
+    }
   }
 
   // ---------------------------------------------------------------- uninstall (optional)
