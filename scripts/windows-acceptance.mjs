@@ -385,6 +385,11 @@ function auditInstallTree(dir) {
   step("app tree exists", existsSync(dir), dir);
   for (const required of [
     ["Arena.exe (or staged server)", ["Arena.exe", "server\\server.js", "server/server.js"]],
+    // The 0.1.0 installer shipped server.js WITHOUT its traced runtime
+    // (electron-builder prunes node_modules at the copy root) — the app
+    // died on every launch with "Cannot find module 'next'". The tree
+    // audit passed anyway because nothing looked for the runtime deps.
+    ["Next server runtime deps (node_modules/next)", ["resources\\app\\server\\node_modules\\next\\package.json", "resources/app/server/node_modules/next/package.json", "server/node_modules/next/package.json"]],
     ["FFmpeg binary", ["resources\\app\\bin\\ffmpeg.exe", "resources/app/bin/ffmpeg", "bin/ffmpeg"]],
     ["FFprobe binary", ["resources\\app\\bin\\ffprobe.exe", "resources/app/bin/ffprobe", "bin/ffprobe"]],
     ["embedded PostgreSQL", ["resources\\app\\embedded-postgres\\bin\\postgres.exe", "resources/app/embedded-postgres/bin/postgres", "embedded-postgres/bin/postgres"]],

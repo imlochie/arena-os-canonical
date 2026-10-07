@@ -38,9 +38,24 @@ files:
   - "!**/__tests__/**"
 
 extraResources:
-  # Next standalone server (built by desktop:prepare-server)
+  # Next standalone server (built by desktop:prepare-server).
+  #
+  # electron-builder's copyFiles filter PRUNES any `node_modules` directory
+  # that sits directly at the ROOT of an extraResources source
+  # (app-builder-lib util/filter.js: relative === "node_modules" → excluded;
+  # only nested node_modules survive). A single `from: desktop-package/server`
+  # entry therefore shipped server.js WITHOUT its traced runtime — the
+  # installed app died on every launch with "Cannot find module 'next'"
+  # (require stack: resources/app/server/server.js; the generated standalone
+  # server.js requires 'next' bare). So the tree ships as TWO entries: the
+  # server tree itself (node_modules pruned there), plus its node_modules as
+  # their own source, whose root IS node_modules — its children are copied
+  # normally. Guarded by desktop/packaged-server.test.ts, which runs the
+  # real FileMatcher/copyFiles against this file.
   - from: desktop-package/server
     to: app/server
+  - from: desktop-package/server/node_modules
+    to: app/server/node_modules
   # Static assets Next expects beside the server (staged inside server/)
   # (kept for clarity; desktop-prepare-server stages .next/static + public
   #  INSIDE the server tree, matching the standalone layout)
