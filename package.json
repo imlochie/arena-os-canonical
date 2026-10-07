@@ -20,7 +20,7 @@
     "desktop": "npm run desktop:compile && electron .",
     "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "desktop:prepare-server": "node scripts/desktop-prepare-server.mjs",
-    "desktop:dist": "npm run desktop:prepare-server && electron-builder --win --config electron-builder.yml",
+    "desktop:dist": "npm run desktop:prepare-server && node scripts/desktop-dist.mjs",
     "desktop:e2e": "node --import ./scripts/register-src-loader.mjs scripts/desktop-e2e.mjs",
     "test:desktop": "node --import ./scripts/register-src-loader.mjs --test \"desktop/**/*.test.ts\" \"src/lib/waveyard/worker-local/*.test.ts\"",
     "desktop:acceptance-headless": "node --import ./scripts/register-src-loader.mjs scripts/desktop-acceptance-headless.mjs",
@@ -61,5 +61,17 @@
   "optionalDependencies": {
     "@embedded-postgres/linux-x64": "^16.14.0-beta.17",
     "@embedded-postgres/windows-x64": "^16.14.0-beta.17"
+  },
+  "allowScripts": {
+    "@embedded-postgres/linux-x64": true,
+    "@embedded-postgres/windows-x64": true,
+    "@ffmpeg-installer/linux-x64": true,
+    "@ffmpeg-installer/win32-x64": true,
+    "@ffprobe-installer/linux-x64": true,
+    "@ffprobe-installer/win32-x64": true,
+    "esbuild": true,
+    "msgpackr-extract": true,
+    "unrs-resolver": true,
+    "electron-winstaller": false
   }
 }

@@ -22,6 +22,13 @@ directories:
   output: desktop-release
   buildResources: desktop/build
 
+# Package the LOCAL Electron distribution instead of downloading one from
+# github.com (electron 44 has no npm install script; the binary is hydrated
+# lazily into node_modules/electron/dist by electron itself). The wrapper
+# scripts/desktop-dist.mjs validates existence + version before building —
+# no silent mismatches, no disabled integrity checks.
+electronDist: node_modules/electron/dist
+
 files:
   - desktop/dist/**
   - desktop/splash/**

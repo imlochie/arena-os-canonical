@@ -7,6 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -197,15 +198,42 @@ test("decodeSourceToStereoPcm natively decodes a 16-bit WAV (no ffmpeg needed)",
   }
 });
 
-test("non-WAV source without ffmpeg fails honestly with DEPENDENCY_MISSING", async () => {
+// The ffmpeg availability boundary is INJECTED (deps.resolveFfmpeg) — the
+// old test relied on the host machine having no ffmpeg on PATH, which is
+// simply false on a developer laptop with FFmpeg installed.
+test("non-WAV source with ffmpeg unavailable fails honestly with DEPENDENCY_MISSING", async () => {
   const dir = await mkdtemp(join(tmpdir(), "arena-pcm-"));
   const path = join(dir, "compressed.bin");
   try {
     await writeFile(path, Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00])); // ID3 header — not WAV
     await assert.rejects(
-      () => decodeSourceToStereoPcm(path),
+      () => decodeSourceToStereoPcm(path, {}, { resolveFfmpeg: async () => null }),
       (error: unknown) => error instanceof DependencyMissingError && /ffmpeg/.test(error.message),
       "must name ffmpeg as the missing dependency, never silently return nothing",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("when ffmpeg IS available, an undecodable source is a real processing error — never DEPENDENCY_MISSING", async () => {
+  // The repo's bundled installer binary (shipped inside the npm package — no
+  // PATH, no machine dependency). Skip only where the platform package is
+  // genuinely absent.
+  const platform = process.platform === "win32" ? "win32-x64" : "linux-x64";
+  const bundled = join(process.cwd(), "node_modules", "@ffmpeg-installer", platform, "ffmpeg" + (process.platform === "win32" ? ".exe" : ""));
+  if (!existsSync(bundled)) return;
+  const dir = await mkdtemp(join(tmpdir(), "arena-pcm-"));
+  const path = join(dir, "garbage.mp3");
+  try {
+    await writeFile(path, Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00])); // ID3 header, truncated junk
+    await assert.rejects(
+      () => decodeSourceToStereoPcm(path, {}, { resolveFfmpeg: async () => bundled }),
+      (error: unknown) =>
+        !(error instanceof DependencyMissingError) &&
+        error instanceof Error &&
+        /ffmpeg exited/.test(error.message),
+      "a present-but-failing ffmpeg must surface as a processing error, not a missing dependency",
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

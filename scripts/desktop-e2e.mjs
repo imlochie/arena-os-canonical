@@ -24,7 +24,9 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const root = process.cwd();
+import { repoRootFromMeta } from "./lib/repo-root.mjs";
+
+const root = repoRootFromMeta(import.meta.url);
 const reportPath = process.argv[2] ?? path.join(root, "desktop-e2e-report.json");
 const steps = [];
 let failed = false;
@@ -41,6 +43,7 @@ const logs = []; // module scope so the crash report can include captured logs
 
 async function main() {
   const { resolveRuntimeConfig, ArenaRuntimeSupervisor } = await import("../desktop/runtime/index.ts");
+  const { removeDirWithRetry } = await import("../desktop/runtime/fs-cleanup.ts");
   const { resolveArenaDataDirs } = await import("../desktop/paths.ts");
 
   const dataRoot = mkdtempSync(path.join(tmpdir(), "arena-desktop-e2e-"));
@@ -309,7 +312,8 @@ async function main() {
   // --- report --------------------------------------------------------------------
   writeFileSync(reportPath, JSON.stringify({ ok: !failed, steps, logs: logs.slice(-200) }, null, 2));
   console.log(failed ? `E2E FAILED — report: ${reportPath}` : `E2E PASSED — report: ${reportPath}`);
-  rmSync(tempDir, { recursive: true, force: true });
+  await removeDirWithRetry(tempDir); // audio fixtures
+  await removeDirWithRetry(dataRoot); // PG cluster + app data (was LEAKED before this fix)
   process.exitCode = failed ? 1 : 0;
 }
 

@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,6 +15,7 @@ import { test } from "node:test";
 
 import { applyMigrations } from "./migrate";
 import { EmbeddedPostgres } from "./embedded-postgres";
+import { removeDirWithRetry } from "./fs-cleanup";
 import type { ArenaRuntimeConfig } from "./config";
 
 async function startTestPostgres(): Promise<{ postgres: EmbeddedPostgres; config: ArenaRuntimeConfig; stop: () => Promise<void> } | null> {
@@ -52,7 +53,9 @@ async function startTestPostgres(): Promise<{ postgres: EmbeddedPostgres; config
     config: config as ArenaRuntimeConfig,
     stop: async () => {
       await postgres.stop(5000);
-      await rm(root, { recursive: true, force: true });
+      // Windows: handles can lag process exit (AV/indexer); retry transient
+      // locks — only AFTER postgres.stop() proved the cluster is released.
+      await removeDirWithRetry(root);
     },
   };
 }

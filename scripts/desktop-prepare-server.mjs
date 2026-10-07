@@ -69,6 +69,16 @@ function materializeSymlinks(dir) {
 }
 materializeSymlinks(path.join(out, "server"));
 
+// 1b. NEVER ship environment files. Next standalone copies `.env*` from the
+// project root into the output whenever one exists (a real, gitignored
+// repo .env can therefore leak into the installer). The packaged runtime
+// receives ALL of its configuration from the supervisor's child env —
+// remove any env file and fail staging if one ever reappears.
+for (const envFile of readdirSync(path.join(out, "server")).filter((name) => /^\.env(\..+)?$/.test(name))) {
+  rmSync(path.join(out, "server", envFile), { force: true });
+  console.log(`[desktop:prepare-server] excluded ${envFile} from the staged server (runtime env comes from the supervisor)`);
+}
+
 // 2. Static assets Next serves from beside server.js (inside the staged tree).
 mkdirSync(path.join(out, "server", ".next"), { recursive: true });
 cpSync(path.join(root, ".next", "static"), path.join(out, "server", ".next", "static"), { recursive: true });
@@ -146,6 +156,13 @@ function assertSelfContained(dir, stagedRoot) {
 }
 for (const staged of ["server", "desktop-migrations", "bin", "embedded-postgres"]) {
   assertSelfContained(path.join(out, staged), out);
+}
+
+// Env-file guard (defense in depth for the removal above): the staged server
+// root must never contain .env* — spec §15: no secrets, no repo junk.
+const stagedEnvFiles = readdirSync(path.join(out, "server")).filter((name) => /^\.env(\..+)?$/.test(name));
+if (stagedEnvFiles.length > 0) {
+  throw new Error(`Staged server contains environment files: ${stagedEnvFiles.join(", ")}`);
 }
 
 // The staged tree mirrors the installed resources layout; the license also

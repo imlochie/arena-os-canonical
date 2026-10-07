@@ -93,6 +93,33 @@ After the automated run, with the app installed and launched normally:
    no Job-object tie between Electron and its children); the recovery
    launch proves the next start copes either way.
 
+## npm environment notes (findings from the real Windows machine)
+
+- **Install-script policy** (npm ≥ 11.16 / 12): dependency scripts run only
+  when allowlisted. The repo commits the decision in `package.json`
+  (`allowScripts`): embedded PostgreSQL platform packages (symlink
+  hydration — required), @ffmpeg-installer/@ffprobe-installer platform
+  packages (exec bits), esbuild (build), msgpackr-extract (worker prebuilds),
+  unrs-resolver (eslint). `electron-winstaller` is explicitly DENIED — we
+  build NSIS and never use its Squirrel tooling. `strict-allow-scripts=true`
+  in `.npmrc` makes an uncovered script fail the install loudly.
+- **Electron**: electron 44 ships NO npm install script — the runtime binary
+  is hydrated lazily into `node_modules/electron/dist` (by
+  `node node_modules/electron/install.js` or a first `npx electron --version`).
+  `desktop:dist` validates the local dist (existence + version match) and
+  passes it to electron-builder via `electronDist` — the build machine never
+  contacts github.com for Electron.
+- **Restricted networks**: skip the lazy Electron download with the SUPPORTED
+  env var `ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install` (the old
+  `electron_skip_binary_download` .npmrc key was never real npm config and
+  only produced warnings — removed).
+- **npm audit**: 0 production/runtime vulnerabilities (`npm audit --omit=dev`
+  is clean). All 18 findings (6 high, 12 moderate) are dev/build-chain only:
+  6 high in the ESLint glob chain (braces/micromatch/fast-glob — lint-time,
+  trusted repo files), 12 moderate in the electron-builder and drizzle-kit
+  chains (incl. the esbuild dev-server advisory). Nothing vulnerable is
+  shipped in the installer; no dependency was mutated (pinned ecosystem).
+
 ## Honest expectations
 
 - The installer cannot be built inside the development sandbox

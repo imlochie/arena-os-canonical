@@ -5,7 +5,9 @@
  * app-data postgres dir. Start: postgres spawned as a TRACKED child bound to
  * 127.0.0.1 on the persisted port (plus a runtime-owned socket dir on
  * POSIX). Readiness: actual pg client connects with the real password.
- * Stop: SIGINT (PostgreSQL "fast" shutdown), SIGQUIT fallback.
+ * Stop: pg_ctl fast shutdown (signals only as fallback — on Windows kill()
+ * is a hard TerminateProcess that can leave background workers holding the
+ * data directory), then a bounded wait for the cluster to be released.
  *
  * The same server is reused across restarts; a stale postmaster.pid from a
  * crashed session is detected by probing the recorded PID, never by
@@ -223,24 +225,111 @@ export class EmbeddedPostgres {
     }
   }
 
-  /** Fast shutdown (SIGINT); immediate (SIGQUIT) fallback after a timeout. */
+  /**
+   * Fast shutdown via `pg_ctl stop -m fast` (the supported cross-platform
+   * mechanism), falling back to signals. SIGINT on POSIX is PostgreSQL's
+   * fast shutdown, but on Windows `child.kill()` is TerminateProcess — a
+   * hard kill that (a) skips checkpointing and (b) can leave background
+   * workers (checkpointer, walwriter, …) alive for seconds, still holding
+   * handles into the data directory (EBUSY on cleanup).
+   */
   async stop(timeoutMs = 10_000): Promise<void> {
     this.stopping = true;
     const child = this.child;
     this.child = null;
     if (child === null || child.exitCode !== null || child.signalCode !== null) {
       this.state = this.state === "failed" ? "failed" : "stopped";
+      await this.waitForClusterReleased(2_000);
       return;
     }
     this.logger.info("postgres", "stopping embedded postgres (fast shutdown)");
-    child.kill("SIGINT");
-    const graceful = await waitForExit(child, timeoutMs);
-    if (!graceful) {
-      this.logger.warn("postgres", "fast shutdown timed out; sending immediate shutdown");
-      child.kill("SIGQUIT");
-      await waitForExit(child, 5000);
+    const viaPgCtl = await this.stopViaPgCtl(timeoutMs);
+    if (!viaPgCtl) {
+      child.kill("SIGINT");
+      const graceful = await waitForExit(child, timeoutMs);
+      if (!graceful) {
+        this.logger.warn("postgres", "fast shutdown timed out; sending immediate shutdown");
+        child.kill("SIGQUIT");
+        await waitForExit(child, 5_000);
+      }
+    } else {
+      // pg_ctl already waited for the postmaster; this is belt-and-braces for
+      // our direct child handle (and reaps the exit event).
+      await waitForExit(child, 5_000);
     }
+    // Deterministic release: a clean shutdown removes postmaster.pid; waiting
+    // for that (bounded) proves the cluster — including background workers —
+    // has let go of the data directory before callers delete it.
+    await this.waitForClusterReleased(10_000);
     this.state = this.state === "failed" ? "failed" : "stopped";
+  }
+
+  /** `pg_ctl -D <dir> stop -m fast` — waits for full shutdown by itself. */
+  private async stopViaPgCtl(timeoutMs: number): Promise<boolean> {
+    const pgCtl = this.config.postgres.pgCtl;
+    const dataDir = this.config.database.dataDir;
+    if (!pgCtl || !existsSync(pgCtl) || !existsSync(path.join(dataDir, "PG_VERSION"))) return false;
+    try {
+      const seconds = Math.max(5, Math.ceil(timeoutMs / 1000));
+      const result = await withTimeout(
+        this.run(pgCtl, ["-D", dataDir, "stop", "-m", "fast", "-w", "-t", String(seconds)]),
+        (seconds + 5) * 1000,
+      );
+      if (result.code === 0) return true;
+      this.logger.warn("postgres", "pg_ctl fast shutdown failed; falling back to signals", {
+        code: result.code,
+        output: result.output.slice(-300),
+      });
+      return false;
+    } catch (error) {
+      this.logger.warn("postgres", "pg_ctl stop could not be executed; falling back to signals", { error: String(error) });
+      return false;
+    }
+  }
+
+  /**
+   * Wait until the data directory is released. postmaster.pid is removed by
+   * a clean shutdown; a hard-killed postmaster leaves it behind, in which
+   * case we wait for the recorded PID to disappear (Windows: background
+   * workers can outlive a terminated postmaster and keep the dir locked).
+   */
+  private async waitForClusterReleased(timeoutMs: number): Promise<boolean> {
+    const pidFile = path.join(this.config.database.dataDir, "postmaster.pid");
+    if (!existsSync(pidFile)) return true;
+    const deadline = Date.now() + timeoutMs;
+    let deadSince: number | null = null;
+    while (Date.now() < deadline) {
+      if (!existsSync(pidFile)) {
+        this.logger.info("postgres", "cluster released (postmaster.pid removed)");
+        return true;
+      }
+      // Pid file remains (hard-kill path): once the postmaster PID is gone,
+      // background workers follow within moments — allow a short grace.
+      const pid = readPidFromFile(pidFile);
+      if (pid !== null && !this.processExists(pid)) {
+        deadSince ??= Date.now();
+        if (Date.now() - deadSince >= 2_000) {
+          this.logger.info("postgres", "cluster released (postmaster gone, workers drained)");
+          return true;
+        }
+      } else {
+        deadSince = null;
+      }
+      await sleep(200);
+    }
+    // Bounded wait is over: report honestly, do not throw — the caller's
+    // retrying directory cleanup will surface a real error if handles remain.
+    this.logger.warn("postgres", "postmaster.pid still present after shutdown wait", { pidFile });
+    return false;
+  }
+}
+
+function readPidFromFile(pidFile: string): number | null {
+  try {
+    const pid = Number.parseInt(readFileSync(pidFile, "utf8").split("\n")[0] ?? "", 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
   }
 }
 
@@ -270,5 +359,26 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
       clearTimeout(timer);
       resolve(true);
     });
+  });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
   });
 }

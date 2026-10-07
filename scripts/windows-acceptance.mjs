@@ -37,7 +37,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+import { repoRootFromMeta } from "./lib/repo-root.mjs";
+
+const root = repoRootFromMeta(import.meta.url);
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const option = (name) => {

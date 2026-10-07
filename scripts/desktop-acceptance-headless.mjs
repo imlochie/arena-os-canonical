@@ -11,12 +11,14 @@
  * Prerequisites: npm run desktop:prepare-server (staged tree must exist).
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+import { repoRootFromMeta } from "./lib/repo-root.mjs";
+
+const root = repoRootFromMeta(import.meta.url);
 const appRoot = path.join(root, "desktop-package");
 if (!existsSync(path.join(appRoot, "server", "server.js"))) {
   console.error("[acceptance-headless] staged tree missing — run: npm run desktop:prepare-server");
@@ -24,6 +26,7 @@ if (!existsSync(path.join(appRoot, "server", "server.js"))) {
 }
 
 const { runDesktopAcceptance } = await import(path.join(root, "desktop", "acceptance.ts"));
+const { removeDirWithRetry } = await import(path.join(root, "desktop", "runtime", "fs-cleanup.ts"));
 const { resolveArenaDataDirs } = await import(path.join(root, "desktop", "paths.ts"));
 
 const dataRoot = mkdtempSync(path.join(tmpdir(), "arena-acceptance-"));
@@ -70,5 +73,6 @@ try {
   } catch {
     /* report already written by the runner */
   }
-  rmSync(dataRoot, { recursive: true, force: true });
+  // Windows-safe: retry transient handle lag AFTER the runner stopped PG.
+  await removeDirWithRetry(dataRoot);
 }

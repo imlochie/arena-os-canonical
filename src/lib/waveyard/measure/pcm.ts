@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 
 import { decodeWav16 } from "../mixer/synth";
+import { resolveToolPath } from "../ffmpeg";
 
 export type DecodedSource = {
   /** Interleaved stereo f32 [-1, 1]. */
@@ -26,9 +27,20 @@ export class DependencyMissingError extends Error {
 
 const MAX_DECODE_BYTES = 2 * 4 * 44_100 * 60 * 15; // 15 min stereo f32 cap
 
+/** Test seam: how the ffmpeg binary is located. Production resolves through
+ *  the product's central resolver (env override → bundled installer package
+ *  → PATH) — a PATH-only probe would miss the desktop app's packaged ffmpeg. */
+export type FfmpegResolver = () => Promise<string | null>;
+
+async function defaultResolveFfmpeg(): Promise<string | null> {
+  const resolved = await resolveToolPath("ffmpeg");
+  return resolved !== null ? resolved.path : null;
+}
+
 export async function decodeSourceToStereoPcm(
   filePath: string,
   hint: { sampleRate?: number } = {},
+  deps: { resolveFfmpeg?: FfmpegResolver } = {},
 ): Promise<DecodedSource> {
   // 1. Native WAV path — no external dependency.
   const bytes = await readFile(filePath).catch(() => null);
@@ -43,7 +55,7 @@ export async function decodeSourceToStereoPcm(
   }
 
   // 2. ffmpeg fallback for compressed formats.
-  const ffmpeg = await resolveFfmpeg();
+  const ffmpeg = await (deps.resolveFfmpeg ?? defaultResolveFfmpeg)();
   if (ffmpeg === null) {
     throw new DependencyMissingError(
       "ffmpeg is not available on this machine and the source is not a 16-bit PCM WAV. " +
@@ -60,17 +72,6 @@ function monoToStereo(samples: Float32Array): Float32Array {
     out[i * 2 + 1] = samples[i];
   }
   return out;
-}
-
-async function resolveFfmpeg(): Promise<string | null> {
-  const probe = (command: string) =>
-    new Promise<boolean>((resolve) => {
-      const child = spawn(command, ["-version"], { stdio: "ignore" });
-      child.once("error", () => resolve(false));
-      child.once("close", (code) => resolve(code === 0));
-    });
-  if (await probe("ffmpeg")) return "ffmpeg";
-  return null;
 }
 
 function decodeWithFfmpeg(command: string, filePath: string): Promise<DecodedSource> {
