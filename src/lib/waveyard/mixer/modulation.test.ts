@@ -153,7 +153,9 @@ test("modulation processing is deterministic", () => {
   const input = sine(0.4, 440, 0.3);
   const a = applyChorus(input, baseChorus());
   const b = applyChorus(input, baseChorus());
-  assert.deepEqual(Array.from(a), Array.from(b));
+  let detDiff = 0;
+  for (let i = 0; i < a.length; i += 1) detDiff = Math.max(detDiff, Math.abs(a[i] - b[i]));
+  assert.ok(detDiff === 0, `renders must be identical (maxDiff=${detDiff})`);
 });
 
 test("wet tails carry energy with feedback", () => {

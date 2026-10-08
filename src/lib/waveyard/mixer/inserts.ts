@@ -31,6 +31,8 @@ import {
   type StereoBuffer,
 } from "./dsp";
 import { applyDeEsser, applyMaximizer } from "./dynamics";
+import { applyEq7 } from "./eq7";
+import { applyLoFi, applyRectifier } from "./lofi";
 import { applyChorus, applyFlanger, applyPhaser } from "./modulation";
 import { applyReverb } from "./reverb";
 import { clamp } from "./types";
@@ -55,7 +57,10 @@ export type InsertProcessorId =
   | "flanger"
   | "phaser"
   | "de-esser"
-  | "maximizer";
+  | "maximizer"
+  | "eq7"
+  | "lofi"
+  | "rectifier";
 
 export type ParamRange = { min: number; max: number; default: number };
 
@@ -155,6 +160,42 @@ export const INSERT_PARAM_RANGES: Record<
     ceilingDb: { min: -30, max: 0, default: -0.3 },
     releaseMs: { min: 1, max: 1000, default: 50 },
   },
+  eq7: {
+    inputGainDb: { min: -24, max: 24, default: 0 },
+    hpfOn: { min: 0, max: 1, default: 0 },
+    hpfHz: { min: 10, max: 2000, default: 80 },
+    hpfSlope: { min: 0, max: 3, default: 1 },
+    lfHz: { min: 20, max: 1000, default: 100 },
+    lfGainDb: { min: -24, max: 24, default: 0 },
+    lfQ: { min: 0.3, max: 2, default: 0.707 },
+    lmfHz: { min: 20, max: 2000, default: 250 },
+    lmfGainDb: { min: -24, max: 24, default: 0 },
+    lmfQ: { min: 0.1, max: 10, default: 1 },
+    mfHz: { min: 100, max: 8000, default: 1000 },
+    mfGainDb: { min: -24, max: 24, default: 0 },
+    mfQ: { min: 0.1, max: 10, default: 1 },
+    hmfHz: { min: 500, max: 20000, default: 4000 },
+    hmfGainDb: { min: -24, max: 24, default: 0 },
+    hmfQ: { min: 0.1, max: 10, default: 1 },
+    hfHz: { min: 1000, max: 20000, default: 8000 },
+    hfGainDb: { min: -24, max: 24, default: 0 },
+    hfQ: { min: 0.3, max: 2, default: 0.707 },
+    lpfOn: { min: 0, max: 1, default: 0 },
+    lpfHz: { min: 1000, max: 20000, default: 18000 },
+    lpfSlope: { min: 0, max: 3, default: 1 },
+    outputGainDb: { min: -24, max: 24, default: 0 },
+  },
+  lofi: {
+    bits: { min: 1, max: 24, default: 8 },
+    sampleRateHz: { min: 500, max: 48000, default: 11025 },
+    noisePercent: { min: 0, max: 100, default: 0 },
+    mix: { min: 0, max: 1, default: 1 },
+  },
+  rectifier: {
+    mode: { min: 0, max: 1, default: 1 },
+    mix: { min: 0, max: 1, default: 1 },
+    outputDb: { min: -24, max: 12, default: 0 },
+  },
 };
 
 export const INSERT_PROCESSOR_LABELS: Record<InsertProcessorId, string> = {
@@ -176,6 +217,9 @@ export const INSERT_PROCESSOR_LABELS: Record<InsertProcessorId, string> = {
   phaser: "Phaser",
   "de-esser": "De-esser",
   maximizer: "Maximizer",
+  eq7: "EQ (7-band)",
+  lofi: "Lo-Fi",
+  rectifier: "Rectifier",
 };
 
 export type Insert = {
@@ -505,6 +549,51 @@ function runProcessor(
         thresholdDb: p.thresholdDb,
         ceilingDb: p.ceilingDb,
         releaseMs: p.releaseMs,
+        sampleRate,
+      });
+      return buffer;
+    case "eq7":
+      applyEq7(buffer, {
+        inputGainDb: p.inputGainDb,
+        hpfOn: p.hpfOn,
+        hpfHz: p.hpfHz,
+        hpfSlope: p.hpfSlope,
+        lfHz: p.lfHz,
+        lfGainDb: p.lfGainDb,
+        lfQ: p.lfQ,
+        lmfHz: p.lmfHz,
+        lmfGainDb: p.lmfGainDb,
+        lmfQ: p.lmfQ,
+        mfHz: p.mfHz,
+        mfGainDb: p.mfGainDb,
+        mfQ: p.mfQ,
+        hmfHz: p.hmfHz,
+        hmfGainDb: p.hmfGainDb,
+        hmfQ: p.hmfQ,
+        hfHz: p.hfHz,
+        hfGainDb: p.hfGainDb,
+        hfQ: p.hfQ,
+        lpfOn: p.lpfOn,
+        lpfHz: p.lpfHz,
+        lpfSlope: p.lpfSlope,
+        outputGainDb: p.outputGainDb,
+        sampleRate,
+      });
+      return buffer;
+    case "lofi":
+      applyLoFi(buffer, {
+        bits: p.bits,
+        sampleRateHz: p.sampleRateHz,
+        noisePercent: p.noisePercent,
+        mix: p.mix,
+        sampleRate,
+      });
+      return buffer;
+    case "rectifier":
+      applyRectifier(buffer, {
+        mode: p.mode,
+        mix: p.mix,
+        outputDb: p.outputDb,
         sampleRate,
       });
       return buffer;

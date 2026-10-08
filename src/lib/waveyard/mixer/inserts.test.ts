@@ -179,7 +179,11 @@ test("reverb bypass leaves the signal untouched", () => {
   ];
   const out = processWithChain(Float32Array.from(source), chain, FS);
   assert.equal(out.length, source.length, "bypassed reverb must not extend the buffer");
-  assert.deepEqual(Array.from(out), Array.from(source));
+  let bypassDiff = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    bypassDiff = Math.max(bypassDiff, Math.abs(out[i] - source[i]));
+  }
+  assert.ok(bypassDiff === 0, `bypassed reverb must be an identity (${bypassDiff})`);
 });
 
 test("modulation and dynamics inserts validate params and fill defaults", () => {
@@ -240,4 +244,62 @@ test("de-esser insert leaves a bass stem essentially untouched", () => {
     maxDiff = Math.max(maxDiff, Math.abs(source[i] - out[i]));
   }
   assert.ok(maxDiff < 1e-3, `bass must pass through (maxDiff=${maxDiff})`);
+});
+
+test("eq7/lofi/rectifier inserts validate params and keep buffer length", () => {
+  const source = sine(0.25, 440, 0.3);
+  const eq7 = makeInsert("eq7", { mfGainDb: 6 })!;
+  assert.equal(eq7.params.mfQ, 1, "eq7 fills Q defaults");
+  assert.equal(makeInsert("eq7", { bogus: 1 }), null, "unknown eq7 param invalidates");
+  assert.equal(makeInsert("lofi")!.params.bits, 8, "lofi bits default");
+  assert.equal(makeInsert("rectifier")!.params.mode, 1, "rectifier defaults to full wave");
+  for (const processor of ["eq7", "lofi", "rectifier"] as const) {
+    const chain: InsertChain = [makeInsert(processor)!];
+    const out = processWithChain(Float32Array.from(source), chain, FS);
+    assert.equal(out.length, source.length, `${processor} keeps length`);
+    for (let i = 0; i < out.length; i += 1) {
+      assert.ok(Number.isFinite(out[i]), `${processor} sample ${i} finite`);
+    }
+  }
+});
+
+test("eq7 insert boosts the band it is set to", () => {
+  // 50 Hz sits on the plateau of the default 100 Hz LF shelf corner.
+  const low = sine(0.5, 50, 0.3);
+  const chain: InsertChain = [makeInsert("eq7", { lfGainDb: 9 })!];
+  const out = processWithChain(Float32Array.from(low), chain, FS);
+  let inSum = 0;
+  let outSum = 0;
+  for (let i = Math.floor(0.2 * FS) * 2; i < low.length; i += 1) {
+    inSum += low[i] * low[i];
+    outSum += out[i] * out[i];
+  }
+  const gainDb = 10 * Math.log10(outSum / inSum);
+  assert.ok(gainDb > 7 && gainDb < 11, `LF shelf boost through the chain was ${gainDb} dB`);
+});
+
+test("lofi insert quantizes audibly at low bit depth", () => {
+  const source = sine(0.25, 440, 0.5);
+  const chain: InsertChain = [makeInsert("lofi", { bits: 4 })!];
+  const out = processWithChain(Float32Array.from(source), chain, FS);
+  let diff = 0;
+  for (let i = 0; i < source.length; i += 1) diff += Math.abs(source[i] - out[i]);
+  assert.ok(diff > 1, `4-bit crush must alter the signal (diff=${diff})`);
+});
+
+test("rectifier insert doubles a sine's frequency", () => {
+  const source = sine(0.5, 440, 0.5);
+  const chain: InsertChain = [makeInsert("rectifier", { mode: 1 })!];
+  const out = processWithChain(Float32Array.from(source), chain, FS);
+  let crossings = 0;
+  const from = Math.floor((out.length / 2) * 0.25);
+  const to = Math.floor((out.length / 2) * 0.75);
+  let prev = out[from * 2];
+  for (let i = from + 1; i < to; i += 1) {
+    const v = out[i * 2];
+    if (prev <= 0 && v > 0) crossings += 1;
+    prev = v;
+  }
+  const hz = crossings / ((to - from) / FS);
+  assert.ok(Math.abs(hz - 880) < 25, `full-wave through the chain was ${hz} Hz`);
 });
