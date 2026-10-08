@@ -16,11 +16,14 @@ import {
   PASSTHROUGH_ENGINE,
   buildStemChannels,
   deriveTrackMetadata,
+  formatPlayClock,
   libraryContainerProjectName,
   normalizeStemMix,
   parseStemMix,
+  playCountThreshold,
   resolveStemAvailability,
   serializeStemMix,
+  shouldCountPlay,
   withUnityDefaults,
 } from "./model";
 
@@ -153,4 +156,31 @@ test("deriveTrackMetadata: degenerate inputs never throw", () => {
 
 test("libraryContainerProjectName: library containers are recognizably named", () => {
   assert.equal(libraryContainerProjectName("Windowlicker"), "Library · Windowlicker");
+});
+
+test("play count threshold: 30s of listening, or half a short track, whichever comes first", () => {
+  assert.equal(playCountThreshold(240), 30); // normal song: 30s
+  assert.equal(playCountThreshold(20), 10); // short clip: half
+  assert.equal(playCountThreshold(4), 2); // very short: half, min 1s floor respected
+  assert.equal(playCountThreshold(0), 30); // unknown duration: flat 30s
+  assert.equal(playCountThreshold(null), 30);
+  assert.equal(playCountThreshold(Number.NaN), 30);
+});
+
+test("shouldCountPlay: fires only after real listening, never on the click itself", () => {
+  assert.equal(shouldCountPlay(0, 240), false, "the play-button click never counts");
+  assert.equal(shouldCountPlay(29.9, 240), false);
+  assert.equal(shouldCountPlay(30, 240), true);
+  assert.equal(shouldCountPlay(15, 20), true, "half of a 20s clip counts");
+  assert.equal(shouldCountPlay(3.9, 8), false);
+  assert.equal(shouldCountPlay(4, 8), true, "exactly at the threshold counts");
+  assert.equal(shouldCountPlay(-5, 240), false, "negative positions never count");
+});
+
+test("formatPlayClock: deterministic m:ss display", () => {
+  assert.equal(formatPlayClock(0), "0:00");
+  assert.equal(formatPlayClock(83.4), "1:23");
+  assert.equal(formatPlayClock(600), "10:00");
+  assert.equal(formatPlayClock(null), "0:00");
+  assert.equal(formatPlayClock(Number.NaN), "0:00");
 });

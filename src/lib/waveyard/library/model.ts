@@ -162,3 +162,32 @@ export function deriveTrackMetadata(originalFilename: string): TrackMetadata {
 export function libraryContainerProjectName(trackTitle: string): string {
   return `Library · ${trackTitle}`;
 }
+
+/**
+ * A play counts after this much LISTENING (or half the track, whichever comes
+ * first) — not on every play-button click. Pure so the client threshold and
+ * any future server check share one definition.
+ */
+export const PLAY_COUNT_THRESHOLD_SECONDS = 30;
+
+export function playCountThreshold(durationSeconds: number | null | undefined): number {
+  if (typeof durationSeconds !== "number" || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return PLAY_COUNT_THRESHOLD_SECONDS;
+  }
+  return Math.min(PLAY_COUNT_THRESHOLD_SECONDS, Math.max(1, durationSeconds / 2));
+}
+
+export function shouldCountPlay(positionSeconds: number, durationSeconds: number | null | undefined): boolean {
+  if (!Number.isFinite(positionSeconds) || positionSeconds < 0) return false;
+  return positionSeconds >= playCountThreshold(durationSeconds);
+}
+
+/** Player-facing clock: 83.4s → "1:23". Deterministic, no Date/locale use. */
+export function formatPlayClock(seconds: number | null | undefined): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const whole = Math.floor(seconds);
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return `${minutes}:${rest < 10 ? "0" : ""}${rest}`;
+}
+

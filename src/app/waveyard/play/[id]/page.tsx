@@ -1,14 +1,11 @@
 import Link from "next/link";
 
-import { MusicHome } from "@/components/waveyard/library/MusicHome";
+import { TrackPlayer } from "@/components/waveyard/library/TrackPlayer";
 
-export const metadata = { title: "Waveyard · Arena" };
+export const dynamic = "force-dynamic";
 
-export default function WaveyardHome() {
-  // Single-owner local app: the original's sign-in gate is intentionally gone.
-  // The home surface is the MUSIC PLATFORM (library, search, playlists, queue,
-  // recently played); the studio keeps its own explicit entries (/create and
-  // the Studio section below) and is untouched.
+export default async function PlayTrackPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   return (
     <main className="shell">
       <nav className="nav">
@@ -20,7 +17,7 @@ export default function WaveyardHome() {
           <Link href="/waveyard/create">Studio · Create</Link>
         </div>
       </nav>
-      <MusicHome />
+      <TrackPlayer trackId={id} />
     </main>
   );
 }
