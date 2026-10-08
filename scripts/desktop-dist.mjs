@@ -24,6 +24,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import { repoRootFromMeta } from "./lib/repo-root.mjs";
+import { verifyDesktopShellFreshness } from "./lib/desktop-shell-freshness.mjs";
 
 const root = repoRootFromMeta(import.meta.url);
 const require = createRequire(import.meta.url);
@@ -64,6 +65,17 @@ if (installedVersion === null && existsSync(distDir)) {
       `version mismatch: local Electron distribution is ${installedVersion}, but package.json declares "${declaredRange}" — refusing to package a silent mismatch`,
     );
   }
+}
+
+// Build-contract guard (f5a0a2e fix): electron-builder packages
+// desktop/dist/** verbatim, so a stale compiled shell ships as-is. `npm run
+// desktop:dist` compiles first; this guard additionally protects DIRECT
+// invocations of this script — fail loudly, never package stale shell code.
+const shellFreshness = verifyDesktopShellFreshness(root);
+if (!shellFreshness.ok) {
+  console.error(`[desktop:dist] ${shellFreshness.reason}`);
+  console.error("Refusing to package a stale compiled desktop shell.");
+  process.exit(1);
 }
 
 if (problems.length > 0) {

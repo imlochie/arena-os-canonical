@@ -20,7 +20,7 @@
     "desktop": "npm run desktop:compile && electron .",
     "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "desktop:prepare-server": "node scripts/desktop-prepare-server.mjs",
-    "desktop:dist": "npm run desktop:prepare-server && node scripts/desktop-dist.mjs",
+    "desktop:dist": "npm run desktop:compile && npm run desktop:prepare-server && node scripts/desktop-dist.mjs",
     "desktop:e2e": "node --import ./scripts/register-src-loader.mjs scripts/desktop-e2e.mjs",
     "test:desktop": "node --import ./scripts/register-src-loader.mjs --test \"desktop/**/*.test.ts\" \"src/lib/waveyard/worker-local/*.test.ts\"",
     "desktop:acceptance-headless": "node --import ./scripts/register-src-loader.mjs scripts/desktop-acceptance-headless.mjs",
