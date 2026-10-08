@@ -707,3 +707,25 @@
 .stem2-cap-state.no{color:var(--muted)}
 .stem2-cap-state.maybe{color:#d0a13e}
 .stem2-cap small{color:var(--muted);font-size:11px;line-height:1.45}
+
+/* P5 · session evidence tags (REAL / APPROXIMATE / UNAVAILABLE) + decks */
+.sess-evidence{display:inline-block;font:10px ui-monospace,monospace;letter-spacing:.08em;padding:2px 7px;margin-right:4px;border:1px solid var(--line);color:var(--ink)}
+.sess-evidence-real{color:var(--acid);border-color:var(--acid)}
+.sess-evidence-approximate{color:#d0a13e;border-color:#d0a13e}
+.sess-evidence-unavailable{color:var(--muted)}
+
+/* P5 · home sessions panel + first-run state */
+.sessions-panel{border-top:1px solid var(--line);padding-top:18px}
+.sessions-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.sessions-list a{display:grid;gap:2px;padding:10px 12px;border:1px solid var(--line);background:var(--panel)}
+.sessions-list a:hover b{color:var(--acid)}
+.sessions-list b{font-size:14px}
+.sessions-list small{color:var(--muted);font-size:11px}
+.first-run{border:1px dashed var(--line);padding:18px;display:grid;gap:12px}
+.first-run ol{margin:0;padding-left:18px;display:grid;gap:10px;color:var(--muted);font-size:13px;line-height:1.55}
+.first-run b{color:var(--ink)}
+
+/* P5 · sessions page empty state */
+.sess-empty{display:grid;gap:8px;border:1px dashed var(--line);padding:16px}
+.sess-empty-about{color:var(--muted);font-size:13px;line-height:1.6;margin:0}
+.sess-empty-about b{color:var(--ink)}

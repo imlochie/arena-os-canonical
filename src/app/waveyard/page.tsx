@@ -1,4 +1,4 @@
-import Link from "next/link";
+import WaveyardNav from "@/components/waveyard/WaveyardNav";
 
 import { MusicHome } from "@/components/waveyard/library/MusicHome";
 
@@ -11,15 +11,7 @@ export default function WaveyardHome() {
   // the Studio section below) and is untouched.
   return (
     <main className="shell">
-      <nav className="nav">
-        <Link href="/waveyard" className="brand"><i>Waveyard</i><small>stem-aware music</small></Link>
-        <div className="navlinks">
-          <Link href="/waveyard">Music</Link>
-          <Link href="/waveyard/sessions">Sessions</Link>
-          <Link href="/waveyard/discover">Discover</Link>
-          <Link href="/waveyard/create">Studio · Create</Link>
-        </div>
-      </nav>
+      <WaveyardNav />
       <MusicHome />
     </main>
   );

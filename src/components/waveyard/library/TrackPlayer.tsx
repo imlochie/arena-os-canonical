@@ -79,6 +79,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   const [repeat, setRepeat] = useState<RepeatMode>("off");
   const [shuffle, setShuffle] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [startingSession, setStartingSession] = useState(false);
 
   const countedRef = useRef(false);
   const mixRef = useRef<Record<string, MixerValues>>({});
@@ -299,6 +300,45 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
     const previous = previousTrackFromQueue(entries, trackRef.current?.id ?? null);
     if (previous !== null) goToTrack(previous);
   }, [goToTrack]);
+
+  // ------------------------------------------- LISTEN → PERFORM (P5 bridge)
+  // Take the playing track into a session: create the session, add THIS
+  // track, open the session surface. Existing APIs only; playback stops here
+  // and continues as a session (the session engine takes over — there is
+  // only one playback engine, never two running at once).
+  const playAsSession = useCallback(() => {
+    if (startingSession || track === null) return;
+    setStartingSession(true);
+    void (async () => {
+      try {
+        const created = await fetch("/api/library/sessions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: track.title }),
+        });
+        if (!created.ok) {
+          setStatus("The session could not be created.");
+          return;
+        }
+        const session = (await created.json()).session as { id: string };
+        const added = await fetch(`/api/library/sessions/${session.id}/tracks`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ trackId: track.id }),
+        });
+        if (!added.ok) {
+          setStatus("The track could not be added to the new session.");
+          return;
+        }
+        transport.pause();
+        router.push(`/waveyard/session/${session.id}`);
+      } catch {
+        setStatus("The session could not be created.");
+      } finally {
+        setStartingSession(false);
+      }
+    })();
+  }, [startingSession, track, transport, router]);
 
   // ------------------------------------- hardware media keys (P4, standard path)
   // OS/hardware play-pause/skip commands (keyboards, Bluetooth speakers that
@@ -603,6 +643,9 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
 
       <div className="player-actions">
         <button type="button" className="button" onClick={() => void addToQueue()}>+ Queue</button>
+        <button type="button" className="button secondary" onClick={playAsSession} disabled={startingSession} title="Create a session starting with this track">
+          {startingSession ? "Starting…" : "Play as session"}
+        </button>
         {playlists.length > 0 && (
           <select
             aria-label="Add to playlist"

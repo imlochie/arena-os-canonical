@@ -179,18 +179,42 @@ control transport (documented GATT, shipped MIDI, or a vendor API) as an
 optional module behind the same boundary; capability states extend, the
 consuming surfaces don't change.
 
-## 7. On-device verification checklist (Windows, user acceptance)
+## 7. Windows physical acceptance procedure (P5, 18 steps)
 
-1. Pair Stem2 in Windows Bluetooth settings (it appears as an audio output).
-2. In Waveyard, open the Stem2 panel: the endpoint is listed (name-match tag
-   if the label contains "Stem2").
-3. Designate it → status becomes **AUDIO_ONLY** with the device name; audio
-   now plays from Stem2 (P3 crossfades included).
-4. Power Stem2 off → panel reports REQUIRES_DEVICE_CONNECTION; Waveyard
-   playback continues on the system default (session survives).
-5. Power Stem2 on → panel returns to AUDIO_ONLY and audio routes back.
-6. Restart the app → the route restores.
-7. Press Stem2's play/pause/skip buttons → if they emit standard media
-   commands, Waveyard responds (this is the hardware-verification step for
-   the media-key path; until confirmed it stays labeled "requires
-   on-device verification").
+Run on the real Windows machine against a real Stem2. Classify every step
+**VERIFIED / PARTIALLY VERIFIED / UNAVAILABLE / FAILED** with observed
+evidence — never from documentation alone. Until this procedure is run,
+the capability matrix reports media keys as `hardware-pending` and nothing
+is marked VERIFIED.
+
+| # | Step | Classification | Observed |
+|---|---|---|---|
+| 1 | Pair physical Stem2 with Windows (Bluetooth settings) | | |
+| 2 | Start Waveyard (packaged app) | | |
+| 3 | Play a real library track | | |
+| 4 | Open the Stem2 panel (player or session) | | |
+| 5 | Select the Stem2 audio output in the panel | | |
+| 6 | Confirm music is physically audible from Stem2 | | |
+| 7 | Move a Waveyard stem control (mute/solo/volume) | | |
+| 8 | Confirm the resulting audio change is audible on Stem2 | | |
+| 9 | Enter a Session | | |
+| 10 | Perform a transition (crossfade) | | |
+| 11 | Confirm the transition audio reaches Stem2 | | |
+| 12 | Disconnect Stem2 (power off / Bluetooth off) | | |
+| 13 | Confirm playback/session survives (system default) | | |
+| 14 | Reconnect Stem2 | | |
+| 15 | Confirm the route restores (panel → AUDIO_ONLY, audio returns) | | |
+| 16 | Press physical Stem2 play/pause | | |
+| 17 | Press physical Stem2 forward/back | | |
+| 18 | Record exactly what happened (each command: acted / ignored / unknown) | | |
+
+Notes for the run:
+
+- Steps 5–8, 11, 15 verify the real `AudioContext.setSinkId` routing path.
+- Steps 7–8 additionally prove stem mixes stay authoritative IN Waveyard
+  (the device receives the resulting audio; no device-side stem control
+  is claimed or expected).
+- Steps 16–17 are the media-key verification: if the buttons emit standard
+  media commands, Waveyard's `mediaSession` handlers respond; if not, the
+  capability stays `AVAILABLE / hardware-pending` and honestly unclaimed.
+- Steps 12–13 verify the mandated session-survives-disconnect behavior.

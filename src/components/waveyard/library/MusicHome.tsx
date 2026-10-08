@@ -53,6 +53,13 @@ interface StudioProject {
   updatedAt: string;
 }
 
+interface SessionSummary {
+  id: string;
+  name: string;
+  trackCount: number;
+  updatedAt: string;
+}
+
 function StemBadge({ availability }: { availability: TrackSummary["stemAvailability"] }) {
   const label =
     availability.status === "separated" ? `${availability.stemCount} STEMS`
@@ -126,6 +133,7 @@ export function MusicHome() {
   const [openPlaylist, setOpenPlaylist] = useState<PlaylistDetail | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [studioProjects, setStudioProjects] = useState<StudioProject[]>([]);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -134,13 +142,15 @@ export function MusicHome() {
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async (query: string) => {
-    const [tracksResponse, playbackResponse, playlistsResponse, queueResponse, projectsResponse] = await Promise.all([
-      fetch(`/api/library/tracks${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`, { cache: "no-store" }),
-      fetch("/api/library/playback-state", { cache: "no-store" }),
-      fetch("/api/library/playlists", { cache: "no-store" }),
-      fetch("/api/library/queue", { cache: "no-store" }),
-      fetch("/api/waveyard/projects", { cache: "no-store" }),
-    ]);
+    const [tracksResponse, playbackResponse, playlistsResponse, queueResponse, projectsResponse, sessionsResponse] =
+      await Promise.all([
+        fetch(`/api/library/tracks${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`, { cache: "no-store" }),
+        fetch("/api/library/playback-state", { cache: "no-store" }),
+        fetch("/api/library/playlists", { cache: "no-store" }),
+        fetch("/api/library/queue", { cache: "no-store" }),
+        fetch("/api/waveyard/projects", { cache: "no-store" }),
+        fetch("/api/library/sessions", { cache: "no-store" }),
+      ]);
     if (tracksResponse.ok) setTracks((await tracksResponse.json()).tracks ?? []);
     if (playbackResponse.ok) {
       const state = (await playbackResponse.json()).playbackState;
@@ -149,6 +159,7 @@ export function MusicHome() {
     if (playlistsResponse.ok) setPlaylists((await playlistsResponse.json()).playlists ?? []);
     if (queueResponse.ok) setQueue((await queueResponse.json()).queue ?? []);
     if (projectsResponse.ok) setStudioProjects((await projectsResponse.json()).projects ?? []);
+    if (sessionsResponse.ok) setSessions((await sessionsResponse.json()).sessions ?? []);
     setLoaded(true);
   }, []);
 
@@ -381,9 +392,32 @@ export function MusicHome() {
           <span>{tracks.length} track{tracks.length === 1 ? "" : "s"}</span>
         </div>
         {loaded && tracks.length === 0 ? (
-          <p className="empty">
-            {search.trim() !== "" ? "Nothing matches that search." : "Your library is empty — add music to begin."}
-          </p>
+          search.trim() !== "" ? (
+            <p className="empty">Nothing matches that search.</p>
+          ) : (
+            <div className="first-run" aria-label="Welcome to Waveyard">
+              <p className="empty">Your library is empty — add music to begin.</p>
+              <ol>
+                <li>
+                  <b>Add music you own or are authorized to use.</b> Files stay on this machine — nothing is uploaded,
+                  and there is no demo catalogue.
+                </li>
+                <li>
+                  <b>Tracks become stem-aware.</b> When separation runs, Waveyard splits them into stems — vocals,
+                  drums, bass, melody — that you can mute, solo and rebalance live. When separation can&rsquo;t run,
+                  the track plays as its full source and says so.
+                </li>
+                <li>
+                  <b>Play, queue and build playlists.</b> The studio — arrangement, cleanup, mastering, exports — is
+                  one click deeper, and never changes your originals.
+                </li>
+                <li>
+                  <b>Perform with sessions.</b> Line up several songs, crossfade between them with live stem control,
+                  and route the result to Stem2 hardware when you have one.
+                </li>
+              </ol>
+            </div>
+          )
         ) : (
           <div className="track-list">
             {tracks.map((track) => (
@@ -430,6 +464,33 @@ export function MusicHome() {
                     {openPlaylist.items.length === 0 && <li className="empty">Empty playlist.</li>}
                   </ol>
                 )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="sessions-panel" aria-label="Sessions">
+        <div className="library-panel-title">
+          <h2>Sessions</h2>
+          <Link className="button secondary" href="/waveyard/sessions">New session</Link>
+        </div>
+        {sessions.length === 0 ? (
+          <p className="empty">
+            No sessions yet. A session lines up songs to play as one set — start one from{" "}
+            <Link href="/waveyard/sessions">Sessions</Link>, or take a playing track into one from its player.
+          </p>
+        ) : (
+          <ul className="sessions-list">
+            {sessions.slice(0, 6).map((session) => (
+              <li key={session.id}>
+                <Link href={`/waveyard/session/${session.id}`}>
+                  <b>{session.name}</b>
+                  <small>
+                    {session.trackCount} track{session.trackCount === 1 ? "" : "s"} · updated{" "}
+                    {new Date(session.updatedAt).toLocaleDateString()}
+                  </small>
+                </Link>
               </li>
             ))}
           </ul>

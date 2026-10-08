@@ -7,6 +7,7 @@ import { useHardwareMediaKeys } from "@/lib/waveyard/stem2";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import {
   beatAlignedTransitionStart,
+  compatibilityEvidence,
   crossfadeCancel,
   crossfadeEnvelope,
   keyCompatibility,
@@ -211,7 +212,7 @@ function SessionDeck({
             );
           })}
           <div className="sess-deck-head">
-            <span className="eyebrow">{active ? "Current" : "On deck"}</span>
+            <span className="eyebrow">{`Deck ${deckIndex === 0 ? "A" : "B"} · ${active ? "current" : "on deck"}`}</span>
             <h3>{item.track.title}</h3>
             <p className="sess-deck-sub">
               {item.track.artist || "Unknown artist"}
@@ -812,6 +813,9 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     const tempo = tempoCompatibility(currentItem.analysis?.bpm ?? null, nextItem.analysis?.bpm ?? null);
     const key = keyCompatibility(currentItem.analysis?.musicalKey ?? null, nextItem.analysis?.musicalKey ?? null);
     const mode = currentTransition?.mode ?? "manual";
+    // REAL / APPROXIMATE / UNAVAILABLE labels from the analyses that exist —
+    // deterministic and tested in session-logic; never blurred.
+    const evidence = compatibilityEvidence(currentItem.analysis, nextItem.analysis, mode);
     let alignment: { ok: boolean; label: string; reason: string } | null = null;
     if (mode === "beat" || mode === "bar") {
       const aligned = beatAlignedTransitionStart(
@@ -828,7 +832,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         reason: "Stored in the session data; V1 crossfades from the current position.",
       };
     }
-    return { tempo, key, alignment };
+    return { tempo, key, alignment, evidence };
   }, [currentItem, nextItem, currentTransition]);
 
   // ---------------------------------------------------------------- render
@@ -1046,14 +1050,26 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
             <div className="sess-compat" data-testid="session-compat">
               <h4 className="library-panel-title">Compatibility</h4>
               <p className={compatibility.tempo.compatible ? "sess-compat-ok" : "sess-compat-bad"}>
-                Tempo — {compatibility.tempo.reason}
+                <b className={`sess-evidence sess-evidence-${compatibility.evidence.tempo.level}`} title={compatibility.evidence.tempo.label}>
+                  Tempo · {compatibility.evidence.tempo.level.toUpperCase()}
+                </b>{" "}
+                {compatibility.tempo.reason}
               </p>
               <p className={compatibility.key.compatible ? "sess-compat-ok" : "sess-compat-bad"}>
-                Key — {compatibility.key.reason}
+                <b className={`sess-evidence sess-evidence-${compatibility.evidence.key.level}`} title={compatibility.evidence.key.label}>
+                  Key · {compatibility.evidence.key.level.toUpperCase()}
+                </b>{" "}
+                {compatibility.key.reason}
               </p>
-              {compatibility.alignment !== null && (
+              {compatibility.alignment !== null && compatibility.evidence.alignment !== null && (
                 <p className={compatibility.alignment.ok ? "sess-compat-ok" : "sess-compat-bad"}>
-                  {compatibility.alignment.label} — {compatibility.alignment.reason}
+                  <b
+                    className={`sess-evidence sess-evidence-${compatibility.evidence.alignment.level}`}
+                    title={compatibility.evidence.alignment.label}
+                  >
+                    Alignment · {compatibility.evidence.alignment.level.toUpperCase()}
+                  </b>{" "}
+                  {compatibility.alignment.reason}
                 </p>
               )}
             </div>

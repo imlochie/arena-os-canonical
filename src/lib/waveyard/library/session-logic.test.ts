@@ -20,6 +20,8 @@ import {
   normalizeTransitionConfig,
   tempoCompatibility,
   validateStemSwap,
+  compatibilityEvidence,
+  TRANSITION_MODES,
 } from "./session-logic";
 
 // ------------------------------------------------------------ transitions
@@ -196,4 +198,53 @@ test("stem swap: refuses when the donor cannot lend a REAL stem of that type", (
   );
   assert.equal(passthroughOnly.ok, false, "a passthrough full-source row is not a lendable stem layer");
   assert.match((passthroughOnly as { reason: string }).reason, /donor track has no separated/);
+});
+
+// ------------------------------------------------- evidence labeling (P5) --
+
+test("evidence: REAL tempo/key only when both analyses exist", () => {
+  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+  const evidence = compatibilityEvidence(full, full, "manual");
+  assert.equal(evidence.tempo.level, "real");
+  assert.equal(evidence.key.level, "real");
+});
+
+test("evidence: UNAVAILABLE tempo/key when either analysis is missing", () => {
+  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+  const none = { bpm: null, musicalKey: null, beatGridMs: null };
+  const one = compatibilityEvidence(full, none, "manual");
+  assert.equal(one.tempo.level, "unavailable");
+  assert.equal(one.key.level, "unavailable");
+  const other = compatibilityEvidence(null, full, "manual");
+  assert.equal(other.tempo.level, "unavailable");
+  assert.equal(other.key.level, "unavailable");
+});
+
+test("evidence: manual mode has no alignment concept (null)", () => {
+  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+  assert.equal(compatibilityEvidence(full, full, "manual").alignment, null);
+});
+
+test("evidence: beat/bar alignment REAL on verified grids, UNAVAILABLE without", () => {
+  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+  assert.equal(compatibilityEvidence(full, full, "bar").alignment?.level, "real");
+  assert.match(compatibilityEvidence(full, full, "bar").alignment?.label ?? "", /start-time alignment/);
+  const partial = { ...full, beatGridMs: null };
+  assert.equal(compatibilityEvidence(full, partial, "beat").alignment?.level, "unavailable");
+});
+
+test("evidence: meeting-point mode is honestly UNAVAILABLE (stored, not cued)", () => {
+  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+  const evidence = compatibilityEvidence(full, full, "meeting-point");
+  assert.equal(evidence.alignment?.level, "unavailable");
+  assert.match(evidence.alignment?.label ?? "", /section-aware cueing/);
+});
+
+test("evidence: never claims phase-locked sync in any label", () => {
+  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
+  for (const mode of TRANSITION_MODES) {
+    const evidence = compatibilityEvidence(full, full, mode);
+    const text = [evidence.tempo.label, evidence.key.label, evidence.alignment?.label ?? ""].join(" ");
+    assert.equal(/phase-locked/i.test(text), false, mode);
+  }
 });

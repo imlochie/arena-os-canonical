@@ -1,4 +1,4 @@
-import Link from "next/link";
+import WaveyardNav from "@/components/waveyard/WaveyardNav";
 import SessionExperience from "@/components/waveyard/library/SessionExperience";
 
 export const metadata = { title: "Session · Waveyard" };
@@ -8,15 +8,7 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
   const { id } = await params;
   return (
     <main className="shell session-shell">
-      <nav className="nav">
-        <Link href="/waveyard" className="brand"><i>Waveyard</i><small>stem-aware music</small></Link>
-        <div className="navlinks">
-          <Link href="/waveyard">Music</Link>
-          <Link href="/waveyard/sessions">Sessions</Link>
-          <Link href="/waveyard/discover">Discover</Link>
-          <Link href="/waveyard/create">Studio · Create</Link>
-        </div>
-      </nav>
+      <WaveyardNav />
       <SessionExperience sessionId={id} />
     </main>
   );

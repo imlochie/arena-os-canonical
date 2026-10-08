@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import WaveyardNav from "@/components/waveyard/WaveyardNav";
 import { useEffect, useState } from "react";
 
 interface SessionListItem {
@@ -73,15 +74,7 @@ export default function SessionsPage() {
 
   return (
     <main className="shell">
-      <nav className="nav">
-        <Link href="/waveyard" className="brand"><i>Waveyard</i><small>stem-aware music</small></Link>
-        <div className="navlinks">
-          <Link href="/waveyard">Music</Link>
-          <Link href="/waveyard/sessions">Sessions</Link>
-          <Link href="/waveyard/discover">Discover</Link>
-          <Link href="/waveyard/create">Studio · Create</Link>
-        </div>
-      </nav>
+      <WaveyardNav />
       <section className="session-preview" aria-label="Sessions">
         <span className="eyebrow">Sessions</span>
         <h1>Play your songs together</h1>
@@ -106,7 +99,16 @@ export default function SessionsPage() {
         </div>
         {status !== null && <p className="sess-status" role="status">{status}</p>}
         {sessions !== null && sessions.length === 0 && (
-          <p className="sess-status">No sessions yet — create one above, then add tracks from your library.</p>
+          <div className="sess-empty" aria-label="What is a session?">
+            <p className="sess-status">No sessions yet.</p>
+            <p className="sess-empty-about">
+              A session lines up several of your songs and plays them as one set: two decks (the current track and the
+              next one), real crossfades, live stem control during transitions, and honest tempo/key/beat evidence for
+              every pairing. You can create one above — or press <b>Play as session</b> on any track in the player to
+              start with that track loaded. Sessions are saved as you go: close Waveyard, and the set — including the
+              track you were on and where — comes back exactly as you left it.
+            </p>
+          </div>
         )}
         <ul className="sess-list">
           {(sessions ?? []).map((session) => (

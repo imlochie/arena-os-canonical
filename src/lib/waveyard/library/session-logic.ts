@@ -211,6 +211,57 @@ export function beatAlignedTransitionStart(
   };
 }
 
+// ------------------------------------------------------- evidence labeling
+
+/** How strongly a compatibility claim is backed: real analysis evidence,
+ * an honest approximation, or nothing (never blurred — P5 STEP 7). */
+export type EvidenceLevel = "real" | "approximate" | "unavailable";
+
+export interface EvidenceLabel {
+  level: EvidenceLevel;
+  label: string;
+}
+
+export interface CompatibilityEvidence {
+  tempo: EvidenceLabel;
+  key: EvidenceLabel;
+  /** null when the transition mode has no alignment concept (manual). */
+  alignment: EvidenceLabel | null;
+}
+
+/** Deterministic REAL / APPROXIMATE / UNAVAILABLE evidence labels from the
+ * analyses that actually exist. Never "real" without analysis; alignment on
+ * verified beat grids is start-time alignment only (the reason prose in the
+ * compatibility panel always carries that scope). */
+export function compatibilityEvidence(
+  currentAnalysis: { bpm: number | null; musicalKey: string | null; beatGridMs: number[] | null } | null,
+  nextAnalysis: { bpm: number | null; musicalKey: string | null; beatGridMs: number[] | null } | null,
+  mode: TransitionMode,
+): CompatibilityEvidence {
+  const bothBpm = currentAnalysis?.bpm != null && nextAnalysis?.bpm != null;
+  const bothKey = currentAnalysis?.musicalKey != null && nextAnalysis?.musicalKey != null;
+  const bothGrids = currentAnalysis?.beatGridMs != null && nextAnalysis?.beatGridMs != null;
+  let alignment: EvidenceLabel | null;
+  if (mode === "manual") {
+    alignment = null;
+  } else if (mode === "beat" || mode === "bar") {
+    alignment = bothGrids
+      ? { level: "real", label: "REAL — verified beat grids (start-time alignment)" }
+      : { level: "unavailable", label: "UNAVAILABLE — beat grids missing; use a manual transition" };
+  } else {
+    alignment = { level: "unavailable", label: "UNAVAILABLE — stored mode; section-aware cueing is not implemented" };
+  }
+  return {
+    tempo: bothBpm
+      ? { level: "real", label: "REAL — tempo analysis complete for both tracks" }
+      : { level: "unavailable", label: "UNAVAILABLE — tempo analysis missing for one or both tracks" },
+    key: bothKey
+      ? { level: "real", label: "REAL — key analysis complete for both tracks" }
+      : { level: "unavailable", label: "UNAVAILABLE — key analysis missing for one or both tracks" },
+    alignment,
+  };
+}
+
 // ------------------------------------------------------------- advancement
 
 export interface SessionOrderEntry {
