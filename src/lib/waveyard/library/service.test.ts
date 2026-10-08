@@ -102,23 +102,17 @@ before(async () => {
     "-D", dataDir, "-p", String(port), "-h", "127.0.0.1", "-F",
   ], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 
+  // Retry-safe readiness (Windows acceptance fix on 9431870): a pg Client
+  // that failed to connect can NEVER be reused, so every attempt builds a
+  // fresh one. Contract enforced by pg-readiness.test.ts.
   const { Client } = await import("pg");
-  const admin = new Client({ connectionString: `postgresql://arena:arena-test@127.0.0.1:${port}/postgres` });
-  const deadline = Date.now() + 30_000;
-  let lastError: unknown = null;
-  while (Date.now() < deadline) {
-    try {
-      await admin.connect();
-      lastError = null;
-      break;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 150));
-    }
-  }
-  if (lastError !== null) throw new Error(`embedded postgres never became ready: ${String(lastError)}`);
-  await admin.query("create database arena_library_test");
-  await admin.end();
+  const { waitForPostgresReady } = await import("./pg-readiness");
+  await waitForPostgresReady({
+    createClient: () => new Client({ connectionString: `postgresql://arena:arena-test@127.0.0.1:${port}/postgres` }),
+    useConnectedClient: async (admin) => {
+      await admin.query("create database arena_library_test");
+    },
+  });
 
   client = new Client({ connectionString: `postgresql://arena:arena-test@127.0.0.1:${port}/arena_library_test` });
   await client.connect();
