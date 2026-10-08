@@ -181,3 +181,63 @@ test("reverb bypass leaves the signal untouched", () => {
   assert.equal(out.length, source.length, "bypassed reverb must not extend the buffer");
   assert.deepEqual(Array.from(out), Array.from(source));
 });
+
+test("modulation and dynamics inserts validate params and fill defaults", () => {
+  const chorus = makeInsert("chorus", { rateHz: 99 })!;
+  assert.equal(chorus.params.rateHz, 5, "rate clamps to range max");
+  assert.equal(chorus.params.mix, 0.5, "chorus mix default");
+  assert.equal(makeInsert("flanger", { nope: 1 }), null, "unknown param invalidates");
+  const max = makeInsert("maximizer")!;
+  assert.equal(max.params.ceilingDb, -0.3, "maximizer ceiling default");
+  const deess = makeInsert("de-esser")!;
+  assert.equal(deess.params.freqHz, 6000, "de-esser freq default");
+  assert.equal(makeInsert("phaser", { stages: 99 })!.params.stages, 12, "stages clamp");
+});
+
+test("chorus/flanger/phaser render tails through the chain", () => {
+  const source = sine(0.25, 440, 0.3);
+  for (const processor of ["chorus", "flanger", "phaser"] as const) {
+    const chain: InsertChain = [makeInsert(processor, {}, { wet: 1 })!];
+    const out = processWithChain(Float32Array.from(source), chain, FS);
+    assert.ok(out.length > source.length, `${processor} must extend the buffer`);
+    for (let i = 0; i < out.length; i += 1) {
+      assert.ok(Number.isFinite(out[i]), `${processor} sample ${i} finite`);
+    }
+  }
+});
+
+test("de-esser and maximizer keep the buffer length", () => {
+  const source = sine(0.25, 440, 0.3);
+  for (const processor of ["de-esser", "maximizer"] as const) {
+    const chain: InsertChain = [makeInsert(processor)!];
+    const out = processWithChain(Float32Array.from(source), chain, FS);
+    assert.equal(out.length, source.length, `${processor} length`);
+  }
+});
+
+test("maximizer insert enforces its ceiling on a hot signal", () => {
+  const frames = FS / 2;
+  const source = new Float32Array(frames * 2);
+  for (let i = 0; i < frames; i += 1) {
+    const v = Math.sin((2 * Math.PI * 220 * i) / FS) >= 0 ? 1 : -1;
+    source[i * 2] = v;
+    source[i * 2 + 1] = v;
+  }
+  const chain: InsertChain = [makeInsert("maximizer", { ceilingDb: -1 })!];
+  const out = processWithChain(Float32Array.from(source), chain, FS);
+  const ceiling = dbToGain(-1);
+  let peak = 0;
+  for (let i = 0; i < out.length; i += 1) peak = Math.max(peak, Math.abs(out[i]));
+  assert.ok(peak <= ceiling + 1e-6, `chain must respect the ceiling (${gainToDb(peak)} dBFS)`);
+});
+
+test("de-esser insert leaves a bass stem essentially untouched", () => {
+  const source = sine(0.5, 150, 0.3);
+  const chain: InsertChain = [makeInsert("de-esser", { thresholdDb: -30, rangeDb: 12 })!];
+  const out = processWithChain(Float32Array.from(source), chain, FS);
+  let maxDiff = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    maxDiff = Math.max(maxDiff, Math.abs(source[i] - out[i]));
+  }
+  assert.ok(maxDiff < 1e-3, `bass must pass through (maxDiff=${maxDiff})`);
+});

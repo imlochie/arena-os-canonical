@@ -30,6 +30,8 @@ import {
   newBiquadState,
   type StereoBuffer,
 } from "./dsp";
+import { applyDeEsser, applyMaximizer } from "./dynamics";
+import { applyChorus, applyFlanger, applyPhaser } from "./modulation";
 import { applyReverb } from "./reverb";
 import { clamp } from "./types";
 
@@ -48,7 +50,12 @@ export type InsertProcessorId =
   | "width"
   | "delay"
   | "reverb"
-  | "plate-reverb";
+  | "plate-reverb"
+  | "chorus"
+  | "flanger"
+  | "phaser"
+  | "de-esser"
+  | "maximizer";
 
 export type ParamRange = { min: number; max: number; default: number };
 
@@ -115,6 +122,39 @@ export const INSERT_PARAM_RANGES: Record<
     lowCutHz: { min: 20, max: 1000, default: 20 },
     mix: { min: 0, max: 1, default: 0.3 },
   },
+  chorus: {
+    rateHz: { min: 0.05, max: 5, default: 0.8 },
+    depth: { min: 0, max: 1, default: 0.5 },
+    delayMs: { min: 5, max: 30, default: 12 },
+    feedback: { min: 0, max: 0.9, default: 0 },
+    mix: { min: 0, max: 1, default: 0.5 },
+    spread: { min: 0, max: 1, default: 1 },
+  },
+  flanger: {
+    rateHz: { min: 0.02, max: 5, default: 0.25 },
+    depth: { min: 0, max: 1, default: 0.7 },
+    delayMs: { min: 0.1, max: 10, default: 2 },
+    feedback: { min: -0.95, max: 0.95, default: 0.5 },
+    mix: { min: 0, max: 1, default: 0.5 },
+  },
+  phaser: {
+    rateHz: { min: 0.02, max: 5, default: 0.5 },
+    depth: { min: 0, max: 1, default: 0.7 },
+    stages: { min: 2, max: 12, default: 6 },
+    feedback: { min: -0.95, max: 0.95, default: 0.4 },
+    centerHz: { min: 100, max: 4000, default: 800 },
+    mix: { min: 0, max: 1, default: 0.5 },
+  },
+  "de-esser": {
+    freqHz: { min: 2000, max: 16000, default: 6000 },
+    thresholdDb: { min: -60, max: 0, default: -30 },
+    rangeDb: { min: 0, max: 40, default: 10 },
+  },
+  maximizer: {
+    thresholdDb: { min: -30, max: 0, default: 0 },
+    ceilingDb: { min: -30, max: 0, default: -0.3 },
+    releaseMs: { min: 1, max: 1000, default: 50 },
+  },
 };
 
 export const INSERT_PROCESSOR_LABELS: Record<InsertProcessorId, string> = {
@@ -131,6 +171,11 @@ export const INSERT_PROCESSOR_LABELS: Record<InsertProcessorId, string> = {
   delay: "Delay",
   reverb: "Reverb (room)",
   "plate-reverb": "Reverb (plate)",
+  chorus: "Chorus",
+  flanger: "Flanger",
+  phaser: "Phaser",
+  "de-esser": "De-esser",
+  maximizer: "Maximizer",
 };
 
 export type Insert = {
@@ -418,5 +463,50 @@ function runProcessor(
         mix: p.mix,
         sampleRate,
       });
+    case "chorus":
+      return applyChorus(buffer, {
+        rateHz: p.rateHz,
+        depth: p.depth,
+        delayMs: p.delayMs,
+        feedback: p.feedback,
+        mix: p.mix,
+        spread: p.spread,
+        sampleRate,
+      });
+    case "flanger":
+      return applyFlanger(buffer, {
+        rateHz: p.rateHz,
+        depth: p.depth,
+        delayMs: p.delayMs,
+        feedback: p.feedback,
+        mix: p.mix,
+        sampleRate,
+      });
+    case "phaser":
+      return applyPhaser(buffer, {
+        rateHz: p.rateHz,
+        depth: p.depth,
+        stages: p.stages,
+        feedback: p.feedback,
+        centerHz: p.centerHz,
+        mix: p.mix,
+        sampleRate,
+      });
+    case "de-esser":
+      applyDeEsser(buffer, {
+        freqHz: p.freqHz,
+        thresholdDb: p.thresholdDb,
+        rangeDb: p.rangeDb,
+        sampleRate,
+      });
+      return buffer;
+    case "maximizer":
+      applyMaximizer(buffer, {
+        thresholdDb: p.thresholdDb,
+        ceilingDb: p.ceilingDb,
+        releaseMs: p.releaseMs,
+        sampleRate,
+      });
+      return buffer;
   }
 }

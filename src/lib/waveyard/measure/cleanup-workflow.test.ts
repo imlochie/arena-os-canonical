@@ -160,7 +160,8 @@ test("normaliseRemixState accepts a valid chain and null clears it", () => {
 });
 
 test("normaliseRemixState rejects invalid insert chains (whole state, not silent clamp)", () => {
-  const bad = normaliseRemixState({ ...minimalState(), tracks: [{ ...minimalState().tracks[0], inserts: [{ id: "x", processor: "flanger", enabled: true, wet: 1, params: {} }] }] });
+  // "vocoder" is not (and must not become) a registered processor.
+  const bad = normaliseRemixState({ ...minimalState(), tracks: [{ ...minimalState().tracks[0], inserts: [{ id: "x", processor: "vocoder", enabled: true, wet: 1, params: {} }] }] });
   assert.equal(bad, null, "unknown processor must reject the state");
   const corruptString = normaliseRemixState({ ...minimalState(), masterInserts: "{not json" });
   assert.equal(corruptString, null, "corrupt JSON string must reject the state");
