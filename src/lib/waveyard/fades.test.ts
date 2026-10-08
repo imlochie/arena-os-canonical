@@ -6,7 +6,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { FADE_SHAPES, applyFades, fadeGainAt, isFadeShape } from "./fades";
+import {
+  CLIP_FADE_SHAPES,
+  FADE_SHAPES,
+  applyFades,
+  clipFadeShapeOrLinear,
+  fadeCurveSamples,
+  fadeGainAt,
+  isClipFadeShape,
+  isFadeShape,
+} from "./fades";
 import type { StereoBuffer } from "./mixer/dsp";
 
 const FS = 48000;
@@ -104,4 +113,43 @@ test("applyFades clamps oversized fades and accepts zero-length fades", () => {
   applyFades(buffer, 10000, 0, "linear");
   // Frame 0 still starts at gain 0.
   assert.ok(Math.abs(buffer[0]) < 1e-9);
+});
+
+test("clip fade shapes are the renderable subset of all fade shapes", () => {
+  for (const shape of CLIP_FADE_SHAPES) {
+    assert.ok((FADE_SHAPES as readonly string[]).includes(shape), `${shape} must be a real shape`);
+    assert.ok(isClipFadeShape(shape), `${shape} must pass the guard`);
+  }
+  // exponential/logarithmic are TS-only (no exact afade equivalent).
+  assert.equal(isClipFadeShape("exponential"), false);
+  assert.equal(isClipFadeShape("logarithmic"), false);
+  assert.equal(isClipFadeShape("sine"), false);
+  assert.equal(isClipFadeShape(3), false);
+  assert.equal(clipFadeShapeOrLinear(undefined), "linear");
+  assert.equal(clipFadeShapeOrLinear("s-curve"), "s-curve");
+  assert.equal(clipFadeShapeOrLinear("nope"), "linear", "invalid falls back to linear for optional reads");
+});
+
+test("fadeCurveSamples samples inclusive endpoints in either direction", () => {
+  const up = fadeCurveSamples("equal-power", 0, 1, 5);
+  assert.equal(up.length, 5);
+  assert.ok(Math.abs(up[0] - fadeGainAt("equal-power", 0)) < 1e-12, "first point = fromT");
+  assert.ok(Math.abs(up[4] - 1) < 1e-12, "last point = toT (unity)");
+  // Quarter sine midpoint: sin(π/4) ≈ 0.7071 (Float32Array storage precision).
+  assert.ok(Math.abs(up[2] - Math.SQRT1_2) < 1e-6, `midpoint ${up[2]}`);
+
+  const down = fadeCurveSamples("s-curve", 1, 0, 3);
+  assert.ok(Math.abs(down[0] - 1) < 1e-12, "descending starts at unity");
+  assert.ok(Math.abs(down[2] - 0) < 1e-12, "descending ends silent");
+
+  // Partial range (resume into a fade): from 0.5 to 1.
+  const partial = fadeCurveSamples("linear", 0.5, 1, 3);
+  assert.ok(Math.abs(partial[0] - 0.5) < 1e-12);
+  assert.ok(Math.abs(partial[1] - 0.75) < 1e-12);
+
+  // Hostile input: count clamps to >= 2, t clamps to [0,1].
+  const hostile = fadeCurveSamples("linear", -5, 99, 1);
+  assert.equal(hostile.length, 2);
+  assert.equal(hostile[0], 0);
+  assert.equal(hostile[1], 1);
 });

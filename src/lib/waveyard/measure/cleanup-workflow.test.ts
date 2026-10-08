@@ -159,6 +159,23 @@ test("normaliseRemixState accepts a valid chain and null clears it", () => {
   assert.deepEqual(cleared!.masterInserts, []);
 });
 
+test("normaliseRemixState validates clip fade shapes (linear default, unknown rejects)", () => {
+  const clip = (fadeShape: unknown) => ({
+    ...minimalState().tracks[0],
+    clips: [{ ...minimalState().tracks[0].clips[0], fadeInMs: 100, fadeOutMs: 100, fadeShape }],
+  });
+  const shaped = normaliseRemixState({ ...minimalState(), tracks: [clip("equal-power")] });
+  assert.notEqual(shaped, null);
+  assert.equal(shaped!.tracks[0].clips[0].fadeShape, "equal-power", "valid shape carries through");
+  const missing = normaliseRemixState({ ...minimalState(), tracks: [clip(undefined)] });
+  assert.notEqual(missing, null);
+  assert.equal(missing!.tracks[0].clips[0].fadeShape, "linear", "missing shape means linear");
+  // exponential exists for TS processing but is NOT a clip shape (no exact
+  // afade equivalent) — persisted states carrying it must be rejected.
+  assert.equal(normaliseRemixState({ ...minimalState(), tracks: [clip("exponential")] }), null, "non-clip shape rejects");
+  assert.equal(normaliseRemixState({ ...minimalState(), tracks: [clip("sine")] }), null, "unknown shape rejects");
+});
+
 test("normaliseRemixState rejects invalid insert chains (whole state, not silent clamp)", () => {
   // "vocoder" is not (and must not become) a registered processor.
   const bad = normaliseRemixState({ ...minimalState(), tracks: [{ ...minimalState().tracks[0], inserts: [{ id: "x", processor: "vocoder", enabled: true, wet: 1, params: {} }] }] });

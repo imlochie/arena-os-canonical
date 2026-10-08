@@ -21,6 +21,50 @@ export function isFadeShape(value: unknown): value is FadeShape {
   return typeof value === "string" && (FADE_SHAPES as readonly string[]).includes(value);
 }
 
+/**
+ * Shapes a persisted CLIP fade may use — the subset BOTH engines render
+ * identically: the Web Audio preview (fadeGainAt curves) and the bundled
+ * ffmpeg 4.1 afade (tri / qsin / hsin). "exponential" and "logarithmic"
+ * remain available to applyFades (TS processing) but have no exact afade
+ * equivalent, so they are deliberately not clip shapes — preview and
+ * export must never disagree.
+ */
+export const CLIP_FADE_SHAPES = ["linear", "equal-power", "s-curve"] as const;
+
+export type ClipFadeShape = (typeof CLIP_FADE_SHAPES)[number];
+
+export function isClipFadeShape(value: unknown): value is ClipFadeShape {
+  return typeof value === "string" && (CLIP_FADE_SHAPES as readonly string[]).includes(value);
+}
+
+/** Missing/undefined means "linear" (the historical behaviour). */
+export function clipFadeShapeOrLinear(value: unknown): ClipFadeShape {
+  return isClipFadeShape(value) ? value : "linear";
+}
+
+/**
+ * Sample `count` (>= 2) gain points of the fade-in curve between `fromT`
+ * and `toT` (positions in 0..1), endpoints inclusive. Used by the preview
+ * to schedule exact curve segments — including resuming INTO a fade, where
+ * fromT > 0. Returns gains in 0..1; callers scale by their base gain.
+ */
+export function fadeCurveSamples(
+  shape: FadeShape,
+  fromT: number,
+  toT: number,
+  count: number,
+): Float32Array {
+  const n = Math.max(2, Math.floor(count));
+  const from = Number.isFinite(fromT) ? Math.min(1, Math.max(0, fromT)) : 0;
+  const to = Number.isFinite(toT) ? Math.min(1, Math.max(0, toT)) : 0;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i += 1) {
+    const t = from + (to - from) * (i / (n - 1));
+    out[i] = fadeGainAt(shape, t);
+  }
+  return out;
+}
+
 /** Curve steepness for the exponential/logarithmic shapes. */
 const K = 4;
 

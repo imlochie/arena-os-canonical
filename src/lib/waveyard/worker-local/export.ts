@@ -28,7 +28,8 @@ import {
   type ExportJobPayload,
   type RemixAutomationLane,
 } from "@/lib/waveyard/types";
-import { automatedTrackBusFilters, atempoFilterChain, mixSumFilters, padToTimeline, pitchFilterChain, requiredSourceDurationMs, resolveKeySync, sourceDurationFits, tempoRatio, timelineSampleCount } from "./render-helpers";
+import { automatedTrackBusFilters, atempoFilterChain, ffmpegFadeFilters, mixSumFilters, padToTimeline, pitchFilterChain, requiredSourceDurationMs, resolveKeySync, sourceDurationFits, tempoRatio, timelineSampleCount } from "./render-helpers";
+import { isClipFadeShape, type ClipFadeShape } from "../fades";
 
 type SnapshotClip = {
   stemAssetId: string;
@@ -38,6 +39,7 @@ type SnapshotClip = {
   gain: number;
   fadeInMs: number;
   fadeOutMs: number;
+  fadeShape: ClipFadeShape;
   tempoSyncEnabled: boolean;
   keySyncEnabled: boolean;
   beatSnapEnabled: boolean;
@@ -102,6 +104,8 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
         const fadeInMs = item.fadeInMs === undefined ? 0 : finite(item.fadeInMs, 0, durationMs);
         const fadeOutMs = item.fadeOutMs === undefined ? 0 : finite(item.fadeOutMs, 0, durationMs);
         if (fadeInMs + fadeOutMs > durationMs) throw new ExportFailure("invalid_snapshot", "Persisted remix clip fades exceed its duration.");
+        const fadeShape = item.fadeShape === undefined ? "linear" : item.fadeShape;
+        if (!isClipFadeShape(fadeShape)) throw new ExportFailure("invalid_snapshot", "Persisted remix clip fade shape is invalid.");
         return {
           stemAssetId: item.stemAssetId,
           timelineStartMs: finite(item.timelineStartMs, 0, 86_400_000),
@@ -110,6 +114,7 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
           gain: finite(item.gain, 0, 4),
           fadeInMs,
           fadeOutMs,
+          fadeShape,
           tempoSyncEnabled: item.tempoSyncEnabled === true,
           keySyncEnabled: item.keySyncEnabled === true,
           beatSnapEnabled: item.beatSnapEnabled === true,
@@ -309,12 +314,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       const delay = Math.round(clip.timelineStartMs);
       const tempo = tempoByClip.get(index);
       const keyShift = keyShiftByClip.get(index);
-      const fades = [
-        clip.fadeInMs > 0 ? `afade=t=in:st=0:d=${seconds(clip.fadeInMs)}` : "",
-        clip.fadeOutMs > 0 ? `afade=t=out:st=${seconds(clip.durationMs - clip.fadeOutMs)}:d=${seconds(clip.fadeOutMs)}` : "",
-      ]
-        .filter(Boolean)
-        .join(",");
+      const fades = ffmpegFadeFilters(clip);
       const fadeSegment = fades ? `,${fades}` : "";
       const padSegment = `,${padToTimeline(job.sampleRate, timelineSamples, clip.timelineStartMs + clip.durationMs)}`;
       const automated = Boolean(clip.track.id && automatedTrackIds.has(clip.track.id));
@@ -365,7 +365,10 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       .join("");
     const topLabels = labels.match(/\[[^\]]+\]/g) ?? [];
     filters.push(...mixSumFilters(topLabels, "premaster"));
-    filters.push(`[premaster]volume=${snapshot.masterVolume.toFixed(6)}[mix]`);
+    // The mix runs in float; convert to the encoder's 16-bit format inside
+    // the graph so the requantization applies high-pass-shaped TPDF dither
+    // (aresample) instead of truncating.
+    filters.push(`[premaster]volume=${snapshot.masterVolume.toFixed(6)},aresample=out_sample_fmt=s16:dither_method=triangular_hp[mix]`);
 
     const outputPath = join(temporaryDirectory, "export.wav");
     const args = [

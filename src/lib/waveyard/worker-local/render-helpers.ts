@@ -13,6 +13,48 @@ import {
   type AutomationPoint,
 } from "@/lib/waveyard/types";
 
+import { clipFadeShapeOrLinear, type ClipFadeShape } from "@/lib/waveyard/fades";
+
+/**
+ * afade curve names in the bundled ffmpeg 4.1 whose formulas are EXACTLY
+ * our fadeGainAt: tri = linear, qsin = sin(t·π/2) = equal-power,
+ * hsin = (1 − cos(t·π))/2 = s-curve.
+ */
+export function ffmpegFadeCurveName(shape: ClipFadeShape): "tri" | "qsin" | "hsin" {
+  switch (shape) {
+    case "equal-power":
+      return "qsin";
+    case "s-curve":
+      return "hsin";
+    default:
+      return "tri";
+  }
+}
+
+/**
+ * The per-clip fade filter segment (no leading comma; empty when the clip
+ * has no fades). Linear clips produce byte-identical filters to the
+ * historical graphs — the curve suffix appears only for shaped fades.
+ */
+export function ffmpegFadeFilters(clip: {
+  fadeInMs: number;
+  fadeOutMs: number;
+  durationMs: number;
+  fadeShape?: ClipFadeShape;
+}): string {
+  const shape = clipFadeShapeOrLinear(clip.fadeShape);
+  const curve = shape === "linear" ? "" : `:curve=${ffmpegFadeCurveName(shape)}`;
+  const seconds = (milliseconds: number) => (milliseconds / 1000).toFixed(3);
+  return [
+    clip.fadeInMs > 0 ? `afade=t=in:st=0:d=${seconds(clip.fadeInMs)}${curve}` : "",
+    clip.fadeOutMs > 0
+      ? `afade=t=out:st=${seconds(clip.durationMs - clip.fadeOutMs)}:d=${seconds(clip.fadeOutMs)}${curve}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(",");
+}
+
 export function tempoRatio(targetBpm: number, sourceBpm: number) {
   if (!Number.isFinite(targetBpm) || targetBpm < 20 || targetBpm > 300) throw new Error("Invalid remix BPM.");
   if (!Number.isFinite(sourceBpm) || sourceBpm < 40 || sourceBpm > 300) throw new Error("Tempo-sync source BPM is unavailable.");

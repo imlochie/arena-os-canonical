@@ -31,6 +31,7 @@ import {
   type StereoBuffer,
 } from "./dsp";
 import { applyDeEsser, applyMaximizer } from "./dynamics";
+import { applyDither } from "./dither";
 import { applyEq7 } from "./eq7";
 import { applyLoFi, applyRectifier } from "./lofi";
 import { applyChorus, applyFlanger, applyPhaser } from "./modulation";
@@ -60,7 +61,8 @@ export type InsertProcessorId =
   | "maximizer"
   | "eq7"
   | "lofi"
-  | "rectifier";
+  | "rectifier"
+  | "dither";
 
 export type ParamRange = { min: number; max: number; default: number };
 
@@ -196,6 +198,10 @@ export const INSERT_PARAM_RANGES: Record<
     mix: { min: 0, max: 1, default: 1 },
     outputDb: { min: -24, max: 12, default: 0 },
   },
+  dither: {
+    bitDepth: { min: 16, max: 24, default: 16 },
+    noiseShaping: { min: 0, max: 1, default: 0 },
+  },
 };
 
 export const INSERT_PROCESSOR_LABELS: Record<InsertProcessorId, string> = {
@@ -220,6 +226,7 @@ export const INSERT_PROCESSOR_LABELS: Record<InsertProcessorId, string> = {
   eq7: "EQ (7-band)",
   lofi: "Lo-Fi",
   rectifier: "Rectifier",
+  dither: "Dither",
 };
 
 export type Insert = {
@@ -594,6 +601,13 @@ function runProcessor(
         mode: p.mode,
         mix: p.mix,
         outputDb: p.outputDb,
+        sampleRate,
+      });
+      return buffer;
+    case "dither":
+      applyDither(buffer, {
+        bitDepth: p.bitDepth,
+        noiseShaping: p.noiseShaping === 1,
         sampleRate,
       });
       return buffer;

@@ -11,6 +11,7 @@ import {
   atempoFilterChain,
   automatedTrackBusFilters,
   ffmpegAutomationExpression,
+  ffmpegFadeFilters,
   mixSumFilters,
   padToTimeline,
   pitchFilterChain,
@@ -96,4 +97,30 @@ test("padToTimeline + timelineSampleCount compute exact render length", () => {
   assert.equal(timelineSampleCount(clips, 44100), 132300); // 3 s
   assert.equal(padToTimeline(44100, 132300, 1000), "apad=pad_len=88200"); // clip A pads 2 s
   assert.equal(padToTimeline(44100, 132300, 3000), "apad=pad_len=0"); // clip B ends at the timeline end
+});
+
+test("ffmpegFadeFilters: linear clips produce the historical byte-identical filters", () => {
+  assert.equal(
+    ffmpegFadeFilters({ fadeInMs: 250, fadeOutMs: 250, durationMs: 1000, fadeShape: "linear" }),
+    "afade=t=in:st=0:d=0.250,afade=t=out:st=0.750:d=0.250",
+  );
+  // Missing shape = linear (historical snapshots).
+  assert.equal(
+    ffmpegFadeFilters({ fadeInMs: 250, fadeOutMs: 250, durationMs: 1000 }),
+    "afade=t=in:st=0:d=0.250,afade=t=out:st=0.750:d=0.250",
+  );
+});
+
+test("ffmpegFadeFilters: shaped fades append the exact afade curve", () => {
+  // qsin = sin(t·π/2) is EXACTLY our equal-power curve; hsin = (1−cos(tπ))/2
+  // is exactly our s-curve — preview and export agree by construction.
+  assert.equal(
+    ffmpegFadeFilters({ fadeInMs: 100, fadeOutMs: 0, durationMs: 1000, fadeShape: "equal-power" }),
+    "afade=t=in:st=0:d=0.100:curve=qsin",
+  );
+  assert.equal(
+    ffmpegFadeFilters({ fadeInMs: 0, fadeOutMs: 300, durationMs: 900, fadeShape: "s-curve" }),
+    "afade=t=out:st=0.600:d=0.300:curve=hsin",
+  );
+  assert.equal(ffmpegFadeFilters({ fadeInMs: 0, fadeOutMs: 0, durationMs: 1000, fadeShape: "equal-power" }), "");
 });

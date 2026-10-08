@@ -1,3 +1,4 @@
+import { isClipFadeShape, type ClipFadeShape } from "./fades";
 import {
   AUTOMATION_PARAMETERS,
   normaliseAutomationPoints,
@@ -21,6 +22,9 @@ export type RemixClipInput = {
   gain: number;
   fadeInMs: number;
   fadeOutMs: number;
+  // Missing on historical snapshots means "linear" (original behaviour);
+  // a present-but-unknown value rejects the whole state (never clamped).
+  fadeShape?: ClipFadeShape;
   // Missing on historical snapshots means preserve the original, untransformed behavior.
   tempoSyncEnabled: boolean;
   // Missing on historical snapshots means preserve the original, untransformed behavior.
@@ -116,6 +120,8 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
       const fadeInMs = Math.round(clamp(clip.fadeInMs ?? 0, 0, durationMs));
       const fadeOutMs = Math.round(clamp(clip.fadeOutMs ?? 0, 0, durationMs));
       if (fadeInMs + fadeOutMs > durationMs) return null;
+      const fadeShape = clip.fadeShape === undefined ? "linear" : clip.fadeShape;
+      if (!isClipFadeShape(fadeShape)) return null;
       clips.push({
         id: clip.id,
         stemAssetId: String(clip.stemAssetId),
@@ -125,6 +131,7 @@ export function normaliseRemixState(raw: unknown): RemixStateInput | null {
         gain: clamp(clip.gain, 0, 4),
         fadeInMs,
         fadeOutMs,
+        fadeShape,
         // Missing in historical snapshots preserves prior, untransformed export behavior.
         tempoSyncEnabled: clip.tempoSyncEnabled === true,
         keySyncEnabled: clip.keySyncEnabled === true,
