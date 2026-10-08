@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStemTransport, type ChannelMeter, type MixerValues } from "@/lib/waveyard/useStemTransport";
+import { useHardwareMediaKeys } from "@/lib/waveyard/stem2";
+import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import {
   beatAlignedTransitionStart,
   crossfadeCancel,
@@ -778,6 +780,32 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     })();
   }, [session]);
 
+  // ------------------------------------- hardware media keys (P4, standard path)
+  // The same OS/hardware media commands as the player, driving the session's
+  // EXISTING controls. The session engine stays authoritative.
+  const previousItem = currentIndex > 0 ? session?.tracks[currentIndex - 1] ?? null : null;
+  useHardwareMediaKeys({
+    nowPlaying:
+      currentItem === null
+        ? null
+        : {
+            title: currentItem.track.title,
+            artist: currentItem.track.artist,
+            album: null,
+            playing: playingByDeck[activeDeck],
+          },
+    handlers: {
+      onPlayPause: () => void togglePlay(),
+      onNext: () => {
+        if (phase === "fading") finishTransition();
+        else if (nextItem !== null) jumpTo(nextItem.id);
+      },
+      onPrevious: () => {
+        if (previousItem !== null) jumpTo(previousItem.id);
+      },
+    },
+  });
+
   // ---------------------------------------------------- compatibility panel
   const compatibility = useMemo(() => {
     if (currentItem === null || nextItem === null) return null;
@@ -1046,6 +1074,10 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           />
         </div>
       </div>
+
+      {/* P4: the real Stem2 hardware surface — output routing + honest caps.
+          The session engine keeps playing through any output change. */}
+      <Stem2Panel />
 
       <aside className="sess-queue" aria-label="Session tracks">
         <h4 className="library-panel-title">Session order</h4>

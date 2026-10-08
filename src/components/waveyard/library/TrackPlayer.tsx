@@ -33,6 +33,8 @@ import {
   type RepeatMode,
 } from "@/lib/waveyard/library/player-logic";
 import { useStemTransport, type ChannelMeter, type MixerValues } from "@/lib/waveyard/useStemTransport";
+import { useHardwareMediaKeys } from "@/lib/waveyard/stem2";
+import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import { WaveformCanvas } from "@/components/waveyard/WaveformCanvas";
 
 interface TrackDetail {
@@ -297,6 +299,31 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
     const previous = previousTrackFromQueue(entries, trackRef.current?.id ?? null);
     if (previous !== null) goToTrack(previous);
   }, [goToTrack]);
+
+  // ------------------------------------- hardware media keys (P4, standard path)
+  // OS/hardware play-pause/skip commands (keyboards, Bluetooth speakers that
+  // send standard media commands) drive the SAME controls as the on-screen
+  // buttons. Whether a given device's buttons emit these commands is verified
+  // on hardware — never claimed here.
+  useHardwareMediaKeys({
+    nowPlaying:
+      track === null
+        ? null
+        : {
+            title: track.title,
+            artist: track.artist,
+            album: track.album || null,
+            playing: transport.playing,
+          },
+    handlers: {
+      onPlayPause: () => {
+        if (transport.playing) transport.pause();
+        else void transport.play();
+      },
+      onNext: skipNext,
+      onPrevious: skipPrevious,
+    },
+  });
 
   // ------------------------------------------------------------- keyboard
   useEffect(() => {
@@ -634,6 +661,9 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
           )}
         </aside>
       )}
+
+      {/* P4: the real Stem2 hardware surface — output routing + honest caps. */}
+      <Stem2Panel />
     </section>
   );
 }
