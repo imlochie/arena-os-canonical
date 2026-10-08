@@ -24,7 +24,7 @@
     "desktop:e2e": "node --import ./scripts/register-src-loader.mjs scripts/desktop-e2e.mjs",
     "test:desktop": "node --import ./scripts/register-src-loader.mjs --test \"desktop/**/*.test.ts\" \"src/lib/waveyard/worker-local/*.test.ts\"",
     "desktop:acceptance-headless": "node --import ./scripts/register-src-loader.mjs scripts/desktop-acceptance-headless.mjs",
-    "windows:acceptance": "node scripts/windows-acceptance.mjs"
+    "windows:acceptance": "node --import ./scripts/register-src-loader.mjs scripts/windows-acceptance.mjs"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",

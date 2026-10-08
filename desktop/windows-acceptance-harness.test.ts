@@ -56,3 +56,40 @@ test("resultFilePath is a hoisted function and its state is initialized before t
   assert.ok(stateIndex !== -1, "resultDirCache declaration must exist");
   assert.ok(stateIndex < tryIndex, "resultDirCache must be declared before the top-level try block");
 });
+
+test("installed-app acceptance runs against an isolated fresh data root (never the real %LOCALAPPDATA%\\Arena state)", () => {
+  // Regression for the Windows acceptance failure: FIRST LAUNCH failed with
+  // firstRun=false because the harness derived the REAL user data dir,
+  // passed no ARENA_DATA_DIR to the installed app, and pointed
+  // findOwnedProcesses() at the real dir — so repeat runs reused existing
+  // Arena state. The harness must now create a fresh marker-guarded root and
+  // route EVERY installed-app launch through the tested plan.
+  assert.ok(
+    source.includes("createAcceptanceDataRoot()"),
+    "the harness must create a fresh acceptance data root per run",
+  );
+  assert.ok(
+    source.includes("planInstalledAcceptanceLaunches("),
+    "every installed-app launch must come from the tested launch plan",
+  );
+  assert.ok(
+    !source.includes("process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE"),
+    "the harness must never derive the real %LOCALAPPDATA%\\Arena as acceptance state",
+  );
+  assert.ok(
+    !/ARENA_DESKTOP_ACCEPTANCE:\s*resultFilePath/.test(source),
+    "launch env must come from the plan (which also carries ARENA_DATA_DIR), never a bare result path",
+  );
+  assert.ok(
+    source.includes("findOwnedProcesses(installDir, acceptancePlan.dataRoot)"),
+    "orphan policing must target the isolated acceptance root, not the real data dir",
+  );
+  assert.ok(
+    source.includes("removeAcceptanceDataRoot(acceptancePlan.dataRoot)"),
+    "cleanup must go through the marker-guarded remover",
+  );
+  assert.ok(
+    /await cleanupAcceptanceData\(\);\s*\}\s*catch/.test(source),
+    "cleanup must run on the failure path too (before the report is written)",
+  );
+});

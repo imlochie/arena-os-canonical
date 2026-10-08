@@ -41,6 +41,20 @@ import { repoRootFromMeta } from "./lib/repo-root.mjs";
 import { runNpmSync } from "./lib/run-command.mjs";
 import { evaluateRecovery } from "./lib/recovery-verdict.mjs";
 
+// Installed-acceptance data isolation (first-launch fix): the pure contract
+// lives in desktop/acceptance-data-root.ts and is regression-tested there
+// and in desktop/windows-acceptance-harness.test.ts. Imported dynamically
+// (.ts source) via the register-src-loader import hook — same pattern as
+// scripts/desktop-e2e.mjs.
+const { createAcceptanceDataRoot, planInstalledAcceptanceLaunches, removeAcceptanceDataRoot } = await import(
+  "../desktop/acceptance-data-root.ts"
+);
+
+// Holders so BOTH the success and failure paths can clean the isolated
+// acceptance data root. Declared before the top-level try (TDZ guard).
+let acceptancePlan = null;
+let installedExeDir = null;
+
 const root = repoRootFromMeta(import.meta.url);
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
@@ -214,9 +228,22 @@ try {
   }
 
   // ---------------------------------------------------------------- acceptance run 1
-  const dataDir = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? "", "AppData", "Local"), "Arena");
+  // Isolated acceptance state (first-launch fix): a fresh temporary data
+  // root per run means the first launch really IS a first launch
+  // (firstRun=true) and the user's real %LOCALAPPDATA%\Arena is never
+  // written to or deleted. The SAME root is shared by the normal launch
+  // (restart persistence runs inside it), the abnormal-shutdown run, and
+  // the recovery launch — recovery must prove persistence, never
+  // re-initialisation. Production path defaults are untouched.
+  installedExeDir = installDir;
+  acceptancePlan = planInstalledAcceptanceLaunches({
+    dataRoot: createAcceptanceDataRoot(),
+    resultDir: path.dirname(resultFilePath("run1.json")),
+  });
+  report.detail.ACCEPTANCE_DATA_DIR = acceptancePlan.dataRoot;
+  console.log(`[windows-acceptance] isolated acceptance data root: ${acceptancePlan.dataRoot}`);
   console.log("[windows-acceptance] launching the installed app (acceptance mode, normal run)…");
-  const run1 = await runInstalledAcceptance(path.join(installDir, "Arena.exe"), "run1.json", 25 * 60_000);
+  const run1 = await runInstalledAcceptance(path.join(installDir, "Arena.exe"), acceptancePlan.launches.normal, 25 * 60_000);
   printAcceptance(run1.body);
   const sections = run1.body?.sections ?? {};
   const sectionOk = (name) => sections[name]?.ok === true;
@@ -233,7 +260,7 @@ try {
   if (run1.body?.export !== undefined) report.detail.EXPORT_MEDIA = run1.body.export;
 
   // ---------------------------------------------------------------- orphan check (normal exit)
-  const orphansAfterExit = findOwnedProcesses(installDir, dataDir);
+  const orphansAfterExit = findOwnedProcesses(installDir, acceptancePlan.dataRoot);
   const processCleanupOk = sectionOk("processCleanup") && orphansAfterExit.length === 0;
   mark("PROCESS CLEANUP", processCleanupOk, {
     inApp: sections.processCleanup,
@@ -244,14 +271,14 @@ try {
   if (!flag("--skip-abnormal")) {
     console.log("[windows-acceptance] abnormal-shutdown variant: force-killing the app mid-run…");
     const child = spawn(path.join(installDir, "Arena.exe"), [], {
-      env: { ...process.env, ARENA_DESKTOP_ACCEPTANCE: resultFilePath("abnormal.json") },
+      env: { ...process.env, ...acceptancePlan.launches.abnormal.env },
       stdio: "ignore",
       detached: false,
     });
     await sleep(75_000); // mid-workflow (runtime up, export likely in flight)
     spawnSync("taskkill", ["/PID", String(child.pid), "/F"], { stdio: "ignore" }); // main process only — a hard crash
     await sleep(5_000);
-    const orphansAfterKill = findOwnedProcesses(installDir, dataDir);
+    const orphansAfterKill = findOwnedProcesses(installDir, acceptancePlan.dataRoot);
     report.detail.ABNORMAL_SHUTDOWN = {
       orphansAfterForceKill: orphansAfterKill,
       note:
@@ -265,7 +292,7 @@ try {
       await sleep(2_000);
     }
     console.log("[windows-acceptance] recovery launch after abnormal shutdown…");
-    const recovery = await runInstalledAcceptance(path.join(installDir, "Arena.exe"), "recovery.json", 25 * 60_000);
+    const recovery = await runInstalledAcceptance(path.join(installDir, "Arena.exe"), acceptancePlan.launches.recovery, 25 * 60_000);
     printAcceptance(recovery.body);
     // Recovery is judged by RECOVERY requirements, not body.ok: the recovery
     // launch runs the same in-app acceptance against an ALREADY-INITIALIZED
@@ -296,9 +323,17 @@ try {
   }
 
   report.KNOWN_LIMITATIONS = collectLimitations(run1.body);
+
+  // Success path: release the isolated acceptance data root (only ever the
+  // marker-guarded root this run created — the real %LOCALAPPDATA%\Arena is
+  // structurally out of reach).
+  await cleanupAcceptanceData();
 } catch (error) {
   report.ERROR = String(error instanceof Error ? (error.stack ?? error.message) : error);
   failed = true;
+  // Failure path: still stop owned processes and release the isolated root
+  // so a failed run leaves nothing behind in the temp directory.
+  await cleanupAcceptanceData();
 }
 
 writeFileSync(path.join(root, "desktop-windows-acceptance-report.json"), JSON.stringify(report, null, 2));
@@ -320,17 +355,44 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Stop any owned processes still holding the isolated acceptance data
+ * root, then remove the root. removeAcceptanceDataRoot is marker-guarded:
+ * it can only ever delete a root created by createAcceptanceDataRoot, so
+ * the user's real %LOCALAPPDATA%\Arena can never be removed here. */
+async function cleanupAcceptanceData() {
+  if (acceptancePlan === null) return;
+  try {
+    if (installedExeDir !== null) {
+      const orphans = findOwnedProcesses(installedExeDir, acceptancePlan.dataRoot);
+      for (const proc of orphans) {
+        spawnSync("taskkill", ["/PID", String(proc.ProcessId), "/T", "/F"], { stdio: "ignore" });
+      }
+      if (orphans.length > 0) await sleep(2_000);
+    }
+    const removed = await removeAcceptanceDataRoot(acceptancePlan.dataRoot);
+    report.detail.ACCEPTANCE_DATA_DIR_REMOVED = removed;
+    if (!removed) {
+      console.error(`[windows-acceptance] could not fully remove the acceptance data root (recorded honestly): ${acceptancePlan.dataRoot}`);
+    }
+  } catch (cleanupError) {
+    report.detail.ACCEPTANCE_DATA_DIR_REMOVED = false;
+    console.error(`[windows-acceptance] acceptance data cleanup error: ${String(cleanupError)}`);
+  }
+}
+
 function resultFilePath(name) {
   resultDirCache ??= mkdtempSync(path.join(tmpdir(), "arena-win-acceptance-"));
   return path.join(resultDirCache, name);
 }
 
-async function runInstalledAcceptance(exePath, resultName, timeoutMs) {
-  const resultPath = resultFilePath(resultName);
+async function runInstalledAcceptance(exePath, launch, timeoutMs) {
+  const resultPath = launch.resultPath;
   rmSync(resultPath, { force: true });
   await new Promise((resolve, reject) => {
     const child = spawn(exePath, [], {
-      env: { ...process.env, ARENA_DESKTOP_ACCEPTANCE: resultPath },
+      // The launch env carries BOTH the isolated data root and the
+      // acceptance result path (see planInstalledAcceptanceLaunches).
+      env: { ...process.env, ...launch.env },
       stdio: "ignore",
       detached: false,
     });
