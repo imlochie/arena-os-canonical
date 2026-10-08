@@ -105,6 +105,12 @@ try {
       ["typecheck", ["run", "typecheck"]],
       ["tests", ["run", "test"]],
       ["build", ["run", "build"]],
+      // The staged package is REGENERATED before desktop:e2e consumes it:
+      // a generic `next build` refreshes .next but NOT desktop-package, and a
+      // stale staged tree silently 404s every route added since it was staged
+      // (the Windows acceptance failure on 6f0be59). desktop:e2e additionally
+      // verifies the staged tree's build identity against this checkout.
+      ["desktop:prepare-server", ["run", "desktop:prepare-server"]],
       ["desktop:e2e", ["run", "desktop:e2e"]],
     ]) {
       console.log(`[windows-acceptance] gate: ${name}`);
@@ -142,7 +148,7 @@ try {
     const testCounts = results.find((entry) => entry.name === "tests")?.counts;
     pass(
       "AUTOMATED_TESTS",
-      `typecheck + build + desktop:e2e green${testCounts !== undefined ? `; tests ${testCounts.pass}/${testCounts.tests} pass, ${testCounts.fail} fail` : "; tests green"}`,
+      `typecheck + tests + build + staged-server regeneration + desktop:e2e green${testCounts !== undefined ? `; tests ${testCounts.pass}/${testCounts.tests} pass, ${testCounts.fail} fail` : "; tests green"}`,
     );
   }
 

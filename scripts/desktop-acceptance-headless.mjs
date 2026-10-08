@@ -17,11 +17,15 @@ import path from "node:path";
 import process from "node:process";
 
 import { repoRootFromMeta } from "./lib/repo-root.mjs";
+import { verifyStagedPackage } from "./lib/staged-identity.mjs";
 
 const root = repoRootFromMeta(import.meta.url);
 const appRoot = path.join(root, "desktop-package");
-if (!existsSync(path.join(appRoot, "server", "server.js"))) {
-  console.error("[acceptance-headless] staged tree missing — run: npm run desktop:prepare-server");
+// Same contract as desktop:e2e: never test a staged package that was not
+// built from the current source state (stale-tree 404s, 6f0be59).
+const identity = verifyStagedPackage({ root, packageRoot: appRoot });
+if (!identity.ok) {
+  console.error(`[acceptance-headless] ${identity.reason}`);
   process.exit(1);
 }
 

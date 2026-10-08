@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { repoRootFromMeta } from "./lib/repo-root.mjs";
+import { verifyStagedPackage } from "./lib/staged-identity.mjs";
 
 const root = repoRootFromMeta(import.meta.url);
 const reportPath = process.argv[2] ?? path.join(root, "desktop-e2e-report.json");
@@ -36,6 +37,29 @@ function step(name, ok, detail = {}) {
   const mark = ok ? "PASS" : "FAIL";
   console.log(`[${mark}] ${name}${typeof detail.info === "string" ? ` — ${detail.info}` : ""}`);
   if (!ok) failed = true;
+}
+
+/** A failed critical prerequisite: the run STOPS cleanly (report written,
+ * supervisor stopped, exit 1) instead of crashing on absent objects. */
+class PrerequisiteError extends Error {}
+
+/** Record a step and stop the run cleanly when it fails. For prerequisites
+ * whose failure makes every later step meaningless (uploads, session
+ * creation) — later failures degrade to plain steps with honest output. */
+function critical(name, ok, detail = {}) {
+  step(name, ok, detail);
+  if (!ok) throw new PrerequisiteError(detail.info === undefined ? name : `${name} — ${detail.info}`);
+}
+
+/** Compact response diagnostics for failures: status, content type, and a
+ * short body snippet — enough to identify a route/manifest mismatch without
+ * dumping HTML pages. */
+function describeResult(result) {
+  const body =
+    typeof result.body === "string"
+      ? result.body.slice(0, 120)
+      : JSON.stringify(result.body)?.slice(0, 120) ?? "";
+  return `${result.status} ${result.contentType ?? "no-content-type"} ${JSON.stringify(body)}`;
 }
 
 let activeSupervisor = null; // hardened catch: never leak the runtime on a crash
@@ -55,6 +79,21 @@ async function main() {
     fileExists: existsSync,
   });
   const appRoot = path.join(root, "desktop-package"); // the staged installer tree
+
+  // ---- staged-package identity guard -------------------------------------
+  // The e2e consumes the STAGED tree, which a generic `next build` does NOT
+  // refresh. Without this guard a package staged from an older commit gets
+  // silently tested (the Windows acceptance failure on 6f0be59: library
+  // routes existed in the fresh route manifest but 404ed from the stale
+  // staged server). Fail loudly; never silently rebuild.
+  const identity = verifyStagedPackage({ root, packageRoot: appRoot });
+  step("staged package identity matches the current source", identity.ok, {
+    info:
+      identity.ok
+        ? `staged from ${String(identity.current?.commit.slice(0, 10))} (digest match)`
+        : identity.reason,
+  });
+  if (!identity.ok) throw new PrerequisiteError(identity.reason);
 
   const logger = {
     info: (scope, message, detail) => logs.push(`${new Date().toISOString()} INFO ${scope} ${message} ${detail ? JSON.stringify(detail) : ""}`),
@@ -125,7 +164,7 @@ async function main() {
     } catch {
       body = text;
     }
-    return { status: response.status, body };
+    return { status: response.status, contentType: response.headers.get("content-type"), body };
   };
 
   // --- health + project ------------------------------------------------------
@@ -137,7 +176,9 @@ async function main() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ title: "Desktop E2E" }),
   });
-  step("create project", project.status === 201 && project.body.project?.id, { info: project.body.project?.id });
+  critical("create project", project.status === 201 && project.body.project?.id !== undefined, {
+    info: project.status === 201 ? String(project.body.project?.id) : describeResult(project),
+  });
   const projectId = project.body.project.id;
 
   // --- real audio: 12 s two-tone signal (bundled-ffmpeg-compatible mix) ------
@@ -304,8 +345,11 @@ async function main() {
   };
   const addedA = await addAsMusic(wavPath, "session-a.wav");
   const addedB = await addAsMusic(wavBPath, "session-b.wav");
-  step("library: two tracks added as music", addedA.status === 201 && addedB.status === 201, {
-    info: `${addedA.status}/${addedB.status} created=${addedA.body.created}/${addedB.body.created}`,
+  critical("library: two tracks added as music", addedA.status === 201 && addedB.status === 201, {
+    info:
+      addedA.status === 201 && addedB.status === 201
+        ? `${addedA.status}/${addedB.status} created=${String(addedA.body.created)}/${String(addedB.body.created)}`
+        : `A: ${describeResult(addedA)} · B: ${describeResult(addedB)}`,
   });
   const trackAId = addedA.body.track?.id;
   const trackBId = addedB.body.track?.id;
@@ -323,21 +367,34 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 700));
     }
   }
-  step("library: real analyses completed for both tracks", detailA.body.track?.analysis?.status === "complete" && typeof detailA.body.track?.analysis?.bpm === "number" && typeof detailB.body.track?.analysis?.musicalKey === "string", {
-    info: `A ${detailA.body.track?.analysis?.bpm}bpm ${detailA.body.track?.analysis?.musicalKey} · B ${detailB.body.track?.analysis?.bpm}bpm ${detailB.body.track?.analysis?.musicalKey}`,
+  const analysesOk =
+    detailA.body.track?.analysis?.status === "complete"
+    && typeof detailA.body.track?.analysis?.bpm === "number"
+    && typeof detailB.body.track?.analysis?.musicalKey === "string";
+  critical("library: real analyses completed for both tracks", analysesOk, {
+    info: analysesOk
+      ? `A ${String(detailA.body.track?.analysis?.bpm)}bpm ${String(detailA.body.track?.analysis?.musicalKey)} · B ${String(detailB.body.track?.analysis?.bpm)}bpm ${String(detailB.body.track?.analysis?.musicalKey)}`
+      : `A: ${describeResult(detailA)} · B: ${describeResult(detailB)}`,
   });
 
   const bridgeA = await api("/api/stems/passthrough", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ sourceAssetId: detailA.body.track?.source?.id }) });
   const bridgeB = await api("/api/stems/passthrough", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ sourceAssetId: detailB.body.track?.source?.id }) });
-  step("library: passthrough stems bridge the unseparated sources (real stem rows)", bridgeA.status === 201 && bridgeB.status === 201);
+  critical("library: passthrough stems bridge the unseparated sources (real stem rows)", bridgeA.status === 201 && bridgeB.status === 201, {
+    info: bridgeA.status === 201 && bridgeB.status === 201 ? undefined : `A: ${describeResult(bridgeA)} · B: ${describeResult(bridgeB)}`,
+  });
 
   const sessionCreate = await api("/api/library/sessions", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Desktop E2E session" }) });
-  step("session created", sessionCreate.status === 201 && sessionCreate.body.session?.id !== undefined, { info: sessionCreate.body.session?.id });
+  critical("session created", sessionCreate.status === 201 && sessionCreate.body.session?.id !== undefined, {
+    info: sessionCreate.status === 201 ? String(sessionCreate.body.session?.id) : describeResult(sessionCreate),
+  });
   const sessionId = sessionCreate.body.session.id;
   const addSessionTrackA = await api(`/api/library/sessions/${sessionId}/tracks`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ trackId: trackAId }) });
   const addSessionTrackB = await api(`/api/library/sessions/${sessionId}/tracks`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ trackId: trackBId }) });
-  step("session: two tracks added in order", addSessionTrackA.status === 201 && addSessionTrackB.status === 201 && addSessionTrackB.body.session?.tracks?.length === 2, {
-    info: `${addSessionTrackA.status}/${addSessionTrackB.status}`,
+  critical("session: two tracks added in order", addSessionTrackA.status === 201 && addSessionTrackB.status === 201 && addSessionTrackB.body.session?.tracks?.length === 2, {
+    info:
+      addSessionTrackA.status === 201 && addSessionTrackB.status === 201
+        ? `${addSessionTrackA.status}/${addSessionTrackB.status}`
+        : `A: ${describeResult(addSessionTrackA)} · B: ${describeResult(addSessionTrackB)}`,
   });
   const sessionItemA = addSessionTrackB.body.session?.tracks?.[0];
   const sessionItemB = addSessionTrackB.body.session?.tracks?.[1];
@@ -414,7 +471,11 @@ async function main() {
 }
 
 main().catch(async (error) => {
-  step("E2E crashed", false, { info: String(error?.stack ?? error) });
+  step(
+    error instanceof PrerequisiteError ? "E2E stopped at a failed prerequisite" : "E2E crashed",
+    false,
+    { info: String(error instanceof PrerequisiteError ? error.message : (error?.stack ?? error)) },
+  );
   // Never leak the runtime: stop the supervisor (ordered: server → postgres)
   if (activeSupervisor) {
     try {
@@ -424,6 +485,11 @@ main().catch(async (error) => {
     }
   }
   writeFileSync(reportPath, JSON.stringify({ ok: false, steps, error: String(error?.stack ?? error), logs: logs.slice(-200) }, null, 2));
-  console.error(`E2E CRASHED — report: ${reportPath}`);
+  if (error instanceof PrerequisiteError) {
+    // Clean, honest stop: a prerequisite failed; nothing after it is meaningful.
+    console.error(`E2E STOPPED — prerequisite failed: ${error.message} — report: ${reportPath}`);
+  } else {
+    console.error(`E2E CRASHED — report: ${reportPath}`);
+  }
   process.exit(1); // hard exit: no lingering handles, no silent pass-through
 });

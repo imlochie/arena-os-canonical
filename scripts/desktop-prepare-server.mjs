@@ -15,6 +15,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { assertStagedTreeClean } from "./lib/staged-tree-guard.mjs";
+import { writeStagedIdentity, IDENTITY_FILE } from "./lib/staged-identity.mjs";
 import path from "node:path";
 import process from "node:process";
 
@@ -190,4 +191,11 @@ console.log("  server/            (Next standalone + traced deps + static + publ
 console.log("  desktop-migrations/");
 console.log("  bin/ffmpeg, bin/ffprobe");
 console.log(`  embedded-postgres/ (from ${pgPackage})`);
+
+// Build identity (acceptance-pipeline fix on 6f0be59): the staged tree
+// records the exact source state that produced it. desktop:e2e and the
+// headless acceptance verify this stamp, so a package staged from an older
+// commit can never be silently tested.
+const identity = writeStagedIdentity(out, root);
+console.log(`  ${IDENTITY_FILE}   (commit ${identity.commit.slice(0, 10)})`);
 console.log("[desktop:prepare-server] done.");
