@@ -142,7 +142,7 @@ test("malformed model output is rejected by the validator, never applied", async
   const server = createServer((_request, response) => {
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify({
-      choices: [{ message: { content: '{"rationale":"oops","changes":[{"targetChannelId":"stem:ghost","processor":"notch","parameters":{},"reason":"x"},{"targetChannelId":"stem:stem-1","processor":"reverb","parameters":{},"reason":"y"}]}' } }],
+      choices: [{ message: { content: '{"rationale":"oops","changes":[{"targetChannelId":"stem:ghost","processor":"notch","parameters":{},"reason":"x"},{"targetChannelId":"stem:stem-1","processor":"vocoder","parameters":{},"reason":"y"}]}' } }],
     }));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

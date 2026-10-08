@@ -128,3 +128,56 @@ test("dry/wet blends between processed and unprocessed", () => {
   // 50% mix of −40 dB path: roughly −6 dB total attenuation.
   assert.ok(delta > 4 && delta < 9, `delta was ${delta} dB`);
 });
+
+test("reverb inserts validate params and apply defaults", () => {
+  for (const processor of ["reverb", "plate-reverb"] as const) {
+    const insert = makeInsert(processor, { decaySeconds: 99, bogus: 1 });
+    assert.equal(insert, null, `unknown param must invalidate (${processor})`);
+    const clamped = makeInsert(processor, { decaySeconds: 99 })!;
+    assert.equal(clamped.params.decaySeconds, 20, "decay clamps to range max");
+    assert.equal(clamped.params.widthPercent, 100, "defaults fill missing params");
+  }
+});
+
+test("reverb insert renders a tail through the chain", () => {
+  const source = new Float32Array(FS); // FS samples = FS/2 interleaved frames
+  // Impulse near the END of the input so the tail region carries fresh energy.
+  const lastFrame = FS / 2 - 240;
+  source[lastFrame * 2] = 1;
+  source[lastFrame * 2 + 1] = 1;
+  const chain: InsertChain = [makeInsert("reverb", { decaySeconds: 0.6 }, { wet: 1 })!];
+  const out = processWithChain(Float32Array.from(source), chain, FS);
+  assert.ok(out.length > source.length, "reverb must extend the buffer with its tail");
+  let tailEnergy = 0;
+  for (let i = source.length; i < out.length; i += 1) tailEnergy += out[i] * out[i];
+  assert.ok(tailEnergy > 1e-6, `tail region must carry energy (${tailEnergy})`);
+});
+
+test("partial wet keeps the reverb tail (dry is zero-padded)", () => {
+  const source = new Float32Array(FS);
+  const lastFrame = FS / 2 - 240;
+  source[lastFrame * 2] = 1;
+  source[lastFrame * 2 + 1] = 1;
+  const chain: InsertChain = [makeInsert("plate-reverb", { decaySeconds: 0.6 }, { wet: 0.3 })!];
+  const out = processWithChain(Float32Array.from(source), chain, FS);
+  assert.ok(out.length > source.length, "partial wet must not truncate the tail");
+  let tailEnergy = 0;
+  for (let i = source.length; i < out.length; i += 1) tailEnergy += out[i] * out[i];
+  assert.ok(tailEnergy > 1e-8, "wet-only tail must survive the dry/wet mix");
+  // Dry region keeps its impulse: mix 0.3 of a wet that starts later, so the
+  // impulse sample itself is dominated by the dry contribution.
+  const impulseIdx = (FS / 2 - 240) * 2;
+  assert.ok(Math.abs(out[impulseIdx] - 1 * 0.7) < 0.35, `impulse survives at ${out[impulseIdx]}`);
+});
+
+test("reverb bypass leaves the signal untouched", () => {
+  const source = new Float32Array(FS);
+  source[50 * 2] = 0.5;
+  source[50 * 2 + 1] = 0.5;
+  const chain: InsertChain = [
+    makeInsert("reverb", { decaySeconds: 2 }, { enabled: false })!,
+  ];
+  const out = processWithChain(Float32Array.from(source), chain, FS);
+  assert.equal(out.length, source.length, "bypassed reverb must not extend the buffer");
+  assert.deepEqual(Array.from(out), Array.from(source));
+});

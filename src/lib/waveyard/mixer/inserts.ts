@@ -30,6 +30,7 @@ import {
   newBiquadState,
   type StereoBuffer,
 } from "./dsp";
+import { applyReverb } from "./reverb";
 import { clamp } from "./types";
 
 export const INSERTS_FORMAT = "waveyard-inserts-v1" as const;
@@ -45,7 +46,9 @@ export type InsertProcessorId =
   | "saturator"
   | "softclip"
   | "width"
-  | "delay";
+  | "delay"
+  | "reverb"
+  | "plate-reverb";
 
 export type ParamRange = { min: number; max: number; default: number };
 
@@ -92,6 +95,26 @@ export const INSERT_PARAM_RANGES: Record<
     feedback: { min: 0, max: 0.95, default: 0.3 },
     mix: { min: 0, max: 1, default: 0.25 },
   },
+  reverb: {
+    predelayMs: { min: 0, max: 250, default: 10 },
+    decaySeconds: { min: 0.1, max: 20, default: 1.2 },
+    sizePercent: { min: 0, max: 100, default: 50 },
+    dampingHz: { min: 1000, max: 20000, default: 6000 },
+    diffusionPercent: { min: 0, max: 100, default: 70 },
+    widthPercent: { min: 0, max: 100, default: 100 },
+    lowCutHz: { min: 20, max: 1000, default: 20 },
+    mix: { min: 0, max: 1, default: 0.25 },
+  },
+  "plate-reverb": {
+    predelayMs: { min: 0, max: 250, default: 20 },
+    decaySeconds: { min: 0.1, max: 20, default: 2.5 },
+    sizePercent: { min: 0, max: 100, default: 50 },
+    dampingHz: { min: 1000, max: 20000, default: 10000 },
+    diffusionPercent: { min: 0, max: 100, default: 85 },
+    widthPercent: { min: 0, max: 100, default: 100 },
+    lowCutHz: { min: 20, max: 1000, default: 20 },
+    mix: { min: 0, max: 1, default: 0.3 },
+  },
 };
 
 export const INSERT_PROCESSOR_LABELS: Record<InsertProcessorId, string> = {
@@ -106,6 +129,8 @@ export const INSERT_PROCESSOR_LABELS: Record<InsertProcessorId, string> = {
   softclip: "Soft clip",
   width: "Stereo width",
   delay: "Delay",
+  reverb: "Reverb (room)",
+  "plate-reverb": "Reverb (plate)",
 };
 
 export type Insert = {
@@ -283,8 +308,16 @@ export function processWithChain(
   for (const insert of chain) {
     if (!insert.enabled) continue;
     if (insert.wet < 1) {
-      const dry = Float32Array.from(current);
+      let dry = Float32Array.from(current);
       const processed = runProcessor(current, insert, sampleRate);
+      // Processors may return a LONGER buffer (reverb tail); the dry copy is
+      // zero-padded so the tail survives the dry/wet mix instead of being
+      // truncated at the original input length.
+      if (processed.length > dry.length) {
+        const padded = new Float32Array(processed.length);
+        padded.set(dry);
+        dry = padded;
+      }
       mixDryWet(dry, processed, insert.wet);
       current = dry;
     } else {
@@ -368,6 +401,20 @@ function runProcessor(
       return applyDelay(buffer, {
         delayMs: p.delayMs,
         feedback: p.feedback,
+        mix: p.mix,
+        sampleRate,
+      });
+    case "reverb":
+    case "plate-reverb":
+      return applyReverb(buffer, {
+        model: insert.processor === "plate-reverb" ? "plate" : "room",
+        predelayMs: p.predelayMs,
+        decaySeconds: p.decaySeconds,
+        sizePercent: p.sizePercent,
+        dampingHz: p.dampingHz,
+        diffusionPercent: p.diffusionPercent,
+        widthPercent: p.widthPercent,
+        lowCutHz: p.lowCutHz,
         mix: p.mix,
         sampleRate,
       });
