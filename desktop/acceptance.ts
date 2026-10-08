@@ -105,6 +105,53 @@ const num = (value: unknown): number | undefined => (typeof value === "number" ?
 // Runner
 // ---------------------------------------------------------------------------
 
+/**
+ * The "data root" acceptance step (regression-tested in
+ * desktop/acceptance-paths.test.ts).
+ *
+ * Validates the ACTIVE configured source — never blindly the production
+ * default. Production resolution (resolveArenaDataDirs) is unchanged; this
+ * contract only checks what actually resolved:
+ *
+ *   - source "env" (an ARENA_DATA_DIR override — how the installed
+ *     acceptance launches with an isolated data root): the root MUST equal
+ *     that absolute override;
+ *   - win32 + source "platform" (a real production install): the root MUST
+ *     be %LOCALAPPDATA%\Arena — the production-default coverage is
+ *     intentionally kept;
+ *   - portable (or non-win32 platform): recorded-location behavior.
+ */
+export function evaluateDataRootStep(
+  dirs: { root: string; source: string; portable: boolean },
+  env: { ARENA_DATA_DIR?: string | undefined; LOCALAPPDATA?: string | undefined },
+  platform: string,
+): AcceptanceStep {
+  const samePath = (a: string, b: string): boolean =>
+    path.win32.resolve(a).toLowerCase() === path.win32.resolve(b).toLowerCase();
+  if (dirs.source === "env") {
+    const override = env.ARENA_DATA_DIR;
+    return {
+      name: "data root follows ARENA_DATA_DIR override",
+      ok: typeof override === "string" && override.length > 0 && samePath(dirs.root, override),
+      info: `${dirs.root} (source: ${dirs.source})`,
+    };
+  }
+  if (platform === "win32" && !dirs.portable) {
+    const localAppData = env.LOCALAPPDATA;
+    const expected = localAppData !== undefined ? path.win32.join(localAppData, "Arena") : null;
+    return {
+      name: "data root is %LOCALAPPDATA%\\Arena",
+      ok: expected !== null && samePath(dirs.root, expected),
+      info: `${dirs.root} (source: ${dirs.source})`,
+    };
+  }
+  return {
+    name: "data root location recorded",
+    ok: true,
+    info: `${dirs.root} (source: ${dirs.source}, portable=${String(dirs.portable)})`,
+  };
+}
+
 export async function runDesktopAcceptance(inputs: AcceptanceInputs): Promise<AcceptanceReport> {
   const startedAt = new Date().toISOString();
   const logs: string[] = [];
@@ -217,17 +264,10 @@ export async function runDesktopAcceptance(inputs: AcceptanceInputs): Promise<Ac
       for (const key of ["data", "projects", "waveyard", "cache", "logs", "models", "runtime", "settings"] as const) {
         s.step(`dir "${key}" lives under the data root`, under(dirs[key]), dirs[key]);
       }
-      if (inputs.platform === "win32" && !dirs.portable) {
-        const localAppData = inputs.env.LOCALAPPDATA;
-        const expected = localAppData !== undefined ? path.win32.join(localAppData, "Arena") : null;
-        s.step(
-          "data root is %LOCALAPPDATA%\\Arena",
-          expected !== null && path.win32.resolve(dirs.root).toLowerCase() === path.win32.resolve(expected).toLowerCase(),
-          `${dirs.root} (source: ${dirs.source})`,
-        );
-      } else {
-        s.step("data root location recorded", true, `${dirs.root} (source: ${dirs.source}, portable=${String(dirs.portable)})`);
-      }
+      // Data-root contract: validate the ACTIVE source (env override /
+      // production default / portable). Pure + regression-tested above.
+      const dataRoot = evaluateDataRootStep(dirs, inputs.env, inputs.platform);
+      s.step(dataRoot.name, dataRoot.ok, dataRoot.info);
       // No dependency on the repo / build machine: the staged tree must not
       // contain symlinks resolving outside the app root (Turbopack pg defect).
       const escaping: string[] = [];
