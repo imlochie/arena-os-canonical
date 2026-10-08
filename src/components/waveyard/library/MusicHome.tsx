@@ -340,7 +340,7 @@ export function MusicHome() {
             </Link>
           )}
           <div className="queue-panel">
-            <div className="panel-title">
+            <div className="library-panel-title">
               <h2>Queue</h2>
               {queue.length > 0 && <button type="button" className="button secondary" onClick={() => void clearQueue()}>Clear</button>}
             </div>
@@ -362,7 +362,7 @@ export function MusicHome() {
 
       {recentlyPlayed.length > 0 && (
         <section className="recently-played" aria-label="Recently played">
-          <div className="panel-title"><h2>Recently played</h2></div>
+          <div className="library-panel-title"><h2>Recently played</h2></div>
           <div className="recent-row">
             {recentlyPlayed.map((track) => (
               <Link key={track.id} className="recent-chip" href={`/waveyard/play/${track.id}`}>
@@ -376,7 +376,7 @@ export function MusicHome() {
       )}
 
       <section className="library-main" aria-label="Your library">
-        <div className="panel-title">
+        <div className="library-panel-title">
           <h2>{search.trim() !== "" ? `Search · “${search.trim()}”` : "Library"}</h2>
           <span>{tracks.length} track{tracks.length === 1 ? "" : "s"}</span>
         </div>
@@ -394,7 +394,7 @@ export function MusicHome() {
       </section>
 
       <section className="playlists-panel" aria-label="Playlists">
-        <div className="panel-title"><h2>Playlists</h2><span>{playlists.length}</span></div>
+        <div className="library-panel-title"><h2>Playlists</h2><span>{playlists.length}</span></div>
         <form className="playlist-create" onSubmit={createPlaylist}>
           <input
             aria-label="New playlist name"
@@ -437,7 +437,7 @@ export function MusicHome() {
       </section>
 
       <section className="studio-panel" aria-label="Studio projects">
-        <div className="panel-title">
+        <div className="library-panel-title">
           <h2>Studio</h2>
           <Link className="button secondary" href="/waveyard/create">New studio project</Link>
         </div>
