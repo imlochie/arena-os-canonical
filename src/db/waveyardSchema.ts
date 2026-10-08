@@ -32,6 +32,13 @@ export const projects = pgTable("wy_projects", {
   visibility: text("visibility").notNull().default("private"),
   publicationStatus: text("publication_status").notNull().default("draft"),
   moderationStatus: text("moderation_status").notNull().default("active"),
+  // Waveyard evolution: how this project entered the world. NULL (all
+  // pre-existing rows) and "studio" = a user-created production project
+  // (the original surface). "library" = an auto-created container project
+  // backing a listening Track (wy_tracks) — implementation detail of the
+  // library/player layer, never shown as a studio project. The storage
+  // model (sources/stems/analyses) is shared either way.
+  kind: text("kind"),
   // SQL migration owns this forward foreign key because export_assets is declared
   // later in this module; application publication logic also verifies project scope.
   publishedExportAssetId: uuid("published_export_asset_id"),
@@ -674,4 +681,115 @@ export const projectAuditEvents = pgTable("project_audit_events", {
 }, (table) => [
   index("project_audit_events_project_created_idx").on(table.projectId, table.createdAt),
   index("project_audit_events_type_created_idx").on(table.eventType, table.createdAt),
+]);
+
+// ============================================================================
+// Waveyard evolution — the LISTENING layer (docs/waveyard-evolution-plan.md).
+//
+// Additive only: no existing table, column, or relation changes (besides the
+// nullable `kind` column above). The listening layer references the existing
+// source/stem/analysis infrastructure — audio is NEVER duplicated: a track
+// points at the same source_assets / stem_assets rows the studio uses.
+// ============================================================================
+
+/**
+ * A Music Track — the playable listening object, separate from the
+ * production Project. One track per source audio (unique). The container
+ * project (wy_projects.kind='library') holds the sources/stems/analyses and
+ * makes "Open in Studio" a plain link to the existing workspace.
+ */
+export const tracks = pgTable("wy_tracks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  title: text("title").notNull(),
+  artist: text("artist").notNull().default(""),
+  album: text("album").notNull().default(""),
+  artworkKey: text("artwork_key"),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  durationSeconds: integer("duration_seconds").notNull(),
+  playCount: integer("play_count").notNull().default(0),
+  lastPlayedAt: timestamp("last_played_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("wy_tracks_source_asset_unique").on(table.sourceAssetId),
+  index("wy_tracks_owner_last_played_idx").on(table.ownerId, table.lastPlayedAt),
+  index("wy_tracks_project_id_idx").on(table.projectId),
+]);
+
+/** User playlist (listening context, ordered). */
+export const playlists = pgTable("wy_playlists", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  name: text("name").notNull(),
+  ...timestamps,
+}, (table) => [index("wy_playlists_owner_id_idx").on(table.ownerId)]);
+
+/** Ordered playlist membership. Duplicates allowed (a song twice is a
+ * legitimate playlist decision); order is the `position` integer. */
+export const playlistItems = pgTable("wy_playlist_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  playlistId: uuid("playlist_id").notNull().references(() => playlists.id, { onDelete: "cascade" }),
+  trackId: uuid("track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("wy_playlist_items_playlist_pos_idx").on(table.playlistId, table.position),
+  index("wy_playlist_items_track_id_idx").on(table.trackId),
+]);
+
+/** The play queue (per owner, ordered). Rebuilt freely by the player. */
+export const queueItems = pgTable("wy_queue_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  trackId: uuid("track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("wy_queue_items_owner_pos_idx").on(table.ownerId, table.position)]);
+
+/**
+ * Durable playback state — one row per owner. Live transport (position
+ * ticks, meter data) stays client-side; ONLY the state worth restoring
+ * across app restarts persists here. stemMix is JSON text
+ * ({"vocals":0.8,...}) matching the repo's text-JSON column convention.
+ */
+export const playbackState = pgTable("wy_playback_state", {
+  ownerId: uuid("owner_id").primaryKey(),
+  currentTrackId: uuid("current_track_id").references(() => tracks.id, { onDelete: "cascade" }),
+  positionSeconds: real("position_seconds").notNull().default(0),
+  stemMix: text("stem_mix").notNull().default("{}"),
+  masterVolume: real("master_volume").notNull().default(1),
+  repeatMode: text("repeat_mode").notNull().default("off"),
+  shuffle: boolean("shuffle").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * A listening SESSION — multiple tracks played together with per-track stem
+ * mixes and transitions (the layer above the player, below the studio).
+ * Distinct from production remix_sessions on purpose: sessions are cheap,
+ * playful, and instant; the studio remains where deep arrangement lives.
+ * "Send to Studio" generates explicit derived versions through the existing
+ * automatic-remix pipeline — never destructive.
+ */
+export const listenSessions = pgTable("wy_listen_sessions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  name: text("name").notNull(),
+  ...timestamps,
+}, (table) => [index("wy_listen_sessions_owner_id_idx").on(table.ownerId)]);
+
+/** Ordered session membership with per-track stem mix + transition config
+ * (both JSON text; see src/lib/waveyard/library/model.ts for shapes). */
+export const listenSessionTracks = pgTable("wy_listen_session_tracks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sessionId: uuid("session_id").notNull().references(() => listenSessions.id, { onDelete: "cascade" }),
+  trackId: uuid("track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  stemMix: text("stem_mix").notNull().default("{}"),
+  transition: text("transition").notNull().default("{}"),
+  ...timestamps,
+}, (table) => [
+  index("wy_listen_session_tracks_session_pos_idx").on(table.sessionId, table.position),
+  index("wy_listen_session_tracks_track_id_idx").on(table.trackId),
 ]);
