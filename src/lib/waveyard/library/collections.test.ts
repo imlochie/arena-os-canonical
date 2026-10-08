@@ -9,6 +9,9 @@ import assert from "node:assert/strict";
 import {
   COLLECTIONS_FORMAT,
   evaluateCollection,
+  normaliseSmartCollectionInput,
+  normaliseSmartRules,
+  parseSmartRules,
   evaluateRule,
   filterByCollection,
   groupByCollections,
@@ -167,4 +170,46 @@ test("serialization round-trips and rejects foreign formats", () => {
     parseSmartCollections(JSON.stringify({ format: COLLECTIONS_FORMAT, collections: [{ id: "x", name: "Y", match: "xor", rules: [] }] })),
     null,
   );
+});
+
+test("normaliseSmartRules validates strictly for persistence", () => {
+  assert.deepEqual(
+    normaliseSmartRules([{ field: "rating", op: ">=", value: 4 }]),
+    [{ field: "rating", op: ">=", value: 4 }],
+  );
+  // Text values are trimmed and bounded; numbers must be finite.
+  assert.deepEqual(
+    normaliseSmartRules([{ field: "title", op: "contains", value: "  night  " }]),
+    [{ field: "title", op: "contains", value: "night" }],
+  );
+  assert.equal(normaliseSmartRules([{ field: "title", op: "contains", value: "" }]), null);
+  assert.equal(normaliseSmartRules([{ field: "title", op: "contains", value: "x".repeat(65) }]), null);
+  assert.equal(normaliseSmartRules([{ field: "nope", op: "is", value: "x" }]), null);
+  assert.equal(normaliseSmartRules([{ field: "rating", op: "sides", value: 1 }]), null);
+  assert.equal(normaliseSmartRules([{ field: "rating", op: "is", value: Number.NaN }]), null);
+  assert.equal(normaliseSmartRules([{ field: "rating", op: "is", value: true }]), null);
+  assert.equal(normaliseSmartRules(Array.from({ length: 17 }, () => ({ field: "rating", op: "is", value: 1 }))), null, "max 16 rules");
+  assert.deepEqual(normaliseSmartRules([]), []);
+  assert.equal(normaliseSmartRules("nope"), null);
+  assert.equal(normaliseSmartRules(null), null);
+});
+
+test("normaliseSmartCollectionInput validates name, match, and rules together", () => {
+  const valid = normaliseSmartCollectionInput({ name: "  Favourites  ", match: "all", rules: [{ field: "rating", op: ">=", value: 4 }] });
+  assert.deepEqual(valid, { name: "Favourites", match: "all", rules: [{ field: "rating", op: ">=", value: 4 }] });
+  assert.equal(normaliseSmartCollectionInput({ name: "", match: "all", rules: [] }), null);
+  assert.equal(normaliseSmartCollectionInput({ name: "x".repeat(65), match: "all", rules: [] }), null);
+  assert.equal(normaliseSmartCollectionInput({ name: "ok", match: "xor", rules: [] }), null);
+  assert.equal(normaliseSmartCollectionInput({ name: "ok", match: "all", rules: "nope" }), null);
+  assert.equal(normaliseSmartCollectionInput(null), null);
+  assert.equal(normaliseSmartCollectionInput(undefined), null);
+});
+
+test("parseSmartRules reads stored columns; corrupt JSON is null, empty is []", () => {
+  assert.deepEqual(parseSmartRules(null), []);
+  assert.deepEqual(parseSmartRules(""), []);
+  assert.deepEqual(parseSmartRules("[]"), []);
+  assert.deepEqual(parseSmartRules('[{"field":"label","op":"is","value":"driving"}]'), [{ field: "label", op: "is", value: "driving" }]);
+  assert.equal(parseSmartRules("{not json"), null);
+  assert.equal(parseSmartRules('[{"field":"nope","op":"is","value":"x"}]'), null, "stored junk rules are corrupt, not silently clamped");
 });

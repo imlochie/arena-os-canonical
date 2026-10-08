@@ -126,6 +126,65 @@ export function parseSmartCollections(text: string | null | undefined): SmartCol
   return result.data.collections;
 }
 
+// ---------------------------------------------------------------------------
+// Persistence-facing validation (API bodies and stored rows)
+// ---------------------------------------------------------------------------
+
+const MAX_RULES = 16;
+const MAX_TEXT_VALUE = 64;
+const MAX_NAME = 64;
+
+/** Validate a rules array for storage/API input. Strict: any bad rule rejects. */
+export function normaliseSmartRules(raw: unknown): SmartRule[] | null {
+  if (!Array.isArray(raw) || raw.length > MAX_RULES) return null;
+  const rules: SmartRule[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return null;
+    const candidate = item as Partial<SmartRule>;
+    if (
+      !SMART_RULE_FIELDS.includes(candidate.field as SmartRuleField)
+      || !SMART_RULE_OPS.includes(candidate.op as SmartRuleOp)
+    ) return null;
+    if (typeof candidate.value === "string") {
+      const value = candidate.value.trim();
+      if (value.length === 0 || value.length > MAX_TEXT_VALUE) return null;
+      rules.push({ field: candidate.field as SmartRuleField, op: candidate.op as SmartRuleOp, value });
+    } else if (typeof candidate.value === "number" && Number.isFinite(candidate.value)) {
+      rules.push({ field: candidate.field as SmartRuleField, op: candidate.op as SmartRuleOp, value: candidate.value });
+    } else {
+      return null;
+    }
+  }
+  return rules;
+}
+
+/** Validate a full collection body: name, match mode, and rules. */
+export function normaliseSmartCollectionInput(
+  raw: unknown,
+): { name: string; match: "all" | "any"; rules: SmartRule[] } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as { name?: unknown; match?: unknown; rules?: unknown };
+  if (typeof candidate.name !== "string") return null;
+  const name = candidate.name.replace(/\s+/g, " ").trim();
+  if (name.length === 0 || name.length > MAX_NAME) return null;
+  if (candidate.match !== "all" && candidate.match !== "any") return null;
+  const rules = normaliseSmartRules(candidate.rules);
+  if (rules === null) return null;
+  return { name, match: candidate.match, rules };
+}
+
+/** Parse a stored rules JSON column; null means corrupt (skipped by readers). */
+export function parseSmartRules(text: string | null | undefined): SmartRule[] | null {
+  if (text === null || text === undefined || text.trim() === "") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  return normaliseSmartRules(parsed);
+}
+
 const DAY_MS = 86_400_000;
 
 /** Evaluate one rule against a track. Pure; `nowMs` keeps time explicit. */

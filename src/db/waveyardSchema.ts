@@ -709,6 +709,10 @@ export const tracks = pgTable("wy_tracks", {
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   durationSeconds: integer("duration_seconds").notNull(),
   playCount: integer("play_count").notNull().default(0),
+  /** Star rating 0 (unrated) .. 5. */
+  rating: integer("rating").notNull().default(0),
+  /** Curated labels, stored as a JSON array of strings. */
+  labels: text("labels"),
   lastPlayedAt: timestamp("last_played_at", { withTimezone: true }),
   ...timestamps,
 }, (table) => [
@@ -716,6 +720,18 @@ export const tracks = pgTable("wy_tracks", {
   index("wy_tracks_owner_last_played_idx").on(table.ownerId, table.lastPlayedAt),
   index("wy_tracks_project_id_idx").on(table.projectId),
 ]);
+
+/** Persistent smart collection: a saved rule set evaluated live against the
+ * library (lightcraft-style). Rules are stored as JSON in the
+ * waveyard-collections-v1 rule vocabulary. */
+export const smartCollections = pgTable("wy_smart_collections", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  name: text("name").notNull(),
+  match: text("match").notNull().default("all"),
+  rulesJson: text("rules_json").notNull().default("[]"),
+  ...timestamps,
+}, (table) => [index("wy_smart_collections_owner_id_idx").on(table.ownerId)]);
 
 /** User playlist (listening context, ordered). */
 export const playlists = pgTable("wy_playlists", {

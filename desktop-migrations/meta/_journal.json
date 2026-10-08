@@ -22,6 +22,13 @@
       "when": 1791446834141,
       "tag": "0002_session_state",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791502412419,
+      "tag": "0003_track_collections",
+      "breakpoints": true
     }
   ]
 }

@@ -688,3 +688,76 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
   const alignment = sessionLogic.beatAlignedTransitionStart(analysisA?.beatGridMs ?? null, analysisB?.beatGridMs ?? null, 100, "beat");
   assert.equal(alignment.ok, true, "both grids verified → aligned start available");
 });
+
+test("track curation: rating and labels persist, normalise, and round-trip", async () => {
+  // Rating rounds/clamps into 0..5.
+  const rated = await service.updateTrackCuration(OWNER, trackA.id, { rating: 4.6 });
+  assert.notEqual(rated, null);
+  assert.equal(rated!.rating, 5);
+  assert.equal((await service.updateTrackCuration(OWNER, trackA.id, { rating: -3 }))!.rating, 0);
+  // Labels normalise: trim, case-insensitive dedupe, order preserved.
+  const labelled = await service.updateTrackCuration(OWNER, trackA.id, { labels: ["  Driving ", "driving", "Synthwave"] });
+  assert.notEqual(labelled, null);
+  assert.deepEqual(labelled!.labels, ["Driving", "Synthwave"]);
+  // Bad input is rejected, unknown tracks are null, and nothing silently clamps.
+  assert.equal(await service.updateTrackCuration(OWNER, trackA.id, { labels: "nope" as unknown }), null);
+  assert.equal(await service.updateTrackCuration(OWNER, "00000000-0000-4000-8000-000000000000", { rating: 3 }), null);
+  // Curation surfaces in the track views the player and HOME render.
+  await service.updateTrackCuration(OWNER, trackA.id, { rating: 4 });
+  const detail = await service.getTrack(OWNER, trackA.id);
+  assert.equal(detail!.rating, 4);
+  assert.deepEqual(detail!.labels, ["Driving", "Synthwave"]);
+  const listing = await service.listTracks({ ownerId: OWNER, search: "" });
+  const listed = listing.find((track) => track.id === trackA.id);
+  assert.equal(listed!.rating, 4);
+  assert.deepEqual(listed!.labels, ["Driving", "Synthwave"]);
+});
+
+test("smart collections: CRUD with strict validation, evaluated live over real tracks", async () => {
+  await service.updateTrackCuration(OWNER, trackA.id, { rating: 5 });
+  await service.updateTrackCuration(OWNER, trackB.id, { rating: 1, labels: [] });
+  const created = await service.createSmartCollection(OWNER, {
+    name: "Favourites",
+    match: "all",
+    rules: [{ field: "rating", op: ">=", value: 4 }],
+  });
+  assert.notEqual(created, null);
+  assert.equal(created!.name, "Favourites");
+  assert.deepEqual(created!.rules, [{ field: "rating", op: ">=", value: 4 }]);
+
+  // The stored collection evaluates over real track summaries.
+  const { evaluateCollection } = await import("./collections");
+  const listing = await service.listTracks({ ownerId: OWNER, search: "" });
+  const matches = listing.filter((track) =>
+    evaluateCollection(
+      {
+        id: track.id,
+        title: track.title,
+        artist: track.artist,
+        addedAtMs: Date.parse(track.addedAt),
+        playCount: track.playCount,
+        durationSeconds: track.durationSeconds,
+        rating: track.rating,
+        labels: track.labels,
+      },
+      created!,
+      Date.now(),
+    ),
+  );
+  assert.ok(matches.some((track) => track.id === trackA.id), "5-star track matches");
+  assert.ok(!matches.some((track) => track.id === trackB.id), "1-star track does not");
+
+  // Invalid rules never persist.
+  assert.equal(await service.createSmartCollection(OWNER, { name: "Bad", match: "all", rules: [{ field: "nope", op: "is", value: "x" }] }), null);
+  assert.equal(await service.createSmartCollection(OWNER, { name: "Bad", match: "xor" as "all", rules: [] }), null);
+
+  // Update, list, delete — and deletes are idempotent-false.
+  const updated = await service.updateSmartCollection(OWNER, created!.id, { match: "any", rules: [{ field: "label", op: "is", value: "driving" }] });
+  assert.notEqual(updated, null);
+  assert.equal(updated!.match, "any");
+  const listed = await service.listSmartCollections(OWNER);
+  assert.equal(listed.length, 1);
+  assert.equal(await service.deleteSmartCollection(OWNER, created!.id), true);
+  assert.equal(await service.deleteSmartCollection(OWNER, created!.id), false);
+  assert.equal((await service.listSmartCollections(OWNER)).length, 0);
+});

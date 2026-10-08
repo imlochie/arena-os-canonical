@@ -13,6 +13,15 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import Link from "next/link";
 
 import { formatPlayClock } from "@/lib/waveyard/library/model";
+import {
+  SMART_RULE_FIELDS,
+  SMART_RULE_OPS,
+  evaluateCollection,
+  type CollectionTrack,
+  type SmartCollection,
+  type SmartRuleField,
+  type SmartRuleOp,
+} from "@/lib/waveyard/library/collections";
 
 const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
 
@@ -23,6 +32,8 @@ interface TrackSummary {
   album: string;
   durationSeconds: number;
   playCount: number;
+  rating: number;
+  labels: string[];
   lastPlayedAt: string | null;
   addedAt: string;
   stemAvailability: { status: string; stemCount?: number; reason?: string };
@@ -81,12 +92,25 @@ function TrackRow({
   onQueue,
   playlists,
   onAddToPlaylist,
+  onRate,
+  onLabels,
 }: {
   track: TrackSummary;
   onQueue: (track: TrackSummary) => void;
   playlists: PlaylistSummary[];
   onAddToPlaylist: (playlistId: string, track: TrackSummary) => void;
+  onRate: (track: TrackSummary, rating: number) => void;
+  onLabels: (track: TrackSummary, labels: string[]) => void;
 }) {
+  const [addingLabel, setAddingLabel] = useState(false);
+  const [labelDraft, setLabelDraft] = useState("");
+  const submitLabel = (event: FormEvent) => {
+    event.preventDefault();
+    const value = labelDraft.trim();
+    if (value !== "") onLabels(track, [...track.labels, value]);
+    setLabelDraft("");
+    setAddingLabel(false);
+  };
   return (
     <article className="track-row" data-testid="library-track">
       <Link className="track-art" href={`/waveyard/play/${track.id}`} aria-label={`Play ${track.title}`}>
@@ -98,6 +122,53 @@ function TrackRow({
           {track.artist || "Unknown artist"}
           {track.album ? ` · ${track.album}` : ""}
         </span>
+        <span className="track-rating" aria-label={`Rating: ${track.rating} of 5`}>
+          {[1, 2, 3, 4, 5].map((star) => (
+            <button
+              key={star}
+              type="button"
+              className={star <= track.rating ? "star filled" : "star"}
+              aria-label={`${track.rating === star ? "Clear" : "Rate"} ${track.title}: ${star} star${star === 1 ? "" : "s"}`}
+              onClick={() => onRate(track, track.rating === star ? 0 : star)}
+            >
+              {star <= track.rating ? "★" : "☆"}
+            </button>
+          ))}
+        </span>
+        {(track.labels.length > 0 || addingLabel) && (
+          <span className="track-labels">
+            {track.labels.map((label) => (
+              <span key={label} className="label-chip">
+                {label}
+                <button
+                  type="button"
+                  aria-label={`Remove label ${label} from ${track.title}`}
+                  onClick={() => onLabels(track, track.labels.filter((existing) => existing !== label))}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </span>
+        )}
+        {addingLabel ? (
+          <form className="label-add" onSubmit={submitLabel}>
+            <input
+              autoFocus
+              aria-label={`Add label to ${track.title}`}
+              value={labelDraft}
+              maxLength={64}
+              placeholder="Label…"
+              onChange={(event) => setLabelDraft(event.target.value)}
+            />
+            <button type="submit" className="button secondary">Add</button>
+            <button type="button" className="button secondary" onClick={() => { setAddingLabel(false); setLabelDraft(""); }}>Cancel</button>
+          </form>
+        ) : (
+          <button type="button" className="label-add-toggle" aria-label={`Add label to ${track.title}`} onClick={() => setAddingLabel(true)}>
+            + label
+          </button>
+        )}
       </div>
       <StemBadge availability={track.stemAvailability} />
       <span className="track-duration">{formatPlayClock(track.durationSeconds)}</span>
@@ -138,11 +209,20 @@ export function MusicHome() {
   const [adding, setAdding] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [newPlaylistName, setNewPlaylistName] = useState("");
+  const [collections, setCollections] = useState<SmartCollection[]>([]);
+  const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [ruleField, setRuleField] = useState<SmartRuleField>("label");
+  const [ruleOp, setRuleOp] = useState<SmartRuleOp>("is");
+  const [ruleValue, setRuleValue] = useState("");
+  /** Library clock for addedDaysAgo rules — set during refresh (never read
+   * impurely during render); day granularity makes short staleness moot. */
+  const [libraryClockMs, setLibraryClockMs] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async (query: string) => {
-    const [tracksResponse, playbackResponse, playlistsResponse, queueResponse, projectsResponse, sessionsResponse] =
+    const [tracksResponse, playbackResponse, playlistsResponse, queueResponse, projectsResponse, sessionsResponse, collectionsResponse] =
       await Promise.all([
         fetch(`/api/library/tracks${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`, { cache: "no-store" }),
         fetch("/api/library/playback-state", { cache: "no-store" }),
@@ -150,6 +230,7 @@ export function MusicHome() {
         fetch("/api/library/queue", { cache: "no-store" }),
         fetch("/api/waveyard/projects", { cache: "no-store" }),
         fetch("/api/library/sessions", { cache: "no-store" }),
+        fetch("/api/library/collections", { cache: "no-store" }),
       ]);
     if (tracksResponse.ok) setTracks((await tracksResponse.json()).tracks ?? []);
     if (playbackResponse.ok) {
@@ -158,6 +239,8 @@ export function MusicHome() {
     }
     if (playlistsResponse.ok) setPlaylists((await playlistsResponse.json()).playlists ?? []);
     if (queueResponse.ok) setQueue((await queueResponse.json()).queue ?? []);
+    if (collectionsResponse.ok) setCollections((await collectionsResponse.json()).collections ?? []);
+    setLibraryClockMs(Date.now());
     if (projectsResponse.ok) setStudioProjects((await projectsResponse.json()).projects ?? []);
     if (sessionsResponse.ok) setSessions((await sessionsResponse.json()).sessions ?? []);
     setLoaded(true);
@@ -225,6 +308,92 @@ export function MusicHome() {
     });
     if (response.ok) setQueue((await response.json()).queue ?? []);
   }, [playback]);
+
+  const rateTrack = useCallback(async (track: TrackSummary, rating: number) => {
+    const response = await fetch(`/api/library/tracks/${track.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rating }),
+    });
+    if (response.ok) {
+      const { track: updated } = (await response.json()) as { track: { rating: number } };
+      setTracks((previous) => previous.map((existing) => (existing.id === track.id ? { ...existing, rating: updated.rating } : existing)));
+    } else {
+      setMessage("Could not save that rating.");
+    }
+  }, []);
+
+  const setTrackLabels = useCallback(async (track: TrackSummary, labels: string[]) => {
+    const response = await fetch(`/api/library/tracks/${track.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ labels }),
+    });
+    if (response.ok) {
+      const { track: updated } = (await response.json()) as { track: { labels: string[] } };
+      setTracks((previous) => previous.map((existing) => (existing.id === track.id ? { ...existing, labels: updated.labels } : existing)));
+    } else {
+      setMessage("Could not save those labels.");
+    }
+  }, []);
+
+  const collectionTrack = useCallback((track: TrackSummary): CollectionTrack => ({
+    id: track.id,
+    title: track.title,
+    artist: track.artist,
+    addedAtMs: Date.parse(track.addedAt),
+    playCount: track.playCount,
+    durationSeconds: track.durationSeconds,
+    rating: track.rating,
+    labels: track.labels,
+  }), []);
+
+  const activeCollection = collections.find((collection) => collection.id === activeCollectionId) ?? null;
+  const visibleTracks = useMemo(() => {
+    if (activeCollection === null) return tracks;
+    return tracks.filter((track) => evaluateCollection(collectionTrack(track), activeCollection, libraryClockMs));
+  }, [tracks, activeCollection, collectionTrack, libraryClockMs]);
+
+  const collectionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const collection of collections) {
+      counts.set(collection.id, tracks.filter((track) => evaluateCollection(collectionTrack(track), collection, libraryClockMs)).length);
+    }
+    return counts;
+  }, [tracks, collections, collectionTrack, libraryClockMs]);
+
+  const createCollection = async (event: FormEvent) => {
+    event.preventDefault();
+    const name = newCollectionName.trim();
+    if (name === "") return;
+    const response = await fetch("/api/library/collections", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        match: "all",
+        rules: ruleValue.trim() === "" ? [] : [{ field: ruleField, op: ruleOp, value: ruleValue.trim() }],
+      }),
+    });
+    if (response.ok) {
+      const { collection } = (await response.json()) as { collection: SmartCollection };
+      setCollections((previous) => [...previous, collection]);
+      setNewCollectionName("");
+      setRuleValue("");
+    } else {
+      setMessage("Could not create that collection.");
+    }
+  };
+
+  const removeCollection = async (collectionId: string) => {
+    const response = await fetch(`/api/library/collections/${collectionId}`, { method: "DELETE" });
+    if (response.ok) {
+      setCollections((previous) => previous.filter((collection) => collection.id !== collectionId));
+      setActiveCollectionId((current) => (current === collectionId ? null : current));
+    } else {
+      setMessage("Could not delete that collection.");
+    }
+  };
 
   const createPlaylist = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -388,8 +557,19 @@ export function MusicHome() {
 
       <section className="library-main" aria-label="Your library">
         <div className="library-panel-title">
-          <h2>{search.trim() !== "" ? `Search · “${search.trim()}”` : "Library"}</h2>
-          <span>{tracks.length} track{tracks.length === 1 ? "" : "s"}</span>
+          <h2>
+            {activeCollection
+              ? `Collection · ${activeCollection.name}`
+              : search.trim() !== ""
+                ? `Search · “${search.trim()}”`
+                : "Library"}
+          </h2>
+          <span>
+            {activeCollection ? (
+              <button type="button" className="button secondary" onClick={() => setActiveCollectionId(null)}>Show all</button>
+            ) : null}
+            {visibleTracks.length} track{visibleTracks.length === 1 ? "" : "s"}
+          </span>
         </div>
         {loaded && tracks.length === 0 ? (
           search.trim() !== "" ? (
@@ -420,8 +600,16 @@ export function MusicHome() {
           )
         ) : (
           <div className="track-list">
-            {tracks.map((track) => (
-              <TrackRow key={track.id} track={track} onQueue={onQueue} playlists={playlists} onAddToPlaylist={onAddToPlaylist} />
+            {visibleTracks.map((track) => (
+              <TrackRow
+                key={track.id}
+                track={track}
+                onQueue={onQueue}
+                playlists={playlists}
+                onAddToPlaylist={onAddToPlaylist}
+                onRate={rateTrack}
+                onLabels={setTrackLabels}
+              />
             ))}
           </div>
         )}
@@ -464,6 +652,69 @@ export function MusicHome() {
                     {openPlaylist.items.length === 0 && <li className="empty">Empty playlist.</li>}
                   </ol>
                 )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="collections-panel" aria-label="Smart collections">
+        <div className="library-panel-title"><h2>Smart collections</h2><span>{collections.length}</span></div>
+        <form className="collection-create" onSubmit={createCollection}>
+          <input
+            aria-label="New collection name"
+            value={newCollectionName}
+            maxLength={64}
+            placeholder="New collection…"
+            onChange={(event) => setNewCollectionName(event.target.value)}
+          />
+          <select aria-label="Rule field" value={ruleField} onChange={(event) => setRuleField(event.target.value as SmartRuleField)}>
+            {SMART_RULE_FIELDS.map((field) => (
+              <option key={field} value={field}>{field}</option>
+            ))}
+          </select>
+          <select aria-label="Rule operator" value={ruleOp} onChange={(event) => setRuleOp(event.target.value as SmartRuleOp)}>
+            {SMART_RULE_OPS.map((op) => (
+              <option key={op} value={op}>{op}</option>
+            ))}
+          </select>
+          <input
+            aria-label="Rule value"
+            value={ruleValue}
+            maxLength={64}
+            placeholder="value"
+            onChange={(event) => setRuleValue(event.target.value)}
+          />
+          <button className="button" type="submit" disabled={newCollectionName.trim() === ""}>Create</button>
+        </form>
+        {collections.length === 0 ? (
+          <p className="empty">No smart collections yet. One rule is enough — e.g. rating ≥ 4.</p>
+        ) : (
+          <ul className="collection-list">
+            {collections.map((collection) => (
+              <li key={collection.id}>
+                <button
+                  type="button"
+                  className={activeCollectionId === collection.id ? "playlist-row active" : "playlist-row"}
+                  onClick={() => setActiveCollectionId((current) => (current === collection.id ? null : collection.id))}
+                >
+                  <b>{collection.name}</b>
+                  <small>
+                    {collection.rules.length === 0
+                      ? "all tracks"
+                      : `${collection.match} · ${collection.rules.map((rule) => `${rule.field} ${rule.op} ${rule.value}`).join(" / ")}`}
+                    {" · "}
+                    {collectionCounts.get(collection.id) ?? 0} track{(collectionCounts.get(collection.id) ?? 0) === 1 ? "" : "s"}
+                  </small>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Delete collection ${collection.name}`}
+                  className="collection-delete"
+                  onClick={() => void removeCollection(collection.id)}
+                >
+                  ×
+                </button>
               </li>
             ))}
           </ul>

@@ -222,6 +222,8 @@ function failSummary(trackId: string): TrackSummary {
     album: "",
     durationSeconds: 0,
     playCount: 0,
+    rating: 0,
+    labels: [],
     lastPlayedAt: null,
     addedAt: "",
     stemAvailability: { status: "unavailable", reason: "This track was removed from your library." },

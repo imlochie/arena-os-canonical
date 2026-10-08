@@ -29,12 +29,20 @@ import {
   processingJobs,
   projects,
   queueItems,
+  smartCollections,
   sourceAnalyses,
   sourceAssets,
   stemAssets,
   tracks,
 } from "@/db/waveyardSchema";
 import { checksumFile } from "@/lib/waveyard/audio";
+import {
+  normalizeLabels,
+  normalizeRating,
+  normaliseSmartRules,
+  parseSmartRules,
+  type SmartCollection,
+} from "./collections";
 import { ingestSourceFile } from "@/lib/waveyard/source-ingest";
 import {
   deriveTrackMetadata,
@@ -56,6 +64,10 @@ export interface TrackSummary {
   album: string;
   durationSeconds: number;
   playCount: number;
+  /** Star rating 0 (unrated) .. 5. */
+  rating: number;
+  /** Curated labels (normalised, ordered as stored). */
+  labels: string[];
   lastPlayedAt: string | null;
   addedAt: string;
   stemAvailability: StemAvailability;
@@ -98,6 +110,8 @@ interface TrackRow {
   album: string;
   durationSeconds: number;
   playCount: number;
+  rating: number;
+  labels: string | null;
   lastPlayedAt: Date | null;
   createdAt: Date;
   projectId: string;
@@ -145,11 +159,23 @@ function toSummary(row: TrackRow, availability: StemAvailability): TrackSummary 
     album: row.album,
     durationSeconds: row.durationSeconds,
     playCount: row.playCount,
+    rating: row.rating,
+    labels: parseStoredLabels(row.labels),
     lastPlayedAt: row.lastPlayedAt?.toISOString() ?? null,
     addedAt: row.createdAt.toISOString(),
     stemAvailability: availability,
     studioProjectId: row.projectId,
   };
+}
+
+/** Stored labels column → normalised label list (corrupt JSON reads as none). */
+function parseStoredLabels(raw: string | null): string[] {
+  if (raw === null || raw.trim() === "") return [];
+  try {
+    return normalizeLabels(JSON.parse(raw));
+  } catch {
+    return [];
+  }
 }
 
 async function summariesFor(rows: TrackRow[]): Promise<TrackSummary[]> {
@@ -164,6 +190,8 @@ const trackSelection = {
   album: tracks.album,
   durationSeconds: tracks.durationSeconds,
   playCount: tracks.playCount,
+  rating: tracks.rating,
+  labels: tracks.labels,
   lastPlayedAt: tracks.lastPlayedAt,
   createdAt: tracks.createdAt,
   projectId: tracks.projectId,
@@ -785,4 +813,108 @@ export async function listStudioProjects(ownerId: string) {
     .where(and(eq(projects.ownerId, ownerId), or(isNull(projects.kind), eq(projects.kind, "studio"))))
     .orderBy(desc(projects.updatedAt))
     .limit(50);
+}
+
+// ------------------------------------------------- track curation (HOME)
+
+export type TrackCuration = { id: string; rating: number; labels: string[] };
+
+/**
+ * Update a track's rating and/or labels. Rating normalises to 0..5; labels
+ * are normalised (trim/dedupe/cap) before storage. Returns the persisted
+ * curation, or null when the track does not exist for this owner.
+ */
+export async function updateTrackCuration(
+  ownerId: string,
+  trackId: string,
+  patch: { rating?: unknown; labels?: unknown },
+): Promise<TrackCuration | null> {
+  const values: Partial<{ rating: number; labels: string; updatedAt: Date }> = {};
+  if (patch.rating !== undefined) values.rating = normalizeRating(patch.rating);
+  if (patch.labels !== undefined) {
+    if (!Array.isArray(patch.labels)) return null;
+    values.labels = JSON.stringify(normalizeLabels(patch.labels));
+  }
+  if (Object.keys(values).length === 0) return null;
+  values.updatedAt = new Date();
+  const [row] = await db
+    .update(tracks)
+    .set(values)
+    .where(and(eq(tracks.id, trackId), eq(tracks.ownerId, ownerId)))
+    .returning();
+  if (!row) return null;
+  return { id: row.id, rating: row.rating, labels: parseStoredLabels(row.labels) };
+}
+
+// ------------------------------------------------- smart collections (HOME)
+
+type SmartCollectionRow = typeof smartCollections.$inferSelect;
+
+function collectionFromRow(row: SmartCollectionRow): SmartCollection | null {
+  const rules = parseSmartRules(row.rulesJson);
+  if (rules === null) return null; // corrupt row — readers skip it
+  const match = row.match === "any" ? "any" : "all";
+  return { id: row.id, name: row.name, match, rules };
+}
+
+export async function listSmartCollections(ownerId: string): Promise<SmartCollection[]> {
+  const rows = await db
+    .select()
+    .from(smartCollections)
+    .where(eq(smartCollections.ownerId, ownerId))
+    .orderBy(asc(smartCollections.createdAt));
+  return rows.map(collectionFromRow).filter((c): c is SmartCollection => c !== null);
+}
+
+export async function createSmartCollection(
+  ownerId: string,
+  input: { name: string; match: "all" | "any"; rules: unknown },
+): Promise<SmartCollection | null> {
+  const rules = normaliseSmartRules(input.rules);
+  if (rules === null) return null;
+  if (input.match !== "all" && input.match !== "any") return null;
+  const [row] = await db
+    .insert(smartCollections)
+    .values({
+      ownerId,
+      name: input.name,
+      match: input.match,
+      rulesJson: JSON.stringify(rules),
+    })
+    .returning();
+  return row ? collectionFromRow(row) : null;
+}
+
+export async function updateSmartCollection(
+  ownerId: string,
+  collectionId: string,
+  patch: { name?: string; match?: "all" | "any"; rules?: unknown },
+): Promise<SmartCollection | null> {
+  const values: Partial<{ name: string; match: string; rulesJson: string; updatedAt: Date }> = {};
+  if (patch.name !== undefined) values.name = patch.name;
+  if (patch.match !== undefined) {
+    if (patch.match !== "all" && patch.match !== "any") return null;
+    values.match = patch.match;
+  }
+  if (patch.rules !== undefined) {
+    const rules = normaliseSmartRules(patch.rules);
+    if (rules === null) return null;
+    values.rulesJson = JSON.stringify(rules);
+  }
+  if (Object.keys(values).length === 0) return null;
+  values.updatedAt = new Date();
+  const [row] = await db
+    .update(smartCollections)
+    .set(values)
+    .where(and(eq(smartCollections.id, collectionId), eq(smartCollections.ownerId, ownerId)))
+    .returning();
+  return row ? collectionFromRow(row) : null;
+}
+
+export async function deleteSmartCollection(ownerId: string, collectionId: string): Promise<boolean> {
+  const rows = await db
+    .delete(smartCollections)
+    .where(and(eq(smartCollections.id, collectionId), eq(smartCollections.ownerId, ownerId)))
+    .returning({ id: smartCollections.id });
+  return rows.length > 0;
 }
