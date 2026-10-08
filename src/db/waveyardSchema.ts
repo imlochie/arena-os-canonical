@@ -776,8 +776,34 @@ export const listenSessions = pgTable("wy_listen_sessions", {
   id: uuid("id").defaultRandom().primaryKey(),
   ownerId: uuid("owner_id").notNull(),
   name: text("name").notNull(),
+  /** Restore point: which session track (wy_listen_session_tracks.id) was
+   * playing when the app closed. Plain uuid — the session-tracks table is
+   * declared later in this module (same pattern as projects.publishedExportAssetId);
+   * scope is validated at the service boundary. */
+  currentTrackId: uuid("current_track_id"),
+  /** Restore point: position within the current track (seconds). */
+  positionSeconds: real("position_seconds").notNull().default(0),
   ...timestamps,
 }, (table) => [index("wy_listen_sessions_owner_id_idx").on(table.ownerId)]);
+
+/**
+ * Provenance for stem swaps performed in a session: which stem layer of which
+ * track was replaced by which donor track's stem, at what session context.
+ * The original tracks and their stems are never modified — a swap is a
+ * recorded listening-time decision, replayed/inspected from this ledger.
+ */
+export const listenSessionSwaps = pgTable("wy_listen_session_swaps", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sessionId: uuid("session_id").notNull().references(() => listenSessions.id, { onDelete: "cascade" }),
+  sessionTrackId: uuid("session_track_id").notNull().references(() => listenSessionTracks.id, { onDelete: "cascade" }),
+  stemType: text("stem_type").notNull(),
+  fromTrackId: uuid("from_track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  toTrackId: uuid("to_track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  atSeconds: real("at_seconds").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("wy_listen_session_swaps_session_idx").on(table.sessionId, table.createdAt),
+]);
 
 /** Ordered session membership with per-track stem mix + transition config
  * (both JSON text; see src/lib/waveyard/library/model.ts for shapes). */

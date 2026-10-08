@@ -15,6 +15,13 @@
       "when": 1791441175965,
       "tag": "0001_listening_layer",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791446834141,
+      "tag": "0002_session_state",
+      "breakpoints": true
     }
   ]
 }

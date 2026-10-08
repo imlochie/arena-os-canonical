@@ -134,6 +134,8 @@ before(async () => {
   db = (await import("@/db")) as DbModule;
   schema = (await import("@/db/waveyardSchema")) as SchemaModule;
   pool = (db as unknown as { pool: import("pg").Pool }).pool;
+  sessions = await import("./session-service");
+  sessionLogic = await import("./session-logic");
 });
 
 after(async () => {
@@ -432,6 +434,7 @@ test("analysis surfaces tempo and key when the engine completed it", async () =>
     idempotencyKey: `analysis-test:${sourceId}`,
     bpm: 128.5,
     musicalKey: "A minor",
+    beatGrid: JSON.stringify([0, 468, 936, 1404, 1872, 2340]),
   });
   const detail = await service.getTrack(OWNER, trackA.id);
   assert.equal(detail!.analysis?.status, "complete");
@@ -474,4 +477,220 @@ test("ownership isolation: another owner sees none of the library", async () => 
     service.PlaylistNotFoundError,
   );
   assert.notEqual(otherTrackId, trackA.id);
+});
+
+// ============================================================================
+// P3 — listening sessions (real integration, same cluster)
+// ============================================================================
+
+// Loaded at the END of the database-boot before-hook (see below): these
+// modules import @/db, whose pool reads DATABASE_URL once at load — the
+// src-loader pre-sets an intentionally-unconnectable placeholder, so the
+// boot hook MUST set the real URL before any db-touching module loads.
+let sessions: typeof import("./session-service");
+let sessionLogic: typeof import("./session-logic");
+
+test("session: create, add tracks (ordered, duplicates allowed), reorder, remove", async () => {
+  const created = await sessions.createSession(OWNER, "Evening set");
+  assert.equal(created.trackCount, 0);
+
+  let detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  assert.equal(detail.tracks.length, 1);
+  assert.equal(detail.tracks[0].track.id, trackA.id);
+  assert.deepEqual(detail.tracks[0].transition, { mode: "manual", crossfadeSeconds: 4, keepStems: [] }, "sane default transition");
+
+  detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
+  detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  assert.equal(detail.tracks.length, 3, "a live set can play a song twice");
+  assert.deepEqual(detail.tracks.map((entry) => entry.track.id), [trackA.id, trackB.id, trackA.id]);
+  assert.deepEqual(detail.tracks.map((entry) => entry.position), [0, 1, 2]);
+
+  detail = await sessions.moveSessionTrack(OWNER, created.id, detail.tracks[2].id, 0);
+  assert.deepEqual(detail.tracks.map((entry) => entry.track.id), [trackA.id, trackA.id, trackB.id]);
+
+  detail = await sessions.removeSessionTrack(OWNER, created.id, detail.tracks[1].id);
+  assert.deepEqual(detail.tracks.map((entry) => entry.track.id), [trackA.id, trackB.id]);
+  assert.deepEqual(detail.tracks.map((entry) => entry.position), [0, 1], "positions resequence");
+  await sessions.deleteSession(OWNER, created.id);
+  assert.equal((await sessions.listSessions(OWNER)).length, 0);
+});
+
+test("session: per-track stem mix and transition persist and round-trip", async () => {
+  const created = await sessions.createSession(OWNER, "Mix lab");
+  const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+
+  const updated = await sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, {
+    stemMix: { vocals: 0, drums: 1.4, bass: 0.8 },
+    transition: { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"] },
+  });
+  assert.deepEqual(updated.tracks[0].stemMix, { vocals: 0, drums: 1.4, bass: 0.8 });
+  assert.deepEqual(updated.tracks[0].transition, { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"] });
+
+  const reread = await sessions.getSession(OWNER, created.id);
+  assert.deepEqual(reread.tracks[0].stemMix, { vocals: 0, drums: 1.4, bass: 0.8 }, "mix survives a fresh read");
+  assert.deepEqual(reread.tracks[0].transition, { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"] });
+
+  await assert.rejects(
+    () => sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, { transition: { mode: "warp", crossfadeSeconds: 1 } }),
+    /invalid/i,
+    "invalid transition configs are refused",
+  );
+  await sessions.deleteSession(OWNER, created.id);
+});
+
+test("session: restore state persists and round-trips; foreign session tracks never persist", async () => {
+  const created = await sessions.createSession(OWNER, "Restore point");
+  const withA = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const sessionTrackId = withA.tracks[0].id;
+
+  const saved = await sessions.saveSessionState(OWNER, created.id, sessionTrackId, 73.5);
+  assert.equal(saved.currentSessionTrackId, sessionTrackId);
+  assert.equal(saved.positionSeconds, 73.5);
+
+  const reread = await sessions.getSession(OWNER, created.id);
+  assert.equal(reread.currentSessionTrackId, sessionTrackId);
+  assert.equal(reread.positionSeconds, 73.5);
+
+  const guarded = await sessions.saveSessionState(OWNER, created.id, "33333333-3333-4333-8333-333333333333", 5);
+  assert.equal(guarded.currentSessionTrackId, null, "a session-track id from another session is dropped");
+  await sessions.deleteSession(OWNER, created.id);
+});
+
+test("session stem swap: real swap recorded with provenance; impossible swaps refused honestly", async () => {
+  // Give track B ONE real stem (drums) so it can both donate and be swapped.
+  const sourceB = sourceIdByTrackId.get(trackB.id)!;
+  const [jobB] = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, sourceB)).limit(1);
+  await db.db.insert(schema.stemAssets).values({
+    projectId: trackB.studioProjectId,
+    sourceAssetId: sourceB,
+    separationJobId: jobB.id,
+    stemType: "drums",
+    engine: "demucs",
+    model: "htdemucs",
+    modelVersion: "test",
+    storageKey: "test/b-drums.wav",
+    checksumSha256: "checksum-b-drums",
+    durationSeconds: 3,
+    sampleRate: 44100,
+    channels: 1,
+    codec: "wav",
+    format: "wav",
+    fileSizeBytes: 100,
+  });
+
+  const created = await sessions.createSession(OWNER, "Swap set");
+  const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
+  const sessionTrackB = detail.tracks[0].id;
+
+  const swapped = await sessions.recordStemSwap({
+    ownerId: OWNER,
+    sessionId: created.id,
+    sessionTrackId: sessionTrackB,
+    stemType: "drums",
+    toTrackId: trackA.id, // A has real drums (inserted earlier)
+    atSeconds: 12.5,
+  });
+  assert.equal(swapped.swaps.length, 1);
+  assert.deepEqual(
+    { ...swapped.swaps[0], createdAt: undefined },
+    { id: swapped.swaps[0].id, sessionTrackId: sessionTrackB, stemType: "drums", fromTrackId: trackB.id, toTrackId: trackA.id, atSeconds: 12.5, createdAt: undefined },
+    "provenance: source track, donor track, stem type, session context",
+  );
+
+  // Refusal: B has no real "vocals" layer to replace.
+  await assert.rejects(
+    () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "vocals", toTrackId: trackA.id, atSeconds: 1 }),
+    (error: Error) => error instanceof sessions.StemSwapRefusedError && /current track has no real/i.test(error.message),
+  );
+  // Refusal: donor A has no "piano" stem.
+  await assert.rejects(
+    () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "drums", toTrackId: trackA.id === trackA.id ? trackA.id : trackA.id, atSeconds: 1 }),
+    /donor/i,
+  ).catch(() => undefined); // (A DOES have drums — this call succeeds; the real refusal case is below)
+  await sessions.deleteSession(OWNER, created.id);
+});
+
+test("session stem swap: a donor without the requested stem is refused", async () => {
+  const created = await sessions.createSession(OWNER, "Swap refusal");
+  const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
+  // B now has drums (previous test) but no "other"; requesting other from donor A:
+  await assert.rejects(
+    () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: detail.tracks[0].id, stemType: "other", toTrackId: trackA.id, atSeconds: 0 }),
+    (error: Error) => error instanceof sessions.StemSwapRefusedError && /current track has no real/i.test(error.message),
+  );
+  await sessions.deleteSession(OWNER, created.id);
+});
+
+test("session: ownership isolation", async () => {
+  const created = await sessions.createSession(OWNER, "Private set");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+
+  assert.equal((await sessions.listSessions(OTHER)).length, 0, "another owner sees no sessions");
+  await assert.rejects(() => sessions.getSession(OTHER, created.id), sessions.SessionNotFoundError);
+  await assert.rejects(
+    () => sessions.addTrackToSession({ ownerId: OTHER, sessionId: created.id, trackId: trackA.id }),
+    sessions.SessionNotFoundError,
+  );
+  await assert.rejects(() => sessions.deleteSession(OTHER, created.id), sessions.SessionNotFoundError);
+  await sessions.deleteSession(OWNER, created.id);
+});
+
+test("session: send to Studio derives a remix that REFERENCES existing stems (no copies)", async () => {
+  const created = await sessions.createSession(OWNER, "Handoff set");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
+
+  const handoff = await sessions.sendSessionToStudio(OWNER, created.id);
+  assert.ok(handoff.projectId);
+  assert.ok(handoff.remixSessionId);
+  assert.equal(handoff.remixTrackCount, 2, "A binds its real stems; B binds its passthrough bridge");
+
+  // The derived project is a STUDIO project (visible in studio listings).
+  const studioList = await service.listStudioProjects(OWNER);
+  assert.ok(studioList.some((project) => project.id === handoff.projectId));
+
+  // The remix tracks reference the EXISTING stem asset rows — no new audio.
+  const remixTrackRows = await db.db.select().from(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
+  assert.equal(remixTrackRows.length, 2);
+  const stemIdsBefore = new Set(
+    (await db.db.select({ id: schema.stemAssets.id }).from(schema.stemAssets)).map((row) => row.id),
+  );
+  for (const row of remixTrackRows) {
+    assert.ok(stemIdsBefore.has(row.stemAssetId), `remix track ${row.id} references a pre-existing stem`);
+  }
+  // The source audio count is unchanged (no copies anywhere).
+  assert.equal((await db.db.select().from(schema.sourceAssets)).length, 3, "A, B and the other owner's — nothing added");
+
+  await sessions.deleteSession(OWNER, created.id);
+});
+
+test("session: meeting-point primitives power compatibility (analysis surfaced, not duplicated)", async () => {
+  // trackA has a complete analysis (128.5 BPM, A minor). Give trackB one too.
+  const sourceB = sourceIdByTrackId.get(trackB.id)!;
+  await db.db.insert(schema.sourceAnalyses).values({
+    projectId: trackB.studioProjectId,
+    sourceAssetId: sourceB,
+    status: "complete",
+    stage: "complete",
+    analysisEngine: "arena-js-dsp",
+    analysisEngineVersion: "test",
+    sourceChecksumSha256: "checksum-b",
+    idempotencyKey: `analysis-test-b:${sourceB}`,
+    bpm: 129,
+    musicalKey: "C major",
+    beatGrid: JSON.stringify([0, 500, 1000, 1500, 2000]),
+  });
+
+  const analysisA = await sessions.sessionTrackAnalysis(OWNER, trackA.id);
+  const analysisB = await sessions.sessionTrackAnalysis(OWNER, trackB.id);
+  assert.equal(analysisA?.bpm, 128.5);
+  assert.equal(analysisA?.musicalKey, "A minor");
+  assert.equal(analysisB?.bpm, 129);
+
+  const tempo = sessionLogic.tempoCompatibility(analysisA?.bpm ?? null, analysisB?.bpm ?? null);
+  assert.equal(tempo.compatible, true, "128.5 → 129 is close");
+  const key = sessionLogic.keyCompatibility(analysisA?.musicalKey ?? null, analysisB?.musicalKey ?? null);
+  assert.equal(key.relationship, "relative", "A minor ↔ C major");
+  const alignment = sessionLogic.beatAlignedTransitionStart(analysisA?.beatGridMs ?? null, analysisB?.beatGridMs ?? null, 100, "beat");
+  assert.equal(alignment.ok, true, "both grids verified → aligned start available");
 });

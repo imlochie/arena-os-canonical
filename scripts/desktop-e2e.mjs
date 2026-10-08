@@ -283,6 +283,90 @@ async function main() {
     step("export contains real signal (not silence)", meanVolume !== undefined && Number(meanVolume) > -60, { info: `mean ${meanVolume} dB` });
   }
 
+  // --- P3: a real two-track LISTENING session (library API) --------------------
+  // Desktop cannot separate (no Python executor), so library tracks are
+  // source-only here: the swap path below proves the HONEST REFUSAL, and the
+  // passthrough bridge (the same one the Studio uses) provides real stem rows
+  // for the Studio handoff. Nothing is faked.
+  const jsonHeaders = { "content-type": "application/json" };
+  const wavBPath = path.join(tempDir, "track-b.wav");
+  execFileSync(path.join(appRoot, "bin", "ffmpeg"), [
+    "-v", "error",
+    "-f", "lavfi", "-i", "sine=frequency=660:duration=12",
+    "-f", "lavfi", "-i", "sine=frequency=1760:duration=12",
+    "-filter_complex", "[0:a][1:a]amerge=inputs=2,pan=stereo|c0=c0+c2|c1=c1+c3,volume=0.5[a]",
+    "-map", "[a]", "-ar", "44100", "-y", wavBPath,
+  ], { stdio: "pipe" });
+  const addAsMusic = async (file, name) => {
+    const body = new FormData();
+    body.set("file", new Blob([readFileSync(file)], { type: "audio/wav" }), name);
+    return api("/api/library/tracks", { method: "POST", body });
+  };
+  const addedA = await addAsMusic(wavPath, "session-a.wav");
+  const addedB = await addAsMusic(wavBPath, "session-b.wav");
+  step("library: two tracks added as music", addedA.status === 201 && addedB.status === 201, {
+    info: `${addedA.status}/${addedB.status} created=${addedA.body.created}/${addedB.body.created}`,
+  });
+  const trackAId = addedA.body.track?.id;
+  const trackBId = addedB.body.track?.id;
+
+  // The local worker's waveform job provisions the analysis row (arena-js-dsp)
+  // with real BPM/key/beat-grid — the evidence sessions surface.
+  let detailA;
+  let detailB;
+  {
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+      detailA = await api(`/api/library/tracks/${trackAId}`);
+      detailB = await api(`/api/library/tracks/${trackBId}`);
+      if (detailA.body.track?.analysis?.status === "complete" && detailB.body.track?.analysis?.status === "complete") break;
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+  }
+  step("library: real analyses completed for both tracks", detailA.body.track?.analysis?.status === "complete" && typeof detailA.body.track?.analysis?.bpm === "number" && typeof detailB.body.track?.analysis?.musicalKey === "string", {
+    info: `A ${detailA.body.track?.analysis?.bpm}bpm ${detailA.body.track?.analysis?.musicalKey} · B ${detailB.body.track?.analysis?.bpm}bpm ${detailB.body.track?.analysis?.musicalKey}`,
+  });
+
+  const bridgeA = await api("/api/stems/passthrough", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ sourceAssetId: detailA.body.track?.source?.id }) });
+  const bridgeB = await api("/api/stems/passthrough", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ sourceAssetId: detailB.body.track?.source?.id }) });
+  step("library: passthrough stems bridge the unseparated sources (real stem rows)", bridgeA.status === 201 && bridgeB.status === 201);
+
+  const sessionCreate = await api("/api/library/sessions", { method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Desktop E2E session" }) });
+  step("session created", sessionCreate.status === 201 && sessionCreate.body.session?.id !== undefined, { info: sessionCreate.body.session?.id });
+  const sessionId = sessionCreate.body.session.id;
+  const addSessionTrackA = await api(`/api/library/sessions/${sessionId}/tracks`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ trackId: trackAId }) });
+  const addSessionTrackB = await api(`/api/library/sessions/${sessionId}/tracks`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ trackId: trackBId }) });
+  step("session: two tracks added in order", addSessionTrackA.status === 201 && addSessionTrackB.status === 201 && addSessionTrackB.body.session?.tracks?.length === 2, {
+    info: `${addSessionTrackA.status}/${addSessionTrackB.status}`,
+  });
+  const sessionItemA = addSessionTrackB.body.session?.tracks?.[0];
+  const sessionItemB = addSessionTrackB.body.session?.tracks?.[1];
+
+  const patchTrack = await api(`/api/library/sessions/${sessionId}/tracks/${sessionItemA?.id}`, {
+    method: "PATCH", headers: jsonHeaders,
+    body: JSON.stringify({ stemMix: { source: 0.5 }, transition: { mode: "beat", crossfadeSeconds: 4, keepStems: ["source"] } }),
+  });
+  step("session: stem mix + transition config persisted", patchTrack.status === 200 && patchTrack.body.session?.tracks?.[0]?.stemMix?.source === 0.5 && patchTrack.body.session?.tracks?.[0]?.transition?.mode === "beat" && patchTrack.body.session?.tracks?.[0]?.transition?.crossfadeSeconds === 4, {
+    info: JSON.stringify(patchTrack.body.session?.tracks?.[0]?.transition ?? null),
+  });
+
+  const savePoint = await api(`/api/library/sessions/${sessionId}/state`, { method: "PUT", headers: jsonHeaders, body: JSON.stringify({ currentSessionTrackId: sessionItemB?.id, positionSeconds: 42.5 }) });
+  step("session: restore point saved", savePoint.status === 200 && savePoint.body.session?.currentSessionTrackId === sessionItemB?.id && Math.abs((savePoint.body.session?.positionSeconds ?? -1) - 42.5) < 0.01);
+
+  const swapRefused = await api(`/api/library/sessions/${sessionId}/swaps`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ sessionTrackId: sessionItemA?.id, stemType: "vocals", toTrackId: trackBId }) });
+  step("session: stem swap REFUSED honestly (no separated stem to lend on desktop)", swapRefused.status === 409, {
+    info: `status ${swapRefused.status}: ${String(swapRefused.body?.error ?? "").slice(0, 140)}`,
+  });
+
+  const handoff = await api(`/api/library/sessions/${sessionId}/studio-handoff`, { method: "POST" });
+  step("session: Studio handoff binds EXISTING stems (derived, non-destructive)", handoff.status === 201 && handoff.body.handoff?.projectId !== undefined && handoff.body.handoff?.remixTrackCount === 2, {
+    info: `project ${handoff.body.handoff?.projectId} · ${handoff.body.handoff?.remixTrackCount} remix tracks`,
+  });
+  const trackAAfterHandoff = await api(`/api/library/tracks/${trackAId}`);
+  step("session: handoff left the library track untouched", trackAAfterHandoff.status === 200 && trackAAfterHandoff.body.track?.id === trackAId);
+  const sessionsListed = await api("/api/library/sessions");
+  step("session listed in the library", sessionsListed.status === 200 && (sessionsListed.body.sessions ?? []).some((row) => row.id === sessionId));
+
   // --- diagnostics -------------------------------------------------------------
   const diagnostics = await api("/api/desktop/diagnostics");
   const components = diagnostics.body.components ?? {};
@@ -314,6 +398,10 @@ async function main() {
   step("analysis persisted across restart", sourceAfter?.analysis?.status === "complete" && sourceAfter?.analysis?.analysisEngine === "arena-js-dsp");
   const stemAfter = detailAfter.body.stems?.some((stem) => stem.engine === "passthrough-unseparated");
   step("stem persisted across restart", stemAfter === true);
+  const sessionAfter = await api(`/api/library/sessions/${sessionId}`);
+  step("session persisted across restart (restore point intact)", sessionAfter.status === 200 && sessionAfter.body.session?.currentSessionTrackId === sessionItemB?.id && sessionAfter.body.session?.tracks?.length === 2, {
+    info: `tracks after restart: ${sessionAfter.body.session?.tracks?.length}`,
+  });
 
   await supervisor.stop();
 

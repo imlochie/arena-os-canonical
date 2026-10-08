@@ -617,3 +617,70 @@
 .player-shell.p2 .waveform-empty{border:1px dashed #2d3224;color:var(--muted);font-size:12px;padding:14px}
 .player-shell.p2 .waveform-empty.compact{padding:8px;font-size:11px}
 @media(max-width:900px){.stem-deck{grid-template-columns:repeat(2,minmax(0,1fr))}.wplayer-transport{grid-template-columns:auto auto auto auto 1fr auto;row-gap:10px}.wplayer-transport .player-mode,.player-master{grid-column:span 2}.wplayer-transport input[type=range]{grid-column:1/-1}}
+
+/* --------------------------------------------------------------------------
+   P3 · Sessions — the two-deck session experience. All selectors are scoped
+   under .session-stage / .sess-* names so they cannot collide with the
+   Studio surfaces or the P2 player (wplayer-*).
+   -------------------------------------------------------------------------- */
+.session-shell{align-items:stretch}
+.session-stage{display:grid;gap:20px;padding:8px 0 40px;width:100%}
+.sess-header{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;justify-content:space-between}
+.sess-header h1{font-size:clamp(26px,4vw,40px);margin:2px 0 4px}
+.sess-header-sub{color:var(--muted);font-size:13px;margin:0}
+.sess-header-actions{display:flex;gap:8px;flex-wrap:wrap}
+.sess-status{border:1px solid var(--line);background:var(--panel);color:var(--muted);padding:10px 14px;font-size:13px;margin:0}
+.sess-handoff{border:1px solid var(--acid);background:#1b2114;color:var(--ink);padding:10px 14px;font-size:13px;margin:0}
+.sess-handoff a{color:var(--acid)}
+.sess-decks{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(240px,0.9fr) minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width: 1080px){.sess-decks{grid-template-columns:1fr}}
+.sess-deck{border:1px solid var(--line);background:var(--panel);padding:16px;display:grid;gap:10px;min-height:150px}
+.sess-deck-active{border-color:var(--acid)}
+.sess-deck-empty{color:var(--muted);font-size:13px;margin:0}
+.sess-deck-head h3{margin:2px 0;font-size:18px}
+.sess-deck-sub{color:var(--muted);font-size:12px;margin:0}
+.sess-deck-progress{height:6px;background:#11130e;border:1px solid var(--line)}
+.sess-deck-progress-fill{height:100%;background:var(--acid);transition:none}
+.sess-deck-time{font:11px ui-monospace,monospace;color:var(--muted);margin:0}
+.sess-deck-stems{display:grid;gap:6px}
+.sess-stem-row{display:flex;align-items:center;gap:10px;font-size:12px}
+.sess-stem-name{min-width:70px;color:var(--ink);letter-spacing:.06em;text-transform:lowercase}
+.sess-stem-meter{flex:1;height:4px;background:#11130e;border:1px solid var(--line)}
+.sess-stem-meter.hot{background:var(--acid)}
+.sess-deck-slot-active .sess-deck{border-color:var(--acid)}
+.sess-mix{border:1px solid var(--line);background:var(--panel);padding:14px;display:grid;gap:8px}
+.sess-mix-row{display:grid;grid-template-columns:90px 1fr 44px auto;gap:8px;align-items:center;font-size:12px}
+.sess-mix-label{color:var(--ink);letter-spacing:.06em;text-transform:lowercase}
+.sess-mix-value{font:11px ui-monospace,monospace;color:var(--muted);text-align:right}
+.sess-transition{border:1px solid var(--line);background:var(--panel);padding:14px;display:grid;gap:10px}
+.sess-transition-row{display:grid;grid-template-columns:70px 1fr auto;gap:8px;align-items:center;font-size:13px;color:var(--muted)}
+.sess-transition-row select{background:#11130e;border:1px solid var(--line);color:var(--ink);padding:6px 8px;font-size:13px}
+.sess-transition-actions{display:flex;gap:8px;flex-wrap:wrap}
+.sess-keep{border:1px dashed var(--line);padding:8px 10px;display:flex;flex-wrap:wrap;gap:10px}
+.sess-keep legend{font-size:11px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;padding:0 4px}
+.sess-keep-option{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink)}
+.sess-compat{display:grid;gap:4px;border-top:1px solid var(--line);padding-top:10px}
+.sess-compat p{margin:0;font-size:12px}
+.sess-compat-ok{color:#9db85c}
+.sess-compat-bad{color:var(--muted)}
+.sess-queue{border:1px solid var(--line);background:var(--panel);padding:14px;display:grid;gap:10px}
+.sess-queue-list{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.sess-queue-item{display:flex;align-items:center;gap:8px;border:1px solid transparent}
+.sess-queue-item.current{border-color:var(--acid);background:#1b2114}
+.sess-queue-item.next{border-color:var(--line)}
+.sess-queue-jump{flex:1;display:flex;gap:10px;align-items:center;background:none;border:none;color:var(--ink);text-align:left;padding:8px 10px;font-size:13px;min-width:0}
+.sess-queue-jump:hover{color:var(--acid)}
+.sess-queue-jump small{display:block;color:var(--muted);font-size:11px}
+.sess-queue-pos{font:11px ui-monospace,monospace;color:var(--muted)}
+.sess-queue-actions{display:flex;gap:4px}
+.sess-queue-add{border-top:1px solid var(--line);padding-top:10px;display:grid;gap:8px;font-size:12px;color:var(--muted)}
+.sess-queue-add-row{display:flex;gap:8px}
+.sess-queue-add select{flex:1;background:#11130e;border:1px solid var(--line);color:var(--ink);padding:6px 8px;font-size:13px;min-width:0}
+.sess-new{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 8px}
+.sess-new input{flex:1;min-width:220px;background:#11130e;border:1px solid var(--line);color:var(--ink);padding:10px 12px;font-size:14px}
+.sess-list{list-style:none;margin:16px 0 0;padding:0;display:grid;gap:8px}
+.sess-list-item{display:flex;align-items:center;gap:10px;border:1px solid var(--line);background:var(--panel)}
+.sess-list-link{flex:1;padding:12px 14px;display:grid;gap:2px;color:var(--ink);min-width:0}
+.sess-list-link:hover .sess-list-name{color:var(--acid)}
+.sess-list-name{font-size:15px;font-weight:700}
+.sess-list-meta{color:var(--muted);font-size:12px}
