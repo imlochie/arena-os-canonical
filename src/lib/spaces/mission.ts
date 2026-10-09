@@ -29,6 +29,7 @@ import { generate } from "@/lib/ai";
 import type { GenerateResult } from "@/lib/runtime";
 import { listAgents } from "@/lib/spaces";
 import { executeTool, ensureWorkspace, toolListFiles, workspaceDir as wsDir, type ToolOutcome } from "./tools";
+import { actionSignature, classifyToolAction, approvalRequired, claimExecution, completeExecution, findLatestBySignature, requestApproval } from "./governance";
 
 export interface MissionAgentSpec {
   name: string;
@@ -196,25 +197,29 @@ export async function runMission(
     .filter((c) => /^[a-z0-9_.@-]+$/i.test(c) && c.length <= 30)
     .slice(0, 12);
 
+  // Load or create the mission row (continue = resume a checkpoint or an
+  // approval wait). Loaded FIRST so a resumed mission reuses its stored plan.
+  const existing = await getLatestMission(spaceId);
+  const resuming = existing && (existing.status === "checkpointed" || existing.status === "awaiting_approval");
+  const resumingPlan = resuming && existing!.agentPlan.length ? existing!.agentPlan : undefined;
+
   // Plan: explicit > the space's fleet > default three-role pipeline.
   const fleet = await listAgents(spaceId).catch(() => []);
   const plan: MissionAgentSpec[] =
-    opts.agentPlan?.length
-      ? opts.agentPlan
-      : fleet.length
+    resumingPlan?.length
+      ? resumingPlan
+      : opts.agentPlan?.length
+        ? opts.agentPlan
+        : fleet.length
         ? fleet.map((a: { name: string; role: string; modelId: string; systemPrompt: string }) => ({ name: a.name, role: a.role, modelId: a.modelId, systemPrompt: a.systemPrompt }))
         : defaultPlan("openai"); // any text alias: routes via Groq/OpenRouter key when sent, else keyless pollinations, else honest local fallback
 
   await ensureWorkspace(spaceId);
-
-  // Load or create the mission row (continue = resume a checkpoint).
-  const existing = await getLatestMission(spaceId);
-  const resuming = existing && existing.status === "checkpointed";
   let row: any;
   if (resuming) {
     if (missionDbHealthy) {
       try {
-        [row] = await db.update(spaceMissions).set({ status: "running", statusDetail: "", updatedAt: new Date() }).where(eq(spaceMissions.id, existing.id)).returning();
+        [row] = await db.update(spaceMissions).set({ status: "running", statusDetail: "resumed", updatedAt: new Date() }).where(eq(spaceMissions.id, existing.id)).returning();
       } catch {
         missionDbHealthy = false;
       }
@@ -371,6 +376,88 @@ export async function runMission(
           statusDetail = `time budget hit mid-turn while ${agent.name} was acting — resume to continue`;
           break;
         }
+        // GOVERNANCE GATE (docs/spaces-autonomy.md Phase A): approval-required
+        // action classes never execute without a recorded human decision. The
+        // mission checkpoints itself awaiting_approval; on resume the same
+        // action signature is matched to its decision — approved executes
+        // (single-claim), pending keeps waiting, denied is refused honestly.
+        const actionClass = classifyToolAction(a.tool);
+        if (approvalRequired(actionClass)) {
+          const sig = actionSignature(mission.id, a.tool, a.args);
+          // The LATEST approval for this exact action instance binds: pending →
+          // wait for the human; denied → refused, terminal; executed/failed →
+          // never repeated; approved → single-claim execution.
+          let approval = await findLatestBySignature(sig);
+          if (!approval) {
+            approval = await requestApproval({
+              spaceId,
+              missionId: mission.id,
+              signature: sig,
+              actionClass,
+              summary: `${a.tool}: ${JSON.stringify(a.args).slice(0, 300)}`,
+              payload: a.args,
+            });
+          }
+          if (approval.status === "pending") {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `⏸ awaiting human approval (class ${actionClass}, request ${approval.id.slice(0, 8)}) — the mission is checkpointed. Approve or deny it in the Spaces workbench (Approvals panel) or via the API; the daemon/workbench resumes automatically once decided.`,
+              ok: false,
+              ms: 0,
+            });
+            status = "awaiting_approval";
+            statusDetail = `action ${a.tool} requires human approval (request ${approval.id.slice(0, 8)}) — decide in the Spaces workbench`;
+            break;
+          }
+          if (approval.status === "denied") {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `refused: the human denied this action (request ${approval.id.slice(0, 8)}). Do not retry the same action; adjust the approach.`,
+              ok: false,
+              ms: 0,
+            });
+            continue;
+          }
+          if (approval.status === "executing") {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `execution of request ${approval.id.slice(0, 8)} is already in progress elsewhere — not repeated here`,
+              ok: false,
+              ms: 0,
+            });
+            continue;
+          }
+          if (approval.status === "executed" || approval.status === "failed") {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `already executed earlier (request ${approval.id.slice(0, 8)}, ${approval.status}) — not repeated`,
+              ok: approval.status === "executed",
+              ms: 0,
+            });
+            continue;
+          }
+          // approved → single-claim execution (exactly one caller wins)
+          const claimed = await claimExecution(approval.id);
+          if (!claimed) {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `lost the execution claim for request ${approval.id.slice(0, 8)} — another runner is executing it`,
+              ok: false,
+              ms: 0,
+            });
+            continue;
+          }
+          const tExec = Date.now();
+          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow });
+          await completeExecution(approval.id, gated.ok, { tool: gated.tool, output: gated.output.slice(0, 2000) }, gated.ok ? undefined : gated.output.slice(0, 500));
+          outcomes.push({ ...gated, ms: Date.now() - tExec });
+          continue;
+        }
         outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow }));
       }
 
@@ -409,7 +496,7 @@ export async function runMission(
     statusDetail,
     handoff,
     artifacts: await listArtifacts(spaceId),
-    endedAt: status === "running" ? null : new Date(),
+    endedAt: status === "running" || status === "awaiting_approval" ? null : new Date(),
   });
   return mission;
 }

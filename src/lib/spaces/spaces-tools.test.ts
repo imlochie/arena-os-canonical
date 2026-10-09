@@ -180,12 +180,29 @@ test("mission runner executes real tool actions from agent turns", async () => {
     } as any;
   }) as any;
 
-  const mission = await runMission(
+  let mission = await runMission(
     spaceId,
     { goal: "build and verify", timeBudgetMs: 60_000 },
     { generate: scripted },
   );
   try {
+    // The Reviewer's github_publish is an approval-gated action class: the
+    // mission checkpoints itself and the publish does NOT run until a human
+    // approves it (governance contract, Phase A).
+    assert.equal(mission.status, "awaiting_approval");
+    const { listApprovals, decideApproval } = await import("./governance");
+    const pending = (await listApprovals(spaceId, "pending")).filter((p) => p.missionId === mission.id);
+    assert.equal(pending.length, 1, "the gated publish produced one approval request");
+
+    // Approve and resume: the publish executes (honestly disconnected), and
+    // the mission now completes.
+    await decideApproval(pending[0].id, "approve", "test-owner");
+    mission = await runMission(
+      spaceId,
+      { goal: "build and verify", timeBudgetMs: 60_000 },
+      { generate: scripted },
+    );
+
     assert.equal(mission.status, "done");
     assert.match(mission.statusDetail, /tool action/);
     const tools = mission.journal.flatMap((s) => s.actions.map((a) => a.tool));
@@ -194,7 +211,7 @@ test("mission runner executes real tool actions from agent turns", async () => {
     assert.ok(tools.includes("github_publish"));
     const nodeRun = mission.journal.flatMap((s) => s.actions).find((a) => a.tool === "run_command");
     assert.match(nodeRun?.output ?? "", /mission-live/);
-    const gh = mission.journal.flatMap((s) => s.actions).find((a) => a.tool === "github_publish");
+    const gh = mission.journal.flatMap((s) => s.actions).find((a) => a.tool === "github_publish" && !/awaiting human approval/.test(a.output));
     assert.equal(gh?.ok, false, "github must be honestly disconnected without a token");
     const paths = mission.artifacts.map((a) => a.path);
     assert.ok(paths.includes("README.md") && paths.includes("hello.js"));

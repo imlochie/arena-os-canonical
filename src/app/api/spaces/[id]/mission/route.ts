@@ -12,7 +12,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
 // POST → start (or continue) a mission.
 // Body: { goal, timeBudgetMinutes?, agentPlan?, githubToken?, keys?, localOnly? }
-// A "checkpointed" mission resumes where it stopped (goal/plan from the row).
+// A "checkpointed" or "awaiting_approval" mission resumes where it stopped
+// (goal/plan from the row; approval decisions apply on the resumed run).
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   let body: any = {};
@@ -26,7 +27,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     if (!space) return Response.json({ error: "space not found" }, { status: 404 });
 
     const existing = await getLatestMission(id);
-    const continuing = existing?.status === "checkpointed" && !body?.goal;
+    const continuing = (existing?.status === "checkpointed" || existing?.status === "awaiting_approval") && !body?.goal;
     if (!continuing && !String(body?.goal ?? "").trim()) {
       return Response.json({ error: "goal is required" }, { status: 400 });
     }

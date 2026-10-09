@@ -270,6 +270,33 @@ export const spaceMissions = pgTable("space_missions", {
 });
 export type SpaceMissionRow = typeof spaceMissions.$inferSelect;
 
+/**
+ * Space action approvals — the check-in ledger for gated mission actions
+ * (docs/spaces-autonomy.md Phase A). Every approval-required action is
+ * recorded here BEFORE execution; a human decision moves it pending →
+ * approved/denied; execution is single-claim approved → executing →
+ * executed/failed. Payload and result are REDACTED (never secrets).
+ */
+export const spaceActionApprovals = pgTable("space_action_approvals", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "cascade" }),
+  missionId: uuid("mission_id"),
+  signature: text("signature").notNull(), // sha256(missionId, tool, canonical args)
+  actionClass: text("action_class").notNull(),
+  summary: text("summary").notNull().default(""),
+  payload: jsonb("payload"),
+  status: text("status").notNull().default("pending"), // pending|approved|denied|executing|executed|failed
+  requestedAt: timestamp("requested_at").notNull().defaultNow(),
+  decidedAt: timestamp("decided_at"),
+  decidedBy: text("decided_by"),
+  executedAt: timestamp("executed_at"),
+  result: jsonb("result"),
+  failureReason: text("failure_reason"),
+}, (t) => [index("space_action_approvals_sig_idx").on(t.signature), index("space_action_approvals_space_status_idx").on(t.spaceId, t.status)]);
+
+export type SpaceActionApprovalRow = typeof spaceActionApprovals.$inferSelect;
+
+
 // ---- Direct chats ----
 export const chats = pgTable("chats", {
   id: uuid("id").primaryKey().defaultRandom(),

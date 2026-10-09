@@ -418,6 +418,7 @@ export default function SpacesWorkbench() {
                   onToggleExpand={() => setExpanded(expanded === s.id ? null : s.id)}
                   onRunNow={() => void runNow(s.id)}
                   onPatch={(body) => void patch(s.id, body)}
+                  onRefresh={() => void refresh()}
                   onRemove={() => void remove(s.id)}
                   onPopOut={() => popOut(s.id)}
                 />
@@ -445,6 +446,7 @@ function SpaceWindow({
   onToggleExpand,
   onRunNow,
   onPatch,
+  onRefresh,
   onRemove,
   onPopOut,
 }: {
@@ -456,6 +458,7 @@ function SpaceWindow({
   onToggleExpand: () => void;
   onRunNow: () => void;
   onPatch: (body: Record<string, unknown>) => void;
+  onRefresh: () => void;
   onRemove: () => void;
   onPopOut: () => void;
 }) {
@@ -505,6 +508,7 @@ function SpaceWindow({
 
         <AgentFleet spaceId={space.id} models={models} />
         <MissionPanel spaceId={space.id} />
+        <ApprovalsPanel spaceId={space.id} onDecided={onRefresh} />
 
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           <button
@@ -851,7 +855,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
     }
   }
 
-  const checkpointed = mission?.status === "checkpointed";
+  const checkpointed = mission?.status === "checkpointed" || mission?.status === "awaiting_approval";
 
   return (
     <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
@@ -862,7 +866,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
             className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
               mission.status === "done"
                 ? "bg-emerald-400/10 text-emerald-300"
-                : mission.status === "checkpointed"
+                : mission.status === "checkpointed" || mission.status === "awaiting_approval"
                   ? "bg-amber-400/10 text-amber-300"
                   : mission.status === "failed"
                     ? "bg-red-400/10 text-red-300"
@@ -1004,6 +1008,132 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
             </p>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------- approvals panel (check-in environment) ----------------
+
+interface ApprovalLite {
+  id: string;
+  actionClass: string;
+  summary: string;
+  status: string;
+  requestedAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  result: unknown;
+  failureReason: string | null;
+}
+
+const APPROVAL_CLASS_LABELS: Record<string, string> = {
+  "github.publish": "GitHub publish",
+  "browser.interact": "Browser action",
+  "external.call": "Phone call",
+  "external.sms": "SMS",
+  "payment.link": "Payment",
+};
+
+function ApprovalsPanel({ spaceId, onDecided }: { spaceId: string; onDecided: () => void }) {
+  const [approvals, setApprovals] = useState<ApprovalLite[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    fetch(`/api/spaces/approvals?spaceId=${spaceId}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((b) => { if (Array.isArray(b.approvals)) setApprovals(b.approvals.slice(0, 20)); })
+      .catch(() => {});
+  }, [spaceId]);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 10_000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  async function decide(id: string, decision: "approve" | "deny") {
+    setBusyId(id);
+    try {
+      await fetch("/api/spaces/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, decision, decidedBy: "workbench" }),
+      });
+      load();
+      onDecided();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const pending = approvals.filter((a) => a.status === "pending");
+  const recent = approvals.filter((a) => a.status !== "pending").slice(0, 5);
+  if (pending.length === 0 && recent.length === 0) return null; // nothing gated yet — no clutter
+
+  return (
+    <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-200/70">Check-in required</span>
+        {pending.length > 0 && (
+          <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+            {pending.length} awaiting you
+          </span>
+        )}
+        <span className="text-[10px] text-slate-500" title="These action classes never run without your explicit decision; denials are permanent for that exact action.">
+          gated: publish · browser act · calls · SMS · payments
+        </span>
+      </div>
+
+      {pending.map((a) => (
+        <div key={a.id} className="mt-2 rounded-lg bg-amber-400/5 p-2 ring-1 ring-amber-400/20">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-amber-200">
+                {APPROVAL_CLASS_LABELS[a.actionClass] ?? a.actionClass}
+              </p>
+              <p className="truncate text-[11px] text-slate-400" title={a.summary}>{a.summary}</p>
+              <p className="text-[10px] text-slate-600">requested {new Date(a.requestedAt).toLocaleString()}</p>
+            </div>
+            <div className="flex shrink-0 gap-1.5">
+              <button
+                onClick={() => decide(a.id, "approve")}
+                disabled={busyId === a.id}
+                className="rounded-lg bg-emerald-500/15 px-2.5 py-1.5 text-xs font-bold text-emerald-200 ring-1 ring-emerald-400/30 hover:bg-emerald-500/25 disabled:opacity-40"
+                title="Approve exactly once — the mission executes it and the ledger records the execution"
+              >
+                ✓ Approve
+              </button>
+              <button
+                onClick={() => decide(a.id, "deny")}
+                disabled={busyId === a.id}
+                className="rounded-lg bg-red-500/15 px-2.5 py-1.5 text-xs font-bold text-red-200 ring-1 ring-red-400/30 hover:bg-red-500/25 disabled:opacity-40"
+                title="Deny permanently — the agent is told the human refused and must adapt"
+              >
+                ✕ Deny
+              </button>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {recent.length > 0 && (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-slate-400">
+            decision history
+          </summary>
+          <div className="mt-1.5 space-y-1">
+            {recent.map((a) => (
+              <p key={a.id} className="truncate text-[10px] text-slate-600" title={a.summary}>
+                <span className={a.status === "executed" ? "text-emerald-400" : a.status === "denied" ? "text-red-400" : "text-slate-400"}>
+                  {a.status}
+                </span>{" "}
+                · {APPROVAL_CLASS_LABELS[a.actionClass] ?? a.actionClass} · {a.summary}
+                {a.decidedBy ? ` · by ${a.decidedBy}` : ""}
+              </p>
+            ))}
+          </div>
+        </details>
       )}
     </div>
   );

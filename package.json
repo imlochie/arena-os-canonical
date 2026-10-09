@@ -1,7 +1,7 @@
 {
   "name": "nextjs-postgresql-template",
   "version": "0.1.0",
-  "description": "Arena — local-first music production workspace",
+  "description": "Arena \u2014 local-first music production workspace",
   "author": "Arena",
   "private": true,
   "scripts": {
@@ -24,7 +24,8 @@
     "desktop:e2e": "node --import ./scripts/register-src-loader.mjs scripts/desktop-e2e.mjs",
     "test:desktop": "node --import ./scripts/register-src-loader.mjs --test \"desktop/**/*.test.ts\" \"src/lib/waveyard/worker-local/*.test.ts\"",
     "desktop:acceptance-headless": "node --import ./scripts/register-src-loader.mjs scripts/desktop-acceptance-headless.mjs",
-    "windows:acceptance": "node --import ./scripts/register-src-loader.mjs scripts/windows-acceptance.mjs"
+    "windows:acceptance": "node --import ./scripts/register-src-loader.mjs scripts/windows-acceptance.mjs",
+    "spaces:daemon": "node scripts/spaces-daemon.mjs"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
