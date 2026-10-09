@@ -1,0 +1,72 @@
+# CI — static quality gate + real Compose build smoke.
+#
+# Provenance: adapted from arena/01a0bebf-arena-os-canonical's
+# compose-release workflow (that branch's monorepo topology — apps/web,
+# apps/worker, packages/* — was not adopted; see
+# docs/branch-integration/ for the full ledger). The static gate is the
+# branch's as-is; the release gate is reduced to what this tree's
+# docker-compose.yml actually defines (postgres, redis, setup, web,
+# worker — no test profile / e2e image here), so every job in this file
+# is green-by-construction against this repository, not aspirational.
+#
+# The branch's full release gate (docker compose --profile test, the
+# waveyard-e2e-release-gate container, scripts/test-compose.ts) remains
+# in branch history for when the e2e compose profile is built here.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Clean dependency install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  compose-build:
+    name: Compose images build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Docker Compose
+        run: |
+          docker version
+          docker compose version
+
+      - name: Build web and worker images
+        run: docker compose build web worker
+
+      - name: Compose config validates
+        run: docker compose config --quiet

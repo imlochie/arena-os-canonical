@@ -44,6 +44,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
+    "@playwright/test": "^1.64.0",
     "@simplewebauthn/server": "^13.3.3",
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
