@@ -26,6 +26,8 @@ import {
   REQUIRED_FIRST_LAUNCH_STEPS,
   REQUIRED_RECOVERY_SECTIONS,
   evaluateRecovery,
+  formatAcceptanceStepLines,
+  recoveryPrintExemptions,
 } from "../scripts/lib/recovery-verdict.mjs";
 
 const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..");
@@ -187,4 +189,82 @@ test("windows-acceptance judges recovery via evaluateRecovery, not body.ok (wiri
     source.includes('mark("FIRST LAUNCH", sectionOk("firstLaunch")'),
     "the normal-launch verdict must keep requiring the full firstLaunch section",
   );
+});
+
+test("presentation: the recovery dump labels the one expected failure [EXPECTED], not a misleading [FAIL]", () => {
+  const body = recoveryBody();
+  const exemptions = recoveryPrintExemptions(body);
+  assert.deepEqual(exemptions, [FIRST_RUN_INVARIANT_STEP]);
+
+  const lines = formatAcceptanceStepLines(body, exemptions);
+  const invariantLine = lines.find((line) => line.includes(FIRST_RUN_INVARIANT_STEP));
+  assert.ok(invariantLine !== undefined, "the invariant step is printed");
+  assert.ok(invariantLine.startsWith("[EXPECTED]"), `the expected failure prints as [EXPECTED], got: ${invariantLine}`);
+  assert.match(invariantLine, /expected on the recovery launch/);
+  assert.ok(!lines.some((line) => line.startsWith("[FAIL]")), "a fully-recovered launch prints NO [FAIL] lines at all");
+  assert.ok(lines.some((line) => line.startsWith("[PASS]")), "passing steps still print [PASS]");
+});
+
+test("presentation: real recovery failures still print [FAIL]; re-initialisation is never exempted", () => {
+  // A failing health step is NOT exempt — it must print [FAIL].
+  const body = recoveryBody();
+  body.sections.firstLaunch.steps = body.sections.firstLaunch.steps.map((step) =>
+    step.name === "GET /api/health ok" ? { ...step, ok: false } : step,
+  );
+  const lines = formatAcceptanceStepLines(body, recoveryPrintExemptions(body));
+  assert.ok(lines.some((line) => line.startsWith("[FAIL] firstLaunch · GET /api/health ok")), "real failures print [FAIL]");
+
+  // The invariant PASSING (re-initialisation = data loss) is exempted from NOTHING.
+  const reinitialised = recoveryBody();
+  reinitialised.sections.firstLaunch.steps = reinitialised.sections.firstLaunch.steps.map((step) =>
+    step.name === FIRST_RUN_INVARIANT_STEP ? { ...step, ok: true } : step,
+  );
+  assert.deepEqual(recoveryPrintExemptions(reinitialised), []);
+  const reinitLines = formatAcceptanceStepLines(reinitialised, recoveryPrintExemptions(reinitialised));
+  assert.ok(
+    reinitLines.some((line) => line.startsWith("[PASS]") && line.includes(FIRST_RUN_INVARIANT_STEP)),
+    "a re-initialised recovery prints the invariant as a plain [PASS] — evaluateRecovery is what fails it (data loss)",
+  );
+
+  // Absent invariant / degenerate bodies: exempt nothing, print without throwing.
+  const noInvariant = recoveryBody();
+  noInvariant.sections.firstLaunch.steps = noInvariant.sections.firstLaunch.steps.filter(
+    (step) => step.name !== FIRST_RUN_INVARIANT_STEP,
+  );
+  assert.deepEqual(recoveryPrintExemptions(noInvariant), []);
+  assert.deepEqual(recoveryPrintExemptions(null), []);
+  assert.deepEqual(recoveryPrintExemptions(undefined), []);
+  assert.deepEqual(formatAcceptanceStepLines(null), []);
+  assert.deepEqual(
+    formatAcceptanceStepLines({ ok: false, error: "installed app exited without writing the acceptance report" } as never),
+    ["[FAIL] runner error: installed app exited without writing the acceptance report"],
+  );
+});
+
+test("presentation: the report body is never rewritten — only the console lines are labeled", () => {
+  const body = recoveryBody();
+  const before = JSON.stringify(body);
+  formatAcceptanceStepLines(body, recoveryPrintExemptions(body));
+  assert.equal(JSON.stringify(body), before, "formatting must not mutate the recorded report");
+  const invariant = body.sections.firstLaunch!.steps.find((step) => step.name === FIRST_RUN_INVARIANT_STEP)!;
+  assert.equal(invariant.ok, false, "the recorded fact stays ok=false (honesty: firstRun WAS false)");
+});
+
+test("windows-acceptance presents the recovery run self-explanatorily (wiring guard)", () => {
+  const source = readFileSync(path.join(repoRoot, "scripts", "windows-acceptance.mjs"), "utf8");
+  // Both dumps are labeled with WHICH launch they belong to (initial vs recovery).
+  assert.ok(source.includes("normal launch — in-app acceptance detail"), "the normal-run dump must be labeled");
+  assert.ok(source.includes("recovery launch — in-app acceptance detail"), "the recovery dump must be labeled");
+  // The recovery dump explains the expected firstRun=false BEFORE the steps print.
+  assert.ok(source.includes("recovery note: this launch runs against the ALREADY-INITIALISED database"), "the recovery note must precede the dump");
+  // The recovery dump passes the exemption list (the [EXPECTED] labeling).
+  assert.ok(source.includes("printAcceptance(recovery.body, { exemptedSteps: recoveryPrintExemptions(recovery.body) })"), "the recovery dump must use the exemptions");
+  // The verdict prints immediately after the dump — the reader sees the judgment, not just raw steps.
+  assert.ok(source.includes("recovery verdict: "), "the recovery verdict line must print");
+  // The final table explains sections that never executed instead of mixing NOT RUN with PASS unexplained.
+  assert.ok(source.includes("NOT RUN: "), "the final report must explain NOT RUN sections");
+  assert.ok(source.includes("they never executed"), "the NOT RUN explanation must be explicit");
+  // The NORMAL launch still prints raw (no exemptions there — firstRun must be true on a true first launch).
+  const normalPrint = 'console.log("[windows-acceptance] normal launch — in-app acceptance detail:");\n  printAcceptance(run1.body);';
+  assert.ok(source.includes(normalPrint), "the normal-launch dump must stay unexempted");
 });

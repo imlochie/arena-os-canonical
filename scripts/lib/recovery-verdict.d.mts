@@ -24,3 +24,12 @@ export declare const REQUIRED_RECOVERY_SECTIONS: string[];
 export declare function evaluateRecovery(
   body: RecoveryReport | null | undefined,
 ): { ok: boolean; failures: string[]; exempted: string[] };
+/** Step names whose failure is the expected outcome on a recovery launch. */
+export declare function recoveryPrintExemptions(
+  body: RecoveryReport | null | undefined,
+): string[];
+/** Console lines for an acceptance body, labeling expected recovery failures. */
+export declare function formatAcceptanceStepLines(
+  body: RecoveryReport | null | undefined,
+  exemptedSteps?: string[],
+): string[];

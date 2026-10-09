@@ -62,6 +62,45 @@ export const REQUIRED_RECOVERY_SECTIONS = [
  *   failures — human-readable list of what did not recover (empty when ok);
  *   exempted — what was deliberately NOT required and why (report honesty).
  */
+/**
+ * Step names whose FAILURE is the expected, correct outcome for this
+ * recovery launch — used by the harness to print them as [EXPECTED] instead
+ * of a misleading [FAIL]. The first-ever-launch invariant is the only one:
+ * on a recovery launch the cluster already exists, so firstRun=false is
+ * right. If the invariant PASSED (re-initialisation = data loss) nothing is
+ * exempt — that is a real recovery failure and must print [FAIL].
+ */
+export function recoveryPrintExemptions(body) {
+  const steps = body?.sections?.firstLaunch?.steps;
+  if (!Array.isArray(steps)) return [];
+  const invariant = steps.find((entry) => entry?.name === FIRST_RUN_INVARIANT_STEP);
+  return invariant !== undefined && invariant.ok !== true ? [FIRST_RUN_INVARIANT_STEP] : [];
+}
+
+/**
+ * Console lines for an in-app acceptance report. Steps whose failure is
+ * EXPECTED on this kind of launch (see recoveryPrintExemptions) print as
+ * [EXPECTED] with the reason; everything else prints its raw PASS/FAIL.
+ * The report BODY is never altered — ok=false stays ok=false in the JSON
+ * (honesty: only the presentation is labeled, the recorded fact is not).
+ */
+export function formatAcceptanceStepLines(body, exemptedSteps = []) {
+  const exemptions = new Set(Array.isArray(exemptedSteps) ? exemptedSteps : []);
+  const lines = [];
+  for (const [name, section] of Object.entries(body?.sections ?? {})) {
+    for (const step of section?.steps ?? []) {
+      const info = step?.info !== undefined ? ` — ${step.info}` : "";
+      if (step?.ok !== true && exemptions.has(step?.name)) {
+        lines.push(`[EXPECTED] ${name} · ${step.name}${info} (expected on the recovery launch — the cluster already exists; exempted from the recovery verdict)`);
+      } else {
+        lines.push(`[${step?.ok ? "PASS" : "FAIL"}] ${name} · ${step?.name ?? "unnamed step"}${info}`);
+      }
+    }
+  }
+  if (body?.error !== undefined) lines.push(`[FAIL] runner error: ${String(body.error).slice(0, 400)}`);
+  return lines;
+}
+
 export function evaluateRecovery(body) {
   const failures = [];
   const exempted = [];

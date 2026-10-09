@@ -39,7 +39,12 @@ import process from "node:process";
 
 import { repoRootFromMeta } from "./lib/repo-root.mjs";
 import { runNpmSync } from "./lib/run-command.mjs";
-import { evaluateRecovery } from "./lib/recovery-verdict.mjs";
+import {
+  evaluateRecovery,
+  FIRST_RUN_INVARIANT_STEP,
+  formatAcceptanceStepLines,
+  recoveryPrintExemptions,
+} from "./lib/recovery-verdict.mjs";
 
 // Installed-acceptance data isolation (first-launch fix): the pure contract
 // lives in desktop/acceptance-data-root.ts and is regression-tested there
@@ -244,6 +249,7 @@ try {
   console.log(`[windows-acceptance] isolated acceptance data root: ${acceptancePlan.dataRoot}`);
   console.log("[windows-acceptance] launching the installed app (acceptance mode, normal run)…");
   const run1 = await runInstalledAcceptance(path.join(installDir, "Arena.exe"), acceptancePlan.launches.normal, 25 * 60_000);
+  console.log("[windows-acceptance] normal launch — in-app acceptance detail:");
   printAcceptance(run1.body);
   const sections = run1.body?.sections ?? {};
   const sectionOk = (name) => sections[name]?.ok === true;
@@ -293,7 +299,6 @@ try {
     }
     console.log("[windows-acceptance] recovery launch after abnormal shutdown…");
     const recovery = await runInstalledAcceptance(path.join(installDir, "Arena.exe"), acceptancePlan.launches.recovery, 25 * 60_000);
-    printAcceptance(recovery.body);
     // Recovery is judged by RECOVERY requirements, not body.ok: the recovery
     // launch runs the same in-app acceptance against an ALREADY-INITIALIZED
     // database, so firstLaunch necessarily fails the first-ever-launch
@@ -302,8 +307,19 @@ try {
     // section, and fails on cluster re-initialisation (data loss). The
     // normal launch above still requires the FULL firstLaunch section.
     const recoveryResult = evaluateRecovery(recovery.body);
+    console.log("[windows-acceptance] recovery launch — in-app acceptance detail:");
+    console.log(
+      `[windows-acceptance] recovery note: this launch runs against the ALREADY-INITIALISED database — "${FIRST_RUN_INVARIANT_STEP}" ` +
+        "is EXPECTED to be false here (re-initialisation would mean data loss). It is exempt from the recovery verdict; every other step must still pass.",
+    );
+    printAcceptance(recovery.body, { exemptedSteps: recoveryPrintExemptions(recovery.body) });
+    console.log(
+      `[windows-acceptance] recovery verdict: ${recoveryResult.ok ? "PASS" : "FAIL"}` +
+        `${recoveryResult.failures.length > 0 ? ` — ${recoveryResult.failures.join("; ")}` : " (firstRun=false on the first-run step is the expected outcome)"}`,
+    );
     report.detail.RECOVERY_AFTER_ABNORMAL = {
       ok: recoveryResult.ok,
+      note: "judged by evaluateRecovery — firstRun=false on the first-run invariant is the expected recovery outcome (the cluster already exists); re-initialisation would be data loss",
       sections: Object.fromEntries(Object.entries(recovery.body?.sections ?? {}).map(([name, section]) => [name, section.ok])),
       failures: recoveryResult.failures,
       exempted: recoveryResult.exempted,
@@ -343,6 +359,22 @@ for (const [key, value] of Object.entries(report)) {
   console.log(`${key}:${typeof value === "string" ? "" : ""} ${typeof value === "string" ? value : JSON.stringify(value)}`);
 }
 console.log(`===========================================================`);
+{
+  // Sections still at their initial "NOT RUN" value never executed — say so
+  // explicitly instead of leaving them side-by-side with PASS unexplained
+  // (the confusing NOT RUN → PASS mixing in otherwise clean logs).
+  const notRunKeys = Object.entries(report)
+    .filter(([key, value]) => key !== "detail" && value === "NOT RUN")
+    .map(([key]) => key);
+  if (notRunKeys.length > 0) {
+    console.log(
+      `NOT RUN: ${notRunKeys.join(", ")} — ` +
+        (report.ERROR !== undefined
+          ? "the run stopped before these sections (see ERROR above); they never executed."
+          : "not exercised by this invocation's flags (--gates/--build/--skip-abnormal/--skip-install)."),
+    );
+  }
+}
 console.log(failed ? "WINDOWS ACCEPTANCE: FAIL" : "WINDOWS ACCEPTANCE: PASS");
 console.log("Full detail: desktop-windows-acceptance-report.json");
 process.exit(failed ? 1 : 0);
@@ -413,13 +445,11 @@ async function runInstalledAcceptance(exePath, launch, timeoutMs) {
   return { body: JSON.parse(readFileSync(resultPath, "utf8")) };
 }
 
-function printAcceptance(body) {
-  for (const [name, section] of Object.entries(body?.sections ?? {})) {
-    for (const step of section.steps ?? []) {
-      console.log(`[${step.ok ? "PASS" : "FAIL"}] ${name} · ${step.name}${step.info !== undefined ? ` — ${step.info}` : ""}`);
-    }
-  }
-  if (body?.error !== undefined) console.error(`[FAIL] runner error: ${String(body.error).slice(0, 400)}`);
+function printAcceptance(body, opts = {}) {
+  // Presentation lives in lib/recovery-verdict.mjs (formatAcceptanceStepLines)
+  // so the recovery launch can label its one expected failure [EXPECTED]
+  // instead of a misleading [FAIL] — the report body itself is never altered.
+  for (const line of formatAcceptanceStepLines(body, opts.exemptedSteps)) console.log(line);
 }
 
 function exportOk(workflowSection) {
