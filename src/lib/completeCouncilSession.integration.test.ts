@@ -8,7 +8,10 @@ import { transitionSession } from "./sessionLifecycle";
 
 const SESSION_ID = "00000000-0000-4000-8000-000000000001";
 const PROJECT_ID = "00000000-0000-4000-8000-000000000002";
-const ORIGINAL_PROJECT_TIME = "2020-01-01T00:00:00.000Z";
+// The fixture's original `updated_at` as a timezone-free WALL-CLOCK value
+// (PostgreSQL `timestamp without time zone` — no offset, no host TZ). The
+// assertion below compares this text directly, never through a JS Date.
+const ORIGINAL_PROJECT_TIME = "2020-01-01T00:00:00.000";
 
 type FailurePoint =
   | "run"
@@ -56,10 +59,17 @@ for (const failurePoint of [
     assert.equal(session.status, "failed");
     assert.equal(session.error_code, "COUNCIL_COMPLETION_PERSISTENCE_FAILED");
 
+    // Rollback invariant on updated_at, asserted timezone-independently:
+    // the driver surfaces `timestamp without time zone` as a JS Date built
+    // in the HOST timezone, so round-tripping through Date/toISOString
+    // would test the machine's TZ configuration, not the database (observed
+    // on Windows UTC+10: 2019-12-31T14:00:00.000Z). to_char reads the
+    // stored wall clock as text — identical under UTC and UTC+10.
     const projectResult = await database.execute(sql.raw(
-      `select updated_at from projects where id = '${PROJECT_ID}'`
+      `select to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS') as updated_at_text ` +
+      `from projects where id = '${PROJECT_ID}'`
     ));
-    assert.equal(new Date(String(projectResult.rows[0].updated_at)).toISOString(), ORIGINAL_PROJECT_TIME);
+    assert.equal(projectResult.rows[0].updated_at_text, ORIGINAL_PROJECT_TIME);
 
     const eventResult = await database.execute(sql.raw(
       `select type from cognitive_session_events where session_id = '${SESSION_ID}' order by sequence`

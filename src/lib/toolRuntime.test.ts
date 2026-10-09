@@ -33,8 +33,19 @@ test("scope authorization rejects another session, resource, sibling root, trave
   await assert.rejects(() => invokeReadOnlyTool({ ...request("filesystem.read", { path: "visible.txt" }), resourceId: "repo-b" }, grant), /TOOL_SCOPE_DENIED/);
   await assert.rejects(() => invokeReadOnlyTool(request("filesystem.read", { path: join(b, "secret.txt") }), grant), /TOOL_SCOPE_DENIED/);
   await assert.rejects(() => invokeReadOnlyTool(request("filesystem.read", { path: "../project-b/secret.txt" }), grant), /TOOL_SCOPE_DENIED/);
-  await symlink(join(b, "secret.txt"), join(a, "escape"));
-  await assert.rejects(() => invokeReadOnlyTool(request("filesystem.read", { path: "escape" }), grant), /TOOL_SCOPE_DENIED/);
+  // Escape-link coverage without privileged file-symlink creation: on
+  // Windows, symlink() for a file target can require Developer Mode and
+  // fails with EPERM, but an unprivileged directory JUNCTION exercises the
+  // exact same production containment path — authorizePath() resolves the
+  // link via realpath (junctions are reparse points, resolved like links)
+  // and must refuse the sibling root. POSIX keeps true symlink coverage.
+  const escapeLink = join(a, "escape");
+  if (process.platform === "win32") {
+    await symlink(b, escapeLink, "junction"); // junctions need an absolute target, never privileges
+  } else {
+    await symlink(b, escapeLink); // directory symlink, resolved by realpath
+  }
+  await assert.rejects(() => invokeReadOnlyTool(request("filesystem.read", { path: join("escape", "secret.txt") }), grant), /TOOL_SCOPE_DENIED/);
 });
 
 test("filesystem tools are bounded, read-only, and expose capability versus adapter provenance", async () => {
