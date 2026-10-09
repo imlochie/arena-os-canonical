@@ -216,8 +216,11 @@ choice:
 electron-builder (NSIS): Electron shell + `desktop/dist` + splash/
 diagnostics pages; `extraResources`: the Next standalone server
 (`output: "standalone"` + `.next/static` + `public/` staged inside the
-server tree), `desktop-migrations/`, FFmpeg/FFprobe binaries,
-embedded-postgres windows-x64 binaries, license notices. No dev caches,
+server tree, including the stem engine's onnxruntime-node — external,
+force-traced, and pruned to the build platform by
+scripts/desktop-prepare-server.mjs), `desktop-migrations/`,
+FFmpeg/FFprobe binaries, embedded-postgres windows-x64 binaries, license
+notices (FFmpeg GPL, ONNX Runtime MIT). No dev caches,
 no test fixtures, no local databases (created at runtime in the user's
 app-data dir), no secrets. `outputFileTracingExcludes` keeps repo trees
 (docs/, scripts/, waveyard-worker/, desktop/) out of the traced server.

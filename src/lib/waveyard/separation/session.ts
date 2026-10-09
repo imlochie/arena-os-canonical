@@ -44,7 +44,7 @@ async function defaultOrtLoader(): Promise<OrtModuleLike | null> {
   try {
     // The package bundles all-platform native binaries; if the import itself
     // fails (not installed / broken native binding) we report unavailable.
-    const mod = (await import(/* webpackIgnore: true */ "onnxruntime-node")) as unknown as OrtModuleLike;
+    const mod = (await import("onnxruntime-node")) as unknown as OrtModuleLike;
     return mod;
   } catch {
     return null;
@@ -87,7 +87,7 @@ export async function verifyModelFile(spec: MdxModelSpec, dir = resolveModelsDir
   } catch {
     throw new SeparationUnavailableError(
       `Separation model "${spec.id}" is not present on this machine (expected at ${path}). ` +
-        "The model is seeded on first use or bundled with the app — see the model manager.",
+        "Use the “Prepare stem engine” action to download it once, then retry.",
     );
   }
   if (stat.size < 1_000_000) {
@@ -100,7 +100,7 @@ export async function verifyModelFile(spec: MdxModelSpec, dir = resolveModelsDir
   if (sha !== spec.sha256) {
     throw new SeparationUnavailableError(
       `Separation model "${spec.id}" failed its integrity check (sha256 ${sha.slice(0, 12)}…, ` +
-        `expected ${spec.sha256.slice(0, 12)}…). Re-seed the model from the model manager.`,
+        `expected ${spec.sha256.slice(0, 12)}…). Use "Prepare stem engine" to re-download it, then retry.`,
     );
   }
   return path;

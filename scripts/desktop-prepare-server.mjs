@@ -86,6 +86,35 @@ for (const envFile of readdirSync(path.join(out, "server")).filter((name) => /^\
   console.log(`[desktop:prepare-server] excluded ${envFile} from the staged server (runtime env comes from the supervisor)`);
 }
 
+// 1c. Stem engine inference runtime: onnxruntime-node is external and
+// force-traced (next.config.ts), so the staged server carries its native
+// bindings for every platform and arch (288 MB). The installer needs
+// exactly the build machine's — prune the rest. A staged server without
+// the runtime is a hard error: the stem machine's promise would silently
+// break in the installed app instead of failing loudly at packaging.
+const ortPackage = path.join(out, "server", "node_modules", "onnxruntime-node");
+if (!existsSync(path.join(ortPackage, "bin", "napi-v6"))) {
+  throw new Error(
+    "onnxruntime-node is missing from the staged server — the stem machine cannot ship without it. " +
+      "Check serverExternalPackages/outputFileTracingIncludes in next.config.ts.",
+  );
+}
+for (const platformDir of readdirSync(path.join(ortPackage, "bin", "napi-v6"), { withFileTypes: true })) {
+  if (!platformDir.isDirectory()) continue;
+  if (platformDir.name !== process.platform) {
+    rmSync(path.join(ortPackage, "bin", "napi-v6", platformDir.name), { recursive: true, force: true });
+    console.log(`[desktop:prepare-server] pruned onnxruntime bindings: ${platformDir.name} (this build is ${process.platform})`);
+    continue;
+  }
+  for (const archDir of readdirSync(path.join(ortPackage, "bin", "napi-v6", platformDir.name), { withFileTypes: true })) {
+    if (archDir.isDirectory() && archDir.name !== process.arch) {
+      rmSync(path.join(ortPackage, "bin", "napi-v6", platformDir.name, archDir.name), { recursive: true, force: true });
+      console.log(`[desktop:prepare-server] pruned onnxruntime bindings: ${platformDir.name}/${archDir.name} (this build is ${process.arch})`);
+    }
+  }
+}
+
+
 // 2. Static assets Next serves from beside server.js (inside the staged tree).
 mkdirSync(path.join(out, "server", ".next"), { recursive: true });
 cpSync(path.join(root, ".next", "static"), path.join(out, "server", ".next", "static"), { recursive: true });
@@ -140,6 +169,22 @@ writeFileSync(
     "",
     "FFmpeg is a trademark of Fabrice Bellard, orig. author of FFmpeg.",
     "This product is not affiliated with the FFmpeg project.",
+  ].join("\n"),
+  "utf8",
+);
+// onnxruntime-node (the stem engine's inference runtime) ships no LICENSE
+// file in its npm package; the runtime itself is MIT — record it here so
+// the installer carries the attribution either way.
+writeFileSync(
+  path.join(root, "desktop", "build", "licenses", "ONNXRUNTIME-LICENSE.txt"),
+  [
+    "Arena bundles ONNX Runtime (the onnxruntime-node npm package) as the",
+    "inference runtime for its local stem separation engine.",
+    "",
+    "ONNX Runtime is licensed under the MIT License.",
+    "Source code is available at https://github.com/microsoft/onnxruntime.",
+    "",
+    "This product is not affiliated with Microsoft or the ONNX Runtime project.",
   ].join("\n"),
   "utf8",
 );

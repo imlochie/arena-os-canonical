@@ -1,9 +1,10 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { summariseSourceIntake } from "@/lib/waveyard/types";
 import { computeBrowserAudioMetadata, computeBrowserWaveform } from "@/lib/waveyard/browser-waveform";
+import { fetchStemEngineStatus, prepareStemEngine, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
 
 const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
 
@@ -14,6 +15,34 @@ export function BuildProject() {
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [engine, setEngine] = useState<StemEngineModelStatus[] | null>(null);
+  const [engineRefresh, setEngineRefresh] = useState(0);
+  const [preparingEngine, setPreparingEngine] = useState(false);
+  const [engineError, setEngineError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const status = await fetchStemEngineStatus();
+      if (!cancelled) setEngine(status);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [engineRefresh]);
+  const engineMissing = engine !== null && engine.some((model) => !model.ready);
+  async function prepareEngine() {
+    const missing = engine?.find((model) => !model.ready);
+    if (!missing) return;
+    setPreparingEngine(true);
+    setEngineError(null);
+    try {
+      const result = await prepareStemEngine(missing.id);
+      if (!result.ok) setEngineError(result.error);
+      setEngineRefresh((value) => value + 1);
+    } finally {
+      setPreparingEngine(false);
+    }
+  }
   const urlLines = useMemo(() => urls.split(/\r?\n/).map((value) => value.trim()).filter(Boolean), [urls]);
   async function build(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setMessage(null);
@@ -66,6 +95,18 @@ export function BuildProject() {
     setBusy(false); router.push(`/waveyard/projects/${projectId}`);
   }
   return <form className="build-project" onSubmit={build}>
+    {engineMissing && (
+      <p className="notice" role="status">
+        First run: the stem engine needs a one-time download
+        ({Math.round((engine!.find((model) => !model.ready)!.sizeBytes ?? 0) / 1_000_000)} MB).
+        You can prepare it now or after your first upload fails — separation
+        then runs fully offline on this machine.
+        <button type="button" className="button secondary" disabled={preparingEngine} onClick={() => void prepareEngine()} style={{ display: "block", marginTop: "0.5rem" }}>
+          {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine now"}
+        </button>
+        {engineError && <span className="error" role="alert" style={{ display: "block", marginTop: "0.5rem" }}>{engineError}</span>}
+      </p>
+    )}
     <input className="build-title" aria-label="Optional project title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Optional project title" />
     <label className="build-dropzone">Drop audio here<input aria-label="Local audio files" type="file" multiple accept={AUDIO_ACCEPT} onChange={(event: ChangeEvent<HTMLInputElement>) => setFiles(Array.from(event.target.files ?? []))} /><b>{files.length ? `${files.length} local file${files.length === 1 ? "" : "s"} ready` : "MP3 · WAV · FLAC · M4A · AAC · OGG"}</b><small>Local audio stays private and enters the same Source Asset pipeline.</small></label>
     <div className="build-or">or</div>

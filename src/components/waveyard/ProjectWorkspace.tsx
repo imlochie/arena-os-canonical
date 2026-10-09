@@ -6,6 +6,7 @@ import { SourceAnalysisSummary } from "./studio/SourceAnalysisSummary";
 import { SourceSectionSummary } from "./studio/SourceSectionSummary";
 import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
 import type { Source, SourceAnalysis, SourceSectionAnalysis, Stem } from "./studio/types";
+import { prepareStemEngine } from "@/lib/waveyard/separation/client";
 import { PublicationPanel } from "./PublicationPanel";
 import { WaveyardHandoffPanel } from "./WaveyardHandoffPanel";
 import { evaluateAutomaticBuildFinalization } from "@/lib/waveyard/automatic-build-finalization";
@@ -164,15 +165,14 @@ async function prepareEngine(model: string, jobId: string) {
     setPreparingEngine(true);
     setError(null);
     try {
-      const response = await fetch(`/api/waveyard/separation/models/${encodeURIComponent(model)}/seed`, { method: "POST" });
-      const json = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError(json.error ?? "The stem engine model could not be prepared.");
+      const result = await prepareStemEngine(model);
+      if (!result.ok) {
+        setError(result.error);
         return;
       }
       // The seed already re-enqueued the failed separations it could fix;
       // fall back to an explicit retry when it found none.
-      if ((json.requeued ?? 0) > 0) setRefresh((value) => value + 1);
+      if (result.requeued > 0) setRefresh((value) => value + 1);
       else await retry(jobId);
     } finally {
       setPreparingEngine(false);

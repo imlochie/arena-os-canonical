@@ -161,7 +161,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       errorCode: "unknown_model",
       errorMessage:
         `The separation model "${payload.model}" is not known to this machine's engine. ` +
-        "Use a model from the built-in model manager.",
+        "Separation runs the model this app ships with — no configuration is needed.",
       completedAt: new Date(),
     });
     throw new Error(`Unknown separation model: ${payload.model}`);

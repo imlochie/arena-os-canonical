@@ -122,10 +122,17 @@ desktop runtime process.
   change either way. HQ seeded set from the canonical
   `huggingface.co/Politrees/UVR_resources` repo (MDX-Net family: Inst_HQ
   series, kuielab challenge models) follows the same pipeline.
-- **Packaging:** onnxruntime-node marked external + `asarUnpack` for the
-  native binding; `allowScripts` entry added so installs stay deterministic
-  (CPU binaries are bundled in the npm tarball — the postinstall only
-  fetches CUDA extras, which we do not use; verified from the tarball).
+- **Packaging (shipped, verified by staging run):** onnxruntime-node is a
+  `serverExternalPackages` entry (Turbopack otherwise bundles the JS wrapper,
+  which then cannot find its native binding — proven before the fix) and its
+  native binaries are force-traced into the standalone server
+  (`outputFileTracingIncludes`); `scripts/desktop-prepare-server.mjs` prunes
+  the bindings to the build platform/arch (288 MB → ~64 MB for win32-x64)
+  and hard-fails if the runtime is missing from the staged tree. No
+  `asarUnpack` is needed — the server ships as extraResources outside the
+  asar archive and runs in a separate Node process. The package's
+  postinstall only fetches CUDA extras (unused); installs run with
+  `--ignore-scripts` and stay deterministic.
 - **Testing honestly:** CI/sandbox cannot fetch model weights (network
   policy) — the demix math (STFT/chunking/overlap-add/windowing) is
   unit-tested against synthetic signals and hand-computed references; the

@@ -12,6 +12,9 @@
 #   - desktop-migrations/ (canonical schema)
 #   - FFmpeg + FFprobe binaries (@ffmpeg-installer builds, GPL — see
 #     build/licenses/FFMPEG-LICENSE.txt)
+#   - ONNX Runtime (onnxruntime-node, MIT) — the stem engine's inference
+#     runtime, traced with the server and pruned to the target platform by
+#     scripts/desktop-prepare-server.mjs (see build/licenses/)
 #   - Embedded PostgreSQL windows-x64 binaries
 
 appId: ai.arena.os
