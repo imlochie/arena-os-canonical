@@ -58,6 +58,8 @@ export interface ArenaRuntimeConfig {
   ffmpegPath: string | null;
   ffprobePath: string | null;
   storageDir: string;
+  /** Stem-machine model files (separation/seed.ts installs here). */
+  modelsDir: string;
   server: RuntimeServerMode;
   mode: "desktop";
 }
@@ -195,6 +197,7 @@ export async function resolveRuntimeConfig(inputs: RuntimeConfigInputs): Promise
     ffmpegPath: resolveInstallerBinary(platform, inputs.appRoot, "ffmpeg"),
     ffprobePath: resolveInstallerBinary(platform, inputs.appRoot, "ffprobe"),
     storageDir: path.join(dirs.waveyard, "storage"),
+    modelsDir: path.join(dirs.waveyard, "models"),
     server,
     mode: "desktop",
   };

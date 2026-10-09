@@ -171,18 +171,26 @@ choice:
 - `enqueue()` gains one branch: desktop mode → `LocalJobBroker.submit()`.
   Same payload, same jobId, same DB row lifecycle the routes already
   implement (queued → running → succeeded/failed, attempts, errorCode).
-  Queue-API calls (retry routes) route to the broker too (`getJob` →
-  undefined → the routes' enqueue fallback path, which submits fresh).
+  Queue-API calls (retry routes) route to the broker too: the separation
+  retry route branches on desktop mode and submits a fresh payload rebuilt
+  from the durable row (BullMQ's `queueJob.retry()` has no record to
+  retry there); the row is reset only after the queue accepts the job.
 - Handlers are **ports of the worker's engines** where the engine is
   FFmpeg (waveform, export) and **new real engines** where the worker
   used Python (source analysis → `arena-js-dsp`, sections →
   `arena-js-structure`). Provenance is honest: analyses persist
   `arena-js-dsp` / `arena-js-structure`, never the Python engine's name.
-- Separation (Demucs) has **no** local executor and fails loudly with a
-  desktop-specific reason — isolated in diagnostics, never silently
-  skipped. Desktop users get waveform + analysis + sections + arrangement
-  + export through the existing "use unseparated source" passthrough
-  surface; stems come from the app's own MDX-Net stem machine
+- Separation is the app's own MDX-Net stem machine (worker-local/
+  separation.ts over onnxruntime-node) — see the queue map above. The
+  Python Demucs worker remains the server/Redis engine; desktop never
+  shells out to it. If the model file is absent, the job fails honestly
+  (`separation_unavailable`) and the UI offers a one-time "Prepare stem
+  engine" download that checksum-verifies and atomically installs the
+  registry-pinned model, then re-enqueues every separation job that
+  failed for want of it (separation/seed.ts, separation/retry.ts).
+  Model files live under the app-data waveyard dir (`WAVEYARD_MODELS_DIR`,
+  default `<data>/waveyard/models` — the same never-CWD rule as storage);
+  a corrupt download can never become the file inference reads.
   (vocals + instrumental, engine "mdx"; the Python worker's Demucs
   remains the server/cloud engine).
 - Desktop pipeline trigger port: on desktop the separation worker cannot

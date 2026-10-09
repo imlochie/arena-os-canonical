@@ -118,6 +118,7 @@ export class ArenaRuntimeSupervisor {
       ARENA_DESKTOP_MODE: "1",
       DATABASE_URL: `postgres://${encodeURIComponent(config.database.user)}:${encodeURIComponent(config.database.password)}@${config.host}:${config.database.port}/${config.database.name}`,
       WAVEYARD_STORAGE_DIR: config.storageDir,
+      WAVEYARD_MODELS_DIR: config.modelsDir,
       PORT: String(config.port),
       HOSTNAME: config.host,
       ...(config.ffmpegPath !== null ? { ARENA_FFMPEG_PATH: config.ffmpegPath } : {}),
@@ -132,7 +133,7 @@ export class ArenaRuntimeSupervisor {
 
     // 1. Storage + runtime directories (app data, never CWD).
     this.setPhase("storage");
-    for (const dir of [this.config.storageDir, this.config.dirs.runtime, this.config.dirs.logs]) {
+    for (const dir of [this.config.storageDir, this.config.modelsDir, this.config.dirs.runtime, this.config.dirs.logs]) {
       mkdirSync(dir, { recursive: true });
     }
 

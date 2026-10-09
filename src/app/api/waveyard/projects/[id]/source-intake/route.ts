@@ -39,8 +39,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const limit = new Transform({ transform(chunk, _encoding, done) { received += chunk.length; done(received > MAX_UPLOAD_BYTES ? new Error("Authorized source exceeded the intake limit.") : undefined, chunk); } });
     await pipeline(Readable.fromWeb(audio.body as import("node:stream/web").ReadableStream), limit, createWriteStream(filePath));
     const result = await ingestSourceFile({ projectId, filePath, filename: resolved.filename, mimeType: resolved.mimeType ?? audio.headers.get("content-type") ?? "application/octet-stream", model: body.model !== undefined && body.model !== null && String(body.model).trim() !== "" ? String(body.model) : defaultSeparationModel(), device: "auto", provenance: { method: "authorized-url", sourceUrl, title: resolved.title, artist: resolved.artist, resolver: resolved.resolver, metadata: resolved.metadata } });
-    if (!result.separationQueued) return NextResponse.json({ error: "The authorized source was stored, but separation could not be queued. Start the worker/Redis and retry this source." }, { status: 503 });
-    return NextResponse.json({ source: result.source, job: result.job, waveformJob: { id: result.waveformJob.id, queued: result.waveformQueued }, acquisition: { method: "authorized-url", sourceUrl, title: resolved.title ?? null, artist: resolved.artist ?? null } }, { status: 201 });
+    // The ingest itself succeeded — a queue failure must not turn the whole
+    // intake into an error. The durable separation row records its own honest
+    // failure boundary (same policy as POST /api/uploads), and the response
+    // carries separationQueued so the UI can surface the real state.
+    return NextResponse.json({ source: result.source, job: result.job, separationQueued: result.separationQueued, waveformJob: { id: result.waveformJob.id, queued: result.waveformQueued }, acquisition: { method: "authorized-url", sourceUrl, title: resolved.title ?? null, artist: resolved.artist ?? null } }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     const message = error instanceof Error ? error.message : "Authorized source acquisition failed.";

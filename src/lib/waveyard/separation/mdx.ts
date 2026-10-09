@@ -50,6 +50,8 @@ export interface MdxModelParams {
 
 export interface MdxModelSpec {
   id: string;
+  /** Product-facing name ("Kim Vocal 2") — never shown as a filename. */
+  label?: string;
   /** ONNX filename as seeded on disk. */
   file: string;
   /** sha256 of the exact file (checksum-verified seeding). */
@@ -77,6 +79,7 @@ export interface MdxModelSpec {
 export const MDX_MODELS: MdxModelSpec[] = [
   {
     id: "kim_vocal_2",
+    label: "Kim Vocal 2",
     file: "Kim_Vocal_2.onnx",
     sha256: "ce74ef3b6a6024ce44211a07be9cf8bc6d87728cc852a68ab34eb8e58cde9c8b",
     sizeBytes: 66_800_000,

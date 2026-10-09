@@ -100,11 +100,11 @@ desktop runtime process.
   `LocalJobBroker` (the desktop queue transport that already runs waveform,
   analysis, and render jobs with no Redis). Upload → separation starts
   immediately, in-process, with real chunk-level progress events.
-- **The 503 wall dies:** `src/app/api/uploads/route.ts` currently tells
-  desktop users *"Start the worker/Redis and retry this source"*. After V1
-  that string no longer exists in any user-facing path. Server/Redis mode
-  remains available for deployments that want it — the local handler simply
-  takes priority in desktop mode.
+- **The 503 wall is dead** (shipped): no user-facing path tells anyone to
+  "start the worker/Redis" anymore — uploads persist and each durable job
+  row records its own honest failure boundary. Server/Redis mode remains
+  available for deployments that want it; in desktop mode the local
+  handler takes priority.
 - **Demix pipeline:** decode via bundled ffmpeg → resample 44.1 kHz stereo →
   STFT with per-model parameters (n_fft/hop/window read from each model's
   config — verified from the real files at integration, not from memory) →
@@ -112,11 +112,16 @@ desktop runtime process.
   ISTFT → stems persisted exactly as the cloud worker would persist them,
   so every downstream surface (availability, player, mixer, arrangement)
   lights up with zero changes.
-- **Models:** bundled fast = `Kim_Vocal_2.onnx` (66.8 MB — vocals +
-  instrumental; license check before bundling, seed-fallback if unclear).
-  HQ seeded set from the canonical `huggingface.co/Politrees/UVR_resources`
-  repo (MDX-Net family: Inst_HQ series, kuielab challenge models), verified
-  by checksum through the seeding pipeline.
+- **Models:** `Kim_Vocal_2.onnx` (66.8 MB — vocals + instrumental,
+  sha256-pinned in the registry). The seeding pipeline is implemented:
+  first use offers "Prepare stem engine (one-time download)" — the
+  registry-pinned file is downloaded, checksum-verified, and installed
+  atomically, then every separation that failed for want of the model is
+  re-enqueued automatically. Bundling the fast model in the installer
+  remains open pending the license check; the seed path needs no design
+  change either way. HQ seeded set from the canonical
+  `huggingface.co/Politrees/UVR_resources` repo (MDX-Net family: Inst_HQ
+  series, kuielab challenge models) follows the same pipeline.
 - **Packaging:** onnxruntime-node marked external + `asarUnpack` for the
   native binding; `allowScripts` entry added so installs stay deterministic
   (CPU binaries are bundled in the npm tarball — the postinstall only

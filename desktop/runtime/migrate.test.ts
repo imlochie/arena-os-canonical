@@ -37,6 +37,7 @@ async function startTestPostgres(): Promise<{ postgres: EmbeddedPostgres; config
     ffmpegPath: null,
     ffprobePath: null,
     storageDir: join(root, "waveyard", "storage"),
+    modelsDir: join(root, "waveyard", "models"),
     server: { kind: "dev", cwd: root, nodeBinary: process.execPath },
     mode: "desktop" as const,
   };

@@ -30,7 +30,7 @@ export function BuildProject() {
     if (!buildResponse.ok) { setBusy(false); setMessage(buildRecord.error ?? "Project was created but its build could not start."); router.push(`/waveyard/projects/${projectId}`); return; }
     const failures: string[] = []; let accepted = 0;
     for (const file of files) {
-      const payload = new FormData(); payload.set("projectId", projectId); payload.set("file", file); payload.set("model", ""); // resolved by the server for this machine payload.set("device", "auto");
+      const payload = new FormData(); payload.set("projectId", projectId); payload.set("file", file); payload.set("device", "auto"); // model is resolved by the server for this machine
       // The browser decodes the real audio (Web Audio) and sends the measured
       // duration/sampleRate/channels — used server-side only when no ffprobe
       // exists, and recorded as probeSource "client-webaudio".

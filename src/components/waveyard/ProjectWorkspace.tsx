@@ -35,6 +35,8 @@ type ProjectData = {
     status: string;
     stage: string;
     errorMessage: string | null;
+    errorCode: string | null;
+    metadata: string | null;
     model: string;
     requestedDevice: string;
     resolvedDevice: string | null;
@@ -43,6 +45,25 @@ type ProjectData = {
 };
 
 const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
+
+/** Chunk-level separation progress, when the engine has reported it. */
+function parseJobProgress(metadata: string | null): { done: number; total: number; percent: number } | null {
+  if (!metadata) return null;
+  try {
+    const parsed = JSON.parse(metadata) as { progress?: { done?: unknown; total?: unknown; percent?: unknown } };
+    const progress = parsed?.progress;
+    if (
+      progress === null || typeof progress !== "object" ||
+      typeof progress.done !== "number" || typeof progress.total !== "number" ||
+      typeof progress.percent !== "number" || progress.total <= 0
+    ) {
+      return null;
+    }
+    return { done: progress.done, total: progress.total, percent: Math.min(100, Math.max(0, progress.percent)) };
+  } catch {
+    return null;
+  }
+}
 
 export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [data, setData] = useState<ProjectData | null>(null);
@@ -53,6 +74,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [selectedSourceName, setSelectedSourceName] = useState("");
   const [sourceMessage, setSourceMessage] = useState<string | null>(null);
   const [passthroughBusy, setPassthroughBusy] = useState(false);
+  const [preparingEngine, setPreparingEngine] = useState(false);
   const finalizingBuild = useRef<string | null>(null);
 
   useEffect(() => {
@@ -138,7 +160,26 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
   }
 
-async function retry(jobId: string) {
+async function prepareEngine(model: string, jobId: string) {
+    setPreparingEngine(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/waveyard/separation/models/${encodeURIComponent(model)}/seed`, { method: "POST" });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(json.error ?? "The stem engine model could not be prepared.");
+        return;
+      }
+      // The seed already re-enqueued the failed separations it could fix;
+      // fall back to an explicit retry when it found none.
+      if ((json.requeued ?? 0) > 0) setRefresh((value) => value + 1);
+      else await retry(jobId);
+    } finally {
+      setPreparingEngine(false);
+    }
+  }
+
+  async function retry(jobId: string) {
     setRetrying(true);
     setError(null);
     const response = await fetch(`/api/jobs/${jobId}/retry`, {
@@ -207,7 +248,7 @@ async function retry(jobId: string) {
     const payload = new FormData();
     payload.set("projectId", projectId);
     payload.set("file", selected);
-        payload.set("device", "auto");
+    payload.set("device", "auto");
     const response = await fetch("/api/uploads", { method: "POST", body: payload });
     const body = await response.json().catch(() => ({}));
     setAddingSource(false);
@@ -217,7 +258,7 @@ async function retry(jobId: string) {
     }
     form.reset();
     setSelectedSourceName("");
-    setSourceMessage(`Queued ${selected.name}. The existing worker will separate it and derive private waveforms.`);
+    setSourceMessage(`Queued ${selected.name}. It separates into stems on this machine — you can keep this page open or come back later.`);
     setRefresh((value) => value + 1);
   }
 
@@ -297,7 +338,7 @@ async function retry(jobId: string) {
                     className="button secondary"
                     disabled={passthroughBusy}
                     onClick={() => void arrangeUnseparatedSource(source.id)}
-                    title="Arrangement tracks bind to stems; without the separation worker you can still arrange the full, unseparated source — labeled as such."
+                    title="Arrangement tracks bind to stems; you can also arrange the full, unseparated source right away — it is labeled as such."
                   >
                     {passthroughBusy ? "Adding…" : "Use unseparated source"}
                   </button>
@@ -323,20 +364,35 @@ async function retry(jobId: string) {
             {latest.errorMessage || "No safe error detail was recorded."} Source
             audio remains stored; no stems were marked complete.
           </p>
-          {editable && <button
-            className="button"
-            disabled={retrying}
-            onClick={() => void retry(latest.id)}
-          >
-            {retrying ? "Retrying…" : "Retry separation"}
-          </button>}
+          {editable && latest.errorCode === "separation_unavailable" && (
+            <button
+              className="button"
+              disabled={preparingEngine}
+              onClick={() => void prepareEngine(latest.model, latest.id)}
+            >
+              {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine (one-time download)"}
+            </button>
+          )}
+          {editable && latest.errorCode !== "separation_unavailable" && (
+            <button
+              className="button"
+              disabled={retrying}
+              onClick={() => void retry(latest.id)}
+            >
+              {retrying ? "Retrying…" : "Retry separation"}
+            </button>
+          )}
         </div>
       )}
       {latest && latest.status !== "complete" && latest.status !== "failed" && (
         <p className="notice">
-          The worker is at “{latest.stage}” using {latest.model}. This is a
-          named processing stage, not an invented percentage. Keep this page
-          open or return later.
+          {(() => {
+            const progress = parseJobProgress(latest.metadata);
+            if (latest.stage === "separating" && progress) {
+              return `Separating — ${progress.percent}% (part ${progress.done} of ${progress.total}). Keep this page open or return later.`;
+            }
+            return `Separation is at the “${latest.stage}” stage. Keep this page open or return later.`;
+          })()}
         </p>
       )}
       <PublicationPanel
@@ -364,7 +420,7 @@ async function retry(jobId: string) {
         (job) => job.status !== "complete" && job.status !== "failed",
       ) && (
         <p className="notice">
-          Waveform worker jobs are still running. Studio renders peaks only
+          Waveforms are still being generated. Studio renders peaks only
           after a real decoded waveform artifact is stored and validated.
         </p>
       )}
