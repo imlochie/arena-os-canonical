@@ -253,22 +253,22 @@ try {
   printAcceptance(run1.body);
   const sections = run1.body?.sections ?? {};
   const sectionOk = (name) => sections[name]?.ok === true;
-  mark("FIRST LAUNCH", sectionOk("firstLaunch"), sections.firstLaunch);
+  mark("FIRST_LAUNCH", sectionOk("firstLaunch"), sections.firstLaunch);
   mark("RUNTIME", sectionOk("firstLaunch") && sectionOk("paths"), { firstLaunch: sections.firstLaunch, paths: sections.paths });
   mark(
-    "WAVEYARD WORKFLOW",
+    "WAVEYARD_WORKFLOW",
     sectionOk("workflow") && sectionOk("failureTests"),
     { note: "API-level automated; GUI checklist (playback/meters/mixer/inserts) is manual — docs/windows-acceptance.md", workflow: sections.workflow, failureTests: sections.failureTests },
   );
   mark("EXPORT", exportOk(sections.workflow), { export: run1.body?.export });
-  mark("RESTART PERSISTENCE", sectionOk("restartPersistence"), sections.restartPersistence);
+  mark("RESTART_PERSISTENCE", sectionOk("restartPersistence"), sections.restartPersistence);
   mark("OFFLINE", sectionOk("offline"), { note: "loopback-only proven in-run; adapter-offline pass is the manual step in docs/windows-acceptance.md", offline: sections.offline });
   if (run1.body?.export !== undefined) report.detail.EXPORT_MEDIA = run1.body.export;
 
   // ---------------------------------------------------------------- orphan check (normal exit)
   const orphansAfterExit = findOwnedProcesses(installDir, acceptancePlan.dataRoot);
   const processCleanupOk = sectionOk("processCleanup") && orphansAfterExit.length === 0;
-  mark("PROCESS CLEANUP", processCleanupOk, {
+  mark("PROCESS_CLEANUP", processCleanupOk, {
     inApp: sections.processCleanup,
     orphansAfterNormalExit: orphansAfterExit,
   });
@@ -325,7 +325,7 @@ try {
       exempted: recoveryResult.exempted,
     };
     if (!recoveryResult.ok) {
-      mark("PROCESS CLEANUP", false, `app did not fully recover after an abnormal shutdown — ${recoveryResult.failures.join("; ")}`);
+      mark("PROCESS_CLEANUP", false, `app did not fully recover after an abnormal shutdown — ${recoveryResult.failures.join("; ")}`);
     }
   }
 

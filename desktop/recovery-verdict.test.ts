@@ -186,8 +186,8 @@ test("windows-acceptance judges recovery via evaluateRecovery, not body.ok (wiri
   // The normal launch still requires the FULL firstLaunch section
   // (firstRun=true included) — the distinction stays explicit.
   assert.ok(
-    source.includes('mark("FIRST LAUNCH", sectionOk("firstLaunch")'),
-    "the normal-launch verdict must keep requiring the full firstLaunch section",
+    source.includes('mark("FIRST_LAUNCH", sectionOk("firstLaunch")'),
+    "the normal-launch verdict must keep requiring the full firstLaunch section (via the canonical report key)",
   );
 });
 
