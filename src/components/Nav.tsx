@@ -59,6 +59,7 @@ const GROUPS: { title: string; rooms: RoomLink[] }[] = [
       { href: "/projects", label: "Projects", emoji: "📁", desc: "Long-lived work with artifacts.", keywords: "folders work organize" },
       { href: "/collab", label: "Collab", emoji: "🤝", desc: "Models collaborate, best result wins.", keywords: "collaborate together lab" },
       { href: "/classroom", label: "Classroom", emoji: "🎓", desc: "Learn with the arena.", keywords: "learn study teach" },
+      { href: "/college", label: "College", emoji: "🏫", desc: "The Lochie Life College: timetable, faculty, governance.", keywords: "college institution timetable faculty governance curriculum campus study" },
       { href: "/cut", label: "Cut Lab", emoji: "✂️", desc: "Edit and split media.", keywords: "cut split edit media" },
     ],
   },

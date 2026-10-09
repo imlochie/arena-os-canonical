@@ -1,3 +1,4 @@
+import Link from "next/link";
 import BattleArena from "@/components/BattleArena";
 import KeysBar from "@/components/KeysBar";
 
@@ -29,15 +30,15 @@ export default function HomePage() {
           Battle models blind, vote honestly, and keep everything — rankings, files, agents — on your machine.
         </p>
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
-          <a href="/command" className="btn rounded-xl bg-violet-600 px-6 py-3 text-sm text-white shadow-[0_10px_30px_rgba(124,58,237,0.45)] hover:bg-violet-500">
+          <Link href="/command" className="btn rounded-xl bg-violet-600 px-6 py-3 text-sm text-white shadow-[0_10px_30px_rgba(124,58,237,0.45)] hover:bg-violet-500">
             🧭 What do you want to do?
-          </a>
-          <a href="/rooms" className="btn rounded-xl bg-white/5 px-5 py-3 text-sm text-slate-200 ring-1 ring-white/15 hover:bg-white/10">
+          </Link>
+          <Link href="/rooms" className="btn rounded-xl bg-white/5 px-5 py-3 text-sm text-slate-200 ring-1 ring-white/15 hover:bg-white/10">
             🗺️ Browse all rooms
-          </a>
+          </Link>
         </div>
         <p className="mt-3 text-[11px] text-slate-600">
-          Three execution levels — <a href="/runtime" className="text-slate-400 underline decoration-dotted hover:text-slate-200">offline engine · on-device LLM · remote models</a> — every answer says what actually ran.
+          Three execution levels — <Link href="/runtime" className="text-slate-400 underline decoration-dotted hover:text-slate-200">offline engine · on-device LLM · remote models</Link> — every answer says what actually ran.
         </p>
       </section>
 

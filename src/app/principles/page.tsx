@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export const dynamic = "force-dynamic";
 
 export default function PrinciplesPage() {
@@ -71,9 +73,9 @@ export default function PrinciplesPage() {
           <p className="rounded-xl bg-white/[0.03] p-3 ring-1 ring-white/5">
             <strong className="text-white">Your data, your control.</strong> Export or erase anything
             anytime in the{" "}
-            <a href="/privacy" className="font-bold text-emerald-300 underline">
+            <Link href="/privacy" className="font-bold text-emerald-300 underline">
               Data Protection Center
-            </a>
+            </Link>
             . Nothing trains on your content, ever.
           </p>
         </div>
@@ -87,9 +89,9 @@ export default function PrinciplesPage() {
           Everything else — edgy fiction, sharp debate, weird art, hard questions — is welcome.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
-          <a href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">
+          <Link href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">
             ⚔️ Back to the arena
-          </a>
+          </Link>
           <a
             href="/privacy"
             className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10"

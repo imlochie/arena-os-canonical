@@ -89,6 +89,17 @@ export const ARENA_ROOMS: ArenaRoom[] = [
     destination: { href: "/classroom", label: "Open Classroom" },
   },
   {
+    id: "college",
+    handoffTarget: "none",
+    name: "Lochie Life College",
+    eyebrow: "Institution",
+    description:
+      "The College runtime: timetable, faculty, curriculum, governance, and the institutional record — scheduled vs observed reality, reconciled.",
+    state: "available",
+    destination: { href: "/college", label: "Open the College" },
+    secondaryDestination: { href: "/college/day", label: "Today at the College" },
+  },
+  {
     id: "studio",
     handoffTarget: "operational",
     name: "Studio",

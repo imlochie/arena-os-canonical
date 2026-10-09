@@ -121,7 +121,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     })();
   }, [data, projectId]);
 
-    async function useUnseparatedSource(sourceAssetId: string) {
+    async function arrangeUnseparatedSource(sourceAssetId: string) {
     setPassthroughBusy(true);
     try {
       const response = await fetch("/api/stems/passthrough", {
@@ -297,7 +297,7 @@ async function retry(jobId: string) {
                   <button
                     className="button secondary"
                     disabled={passthroughBusy}
-                    onClick={() => void useUnseparatedSource(source.id)}
+                    onClick={() => void arrangeUnseparatedSource(source.id)}
                     title="Arrangement tracks bind to stems; without the separation worker you can still arrange the full, unseparated source — labeled as such."
                   >
                     {passthroughBusy ? "Adding…" : "Use unseparated source"}

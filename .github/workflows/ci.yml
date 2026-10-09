@@ -17,8 +17,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "arena/**"]
   pull_request:
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

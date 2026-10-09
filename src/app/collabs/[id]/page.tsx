@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { db } from "@/db";
 import { collabs, collabContributions } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
@@ -100,12 +101,12 @@ export default async function CollabPage({ params }: { params: Promise<{ id: str
       )}
 
       <div className="mt-6 flex flex-wrap justify-center gap-2">
-        <a href="/collab" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">
+        <Link href="/collab" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">
           🤝 Run your own collab
-        </a>
-        <a href="/" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">
+        </Link>
+        <Link href="/" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">
           ⚔️ Battle arena
-        </a>
+        </Link>
       </div>
     </div>
   );

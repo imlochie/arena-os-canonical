@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export const dynamic = "force-dynamic";
 
 function Code({ children, title }: { children: string; title?: string }) {
@@ -201,8 +203,8 @@ newA = eloA + 32 * (scoreA - expectedA)  // score: win=1 tie=0.5 loss=0`}
           ))}
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <a href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Back to the arena</a>
-          <a href="/assistants" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🧬 Build an assistant</a>
+          <Link href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Back to the arena</Link>
+          <Link href="/assistants" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🧬 Build an assistant</Link>
         </div>
       </div>
     </div>
