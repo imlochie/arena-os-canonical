@@ -1,0 +1,129 @@
+/**
+ * -----------------------------------------------------------------------------
+ * AUTO-GENERATED FILE — DO NOT EDIT BY HAND.
+ *
+ * Source of truth : https://github.com/imlochie/SomeSafePortablesoftware/blob/arena/01a0b5e9-somesafeportablesoftware/lib/api-spec/openapi.yaml
+ * Upstream ref    : imlochie/SomeSafePortablesoftware@1a2200bcbb496154f9ed9ede77059d6be9d0a1be
+ *
+ * Byte-for-byte reproducible: regenerate whenever the upstream OpenAPI
+ * document changes (npm run generate:personalisation-contract), then commit both
+ * generated files together. The --check mode fails if the committed output
+ * is stale with respect to the given spec.
+ *   npm run generate:personalisation-contract
+ * -----------------------------------------------------------------------------
+ */
+/**
+ * AUTO-GENERATED TypeScript types for the Archive Assistant
+ * personalisation-evidence boundary (the Gate-6 seam). Mirrors the OpenAPI
+ * component schemas referenced by the single sanctioned seventh read,
+ * GET /assistant/personalisation-context. Regenerate; never hand-edit.
+ */
+
+export type BehavioralSignal = {
+  signalId: string;
+  profile: "long_term" | "recent" | "collection";
+  signalType: string;
+  subjectIdentity: string;
+  value: Record<string, unknown>;
+  epistemicStatus: "derived";
+  scopeIdentity: string;
+  coverage: Record<string, unknown>;
+  provenance: SignalProvenance;
+  derivedAt: string;
+  [key: string]: unknown;
+};
+
+export type PersonalisationCollectionFact = BehavioralSignal & {
+  evidenceClass: "collection_fact";
+};
+
+export type PersonalisationContext = {
+  domain: string;
+  facts: Array<PersonalisationFact>;
+  observedSignals: Array<PersonalisationObservedSignal>;
+  temporalSignals: Array<PersonalisationTemporalSignal>;
+  collectionFacts: Array<PersonalisationCollectionFact>;
+  interpretations: Array<PersonalisationInterpretation>;
+  uncertainties: Array<PersonalisationUncertainty>;
+  explicitPreferences: Array<PersonalisationExplicitPreference>;
+  constraints: Array<string>;
+};
+
+export type PersonalisationExplicitPreference = {
+  preferenceId: number;
+  subjectType: string;
+  subjectIdentity: string;
+  statement: string;
+  scopeIdentity: string;
+  observedAt: string;
+  provenanceStatus: "authoritative" | "legacy";
+  provenance: PreferenceProvenance | null;
+};
+
+export type PersonalisationFact = {
+  evidenceClass: "fact";
+  factType: string;
+  value: unknown;
+  epistemicStatus: "observed" | "derived" | "coverage-limited" | "unknown";
+  provenance: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type PersonalisationInterpretation = {
+  evidenceClass: "interpretation";
+  statement?: string;
+  epistemicStatus?: "derived" | "unknown";
+  provenance?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type PersonalisationObservedSignal = BehavioralSignal & {
+  evidenceClass: "observed_signal";
+};
+
+export type PersonalisationTemporalSignal = BehavioralSignal & {
+  evidenceClass: "temporal_signal";
+  value: TemporalSignalValue;
+};
+
+export type PersonalisationUncertainty = {
+  evidenceClass: "uncertainty";
+  reason?: string;
+  epistemicStatus?: "coverage-limited" | "unknown";
+  scopeIdentity?: string;
+  coverage?: Record<string, unknown>;
+  provenance?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type PreferenceProvenance = {
+  preferenceId: number;
+  source: "operator_statement";
+  observedAt: string;
+  scopeIdentity: string;
+};
+
+export type SignalProvenance = {
+  derivedFrom: string;
+  observationIds: Array<number>;
+  eventIds: Array<number>;
+  evidenceKeys: Array<string>;
+  providerEventIds: Array<string>;
+  ingestionBatchIds: Array<string>;
+  batchIds: Array<string>;
+  eventOccurredAt: Array<string>;
+  observedAt: Array<string>;
+  scopeIdentity: string;
+  [key: string]: unknown;
+};
+
+export type TemporalSignalValue = {
+  window: TemporalWindow;
+  previousWindow?: TemporalWindow;
+  [key: string]: unknown;
+};
+
+export type TemporalWindow = {
+  startsAt: string;
+  endsAt: string;
+};

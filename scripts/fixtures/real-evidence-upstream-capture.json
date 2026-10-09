@@ -1,0 +1,517 @@
+{
+  "derivedAt": "2026-09-19T00:00:00.000Z",
+  "context": {
+    "domain": "archive.personalisation",
+    "facts": [
+      {
+        "evidenceClass": "fact",
+        "factType": "totalPlays",
+        "value": 4,
+        "epistemicStatus": "observed",
+        "provenance": {
+          "source": "Archive Assistant normalized watch_event",
+          "observedAt": "2026-09-19T14:32:17.108Z",
+          "eventIds": [
+            4,
+            3,
+            2,
+            1
+          ]
+        }
+      },
+      {
+        "evidenceClass": "fact",
+        "factType": "uniqueTitlesWatched",
+        "value": 1,
+        "epistemicStatus": "derived",
+        "provenance": {
+          "source": "Archive Assistant normalized watch_event",
+          "observedAt": "2026-09-19T14:32:17.108Z",
+          "eventIds": [
+            4,
+            3,
+            2,
+            1
+          ]
+        }
+      },
+      {
+        "evidenceClass": "fact",
+        "factType": "rewatches",
+        "value": 3,
+        "epistemicStatus": "derived",
+        "provenance": {
+          "source": "Archive Assistant normalized watch_event",
+          "observedAt": "2026-09-19T14:32:17.108Z",
+          "eventIds": [
+            4,
+            3,
+            2,
+            1
+          ]
+        }
+      },
+      {
+        "evidenceClass": "fact",
+        "factType": "playsByMonth",
+        "value": {
+          "2026-09": 1,
+          "2026-08": 1,
+          "2026-05": 1,
+          "2020-01": 1
+        },
+        "epistemicStatus": "derived",
+        "provenance": {
+          "source": "Archive Assistant normalized watch_event",
+          "observedAt": "2026-09-19T14:32:17.108Z",
+          "eventIds": [
+            4,
+            3,
+            2,
+            1
+          ]
+        }
+      },
+      {
+        "evidenceClass": "fact",
+        "factType": "hoursWatched",
+        "value": null,
+        "epistemicStatus": "unknown",
+        "provenance": {
+          "source": "Archive Assistant normalized watch_event",
+          "observedAt": "2026-09-19T14:32:17.108Z",
+          "eventIds": [
+            4,
+            3,
+            2,
+            1
+          ]
+        }
+      },
+      {
+        "evidenceClass": "fact",
+        "factType": "movieTvSplit",
+        "value": {
+          "movies": 4,
+          "tvEpisodes": 0
+        },
+        "epistemicStatus": "derived",
+        "provenance": {
+          "source": "Archive Assistant normalized watch_event",
+          "observedAt": "2026-09-19T14:32:17.108Z",
+          "eventIds": [
+            4,
+            3,
+            2,
+            1
+          ]
+        }
+      },
+      {
+        "evidenceClass": "fact",
+        "factType": "ownership",
+        "value": {
+          "currentlyOwned": 0,
+          "notCurrentlyOwned": 4,
+          "previouslyOwned": 0,
+          "departureUnconfirmed": 0,
+          "neverMatched": 4
+        },
+        "epistemicStatus": "derived",
+        "provenance": {
+          "source": "Archive Assistant normalized watch_event",
+          "observedAt": "2026-09-19T14:32:17.109Z",
+          "eventIds": [
+            4,
+            3,
+            2,
+            1
+          ]
+        }
+      },
+      {
+        "evidenceClass": "fact",
+        "factType": "topWatchedMedia",
+        "value": [
+          {
+            "title": "behaviour-film",
+            "plays": 4
+          }
+        ],
+        "epistemicStatus": "derived",
+        "provenance": {
+          "source": "Archive Assistant normalized watch_event",
+          "observedAt": "2026-09-19T14:32:17.109Z",
+          "eventIds": [
+            4,
+            3,
+            2,
+            1
+          ]
+        }
+      }
+    ],
+    "observedSignals": [
+      {
+        "evidenceClass": "observed_signal",
+        "signalId": "1",
+        "profile": "long_term",
+        "signalType": "long_term_affinity",
+        "subjectType": "media",
+        "subjectIdentity": "behaviour-film",
+        "value": {
+          "title": "behaviour-film",
+          "totalWatches": 4,
+          "firstWatchedAt": "2020-01-01T10:00:00.000Z",
+          "lastWatchedAt": "2026-09-01T10:00:00.000Z",
+          "activeMonths": 4
+        },
+        "epistemicStatus": "derived",
+        "scopeIdentity": "plex:movies-v1",
+        "coverage": {
+          "historicalCoverageStart": null,
+          "collectingSince": "2026-09-19",
+          "source": "Archive Assistant analytics coverage"
+        },
+        "provenance": {
+          "derivedFrom": "watch_event",
+          "observationIds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "eventIds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "evidenceKeys": [
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-old\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-previous\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-new-1\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-new-2\",\"plex:movies-v1\"]"
+          ],
+          "providerEventIds": [
+            "behaviour-old",
+            "behaviour-previous",
+            "behaviour-new-1",
+            "behaviour-new-2"
+          ],
+          "ingestionBatchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "batchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "eventOccurredAt": [
+            "2020-01-01T10:00:00.000Z",
+            "2026-05-01T10:00:00.000Z",
+            "2026-08-01T10:00:00.000Z",
+            "2026-09-01T10:00:00.000Z"
+          ],
+          "observedAt": [
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z"
+          ],
+          "scopeIdentity": "plex:movies-v1"
+        },
+        "derivedAt": "2026-09-19T14:32:17.103Z"
+      },
+      {
+        "evidenceClass": "observed_signal",
+        "signalId": "4",
+        "profile": "long_term",
+        "signalType": "rewatch_affinity",
+        "subjectType": "media",
+        "subjectIdentity": "behaviour-film",
+        "value": {
+          "title": "behaviour-film",
+          "firstWatch": "2020-01-01T10:00:00.000Z",
+          "rewatchCount": 3,
+          "rewatchIntervalsDays": [
+            2312,
+            92,
+            31
+          ],
+          "lastRewatchAt": "2026-09-01T10:00:00.000Z"
+        },
+        "epistemicStatus": "derived",
+        "scopeIdentity": "plex:movies-v1",
+        "coverage": {
+          "historicalCoverageStart": null,
+          "collectingSince": "2026-09-19",
+          "source": "Archive Assistant analytics coverage"
+        },
+        "provenance": {
+          "derivedFrom": "watch_event",
+          "observationIds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "eventIds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "evidenceKeys": [
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-old\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-previous\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-new-1\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-new-2\",\"plex:movies-v1\"]"
+          ],
+          "providerEventIds": [
+            "behaviour-old",
+            "behaviour-previous",
+            "behaviour-new-1",
+            "behaviour-new-2"
+          ],
+          "ingestionBatchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "batchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "eventOccurredAt": [
+            "2020-01-01T10:00:00.000Z",
+            "2026-05-01T10:00:00.000Z",
+            "2026-08-01T10:00:00.000Z",
+            "2026-09-01T10:00:00.000Z"
+          ],
+          "observedAt": [
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z"
+          ],
+          "scopeIdentity": "plex:movies-v1"
+        },
+        "derivedAt": "2026-09-19T14:32:17.103Z"
+      }
+    ],
+    "temporalSignals": [
+      {
+        "evidenceClass": "temporal_signal",
+        "signalId": "2",
+        "profile": "recent",
+        "signalType": "recent_activity",
+        "subjectType": "media",
+        "subjectIdentity": "behaviour-film",
+        "value": {
+          "title": "behaviour-film",
+          "watches": 2,
+          "watchesLast30Days": 1,
+          "watchesLast90Days": 2,
+          "watchesPrevious90Days": 1,
+          "lastWatchedAt": "2026-09-01T10:00:00.000Z",
+          "comparisonWindowDays": 90,
+          "window": {
+            "startsAt": "2026-06-21T14:32:17.103Z",
+            "endsAt": "2026-09-19T14:32:17.103Z"
+          }
+        },
+        "epistemicStatus": "derived",
+        "scopeIdentity": "plex:movies-v1",
+        "coverage": {
+          "historicalCoverageStart": null,
+          "collectingSince": "2026-09-19",
+          "source": "Archive Assistant analytics coverage"
+        },
+        "provenance": {
+          "derivedFrom": "watch_event",
+          "observationIds": [
+            3,
+            4
+          ],
+          "eventIds": [
+            3,
+            4
+          ],
+          "evidenceKeys": [
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-new-1\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-new-2\",\"plex:movies-v1\"]"
+          ],
+          "providerEventIds": [
+            "behaviour-new-1",
+            "behaviour-new-2"
+          ],
+          "ingestionBatchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "batchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "eventOccurredAt": [
+            "2026-08-01T10:00:00.000Z",
+            "2026-09-01T10:00:00.000Z"
+          ],
+          "observedAt": [
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z"
+          ],
+          "scopeIdentity": "plex:movies-v1"
+        },
+        "derivedAt": "2026-09-19T14:32:17.103Z"
+      },
+      {
+        "evidenceClass": "temporal_signal",
+        "signalId": "3",
+        "profile": "recent",
+        "signalType": "recent_activity_previous",
+        "subjectType": "media",
+        "subjectIdentity": "behaviour-film",
+        "value": {
+          "title": "behaviour-film",
+          "watches": 1,
+          "window": {
+            "startsAt": "2026-03-23T14:32:17.103Z",
+            "endsAt": "2026-06-21T14:32:17.103Z"
+          }
+        },
+        "epistemicStatus": "derived",
+        "scopeIdentity": "plex:movies-v1",
+        "coverage": {
+          "historicalCoverageStart": null,
+          "collectingSince": "2026-09-19",
+          "source": "Archive Assistant analytics coverage"
+        },
+        "provenance": {
+          "derivedFrom": "watch_event",
+          "observationIds": [
+            2
+          ],
+          "eventIds": [
+            2
+          ],
+          "evidenceKeys": [
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-previous\",\"plex:movies-v1\"]"
+          ],
+          "providerEventIds": [
+            "behaviour-previous"
+          ],
+          "ingestionBatchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "batchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "eventOccurredAt": [
+            "2026-05-01T10:00:00.000Z"
+          ],
+          "observedAt": [
+            "2026-09-19T14:32:17.099Z"
+          ],
+          "scopeIdentity": "plex:movies-v1"
+        },
+        "derivedAt": "2026-09-19T14:32:17.103Z"
+      }
+    ],
+    "collectionFacts": [
+      {
+        "evidenceClass": "collection_fact",
+        "signalId": "5",
+        "profile": "collection",
+        "signalType": "collection_relationship",
+        "subjectType": "media",
+        "subjectIdentity": "archive",
+        "value": {
+          "never_matched": 4
+        },
+        "epistemicStatus": "derived",
+        "scopeIdentity": "plex:movies-v1",
+        "coverage": {
+          "historicalCoverageStart": null,
+          "collectingSince": "2026-09-19",
+          "source": "Archive Assistant analytics coverage"
+        },
+        "provenance": {
+          "derivedFrom": "watch_event",
+          "observationIds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "eventIds": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "evidenceKeys": [
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-old\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-previous\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-new-1\",\"plex:movies-v1\"]",
+            "[\"archive-assistant.evidence.v1\",\"plex\",\"behaviour-new-2\",\"plex:movies-v1\"]"
+          ],
+          "providerEventIds": [
+            "behaviour-old",
+            "behaviour-previous",
+            "behaviour-new-1",
+            "behaviour-new-2"
+          ],
+          "ingestionBatchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "batchIds": [
+            "manual-0013acd8-4bf8-4b4c-823b-accd0abbf824"
+          ],
+          "eventOccurredAt": [
+            "2020-01-01T10:00:00.000Z",
+            "2026-05-01T10:00:00.000Z",
+            "2026-08-01T10:00:00.000Z",
+            "2026-09-01T10:00:00.000Z"
+          ],
+          "observedAt": [
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z",
+            "2026-09-19T14:32:17.099Z"
+          ],
+          "scopeIdentity": "plex:movies-v1"
+        },
+        "derivedAt": "2026-09-19T14:32:17.103Z"
+      }
+    ],
+    "interpretations": [],
+    "uncertainties": [],
+    "explicitPreferences": [
+      {
+        "preferenceId": 1,
+        "subjectType": "genre",
+        "subjectIdentity": "Japanese cinema",
+        "statement": "I am into Japanese cinema right now.",
+        "scopeIdentity": "plex:movies-v1",
+        "observedAt": "2026-09-18T12:00:00.000Z",
+        "provenanceStatus": "authoritative",
+        "provenance": {
+          "preferenceId": 1,
+          "source": "operator_statement",
+          "observedAt": "2026-09-18T12:00:00.000Z",
+          "scopeIdentity": "plex:movies-v1"
+        }
+      },
+      {
+        "preferenceId": 2,
+        "subjectType": "genre",
+        "subjectIdentity": "legacy preference",
+        "statement": "Legacy statement",
+        "scopeIdentity": "plex:movies-v1",
+        "observedAt": "2020-01-01T00:00:00.000Z",
+        "provenanceStatus": "legacy",
+        "provenance": null
+      }
+    ],
+    "constraints": [
+      "Signals are observations, not likes or preferences",
+      "No universal taste score",
+      "No recommendation decision is made here"
+    ]
+  }
+}

@@ -40,6 +40,8 @@
     "node_modules",
     "waveyard-worker",
     "desktop-package",
-    "desktop-release"
+    "desktop-release",
+    "luma",
+    "mobile"
   ]
 }
