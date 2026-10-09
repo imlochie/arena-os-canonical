@@ -93,6 +93,8 @@ export interface MissionOpts {
 
 export interface MissionDeps {
   generate?: typeof generate;
+  /** Browser engine override for tests (real missions use the playwright engine). */
+  browserEngine?: import("./browser").BrowserEngine;
 }
 
 const AGENT_KNOWLEDGE = `WORK DISCIPLINE (how strong coding agents operate):
@@ -113,6 +115,11 @@ const TOOL_DOC = `Available tools (emit actions as JSON):
 - search_code {pattern, glob?}      regex search across the workspace — file:line results (use this to explore existing code)
 - run_tests {command?}              run the workspace's tests (auto-detects npm test / node --test); 60s budget — use it to verify your work
 - fetch_url {url}                   GET a URL (this is how you read feeds/pages)
+- browser_navigate {url}            open a REAL page in the space's own browser (per-space profile; you see the real DOM text)
+- browser_extract {selector?, limit?}  read text from elements on the current page
+- browser_screenshot {}             save a screenshot of the current page into the workspace
+- browser_click {selector}          click on the page — REQUIRES HUMAN APPROVAL (it changes state)
+- browser_fill {selector, value}    type into a field — REQUIRES HUMAN APPROVAL (account logins, forms)
 - github_publish {repo, message, files:[{path,content}], branch?}  commit+push to GitHub (needs a connected token)
 
 Respond with ONE JSON object only, no prose outside it:
@@ -504,12 +511,12 @@ async function runMissionInner(
             continue;
           }
           const tExec = Date.now();
-          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget });
+          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine });
           await completeExecution(approval.id, gated.ok, { tool: gated.tool, output: gated.output.slice(0, 2000) }, gated.ok ? undefined : gated.output.slice(0, 500));
           outcomes.push({ ...gated, ms: Date.now() - tExec });
           continue;
         }
-        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget }));
+        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine }));
       }
 
       const step: MissionStep = {

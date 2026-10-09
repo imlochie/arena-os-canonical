@@ -502,7 +502,12 @@ export interface ToolOutcome {
 export async function executeTool(
   spaceId: string,
   action: ToolAction,
-  opts: { githubToken?: string; extraAllow?: string[]; execTarget?: import("./workspace-isolation").ExecTarget } = {}
+  opts: {
+    githubToken?: string;
+    extraAllow?: string[];
+    execTarget?: import("./workspace-isolation").ExecTarget;
+    browserEngine?: import("./browser").BrowserEngine;
+  } = {}
 ): Promise<ToolOutcome> {
   const dir = await ensureWorkspace(spaceId);
   const t0 = Date.now();
@@ -537,6 +542,26 @@ export async function executeTool(
         return toolRunTests(dir, { command: action.args.command ? String(action.args.command) : undefined }, opts.extraAllow ?? [], opts.execTarget);
       case "fetch_url":
         return toolFetchUrl(String(action.args.url ?? ""));
+      case "browser_navigate":
+        return (await import("./browser")).toolBrowserNavigate(spaceId, String(action.args.url ?? ""), opts.browserEngine);
+      case "browser_extract":
+        return (await import("./browser")).toolBrowserExtract(
+          spaceId,
+          String(action.args.selector ?? "body"),
+          action.args.limit ? Number(action.args.limit) : 10,
+          opts.browserEngine,
+        );
+      case "browser_screenshot":
+        return (await import("./browser")).toolBrowserScreenshot(spaceId, opts.browserEngine);
+      case "browser_click":
+        return (await import("./browser")).toolBrowserClick(spaceId, String(action.args.selector ?? ""), opts.browserEngine);
+      case "browser_fill":
+        return (await import("./browser")).toolBrowserFill(
+          spaceId,
+          String(action.args.selector ?? ""),
+          String(action.args.value ?? ""),
+          opts.browserEngine,
+        );
       case "github_publish":
         return toolGithubPublish(
           dir,
