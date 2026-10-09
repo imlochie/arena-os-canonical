@@ -119,19 +119,34 @@ test("freshness (repo layout): verifyDesktopShellFreshness detects stale, fresh,
   }
 });
 
-test("freshness (this repo): the compiled shell is current after desktop:compile — or honestly not", () => {
-  // In the battery, desktop:compile runs before/around the tests; this test
-  // asserts the real repo verdict is DECISIVE either way (never a silent
-  // pass) and that a present dist is judged correctly.
+test("freshness (this repo): the scanner binds to the real desktop layout, decisively, whatever the dist state", () => {
+  // Order-independence contract (Windows defect fix): ordinary tests must
+  // NOT depend on whether ignored desktop/dist build output happens to
+  // exist or when it was last compiled. The PREVIOUS live-repository
+  // assertion required a fresh dist during `npm test`, so a machine with
+  // stale compiled output failed the battery BEFORE the corrected
+  // desktop:dist chain (compile → prepare-server → package) could rebuild
+  // it — packaging, which the freshness guard actually protects, was never
+  // reached.
+  //
+  // The freshness DECISION is fully covered above by the pure
+  // compareFreshness tests and the isolated temporary-repository tests
+  // (fresh, stale, uncompiled — controlled mtimes, not this machine's).
+  // What this test pins down instead is that the REAL repository layout is
+  // scannable: the source walk discovers the actual desktop/*.ts tree
+  // (never the "wrong root" failure) and the verdict is always decisive
+  // and well-formed — with dist absent, fresh, OR stale.
   const verdict = verifyDesktopShellFreshness(repoRoot);
-  const distExists = existsSync(path.join(repoRoot, "desktop", "dist"));
-  if (!distExists) {
-    assert.equal(verdict.ok, false, "no compiled shell must be an explicit failure, never a pass");
-    assert.match(verdict.reason, /not compiled/);
-  } else {
-    // With a compiled tree present the verdict must be well-formed; the
-    // battery's desktop:compile step keeps it fresh.
-    assert.equal(verdict.ok, true, verdict.reason);
+  assert.equal(typeof verdict.ok, "boolean", "the verdict must be decisive");
+  assert.ok(typeof verdict.reason === "string" && verdict.reason.length > 0, "the verdict must carry a reason");
+  assert.ok(Array.isArray(verdict.staleSources), "the verdict must list stale sources (possibly empty)");
+  assert.ok(!/wrong root/.test(verdict.reason), "the real desktop TypeScript sources must be discovered by the scan");
+  if (!verdict.ok) {
+    assert.match(
+      verdict.reason,
+      /stale|not compiled/,
+      `an unfresh verdict must name the condition and the fix, got: ${verdict.reason}`,
+    );
   }
 });
 
