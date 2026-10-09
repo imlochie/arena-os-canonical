@@ -63,8 +63,12 @@ type ExportSnapshot = {
 };
 
 export class ExportFailure extends Error {
-  constructor(readonly code: string, message: string) {
+  readonly code: string;
+  // No TypeScript parameter properties: node's type-stripping loader
+  // (used by the test battery's src-loader for plain TS) rejects them.
+  constructor(code: string, message: string) {
     super(message);
+    this.code = code;
   }
 }
 

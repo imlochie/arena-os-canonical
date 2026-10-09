@@ -6,10 +6,12 @@
  *
  * Desktop-only difference, documented in docs/desktop-runtime-plan.md §5:
  * in the cloud pipeline the separation worker provisions the source
- * analysis row; on desktop separation is unavailable, so completing a
- * SOURCE waveform provisions the analysis row (engine arena-js-dsp) and
- * enqueues it once every related waveform job is terminal — the same
- * maybeQueueSourceAnalysis trigger the worker runs for stems.
+ * analysis row; on desktop, completing a SOURCE waveform provisions the
+ * analysis row (engine arena-js-dsp) and enqueues it once every related
+ * waveform job is terminal — the same maybeQueueSourceAnalysis trigger the
+ * worker runs for stems. (Since the local MDX stem machine landed, desktop
+ * separation is real too — this trigger now fires for stem waveframes as
+ * well, exactly like the worker's.)
  */
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";

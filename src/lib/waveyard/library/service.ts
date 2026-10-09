@@ -43,7 +43,8 @@ import {
   parseSmartRules,
   type SmartCollection,
 } from "./collections";
-import { ingestSourceFile } from "@/lib/waveyard/source-ingest";
+import { ingestSourceFile } from "@/lib/waveyard/source-ingest"
+import { defaultSeparationModel } from "@/lib/waveyard/separation/selection";
 import {
   deriveTrackMetadata,
   libraryContainerProjectName,
@@ -261,7 +262,7 @@ export async function addTrackFromAudioFile(input: {
     filePath: input.filePath,
     filename: input.filename,
     mimeType: input.mimeType,
-    model: input.model ?? process.env.SEPARATION_MODEL ?? "htdemucs",
+    model: input.model ?? defaultSeparationModel(),
     device: input.device ?? "auto",
     provenance: { method: "local-upload", title, artist, metadata: { intake: "waveyard-library" } },
   });

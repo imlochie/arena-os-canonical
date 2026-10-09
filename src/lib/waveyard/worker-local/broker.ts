@@ -5,8 +5,8 @@
  * queue.ts submits here instead of BullMQ. The broker preserves the
  * worker's job semantics: serial execution, real handlers, failures
  * surface on the same DB rows the routes already maintain. No handler
- * for a queue ⇒ submit throws an honest desktop reason (separation stays
- * Python-worker-only).
+ * for a queue ⇒ submit throws an honest desktop reason (the Python-only
+ * stem analyses are the remaining unregistered queues).
  */
 
 export type LocalJobHandler = (payload: Record<string, unknown>) => Promise<void>;
@@ -50,8 +50,8 @@ export class LocalJobBroker {
       this.counts.rejected += 1;
       const error = new Error(
         `Desktop runtime has no local executor for the "${queue}" queue. ` +
-          `This operation needs the Waveyard Python worker (separation/Demucs and stem analyses) ` +
-          `which is not bundled with the desktop app.`,
+          `This operation needs the Waveyard Python worker (the stem-analysis engines ` +
+          `that are not bundled with the desktop app).`,
       );
       this.record({ kind: "rejected", queue, error: error.message });
       return Promise.reject(error);

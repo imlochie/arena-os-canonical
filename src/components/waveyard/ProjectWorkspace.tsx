@@ -207,8 +207,7 @@ async function retry(jobId: string) {
     const payload = new FormData();
     payload.set("projectId", projectId);
     payload.set("file", selected);
-    payload.set("model", "htdemucs");
-    payload.set("device", "auto");
+        payload.set("device", "auto");
     const response = await fetch("/api/uploads", { method: "POST", body: payload });
     const body = await response.json().catch(() => ({}));
     setAddingSource(false);

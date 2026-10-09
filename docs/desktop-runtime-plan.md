@@ -97,13 +97,14 @@ src/instrumentation.ts (register(), once per process)
             waveyard-source-section-analysis → arena-js-structure
                                                (bar-aligned novelty boundaries)
             waveyard-export                  → FFmpeg render (ported)
-            waveyard-separation              → NO local executor (Python/
-             (no handler)                      Demucs not packageable) →
-                                              enqueue throws an honest
-                                              desktop reason; the existing
-                                              route catch marks the row
-                                              failed. Isolated, visible in
-                                              diagnostics.
+            waveyard-separation              → the app's own MDX-Net stem
+                                               machine (separation/ — TS
+                                               port of the reference demix
+                                               over onnxruntime-node; model
+                                               file sha256-verified before
+                                               inference; missing model ⇒
+                                               honest separation_unavailable
+                                               on the job row)
 ```
 
 Web/cloud/dev mode is **untouched**: without `ARENA_DESKTOP_MODE=1`
@@ -181,7 +182,9 @@ choice:
   desktop-specific reason — isolated in diagnostics, never silently
   skipped. Desktop users get waveform + analysis + sections + arrangement
   + export through the existing "use unseparated source" passthrough
-  surface; stems require the Python worker.
+  surface; stems come from the app's own MDX-Net stem machine
+  (vocals + instrumental, engine "mdx"; the Python worker's Demucs
+  remains the server/cloud engine).
 - Desktop pipeline trigger port: on desktop the separation worker cannot
   provision the analysis row, so the waveform handler provisions it
   (engine arena-js-dsp) and enqueues analysis once all related waveform
@@ -195,9 +198,10 @@ choice:
   separation-queue failure BEFORE attempting the waveform enqueue — on
   desktop that would have made every upload unprocessable. Each queue is
   now attempted independently and each durable row records its own
-  honest failure boundary. Web behavior is unchanged (the 503 still
-  happens when separation cannot queue; the response now also carries
-  `waveformQueued`).
+  honest failure boundary. The 503 is gone entirely (the stem machine
+  made it obsolete): a queue failure keeps the 201 — the upload itself
+  succeeded — and the response carries `separationQueued` plus
+  `waveformQueued` so the UI can surface the honest per-job state.
 
 ## 6. What the packaged app contains
 

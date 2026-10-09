@@ -41,25 +41,38 @@ export async function decodeSourceToStereoPcm(
   filePath: string,
   hint: { sampleRate?: number } = {},
   deps: { resolveFfmpeg?: FfmpegResolver } = {},
+  opts: { requireSampleRate?: number } = {},
 ): Promise<DecodedSource> {
-  // 1. Native WAV path — no external dependency.
+  // 1. Native WAV path — no external dependency. When the caller needs a
+  //    specific rate (the separation engine is trained at 44.1 kHz), a
+  //    native decode at a different rate is NOT acceptable output: fall
+  //    through to the ffmpeg path, which resamples (-ar 44100).
   const bytes = await readFile(filePath).catch(() => null);
   if (bytes !== null) {
     const decoded = decodeWav16(new Uint8Array(bytes));
     if (decoded !== null) {
-      return {
-        pcm: decoded.channels === 2 ? decoded.samples : monoToStereo(decoded.samples),
-        sampleRate: decoded.sampleRate || hint.sampleRate || 44_100,
-      };
+      const nativeRate = decoded.sampleRate || hint.sampleRate || 44_100;
+      const rateAcceptable = opts.requireSampleRate === undefined || nativeRate === opts.requireSampleRate;
+      if (rateAcceptable) {
+        return {
+          pcm: decoded.channels === 2 ? decoded.samples : monoToStereo(decoded.samples),
+          sampleRate: nativeRate,
+        };
+      }
     }
   }
 
-  // 2. ffmpeg fallback for compressed formats.
+  // 2. ffmpeg fallback for compressed formats (and rate conversion).
   const ffmpeg = await (deps.resolveFfmpeg ?? defaultResolveFfmpeg)();
   if (ffmpeg === null) {
+    const rateNote =
+      opts.requireSampleRate !== undefined
+        ? ` This source decodes natively at a different sample rate than the required ${opts.requireSampleRate} Hz; conversion needs ffmpeg.`
+        : "";
     throw new DependencyMissingError(
       "ffmpeg is not available on this machine and the source is not a 16-bit PCM WAV. " +
-        "Cleanup analysis needs decodable PCM: install ffmpeg, or import the source as WAV.",
+        "Cleanup analysis needs decodable PCM: install ffmpeg, or import the source as WAV." +
+        rateNote,
     );
   }
   return decodeWithFfmpeg(ffmpeg, filePath);

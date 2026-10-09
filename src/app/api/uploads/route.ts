@@ -13,6 +13,7 @@ import {
   waveformJobs,
 } from "@/db/waveyardSchema";
 import { enqueueSeparation, enqueueWaveform } from "@/lib/waveyard/queue";
+import { defaultSeparationModel } from "@/lib/waveyard/separation/selection";
 import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
@@ -27,7 +28,8 @@ export async function POST(request: Request) {
     const user = await requireUser();
     const form = await request.formData();
     const projectId = String(form.get("projectId") ?? "");
-    const requestedModel = String(form.get("model") ?? process.env.SEPARATION_MODEL ?? "htdemucs");
+    const modelField = form.get("model");
+    const requestedModel = modelField !== null && String(modelField).trim() !== "" ? String(modelField) : defaultSeparationModel();
     const requestedDevice = String(form.get("device") ?? process.env.STEM_DEVICE ?? "auto");
     const upload = form.get("file");
     if (!projectId || !(upload instanceof File)) return NextResponse.json({ error: "Project and audio file are required." }, { status: 400 });
@@ -87,11 +89,10 @@ export async function POST(request: Request) {
       return { source: createdSource, job: createdJob, waveformJob: createdWaveformJob };
     });
     persisted = true;
-    // Every queue is attempted independently: a separation outage (the
-    // desktop runtime has no Python separation executor) must not prevent
-    // the waveform from being generated — each durable row records its own
-    // honest failure boundary. (Desktop runtime fix; see
-    // docs/desktop-runtime-plan.md §5.)
+    // Every queue is attempted independently: a queue outage must not
+    // prevent the rest of the pipeline — the upload itself succeeded, and
+    // each durable row records its own honest failure boundary. (Desktop
+    // runtime fix; see docs/desktop-runtime-plan.md §5.)
     let separationQueued = true;
     try {
       await enqueueSeparation({ processingJobId: job.id, projectId, sourceAssetId: source.id, model: requestedModel, requestedDevice: requestedDevice as "auto" | "cpu" | "cuda" });
@@ -106,9 +107,7 @@ export async function POST(request: Request) {
       waveformQueued = false;
       await db.update(waveformJobs).set({ status: "failed", stage: "queue-unavailable", errorCode: "queue_unavailable", errorMessage: queueError instanceof Error ? queueError.message.slice(0, 1000) : "Queue unavailable.", completedAt: new Date(), updatedAt: new Date() }).where(eq(waveformJobs.id, waveformJob.id));
     }
-    if (!separationQueued)
-      return NextResponse.json({ error: "The upload was stored, but separation could not be queued. Start the worker/Redis and retry this source.", source, waveformJobId: waveformJob.id, waveformQueued }, { status: 503 });
-    return NextResponse.json({ source, job, waveformJob: { id: waveformJob.id, queued: waveformQueued } }, { status: 201 });
+    return NextResponse.json({ source, job, separationQueued, waveformJob: { id: waveformJob.id, queued: waveformQueued } }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     const message = error instanceof Error ? error.message : "Upload failed.";

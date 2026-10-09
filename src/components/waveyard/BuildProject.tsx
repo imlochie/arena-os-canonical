@@ -30,7 +30,7 @@ export function BuildProject() {
     if (!buildResponse.ok) { setBusy(false); setMessage(buildRecord.error ?? "Project was created but its build could not start."); router.push(`/waveyard/projects/${projectId}`); return; }
     const failures: string[] = []; let accepted = 0;
     for (const file of files) {
-      const payload = new FormData(); payload.set("projectId", projectId); payload.set("file", file); payload.set("model", "htdemucs"); payload.set("device", "auto");
+      const payload = new FormData(); payload.set("projectId", projectId); payload.set("file", file); payload.set("model", ""); // resolved by the server for this machine payload.set("device", "auto");
       // The browser decodes the real audio (Web Audio) and sends the measured
       // duration/sampleRate/channels — used server-side only when no ffprobe
       // exists, and recorded as probeSource "client-webaudio".
@@ -59,7 +59,7 @@ export function BuildProject() {
       }
     }
     for (const url of intake.distinctUrls) {
-      const response = await fetch(`/api/waveyard/projects/${projectId}/source-intake`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, model: "htdemucs" }) }); const body = await response.json().catch(() => ({}));
+      const response = await fetch(`/api/waveyard/projects/${projectId}/source-intake`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) }); const body = await response.json().catch(() => ({}));
       if (response.ok) accepted += 1; else failures.push(`${url}: ${body.error ?? "authorized acquisition failed"}`);
     }
     await fetch(`/api/waveyard/projects/${projectId}/builds`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ buildId: buildRecord.build.id, status: accepted ? "processing" : "failed", stage: accepted ? "separating" : "failed", acceptedSourceCount: accepted, failedSourceCount: failures.length, errorMessage: accepted ? null : failures.join("\n"), details: { failures } }) });
