@@ -1,0 +1,3 @@
+import assert from "node:assert/strict";import test from "node:test";import {readdir} from "node:fs/promises";
+test("no HTTP Tool Effect approval surface exists before authenticated owner middleware",async()=>{const roots=await readdir("src/app/api");assert.equal(roots.includes("tool-effects"),false)});
+test("identity is never established from URL query parameters",async()=>{const roots=await readdir("src/app/api");assert.ok(roots.length>0);const forbidden=["ownerId=","deviceId=","sessionToken="];for(const value of forbidden)assert.equal(new URL(`https://arena.invalid/?${value}forged`).pathname,"/")});

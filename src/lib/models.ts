@@ -48,6 +48,20 @@ export const MODEL_ALIASES: Record<string, string> = {
   "offline-sage": LOCAL_ENGINE_ID,
 };
 
+export const STRUCTURED_OUTPUT_MODELS = new Set([
+  "openai", "deepseek", "claude", "gemini", "qwen", "kimi", "offline-sage",
+]);
+
+export function declaredModelCapabilities(model: FreeModel): string[] {
+  return [
+    ...model.strengths.map((strength) => strength.toLowerCase().replaceAll(" ", "_")),
+    ...(STRUCTURED_OUTPUT_MODELS.has(model.id) ? ["structured_output"] : []),
+    ...(model.kind === "image" ? ["image_generation"] : ["text_generation"]),
+    ...(model.pollinationsId === "__offline__" || model.kind === "image" ? ["local_execution"] : []),
+    ...(model.pollinationsId !== "__offline__" ? ["remote_execution"] : []),
+  ];
+}
+
 export const FREE_MODELS: FreeModel[] = [
   // ------------------------------------------------------------------
   // TIER 1 — LOCAL ENGINE (deterministic, offline, NOT an LLM)

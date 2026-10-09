@@ -43,6 +43,8 @@ export interface GenerateOpts {
   // If the selected model is NOT the Local Engine, the result is an honest,
   // clearly-labelled fallback.
   localOnly?: boolean;
+  // Assigned-worker execution disables the legacy provider/fallback cascade.
+  strictRoute?: boolean;
   // Optional user-supplied keys (BYOK) — sent from client, never stored
   keys?: {
     openrouter?: string;
@@ -254,6 +256,22 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
   const fullMessages: ChatMsg[] = system
     ? [{ role: "system", content: system }, ...opts.messages.filter((m) => m.role !== "system")]
     : opts.messages;
+
+  // Assigned workers execute exactly one route. Any failure is surfaced to the
+  // worker executor; switching provider/model requires a new explicit assignment.
+  // Offline models fall through to the local engine tier below (zero network).
+  if (opts.strictRoute && model.pollinationsId !== "__offline__") {
+    const text = await tryPollinationsOpenAI(fetch, model.pollinationsId, fullMessages, temperature);
+    return {
+      text,
+      runtimeLevel: "remote",
+      backend: "pollinations",
+      modelId: model.id,
+      via: `pollinations:${model.pollinationsId}`,
+      ms: Date.now() - started,
+      fallback: false,
+    };
+  }
 
   // ---------------- LOCAL ENGINE (tier 1) ----------------
   // The built-in deterministic engine. Selected directly, or reached as the

@@ -11,6 +11,8 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+import { executionSessions } from "./identitySchema";
+
 // ---- Model registry (ELO tracked) ----
 export const models = pgTable("models", {
   id: text("id").primaryKey(),
@@ -23,6 +25,9 @@ export const models = pgTable("models", {
   wins: integer("wins").notNull().default(0),
   ties: integer("ties").notNull().default(0),
   avgLatencyMs: integer("avg_latency_ms").notNull().default(0),
+  availability: text("availability").notNull().default("unknown"), // available|unavailable|unknown
+  supportsStructuredOutput: boolean("supports_structured_output").notNull().default(false),
+  capabilities: text("capabilities").notNull().default("[]"), // declared worker capability ids, JSON string[]
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
@@ -69,6 +74,7 @@ export const battles = pgTable("battles", {
   winner: text("winner"), // 'a' | 'b' | 'tie' | 'both-bad'
   judgeResult: text("judge_result"), // JSON: {suggestion, reasoning, raw, at}
   projectId: uuid("project_id"),
+  sessionId: uuid("session_id").references(() => executionSessions.id).unique(),
   createdAt: timestamp("created_at").defaultNow(),
   // What ACTUALLY executed each side (full GenerateResult contract). ELO only
   // moves on rated battles — no fallback or Local-Engine execution may ever
@@ -109,6 +115,7 @@ export const collabs = pgTable("collabs", {
   rounds: integer("rounds").notNull().default(1),
   bestContributor: integer("best_contributor"), // index into collaborators
   projectId: uuid("project_id"),
+  sessionId: uuid("session_id").references(() => executionSessions.id).unique(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -140,9 +147,11 @@ export const councilRuns = pgTable("council_runs", {
   perspectiveB: text("perspective_b").notNull().default(""),
   critiqueA: text("critique_a").notNull().default(""), // A critiques B
   critiqueB: text("critique_b").notNull().default(""), // B critiques A
-  synthesis: text("synthesis").notNull().default(""),
+  synthesis: text("synthesis").notNull().default(""), // rendered structured synthesis
+  structuredSynthesis: text("structured_synthesis"), // validated CouncilSynthesis JSON
   latencyMs: integer("latency_ms").notNull().default(0),
   projectId: uuid("project_id"),
+  sessionId: uuid("session_id"), // mode execution points to generic session root
   createdAt: timestamp("created_at").defaultNow(),
   runtimeA: jsonb("runtime_a"),
   runtimeB: jsonb("runtime_b"),
