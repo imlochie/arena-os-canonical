@@ -11,7 +11,7 @@
     "build": "next build",
     "prestart": "node scripts/ensure-env.mjs",
     "start": "next start",
-    "lint": "eslint .",
+    "lint": "eslint . --cache",
     "db:setup": "node scripts/db-setup.mjs",
     "typecheck": "node scripts/typecheck.mjs",
     "test": "node --import ./scripts/register-src-loader.mjs --test \"src/**/*.test.ts\" \"desktop/**/*.test.ts\"",

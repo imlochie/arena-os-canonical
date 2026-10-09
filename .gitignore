@@ -17,3 +17,6 @@ tsconfig.tsbuildinfo
 
 desktop-acceptance-headless-report.json
 desktop-windows-acceptance-report.json
+
+# Local tool caches (content-hash based; never committed)
+.eslintcache
