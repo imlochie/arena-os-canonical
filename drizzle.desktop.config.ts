@@ -11,6 +11,6 @@ import type { Config } from "drizzle-kit";
 
 export default {
   dialect: "postgresql",
-  schema: ["./src/db/schema.ts", "./src/db/waveyardSchema.ts"],
+  schema: ["./src/db/schema.ts", "./src/db/waveyardSchema.ts", "./src/db/college.ts"],
   out: "./desktop-migrations",
 } satisfies Config;
