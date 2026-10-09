@@ -42,6 +42,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       githubToken: body?.githubToken || undefined,
       maxTurnsPerAgent: body?.maxTurnsPerAgent ? Math.round(Number(body.maxTurnsPerAgent)) : undefined,
       maxActionsPerTurn: body?.maxActionsPerTurn ? Math.round(Number(body.maxActionsPerTurn)) : undefined,
+      isolation: body?.isolation === "container" || body?.isolation === "host" ? body.isolation : "auto",
+      isolationImage: typeof body?.isolationImage === "string" && body.isolationImage.trim() ? body.isolationImage.trim().slice(0, 100) : undefined,
+      isolationNetwork: body?.isolationNetwork === "bridge" ? "bridge" : "none",
       extraCommands: Array.isArray(body?.extraCommands)
         ? body.extraCommands.map((c: unknown) => String(c)).slice(0, 12)
         : undefined,

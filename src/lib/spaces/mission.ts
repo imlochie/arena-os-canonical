@@ -30,6 +30,7 @@ import type { GenerateResult } from "@/lib/runtime";
 import { listAgents } from "@/lib/spaces";
 import { executeTool, ensureWorkspace, toolListFiles, workspaceDir as wsDir, type ToolOutcome } from "./tools";
 import { actionSignature, classifyToolAction, approvalRequired, claimExecution, completeExecution, findLatestBySignature, requestApproval } from "./governance";
+import { ensureIsolatedWorkspace, teardownIsolatedWorkspace, type ExecTarget } from "./workspace-isolation";
 
 export interface MissionAgentSpec {
   name: string;
@@ -80,6 +81,14 @@ export interface MissionOpts {
   maxActionsPerTurn?: number;
   /** Extra command binaries this mission opts into (beyond the base allowlist). */
   extraCommands?: string[];
+  /** Workspace isolation (Phase B): "auto" (default) isolates when a
+   *  container runtime exists and records an honest host fallback otherwise;
+   *  "container" requires isolation; "host" never isolates. */
+  isolation?: "auto" | "container" | "host";
+  /** Container image when isolating (default node:22-slim). */
+  isolationImage?: string;
+  /** Container network: "none" (default, strict) or "bridge" (opt-in). */
+  isolationNetwork?: "none" | "bridge";
 }
 
 export interface MissionDeps {
@@ -188,6 +197,47 @@ export async function runMission(
   opts: MissionOpts,
   deps: MissionDeps = {}
 ): Promise<MissionSummary> {
+
+  // Phase B — real workspace isolation: start the mission container when the
+  // policy and the machine allow it. Honest fallback: no runtime → host jail,
+  // recorded in the mission's statusDetail, never a silent downgrade.
+  let execTarget: ExecTarget = { env: "host" };
+  let isolationNote = "";
+  const isolationMode = opts.isolation ?? "auto";
+  if (isolationMode !== "host") {
+    try {
+      const isolated = await ensureIsolatedWorkspace(spaceId, {
+        mode: isolationMode,
+        image: opts.isolationImage,
+        networkMode: opts.isolationNetwork,
+      });
+      if (isolated) {
+        execTarget = { env: "isolated", isolation: isolated };
+        isolationNote = `commands execute inside ${isolated.kind} container ${isolated.ref} (${isolated.image}, network ${isolated.networkMode})`;
+      } else if (isolationMode === "auto") {
+        isolationNote = "no container runtime available — commands execute on the HOST jail (allowlist, workspace cwd, timeouts)";
+      }
+    } catch (e) {
+      if (isolationMode === "container") throw e; // strict mode: fail loudly
+      isolationNote = `isolation unavailable (${e instanceof Error ? e.message : "error"}) — commands execute on the HOST jail`;
+    }
+  }
+  try {
+    return await runMissionInner(spaceId, opts, deps, { execTarget, isolationNote });
+  } finally {
+    if (execTarget.env === "isolated") {
+      await teardownIsolatedWorkspace(spaceId).catch(() => {});
+    }
+  }
+}
+
+async function runMissionInner(
+  spaceId: string,
+  opts: MissionOpts,
+  deps: MissionDeps,
+  isolation: { execTarget: ExecTarget; isolationNote: string },
+): Promise<MissionSummary> {
+  const { execTarget, isolationNote } = isolation;
   const gen = deps.generate ?? generate;
   const timeBudgetMs = Math.min(3_600_000, Math.max(30_000, opts.timeBudgetMs ?? 600_000));
   const maxTurns = Math.min(16, Math.max(1, opts.maxTurnsPerAgent ?? 3));
@@ -333,6 +383,7 @@ export async function runMission(
         (memory ? `MEMORY — lessons from previous missions in this space:\n${memory}\n\n` : "") +
         (map && map !== "(workspace is empty)" ? `WORKSPACE MAP (current files):\n${map}\n\n` : "") +
         `Mission goal: ${mission.goal}\nYou are agent ${ai + 1}/${plan.length}: ${agent.name} (${agent.role}).` +
+        (isolationNote ? `\n\nEXECUTION ENVIRONMENT: ${isolationNote}` : "") +
         (steps.length ? `\n\nRecent journal (most recent last):\n${steps.slice(-4).map((s) => `${s.agent}: ${s.thought} [${s.actions.map((a) => a.tool + (a.ok ? "✓" : "✗")).join(", ")}]`).join("\n")}` : "") +
         (observations ? `\n\nOBSERVATIONS — actual tool outputs from your recent turns (read them; fix what failed):\n${observations}` : "");
 
@@ -453,12 +504,12 @@ export async function runMission(
             continue;
           }
           const tExec = Date.now();
-          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow });
+          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget });
           await completeExecution(approval.id, gated.ok, { tool: gated.tool, output: gated.output.slice(0, 2000) }, gated.ok ? undefined : gated.output.slice(0, 500));
           outcomes.push({ ...gated, ms: Date.now() - tExec });
           continue;
         }
-        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow }));
+        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget }));
       }
 
       const step: MissionStep = {
@@ -491,9 +542,10 @@ export async function runMission(
     }
   }
 
+  const statusDetailWithEnv = isolationNote ? `${statusDetail} · ${isolationNote}` : statusDetail;
   await save({
     status,
-    statusDetail,
+    statusDetail: statusDetailWithEnv,
     handoff,
     artifacts: await listArtifacts(spaceId),
     endedAt: status === "running" || status === "awaiting_approval" ? null : new Date(),

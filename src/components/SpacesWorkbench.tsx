@@ -806,6 +806,8 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
   const [budget, setBudget] = useState(5);
   const [turns, setTurns] = useState(3);
   const [extraCommands, setExtraCommands] = useState("");
+  const [isolation, setIsolation] = useState<"auto" | "container" | "host">("auto");
+  const [isolationNetwork, setIsolationNetwork] = useState<"none" | "bridge">("none");
   const [showAdv, setShowAdv] = useState(false);
   const [githubToken, setGithubToken] = useState("");
   const [showGit, setShowGit] = useState(false);
@@ -834,6 +836,8 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
           ...privacyFlags(),
           githubToken: githubToken || undefined,
           maxTurnsPerAgent: turns,
+          isolation,
+          isolationNetwork,
           extraCommands: extraCommands
             .split(",")
             .map((c) => c.trim())
@@ -906,6 +910,25 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
                 {t} turns
               </option>
             ))}
+          </select>
+          <select
+            value={isolation}
+            onChange={(e) => setIsolation(e.target.value as "auto" | "container" | "host")}
+            className="rounded-lg border border-white/10 bg-[#0c1428] px-2 py-1.5 text-xs text-white outline-none"
+            title="Where commands run: auto = container when a runtime exists (honest host fallback otherwise); container = require isolation; host = this machine's jail"
+          >
+            <option value="auto">isolated: auto</option>
+            <option value="container">isolated: required</option>
+            <option value="host">host jail</option>
+          </select>
+          <select
+            value={isolationNetwork}
+            onChange={(e) => setIsolationNetwork(e.target.value as "none" | "bridge")}
+            className="rounded-lg border border-white/10 bg-[#0c1428] px-2 py-1.5 text-xs text-white outline-none"
+            title="Container network: none = fully offline (strict default); bridge = bounded internet for installs"
+          >
+            <option value="none">net: offline</option>
+            <option value="bridge">net: bounded</option>
           </select>
           <input
             value={extraCommands}
