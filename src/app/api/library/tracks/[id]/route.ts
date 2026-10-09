@@ -1,15 +1,33 @@
 /**
+ * GET /api/library/tracks/[id] — one track with everything the player
+ * needs: real stems (or the honest reason they are missing), the source,
+ * analysis, and the container project "Open in Studio" routes to.
+ *
  * PATCH /api/library/tracks/[id] — update a track's curation (rating
  * and/or labels). The response carries the persisted values so the caller
- * can update its view without a refetch.
+ * can update their view without a refetch.
  */
 
 import { NextResponse } from "next/server";
 import { isUuid } from "@/lib/api/ids";
 import { requireUser } from "@/lib/waveyard/local-context";
-import { updateTrackCuration } from "@/lib/waveyard/library/service";
+import { getTrack, updateTrackCuration } from "@/lib/waveyard/library/service";
 
 export const runtime = "nodejs";
+
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await requireUser();
+    const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    const track = await getTrack(user.id, id);
+    if (track === null) return NextResponse.json({ error: "Track not found." }, { status: 404 });
+    return NextResponse.json({ track });
+  } catch (error) {
+    if (error instanceof Response) return error;
+    throw error;
+  }
+}
 
 export async function PATCH(
   request: Request,
