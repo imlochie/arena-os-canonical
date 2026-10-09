@@ -15,9 +15,9 @@ import {
   containerName,
   containerRunArgs,
   ensureIsolatedWorkspace,
-  isolatedExecArgs,
   probeIsolation,
   runInTarget,
+  teardownIsolatedWorkspace,
   type IsolatedEnv,
   type Runner,
 } from "./workspace-isolation";
@@ -50,11 +50,23 @@ test("probe: podman is the fallback runtime; none when nothing answers", async (
   ]);
   assert.equal((await probeIsolation(podman)).kind, "podman");
 
+  // "nothing answers" must include wsl — the win32 probe checks it and the
+  // fake runner's default response is success, which would leak through.
   const empty = fakeRunner([
     { match: (c) => c === "docker", code: 127, output: "not found" },
     { match: (c) => c === "podman", code: 127, output: "not found" },
+    { match: (c) => c === "wsl", code: 1, output: "not found" },
   ]);
   assert.equal((await probeIsolation(empty)).kind, "none");
+
+  // A wsl-only machine: the probe honestly REPORTS wsl on win32 (detection,
+  // not usability — see the ensure tests below) and cannot see it elsewhere.
+  const wslOnly = fakeRunner([
+    { match: (c) => c === "docker", code: 127, output: "" },
+    { match: (c) => c === "podman", code: 127, output: "" },
+    { match: (c) => c === "wsl", code: 0, output: "Default Version: 2" },
+  ]);
+  assert.equal((await probeIsolation(wslOnly)).kind, process.platform === "win32" ? "wsl" : "none");
 });
 
 test("containment policy: the container is network-isolated, resource-capped, workspace-mounted only", () => {
@@ -100,10 +112,27 @@ test("strict mode: requesting isolation without a runtime fails LOUDLY", async (
   const runner = fakeRunner([
     { match: (c) => c === "docker", code: 127, output: "not found" },
     { match: (c) => c === "podman", code: 127, output: "not found" },
+    { match: (c) => c === "wsl", code: 1, output: "not found" },
   ]);
   await assert.rejects(
     () => ensureIsolatedWorkspace("t1", { mode: "container" }, runner),
     /no container runtime is available/,
+  );
+});
+
+test("strict mode on a wsl-only machine: a bare WSL distro is NOT isolation — loud failure, never a pretense", async () => {
+  const runner = fakeRunner([
+    { match: (c) => c === "docker", code: 127, output: "" },
+    { match: (c) => c === "podman", code: 127, output: "" },
+    { match: (c) => c === "wsl", code: 0, output: "Default Version: 2" },
+  ]);
+  // The precise WSL explanation is only reachable on win32 (where the
+  // wsl-only scenario is real); elsewhere the scenario cannot arise.
+  await assert.rejects(
+    () => ensureIsolatedWorkspace("t1", { mode: "container" }, runner),
+    process.platform === "win32"
+      ? /no container runtime is available.*bare WSL distro shares the host filesystem and network/
+      : /no container runtime is available/,
   );
 });
 
@@ -129,20 +158,17 @@ test("execution: a failing isolated command reports its exit code honestly", asy
   assert.match(out, /\(exit 3\)/);
 });
 
-test("this machine (no container runtime in CI): auto mode honestly falls back to the host jail", async () => {
+test("this machine: auto mode is honest about what isolation it can actually provide", async () => {
   const probe = await probeIsolation();
-  if (probe.kind === "none") {
-    const env = await ensureIsolatedWorkspace("t-probe", { mode: "auto" });
-    assert.equal(env, null, "auto mode falls back to the host jail when no runtime exists");
-  } else {
-    // A developer machine with Docker: auto mode isolates for real.
-    const env = await ensureIsolatedWorkspace("t-probe", { mode: "auto" });
+  const env = await ensureIsolatedWorkspace("t-probe", { mode: "auto" });
+  if (probe.kind === "docker" || probe.kind === "podman") {
+    // A machine with a real container runtime: auto mode isolates for real.
     assert.equal(env?.kind, probe.kind);
+    await teardownIsolatedWorkspace("t-probe"); // remove the real container
+  } else {
+    // No container runtime (CI), or a wsl-only Windows machine: a bare WSL
+    // distro shares the host filesystem and network, so treating it as
+    // isolation would be a lie. The honest answer is the host jail.
+    assert.equal(env, null, "auto mode honestly falls back to the host jail");
   }
-});
-
-test("isolatedExecArgs: wsl variant targets the distro and /workspace", () => {
-  const { command, args } = isolatedExecArgs({ kind: "wsl", ref: "Ubuntu", image: "-", networkMode: "none" }, "ls");
-  assert.equal(command, "wsl");
-  assert.deepEqual(args, ["-d", "Ubuntu", "--cd", "/workspace", "--", "sh", "-c", "ls"]);
 });

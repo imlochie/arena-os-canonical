@@ -56,7 +56,12 @@ Windows. The tool surface stays identical — `run_command` executes inside the
 container; the host is unreachable by construction.
 
 SHIPPED (`src/lib/spaces/workspace-isolation.ts` + mission wiring): runtime
-probe (docker → podman → wsl, real version output, never assumed), one
+probe (docker → podman → wsl, real version output, never assumed — a bare
+WSL distro is DETECTED for honest diagnostics but deliberately NOT used as
+isolation: it shares the host's filesystem and network. On Windows the
+container path is Docker Desktop's WSL2 backend or Podman; a wsl-only machine
+gets the honest host-jail fallback, and `isolation: "container"` fails loudly
+there instead of pretending), one
 long-lived container per space workspace (`arena-space-<id>`, idempotent
 start/reuse, teardown at mission end), containment policy — `--network none`
 by default (bounded internet is an explicit opt-in), 1g memory, 1 cpu, 256

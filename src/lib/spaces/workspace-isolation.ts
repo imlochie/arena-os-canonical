@@ -2,11 +2,17 @@
  * Space workspace isolation (docs/spaces-autonomy.md Phase B) — real,
  * OS-level separation for mission command execution.
  *
- * When a container runtime is available (Docker/Podman on Linux or macOS,
- * WSL on Windows), a mission's `run_command`/`run_tests` actions execute
- * INSIDE a dedicated, long-lived container with the mission workspace
- * bind-mounted — the host is unreachable by construction except through
- * that single directory. File tools (write/read/list/search) keep operating
+ * When a container runtime is available (Docker/Podman — on Windows that
+ * means Docker Desktop's WSL2 backend or Podman), a mission's
+ * `run_command`/`run_tests` actions execute INSIDE a dedicated, long-lived
+ * container with the mission workspace bind-mounted — the host is
+ * unreachable by construction except through that single directory.
+ *
+ * A bare WSL distro is deliberately NOT treated as isolation: it shares the
+ * host's filesystem and network, so "isolated in WSL" would be a lie. The
+ * probe still DETECTS and reports WSL (honest diagnostics); a wsl-only
+ * machine gets the honest host-jail fallback and `mode: "container"` fails
+ * loudly there instead of pretending. File tools (write/read/list/search) keep operating
  * on the same directory from the host side, so both views are identical.
  *
  * Honesty contract (nothing pretended):
@@ -36,8 +42,8 @@ export interface IsolationRuntime {
 }
 
 export interface IsolatedEnv {
-  kind: "docker" | "podman" | "wsl";
-  /** Container name (docker/podman) or distro (wsl). */
+  kind: "docker" | "podman";
+  /** Container name. */
   ref: string;
   image: string;
   networkMode: "none" | "bridge";
@@ -143,8 +149,8 @@ export async function ensureIsolatedWorkspace(
   if (runtime.kind === "none" || runtime.kind === "wsl") {
     if (opts.mode === "container") {
       throw new Error(
-        `workspace isolation was requested but no container runtime is available (${runtime.kind}) — ` +
-          "install Docker/Podman or set isolation to 'auto' for an honest host-jail fallback",
+        `workspace isolation was requested but no container runtime is available (${runtime.kind}${runtime.kind === "wsl" ? " — a bare WSL distro shares the host filesystem and network, so it is not isolation" : ""}) — ` +
+          "install Docker/Podman (Docker Desktop on Windows) or set isolation to 'auto' for an honest host-jail fallback",
       );
     }
     return null; // honest fallback (auto mode) — caller must record it
@@ -176,7 +182,6 @@ export async function teardownIsolatedWorkspace(spaceId: string, runner: Runner 
 
 /** Command-line for executing a command inside the isolated env. */
 export function isolatedExecArgs(env: IsolatedEnv, command: string): { command: string; args: string[] } {
-  if (env.kind === "wsl") return { command: "wsl", args: ["-d", env.ref, "--cd", "/workspace", "--", "sh", "-c", command] };
   return { command: env.kind, args: ["exec", "-w", "/workspace", env.ref, "sh", "-c", command] };
 }
 
