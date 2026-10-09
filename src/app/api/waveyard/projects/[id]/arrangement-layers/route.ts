@@ -72,7 +72,19 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       .from(arrangementLayers)
       .where(eq(arrangementLayers.projectId, projectId))
       .orderBy(asc(arrangementLayers.createdAt));
-    return NextResponse.json({ layers: rows.map(layerRowToResponse) }, { status: 200 });
+    // The piano roll grid needs the project's real tempo; layers are
+    // composed on the analysed beat grid.
+    const [firstLayer] = rows;
+    let bpm: number | null = null;
+    if (firstLayer !== undefined) {
+      const [analysis] = await db
+        .select({ bpm: sourceAnalyses.bpm })
+        .from(sourceAnalyses)
+        .where(eq(sourceAnalyses.sourceAssetId, firstLayer.sourceAssetId))
+        .limit(1);
+      bpm = analysis?.bpm ?? null;
+    }
+    return NextResponse.json({ layers: rows.map(layerRowToResponse), bpm }, { status: 200 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("arrangement layer listing failed", error);

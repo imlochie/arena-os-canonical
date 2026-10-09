@@ -170,12 +170,21 @@ protocol research; sequenced deliberately after V1/V2.
 
 ### V4 — The Studio (piano roll, MIDI, customization)
 
-- Native piano roll (canvas editor) + MIDI tracks wired to what already
-  exists: the synth renderer, the insert chain (26 processors), buses,
-  arrangement, automation lanes.
-- MIDI-file interchange from day one: SMF read/write already exists in the
-  codebase (`midi-file.ts`) — FL Studio opens our SMF natively, and we open
-  FL's exported MIDI.
+- **First slice shipped:** the native piano roll is live in the studio. A pure,
+  fully-tested domain model (`studio/piano-roll.ts`) drives a real editor
+  (`PianoRoll.tsx`): draw/move/resize notes on the project's analysed beat
+  grid, snap settings bar→1/16, multi-select, duplicate, transpose, quantize,
+  velocity lane, and keyboard editing (Delete, Ctrl+D, arrows, Ctrl+A). Every
+  arrangement layer gets an in-place editor — saving re-renders the layer's
+  real audio with the same instrument (the stored WAV is always exactly what
+  the notes say) and the layer's provenance records the edit.
+- MIDI-file interchange from day one: SMF read/write exists in the codebase
+  (`midi-file.ts`, both directions tested) and is wired per layer — export
+  any layer as a Standard MIDI File at the project tempo (FL Studio opens it
+  natively), import an FL-exported `.mid` back into the editor.
+- Next: MIDI tracks on the timeline (clips referencing layer notes), recorded
+  MIDI input, and hooking the insert chain (26 processors) + automation lanes
+  to editor output.
 - Customization: layouts and theming on the existing visual-state system.
 - FL bridging (virtual MIDI port + loopback audio) only if the native
   editor hits a wall (decision 4).

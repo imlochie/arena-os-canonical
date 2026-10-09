@@ -8,6 +8,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { PianoRoll } from "./PianoRoll";
+import { fromSynthEvents, type PianoNote } from "@/lib/waveyard/studio/piano-roll";
+
 export type ArrangementLayerSummary = {
   id: string;
   instrument: string;
@@ -34,6 +37,12 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [playErrorId, setPlayingErrorId] = useState<string | null>(null);
+  const [bpm, setBpm] = useState(120);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editNotes, setEditNotes] = useState<PianoNote[] | null>(null);
+  const [editDirty, setEditDirty] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const load = useCallback(async () => {
@@ -44,6 +53,7 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
       return;
     }
     setLayers(body.layers ?? []);
+    if (typeof body.bpm === "number" && body.bpm > 0) setBpm(body.bpm);
     setError(null);
   }, [projectId]);
 
@@ -94,6 +104,53 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
     if (audioRef.current === null) audioRef.current = new Audio();
     audioRef.current.src = layer.audioUrl;
     void audioRef.current.play().then(() => setPlayingId(layer.id)).catch(() => setPlayingErrorId(layer.id));
+  };
+
+  const openEditor = (layer: ArrangementLayerSummary) => {
+    setEditingId(layer.id);
+    setEditNotes(fromSynthEvents(layer.events));
+    setEditDirty(false);
+    setEditError(null);
+  };
+
+  const closeEditor = () => {
+    setEditingId(null);
+    setEditNotes(null);
+    setEditDirty(false);
+    setEditError(null);
+  };
+
+  const saveEditor = async () => {
+    if (editingId === null || editNotes === null || editSaving) return;
+    setEditSaving(true);
+    setEditError(null);
+    const response = await fetch(
+      `/api/waveyard/projects/${projectId}/arrangement-layers/${editingId}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ events: editNotes }) },
+    );
+    const body = await response.json().catch(() => ({}));
+    setEditSaving(false);
+    if (!response.ok) {
+      setEditError(body.error ?? "The edit could not be saved.");
+      return;
+    }
+    setEditDirty(false);
+    await load();
+  };
+
+  const importMidi = async (layerId: string, file: File) => {
+    setEditError(null);
+    const response = await fetch(
+      `/api/waveyard/projects/${projectId}/arrangement-layers/${layerId}/midi`,
+      { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: await file.arrayBuffer() },
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setEditError(body.error ?? "The MIDI file could not be imported.");
+      return;
+    }
+    setEditNotes(body.notes ?? []);
+    setEditDirty(true);
   };
 
   return (
@@ -156,6 +213,18 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
                 {canEdit && (
                   <button
                     className="toggle"
+                    aria-label={`Edit ${layer.instrument} layer notes in the piano roll`}
+                    onClick={() => (editingId === layer.id ? closeEditor() : openEditor(layer))}
+                  >🎹</button>
+                )}
+                <a
+                  className="toggle"
+                  aria-label={`Export ${layer.instrument} layer as a Standard MIDI File`}
+                  href={`/api/waveyard/projects/${projectId}/arrangement-layers/${layer.id}/midi`}
+                >⇩MIDI</a>
+                {canEdit && (
+                  <button
+                    className="toggle"
                     aria-label={`Delete ${layer.instrument} layer`}
                     onClick={() => void remove(layer.id)}
                   >✕</button>
@@ -163,6 +232,44 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
               </div>
             </div>
             {playErrorId === layer.id && <small className="form-error">Playback was blocked by the browser.</small>}
+            {editingId === layer.id && editNotes !== null && (
+              <div className="layer-editor" data-testid={`piano-roll-editor-${layer.id}`}>
+                <div className="layer-editor-bar">
+                  <b>Piano roll — {layer.instrument}</b>
+                  <small>{editDirty ? "Unsaved changes" : "In sync with the saved layer"}</small>
+                  <label className="layer-midi-import">
+                    Import MIDI
+                    <input
+                      aria-label="Import a Standard MIDI File into this layer"
+                      type="file"
+                      accept=".mid,.midi,audio/midi"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file !== undefined) void importMidi(layer.id, file);
+                        event.target.value = "";
+                      }}
+                    />
+                  </label>
+                  {canEdit && (
+                    <button className="button" disabled={editSaving || !editDirty} onClick={() => void saveEditor()}>
+                      {editSaving ? "Rendering…" : editDirty ? "Save + re-render layer" : "Saved"}
+                    </button>
+                  )}
+                  <button className="toggle" aria-label="Close piano roll" onClick={closeEditor}>✕</button>
+                </div>
+                {editError && <p className="form-error" role="alert">{editError}</p>}
+                <PianoRoll
+                  notes={editNotes}
+                  onChange={(next) => {
+                    setEditNotes(next);
+                    setEditDirty(true);
+                  }}
+                  bpm={bpm}
+                  durationMs={layer.durationSeconds * 1000}
+                  disabled={!canEdit}
+                />
+              </div>
+            )}
             {expanded === layer.id && (
               <div className="layer-notes">
                 <b>How it was placed</b>

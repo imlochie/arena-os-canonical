@@ -753,3 +753,36 @@
 .collection-list li .playlist-row small{display:block}
 .collection-delete{background:none;border:1px solid var(--line);color:var(--muted);cursor:pointer;padding:0 10px}
 .collection-delete:hover{color:#fff;border-color:var(--acid)}
+
+/* Piano roll (native MIDI editor, vision §V4) */
+.piano-roll{display:grid;gap:8px;border:1px solid var(--line);background:var(--panel-deep);padding:10px}
+.piano-roll-toolbar{display:flex;align-items:end;gap:16px;flex-wrap:wrap}
+.piano-roll-toolbar label{display:grid;gap:4px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.piano-roll-toolbar select{background:#181b13;border:1px solid #4b5832;color:var(--ink);padding:5px}
+.piano-roll-toolbar small{color:var(--muted);font-size:11px;margin-left:auto}
+.piano-roll-body:focus-visible{outline:2px solid var(--acid);outline-offset:2px}
+.piano-roll-scroll{overflow:auto;max-height:420px;border:1px solid var(--line)}
+.piano-roll-inner{display:flex;min-width:max-content}
+.piano-roll-keys{position:sticky;left:0;z-index:2;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--line)}
+.piano-roll-key{position:relative;width:100%;border-bottom:1px solid rgba(255,255,255,.05)}
+.piano-roll-key.white{background:#20241c}
+.piano-roll-key.black{background:#12140f}
+.piano-roll-key span{position:absolute;left:5px;top:0;font:9px ui-monospace,monospace;color:var(--muted);line-height:14px;pointer-events:none}
+.piano-roll-track{display:flex;flex-direction:column}
+.piano-roll-grid{position:relative;touch-action:none;cursor:crosshair}
+.piano-roll-grid.disabled{opacity:.55;cursor:not-allowed}
+.piano-roll-row{position:absolute;left:0;right:0}
+.piano-roll-row.white{background:#161a12}
+.piano-roll-row.black{background:#0f110c}
+.piano-roll-barline{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.07);pointer-events:none}
+.piano-roll-barline.strong{background:rgba(214,251,84,.28)}
+.piano-roll-note{position:absolute;background:var(--cyan);border:1px solid #b7f3f5;cursor:grab;z-index:1}
+.piano-roll-note.selected{background:var(--acid);border-color:#eaffab;box-shadow:0 0 0 2px rgba(214,251,84,.25);z-index:2}
+.piano-roll-velocity{position:relative;border-top:1px solid var(--line);background:#0d0f0b;flex:none}
+.piano-roll-velocity-bar{position:absolute;bottom:0;width:5px;background:var(--orange);border:1px solid #f6bd93;cursor:ns-resize;touch-action:none}
+.piano-roll-velocity-bar.selected{background:var(--acid);border-color:#eaffab}
+.layer-editor{border-top:1px solid var(--line);padding-top:11px;display:grid;gap:9px}
+.layer-editor-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.layer-editor-bar small{color:var(--muted);font-size:11px}
+.layer-midi-import{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);border:1px solid var(--line);padding:6px 9px;cursor:pointer}
+.layer-midi-import input{display:none}
