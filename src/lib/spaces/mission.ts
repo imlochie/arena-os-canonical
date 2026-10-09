@@ -95,6 +95,8 @@ export interface MissionDeps {
   generate?: typeof generate;
   /** Browser engine override for tests (real missions use the playwright engine). */
   browserEngine?: import("./browser").BrowserEngine;
+  /** External action deps (fetcher/env) override for tests. */
+  externalDeps?: import("./external").ExternalDeps;
 }
 
 const AGENT_KNOWLEDGE = `WORK DISCIPLINE (how strong coding agents operate):
@@ -120,6 +122,9 @@ const TOOL_DOC = `Available tools (emit actions as JSON):
 - browser_screenshot {}             save a screenshot of the current page into the workspace
 - browser_click {selector}          click on the page — REQUIRES HUMAN APPROVAL (it changes state)
 - browser_fill {selector, value}    type into a field — REQUIRES HUMAN APPROVAL (account logins, forms)
+- external_call {to, message}      place a real phone call speaking the message — REQUIRES HUMAN APPROVAL + owner-configured Twilio
+- external_sms {to, message}       send a real SMS — REQUIRES HUMAN APPROVAL + owner-configured Twilio
+- payment_link {amount, description, currency?}  create a real Stripe payment link URL — REQUIRES HUMAN APPROVAL + owner-configured Stripe, capped by MAX_PAYMENT_AMOUNT_USD
 - github_publish {repo, message, files:[{path,content}], branch?}  commit+push to GitHub (needs a connected token)
 
 Respond with ONE JSON object only, no prose outside it:
@@ -511,12 +516,12 @@ async function runMissionInner(
             continue;
           }
           const tExec = Date.now();
-          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine });
+          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps });
           await completeExecution(approval.id, gated.ok, { tool: gated.tool, output: gated.output.slice(0, 2000) }, gated.ok ? undefined : gated.output.slice(0, 500));
           outcomes.push({ ...gated, ms: Date.now() - tExec });
           continue;
         }
-        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine }));
+        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps }));
       }
 
       const step: MissionStep = {

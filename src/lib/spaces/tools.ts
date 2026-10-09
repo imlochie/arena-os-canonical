@@ -507,6 +507,7 @@ export async function executeTool(
     extraAllow?: string[];
     execTarget?: import("./workspace-isolation").ExecTarget;
     browserEngine?: import("./browser").BrowserEngine;
+    externalDeps?: import("./external").ExternalDeps;
   } = {}
 ): Promise<ToolOutcome> {
   const dir = await ensureWorkspace(spaceId);
@@ -555,6 +556,28 @@ export async function executeTool(
         return (await import("./browser")).toolBrowserScreenshot(spaceId, opts.browserEngine);
       case "browser_click":
         return (await import("./browser")).toolBrowserClick(spaceId, String(action.args.selector ?? ""), opts.browserEngine);
+      case "external_call":
+        return (await import("./external")).toolExternalCall(
+          { to: String(action.args.to ?? ""), message: String(action.args.message ?? "") },
+          opts.externalDeps,
+        );
+      case "external_sms":
+        return (await import("./external")).toolExternalSms(
+          { to: String(action.args.to ?? ""), message: String(action.args.message ?? "") },
+          opts.externalDeps,
+        );
+      case "payment_link": {
+        const res = await (await import("./external")).toolPaymentLink(
+          {
+            amount: (action.args.amount ?? 0) as string | number,
+            description: String(action.args.description ?? ""),
+            currency: action.args.currency ? String(action.args.currency) : undefined,
+          },
+          opts.externalDeps,
+        );
+        if (!res.ok) throw new Error(res.output); // refused → recorded as a tool failure, never a silent success
+        return res.output;
+      }
       case "browser_fill":
         return (await import("./browser")).toolBrowserFill(
           spaceId,
