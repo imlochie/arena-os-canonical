@@ -126,6 +126,34 @@ function seededRandom(seed: number): () => number {
 }
 
 /** Stable string → 32-bit seed (FNV-1a). */
+// ------------------------------------------------------------------ helix
+// The DNA view of the A//B: two strands (the two tracks) wound around one
+// axis, beats building the rungs between them. Where the tracks agree, the
+// rungs glow — mashup proof made visible.
+
+/** A strand's height at `t` (0–1 across the view), −1…1. */
+export function helixY(t: number, turns: number, rotation: number, phase: number): number {
+  return Math.sin(t * turns * Math.PI * 2 + rotation + phase);
+}
+
+/**
+ * Rung glow from the two sides' levels: 1 when they match in energy, 0 when
+ * only one side is sounding. This is the "they lock here" signal.
+ */
+export function helixRungGlow(rmsA: number, rmsB: number): number {
+  const a = Math.max(0, Math.min(1, Number.isFinite(rmsA) ? rmsA : 0));
+  const b = Math.max(0, Math.min(1, Number.isFinite(rmsB) ? rmsB : 0));
+  const similarity = 1 - Math.abs(a - b);
+  return Math.max(0, similarity * Math.min(1, (a + b) * 2));
+}
+
+/** Strand breathing: louder music swells the helix (0.16–0.5 of half-height). */
+export function helixAmplitude(rmsA: number, rmsB: number): number {
+  const a = Math.max(0, Math.min(1, Number.isFinite(rmsA) ? rmsA : 0));
+  const b = Math.max(0, Math.min(1, Number.isFinite(rmsB) ? rmsB : 0));
+  return 0.16 + Math.min(1, (a + b) / 2) * 0.34;
+}
+
 export function hashSeed(input: string): number {
   let hash = 0x811c9dc5;
   for (let i = 0; i < input.length; i += 1) {

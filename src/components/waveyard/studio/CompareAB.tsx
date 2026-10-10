@@ -26,11 +26,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   buildShowcasePlan,
   equalPowerCrossfade,
+  helixAmplitude,
+  helixRungGlow,
+  helixY,
   parseId3Artwork,
   proceduralCoverSpec,
   showcaseDividerAt,
   type CoverSpec,
 } from "@/lib/waveyard/studio/ab-compare";
+import { analyzeSpectrum, createAnalyzerState, type AnalyzerState } from "@/lib/waveyard/studio/visualizer";
 import type { Stem, Source } from "./types";
 
 type TransportLike = { pause(): void; playing: boolean };
@@ -148,6 +152,7 @@ export function CompareAB({ projectId, sources, stems, transport }: { projectId:
   const [slotB, setSlotB] = useState<Slot | null>(null);
   const [layers, setLayers] = useState<LayerSummary[]>([]);
   const [divider, setDivider] = useState(0.5);
+  const [visual, setVisual] = useState<"split" | "helix">("helix");
   const [mode, setMode] = useState<"manual" | "showcase">("manual");
   const [playing, setPlaying] = useState(false);
   const [showcaseActive, setShowcaseActive] = useState(false);
@@ -169,13 +174,20 @@ export function CompareAB({ projectId, sources, stems, transport }: { projectId:
   const streamDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const showcaseRef = useRef<{ start: number; plan: ReturnType<typeof buildShowcasePlan> } | null>(null);
-  const liveRef = useRef({ divider, volumeA, volumeB, slotA, slotB, playing, mode, recording });
+  const helixRef = useRef<{ rotation: number; rungs: Array<{ age: number; glow: number; x: number }>; analyzerA: AnalyzerState; analyzerB: AnalyzerState; lastMs: number }>({
+    rotation: 0,
+    rungs: [],
+    analyzerA: createAnalyzerState(),
+    analyzerB: createAnalyzerState(),
+    lastMs: 0,
+  });
+  const liveRef = useRef({ divider, volumeA, volumeB, slotA, slotB, playing, mode, recording, visual });
   const coverA = useCover(slotA);
   const coverB = useCover(slotB);
 
   useEffect(() => {
-    liveRef.current = { divider, volumeA, volumeB, slotA, slotB, playing, mode, recording };
-  }, [divider, volumeA, volumeB, slotA, slotB, playing, mode, recording]);
+    liveRef.current = { divider, volumeA, volumeB, slotA, slotB, playing, mode, recording, visual };
+  }, [divider, volumeA, volumeB, slotA, slotB, playing, mode, recording, visual]);
 
   // Layer list for the pickers.
   useEffect(() => {
@@ -298,6 +310,35 @@ export function CompareAB({ projectId, sources, stems, transport }: { projectId:
       if (gainARef.current !== null) gainARef.current.gain.value = gains.a * live.volumeA;
       if (gainBRef.current !== null) gainBRef.current.gain.value = gains.b * live.volumeB;
 
+      // The helix: per-side perception (onsets + levels) drives the rungs.
+      const helix = helixRef.current;
+      const dt = Math.min(0.1, Math.max(0, (now - helix.lastMs) / 1000));
+      helix.lastMs = now;
+      const sampleRate = ctxRef.current?.sampleRate ?? 44_100;
+      const spectrumA = readSpectrum(analyserARef.current);
+      const spectrumB = readSpectrum(analyserBRef.current);
+      let featuresA: ReturnType<typeof analyzeSpectrum>["features"] | null = null;
+      let featuresB: ReturnType<typeof analyzeSpectrum>["features"] | null = null;
+      if (spectrumA !== null) {
+        const analyzed = analyzeSpectrum(spectrumA, helix.analyzerA, { sampleRate, fftSize: 256, nowMs: now });
+        helix.analyzerA = analyzed.state;
+        featuresA = analyzed.features;
+      }
+      if (spectrumB !== null) {
+        const analyzed = analyzeSpectrum(spectrumB, helix.analyzerB, { sampleRate, fftSize: 256, nowMs: now });
+        helix.analyzerB = analyzed.state;
+        featuresB = analyzed.features;
+      }
+      const rmsA = (featuresA?.rms ?? 0) * gains.a * live.volumeA;
+      const rmsB = (featuresB?.rms ?? 0) * gains.b * live.volumeB;
+      // The braid tightens through the crossfade (fastest at the middle).
+      const braidBoost = 1 + (1 - Math.abs(2 * effectiveDivider - 1)) * 1.6;
+      helix.rotation += dt * 0.9 * braidBoost;
+      helix.rungs = helix.rungs.map((rung) => ({ ...rung, age: rung.age + dt * 1000, x: rung.x - dt * 0.2 })).filter((rung) => rung.age < 2600 && rung.x > -0.02);
+      if ((featuresA?.onset === true || featuresB?.onset === true) && helix.rungs.length < 48) {
+        helix.rungs = [...helix.rungs, { age: 0, glow: helixRungGlow(rmsA, rmsB), x: 1 }].slice(-48);
+      }
+
       // DPR-sharp backing store.
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       const box = canvas.getBoundingClientRect();
@@ -307,8 +348,8 @@ export function CompareAB({ projectId, sources, stems, transport }: { projectId:
       }
       ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
       drawComparison(ctx2d, box.width, box.height, {
-        spectrumA: readSpectrum(analyserARef.current),
-        spectrumB: readSpectrum(analyserBRef.current),
+        spectrumA,
+        spectrumB,
         divider: effectiveDivider,
         labelA: live.slotA?.label ?? "A",
         labelB: live.slotB?.label ?? "B",
@@ -316,6 +357,8 @@ export function CompareAB({ projectId, sources, stems, transport }: { projectId:
         coverB: coverB.image ?? (coverB.spec !== null ? drawSpecToCanvas(coverB.spec) : null),
         phaseLabel,
         progress,
+        visual: live.visual,
+        helix: { rotation: helix.rotation, rungs: helix.rungs, rmsA, rmsB },
       });
     };
     frame = requestAnimationFrame(loop);
@@ -456,6 +499,12 @@ export function CompareAB({ projectId, sources, stems, transport }: { projectId:
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
 
+      <div className="compare-visuals" role="group" aria-label="Comparison visual">
+        <button className={`deck-chip ${visual === "helix" ? "on" : ""}`} aria-pressed={visual === "helix"} onClick={() => setVisual("helix")}>DNA helix</button>
+        <button className={`deck-chip ${visual === "split" ? "on" : ""}`} aria-pressed={visual === "split"} onClick={() => setVisual("split")}>Split spectrum</button>
+        <small>{visual === "helix" ? "the two tracks as intertwined strands — beats build the rungs, they glow where the tracks lock" : "A's spectrum left of the divider, B's right — drag to crossfade"}</small>
+      </div>
+
       <canvas
         ref={canvasRef}
         className={`compare-canvas ${playing ? "" : "idle"}`}
@@ -545,6 +594,8 @@ function drawComparison(
     coverB: CanvasImageSource | null;
     phaseLabel: string | null;
     progress: number | null;
+    visual: "split" | "helix";
+    helix: { rotation: number; rungs: Array<{ age: number; glow: number; x: number }>; rmsA: number; rmsB: number };
   },
 ) {
   ctx.clearRect(0, 0, width, height);
@@ -553,6 +604,11 @@ function drawComparison(
   background.addColorStop(1, "#070a10");
   ctx.fillStyle = background;
   ctx.fillRect(0, 0, width, height);
+
+  if (input.visual === "helix") {
+    drawHelixComparison(ctx, width, height, input);
+    return;
+  }
 
   const splitX = input.divider * width;
 
@@ -632,6 +688,159 @@ function drawComparison(
     ctx.font = "13px ui-monospace, monospace";
     ctx.textAlign = "center";
     ctx.fillText("pick two sides and press play — then drag the divider to morph A into B", width / 2, height / 2);
+    ctx.textAlign = "left";
+  }
+}
+
+/**
+ * The DNA view: two strands — A cyan from the left, B lime from the right —
+ * wound around one axis. Each side's album cover badges its strand (the
+ * song's identity), beats build the rungs between the strands, and a rung
+ * glows in proportion to how well the two sides agree at that moment.
+ */
+function drawHelixComparison(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  input: {
+    spectrumA: Uint8Array | null;
+    spectrumB: Uint8Array | null;
+    divider: number;
+    labelA: string;
+    labelB: string;
+    coverA: CanvasImageSource | null;
+    coverB: CanvasImageSource | null;
+    phaseLabel: string | null;
+    progress: number | null;
+    helix: { rotation: number; rungs: Array<{ age: number; glow: number; x: number }>; rmsA: number; rmsB: number };
+  },
+): void {
+  const turns = 3;
+  const badgeRadius = Math.max(26, Math.min(40, height * 0.11));
+  const axisY = height * 0.5;
+  const fromX = badgeRadius + 34;
+  const toX = width - badgeRadius - 34;
+  const axisLength = Math.max(10, toX - fromX);
+  const amplitude = helixAmplitude(input.helix.rmsA, input.helix.rmsB) * height * 0.3;
+
+  // The strand paths (A phase 0, B phase π) + depth ghosts.
+  const strand = (phase: number, color: string, alpha: number, lineWidth: number) => {
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = lineWidth;
+    ctx.beginPath();
+    for (let step = 0; step <= 90; step += 1) {
+      const t = step / 90;
+      const x = fromX + t * axisLength;
+      const y = axisY + helixY(t, turns, input.helix.rotation, phase) * amplitude;
+      if (step === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  };
+  strand(Math.PI, A_COLOR, 0.34, 2); // A's far side
+  strand(0, B_COLOR, 0.34, 2); // B's far side
+  strand(Math.PI, A_COLOR, 0.95, 3); // A
+  strand(0, B_COLOR, 0.95, 3); // B
+
+  // The rungs: beats as the ladder, glow = agreement.
+  for (const rung of input.helix.rungs) {
+    const fade = Math.max(0, 1 - rung.age / 2600);
+    const t = rung.x;
+    if (t < 0 || t > 1) continue;
+    const x = fromX + t * axisLength;
+    const yA = axisY + helixY(t, turns, input.helix.rotation, Math.PI) * amplitude;
+    const yB = axisY + helixY(t, turns, input.helix.rotation, 0) * amplitude;
+    const top = Math.min(yA, yB);
+    const bottom = Math.max(yA, yB);
+    ctx.strokeStyle = `rgba(245, 244, 240, ${0.1 + rung.glow * 0.7 * fade})`;
+    ctx.lineWidth = 1 + rung.glow * 3.5 * fade;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+    ctx.stroke();
+    if (rung.glow > 0.55) {
+      ctx.fillStyle = `rgba(214, 251, 84, ${rung.glow * 0.5 * fade})`;
+      ctx.beginPath();
+      ctx.arc(x, (top + bottom) / 2, 2 + rung.glow * 3 * fade, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // The covers badge each strand — the songs' identity.
+  const badge = (cover: CanvasImageSource | null, label: string, color: string, cx: number, letter: string) => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, axisY, badgeRadius, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    if (cover !== null) {
+      ctx.drawImage(cover, cx - badgeRadius, axisY - badgeRadius, badgeRadius * 2, badgeRadius * 2);
+    } else {
+      ctx.fillStyle = "#141926";
+      ctx.fillRect(cx - badgeRadius, axisY - badgeRadius, badgeRadius * 2, badgeRadius * 2);
+      ctx.fillStyle = color;
+      ctx.font = `bold ${badgeRadius}px ui-monospace, monospace`;
+      ctx.textAlign = "center";
+      ctx.fillText(letter, cx, axisY + badgeRadius * 0.35);
+      ctx.textAlign = "left";
+    }
+    ctx.restore();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(cx, axisY, badgeRadius + 1, 0, Math.PI * 2);
+    ctx.stroke();
+    // The label under the badge.
+    ctx.fillStyle = "rgba(245, 244, 240, 0.92)";
+    ctx.font = "12px Arial, sans-serif";
+    ctx.textAlign = "center";
+    const text = label.length > 34 ? `${label.slice(0, 31)}…` : label;
+    ctx.fillText(text, cx, axisY + badgeRadius + 20);
+    ctx.textAlign = "left";
+  };
+  badge(input.coverA, `A · ${input.labelA}`, A_COLOR, fromX - badgeRadius * 0.4, "A");
+  badge(input.coverB, `B · ${input.labelB}`, B_COLOR, toX + badgeRadius * 0.4, "B");
+
+  // The crossfade handle: a compact A|B pill that mirrors the divider.
+  const handleX = 40 + input.divider * (width - 80);
+  ctx.fillStyle = "#0a0d14";
+  ctx.strokeStyle = "rgba(245, 244, 240, 0.85)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(handleX - 34, height - 34, 68, 22, 11);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = A_COLOR;
+  ctx.beginPath();
+  ctx.roundRect(handleX - 32, height - 32, 64 * input.divider, 18, 9);
+  ctx.fill();
+  ctx.fillStyle = input.divider > 0.5 ? B_COLOR : "#0a0d14";
+  ctx.font = "bold 10px ui-monospace, monospace";
+  ctx.fillText("A", handleX - 26, height - 19);
+  ctx.fillStyle = input.divider > 0.5 ? "#0a0d14" : B_COLOR;
+  ctx.textAlign = "right";
+  ctx.fillText("B", handleX + 26, height - 19);
+  ctx.textAlign = "left";
+
+  // Showcase overlays (same contract as the split view).
+  if (input.phaseLabel !== null) {
+    ctx.fillStyle = "rgba(245, 244, 240, 0.95)";
+    ctx.font = "bold 15px ui-monospace, monospace";
+    ctx.fillText(input.phaseLabel, 14, height - 44);
+  }
+  if (input.progress !== null) {
+    ctx.fillStyle = "rgba(255, 255, 255, 0.14)";
+    ctx.fillRect(0, height - 8, width, 3);
+    ctx.fillStyle = "#d6fb54";
+    ctx.fillRect(0, height - 8, width * input.progress, 3);
+  }
+
+  if (input.spectrumA === null && input.spectrumB === null) {
+    ctx.fillStyle = "rgba(127, 135, 150, 0.85)";
+    ctx.font = "13px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("pick two sides and press play — the strands wind, the beats build the rungs", width / 2, 24);
     ctx.textAlign = "left";
   }
 }

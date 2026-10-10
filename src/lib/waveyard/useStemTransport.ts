@@ -210,6 +210,7 @@ export function useStemTransport(ids: string[], duration: number) {
   const masterRight = useRef<AnalyserNode | null>(null);
   const clipHold = useRef<Record<string, number>>({});
   const mixValues = useRef<Record<string, MixerValues>>({});
+  const masterTap = useRef<MediaStreamAudioDestinationNode | null>(null);
   const clockId = useRef<number | null>(null);
   const lastUiUpdate = useRef(0);
   const [playing, setPlaying] = useState(false);
@@ -464,6 +465,21 @@ export function useStemTransport(ids: string[], duration: number) {
     return bins;
   }, []);
 
+  /** A recording tap of the master bus (post gain, pan, inserts, master
+   *  chain — exactly what you hear). Creates the destination lazily; the
+   *  same stream is reused for every recording. Null before the first play
+   *  (no audio graph exists yet). */
+  const masterTapStream = useCallback((): MediaStream | null => {
+    const analyser = masterAnalyser.current;
+    const ctx = context.current;
+    if (!analyser || !ctx) return null;
+    if (masterTap.current === null) {
+      masterTap.current = ctx.createMediaStreamDestination();
+      analyser.connect(masterTap.current);
+    }
+    return masterTap.current.stream;
+  }, []);
+
   /** Time-domain tap for one stem (the actual oscillating wave, [-1, 1]).
    *  Returns null before the graph exists. The caller owns the array. */
   const readWaveform = useCallback((id: string): Float32Array | null => {
@@ -539,6 +555,7 @@ export function useStemTransport(ids: string[], duration: number) {
     readSpectrum,
     readMasterSpectrum,
     readWaveform,
+    masterTapStream,
     /** The audio context's actual rate (bin→Hz math for spectrum consumers). */
     contextSampleRate: () => context.current?.sampleRate ?? 44_100,
     readMeters,

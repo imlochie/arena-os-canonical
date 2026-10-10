@@ -885,3 +885,26 @@
 .compare-actions small{color:var(--muted);font-size:11px}
 .compare-ab video{border-radius:10px;max-width:480px}
 @media(max-width:900px){.compare-pickers{grid-template-columns:1fr}}
+
+/* Visualizer customization panel + recording (the customization layers) */
+.viz-settings{display:grid;gap:10px;border:1px solid color-mix(in srgb,var(--line),white 10%);border-radius:12px;background:#0a0d14;padding:12px 14px}
+.viz-settings-row{display:flex;gap:18px;flex-wrap:wrap;align-items:center;font-size:11px;color:var(--muted)}
+.viz-settings-row label{display:inline-flex;gap:7px;align-items:center;font-size:11px;color:var(--muted)}
+.viz-settings-row input[type="range"]{width:120px;accent-color:var(--playback)}
+.viz-settings-row input[type="checkbox"]{accent-color:var(--playback)}
+.viz-settings-row .viz-caption input{width:200px;background:#181b13;border:1px solid #4b5832;color:var(--ink);padding:6px 8px;border-radius:6px;font-size:11px}
+.viz-whitelist{display:grid;gap:6px}
+.viz-whitelist>span,.viz-palette>span{font-size:11px;color:var(--muted)}
+.viz-whitelist>div{display:flex;gap:5px;flex-wrap:wrap}
+.viz-palette{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.viz-swatches{display:inline-flex;gap:4px;align-items:center}
+.viz-swatches i{width:16px;height:16px;border-radius:4px;display:inline-block;border:1px solid rgba(255,255,255,.25)}
+.viz-settings-footer{justify-content:space-between;border-top:1px solid color-mix(in srgb,var(--line),white 10%);padding-top:8px}
+.viz-record{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.viz-record small{color:var(--muted);font-size:11px}
+.visualizer-canvas.lasso{cursor:crosshair}
+
+/* A//B visual mode toggle + DNA helix view */
+.compare-visuals{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.compare-visuals small{color:var(--muted);font-size:11px}
+.compare-visuals .deck-chip{--lane:var(--playback)}

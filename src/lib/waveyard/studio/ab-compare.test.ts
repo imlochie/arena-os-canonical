@@ -8,6 +8,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  helixAmplitude,
+  helixRungGlow,
+  helixY,
   buildShowcasePlan,
   equalPowerCrossfade,
   hashSeed,
@@ -171,4 +174,33 @@ test("showcase options are clamped to sane lengths", () => {
   assert.ok(plan.phases[0].endMs >= 500);
   assert.ok(plan.phases[1].endMs - plan.phases[1].startMs >= 250);
   assert.ok(plan.totalMs <= 90_000, `total ${plan.totalMs}`);
+});
+
+// ------------------------------------------------------------------ helix
+
+test("helix strands wind periodically; the two sides oppose", () => {
+  const turns = 3;
+  // Periodicity: t=0 and t=1 with integer turns coincide.
+  for (const rotation of [0, 1.7, 42]) {
+    assert.ok(Math.abs(helixY(0, turns, rotation, 0) - helixY(1, turns, rotation, 0)) < 1e-9, `periodic at rotation ${rotation}`);
+  }
+  // The B strand (phase π) mirrors the A strand.
+  assert.ok(Math.abs(helixY(0.3, turns, 2, 0) + helixY(0.3, turns, 2, Math.PI)) < 1e-9, "phase π inverts");
+  // Output stays a sane sine.
+  assert.ok(Math.abs(helixY(0.25, 1, 0, 0) - 1) < 1e-9, "peak at a quarter turn");
+});
+
+test("rung glow rewards matched, sounding sides", () => {
+  assert.ok(Math.abs(helixRungGlow(0.5, 0.5) - 1) < 1e-9, "matched levels → full glow");
+  assert.equal(helixRungGlow(1, 0), 0, "one side silent → no glow");
+  assert.equal(helixRungGlow(0, 0), 0, "silence → no glow");
+  assert.equal(helixRungGlow(Number.NaN, 0.5), helixRungGlow(0, 0.5), "NaN clamps to silence, then the normal math");
+  assert.ok(helixRungGlow(0.6, 0.5) > helixRungGlow(0.9, 0.1), "closer levels glow brighter");
+});
+
+test("strand amplitude breathes with the music, clamped", () => {
+  assert.ok(Math.abs(helixAmplitude(0, 0) - 0.16) < 1e-9, "silence → the minimum");
+  assert.ok(Math.abs(helixAmplitude(1, 1) - 0.5) < 1e-9, "full level → the maximum");
+  assert.ok(helixAmplitude(0.5, 0.6) > helixAmplitude(0.1, 0.1), "louder breathes wider");
+  assert.equal(helixAmplitude(Number.NaN, 7), helixAmplitude(0, 1), "NaN inputs clamp, never propagate");
 });

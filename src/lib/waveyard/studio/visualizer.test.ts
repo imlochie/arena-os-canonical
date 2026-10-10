@@ -12,13 +12,31 @@ import test from "node:test";
 import {
   analyzeSpectrum,
   BAND_NAMES,
+  barIndexAt,
+  bestChord,
+  beatWrap,
+  chordAt,
+  chopStarLayout,
+  circuitLayout,
   classifyCharacter,
+  countLayersByStem,
   createAnalyzerState,
   createScene,
+  detectChroma,
   directScene,
+  estimateBpmFromTaps,
+  fifthsSlot,
   IDLE_POINTER,
+  lassoSelection,
+  midiToHeight,
+  noteNameToPitchClass,
+  phraseMeanMidi,
+  scaleFeatures,
   stepScene,
+  tappedBeatPhase,
   TERRAIN_ROWS,
+  WATERFALL_COLUMNS,
+  CITY_BARS,
   type PointerState,
   type SpectrumFeatures,
   type StemInput,
@@ -343,4 +361,276 @@ test("the director switches content to match the music — after the dwell", () 
     const decision = directScene("nebula", character, 0, t);
     if (decision !== null) assert.ok(decision.reason.length > 5, "reason present");
   }
+});
+
+// ------------------------------------------------------------- new scenes
+
+test("helix: beats build rungs; rungs age, drift, and expire; torque twists", () => {
+  const master = makeFeatures();
+  let scene = createScene("helix", 2);
+  // Beat phase wraps 0.9 → 0.1: a new beat.
+  scene = stepScene(scene, [stem("vocals"), stem("drums")], { ...master, rms: 0.4 }, 16, IDLE_POINTER, { beatPhaseOverride: 0.9 });
+  scene = stepScene(scene, [stem("vocals"), stem("drums")], { ...master, rms: 0.4 }, 16, IDLE_POINTER, { beatPhaseOverride: 0.1 });
+  assert.equal(scene.helixRungs.length, 1, "a beat wrap spawns a rung");
+  assert.ok(scene.helixRungs[0].glow > 0, "the rung carries glow");
+
+  const rotationBefore = scene.helixRotation;
+  for (let step = 0; step < 60; step += 1) scene = stepScene(scene, [stem("vocals"), stem("drums")], master, 32, IDLE_POINTER, { beatPhaseOverride: 0.5 });
+  assert.ok(scene.helixRotation > rotationBefore, "the helix turns on its own");
+  assert.equal(scene.helixRungs.length, 1, "no wrap, no onset → no extra rungs");
+
+  // Torque: dragging right twists faster.
+  const twist = (pointer: PointerState) => {
+    let s2 = createScene("helix", 1);
+    for (let step = 0; step < 30; step += 1) s2 = stepScene(s2, [stem("drums")], master, 16, pointer);
+    return s2.helixRotation;
+  };
+  assert.ok(twist({ x: 1, y: 0.5, active: true }) > twist(IDLE_POINTER), "pointer torque twists the helix");
+
+  // Rungs expire with age.
+  for (let step = 0; step < 200; step += 1) scene = stepScene(scene, [stem("vocals"), stem("drums")], master, 32, IDLE_POINTER);
+  assert.equal(scene.helixRungs.length, 0, "rungs expired");
+});
+
+test("waterfall: per-stem band columns fall, bounded; hold freezes", () => {
+  const stems = [stem("vocals", { rms: 0.6 }), stem("bass", { rms: 0.2 })];
+  const master = makeFeatures();
+  let scene = createScene("waterfall", 2);
+  for (let step = 0; step < 5; step += 1) scene = stepScene(scene, stems, master, 16, IDLE_POINTER);
+  assert.equal(scene.waterfallColumns[0].length, 5, "a column per frame per stem");
+  assert.equal(scene.waterfallColumns[0][4].length, BAND_NAMES.length, "each column holds the 6 bands");
+  assert.ok(scene.waterfallColumns[0][4][1] > 0, "the bass band value landed");
+
+  for (let step = 0; step < 500; step += 1) scene = stepScene(scene, stems, master, 16, IDLE_POINTER);
+  assert.equal(scene.waterfallColumns[0].length, WATERFALL_COLUMNS, "history bounded");
+
+  const hold: PointerState = { x: 0.5, y: 0.5, active: true };
+  const before = scene.waterfallColumns[0].length;
+  for (let step = 0; step < 20; step += 1) scene = stepScene(scene, stems, master, 16, hold);
+  assert.equal(scene.waterfallColumns[0].length, before, "hold freezes the fall");
+});
+
+test("beatcity: the playing bar's height follows the level; bars decay slowly", () => {
+  const master = makeFeatures({ rms: 0.6 });
+  let scene = createScene("beatcity", 4);
+  scene = stepScene(scene, [stem("drums")], master, 16, IDLE_POINTER, { positionMs: 0, bpm: 120 });
+  const barZeroHeight = scene.cityHeights[0];
+  assert.ok(barZeroHeight > 0.3, `bar 0 lit (${barZeroHeight})`);
+
+  // 120 bpm → 2000 ms/bar: bar 1 at 2500 ms.
+  scene = stepScene(scene, [stem("drums")], master, 16, IDLE_POINTER, { positionMs: 2500, bpm: 120 });
+  assert.ok(scene.cityHeights[1] > 0.3, "bar 1 lit");
+  assert.ok(scene.cityHeights[1] > scene.cityHeights[2], "the future bar is dark");
+  assert.ok(scene.cityHeights[0] <= barZeroHeight + 1e-9, "the past bar keeps (or decays below) its peak");
+
+  // Without a tempo the city is honest: nothing changes but the decay.
+  const heights = [...scene.cityHeights];
+  scene = stepScene(scene, [stem("drums")], master, 16, IDLE_POINTER, { positionMs: 2500, bpm: null });
+  assert.equal(scene.cityLastBar, 1, "cursor unchanged without a tempo");
+  assert.ok(heights.every((height, index) => scene.cityHeights[index] <= height), "no growth without a tempo");
+});
+
+test("halo: chroma smooths toward the live vector; chord changes sweep", () => {
+  const chroma = new Array<number>(12).fill(0);
+  chroma[9] = 1; // A
+  chroma[0] = 0.6; // C#
+  chroma[4] = 0.7; // E
+  const master = makeFeatures();
+  let scene = createScene("halo", 1);
+  for (let step = 0; step < 60; step += 1) scene = stepScene(scene, [stem("vocals")], master, 16, IDLE_POINTER, { chroma });
+  assert.ok(scene.haloChroma[9] > 0.9, `chroma approached the target (${scene.haloChroma[9]})`);
+  assert.ok(scene.haloChroma[8] < 0.01, "absent classes stay near zero");
+
+  // The analysed chord drives the root; a root change sweeps.
+  scene = stepScene(scene, [stem("vocals")], master, 16, IDLE_POINTER, {
+    chroma,
+    chords: [{ startMs: 0, endMs: 10_000, root: "A", quality: "major" }],
+    positionMs: 5000,
+  });
+  assert.equal(scene.haloLastRoot, 9, "root A lit");
+  scene = stepScene(scene, [stem("vocals")], master, 16, IDLE_POINTER, {
+    chroma,
+    chords: [{ startMs: 0, endMs: 10_000, root: "A", quality: "major" }, { startMs: 10_000, endMs: 20_000, root: "D", quality: "major" }],
+    positionMs: 15_000,
+  });
+  assert.equal(scene.haloLastRoot, 2, "modulation to D");
+  assert.ok(scene.haloSweep !== null, "the sweep fired");
+  for (let step = 0; step < 80; step += 1) scene = stepScene(scene, [stem("vocals")], master, 16, IDLE_POINTER, { chroma, positionMs: 15_000, chords: [{ startMs: 10_000, endMs: 20_000, root: "D", quality: "major" }] });
+  assert.equal(scene.haloSweep, null, "the sweep expired");
+});
+
+test("circuit: the current flows faster when the master is louder", () => {
+  const master = makeFeatures({ rms: 0.8 });
+  let scene = createScene("circuit", 3);
+  for (let step = 0; step < 30; step += 1) scene = stepScene(scene, [stem("drums")], master, 16, IDLE_POINTER);
+  const fast = scene.circuitPulse;
+  let quiet = createScene("circuit", 3);
+  for (let step = 0; step < 30; step += 1) quiet = stepScene(quiet, [stem("drums")], makeFeatures({ rms: 0.02 }), 16, IDLE_POINTER);
+  assert.ok(fast > quiet.circuitPulse * 1.5, `loud flows faster (${fast} vs ${quiet.circuitPulse})`);
+});
+
+test("lyrics: the active phrase glows and the rest dim; no phrases is a no-op", () => {
+  const master = makeFeatures();
+  const phrases = [
+    { startMs: 0, endMs: 1000, midi: 60 },
+    { startMs: 1000, endMs: 2000, midi: 64 },
+  ];
+  let scene = createScene("lyrics", 1);
+  for (let step = 0; step < 20; step += 1) scene = stepScene(scene, [stem("vocals")], master, 32, IDLE_POINTER, { phrases, positionMs: 500 });
+  assert.ok(scene.phraseGlows[0] > 0.8, `active phrase lit (${scene.phraseGlows[0]})`);
+  assert.equal(scene.phraseGlows[1], 0, "future phrase dark");
+  for (let step = 0; step < 60; step += 1) scene = stepScene(scene, [stem("vocals")], master, 32, IDLE_POINTER, { phrases, positionMs: 999_999 });
+  assert.ok(scene.phraseGlows[0] < 0.1, "the phrase faded");
+  // No phrase data: no crash, glows empty.
+  scene = stepScene(scene, [stem("vocals")], master, 16, IDLE_POINTER, {});
+  assert.equal(scene.phraseGlows.length, 0);
+});
+
+test("chopgalaxy: chops light inside their window and spark on nearby onsets", () => {
+  const master = makeFeatures({ onset: true, flux: 0.05 });
+  const chops = [
+    { startMs: 1000, durationMs: 400, rootMidi: 60, confidence: 0.9 },
+    { startMs: 5000, durationMs: 400, rootMidi: 64, confidence: 0.8 },
+  ];
+  let scene = createScene("chopgalaxy", 1);
+  for (let step = 0; step < 10; step += 1) scene = stepScene(scene, [stem("vocals")], master, 32, IDLE_POINTER, { chops, positionMs: 1200 });
+  assert.ok(scene.chopGlows[0] > 0.7, `the playing chop lit (${scene.chopGlows[0]})`);
+  assert.equal(scene.chopGlows[1], 0, "the far chop stays dark");
+  // Near (but not inside) + onset → a spark.
+  scene = stepScene(scene, [stem("vocals")], master, 16, IDLE_POINTER, { chops, positionMs: 4400 });
+  assert.ok(scene.chopGlows[1] > 0, "a nearby onset sparked the chop");
+});
+
+// --------------------------------------------------- music + interaction
+
+test("scaleFeatures scales magnitudes and preserves events", () => {
+  const features = makeFeatures({ rms: 0.4, flux: 0.05, onset: true, beatPhase: 0.3 });
+  const boosted = scaleFeatures(features, 2);
+  assert.ok(Math.abs(boosted.rms - 0.8) < 1e-9, "rms scales");
+  assert.equal(boosted.onset, true, "onset preserved");
+  assert.equal(boosted.beatPhase, 0.3, "phase preserved");
+  const clamped = scaleFeatures(features, 10);
+  assert.ok(clamped.rms <= 1 && clamped.bands.bass <= 1, "values clamp at 1");
+  const zeroed = scaleFeatures(features, 0);
+  assert.equal(zeroed.rms, 0, "gain 0 silences");
+});
+
+test("detectChroma folds spectrum peaks onto pitch classes", () => {
+  // A4 = 440 Hz → class 9; C5 ≈ 523.25 Hz → class 0.
+  const a = detectChroma(peakAt(440), { sampleRate: SAMPLE_RATE, fftSize: FFT_SIZE });
+  let maxClass = 0;
+  for (let i = 1; i < 12; i += 1) if (a[i] > a[maxClass]) maxClass = i;
+  assert.equal(maxClass, 9, "A4 dominates class A");
+  const c = detectChroma(peakAt(523.25), { sampleRate: SAMPLE_RATE, fftSize: FFT_SIZE });
+  maxClass = 0;
+  for (let i = 1; i < 12; i += 1) if (c[i] > c[maxClass]) maxClass = i;
+  assert.equal(maxClass, 0, "C5 dominates class C");
+  const silence = detectChroma(spectrum(), { sampleRate: SAMPLE_RATE, fftSize: FFT_SIZE });
+  assert.ok(silence.every((value) => value === 0), "silence → all-zero chroma");
+});
+
+test("bestChord names triads and stays quiet on flat chroma", () => {
+  const aMajor = new Array<number>(12).fill(0.05);
+  aMajor[9] = 1; aMajor[1] = 0.8; aMajor[4] = 0.9; // A C# E
+  const chord = bestChord(aMajor);
+  assert.deepEqual(chord, { rootIndex: 9, quality: "major" }, "A major detected");
+
+  const flat = new Array<number>(12).fill(0.5);
+  assert.equal(bestChord(flat), null, "no chord without contrast");
+  assert.equal(bestChord([0.1, 0.2]), null, "malformed chroma rejected");
+});
+
+test("fifths + chord lookup + bars + beats + taps", () => {
+  assert.equal(noteNameToPitchClass("C"), 0);
+  assert.equal(noteNameToPitchClass("Db"), 1);
+  assert.equal(noteNameToPitchClass("A#"), 10);
+  assert.equal(noteNameToPitchClass("H"), null);
+
+  assert.equal(fifthsSlot(0), 0, "C at 12 o'clock");
+  assert.equal(fifthsSlot(7), 1, "G one step clockwise");
+  assert.equal(fifthsSlot(5), 11, "F one step counter-clockwise");
+
+  const chords = [{ startMs: 0, endMs: 1000, root: "F#", quality: "minor7" }, { startMs: 1000, endMs: 2000, root: null, quality: "major" }];
+  assert.deepEqual(chordAt(chords, 500), { rootIndex: 6, quality: "minor7" });
+  assert.equal(chordAt(chords, 1500), null, "null root is honestly unusable");
+  assert.equal(chordAt(chords, 9999), null, "outside every window");
+
+  assert.equal(barIndexAt(0, 120), 0);
+  assert.equal(barIndexAt(1999, 120), 0);
+  assert.equal(barIndexAt(2000, 120), 1, "120 bpm → 2000 ms bars");
+  assert.equal(barIndexAt(1000, null), null, "no tempo → no bars");
+
+  assert.equal(beatWrap(null, 0.5), false);
+  assert.equal(beatWrap(0.2, 0.5), false);
+  assert.equal(beatWrap(0.9, 0.1), true, "the wrap is a new beat");
+
+  assert.equal(tappedBeatPhase(250, 0, 120), 0.5, "half a beat at 120 bpm");
+  assert.equal(tappedBeatPhase(1000, 0, 120), 0, "two whole beats wrap to 0");
+  assert.equal(estimateBpmFromTaps([0, 500, 1000]), 120, "500 ms taps → 120 bpm");
+  assert.equal(estimateBpmFromTaps([0, 100]), null, "too few taps");
+  assert.equal(estimateBpmFromTaps([0, 10, 20]), null, "machine-gun taps rejected");
+});
+
+test("lasso selection takes the stems inside the stroke's span", () => {
+  const points = [{ x: 0.1, y: 0.2 }, { x: 0.45, y: 0.8 }];
+  const selected = lassoSelection(4, points);
+  assert.deepEqual(selected, [true, true, false, false], "stems 0 and 1 inside");
+
+  const click = [{ x: 0.3, y: 0.5 }];
+  assert.deepEqual(lassoSelection(4, click), [true, true, true, true], "a click is not a lasso");
+  assert.deepEqual(lassoSelection(0, points), [], "no stems, no selection");
+});
+
+test("layer counts, phrase pitch, midi heights, layouts", () => {
+  assert.deepEqual(countLayersByStem(["vocals", "drums"], ["drums", "drums/extra", "bass"]), [0, 2]);
+
+  const frames = [
+    { timestampMs: 0, midiFloat: 60, voiced: true },
+    { timestampMs: 100, midiFloat: 64, voiced: true },
+    { timestampMs: 200, midiFloat: 67, voiced: false },
+  ];
+  assert.equal(phraseMeanMidi(frames, 0, 200), 62, "only voiced frames inside the window count");
+  assert.equal(phraseMeanMidi(frames, 500, 900), null, "empty window → null");
+
+  assert.equal(midiToHeight(36), 0.88, "low notes sit low");
+  assert.equal(midiToHeight(84), 0.12, "high notes sit high");
+  assert.equal(midiToHeight(12), 0.88, "below range clamps");
+  assert.equal(midiToHeight(120), 0.12, "above range clamps");
+
+  const layout = circuitLayout(2, [0, 2], 800, 400);
+  assert.equal(layout.stems.length, 2);
+  assert.equal(layout.layers.length, 2, "two layers on the second stem");
+  assert.ok(layout.layers.every((layer) => layer.stemIndex === 1));
+  assert.ok(layout.master.x > layout.stems[0].x, "master sits right");
+
+  const stars = chopStarLayout([{ startMs: 0, durationMs: 400, rootMidi: 60, confidence: 0.5 }, { startMs: 5000, durationMs: 400, rootMidi: 72, confidence: 1 }], 10_000);
+  assert.ok(Math.abs((stars[1].angle - stars[0].angle) - 0.25) < 1e-9, "same pitch class, later time → the time spiral offsets the angle");
+  assert.ok(stars[1].radius > stars[0].radius, "later chops sit further out");
+  assert.ok(stars[1].size > stars[0].size, "confidence sizes the star");
+});
+
+// --------------------------------------------------- director extensions
+
+test("the director stays classic without extra scenes, and honors policy", () => {
+  const t = 100_000;
+  // Middling music with no extras: unchanged — stays put.
+  const middling = { energy: 0.4, brightness: 0.45, percussiveness: 0.35, vocalDominance: 0.2, density: 0.6 };
+  assert.equal(directScene("nebula", middling, 0, t, { extra: [] }), null, "no data-gated scenes offered → stays");
+
+  // With circuit offered, busy-and-bright music goes to the graph.
+  assert.equal(directScene("nebula", middling, 0, t, { extra: ["circuit"] })?.scene, "circuit", "busy + bright → circuit");
+
+  // The whitelist overrides taste: circuit banned → fall through to nebula.
+  const brightBusy = { energy: 0.4, brightness: 0.8, percussiveness: 0.35, vocalDominance: 0.2, density: 0.6 };
+  assert.equal(directScene("terrain", brightBusy, 0, t, { extra: ["circuit"], whitelist: ["nebula", "terrain"] })?.scene, "nebula", "whitelist bans circuit → nebula");
+
+  // Dwell policy: an impatient director switches sooner.
+  const driving = { energy: 0.7, brightness: 0.4, percussiveness: 0.8, vocalDominance: 0.05, density: 0.8 };
+  assert.equal(directScene("nebula", driving, 0, 5000, { dwellMs: 4000 })?.scene, "orbits", "short dwell switches at 5 s");
+  assert.equal(directScene("nebula", driving, 0, 5000), null, "default dwell still holds at 5 s");
+
+  // The helix wants exactly two stems in dialogue.
+  const dialogue = { energy: 0.5, brightness: 0.4, percussiveness: 0.2, vocalDominance: 0.3, density: 0.5, activeCount: 2 };
+  assert.equal(directScene("nebula", dialogue, 0, t, { extra: ["helix"] })?.scene, "helix", "two active stems → helix");
+  assert.notEqual(directScene("nebula", { ...dialogue, activeCount: 3 }, 0, t, { extra: ["helix"] })?.scene, "helix", "three stems is not a dialogue (it may honestly match another rule)");
 });
