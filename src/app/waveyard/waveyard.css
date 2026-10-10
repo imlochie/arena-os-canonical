@@ -863,3 +863,9 @@
 .visualizer.fullscreen .visualizer-canvas{height:auto;flex:1;min-height:0}
 .visualizer.fullscreen{display:flex;flex-direction:column}
 .visualizer-still{min-height:200px;display:grid;place-items:center;color:var(--muted);font-size:13px;border:1px dashed var(--line);border-radius:10px;padding:20px;text-align:center}
+.stem-layer-picker{display:grid;gap:7px;margin:2px 0 8px;padding:10px;border:1px dashed color-mix(in srgb,var(--lane) 40%,transparent);border-radius:9px;background:rgba(8,10,15,.55)}
+.stem-layer-picker b{font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.stem-layer-picker small{color:var(--muted);font-size:10px;line-height:1.5}
+.stem-layer-notice{margin:8px 0 0;color:var(--cyan);font-size:12px}
+.chop-scan-stem{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--muted)}
+.chop-scan-stem select{background:#181b13;border:1px solid #4b5832;color:var(--ink);padding:7px}

@@ -37,6 +37,7 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [playErrorId, setPlayErrorId] = useState<string | null>(null);
   const [chipmunk, setChipmunk] = useState(false);
+  const [scanStemType, setScanStemType] = useState("vocals");
   const [armedChopId, setArmedChopId] = useState<string | null>(null);
   const [bpm, setBpm] = useState(120);
   /** The chef/cleanup context: key from the analysed vocal source. */
@@ -95,7 +96,7 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
     const response = await fetch(`/api/waveyard/projects/${projectId}/vocal-chops`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ stemType: scanStemType }),
     });
     const body = await response.json().catch(() => ({}));
     setScanning(false);
@@ -198,8 +199,18 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
 
       {canEdit && (
         <div className="remix-actions">
+          <label className="chop-scan-stem">
+            Scan stem
+            <select aria-label="Stem to scan for chops" value={scanStemType} onChange={(event) => setScanStemType(event.target.value)}>
+              <option value="vocals">Vocals</option>
+              <option value="other">Melody (grab a flute, a lead…)</option>
+              <option value="bass">Bass</option>
+              <option value="drums">Drums</option>
+              <option value="instrumental">Instrumental</option>
+            </select>
+          </label>
           <button className="button" disabled={scanning} onClick={() => void scan()}>
-            {scanning ? "Scanning vocal stem…" : chops !== null && chops.length > 0 ? "Rescan vocal stem" : "Scan vocal stem for chops"}
+            {scanning ? `Scanning ${scanStemType === "other" ? "melody" : scanStemType} stem…` : chops !== null && chops.length > 0 ? "Rescan stem for chops" : "Scan stem for chops"}
           </button>
           <label className="chop-chipmunk-toggle">
             <input type="checkbox" checked={chipmunk} onChange={(event) => setChipmunk(event.target.checked)} />
@@ -210,8 +221,9 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
       {error && <p className="form-error" role="alert">{error}</p>}
       {chops !== null && chops.length === 0 && (
         <p className="empty-state">
-          No vocal chops yet. Separate a source first — then the scan reads the clean vocal stem and
-          finds the best one-shot notes to chop, pitch, and build a beat from.
+          No chops yet. Separate a source first — then the scan reads the stem you pick (vocals, melody,
+          bass…) and finds the best one-shot notes to chop, pitch, and build a beat from. On the melody
+          stem that means grabbing a flute line or a lead — something stem.fm simply cannot do.
         </p>
       )}
 

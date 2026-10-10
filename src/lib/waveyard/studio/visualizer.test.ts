@@ -245,6 +245,55 @@ test("bloom: the pointer plants flowers", () => {
   assert.ok(planted !== undefined, "a bloom was planted at the pointer");
 });
 
+test("waves: each stem's live oscillation becomes bounded [min,max] columns", () => {
+  // A full-scale sine over one tap: min ≈ −1, max ≈ +1.
+  const sine = new Float32Array(2048);
+  for (let i = 0; i < sine.length; i += 1) sine[i] = Math.sin((2 * Math.PI * 12 * i) / sine.length);
+  const quiet = new Float32Array(2048).fill(0.05);
+  const stems: StemInput[] = [
+    { stemType: "vocals", features: makeFeatures(), waveform: sine },
+    { stemType: "bass", features: makeFeatures(), waveform: quiet },
+  ];
+  let scene = createScene("waves", 2);
+  for (let step = 0; step < 5; step += 1) scene = stepScene(scene, stems, makeFeatures(), 16, IDLE_POINTER);
+  assert.equal(scene.waveColumns[0].length, 5, "a column per frame per stem");
+  const [min, max] = scene.waveColumns[0][4];
+  assert.ok(min < -0.9 && max > 0.9, `full-scale sine captured (${min}…${max})`);
+  const [quietMin, quietMax] = scene.waveColumns[1][4];
+  assert.ok(Math.abs(quietMin - 0.05) < 1e-6 && Math.abs(quietMax - 0.05) < 1e-6, "quiet stem captured");
+
+  // Bounded history.
+  for (let step = 0; step < 500; step += 1) scene = stepScene(scene, stems, makeFeatures(), 16, IDLE_POINTER);
+  assert.ok(scene.waveColumns[0].length <= 180, `bounded (${scene.waveColumns[0].length})`);
+});
+
+test("waves: pressing and holding FREEZES the flow", () => {
+  const sine = new Float32Array(2048);
+  for (let i = 0; i < sine.length; i += 1) sine[i] = Math.sin(i / 32);
+  const stems: StemInput[] = [{ stemType: "drums", features: makeFeatures(), waveform: sine }];
+  let scene = createScene("waves", 1);
+  for (let step = 0; step < 10; step += 1) scene = stepScene(scene, stems, makeFeatures(), 16, IDLE_POINTER);
+  const frozenColumns = scene.waveColumns[0].length;
+  const lastColumn = scene.waveColumns[0][frozenColumns - 1];
+
+  const hold: PointerState = { x: 0.5, y: 0.5, active: true };
+  for (let step = 0; step < 30; step += 1) scene = stepScene(scene, stems, makeFeatures(), 16, hold);
+  assert.equal(scene.waveColumns[0].length, frozenColumns, "no columns advance while held");
+  assert.deepEqual(scene.waveColumns[0][frozenColumns - 1], lastColumn, "the last column is untouched");
+
+  // Release: the flow resumes.
+  scene = stepScene(scene, stems, makeFeatures(), 16, IDLE_POINTER);
+  assert.equal(scene.waveColumns[0].length, frozenColumns + 1);
+});
+
+test("waves: stems without a waveform tap keep their history", () => {
+  const stems: StemInput[] = [{ stemType: "drums", features: makeFeatures() }];
+  let scene = createScene("waves", 1);
+  scene = stepScene(scene, stems, makeFeatures(), 16, IDLE_POINTER);
+  scene = stepScene(scene, stems, makeFeatures(), 16, IDLE_POINTER);
+  assert.equal(scene.waveColumns[0].length, 0, "no tap → no columns, no crash");
+});
+
 // ------------------------------------------------------------------ director
 
 test("character classification reads the stems honestly", () => {
@@ -280,8 +329,17 @@ test("the director switches content to match the music — after the dwell", () 
   assert.equal(directScene("bloom", dense, 0, t)?.scene, "tide", "dense and dark → Tide");
   assert.equal(directScene("tide", bright, 0, t)?.scene, "nebula", "bright and open → Nebula");
 
+  // Sustained, mid-density, not bright → the waves themselves.
+  const sustained = { energy: 0.45, brightness: 0.35, percussiveness: 0.15, vocalDominance: 0.2, density: 0.5 };
+  assert.equal(directScene("nebula", sustained, 0, t)?.scene, "waves", "sustained textures → Waves");
+  assert.equal(directScene("waves", sustained, 0, t), null, "already waves → stays");
+
+  // A character nothing matches (mid everything) honestly stays put.
+  const middling = { energy: 0.4, brightness: 0.45, percussiveness: 0.35, vocalDominance: 0.2, density: 0.6 };
+  assert.equal(directScene("nebula", middling, 0, t), null, "no strong character → no forced switch");
+
   // Every switch carries a human-readable reason.
-  for (const character of [ambient, driving, vocalLed, dense, bright]) {
+  for (const character of [ambient, driving, vocalLed, dense, bright, sustained]) {
     const decision = directScene("nebula", character, 0, t);
     if (decision !== null) assert.ok(decision.reason.length > 5, "reason present");
   }

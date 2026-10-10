@@ -464,6 +464,16 @@ export function useStemTransport(ids: string[], duration: number) {
     return bins;
   }, []);
 
+  /** Time-domain tap for one stem (the actual oscillating wave, [-1, 1]).
+   *  Returns null before the graph exists. The caller owns the array. */
+  const readWaveform = useCallback((id: string): Float32Array | null => {
+    const graph = graphs.current[id];
+    if (!graph) return null;
+    const samples = new Float32Array(graph.analyser.fftSize);
+    graph.analyser.getFloatTimeDomainData(samples);
+    return samples;
+  }, []);
+
   /**
    * Real meter readings from the audio graph's AnalyserNode taps.
    * Returns zeros when the graph does not exist yet (before first play).
@@ -528,6 +538,7 @@ export function useStemTransport(ids: string[], duration: number) {
     register,
     readSpectrum,
     readMasterSpectrum,
+    readWaveform,
     /** The audio context's actual rate (bin→Hz math for spectrum consumers). */
     contextSampleRate: () => context.current?.sampleRate ?? 44_100,
     readMeters,

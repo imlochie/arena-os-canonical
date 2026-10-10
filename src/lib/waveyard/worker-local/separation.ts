@@ -201,6 +201,30 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     throw new Error("Authorized source asset is missing.");
   }
 
+  // RECURSIVE SEPARATION (stem layers): the input is a STEM, not the
+  // source — outputs are named "<parent>/<child>" (e.g. "other/vocals" =
+  // backing vocals pulled out of the melody stem).
+  let parentStem: typeof stemAssets.$inferSelect | null = null;
+  if (payload.parentStemAssetId !== undefined) {
+    const [stem] = await database
+      .select()
+      .from(stemAssets)
+      .where(and(eq(stemAssets.id, payload.parentStemAssetId), eq(stemAssets.projectId, payload.projectId)))
+      .limit(1);
+    if (!stem) {
+      await updateJob(database, job.id, {
+        status: "failed",
+        stage: "failed",
+        errorCode: "source_missing",
+        errorMessage: "The parent stem this layer job targets is missing.",
+        completedAt: new Date(),
+      });
+      throw new Error("Parent stem asset is missing.");
+    }
+    parentStem = stem;
+    for (const run of runs) run.stemType = `${stem.stemType}/${run.stemType}`;
+  }
+
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "arena-separation-"));
   const inputPath = join(temporaryDirectory, "source-upload");
   const storage = getStorage();
@@ -215,7 +239,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       errorCode: null,
       errorMessage: null,
     });
-    await storage.getToFile(source.storageKey, inputPath);
+    await storage.getToFile((parentStem ?? source).storageKey, inputPath);
 
     await updateJob(database, job.id, {
       status: "processing",
@@ -290,7 +314,8 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       const values: (typeof stemAssets.$inferInsert)[] = [];
       for (const stem of stemOutputs) {
         const wav = encodeWav16(interleavePlanar(stem.channels), 44_100);
-        const stemPath = join(temporaryDirectory, `${stem.stemType}.wav`);
+        // Layered stem types ("other/vocals") must become safe filenames.
+        const stemPath = join(temporaryDirectory, `${stem.stemType.replace(/[^a-zA-Z0-9_-]+/g, "-")}.wav`);
         await writeFile(stemPath, wav);
         const checksum = await checksumFile(stemPath);
         const storageKey = privateObjectKey(job.projectId, "stem", "wav");

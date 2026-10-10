@@ -34,6 +34,8 @@ export const dynamic = "force-dynamic";
 
 const MAX_STEM_BYTES = 64 * 1024 * 1024;
 const MAX_CHOPS = 12;
+/** Stems the chop scanner accepts (the registry's stem vocabulary). */
+const SCAN_STEM_TYPES = ["vocals", "drums", "bass", "other", "instrumental"] as const;
 
 function chopRowToResponse(projectId: string, row: { id: string; startMs: number; durationMs: number; rootMidi: number; cents: number; confidence: number; sampleRate: number; createdAt: Date }) {
   return {
@@ -77,10 +79,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
-    const body = (await request.json().catch(() => ({}))) as { sourceAssetId?: unknown };
+    const body = (await request.json().catch(() => ({}))) as { sourceAssetId?: unknown; stemType?: unknown };
+    const stemType = typeof body.stemType === "string" && (SCAN_STEM_TYPES as readonly string[]).includes(body.stemType) ? body.stemType : "vocals";
 
-    // The scan reads the separated VOCAL stem — the cleanest possible input.
-    const stemConditions = [eq(stemAssets.projectId, projectId), eq(stemAssets.stemType, "vocals")];
+    // The scan reads a separated stem — vocals by default, but it is
+    // pitch-agnostic: it finds the NOTES in any tonal stem (a flute line
+    // inside the melody, a bass figure, a lead synth).
+    const stemConditions = [eq(stemAssets.projectId, projectId), eq(stemAssets.stemType, stemType)];
     if (typeof body.sourceAssetId === "string" && isUuid(body.sourceAssetId)) {
       stemConditions.push(eq(stemAssets.sourceAssetId, body.sourceAssetId));
     }
@@ -93,7 +98,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!stem) {
       return NextResponse.json(
         {
-          error: "No separated vocal stem in this project yet — separate a source first, then the scan reads the clean vocal.",
+          error: `No separated “${stemType}” stem in this project yet — separate a source first, then the scan reads that stem.`,
           errorCode: "STEM_MISSING",
         },
         { status: 409 },

@@ -33,7 +33,8 @@ export const STEM_COLORS: Record<string, string> = {
 };
 
 export function stemColor(stemType: string): string {
-  return STEM_COLORS[stemType] ?? "#7ae5e7";
+  // Layered stems ("other/vocals") inherit their parent's color.
+  return STEM_COLORS[stemType.split("/")[0]] ?? "#7ae5e7";
 }
 
 // ------------------------------------------------------------------ features
@@ -179,9 +180,9 @@ export function analyzeSpectrum(
 
 // ------------------------------------------------------------------ scenes
 
-export type SceneId = "nebula" | "terrain" | "orbits" | "tide" | "bloom";
+export type SceneId = "nebula" | "terrain" | "orbits" | "tide" | "bloom" | "waves";
 
-export const SCENE_IDS: SceneId[] = ["nebula", "terrain", "orbits", "tide", "bloom"];
+export const SCENE_IDS: SceneId[] = ["nebula", "terrain", "orbits", "tide", "bloom", "waves"];
 
 export const SCENE_LABELS: Record<SceneId, string> = {
   nebula: "Nebula",
@@ -189,6 +190,7 @@ export const SCENE_LABELS: Record<SceneId, string> = {
   orbits: "Orbits",
   tide: "Tide",
   bloom: "Bloom",
+  waves: "Waves",
 };
 
 export const SCENE_BLURBS: Record<SceneId, string> = {
@@ -197,12 +199,16 @@ export const SCENE_BLURBS: Record<SceneId, string> = {
   orbits: "stems as bodies around the vocal star — drag to spin the system",
   tide: "mirrored band bars per stem — press for ripples",
   bloom: "flowers grow from onsets — bright sounds bloom bright; press to plant",
+  waves: "each stem's actual audio wave, flowing together — press and hold to freeze and inspect",
 };
 
 /** A stem's per-frame perceptual input to the scenes. */
 export type StemInput = {
   stemType: string;
   features: SpectrumFeatures;
+  /** The raw time-domain tap ([-1, 1]) when the consumer provides one —
+   *  the waves scene draws this literally; other scenes ignore it. */
+  waveform?: Float32Array;
 };
 
 /** The pointer as the interaction input (normalized 0–1, y down). */
@@ -239,6 +245,8 @@ export type SceneState = {
   terrain: number[][];
   /** Per-stem orbit bodies. */
   orbits: Array<{ angle: number; energy: number; speed: number }>;
+  /** Waves history: per stem, [min, max] columns, newest last. */
+  waveColumns: Array<Array<[number, number]>>;
   blooms: Bloom[];
   ripples: Ripple[];
   /** Monotonic step counter — the deterministic pseudo-random source. */
@@ -246,6 +254,7 @@ export type SceneState = {
 };
 
 export const TERRAIN_ROWS = 90;
+export const WAVES_COLUMNS = 180;
 const MAX_PARTICLES = 600;
 const MAX_BLOOMS = 24;
 const MAX_RIPPLES = 24;
@@ -271,6 +280,7 @@ export function createScene(scene: SceneId, stemCount = 0): SceneState {
       energy: 0,
       speed: 0.35 + index * 0.11,
     })),
+    waveColumns: Array.from({ length: Math.max(1, stemCount) }, () => [] as Array<[number, number]>),
     blooms: [],
     ripples: [],
     tick: 0,
@@ -327,6 +337,28 @@ export function stepScene(
       };
     });
     return { ...state, orbits, tick };
+  }
+
+  if (state.scene === "waves") {
+    // Each stem's live oscillation, compressed to [min, max] columns and
+    // scrolled right-to-left. Pressing FREEZES the flow for inspection
+    // (the pointer is held) — release to let the waves run again.
+    if (pointer.active) return { ...state, tick };
+    const waveColumns = state.waveColumns.map((columns, index) => {
+      const waveform = stems[Math.min(index, stems.length - 1)]?.waveform;
+      if (waveform === undefined || waveform.length === 0) return columns;
+      // Seed from the first sample — an all-positive (or all-negative)
+      // signal must report its TRUE extent, not a clamp at zero.
+      let min = waveform[0];
+      let max = waveform[0];
+      for (let i = 1; i < waveform.length; i += 1) {
+        const value = waveform[i];
+        if (value < min) min = value;
+        if (value > max) max = value;
+      }
+      return [...columns, [min, max] as [number, number]].slice(-WAVES_COLUMNS);
+    });
+    return { ...state, waveColumns, tick };
   }
 
   if (state.scene === "tide") {
@@ -466,6 +498,7 @@ export const DIRECTOR_DWELL_MS = 12_000;
  *   orbits    — percussive and driving: kinetic bodies
  *   tide      — dense and mid-heavy: layered bars
  *   nebula    — bright and spacious: the particle field
+ *   waves     — sustained textures: the audio waves themselves
  */
 export function directScene(
   current: SceneId,
@@ -493,6 +526,10 @@ export function directScene(
   if (character.brightness > 0.5) {
     if (current === "nebula") return null;
     return { scene: "nebula", reason: "bright and open — a particle field" };
+  }
+  if (character.percussiveness < 0.3 && character.energy > 0.15) {
+    if (current === "waves") return null;
+    return { scene: "waves", reason: "sustained textures — the waves themselves" };
   }
   return null;
 }

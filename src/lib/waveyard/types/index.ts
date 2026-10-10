@@ -30,6 +30,10 @@ export type SeparationJobPayload = {
   sourceAssetId: string;
   model: string;
   requestedDevice: "auto" | "cpu" | "cuda";
+  /** RECURSIVE SEPARATION: when set, the job's input is this STEM's audio
+   *  (not the source), and outputs are named "<parent>/<child>" — pulling
+   *  layers out of a stem (e.g. backing vocals out of the melody). */
+  parentStemAssetId?: string;
 };
 
 export type AudioMetadata = {

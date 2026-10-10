@@ -366,6 +366,62 @@ test("the local broker registers the separation queue alongside the other engine
 });
 
 
+test("stem layers: a second pass on a STEM pulls named layers out of it", async () => {
+  // Parent = a melody ("other") stem whose audio IS the fixture's source
+  // WAV (a real stored object the handler can download).
+  const f = await fixture({ model: "kim_vocal_2" });
+  try {
+    const [parentStem] = await f.database
+      .insert(stemAssets)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        separationJobId: f.job.id,
+        stemType: "other",
+        engine: "mdx",
+        model: "kuielab_b_other",
+        modelVersion: "test",
+        storageKey: f.source.storageKey,
+        checksumSha256: "test",
+        durationSeconds: 1,
+        sampleRate: 44_100,
+        channels: 2,
+        codec: "pcm_s16le",
+        format: "wav",
+        fileSizeBytes: 1,
+      })
+      .returning();
+
+    const seenSpecs: string[] = [];
+    const engine: (spec: MdxModelSpec) => Promise<OpenedEngine> = async (spec) => {
+      seenSpecs.push(spec.id);
+      return { infer: (async (spek: Float32Array) => spek) as MdxInfer, release: async () => {}, resolvedDevice: "cpu" };
+    };
+    await handleSeparationJob(
+      { ...payloadOf(f), parentStemAssetId: parentStem.id },
+      { db: f.database, openEngine: engine },
+    );
+
+    const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    assert.equal(row.status, "complete");
+    const metadata = JSON.parse(row.metadata);
+    assert.deepEqual(metadata.stems, ["other/vocals", "other/instrumental"], "layered names: <parent>/<child>");
+
+    const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+    const byType = new Map(stems.map((stem) => [stem.stemType, stem]));
+    assert.ok(byType.has("other/vocals"), "backing-vocals layer out of the melody");
+    assert.ok(byType.has("other/instrumental"), "melody-minus-vocals layer");
+    assert.equal(seenSpecs[0], "kim_vocal_2", "the second-pass model ran");
+    // Identity inference on the parent stem's audio: both layers decode to
+    // the parent's own samples (provenance: input was the STEM, not the source).
+    for (const layer of ["other/vocals", "other/instrumental"]) {
+      assert.equal(byType.get(layer)?.durationSeconds, 1);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
 test("4-stem recipe: four stems stored, each attributed to its own model", async () => {
   const f = await fixture({ model: "stems_4" });
   try {

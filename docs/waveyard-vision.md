@@ -206,11 +206,25 @@ protocol research; sequenced deliberately after V1/V2.
   by clicking any waveform. It drives the SAME audio graph and MixerValues
   as the mixer console: one source of truth, two views. The deep studio
   (inserts, timeline, automation) sits below for going further.
+- **Waves mode + stem layers shipped (the differentiate-us pass):**
+  the visualizer gained a sixth content type — Waves — each stem's ACTUAL
+  time-domain oscillation flowing as a colored ribbon (one lane per stem,
+  crest lines additive where they meet); press and hold to freeze the flow
+  and inspect, the pointer's lane keeps focus while others dim. And the
+  thing stem.fm cannot do: RECURSIVE separation. Any stem lane can be
+  separated again into layers ("other/vocals" = backing vocals pulled out
+  of the melody, drums/bass residue, or a 4-way split) — new lanes appear
+  in the player, named "Melody · Vocals" etc., each attributed to the model
+  that produced it. Grabbing a specific tonal line (a flute inside the
+  melody) is the chop scanner's job — it is pitch-agnostic and now scans
+  ANY stem; removal is muting the layer or using the minus-layer. Honest
+  limit: second passes extract the registry's trained categories
+  (vocals/drums/bass), not arbitrary instruments by name.
 - **The sound visualizer shipped (content that listens):** an interactive
   visualizer above the studio, driven by the REAL per-stem analysers (post
   gain/pan/inserts — it hears exactly what you hear; a muted stem stops
   contributing). A pure, fully-tested engine perceives each stem (bands,
-  brightness, onsets, beat phase) and generates five kinds of content from
+  brightness, onsets, beat phase) and generates six kinds of content from
   it — Nebula (per-stem particle fields; the pointer is gravity), Terrain
   (the spectrum carved into a scrolling landscape; the pointer is the sun),
   Orbits (stems as bodies around the vocal star; drag to spin), Tide

@@ -14,9 +14,19 @@
  * transport, and the waveforms are the assets' real computed peaks.
  */
 
+import { useState } from "react";
+
 import { WaveformCanvas } from "../WaveformCanvas";
 import type { MixerValues, useStemTransport } from "@/lib/waveyard/useStemTransport";
 import { clock, type Source, type Stem } from "./types";
+
+/** Second-pass separation targets offered per stem (stem-layers route). */
+const LAYER_TARGETS = [
+  { id: "kim_vocal_2", label: "Backing vocals", blurb: "pull vocal content out of this stem — backing vocals, ad-libs, buried harmonies" },
+  { id: "kuielab_b_drums", label: "Drums residue", blurb: "pull percussion leakage out" },
+  { id: "kuielab_b_bass", label: "Bass residue", blurb: "pull low-end leakage out" },
+  { id: "stems_4", label: "4-way layers", blurb: "split this stem four ways" },
+];
 
 type Transport = ReturnType<typeof useStemTransport>;
 
@@ -31,15 +41,18 @@ const STEM_COLORS: Record<string, string> = {
 };
 
 function stemColor(stemType: string): string {
-  return STEM_COLORS[stemType] ?? "#7ae5e7";
+  return STEM_COLORS[stemType.split("/")[0]] ?? "#7ae5e7";
 }
 
 function stemDisplayName(stemType: string): string {
-  if (stemType === "other") return "Melody";
-  return stemType.charAt(0).toUpperCase() + stemType.slice(1);
+  return stemType
+    .split("/")
+    .map((part) => (part === "other" ? "Melody" : part.charAt(0).toUpperCase() + part.slice(1)))
+    .join(" · ");
 }
 
 export function StemPlayerDeck({
+  projectId,
   stems,
   sources,
   duration,
@@ -47,6 +60,7 @@ export function StemPlayerDeck({
   transport,
   onControl,
 }: {
+  projectId: string;
   stems: Stem[];
   sources: Source[];
   duration: number;
@@ -54,6 +68,28 @@ export function StemPlayerDeck({
   transport: Transport;
   onControl: (id: string, patch: Partial<MixerValues>) => void;
 }) {
+  const [layersFor, setLayersFor] = useState<string | null>(null);
+  const [layerError, setLayerError] = useState<string | null>(null);
+  const [layerNotice, setLayerNotice] = useState<string | null>(null);
+
+  const separateLayers = async (stem: Stem, target: string) => {
+    setLayerError(null);
+    setLayerNotice("Separating layers…");
+    const response = await fetch(`/api/waveyard/projects/${projectId}/stem-layers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stemAssetId: stem.id, target }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setLayerNotice(null);
+      setLayerError(body.error ?? "The layer separation could not start.");
+      return;
+    }
+    setLayersFor(null);
+    setLayerNotice(`Separating ${body.layering?.target ?? "layers"} out of ${stemDisplayName(stem.stemType)} — new lanes appear when done.`);
+  };
+
   if (stems.length === 0) return null;
   const source = sources.find((item) => item.id === stems[0]?.sourceAssetId);
   const anySolo = stems.some((stem) => controls[stem.id]?.solo);
@@ -102,6 +138,14 @@ export function StemPlayerDeck({
                     aria-label={`${values.solo ? "Release" : "Isolate"} ${stemDisplayName(stem.stemType)}`}
                     onClick={() => toggleIsolate(stem)}
                   >ISO</button>
+                  {!stem.stemType.includes("/") && (
+                    <button
+                      className="deck-chip"
+                      aria-label={`Separate ${stemDisplayName(stem.stemType)} into layers`}
+                      title="Separate this stem into layers (recursive separation)"
+                      onClick={() => { setLayersFor(layersFor === stem.id ? null : stem.id); setLayerError(null); }}
+                    >⋁</button>
+                  )}
                   <input
                     className="stem-deck-fader"
                     type="range"
@@ -115,6 +159,17 @@ export function StemPlayerDeck({
                   />
                 </div>
               </div>
+              {layersFor === stem.id && (
+                <div className="stem-layer-picker" data-testid={`stem-layers-${stem.id}`}>
+                  <b>Separate “{stemDisplayName(stem.stemType)}” into layers</b>
+                  {LAYER_TARGETS.map((target) => (
+                    <button key={target.id} className="deck-chip" onClick={() => void separateLayers(stem, target.id)} title={target.blurb}>
+                      {target.label}
+                    </button>
+                  ))}
+                  <small>New lanes appear below when the pass finishes. Grabbing a specific instrument (a flute line, a lead) is the chop scanner’s job — it works on any tonal stem.</small>
+                </div>
+              )}
               <WaveformCanvas
                 assetId={stem.id}
                 label={`${stemDisplayName(stem.stemType)} stem`}
@@ -126,6 +181,8 @@ export function StemPlayerDeck({
           );
         })}
       </div>
+      {layerError && <p className="form-error" role="alert">{layerError}</p>}
+      {layerNotice && <p className="stem-layer-notice" role="status">{layerNotice}</p>}
 
       <div className="stem-deck-transport">
         <button

@@ -32,6 +32,7 @@ import {
   SCENE_LABELS,
   stepScene,
   stemColor,
+  WAVES_COLUMNS,
   type AnalyzerState,
   type PointerState,
   type SceneId,
@@ -64,6 +65,63 @@ function drawScene(
   ctx.clearRect(0, 0, width, height);
   const w = (x: number) => x * width;
   const h = (y: number) => y * height;
+
+  if (scene.scene === "waves") {
+    const laneCount = Math.max(1, stems.length);
+    const laneHeight = height / laneCount;
+    const columnWidth = width / (WAVES_COLUMNS - 1);
+    const focusedLane = pointer.active ? Math.min(laneCount - 1, Math.floor(pointer.y * laneCount)) : -1;
+    stems.forEach((stem, index) => {
+      const columns = scene.waveColumns[Math.min(index, scene.waveColumns.length - 1)] ?? [];
+      if (columns.length < 2) return;
+      const color = stemColor(stem.stemType);
+      const center = (index + 0.5) * laneHeight;
+      const scale = laneHeight * 0.42;
+      const dimmed = focusedLane >= 0 && index !== focusedLane;
+
+      // The flowing ribbon: top edge = max curve, bottom = min curve.
+      ctx.globalAlpha = dimmed ? 0.16 : 0.55;
+      ctx.beginPath();
+      let started = false;
+      for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+        const x = width - (columns.length - 1 - columnIndex) * columnWidth;
+        const y = center - columns[columnIndex][1] * scale;
+        if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+      }
+      for (let columnIndex = columns.length - 1; columnIndex >= 0; columnIndex -= 1) {
+        const x = width - (columns.length - 1 - columnIndex) * columnWidth;
+        ctx.lineTo(x, center - columns[columnIndex][0] * scale);
+      }
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+
+      // Bright crest on the max curve + the "now" edge.
+      ctx.globalAlpha = dimmed ? 0.3 : 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+        const x = width - (columns.length - 1 - columnIndex) * columnWidth;
+        const y = center - columns[columnIndex][1] * scale;
+        if (columnIndex === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(width - 0.5, 0);
+    ctx.lineTo(width - 0.5, height);
+    ctx.stroke();
+    if (pointer.active) {
+      ctx.fillStyle = "rgba(214, 251, 84, 0.9)";
+      ctx.font = "12px ui-monospace, monospace";
+      ctx.fillText("frozen — release to resume the flow", 14, 22);
+    }
+    return;
+  }
 
   if (scene.scene === "nebula") {
     // Trail fade instead of a hard clear — the field smears like light.
@@ -293,6 +351,10 @@ export function VisualizerStudio({ stems, transport }: { stems: Stem[]; transpor
       const activeStems = stemsRef.current;
       const activeTransport = transportRef.current;
 
+      // The waves scene needs the time-domain taps; only fetch them then.
+      const activeSceneNeedsWaves =
+        (modeRef.current === "auto" ? directorRef.current.scene : modeRef.current) === "waves";
+
       // 1. Perceive: real spectrums, per stem + master.
       const stemInputs: StemInput[] = [];
       for (const stem of activeStems) {
@@ -305,7 +367,11 @@ export function VisualizerStudio({ stems, transport }: { stems: Stem[]; transpor
         }
         const analyzed = analyzeSpectrum(bins, state, { sampleRate: activeTransport.contextSampleRate(), fftSize: 2048, nowMs: now });
         analyzersRef.current.set(stem.id, analyzed.state);
-        stemInputs.push({ stemType: stem.stemType, features: analyzed.features });
+        stemInputs.push({
+          stemType: stem.stemType,
+          features: analyzed.features,
+          ...(activeSceneNeedsWaves ? { waveform: activeTransport.readWaveform(stem.id) ?? undefined } : {}),
+        });
       }
       let master = ZERO_FEATURES;
       const masterBins = activeTransport.readMasterSpectrum();
