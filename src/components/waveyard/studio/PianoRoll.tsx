@@ -65,6 +65,9 @@ export type PianoRollProps = {
   /** Total timeline extent the grid should show (ms). */
   durationMs: number;
   disabled?: boolean;
+  /** Universal undo/redo — wired by the owning editor's history. */
+  onUndo?: () => void;
+  onRedo?: () => void;
 };
 
 /** A short, quiet preview voice for note placement/selection. */
@@ -96,7 +99,7 @@ function useNotePreview() {
   }, []);
 }
 
-export function PianoRoll({ notes, onChange, bpm, beatsPerBar = 4, durationMs, disabled = false }: PianoRollProps) {
+export function PianoRoll({ notes, onChange, bpm, beatsPerBar = 4, durationMs, disabled = false, onUndo, onRedo }: PianoRollProps) {
   const [snapSetting, setSnapSetting] = useState<SnapSetting>("beat");
   const [pixelsPerSecond, setPixelsPerSecond] = useState(120);
   const [selection, setSelection] = useState<ReadonlySet<string>>(new Set());
@@ -221,6 +224,25 @@ export function PianoRoll({ notes, onChange, bpm, beatsPerBar = 4, durationMs, d
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (disabled) return;
     const meta = event.ctrlKey || event.metaKey;
+    if (meta && event.key.toLowerCase() === "z") {
+      if (event.shiftKey) {
+        if (onRedo !== undefined) {
+          event.preventDefault();
+          onRedo();
+        }
+      } else if (onUndo !== undefined) {
+        event.preventDefault();
+        onUndo();
+      }
+      return;
+    }
+    if (meta && event.key.toLowerCase() === "y") {
+      if (onRedo !== undefined) {
+        event.preventDefault();
+        onRedo();
+      }
+      return;
+    }
     if (event.key === "Delete" || event.key === "Backspace") {
       if (selection.size === 0) return;
       event.preventDefault();

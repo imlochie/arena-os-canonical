@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { PianoRoll } from "./PianoRoll";
 import { fromSynthEvents, type PianoNote } from "@/lib/waveyard/studio/piano-roll";
+import { useUndoRedo } from "@/lib/waveyard/studio/history";
 
 export type ArrangementLayerSummary = {
   id: string;
@@ -39,7 +40,9 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
   const [playErrorId, setPlayingErrorId] = useState<string | null>(null);
   const [bpm, setBpm] = useState(120);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editNotes, setEditNotes] = useState<PianoNote[] | null>(null);
+  const editHistory = useUndoRedo<PianoNote[]>([]);
+  /** The editor's notes ARE the history's present — undo/redo needs no sync. */
+  const editNotes: PianoNote[] | null = editingId === null ? null : editHistory.value;
   const [editDirty, setEditDirty] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
@@ -108,14 +111,14 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
 
   const openEditor = (layer: ArrangementLayerSummary) => {
     setEditingId(layer.id);
-    setEditNotes(fromSynthEvents(layer.events));
+    editHistory.reset(fromSynthEvents(layer.events));
     setEditDirty(false);
     setEditError(null);
   };
 
   const closeEditor = () => {
     setEditingId(null);
-    setEditNotes(null);
+    editHistory.reset([]);
     setEditDirty(false);
     setEditError(null);
   };
@@ -149,7 +152,7 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
       setEditError(body.error ?? "The MIDI file could not be imported.");
       return;
     }
-    setEditNotes(body.notes ?? []);
+    editHistory.set(body.notes ?? []);
     setEditDirty(true);
   };
 
@@ -251,9 +254,13 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
                     />
                   </label>
                   {canEdit && (
-                    <button className="button" disabled={editSaving || !editDirty} onClick={() => void saveEditor()}>
-                      {editSaving ? "Rendering…" : editDirty ? "Save + re-render layer" : "Saved"}
-                    </button>
+                    <>
+                      <button className="button secondary" disabled={!editHistory.canUndo} onClick={editHistory.undo} title="Undo (Ctrl+Z)">↶</button>
+                      <button className="button secondary" disabled={!editHistory.canRedo} onClick={editHistory.redo} title="Redo (Ctrl+Shift+Z)">↷</button>
+                      <button className="button" disabled={editSaving || !editDirty} onClick={() => void saveEditor()}>
+                        {editSaving ? "Rendering…" : editDirty ? "Save + re-render layer" : "Saved"}
+                      </button>
+                    </>
                   )}
                   <button className="toggle" aria-label="Close piano roll" onClick={closeEditor}>✕</button>
                 </div>
@@ -261,12 +268,20 @@ export function GeneratedLayers({ projectId, canEdit }: { projectId: string; can
                 <PianoRoll
                   notes={editNotes}
                   onChange={(next) => {
-                    setEditNotes(next);
+                    editHistory.set(next);
                     setEditDirty(true);
                   }}
                   bpm={bpm}
                   durationMs={layer.durationSeconds * 1000}
                   disabled={!canEdit}
+                  onUndo={() => {
+                    editHistory.undo();
+                    setEditDirty(true);
+                  }}
+                  onRedo={() => {
+                    editHistory.redo();
+                    setEditDirty(true);
+                  }}
                 />
               </div>
             )}

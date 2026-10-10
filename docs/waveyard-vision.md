@@ -192,6 +192,32 @@ protocol research; sequenced deliberately after V1/V2.
   piano roll — every note plays its chop resampled to the drawn pitch
   (up an octave = faster + brighter = the chipmunk effect) and the whole
   pattern renders to real PCM WAV on demand.
+- **The mashup brain shipped (song × song, the main goal):** the Mashup
+  Studio reads two tracks' real analysis — tempo, key, labelled sections —
+  and PROPOSES the mashup: which tempo wins (the bed's), the vocal's
+  WSOLA stretch (double/half tempo locks are left natural — a 140 BPM vocal
+  over a 70 BPM bed is already grid-consistent in double-time), the pitch
+  move into the bed's key (relative keys correctly need none), the entry
+  point, and a rationale for every decision. Render produces the real WAV
+  (vocals stretched + pitched over the bed, ducked under the vocal pocket,
+  crossfaded). Sync is verified arithmetically in tests: a 140 BPM vocal's
+  onsets land on the 100 BPM bed's beat grid. Extending songs lives here
+  too — loop any analysed section to lengthen a track, bar-aligned
+  crossfades, the original never cut. Nothing is persisted and no source is
+  touched: a plan is a proposal, and the user's own arrangement stays theirs.
+- **The soul chef shipped (the early-Kanye brain):** one click sequences the
+  scanned chops into a pattern — grid-locked to the analysed tempo, pitched
+  into the analysed key, in the classic idioms (straight hits, end-of-bar
+  stutters, call-and-response; chipmunk up / screwed down), deterministic
+  from a seed with a per-bar rationale. When the user resequences the
+  chef's decisions, "Tidy my edits" quantifies the drift (off-grid notes,
+  out-of-key pitches, overlaps, velocity outliers) and offers the cleanup
+  with every change listed — applying is always the user's click, and undo
+  restores their exact version. Their ears are the authority, always.
+- **Universal undo/redo shipped:** one tested history primitive
+  (coalescing — a whole pointer drag is one undo step) wired into every
+  editing surface: the chop builder, the layer editor, and Ctrl+Z /
+  Ctrl+Shift+Z inside the piano roll itself.
 - Next: MIDI tracks on the timeline (clips referencing layer notes), recorded
   MIDI input, and hooking the insert chain (26 processors) + automation lanes
   to editor output.

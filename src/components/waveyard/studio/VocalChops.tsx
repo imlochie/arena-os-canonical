@@ -16,6 +16,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { PianoRoll } from "./PianoRoll";
 import { midiToNoteName, type PianoNote } from "@/lib/waveyard/studio/piano-roll";
 import { assignChopToNewNotes } from "@/lib/waveyard/studio/vocal-chops";
+import { cleanupPattern } from "@/lib/waveyard/studio/soul-chef";
+import { useUndoRedo } from "@/lib/waveyard/studio/history";
 
 type VocalChop = {
   id: string;
@@ -36,10 +38,16 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
   const [playErrorId, setPlayErrorId] = useState<string | null>(null);
   const [chipmunk, setChipmunk] = useState(false);
   const [armedChopId, setArmedChopId] = useState<string | null>(null);
-  const [patternNotes, setPatternNotes] = useState<PianoNote[]>([]);
   const [bpm, setBpm] = useState(120);
+  /** The chef/cleanup context: key from the analysed vocal source. */
+  const [musicalKey, setMusicalKey] = useState<string | null>(null);
+  const [cooking, setCooking] = useState(false);
+  const [chefRationale, setChefRationale] = useState<string[]>([]);
+  const [cleanupReport, setCleanupReport] = useState<string[] | null>(null);
+  const pattern = useUndoRedo<PianoNote[]>([]);
   const [rendering, setRendering] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const patternNotes = pattern.value;
   const [renderUrl, setRenderUrl] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const renderUrlRef = useRef<string | null>(null);
@@ -64,6 +72,16 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
       const body = await response.json().catch(() => ({}));
       if (typeof body.bpm === "number" && body.bpm > 0) setBpm(body.bpm);
     })();
+    // The analysed key of the vocal source (for the chef + cleanup).
+    void (async () => {
+      const response = await fetch(`/api/waveyard/projects/${projectId}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const body = await response.json().catch(() => ({}));
+      const withKey = (body.sources ?? []).find(
+        (source: { analysis?: { musicalKey?: string | null } }) => typeof source.analysis?.musicalKey === "string",
+      );
+      if (withKey !== undefined) setMusicalKey(withKey.analysis.musicalKey);
+    })();
     return () => {
       audioRef.current?.pause();
       if (renderUrlRef.current !== null) URL.revokeObjectURL(renderUrlRef.current);
@@ -85,14 +103,14 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
       setError(body.error ?? "The vocal chop scan failed.");
       return;
     }
-    setPatternNotes([]);
+    pattern.reset([]);
     await load();
   };
 
   const remove = async (chopId: string) => {
     await fetch(`/api/waveyard/projects/${projectId}/vocal-chops/${chopId}`, { method: "DELETE" });
     if (armedChopId === chopId) setArmedChopId(null);
-    setPatternNotes((notes) => notes.filter((note) => !note.id.startsWith(`${chopId}:`)));
+    pattern.set(patternNotes.filter((note) => !note.id.startsWith(`${chopId}:`)));
     await load();
   };
 
@@ -131,6 +149,38 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
     const url = URL.createObjectURL(blob);
     renderUrlRef.current = url;
     setRenderUrl(url);
+  };
+
+  const cookPattern = async () => {
+    if (cooking) return;
+    setCooking(true);
+    setRenderError(null);
+    setCleanupReport(null);
+    const response = await fetch(`/api/waveyard/projects/${projectId}/vocal-chops/auto-sequence`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seed: Math.floor(Math.random() * 1_000_000), bars: 4, style: "chopped" }),
+    });
+    const body = await response.json().catch(() => ({}));
+    setCooking(false);
+    if (!response.ok) {
+      setRenderError(body.error ?? "The chef could not sequence a pattern.");
+      return;
+    }
+    pattern.reset(body.notes ?? []);
+    setChefRationale(body.rationale ?? []);
+    if (body.context?.musicalKey) setMusicalKey(body.context.musicalKey);
+    if (body.context?.bpm) setBpm(body.context.bpm);
+  };
+
+  const tidyEdits = () => {
+    const result = cleanupPattern(patternNotes, { bpm, musicalKey }, 60_000 / bpm / 2);
+    if (result.changes.length === 0) {
+      setCleanupReport(["Nothing to tidy — your edit is already on the grid and in key."]);
+      return;
+    }
+    setCleanupReport(result.changes);
+    pattern.set(result.notes);
   };
 
   const armed = chops?.find((chop) => chop.id === armedChopId) ?? null;
@@ -214,6 +264,12 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
                 ? "Arm a chop above (🎹), then draw notes — each note plays that chop at the drawn pitch"
                 : `Armed: ${midiToNoteName(armed.rootMidi)} chop — draw at any pitch (up = chipmunk)`}
             </small>
+            <button className="button secondary" disabled={cooking} onClick={() => void cookPattern()}>
+              {cooking ? "Cooking…" : "Cook a pattern 🧑‍🍳"}
+            </button>
+            <button className="button secondary" disabled={!pattern.canUndo} onClick={pattern.undo} title="Undo (Ctrl+Z)">↶</button>
+            <button className="button secondary" disabled={!pattern.canRedo} onClick={pattern.redo} title="Redo (Ctrl+Shift+Z)">↷</button>
+            <button className="button secondary" disabled={patternNotes.length === 0} onClick={tidyEdits} title="Snap my edits back to the grid and key — I will show you every change first">Tidy my edits</button>
             <button
               className="button"
               disabled={rendering || patternNotes.length === 0 || armedChopId === null}
@@ -222,6 +278,19 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
               {rendering ? "Rendering…" : "Render chop pattern"}
             </button>
           </div>
+          {chefRationale.length > 0 && (
+            <details className="chef-rationale">
+              <summary>How the chef sequenced it</summary>
+              <ul>{chefRationale.map((line, index) => <li key={index}>{line}</li>)}</ul>
+            </details>
+          )}
+          {cleanupReport !== null && (
+            <div className="cleanup-report" role="status">
+              <b>Tidied:</b>
+              <ul>{cleanupReport.map((line, index) => <li key={index}>{line}</li>)}</ul>
+              <small>Undo (↶ or Ctrl+Z) restores your exact version if your ears preferred it.</small>
+            </div>
+          )}
           {renderError && <p className="form-error" role="alert">{renderError}</p>}
           {renderUrl !== null && (
             <div className="chop-render-result">
@@ -232,9 +301,11 @@ export function VocalChops({ projectId, canEdit }: { projectId: string; canEdit:
           {armedChopId !== null ? (
             <PianoRoll
               notes={patternNotes}
-              onChange={(next) => setPatternNotes(assignChopToNewNotes(next, armedChopId))}
+              onChange={(next) => pattern.set(assignChopToNewNotes(next, armedChopId))}
               bpm={bpm}
               durationMs={Math.max(8000, patternEndMs + 2000)}
+              onUndo={pattern.undo}
+              onRedo={pattern.redo}
             />
           ) : (
             <p className="empty-state">Arm a chop to start drawing its pattern.</p>
