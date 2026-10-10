@@ -182,6 +182,16 @@ protocol research; sequenced deliberately after V1/V2.
   (`midi-file.ts`, both directions tested) and is wired per layer — export
   any layer as a Standard MIDI File at the project tempo (FL Studio opens it
   natively), import an FL-exported `.mid` back into the editor.
+- **Vocal chops shipped (chipmunk-soul sampler):** the scan reads the
+  project's separated VOCAL STEM — the Waveyard advantage, a clean vocal
+  instead of a mix — detects the best one-shot notes (voiced-segment
+  splitting, autocorrelation pitch tracking with octave-safe peak picking,
+  quality-ranked by clarity/stability/length/level), and persists each chop
+  as a normalised WAV (playable in the studio, downloadable straight into
+  FL). The chop builder arms any chop and draws its pattern in the same
+  piano roll — every note plays its chop resampled to the drawn pitch
+  (up an octave = faster + brighter = the chipmunk effect) and the whole
+  pattern renders to real PCM WAV on demand.
 - Next: MIDI tracks on the timeline (clips referencing layer notes), recorded
   MIDI input, and hooking the insert chain (26 processors) + automation lanes
   to editor output.

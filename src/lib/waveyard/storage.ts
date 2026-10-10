@@ -45,7 +45,7 @@ export interface StorageProvider {
 
 export function privateObjectKey(
   projectId: string,
-  category: "source" | "stem" | "waveform" | "export",
+  category: "source" | "stem" | "waveform" | "export" | "chop",
   extension: string,
 ) {
   const safeExtension =

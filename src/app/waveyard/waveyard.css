@@ -786,3 +786,16 @@
 .layer-editor-bar small{color:var(--muted);font-size:11px}
 .layer-midi-import{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);border:1px solid var(--line);padding:6px 9px;cursor:pointer}
 .layer-midi-import input{display:none}
+
+/* Vocal chops (chipmunk-soul sampler, vision §V4) */
+.chop-list{display:grid;gap:6px;list-style:none;padding:0;margin:12px 0}
+.chop-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;border:1px solid var(--line);background:#131811;padding:8px 10px}
+.chop-item.armed{border-color:var(--acid)}
+.chop-item .stem-select small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+.chop-confidence{display:block;height:4px;margin-top:6px;background:#20261a;border:1px solid #3a422e}
+.chop-confidence i{display:block;height:100%;background:var(--acid)}
+.chop-chipmunk-toggle{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--muted)}
+.chop-chipmunk-toggle input{accent-color:var(--acid)}
+.chop-builder{border-top:1px solid var(--line);margin-top:14px;padding-top:12px;display:grid;gap:10px}
+.chop-render-result{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.chop-render-result audio{flex:1;min-width:260px}

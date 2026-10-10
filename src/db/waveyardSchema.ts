@@ -441,6 +441,35 @@ export const arrangementLayers = pgTable("arrangement_layers", {
 
 
 
+// Vocal chops — one-shot vocal notes sampled out of a separated vocal stem
+// (the chipmunk-soul sampler, vision §V4). Each row is a detected, ranked,
+// trimmed chop; the WAV lives in project storage. Never mutated after
+// creation — rescan replaces the set.
+
+export const vocalChops = pgTable("vocal_chops", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  /** The separated vocal stem this chop was cut from. */
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  /** Position + length in the stem (ms). */
+  startMs: integer("start_ms").notNull(),
+  durationMs: integer("duration_ms").notNull(),
+  /** Detected root pitch (MIDI) + signed cents deviation. */
+  rootMidi: integer("root_midi").notNull(),
+  cents: integer("cents").notNull(),
+  /** Detection quality score (0–1) — the ranking key. */
+  confidence: real("confidence").notNull(),
+  /** Full detection breakdown JSON (clarity, stability, voicedRatio, engine). */
+  detection: text("detection").notNull(),
+  storageKey: text("storage_key").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("vocal_chops_project_idx").on(table.projectId),
+  uniqueIndex("vocal_chops_storage_key_unique").on(table.storageKey),
+]);
+
 export const soundDesignAssets = pgTable("sound_design_assets", {
   id: uuid("id").primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
