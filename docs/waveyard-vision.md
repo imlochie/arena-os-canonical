@@ -338,6 +338,50 @@ Still open on the roadmap: 3D WebGL passes (volumetric nebula,
 terrain flythrough) and per-stem sensitivity + cover watermark
 overlays.
 
+### V6 — The Library Bridge (streaming libraries as the catalog)
+
+**Shipped.** The user's ask: "connect to an actual audio library — Spotify,
+YouTube Music, Apple — to stream and split stems directly... only if it
+works the way stem.fm natively do it" + "sync my streaming libraries
+automatically and easily create backups, Songify and TuneMyMusic style."
+
+**The honest wall, verified (2026-10):** stem.fm streams its own licensed
+catalog — a label deal, not an API. Spotify removed third-party
+`preview_url` access (Nov 2024; confirmed dead Feb 2026 — "no supported or
+compliant way to play short audio clips in third-party apps") and its
+developer terms prohibit syncing Spotify content with video. Apple
+MusicKit JS plays full tracks only inside its own player (no audio tap).
+So "works the way stem.fm does it" is impossible for ANY third party; the
+personal edge is built where the APIs are real:
+
+- **Your library as the catalog** — connect Spotify in-browser (PKCE, the
+  user's own app client ID, read-only scopes; credentials never touch our
+  server), pull playlists + liked songs with ISRC/duration, browse and
+  search them in the studio next to the palette.
+- **Dispatch, not rip** — "bring into studio" sends a track through the
+  app's REAL intake (authorized link via the resolver, or a dropped file);
+  nothing is ever ripped from a stream. Honest errors surface when no
+  resolver is configured.
+- **Sync + backup (the Songify/TuneMyMusic ground)** — every snapshot is a
+  stored, validated backup (total parser, 8 MB ceiling, limits enforced);
+  each sync diffs against the previous backup ("what changed"); JSON
+  (lossless, re-importable) + CSV exports; JSON import for any service.
+- **Cross-service matching engine** — ISRC-decisive scoring (equality =
+  same recording; conflict = penalty, never auto-match), title folding
+  (feat./remaster/punctuation/diacritics), artist containment, duration
+  tolerance bands; strict 0.92 auto-grouping vs 0.72 "likely" candidate
+  tier for user confirmation. YouTube's metadata-poor rows (no artist/
+  duration/isrc) honestly never auto-merge — they surface as candidates.
+- **Apple + YouTube adapters** — pure mappers for MusicKit library
+  resources and Data API playlist items ("Artist - Topic" → artist), with
+  their live connection flows honestly marked next-wave (they need the
+  user's Apple developer token / Google OAuth client); backup import
+  works today.
+
+Storage: `wy_streaming_accounts` (one per service per owner) +
+`wy_library_snapshots` (migration 0008). Engine: library-sync.ts (16
+tests — model/matching/diff/backup/CSV, PKCE against the RFC 7636 vector).
+
 ### V5 — The Crew (agents on the bench)
 
 Waveyard operations become Spaces agent tools behind the governance gate we

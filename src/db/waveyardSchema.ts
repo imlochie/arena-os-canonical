@@ -864,3 +864,38 @@ export const listenSessionTracks = pgTable("wy_listen_session_tracks", {
   index("wy_listen_session_tracks_session_pos_idx").on(table.sessionId, table.position),
   index("wy_listen_session_tracks_track_id_idx").on(table.trackId),
 ]);
+
+// ---------------------------------------------------------------- streaming
+// The streaming-library bridge (vision §V6): connected Spotify/Apple/
+// YouTube accounts and their library SNAPSHOTS — the Songify/TuneMyMusic
+// ground (sync, diff, backup, export). Snapshots are pulled client-side
+// (PKCE / MusicKit / user tokens never touch this server) and stored
+// validated; audio itself never comes from these services (licensing).
+
+/** One connected streaming account (one per service per owner). */
+export const streamingAccounts = pgTable("wy_streaming_accounts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  service: text("service").notNull(),
+  displayName: text("display_name").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("wy_streaming_accounts_owner_service_unique").on(table.ownerId, table.service),
+]);
+
+/** A full library snapshot — the backup unit, JSON-validated on intake. */
+export const librarySnapshots = pgTable("wy_library_snapshots", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  accountId: uuid("account_id").notNull().references(() => streamingAccounts.id, { onDelete: "cascade" }),
+  service: text("service").notNull(),
+  takenAt: timestamp("taken_at", { withTimezone: true }).notNull(),
+  playlistCount: integer("playlist_count").notNull(),
+  trackCount: integer("track_count").notNull(),
+  /** backupToJson output (format "waveyard-library-backup", version 1). */
+  snapshotJson: text("snapshot_json").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("wy_library_snapshots_account_taken_idx").on(table.accountId, table.takenAt),
+  index("wy_library_snapshots_owner_idx").on(table.ownerId),
+]);

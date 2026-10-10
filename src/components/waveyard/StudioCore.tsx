@@ -21,6 +21,7 @@ import { MashupStudio } from "./studio/MashupStudio";
 import { StemPlayerDeck } from "./studio/StemPlayerDeck";
 import { VisualizerStudio } from "./studio/VisualizerStudio";
 import { CompareAB } from "./studio/CompareAB";
+import { ConnectedLibraries } from "./studio/ConnectedLibraries";
 import { DrumAnalysisPanel } from "./studio/DrumAnalysisPanel";
 import { HarmonyAnalysisPanel } from "./studio/HarmonyAnalysisPanel";
 import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
@@ -753,6 +754,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
       onOpenStudio={() => { setPresentation("studio"); setVisualFullscreen(false); }}
     /> : <>
     <SourcePool sources={sources} stems={stems} selectedStemId={selectedId} onSelectStem={(stemId) => { setSelectedId(stemId); setSelectedSourceSectionId(null); }} />
+    <ConnectedLibraries projectId={projectId} />
     {remix && <><ProjectMusicalWorld remix={remix} stems={stems} /><ExtendedArrangementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} onApplied={async () => { await loadRemix(remix.id); }} /><MultiSourcePlacementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} stemAssetId={selected?.id ?? ""} sourceSectionId={selectedSourceSectionId} onApplied={async () => { await loadRemix(remix.id); }} /></>}
     <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
     {source && <SourceSectionMap source={source} onUseForSlice={(section) => { setSelectedSourceSectionId(section.id); setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` }); }} onArrangementAction={arrangeSection} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
