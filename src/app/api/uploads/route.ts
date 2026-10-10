@@ -64,7 +64,10 @@ export async function POST(request: Request) {
       metadata = await probeAudio(localUpload);
     } catch (probeError) {
       const message = probeError instanceof Error ? probeError.message : String(probeError);
-      const ffprobeMissing = /ENOENT|not found|spawn/i.test(message);
+      // FfmpegMissingError says "ffprobe is not available to Arena…"; a raw
+      // spawn failure says ENOENT/spawn. Both mean "no binary", which is
+      // exactly when the browser's real decode may stand in.
+      const ffprobeMissing = /ENOENT|not found|spawn|is not available/i.test(message);
       if (!ffprobeMissing || !clientProbeUsable) throw probeError;
       metadata = { ...clientProbe, bitrate: null, sizeBytes: upload.size } as Awaited<ReturnType<typeof probeAudio>>;
       probeSource = "client-webaudio";

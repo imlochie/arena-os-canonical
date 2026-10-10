@@ -22,6 +22,9 @@ export function BuildProject() {
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [separationTarget, setSeparationTarget] = useState("");
+  /** Options live behind one toggle (vision Principle 3): the cold form is
+   * title + drop + build; target choice and link sources stay one click away. */
+  const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [engine, setEngine] = useState<StemEngineModelStatus[] | null>(null);
   const [engineRefresh, setEngineRefresh] = useState(0);
@@ -117,13 +120,18 @@ export function BuildProject() {
     )}
     <input className="build-title" aria-label="Optional project title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Optional project title" />
     <label className="build-dropzone">Drop audio here<input aria-label="Local audio files" type="file" multiple accept={AUDIO_ACCEPT} onChange={(event: ChangeEvent<HTMLInputElement>) => setFiles(Array.from(event.target.files ?? []))} /><b>{files.length ? `${files.length} local file${files.length === 1 ? "" : "s"} ready` : "MP3 · WAV · FLAC · M4A · AAC · OGG"}</b><small>Local audio stays private and enters the same Source Asset pipeline.</small></label>
-    <label className="build-separation">Separate into
-      <select aria-label="Separation target" value={separationTarget} onChange={(event) => setSeparationTarget(event.target.value)}>
-        {SEPARATION_TARGETS.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}
-      </select>
-    </label>
-    <div className="build-or">or</div>
-    <label>Paste authorized source links<textarea aria-label="Authorized source links" value={urls} onChange={(event) => setUrls(event.target.value)} rows={4} placeholder={"https://youtube.com/...\nhttps://youtube.com/..."} /><small>One link per line. This deployment uses only a configured authorized resolver; unsupported links can always be added as local audio.</small></label>
+    <button type="button" className="build-advanced-toggle" aria-expanded={advanced} onClick={() => setAdvanced((current) => !current)}>
+      {advanced ? "Hide options" : "Options: separate into " + (SEPARATION_TARGETS.find((target) => target.id === separationTarget)?.label.replace(/ —.*/, "") ?? "the default") + " · add links"}
+    </button>
+    {advanced && <>
+      <label className="build-separation">Separate into
+        <select aria-label="Separation target" value={separationTarget} onChange={(event) => setSeparationTarget(event.target.value)}>
+          {SEPARATION_TARGETS.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}
+        </select>
+      </label>
+      <div className="build-or">or</div>
+      <label>Paste authorized source links<textarea aria-label="Authorized source links" value={urls} onChange={(event) => setUrls(event.target.value)} rows={4} placeholder={"https://youtube.com/...\nhttps://youtube.com/..."} /><small>One link per line. This deployment uses only a configured authorized resolver; unsupported links can always be added as local audio.</small></label>
+    </>}
     {(files.length || urlLines.length) ? <p className="build-summary">{files.length} local · {urlLines.length} link{urlLines.length === 1 ? "" : "s"} · one source pool</p> : null}
     {message && <p className="error" role="alert">{message}</p>}
     <button className="button build-button" disabled={busy}>{busy ? "BUILDING SOURCES…" : "BUILD"}</button>

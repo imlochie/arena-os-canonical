@@ -413,3 +413,138 @@ export function snapshotToCsv(snapshot: LibrarySnapshot): string {
   snapshot.likedTracks.forEach((track, index) => rows.push(trackRow("Liked songs", index, track)));
   return [header, ...rows].join("\n");
 }
+
+/**
+ * Minimal RFC 4180 row splitter: quoted fields may contain commas,
+ * newlines, and escaped ("") quotes. Returns null on unterminated quotes —
+ * a malformed CSV is never silently reinterpreted.
+ */
+function splitCsvRows(text: string): string[][] | null {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[index + 1] === '"') { field += '"'; index += 1; }
+        else inQuotes = false;
+      } else field += char;
+    } else if (char === '"') inQuotes = true;
+    else if (char === ",") { row.push(field); field = ""; }
+    else if (char === "\n" || char === "\r") {
+      if (char === "\r" && text[index + 1] === "\n") index += 1;
+      row.push(field); field = "";
+      if (row.length > 1 || row[0] !== "") rows.push(row);
+      row = [];
+    } else field += char;
+  }
+  if (inQuotes) return null;
+  row.push(field);
+  if (row.length > 1 || row[0] !== "") rows.push(row);
+  return rows;
+}
+
+const normaliseHeader = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, " ");
+
+const CSV_COLUMN_ALIASES: Record<"playlist" | "title" | "artists" | "album" | "isrc" | "durationMs" | "externalId", readonly string[]> = {
+  // Ours first (round-trip guarantee), then Exportify, then TuneMyMusic.
+  playlist: ["playlist", "playlist name"],
+  title: ["title", "track name", "track", "name", "song"],
+  artists: ["artists", "artist name(s)", "artist name", "artist(s)", "artist"],
+  album: ["album", "album name"],
+  isrc: ["isrc"],
+  durationMs: ["duration_ms", "duration (ms)", "duration", "length"],
+  externalId: ["external_id", "track id", "id"],
+};
+
+function parseDurationMs(value: string): number | null {
+  const clock = /^(\d+):(\d{1,2})(?::(\d{1,2}))?$/.exec(value.trim());
+  if (clock !== null) {
+    // "4:15" is minutes:seconds; "1:04:15" is hours:minutes:seconds.
+    const [, head, middle, tail] = clock;
+    const totalSeconds = tail !== undefined
+      ? Number(head) * 3600 + Number(middle) * 60 + Number(tail)
+      : Number(head) * 60 + Number(middle);
+    return Number.isFinite(totalSeconds) ? totalSeconds * 1000 : null;
+  }
+  if (!/^\d+$/.test(value.trim()) || value.trim() === "") return null;
+  const ms = Number(value.trim());
+  return ms > 0 ? ms : null;
+}
+
+/**
+ * CSV import (vision §V6 — library vision completion): accepts our own
+ * export format (perfect round-trip: snapshotToCsv → parseCsvSnapshot),
+ * Exportify CSVs, and TuneMyMusic CSVs. Tracks land in one named playlist
+ * (or grouped by the playlist column when present). Returns null when the
+ * text is not a recognizable track CSV — the caller reports, never guesses.
+ */
+export function parseCsvSnapshot(text: string, service: StreamingService, playlistName = "CSV import"): LibrarySnapshot | null {
+  const rows = splitCsvRows(text.replace(/^\uFEFF/, ""));
+  if (rows === null || rows.length < 2) return null;
+  const header = rows[0].map(normaliseHeader);
+  const columnIndex = (field: keyof typeof CSV_COLUMN_ALIASES): number =>
+    header.findIndex((cell) => CSV_COLUMN_ALIASES[field].includes(cell));
+  const titleColumn = columnIndex("title");
+  const artistsColumn = columnIndex("artists");
+  if (titleColumn === -1 || artistsColumn === -1) return null;
+  const albumColumn = columnIndex("album");
+  const isrcColumn = columnIndex("isrc");
+  const durationColumn = columnIndex("durationMs");
+  const idColumn = columnIndex("externalId");
+  const playlistColumn = columnIndex("playlist");
+
+  // Rows in file order, each tagged with its playlist cell (when the export
+  // carries one — ours does; Exportify is one file per playlist).
+  const collected: { playlist: string; track: ExternalTrack }[] = [];
+  for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+    const cells = rows[rowIndex];
+    const title = cells[titleColumn]?.trim() ?? "";
+    if (title === "") continue;
+    const artistCell = cells[artistsColumn] ?? "";
+    const artists = artistCell
+      .split(/;|,/)
+      .map((part) => part.trim())
+      .filter((part) => part !== "");
+    collected.push({
+      playlist: playlistColumn !== -1 ? (cells[playlistColumn] ?? "").trim() || playlistName : playlistName,
+      track: {
+        service,
+        externalId: (idColumn !== -1 ? cells[idColumn]?.trim() : "") || `csv:${rowIndex}`,
+        title: title.slice(0, MAX_TITLE_LENGTH),
+        artists: artists.length > 0 ? artists : ["Unknown artist"],
+        album: albumColumn !== -1 ? cleanString(cells[albumColumn], MAX_TITLE_LENGTH) : null,
+        isrc: isrcColumn !== -1 ? parseIsrc(cells[isrcColumn]) : null,
+        durationMs: durationColumn !== -1 ? parseDurationMs(cells[durationColumn] ?? "") : null,
+      },
+    });
+  }
+  if (collected.length === 0) return null;
+
+  // Group in first-seen playlist order.
+  const order: string[] = [];
+  const buckets = new Map<string, ExternalTrack[]>();
+  for (const entry of collected) {
+    if (!buckets.has(entry.playlist)) { buckets.set(entry.playlist, []); order.push(entry.playlist); }
+    buckets.get(entry.playlist)!.push(entry.track);
+  }
+  const playlists: ExternalPlaylist[] = order.map((name, index) => ({
+    externalId: `csv-import-${index}`,
+    name: name.slice(0, 200),
+    description: null,
+    tracks: (buckets.get(name) ?? []).slice(0, MAX_TRACKS_PER_PLAYLIST),
+  }));
+
+  const candidate: LibrarySnapshot = {
+    service,
+    takenAt: new Date().toISOString(),
+    accountName: null,
+    playlists: playlists.slice(0, MAX_PLAYLISTS),
+    likedTracks: [],
+  };
+  // Reuse the validation the live/backup paths use — limits stay honest.
+  return parseLibrarySnapshot(candidate);
+}
+

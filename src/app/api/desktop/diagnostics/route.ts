@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 
 import { db } from "@/db";
 import { getStorage } from "@/lib/waveyard/storage";
+import { requireUser } from "@/lib/waveyard/local-context";
 import { execTool, resolveToolPath } from "@/lib/waveyard/ffmpeg";
 import { listProviders } from "@/lib/waveyard/ai/providers";
 import { localWorkerActive, localWorkerStats } from "@/lib/waveyard/worker-local";
@@ -104,6 +105,7 @@ function checkServer(): Report {
 }
 
 export async function GET() {
+  await requireUser(); // same guard as every other route (resolves to the local owner)
   const [database, storage, ffmpeg, ffprobe] = await Promise.all([checkDatabase(), checkStorage(), checkTool("ffmpeg"), checkTool("ffprobe")]);
   const components = {
     server: checkServer(),

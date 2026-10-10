@@ -1,33 +1,64 @@
 /**
- * Compatibility tests: opt-in archive evidence in the reasoning route.
+ * Compatibility tests: opt-in archive evidence in the reasoning route —
+ * NATIVE since the Archive Assistant merge (facts from Arena's own tables,
+ * zero network hops).
  *
- * `POST /api/chat` stays the reasoning backend; Archive Assistant only
- * supplies bounded, normalized facts when the caller asks. Local Mode's
- * zero-egress guarantee always wins over archive context.
+ * `POST /api/chat` stays the reasoning backend; the merged archive
+ * assistant only supplies bounded, normalized facts when the caller asks.
+ * Local Mode's zero-egress guarantee always wins over archive context, and
+ * the internal service credential is never treated as a user identity.
  */
 
-import { test, beforeEach, afterEach } from "node:test";
+import { test, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
-
-import { POST as postChat } from "./route";
-import { makeArchiveFetchStub } from "../../../lib/archive-assistant/fixtures";
+import { readFileSync } from "node:fs";
+import net from "node:net";
 
 const ENV_KEYS = [
-  "ARCHIVE_ASSISTANT_API_URL",
-  "ARCHIVE_ASSISTANT_AUTH_MODE",
-  "ARCHIVE_ASSISTANT_OWNER_ID",
   "ARENA_INTERNAL_API_KEY",
 ];
 
 let savedEnv: Record<string, string | undefined> = {};
 let realFetch: typeof fetch;
 
+function resolveDatabaseUrl(): string {
+  const envUrl = process.env.DATABASE_URL ?? "";
+  if (envUrl && !envUrl.includes("arena-test-no-connect")) return envUrl;
+  try {
+    const env = readFileSync(new URL("../../../.env", import.meta.url), "utf8");
+    const match = env.match(/^DATABASE_URL=(.+)$/m);
+    if (match) return match[1].trim();
+  } catch {
+    /* fall through */
+  }
+  return "postgresql://postgres:postgres@127.0.0.1:5432/app_db";
+}
+
+async function localPostgresUp(url: string): Promise<boolean> {
+  try {
+    const parsed = new URL(url);
+    return await new Promise<boolean>((resolve) => {
+      const socket = net.connect({ host: parsed.hostname, port: Number(parsed.port || 5432), timeout: 800 });
+      socket.once("connect", () => { socket.destroy(); resolve(true); });
+      socket.once("error", () => resolve(false));
+      socket.once("timeout", () => { socket.destroy(); resolve(false); });
+    });
+  } catch {
+    return false;
+  }
+}
+
+const databaseUrl = resolveDatabaseUrl();
+const pgUp = await localPostgresUp(databaseUrl);
+process.env.DATABASE_URL = databaseUrl;
+
+// The route builds the pg pool at import time (chatRunner → native client),
+// so it is imported only after the real DATABASE_URL is in place.
+const { POST: postChat } = await import("./route");
+
 beforeEach(() => {
   savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   realFetch = globalThis.fetch;
-  process.env.ARCHIVE_ASSISTANT_API_URL = "https://archive-assistant.example.com/api";
-  delete process.env.ARCHIVE_ASSISTANT_AUTH_MODE;
-  delete process.env.ARCHIVE_ASSISTANT_OWNER_ID;
   delete process.env.ARENA_INTERNAL_API_KEY;
 });
 
@@ -52,25 +83,58 @@ const OFFLINE_BODY = {
   messages: [{ role: "user", content: "What in my archive needs attention?" }],
 };
 
-test("chat: archiveContext=true folds cited facts into an offline answer, forwarding the bearer token", async () => {
-  const { stub, calls } = makeArchiveFetchStub();
-  globalThis.fetch = stub;
+async function seedOneReviewItem(): Promise<void> {
+  const { db } = await import("@/db");
+  const { archiveObservations, archiveReviewItems } = await import("@/db/schema");
+  await db.delete(archiveObservations);
+  await db.delete(archiveReviewItems);
+  const [review] = await db
+    .insert(archiveReviewItems)
+    .values({
+      subjectKey: "movie|heat|1995",
+      title: "Heat (1995) local_only",
+      kind: "identity",
+      state: "needs_you",
+      classification: "local_only",
+      payload: { summary: "Local archive file is not indexed by any synced provider library." },
+      evidence: ["archive index"],
+    })
+    .returning();
+  await db.insert(archiveObservations).values({
+    reviewItemId: review.id,
+    evidenceKey: "chat-obs-1",
+    payload: { summary: "still local_only" },
+  });
+}
 
-  const res = await postChat(chatRequest({ ...OFFLINE_BODY, archiveContext: true }, { authorization: "Bearer owner-a" }));
-  assert.equal(res.status, 200);
-  const body = await res.json();
+async function clearReviewItems(): Promise<void> {
+  const { db } = await import("@/db");
+  const { archiveObservations, archiveReviewItems } = await import("@/db/schema");
+  await db.delete(archiveObservations);
+  await db.delete(archiveReviewItems);
+}
 
-  assert.equal(body.archiveContext.included, true);
-  assert.ok(body.archiveContext.factCount > 0);
-  assert.ok(Date.parse(body.archiveContext.generatedAt));
-  assert.ok(body.text.length > 0);
-  assert.ok(calls.length >= 5, "context assembly reads the archive bridge only");
+test("chat: archiveContext=true folds cited native facts into an offline answer with zero network", async () => {
+  if (!pgUp) return assert.fail("PG required for native archive context chat test");
+  await seedOneReviewItem();
+  let fetched = 0;
+  globalThis.fetch = (async () => {
+    fetched++;
+    return Response.json({});
+  }) as unknown as typeof fetch;
+  try {
+    const res = await postChat(chatRequest({ ...OFFLINE_BODY, archiveContext: true }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
 
-  // Zero non-archive egress: the offline model never leaves the machine.
-  for (const call of calls) {
-    assert.match(new URL(call.url).host, /^archive-assistant\.example\.com$/);
-    assert.equal(call.headers["authorization"], "Bearer owner-a");
-    assert.ok(!("x-test-owner-id" in call.headers));
+    assert.equal(body.archiveContext.included, true);
+    assert.ok(body.archiveContext.factCount > 0);
+    assert.ok(Date.parse(body.archiveContext.generatedAt));
+    assert.ok(body.text.length > 0);
+    // Native means native: context assembly touched only the local database.
+    assert.equal(fetched, 0, "native archive context must make zero network calls");
+  } finally {
+    await clearReviewItems();
   }
 });
 
@@ -81,39 +145,13 @@ test("chat: Local Mode wins — zero egress, archive explicitly skipped", async 
     return Response.json({});
   }) as unknown as typeof fetch;
 
-  const res = await postChat(
-    chatRequest({ ...OFFLINE_BODY, localOnly: true, archiveContext: true }, { authorization: "Bearer owner-a" }),
-  );
+  const res = await postChat(chatRequest({ ...OFFLINE_BODY, localOnly: true, archiveContext: true }));
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.localOnly, true);
   assert.equal(body.archiveContext.included, false);
   assert.equal(body.archiveContext.reason, "local_only");
   assert.equal(fetched, 0, "Local Mode must not touch the network at all");
-});
-
-test("chat: unconfigured bridge degrades softly and says why", async () => {
-  delete process.env.ARCHIVE_ASSISTANT_API_URL;
-  let fetched = 0;
-  globalThis.fetch = (async () => {
-    fetched++;
-    return Response.json({});
-  }) as unknown as typeof fetch;
-
-  const res = await postChat(chatRequest({ ...OFFLINE_BODY, archiveContext: true }, { authorization: "Bearer owner-a" }));
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.archiveContext.included, false);
-  assert.equal(body.archiveContext.reason, "not_configured");
-  assert.equal(fetched, 0);
-});
-
-test("chat: missing bearer with archive requested degrades softly as auth_required", async () => {
-  const res = await postChat(chatRequest({ ...OFFLINE_BODY, archiveContext: true }));
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.archiveContext.included, false);
-  assert.equal(body.archiveContext.reason, "auth_required");
 });
 
 test("chat: without the flag there is no archive work at all", async () => {
@@ -123,7 +161,7 @@ test("chat: without the flag there is no archive work at all", async () => {
     return Response.json({});
   }) as unknown as typeof fetch;
 
-  const res = await postChat(chatRequest(OFFLINE_BODY, { authorization: "Bearer owner-a" }));
+  const res = await postChat(chatRequest(OFFLINE_BODY));
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.archiveContext, undefined);
@@ -149,7 +187,7 @@ test("chat: browser leg still works with no credential when the internal key is 
   assert.equal(fetched, 0);
 });
 
-test("chat: the internal credential authenticates service calls on the legacy path", async () => {
+test("chat: the internal credential authenticates service calls, and archive stays off that leg", async () => {
   process.env.ARENA_INTERNAL_API_KEY = INTERNAL_KEY;
   let fetched = 0;
   globalThis.fetch = (async () => {
@@ -163,8 +201,8 @@ test("chat: the internal credential authenticates service calls on the legacy pa
   assert.equal(body.caller, "internal_service");
   assert.equal(fetched, 0);
 
-  // The service credential is NOT a user identity: archive evidence
-  // forwarding is refused even when explicitly requested.
+  // The service credential is NOT a user identity: archive evidence is not
+  // honored on the service leg even when explicitly requested.
   const res2 = await postChat(
     chatRequest({ ...OFFLINE_BODY, archiveContext: true }, { authorization: `Bearer ${INTERNAL_KEY}` }),
   );
@@ -173,28 +211,39 @@ test("chat: the internal credential authenticates service calls on the legacy pa
   assert.equal(body2.caller, "internal_service");
   assert.equal(body2.archiveContext.included, false);
   assert.equal(body2.archiveContext.reason, "internal_caller");
-  assert.equal(fetched, 0, "the internal credential must never be forwarded to Archive Assistant");
 });
 
-test("chat: an unknown bearer on plain chat is rejected; as an archive user token it is forwarded", async () => {
+test("chat: an unknown bearer on plain chat is rejected; as a user token it chats with native archive context", async () => {
   process.env.ARENA_INTERNAL_API_KEY = INTERNAL_KEY;
 
-  // Wrong secret, no archiveContext: no forwarding purpose → 401.
+  // Wrong secret, no archiveContext: no user intent → 401.
   const rejected = await postChat(chatRequest(OFFLINE_BODY, { authorization: "Bearer not-the-key" }));
   assert.equal(rejected.status, 401);
   const rejectedBody = await rejected.json();
   assert.equal(rejectedBody.error, "unauthorized_internal_caller");
 
-  // Unknown bearer + archiveContext: it is a USER token for Archive
-  // Assistant, forwarded server-to-server exactly like the browser flow.
-  const { stub, calls } = makeArchiveFetchStub();
-  globalThis.fetch = stub;
-  const forwarded = await postChat(
-    chatRequest({ ...OFFLINE_BODY, archiveContext: true }, { authorization: "Bearer user-aa-token" }),
-  );
-  assert.equal(forwarded.status, 200);
-  const forwardedBody = await forwarded.json();
-  assert.equal(forwardedBody.archiveContext.included, true);
-  assert.ok(calls.length >= 5);
-  assert.ok(calls.every((c) => c.headers["authorization"] === "Bearer user-aa-token"));
+  // Unknown bearer + archiveContext: it is a user token — native context
+  // is folded in from Arena's own tables (no forwarding exists any more).
+  if (pgUp) {
+    await seedOneReviewItem();
+    try {
+      const res = await postChat(
+        chatRequest({ ...OFFLINE_BODY, archiveContext: true }, { authorization: "Bearer user-aa-token" }),
+      );
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.archiveContext.included, true);
+      assert.ok(body.archiveContext.factCount > 0);
+    } finally {
+      await clearReviewItems();
+    }
+  }
+});
+
+// One shared pool lifecycle for the whole file.
+after(async () => {
+  if (pgUp) {
+    const { pool } = await import("@/db");
+    await pool.end().catch(() => {});
+  }
 });

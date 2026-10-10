@@ -57,7 +57,7 @@ export const LEVEL_DESCRIPTIONS: Record<RuntimeLevel, string> = {
 export const LEVEL_BACKENDS: Record<RuntimeLevel, readonly Backend[]> = {
   "arena-local": ["arena-local-engine"],
   "on-device": ["webllm", "turboagent"],
-  remote: ["pollinations", "openrouter", "groq"],
+  remote: ["pollinations", "openrouter", "groq", "mistral"],
 };
 
 /** The provider identity behind a backend (who actually serves the model). */
@@ -68,6 +68,10 @@ export const BACKEND_PROVIDER: Record<Backend, string> = {
   pollinations: "pollinations",
   openrouter: "openrouter",
   groq: "groq",
+  openai: "openai",
+  mistral: "mistral",
+  "local-server": "local-server",
+  "agent-bridge": "agent-bridge",
 };
 
 export interface RuntimeModelInfo {

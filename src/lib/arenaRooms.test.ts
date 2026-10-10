@@ -26,9 +26,20 @@ const EXPECTED_ROOM_IDS = [
   "classroom",
   "college",
   "studio",
+  // Added by the 13-tools mandate: Creative Suite (research/decks/podcast/voice/captions).
+  "creative",
+  // Added by the vibe-coding mandate: App Foundry (describe → build → iterate).
+  "foundry",
+  // Added by the Wave 3 mandate: Deep Agent (bounded plan → act → verify).
+  "deep-agent",
+  // Added by the mind-apps mandate (mymind/albo/bobby/mailopoly dupes).
+  "mind",
+  "subscriptions",
   "cut-lab",
   "waveyard",
   "luma",
+  // Added by the product audit: Market was reachable from nowhere.
+  "market",
   "device-security",
 ] as const;
 
@@ -47,6 +58,7 @@ const EXPECTED_DESTINATIONS: Record<string, string> = {
   waveyard: "/waveyard",
   luma: "/luma",
   "device-security": "/device-security",
+  market: "/market",
 };
 
 /** Collect every route Next.js actually serves (page.tsx / page.ts files). */
@@ -93,7 +105,7 @@ function routeIsServed(href: string): boolean {
   return false;
 }
 
-test("room inventory is exactly the fixed 12 rooms", () => {
+test("room inventory is exactly the fixed room list", () => {
   assert.deepEqual(
     ARENA_ROOMS.map((r) => r.id),
     [...EXPECTED_ROOM_IDS],

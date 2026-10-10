@@ -1,3 +1,16 @@
+/**
+ * LEGACY ACCEPTANCE SPEC — compose profile (multi-user build).
+ *
+ * This spec was written against the ORIGINAL hosted Waveyard with real
+ * accounts: it registers owners and logs in via /api/auth/login|register,
+ * and exercises multi-user isolation (intruder/viewer/reporter/moderator).
+ * The local-first port removed that auth surface (single local owner), so
+ * this spec DOES NOT RUN against a plain dev server — it is retained as the
+ * acceptance gate for the compose/e2e profile (npm run test:compose) for
+ * when that profile is rebuilt on the multi-user-capable deployment.
+ *
+ * For the current local-first UI smoke, see tests/e2e/arena-smoke.spec.ts.
+ */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

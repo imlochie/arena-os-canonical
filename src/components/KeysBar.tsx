@@ -10,6 +10,8 @@ export function loadKeys() {
     return {
       openrouter: localStorage.getItem("af_key_openrouter") || undefined,
       groq: localStorage.getItem("af_key_groq") || undefined,
+      openai: localStorage.getItem("af_key_openai") || undefined,
+      mistral: localStorage.getItem("af_key_mistral") || undefined,
       turboagent: localStorage.getItem("af_url_turboagent") || undefined,
     };
   } catch {
@@ -21,6 +23,8 @@ export default function KeysBar() {
   const [open, setOpen] = useState(false);
   const [orKey, setOrKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
+  const [oaKey, setOaKey] = useState("");
+  const [miKey, setMiKey] = useState("");
   const [taUrl, setTaUrl] = useState("");
   const [saved, setSaved] = useState(false);
 
@@ -28,6 +32,8 @@ export default function KeysBar() {
     try {
       setOrKey(localStorage.getItem("af_key_openrouter") ?? "");
       setGroqKey(localStorage.getItem("af_key_groq") ?? "");
+      setOaKey(localStorage.getItem("af_key_openai") ?? "");
+      setMiKey(localStorage.getItem("af_key_mistral") ?? "");
       setTaUrl(localStorage.getItem("af_url_turboagent") ?? "");
     } catch {}
   }, []);
@@ -38,6 +44,10 @@ export default function KeysBar() {
       else localStorage.removeItem("af_key_openrouter");
       if (groqKey.trim()) localStorage.setItem("af_key_groq", groqKey.trim());
       else localStorage.removeItem("af_key_groq");
+      if (oaKey.trim()) localStorage.setItem("af_key_openai", oaKey.trim());
+      else localStorage.removeItem("af_key_openai");
+      if (miKey.trim()) localStorage.setItem("af_key_mistral", miKey.trim());
+      else localStorage.removeItem("af_key_mistral");
       if (taUrl.trim()) localStorage.setItem("af_url_turboagent", taUrl.trim());
       else localStorage.removeItem("af_url_turboagent");
       setSaved(true);
@@ -45,7 +55,7 @@ export default function KeysBar() {
     } catch {}
   };
 
-  const hasKeys = orKey.trim() !== "" || groqKey.trim() !== "";
+  const hasKeys = orKey.trim() !== "" || groqKey.trim() !== "" || oaKey.trim() !== "" || miKey.trim() !== "";
 
   return (
     <div className="glass rounded-2xl p-4">
@@ -92,6 +102,30 @@ export default function KeysBar() {
               value={groqKey}
               onChange={(e) => setGroqKey(e.target.value)}
               placeholder="gsk_…"
+              className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:border-violet-500 focus:outline-none"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              OpenAI key (pay-as-you-go — not a ChatGPT subscription)
+            </span>
+            <input
+              type="password"
+              value={oaKey}
+              onChange={(e) => setOaKey(e.target.value)}
+              placeholder="sk-…"
+              className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:border-violet-500 focus:outline-none"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              Mistral key (free Experiment plan — open weights)
+            </span>
+            <input
+              type="password"
+              value={miKey}
+              onChange={(e) => setMiKey(e.target.value)}
+              placeholder="…"
               className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:border-violet-500 focus:outline-none"
             />
           </label>

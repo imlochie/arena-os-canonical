@@ -21,10 +21,31 @@ type ExportCandidate = {
   sampleRate: number;
   channels: number;
 };
+type AuditEvent = {
+  id: string;
+  eventType: string;
+  reason: string | null;
+  createdAt: string;
+};
+type ActiveExportJob = {
+  id: string;
+  status: string;
+  stage: string;
+  format: string;
+  midiKind: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+};
 
 export function PublicationPanel({ projectId, editable }: { projectId: string; editable: boolean }) {
   const [publication, setPublication] = useState<Publication | null>(null);
   const [exports, setExports] = useState<ExportCandidate[]>([]);
+  // Publication history (feature-utilisation: the audit route) — who changed
+  // what, newest first. Loaded with the settings and refreshed after a save.
+  const [audit, setAudit] = useState<AuditEvent[] | null>(null);
+  // Export jobs in flight (or failed) — the honest status behind queued
+  // MIDI/WAV exports. Completed exports appear in the picker above.
+  const [exportJobs, setExportJobs] = useState<ActiveExportJob[]>([]);
   const [visibility, setVisibility] = useState<Publication["visibility"]>("private");
   const [assetId, setAssetId] = useState("");
   const [downloadPermission, setDownloadPermission] = useState<"owner-only" | "public">("owner-only");
@@ -47,6 +68,9 @@ export function PublicationPanel({ projectId, editable }: { projectId: string; e
     setAssetId(body.publication.publishedExportAssetId ?? "");
     setDownloadPermission(body.publication.downloadPermission);
     setTags((body.publication.tags ?? []).join(", "));
+    setExportJobs(body.exportJobs ?? []);
+    const auditResponse = await fetch(`/api/waveyard/projects/${projectId}/publication/audit`, { cache: "no-store" });
+    if (auditResponse.ok) setAudit((await auditResponse.json().catch(() => ({ events: [] }))).events ?? []);
   }, [projectId]);
   useEffect(() => { const timer = window.setTimeout(() => { void load(); }, 0); return () => window.clearTimeout(timer); }, [load]);
 
@@ -69,8 +93,11 @@ export function PublicationPanel({ projectId, editable }: { projectId: string; e
     if (!response.ok) return setMessage(body.error ?? "Publication settings could not be saved.");
     setPublication(body.publication);
     setExports(body.exports ?? []);
+    setExportJobs(body.exportJobs ?? []);
     setAcknowledged(false);
     setMessage(visibility === "private" ? "Project returned to the private workshop." : "Publication settings saved.");
+    const auditResponse = await fetch(`/api/waveyard/projects/${projectId}/publication/audit`, { cache: "no-store" });
+    if (auditResponse.ok) setAudit((await auditResponse.json().catch(() => ({ events: [] }))).events ?? []);
   }
 
   if (!publication) return <section className="publication-panel"><p className="notice">Loading publication settings…</p>{message && <p className="error">{message}</p>}</section>;
@@ -87,5 +114,28 @@ export function PublicationPanel({ projectId, editable }: { projectId: string; e
       <div className="publication-actions"><button className="button" disabled={busy}>{busy ? "Saving…" : visibility === "private" ? "Keep private" : "Publish project"}</button>{publication.publicationStatus === "published" && <button className="button secondary" type="button" onClick={() => void navigator.clipboard.writeText(publicLink).then(() => setMessage("Public link copied."))}>Copy public link</button>}</div>
     </form>}
     {message && <p className={message.includes("could") || message.includes("required") ? "error" : "notice"} role="status">{message}</p>}
+    {exportJobs.length > 0 && (
+      <div className="export-jobs" aria-label="Exports in progress" role="status">
+        <h3>Exports</h3>
+        <ul>{exportJobs.map((job) => (
+          <li key={job.id} className={job.status === "failed" ? "failed" : ""}>
+            <b>{job.format === "midi" ? `MIDI (${job.midiKind ?? "mixed"})` : job.format.toUpperCase()}</b>
+            <span>{job.status === "failed" ? `failed — ${job.errorMessage ?? "unknown error"}` : `${job.status} · ${job.stage}`}</span>
+          </li>
+        ))}</ul>
+      </div>
+    )}
+    <div className="audit-trail" aria-label="Publication history">
+      <h3>Publication history</h3>
+      {audit === null ? <p className="notice">Loading history…</p>
+        : audit.length === 0 ? <p className="notice">Nothing has been published or changed yet.</p>
+        : <ul>{audit.map((event) => (
+            <li key={event.id}>
+              <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleString()}</time>
+              <b>{event.eventType.replace(/_/g, " ")}</b>
+              {event.reason !== null && event.reason !== "" ? <span>{event.reason}</span> : null}
+            </li>
+          ))}</ul>}
+    </div>
   </section>;
 }

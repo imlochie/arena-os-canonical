@@ -76,6 +76,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [sourceMessage, setSourceMessage] = useState<string | null>(null);
   const [passthroughBusy, setPassthroughBusy] = useState(false);
   const [preparingEngine, setPreparingEngine] = useState(false);
+  const [processorNotice, setProcessorNotice] = useState<string | null>(null);
+  const processorChecked = useRef(false);
   const finalizingBuild = useRef<string | null>(null);
 
   useEffect(() => {
@@ -108,6 +110,22 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           ),
       );
       if (active) timer = setTimeout(load, 2_500);
+      if (active && !processorChecked.current) {
+        processorChecked.current = true;
+        void (async () => {
+          try {
+            const response = await fetch("/api/waveyard/processing-status", { cache: "no-store" });
+            const body = await response.json();
+            if (response.ok && (body.mode === "none" || (body.mode === "in-process" && body.localWorker === null))) {
+              setProcessorNotice(body.explanation ?? "Processing is waiting — no processor is running.");
+            } else {
+              setProcessorNotice(null);
+            }
+          } catch {
+            setProcessorNotice(null); // the status endpoint itself is unavailable — not our claim to make
+          }
+        })();
+      }
     };
     void load();
     return () => {
@@ -295,6 +313,13 @@ async function prepareEngine(model: string, jobId: string) {
         projectDescription={data.project.description}
         editable={editable}
       />
+      {processorNotice && (
+        <section className="build-progress failed processor-notice" role="alert" data-testid="processor-notice">
+          <span className="eyebrow">Processing is waiting — honestly</span>
+          <h2>No processor is running for this deployment</h2>
+          <p>{processorNotice}</p>
+        </section>
+      )}
       {data.build && <section className={`build-progress ${data.build.status}`} aria-label="Build progress" data-testid="build-progress"><span className="eyebrow">Waveyard build</span><h2>{({ "resolving-sources": "Resolving sources", separating: "Separating", understanding: "Understanding", "finding-structure": "Finding structure", building: "Building", ready: "Ready", failed: "Build needs attention" } as Record<string, string>)[data.build.stage] ?? "Building"}</h2><p>{data.build.status === "complete" ? "Your automatic starting arrangement is ready in Play." : data.build.status === "failed" ? data.build.errorMessage ?? "No sources could complete the build." : `${data.build.acceptedSourceCount} source${data.build.acceptedSourceCount === 1 ? "" : "s"} accepted${data.build.failedSourceCount ? ` · ${data.build.failedSourceCount} source failure${data.build.failedSourceCount === 1 ? "" : "s"}` : ""}`}</p><div className="build-progress-steps"><span className={data.build.stage === "resolving-sources" ? "active" : ""}>Sources</span><span className={["separating", "understanding", "finding-structure", "building", "ready"].includes(data.build.stage) ? "active" : ""}>Stems</span><span className={["understanding", "finding-structure", "building", "ready"].includes(data.build.stage) ? "active" : ""}>Structure</span><span className={["building", "ready"].includes(data.build.stage) ? "active" : ""}>Build</span><span className={data.build.stage === "ready" ? "active" : ""}>Play</span></div></section>}
       {editable && data.build?.status !== "complete" && (
         <section className="add-source-panel" aria-label="Add source audio">

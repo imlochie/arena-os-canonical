@@ -31,8 +31,7 @@ import {
   ArchiveAssistantTimeoutError,
   ArchiveAssistantUpstreamAuthError,
 } from "../archive-assistant/errors";
-import type { ArchiveAssistantConfig } from "../archive-assistant/config";
-import type { ArchiveAssistantAuth } from "../archive-assistant/client";
+import type { PersonalisationUpstreamConfig } from "./upstream";
 import { personalisationOperations } from "./generated/contract";
 import type { PersonalisationContext } from "./generated/types";
 import type { PersonalisationEvidenceClient } from "./types";
@@ -49,9 +48,11 @@ export type PersonalisationClientOptions = {
   fetchImpl?: typeof fetch;
 };
 
+export type PersonalisationAuth = { mode: "bearer"; token: string } | { mode: "local"; ownerId: string };
+
 export function createPersonalisationEvidenceClient(
-  config: ArchiveAssistantConfig,
-  auth: ArchiveAssistantAuth,
+  config: PersonalisationUpstreamConfig,
+  auth: PersonalisationAuth,
   options: PersonalisationClientOptions = {},
 ): PersonalisationEvidenceClient {
   const fetchImpl = options.fetchImpl ?? fetch;

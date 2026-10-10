@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import { models } from "@/db/schema";
-import { FREE_MODELS, LOCAL_ENGINE_ID } from "@/lib/models";
+import { dynamicModels, FREE_MODELS, LOCAL_ENGINE_ID } from "@/lib/models";
+import { ensureHubModelsLoaded } from "@/lib/modelHub/registry";
 import { LEVEL_DESCRIPTIONS, LEVEL_LABELS, LEVEL_NUMBER } from "@/lib/runtime";
 import { ensureSeeded } from "@/lib/seed";
 
@@ -14,10 +15,14 @@ const levelSummary = [
 
 export async function GET() {
   await ensureSeeded();
+  // Model Hub: registered local runtimes join the catalog here so every
+  // picker (chat, battles, council, collab) sees them. Cached + never throws.
+  await ensureHubModelsLoaded();
+  const catalog = [...FREE_MODELS, ...dynamicModels()];
   try {
     const rows = await db.select().from(models);
     const byId = new Map(rows.map((r) => [r.id, r]));
-    const merged = FREE_MODELS.map((m) => {
+    const merged = catalog.map((m) => {
       const dbRow = byId.get(m.id);
       return {
         ...m,
@@ -30,7 +35,7 @@ export async function GET() {
     return Response.json({ models: merged, levels: levelSummary });
   } catch {
     return Response.json({
-      models: FREE_MODELS.map((m) => ({ ...m, elo: 1200, battles: 0, wins: 0, ties: 0 })),
+      models: catalog.map((m) => ({ ...m, elo: 1200, battles: 0, wins: 0, ties: 0 })),
       levels: levelSummary,
     });
   }

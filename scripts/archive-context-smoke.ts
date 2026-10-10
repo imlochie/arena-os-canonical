@@ -1,36 +1,24 @@
 /**
- * archive-context-smoke.ts — end-to-end smoke of the Archive Assistant
- * read-only bridge against a LIVE upstream (real Archive Assistant, or the
- * committed development fixture in scripts/mock-archive-assistant.mjs).
+ * archive-context-smoke.ts — end-to-end smoke of the NATIVE archive
+ * context (the merged Archive Assistant) against the local database.
  *
- * This is the manual check for "is the information crossing the bridge
- * sufficient?": it runs the real client, the generated-contract runtime
+ * This is the manual check for "is the information sufficient?": it runs
+ * the real native six-operation client, the generated-contract runtime
  * validators, and the context normalizer, then prints the same owner-facing
  * digest Arena would reason over.
  *
  * Usage:
- *   npm run smoke:archive -- [--history] [--json] [--lineage <reviewItemId>] [--token <bearer>]
+ *   npm run smoke:archive -- [--history] [--json] [--lineage <reviewItemId>]
  *
- * Environment (same contract as the app, see .env.example):
- *   ARCHIVE_ASSISTANT_API_URL       required, no localhost fallback
- *   ARCHIVE_ASSISTANT_AUTH_MODE     bearer (default) | local
- *   ARCHIVE_ASSISTANT_OWNER_ID      required in local mode
- *   ARCHIVE_ASSISTANT_BEARER_TOKEN  bearer token to forward (bearer mode),
- *                                   or pass --token
- *
- * Exit codes: 0 ok · 2 configuration problem · 3 upstream/auth/contract failure
+ * Exit codes: 0 ok · 3 read/contract failure
  */
 
-import { getArchiveAssistantConfig } from "../src/lib/archive-assistant/config";
-import {
-  createArchiveAssistantClient,
-  type ArchiveAssistantAuth,
-} from "../src/lib/archive-assistant/client";
 import {
   buildArchiveContext,
   buildFindingLineageFacts,
   summarizeRefresh,
 } from "../src/lib/archive-assistant/context";
+import { createNativeArchiveContextClient } from "../src/lib/mediaArchive/contextClient";
 import { isArchiveAssistantError } from "../src/lib/archive-assistant/errors";
 import { ARCHIVE_PROVIDERS, type ArchiveContextFact } from "../src/lib/archive-assistant/types";
 
@@ -38,16 +26,14 @@ type Args = {
   history: boolean;
   json: boolean;
   lineage: number | null;
-  token: string | null;
 };
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { history: false, json: false, lineage: null, token: null };
+  const args: Args = { history: false, json: false, lineage: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--history") args.history = true;
     else if (a === "--json") args.json = true;
-    else if (a === "--token") args.token = argv[++i] ?? null;
     else if (a === "--lineage") {
       const id = Number(argv[++i]);
       if (!Number.isInteger(id) || id < 1) {
@@ -75,30 +61,7 @@ function factLine(index: number, fact: ArchiveContextFact): string {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-
-  let config;
-  try {
-    config = getArchiveAssistantConfig();
-  } catch (error) {
-    console.error(`✗ configuration: ${(error as Error).message}`);
-    process.exit(2);
-  }
-
-  let auth: ArchiveAssistantAuth;
-  if (config.authMode === "local") {
-    auth = { mode: "local", ownerId: config.ownerId ?? "" };
-  } else {
-    const token = args.token ?? process.env.ARCHIVE_ASSISTANT_BEARER_TOKEN?.trim() ?? null;
-    if (!token) {
-      console.error(
-        "✗ bearer mode needs a token: pass --token <bearer> or set ARCHIVE_ASSISTANT_BEARER_TOKEN.",
-      );
-      process.exit(2);
-    }
-    auth = { mode: "bearer", token };
-  }
-
-  const client = createArchiveAssistantClient(config, auth);
+  const client = createNativeArchiveContextClient();
 
   try {
     const built = await buildArchiveContext(client, { includeHistory: args.history });
@@ -111,8 +74,7 @@ async function main() {
       const counts = context.workload.counts;
       const rec = context.reconciliation;
 
-      console.log(`Archive Assistant context @ ${context.generatedAt}`);
-      console.log(`upstream: ${config.baseUrl} · authMode: ${config.authMode}`);
+      console.log(`Archive context (native) @ ${context.generatedAt}`);
       console.log("");
       console.log(
         `Overview: ${summary.health} — ${summary.attentionCount} attention · ` +
@@ -138,13 +100,15 @@ async function main() {
       if (built.refreshHistory) {
         for (const provider of ARCHIVE_PROVIDERS) {
           const history = built.refreshHistory[provider];
-          const ids = (history?.results ?? []).slice(0, 5).map((r) => `${r.refreshId}(${r.status}/${r.snapshotCompleteness}${r.authoritative ? ",auth" : ""})`);
+          const ids = (history?.results ?? [])
+            .slice(0, 5)
+            .map((r) => `${r.refreshId}(${r.status}/${r.snapshotCompleteness}${r.authoritative ? ",auth" : ""})`);
           console.log(`${provider} history (${history?.pagination.total ?? 0}): ${ids.join(" · ") || "—"}`);
         }
       }
 
       console.log("");
-      console.log(`Facts crossing the bridge (${facts.length}${built.factsTruncated ? ", truncated" : ""}):`);
+      console.log(`Facts from the native context (${facts.length}${built.factsTruncated ? ", truncated" : ""}):`);
       facts.slice(0, 20).forEach((fact, i) => console.log(factLine(i, fact)));
       if (facts.length > 20) console.log(`  … ${facts.length - 20} more (use --json for the full list)`);
     }
@@ -169,10 +133,10 @@ async function main() {
     }
 
     console.log("");
-    console.log("✓ bridge healthy: contract-validated reads, normalized facts, zero mutations attempted.");
+    console.log("✓ native context healthy: contract-validated reads, normalized facts, zero mutations attempted.");
   } catch (error) {
     const kind = isArchiveAssistantError(error) ? error.kind : "unexpected";
-    console.error(`✗ bridge read failed [${kind}]: ${(error as Error).message}`);
+    console.error(`✗ native context read failed [${kind}]: ${(error as Error).message}`);
     process.exit(3);
   }
 }

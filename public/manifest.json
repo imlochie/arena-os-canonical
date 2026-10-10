@@ -1,7 +1,7 @@
 {
-  "name": "ArenaForge Personal — Private AI Arena",
-  "short_name": "ArenaForge",
-  "description": "Blind battles, collab lab, and leaderboards. Local Mode works fully offline. Never trained on.",
+  "name": "Arena OS — Private AI Arena & Waveyard Studio",
+  "short_name": "Arena OS",
+  "description": "Blind battles, collab lab, leaderboards, and the Waveyard stem studio. Local Mode works fully offline. Never trained on.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#060a17",

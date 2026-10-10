@@ -14,7 +14,7 @@ import { NextResponse } from "next/server";
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import { db } from "@/db";
-import { librarySnapshots, streamingAccounts } from "@/db/waveyardSchema";
+import { streamingAccounts } from "@/db/waveyardSchema";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { isStreamingService } from "@/lib/waveyard/streaming/library-sync";
 
@@ -29,9 +29,17 @@ export async function GET() {
         service: streamingAccounts.service,
         displayName: streamingAccounts.displayName,
         createdAt: streamingAccounts.createdAt,
-        snapshotCount: sql<number>`(select count(*)::int from ${librarySnapshots} where ${librarySnapshots.accountId} = ${streamingAccounts.id})`,
-        lastSyncAt: sql<string | null>`(select max(${librarySnapshots.takenAt})::text from ${librarySnapshots} where ${librarySnapshots.accountId} = ${streamingAccounts.id})`,
-        trackCount: sql<number>`(select ${librarySnapshots.trackCount} from ${librarySnapshots} where ${librarySnapshots.accountId} = ${streamingAccounts.id} order by ${librarySnapshots.takenAt} desc limit 1)`,
+        // Correlated subqueries are written with literal aliased table names:
+        // drizzle renders interpolated columns UNQUALIFIED inside sql`` (as
+        // `"account_id" = "id"`), which silently correlates the snapshot's own
+        // id instead of the account's — every stat read 0/null (caught live
+        // during the V6.1 sync-on-open verification, fixed here).
+        snapshotCount: sql<number>`(select count(*)::int from wy_library_snapshots ls where ls.account_id = wy_streaming_accounts.id)`,
+        lastSyncAt: sql<string | null>`(select max(ls.taken_at)::text from wy_library_snapshots ls where ls.account_id = wy_streaming_accounts.id)`,
+        trackCount: sql<number>`(select ls.track_count from wy_library_snapshots ls where ls.account_id = wy_streaming_accounts.id order by ls.taken_at desc limit 1)`,
+        // Sync-on-open (vision §V6): the panel opens straight into the
+        // freshest snapshot + its diff — no click required.
+        latestSnapshotId: sql<string | null>`(select ls.id from wy_library_snapshots ls where ls.account_id = wy_streaming_accounts.id order by ls.taken_at desc limit 1)`,
       })
       .from(streamingAccounts)
       .where(eq(streamingAccounts.ownerId, user.id))

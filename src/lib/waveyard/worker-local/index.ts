@@ -1,5 +1,6 @@
 /**
- * Local worker bootstrap — desktop mode only (ARENA_DESKTOP_MODE=1 without
+ * Local worker bootstrap — whenever the runtime policy says this process
+ * owns processing (desktop, dev, or WAVEYARD_LOCAL_WORKER=1; never with
  * REDIS_URL). Registers the real local executors on the LocalJobBroker and
  * starts draining. Registered queues are exactly the engines the desktop
  * can run honestly: waveforms, the in-process MDX-Net stem machine

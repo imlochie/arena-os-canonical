@@ -7,7 +7,15 @@ import type { NextConfig } from "next";
 // relocated wrapper cannot find the binding and the stem machine dies with
 // "onnxruntime-node is not available" in the packaged app. pg gets this
 // treatment from Next's default list; onnxruntime-node is not on it.
-const externalPackages = ["onnxruntime-node"];
+// @ffprobe-installer/@ffmpeg-installer resolve their platform binary via a
+// runtime require + __dirname-relative path. Bundling their index into a
+// server chunk breaks that resolution (proven live: dev server reported
+// "no installer package" while the same package resolved fine from plain
+// node), which silently killed tier-2 binary discovery and with it every
+// server-side audio probe in dev/web deployments on machines without
+// system ffmpeg. Keeping them external restores the documented order:
+// env override → installer package → PATH.
+const externalPackages = ["onnxruntime-node", "@ffmpeg-installer/ffmpeg", "@ffprobe-installer/ffprobe"];
 
 // `output: "standalone"` is enabled ONLY for desktop packaging
 // (ARENA_DESKTOP_BUILD=1). Web/dev builds stay as before apart from the
@@ -27,7 +35,14 @@ const nextConfig: NextConfig =
         // platform so the installer ships one platform's ~70-134 MB, not
         // all three (288 MB).
         outputFileTracingIncludes: {
-          "*": ["./node_modules/onnxruntime-node/bin/**"],
+          "*": [
+            "./node_modules/onnxruntime-node/bin/**",
+            // ffmpeg/ffprobe installer trees: resolved at runtime from the
+            // filesystem (bundler-proof tier in src/lib/waveyard/ffmpeg.ts),
+            // so tracing must carry them into the standalone server.
+            "./node_modules/@ffmpeg-installer/**",
+            "./node_modules/@ffprobe-installer/**",
+          ],
         },
         outputFileTracingExcludes: {
           "*": [

@@ -134,6 +134,8 @@ export class LocalJobBroker {
 // Turbopack can instantiate this module once for the instrumentation graph
 // and once for route graphs — a module-level singleton would split in two.
 // Like src/db, the broker lives on globalThis so every graph shares one.
+import { shouldRunLocalWorker } from "./runtime-policy";
+
 const globalForBroker = globalThis as typeof globalThis & {
   __arenaLocalJobBroker?: LocalJobBroker;
 };
@@ -149,7 +151,9 @@ export function getLocalJobBroker(): LocalJobBroker {
 }
 
 export function localWorkerActive(): boolean {
-  return process.env.ARENA_DESKTOP_MODE === "1" && !process.env.REDIS_URL;
+  // The deliberate runtime policy (runtime-policy.ts): desktop, dev, or an
+  // explicit opt-in — never when REDIS_URL hands processing to a real worker.
+  return shouldRunLocalWorker();
 }
 
 export function resetLocalJobBrokerForTests(): void {

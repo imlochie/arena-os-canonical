@@ -15,6 +15,24 @@ async function replyFor(
   body: any,
   opts: { modelId: string; messages: ChatMsg[]; system?: string; temperature?: number; keys?: any; localOnly: boolean },
 ): Promise<GenerateResult> {
+  // Research mode (Perplexity-style): the answer is grounded in real sources
+  // (local chats + archive, plus SearXNG when configured and not localOnly),
+  // with the numbered source list appended — persisted with the message.
+  if (body.research === true) {
+    const lastUser = [...opts.messages].reverse().find((m) => m.role === "user")?.content ?? "";
+    const { researchAnswer, researchSourcesFooter } = await import("@/lib/creative/research");
+    const result = await researchAnswer(lastUser, { keys: opts.keys, modelId: opts.modelId, localOnly: opts.localOnly });
+    return {
+      text: result.answer + researchSourcesFooter([...result.sources, ...result.webSources]),
+      runtimeLevel: opts.localOnly ? "arena-local" : "remote",
+      backend: result.backend as GenerateResult["backend"],
+      modelId: opts.modelId,
+      via: `research+${result.via}`,
+      ms: 0,
+      fallback: result.fallback,
+      note: result.note ?? `grounded in ${result.sources.length + result.webSources.length} source(s)`,
+    };
+  }
   if (!opts.localOnly && typeof body.clientReply === "string" && body.clientReply && body.clientRuntime?.backend === "webllm") {
     const model = getModel(opts.modelId);
     if (model.pollinationsId.startsWith("__webllm__")) {

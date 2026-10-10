@@ -15,7 +15,15 @@ export type Backend =
   | "turboagent"
   | "pollinations"
   | "openrouter"
-  | "groq";
+  | "groq"
+  | "openai"
+  | "mistral"
+  // A local OpenAI-compatible server registered through the Model Hub
+  // (Ollama / LM Studio / llama.cpp). Routing id: __server__:<base>:<model>.
+  | "local-server"
+  // The agent bridge: an external agent (a human at a terminal, or an AI
+  // session running scripts/agent-bridge.mjs) answers queued prompts.
+  | "agent-bridge";
 
 export interface FreeModel {
   id: string;
@@ -103,6 +111,26 @@ export const FREE_MODELS: FreeModel[] = [
     emoji: "🎨",
     color: "#22c55e",
     kind: "image",
+  },
+
+  {
+    id: "arena-agent",
+    name: "Arena Agent (bridge)",
+    provider: "local · agent bridge",
+    description:
+      "You, or an AI agent session, answer the app: prompts queue locally and are served through scripts/agent-bridge.mjs. Real intelligence, honestly labeled — not a language model. When no bridge is connected, requests fall back visibly.",
+    strengths: ["Offline", "Private", "Any brain you wire"],
+    speed: "medium",
+    quality: 5,
+    level: "on-device",
+    backend: "agent-bridge",
+    requiresNetwork: false,
+    requiresKey: false,
+    requiresDownload: false,
+    pollinationsId: "__agent__",
+    emoji: "🛰️",
+    color: "#a78bfa",
+    kind: "text",
   },
 
   // ------------------------------------------------------------------
@@ -403,17 +431,37 @@ export const FREE_MODELS: FreeModel[] = [
   },
 ];
 
+/**
+ * Dynamic models registered at runtime through the Model Hub (local
+ * Ollama/LM Studio models). The static catalog stays immutable; hub models
+ * join the same registry so EVERY surface (chat pickers, battles, council)
+ * sees them. Populated by lib/modelHub/registry.ts from the DB.
+ */
+const DYNAMIC_MODELS = new Map<string, FreeModel>();
+
+export function registerDynamicModels(entries: FreeModel[]): void {
+  for (const entry of entries) DYNAMIC_MODELS.set(entry.id, entry);
+}
+
+export function clearDynamicModels(): void {
+  DYNAMIC_MODELS.clear();
+}
+
+export function dynamicModels(): FreeModel[] {
+  return [...DYNAMIC_MODELS.values()];
+}
+
 export function getModel(id: string): FreeModel {
   const resolved = MODEL_ALIASES[id] ?? id;
-  return FREE_MODELS.find((m) => m.id === resolved) ?? FREE_MODELS[0];
+  return FREE_MODELS.find((m) => m.id === resolved) ?? DYNAMIC_MODELS.get(resolved) ?? FREE_MODELS[0];
 }
 
 export function textModels(): FreeModel[] {
-  return FREE_MODELS.filter((m) => m.kind === "text");
+  return [...FREE_MODELS, ...DYNAMIC_MODELS.values()].filter((m) => m.kind === "text");
 }
 
 export function imageModels(): FreeModel[] {
-  return FREE_MODELS.filter((m) => m.kind === "image");
+  return [...FREE_MODELS, ...DYNAMIC_MODELS.values()].filter((m) => m.kind === "image");
 }
 
 /** Battles compare genuinely different execution targets: never two

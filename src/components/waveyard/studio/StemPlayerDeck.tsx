@@ -146,6 +146,12 @@ export function StemPlayerDeck({
                       onClick={() => { setLayersFor(layersFor === stem.id ? null : stem.id); setLayerError(null); }}
                     >⋁</button>
                   )}
+                  <a
+                    className="deck-chip"
+                    aria-label={`Download ${stemDisplayName(stem.stemType)} as WAV`}
+                    title="Download this stem (WAV)"
+                    href={`/api/assets/${stem.id}?download=1`}
+                  >⇩</a>
                   <input
                     className="stem-deck-fader"
                     type="range"

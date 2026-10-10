@@ -158,7 +158,12 @@ export type ArchiveContextResponse = {
   };
 };
 
-export type ArchiveAssistantAuthModeSafe = "bearer" | "local";
+/**
+ * How the context was assembled. Since the Archive Assistant merge the
+ * answer is always "native" (Arena's own database); the legacy values
+ * remain in the union for compatibility with recorded responses.
+ */
+export type ArchiveAssistantAuthModeSafe = "native" | "bearer" | "local";
 
 export type FindingLineageResponse = {
   lineage: FindingLineage;

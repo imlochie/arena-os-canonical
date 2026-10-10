@@ -19,6 +19,7 @@ import {
   normalizeArtist,
   normalizeTitle,
   parseBackup,
+  parseCsvSnapshot,
   parseLibrarySnapshot,
   snapshotStats,
   snapshotToCsv,
@@ -222,4 +223,70 @@ test("CSV export escapes honestly (TuneMyMusic parity)", () => {
   // The plain snapshot's CSV has a row per track.
   const plain = snapshotToCsv(snapshot()).split("\n");
   assert.equal(plain.length, 1 + 3);
+});
+
+// ------------------------------------------------------- CSV import (V6.1)
+
+test("CSV import round-trips our own export", () => {
+  const original = snapshot();
+  const reparsed = parseCsvSnapshot(snapshotToCsv(original), "spotify", "reimport");
+  assert.notEqual(reparsed, null);
+  assert.equal(reparsed!.service, "spotify");
+  // Every playlist and track from the export survives, grouped by name.
+  const names = reparsed!.playlists.map((playlist) => playlist.name);
+  assert.ok(names.includes("Road trip"));
+  assert.ok(names.includes("Liked songs"));
+  const roadTrip = reparsed!.playlists.find((playlist) => playlist.name === "Road trip")!;
+  assert.equal(roadTrip.tracks.length, 2);
+  assert.equal(roadTrip.tracks[0].title, "Back in Black");
+  assert.equal(roadTrip.tracks[0].artists[0], "AC/DC");
+  assert.equal(roadTrip.tracks[0].isrc, "AUSBM0000001");
+  assert.equal(roadTrip.tracks[0].durationMs, 255_000);
+});
+
+test("CSV import accepts Exportify headers, quoting, and multi-artist cells", () => {
+  const csv = [
+    '"Track Name","Artist Name(s)","Album Name","Duration (ms)","ISRC"',
+    '"Song, with comma","AC/DC, Bon Scott","Back in Black","255000","AUSBM0000001"',
+    '"Thunderstruck","AC/DC","Back in Black","292000","invalid-isrc"',
+  ].join("\r\n");
+  const parsed = parseCsvSnapshot(csv, "apple", "Exported playlist");
+  assert.notEqual(parsed, null);
+  assert.equal(parsed!.playlists.length, 1);
+  assert.equal(parsed!.playlists[0].name, "Exported playlist");
+  const first = parsed!.playlists[0].tracks[0];
+  assert.equal(first.title, "Song, with comma");
+  assert.deepEqual(first.artists, ["AC/DC", "Bon Scott"]);
+  assert.equal(first.durationMs, 255_000);
+  assert.equal(first.isrc, "AUSBM0000001");
+  assert.equal(parsed!.playlists[0].tracks[1].isrc, null, "invalid ISRCs drop to null, never guess");
+});
+
+test("CSV import accepts TuneMyMusic clock durations and BOM", () => {
+  const csv = "\uFEFFTrack,Artist,Album,Length\nBack in Black,AC/DC,Back in Black,4:15";
+  const parsed = parseCsvSnapshot(csv, "youtube");
+  assert.notEqual(parsed, null);
+  assert.equal(parsed!.playlists[0].tracks[0].durationMs, 255_000);
+});
+
+test("CSV import groups by the playlist column in first-seen order", () => {
+  const csv = [
+    "playlist,position,title,artists,album,isrc,duration_ms,service,external_id",
+    "A,1,One,Artist,X,,1000,spotify,e1",
+    "B,1,Two,Artist,X,,1000,spotify,e2",
+    "A,2,Three,Artist,X,,1000,spotify,e3",
+  ].join("\n");
+  const parsed = parseCsvSnapshot(csv, "spotify");
+  assert.notEqual(parsed, null);
+  assert.deepEqual(parsed!.playlists.map((playlist) => playlist.name), ["A", "B"]);
+  assert.deepEqual(parsed!.playlists[0].tracks.map((t) => t.title), ["One", "Three"]);
+  assert.deepEqual(parsed!.playlists[1].tracks.map((t) => t.title), ["Two"]);
+});
+
+test("CSV import rejects what is not a track list — never guesses", () => {
+  assert.equal(parseCsvSnapshot("", "spotify"), null);
+  assert.equal(parseCsvSnapshot("just one header row\n", "spotify"), null);
+  assert.equal(parseCsvSnapshot("a,b\n1,2\n", "spotify"), null, "no title/artist columns");
+  assert.equal(parseCsvSnapshot('title,artists\n"unterminated quote that never closes, artists\n', "spotify"), null);
+  assert.equal(parseCsvSnapshot("title,artists\n,Artist\n", "spotify"), null, "empty-title rows only → no tracks");
 });

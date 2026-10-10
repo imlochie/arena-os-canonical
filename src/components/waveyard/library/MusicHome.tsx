@@ -11,6 +11,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { formatPlayClock } from "@/lib/waveyard/library/model";
 import {
@@ -206,6 +207,7 @@ export function MusicHome() {
   const [studioProjects, setStudioProjects] = useState<StudioProject[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [search, setSearch] = useState("");
+  const [importUrl, setImportUrl] = useState("");
   const [adding, setAdding] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [newPlaylistName, setNewPlaylistName] = useState("");
@@ -218,7 +220,11 @@ export function MusicHome() {
   /** Library clock for addedDaysAgo rules — set during refresh (never read
    * impurely during render); day granularity makes short staleness moot. */
   const [libraryClockMs, setLibraryClockMs] = useState(0);
+  const router = useRouter();
   const [loaded, setLoaded] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const [dropBusy, setDropBusy] = useState<string | null>(null);
+  const dragDepth = useRef(0);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async (query: string) => {
@@ -269,6 +275,37 @@ export function MusicHome() {
     };
   }, [search]);
 
+  const importFromUrl = useCallback(
+    async (url: string) => {
+      const trimmed = url.trim();
+      if (!trimmed || adding) return;
+      setAdding(true);
+      setMessage(null);
+      try {
+        const response = await fetch("/api/library/ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: trimmed }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (response.ok) {
+          setMessage(
+            body.created === false
+              ? "Already in your library — nothing imported."
+              : "Imported through yt-dlp. Stems separate in the background.",
+          );
+          setImportUrl("");
+        } else {
+          setMessage(`Import failed — ${body.error ?? `HTTP ${response.status}`}`);
+        }
+      } finally {
+        setAdding(false);
+        await refresh(search);
+      }
+    },
+    [adding, refresh, search],
+  );
+
   const addMusic = useCallback(
     async (files: FileList | null) => {
       if (files === null || files.length === 0) return;
@@ -298,6 +335,51 @@ export function MusicHome() {
       await refresh(search);
     },
     [refresh, search],
+  );
+
+  /** The cold-open promise (vision Principle 1): drop a song anywhere on
+   *  this page → a project is created with the default separation → the file
+   *  uploads → you land in the workspace watching stems appear. Zero
+   *  configuration, zero navigation decisions. */
+  const dropToStudio = useCallback(
+    async (files: FileList | File[]) => {
+      const audio = Array.from(files).filter(
+        (file) => file.type.startsWith("audio/") || /\.(wav|mp3|flac|m4a|aac|ogg)$/i.test(file.name),
+      );
+      if (audio.length === 0) {
+        setMessage("That file is not audio — drop an MP3, WAV, FLAC, M4A, AAC, or OGG.");
+        return;
+      }
+      const file = audio[0];
+      setDropBusy(file.name);
+      setMessage(null);
+      try {
+        const created = await fetch("/api/waveyard/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: file.name.replace(/\.[^.]+$/, "") }),
+        });
+        const createdBody = await created.json().catch(() => ({}));
+        if (!created.ok) {
+          setMessage(createdBody.error ?? "Could not start the project.");
+          return;
+        }
+        const projectId: string = createdBody.project.id;
+        const payload = new FormData();
+        payload.set("projectId", projectId);
+        payload.set("file", file);
+        const uploaded = await fetch("/api/uploads", { method: "POST", body: payload });
+        if (!uploaded.ok) {
+          const uploadedBody = await uploaded.json().catch(() => ({}));
+          setMessage(uploadedBody.error ?? "The upload failed — the project stays; try again from Studio.");
+          return;
+        }
+        router.push(`/waveyard/projects/${projectId}`);
+      } finally {
+        setDropBusy(null);
+      }
+    },
+    [router],
   );
 
   const onQueue = useCallback(async (track: TrackSummary) => {
@@ -479,13 +561,35 @@ export function MusicHome() {
 
   return (
     <>
+      <div
+        className={`music-home-surface ${dragActive ? "drop-active" : ""}`}
+        onDragEnter={(event) => {
+          if (Array.from(event.dataTransfer.types).includes("Files")) {
+            dragDepth.current += 1;
+            setDragActive(true);
+          }
+        }}
+        onDragOver={(event) => {
+          if (Array.from(event.dataTransfer.types).includes("Files")) event.preventDefault();
+        }}
+        onDragLeave={() => {
+          dragDepth.current = Math.max(0, dragDepth.current - 1);
+          if (dragDepth.current === 0) setDragActive(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          dragDepth.current = 0;
+          setDragActive(false);
+          void dropToStudio(event.dataTransfer.files);
+        }}
+      >
       <section className="library-hero" aria-label="Your music">
         <div>
           <span className="eyebrow">Your music, stem-aware</span>
           <h1>Listen first.</h1>
           <p>
-            Add audio you own or are authorized to use. Waveyard separates it into stems, understands it, and keeps the
-            studio one click deeper — but up here, it&rsquo;s just your music.
+            Drop a song anywhere on this page and Waveyard separates it into stems — right here on your machine —
+            then hands you the player. Add audio you own or are authorized to use; the studio is one click deeper.
           </p>
           <label className="add-music">
             <input
@@ -502,6 +606,37 @@ export function MusicHome() {
             <b>{adding ? "ADDING…" : "+ ADD MUSIC"}</b>
             <small>MP3 · WAV · FLAC · M4A · AAC · OGG — local and private</small>
           </label>
+          <div className="add-music" style={{ display: "flex", gap: 8, marginTop: 8, padding: "10px 14px" }}>
+            <input
+              aria-label="Import from URL with yt-dlp"
+              className="library-search"
+              style={{ flex: 1, minWidth: 0 }}
+              placeholder="…or paste a URL — yt-dlp imports it (personal use)"
+              value={importUrl}
+              disabled={adding}
+              onChange={(event) => setImportUrl(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void importFromUrl(importUrl);
+              }}
+            />
+            <button
+              type="button"
+              disabled={adding || !importUrl.trim()}
+              onClick={() => void importFromUrl(importUrl)}
+              style={{
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.15)",
+                padding: "6px 14px",
+                color: "white",
+                fontWeight: 700,
+                fontSize: 12,
+                background: adding ? "transparent" : "rgba(124,58,237,0.35)",
+                cursor: adding ? "default" : "pointer",
+              }}
+            >
+              IMPORT
+            </button>
+          </div>
           {message && <p className="library-message" role="status">{message}</p>}
         </div>
         <div className="library-side">
@@ -765,6 +900,13 @@ export function MusicHome() {
           </ul>
         )}
     </section>
+      </div>
+      {dragActive && (
+        <div className="drop-overlay" role="status" aria-live="polite">
+          <b>{dropBusy !== null ? `Adding ${dropBusy}…` : "Drop to separate"}</b>
+          <small>The stems start building the moment it lands — no setup.</small>
+        </div>
+      )}
       </>
   );
 }

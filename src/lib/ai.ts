@@ -23,6 +23,7 @@ import { localImageDataURI, localTextReply } from "./localEngine";
 import { NO_TRAIN_HEADERS } from "./privacy";
 import type { GenerateResult, RuntimeExecution } from "./runtime";
 import { BACKEND_PROVIDER, localEngineResult } from "./runtime";
+import { assertLoopbackUrl, parseServerRoutingId } from "./modelHub/runtimes";
 
 export interface ChatMsg {
   role: "system" | "user" | "assistant";
@@ -51,6 +52,12 @@ export interface GenerateOpts {
     groq?: string;
     gemini?: string;
     turboagent?: string;
+    // OpenAI API key (pay-as-you-go credits — NOT part of a ChatGPT
+    // subscription; the hub page says this plainly).
+    openai?: string;
+    // Mistral La Plateforme key (free "Experiment" plan) — routes remote-tier
+    // requests to Mistral Small, an Apache-2.0 open-weights model.
+    mistral?: string;
   };
 }
 
@@ -61,6 +68,9 @@ export interface GenerateDeps {
   // WebLLM executes in the browser (WebGPU). Server routes cannot run it;
   // an injected executor lets clients/tests prove the contract.
   webllmExecutor?: (mlcModelId: string, messages: ChatMsg[], temperature: number) => Promise<string>;
+  // Agent bridge executor (tests inject a fake; the default is the real
+  // DB-backed queue in lib/modelHub/agentBridge.ts).
+  agentBridgeExecutor?: (messages: ChatMsg[], waitMs: number) => Promise<string | null>;
 }
 
 export type { GenerateResult };
@@ -227,6 +237,62 @@ async function tryGroq(
   return String(text);
 }
 
+async function tryMistral(
+  fetchImpl: typeof fetch,
+  key: string,
+  messages: ChatMsg[],
+  temperature: number,
+  maxTokens?: number,
+): Promise<string> {
+  const res = await fetchImpl("https://api.mistral.ai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+      ...NO_TRAIN_HEADERS,
+    },
+    body: JSON.stringify({
+      model: "mistral-small-latest",
+      messages,
+      temperature,
+      ...(maxTokens ? { max_tokens: maxTokens } : {}),
+    }),
+  });
+  if (!res.ok) throw new Error(`mistral ${res.status}`);
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text) throw new Error("mistral empty");
+  return String(text);
+}
+
+async function tryOpenAI(
+  fetchImpl: typeof fetch,
+  key: string,
+  messages: ChatMsg[],
+  temperature: number,
+  maxTokens?: number,
+): Promise<string> {
+  const res = await fetchImpl("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+      ...NO_TRAIN_HEADERS,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages,
+      temperature,
+      ...(maxTokens ? { max_tokens: maxTokens } : {}),
+    }),
+  });
+  if (!res.ok) throw new Error(`openai ${res.status}`);
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text) throw new Error("openai empty");
+  return String(text);
+}
+
 function localImage(
   modelId: string,
   opts: GenerateOpts,
@@ -248,6 +314,14 @@ function localImage(
 async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promise<GenerateResult> {
   const started = Date.now();
   const fetchImpl = deps.fetchImpl ?? fetch;
+  // Model Hub: registered local-server models join the registry lazily
+  // (instrumentation preloads at boot; this covers fresh processes).
+  try {
+    const { ensureHubModelsLoaded } = await import("./modelHub/registry");
+    await ensureHubModelsLoaded();
+  } catch {
+    /* static catalog still works */
+  }
   const model = getModel(opts.modelId);
   const temperature = opts.temperature ?? 0.7;
   const system = opts.system?.trim();
@@ -337,6 +411,77 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
       ms: ms(),
       fallback: false,
     };
+  }
+
+  // ---------------- LOCAL SERVER (Model Hub, tier 2) ----------------
+  // A registered Ollama / LM Studio / llama.cpp model. The routing id is
+  // self-contained (base URL + remote model), so no DB lookup is needed
+  // here; loopback is re-asserted so a tampered row cannot aim the server
+  // elsewhere.
+  if (model.backend === "local-server") {
+    const route = parseServerRoutingId(model.pollinationsId);
+    const wanted = requestedExecution(model.id, model.backend, model.level);
+    if (route !== null) {
+      try {
+        assertLoopbackUrl(route.baseUrl);
+        const text = await tryTurboAgent(fetchImpl, route.baseUrl, route.remoteModel, fullMessages, temperature, opts.maxTokens);
+        return {
+          text,
+          runtimeLevel: "on-device",
+          backend: "local-server",
+          modelId: model.id,
+          via: `local-server:${new URL(route.baseUrl).host}/${route.remoteModel}`,
+          ms: ms(),
+          fallback: false,
+        };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "unreachable";
+        return localEngineResult(
+          localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
+            FALLBACK_NOTICE(`${model.name} (${route.baseUrl})`, reason),
+          "offline-fallback",
+          ms(),
+          { fallback: true, fallbackFrom: wanted, note: `Local server unreachable: ${reason}` },
+        );
+      }
+    }
+    return localEngineResult(
+      localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
+        FALLBACK_NOTICE(model.name, "corrupt local-server routing id"),
+      "offline-fallback",
+      ms(),
+      { fallback: true, fallbackFrom: wanted, note: "Corrupt routing id." },
+    );
+  }
+
+  // ---------------- AGENT BRIDGE (tier 2, human/AI-at-a-terminal) ----------------
+  if (model.backend === "agent-bridge") {
+    const wanted = requestedExecution(model.id, model.backend, model.level);
+    const run = async (): Promise<string | null> => {
+      if (deps.agentBridgeExecutor) return deps.agentBridgeExecutor(fullMessages, 90_000);
+      const { submitAgentTask } = await import("./modelHub/agentBridge");
+      return submitAgentTask(fullMessages, opts.modelId, 90_000);
+    };
+    const text = await run();
+    if (text !== null && text.trim() !== "") {
+      return {
+        text,
+        runtimeLevel: "on-device",
+        backend: "agent-bridge",
+        modelId: model.id,
+        via: "agent-bridge",
+        ms: ms(),
+        fallback: false,
+        note: "Answered by a connected agent (scripts/agent-bridge.mjs) — not a language model.",
+      };
+    }
+    return localEngineResult(
+      localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +
+        FALLBACK_NOTICE(model.name, "no agent bridge is connected — start one with `node scripts/agent-bridge.mjs`"),
+      "offline-fallback",
+      ms(),
+      { fallback: true, fallbackFrom: wanted, note: "Agent bridge not connected." },
+    );
   }
 
   // ---------------- LOCAL LLM (tier 2) ----------------
@@ -443,6 +588,39 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
         backend: "groq",
         modelId: model.id,
         via: "groq:free",
+        ms: ms(),
+        fallback: false,
+      };
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (opts.keys?.mistral) {
+    try {
+      const text = await tryMistral(fetchImpl, opts.keys.mistral, fullMessages, temperature, opts.maxTokens);
+      return {
+        text,
+        runtimeLevel: "remote",
+        backend: "mistral",
+        modelId: model.id,
+        via: "mistral:small",
+        ms: ms(),
+        fallback: false,
+      };
+    } catch {
+      /* fall through */
+    }
+  }
+  if (opts.keys?.openai) {
+    try {
+      const text = await tryOpenAI(fetchImpl, opts.keys.openai, fullMessages, temperature, opts.maxTokens);
+      return {
+        text,
+        runtimeLevel: "remote",
+        backend: "openai",
+        modelId: model.id,
+        via: "openai:gpt-4o-mini",
         ms: ms(),
         fallback: false,
       };

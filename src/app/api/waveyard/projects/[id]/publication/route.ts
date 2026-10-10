@@ -1,6 +1,6 @@
 import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import {
@@ -33,6 +33,31 @@ function eventMetadata(
   extra: Record<string, unknown> = {},
 ) {
   return JSON.stringify({ before, after, ...extra });
+}
+
+/** Export jobs still in flight (or failed) for this project — the honest
+ *  status behind "your export is being rendered". Completed exports appear
+ *  in the picker; these appear until they finish. */
+async function activeExportJobs(projectId: string) {
+  return db
+    .select({
+      id: exportJobs.id,
+      status: exportJobs.status,
+      stage: exportJobs.stage,
+      format: exportJobs.format,
+      midiKind: exportJobs.midiKind,
+      errorMessage: exportJobs.errorMessage,
+      createdAt: exportJobs.createdAt,
+    })
+    .from(exportJobs)
+    .where(
+      and(
+        eq(exportJobs.projectId, projectId),
+        notInArray(exportJobs.status, ["complete"]),
+      ),
+    )
+    .orderBy(desc(exportJobs.createdAt))
+    .limit(25);
 }
 
 async function completedExports(projectId: string) {
@@ -77,6 +102,7 @@ export async function GET(
         tags: parseProjectTags(project.tags),
       },
       exports: editable ? await completedExports(project.id) : [],
+      exportJobs: editable ? await activeExportJobs(project.id) : [],
     });
   } catch (error) {
     if (error instanceof Response) return error;
@@ -223,6 +249,7 @@ export async function PUT(
         tags: parseProjectTags(result.tags),
       },
       exports: await completedExports(project.id),
+        exportJobs: await activeExportJobs(project.id),
     });
   } catch (error) {
     if (error instanceof Response) return error;

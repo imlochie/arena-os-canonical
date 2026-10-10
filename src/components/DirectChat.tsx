@@ -52,6 +52,8 @@ export default function DirectChat() {
   const [chats, setChats] = useState<any[]>([]);
   const [chatId, setChatId] = useState<string | null>(null);
   const [modelId, setModelId] = useState(LOCAL_ENGINE_ID);
+  const [researchMode, setResearchMode] = useState(false);
+  const [attachment, setAttachment] = useState<string | null>(null); // text context for the next message
   const [assistantId, setAssistantId] = useState<string>("");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -90,8 +92,13 @@ export default function DirectChat() {
   }
 
   async function send() {
-    const text = input.trim();
-    if (!text || busy) return;
+    const raw = input.trim();
+    if (!raw || busy) return;
+    // Attached text becomes labeled context for this one message.
+    const text = attachment ? `Attached file context:\n"""
+${attachment.slice(0, 30_000)}
+"""\n\n${raw}` : raw;
+    setAttachment(null);
     const flags = privacyFlags();
     const withUser = [...msgs, { role: "user" as const, content: text }];
     setInput("");
@@ -128,10 +135,11 @@ export default function DirectChat() {
             assistantId: assistantId || undefined,
             keys: loadKeys(),
             ...(clientReply ? { clientReply, clientRuntime } : {}),
+            ...(researchMode ? { research: true } : {}),
             ...flags,
           }
         : chatId
-          ? { mode: "message", chatId, message: text, keys: loadKeys(), ...(clientReply ? { clientReply, clientRuntime } : {}), ...flags }
+          ? { mode: "message", chatId, message: text, keys: loadKeys(), ...(clientReply ? { clientReply, clientRuntime } : {}), ...(researchMode ? { research: true } : {}), ...flags }
           : {
               mode: "create",
               message: text,
@@ -139,6 +147,7 @@ export default function DirectChat() {
               assistantId: assistantId || undefined,
               keys: loadKeys(),
               ...(clientReply ? { clientReply, clientRuntime } : {}),
+              ...(researchMode ? { research: true } : {}),
               ...flags,
             };
       const r = await fetch("/api/chats", {
@@ -313,12 +322,44 @@ export default function DirectChat() {
         </div>
 
         <div className="border-t border-white/10 p-3">
+          {attachment && (
+            <p className="mb-2 truncate rounded-lg bg-violet-500/10 px-3 py-1.5 text-[11px] text-violet-300">
+              📎 attached: {attachment.slice(0, 80)}… ({attachment.length.toLocaleString()} chars) —{" "}
+              <button className="underline" onClick={() => setAttachment(null)}>remove</button>
+            </p>
+          )}
           <div className="flex gap-2">
+            <button
+              title="Research mode: answers grounded in your chats, your archive and (if configured) SearXNG — sources listed under the answer"
+              onClick={() => setResearchMode(!researchMode)}
+              className={`rounded-xl border px-3 py-2.5 text-sm font-bold ${researchMode ? "border-violet-400 bg-violet-600/30 text-white" : "border-white/10 text-slate-400 hover:text-white"}`}
+            >
+              🔍
+            </button>
+            <label
+              title="Attach a text file (.txt .md .json .csv .srt .vtt code…) as context for the next message"
+              className="cursor-pointer rounded-xl border border-white/10 px-3 py-2.5 text-sm font-bold text-slate-400 hover:text-white"
+            >
+              📎
+              <input
+                type="file"
+                accept=".txt,.md,.markdown,.json,.csv,.tsv,.srt,.vtt,.log,.ts,.tsx,.js,.jsx,.mjs,.py,.rs,.go,.java,.c,.h,.cpp,.css,.html,.yml,.yaml,.toml,.ini,.sql,.sh"
+                className="hidden"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  if (file.size > 2 * 1024 * 1024) return;
+                  const text = await file.text();
+                  if (text.trim()) setAttachment(text);
+                }}
+              />
+            </label>
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send()}
-              placeholder="Message… (Enter to send)"
+              placeholder={researchMode ? "Ask anything — answers come with checkable sources…" : "Message… (Enter to send)"}
               className="flex-1 rounded-xl border border-white/10 bg-black/40 px-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-violet-500 focus:outline-none"
             />
             <button onClick={send} disabled={busy || !input.trim()} className="btn-arena rounded-xl px-5 py-2.5 text-sm font-extrabold text-white">

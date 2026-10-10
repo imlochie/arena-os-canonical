@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { getArchiveAssistantConfig } from "../archive-assistant/config";
+import { getPersonalisationUpstreamConfig } from "./upstream";
 import {
   ArchiveAssistantContractError,
   ArchiveAssistantNotFoundError,
@@ -80,7 +80,7 @@ function makeClient(
     auth.mode === "local"
       ? { ...BASE_ENV, ARCHIVE_ASSISTANT_AUTH_MODE: "local", ARCHIVE_ASSISTANT_OWNER_ID: auth.ownerId }
       : BASE_ENV;
-  const config = getArchiveAssistantConfig(env);
+  const config = getPersonalisationUpstreamConfig(env);
   const { stub, calls } = makePersonalisationFetchStub(routes);
   const client = createPersonalisationEvidenceClient(config, auth, { fetchImpl: stub });
   return { client, calls };
@@ -257,7 +257,7 @@ test("gate-6 #3: every response is validated against the generated snapshot at i
 
   // Non-JSON body → violation; upstream auth rejection and 404 map onto the
   // bridge taxonomy without synthesizing owner-scoped data.
-  const config = getArchiveAssistantConfig(BASE_ENV);
+  const config = getPersonalisationUpstreamConfig(BASE_ENV);
   const invalidJsonClient = createPersonalisationEvidenceClient(
     config,
     { mode: "bearer", token: "token-c" },

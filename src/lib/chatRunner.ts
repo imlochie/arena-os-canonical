@@ -3,26 +3,25 @@
  *
  * Two entry legs, one engine:
  *
- *   /api/chat           browser leg  — optional Archive Assistant evidence
- *                        (user token forwarded server-to-server on request)
+ *   /api/chat           browser leg  — optional archive evidence (the
+ *                        merged Archive Assistant's native six-op client:
+ *                        facts from Arena's own database, never a network
+ *                        hop)
  *   /api/internal/chat  service leg  — authenticated machine callers
  *                        (ARENA_INTERNAL_API_KEY). An internal credential is
- *                        NOT a user identity, so it is never forwarded to
- *                        Archive Assistant: archiveContext is not honored on
- *                        the service leg.
+ *                        NOT a user identity, so archiveContext is not
+ *                        honored on the service leg.
  */
 
 import { generate, type ChatMsg } from "./ai";
 import { getModel } from "./models";
 import { isLocalOnlyBody } from "./privacy";
-import { getArchiveAssistantConfig } from "./archive-assistant/config";
-import { createArchiveAssistantClient, resolveRequestAuth } from "./archive-assistant/client";
 import { buildArchiveContext } from "./archive-assistant/context";
 import {
   ARCHIVE_CONTEXT_UNAVAILABLE_NOTE,
   buildArchiveContextSystemPrompt,
 } from "./archive-assistant/prompt";
-import { isArchiveAssistantError } from "./archive-assistant/errors";
+import { createNativeArchiveContextClient } from "./mediaArchive/contextClient";
 
 export type ChatCaller = "browser" | "internal_service";
 
@@ -82,14 +81,9 @@ export async function runChat({ body, authorization, caller }: ChatRunOptions): 
         archiveMeta = { included: false, reason: "local_only" };
       } else {
         try {
-          const archiveConfig = getArchiveAssistantConfig();
-          // resolveRequestAuth reads the Authorization header off a Request;
-          // reconstruct the minimal view it needs from the raw header.
-          const authReq = new Request("https://arena.internal/chat", {
-            headers: authorization ? { authorization } : {},
-          });
-          const archiveAuth = resolveRequestAuth(authReq, archiveConfig);
-          const archiveClient = createArchiveAssistantClient(archiveConfig, archiveAuth);
+          // Native since the Archive Assistant merge: facts come from
+          // Arena's own tables through the same validated client contract.
+          const archiveClient = createNativeArchiveContextClient();
           const built = await buildArchiveContext(archiveClient);
           archiveSystem = buildArchiveContextSystemPrompt(built.context, built.facts);
           archiveMeta = {
@@ -103,8 +97,9 @@ export async function runChat({ body, authorization, caller }: ChatRunOptions): 
           archiveSystem = ARCHIVE_CONTEXT_UNAVAILABLE_NOTE;
           archiveMeta = {
             included: false,
-            reason: isArchiveAssistantError(error) ? error.kind : "unexpected",
+            reason: "archive_context_failed",
           };
+          void error;
         }
       }
     }

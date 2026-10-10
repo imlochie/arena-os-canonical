@@ -11,6 +11,8 @@ const INTENTS = [
   { id: "debate", emoji: "⚔️", label: "DEBATE", desc: "Blind battle test", href: "/" },
   { id: "build", emoji: "⚙️", label: "BUILD", desc: "Systems + machines", href: "/collab?strategy=systems" },
   { id: "explore", emoji: "🔮", label: "EXPLORE", desc: "Prototype futures", href: "/council?jobId=simulation_partner" },
+  { id: "music", emoji: "🎚️", label: "MAKE MUSIC", desc: "Stems, remixes, exports", href: "/waveyard" },
+  { id: "visual", emoji: "🎬", label: "GENERATE", desc: "Video, images, audio", href: "/studio" },
 ];
 
 export default function CommandPage() {

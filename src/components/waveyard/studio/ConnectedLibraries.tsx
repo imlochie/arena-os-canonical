@@ -40,8 +40,14 @@ import {
   type ExternalTrack,
   type LibrarySnapshot,
   type SnapshotDiff,
+  parseCsvSnapshot,
   type StreamingService,
 } from "@/lib/waveyard/streaming/library-sync";
+
+/** Library metadata is kilobytes-to-megabytes, never gigabytes: a cap here
+ *  keeps a mis-dropped audio file from being parsed as text (DoS) — the
+ *  parse itself is limit-enforcing but the read should be bounded first. */
+const MAX_IMPORT_BYTES = 64 * 1024 * 1024;
 
 type AccountSummary = {
   id: string;
@@ -50,6 +56,7 @@ type AccountSummary = {
   snapshotCount: number;
   lastSyncAt: string | null;
   trackCount: number | null;
+  latestSnapshotId: string | null;
 };
 
 type SnapshotView = {
@@ -84,15 +91,29 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
   const [dispatchUrl, setDispatchUrl] = useState("");
   const [dispatching, setDispatching] = useState(false);
   const bootstrappedRef = useRef(false);
+  // Sync-on-open plumbing: once any snapshot is open (user click, import, or
+  // the auto-open below) it is never stomped by a later account reload.
+  const snapshotOpenRef = useRef(false);
+  const openSnapshotRef = useRef<(snapshotId: string) => void>(() => {});
 
   const loadAccounts = useCallback(async () => {
     const response = await fetch("/api/streaming/accounts", { cache: "no-store" });
     if (!response.ok) return;
     const body = await response.json().catch(() => ({}));
-    setAccounts(body.accounts ?? []);
+    const loaded = (body.accounts ?? []) as AccountSummary[];
+    setAccounts(loaded);
+    // Sync-on-open (vision §V6): land straight in the freshest snapshot with
+    // its diff already computed — exactly once, never stomping a user choice.
+    if (!snapshotOpenRef.current) {
+      const freshest = loaded
+        .filter((account) => account.latestSnapshotId !== null)
+        .sort((a, b) => (a.lastSyncAt ?? "") < (b.lastSyncAt ?? "") ? 1 : -1)[0];
+      if (freshest !== undefined) void openSnapshotRef.current(freshest.latestSnapshotId!);
+    }
   }, []);
 
   const openSnapshot = useCallback(async (snapshotId: string) => {
+    snapshotOpenRef.current = true;
     const response = await fetch(`/api/streaming/snapshots/${snapshotId}`, { cache: "no-store" });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -103,6 +124,7 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
     setDiff(body.diff ?? null);
     setSelectedPlaylist("liked");
   }, []);
+  useEffect(() => { openSnapshotRef.current = openSnapshot; }, [openSnapshot]);
 
   // Bootstrap + the PKCE callback (Spotify redirects back with ?code&state).
   useEffect(() => {
@@ -176,15 +198,32 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
     setError(null);
     setNotice(null);
     try {
-      const text = await file.text();
-      const parsed = parseBackup(text);
-      if (parsed === null) {
-        setError("That file is not a waveyard-library-backup JSON (format/version validation failed).");
+      if (file.size > MAX_IMPORT_BYTES) {
+        setError(`That file is ${(file.size / 1_048_576).toFixed(0)} MB — library imports are capped at ${MAX_IMPORT_BYTES / 1_048_576} MB. Split the export first.`);
         return;
       }
-      if (parsed.service !== service) {
-        setError(`That backup is a ${SERVICE_LABELS[parsed.service]} backup — import it under ${SERVICE_LABELS[parsed.service]}.`);
-        return;
+      const text = await file.text();
+      let parsed: LibrarySnapshot | null;
+      if (/\.csv$/i.test(file.name) || (!/\.json$/i.test(file.name) && !text.trimStart().startsWith("{"))) {
+        // CSV import (vision §V6): our own export, Exportify, or TuneMyMusic —
+        // one playlist per file (or per playlist column), same diff/export path.
+        parsed = parseCsvSnapshot(text, service, file.name.replace(/\.[^.]+$/, "") || "CSV import");
+        if (parsed === null) {
+          setError("That CSV has no recognizable track columns (needs at least title + artist). Nothing was imported.");
+          return;
+        }
+        const stats = snapshotStats(parsed);
+        setNotice(`Parsed ${stats.tracks} tracks${stats.tracksWithIsrc > 0 ? ` (${stats.tracksWithIsrc} with ISRC)` : ""} from ${file.name} — storing…`);
+      } else {
+        parsed = parseBackup(text);
+        if (parsed === null) {
+          setError("That file is not a waveyard-library-backup JSON (format/version validation failed).");
+          return;
+        }
+        if (parsed.service !== service) {
+          setError(`That backup is a ${SERVICE_LABELS[parsed.service]} backup — import it under ${SERVICE_LABELS[parsed.service]}.`);
+          return;
+        }
       }
       const accountId = accounts?.find((account) => account.service === service)?.id ?? (await connectAccount(service, `My ${SERVICE_LABELS[service]}`));
       if (accountId === null) return;
@@ -201,7 +240,7 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
       await loadAccounts();
       await openSnapshot(body.snapshot.id);
       const stats = snapshotStats(parsed);
-      setNotice(`Imported your ${SERVICE_LABELS[service]} backup — ${stats.playlists} playlists, ${stats.tracks} tracks.`);
+      setNotice(`Imported your ${SERVICE_LABELS[service]} library — ${stats.playlists} playlists, ${stats.tracks} tracks.`);
     } finally {
       setBusy(null);
     }
@@ -309,11 +348,11 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
               <header><b>{SERVICE_LABELS[service]}</b>{account !== null && <span>{account.snapshotCount} backups{account.trackCount !== null ? ` · ${account.trackCount} tracks` : ""}</span>}</header>
               <div className="stream-card-actions">
                 <label className="button secondary file-button">
-                  Import backup JSON
+                  Import JSON or CSV
                   <input
                     aria-label={`Import ${SERVICE_LABELS[service]} backup`}
                     type="file"
-                    accept="application/json"
+                    accept="application/json,.csv,text/csv"
                     disabled={busy !== null}
                     onChange={(event) => { const file = event.target.files?.[0]; if (file !== undefined) void importBackupFile(service, file); event.target.value = ""; }}
                   />

@@ -13,8 +13,9 @@
 
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
-import { constants } from "node:fs";
+import { constants, existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 
 export type FfmpegTool = "ffmpeg" | "ffprobe";
 
@@ -37,12 +38,45 @@ function installerPath(packageName: string): string | null {
   try {
     // createRequire keeps this a runtime-optional dependency: a missing
     // platform package degrades to PATH instead of crashing the server.
+    // Works in plain node (tests, worker processes).
     const require = createRequire(import.meta.url);
     const resolved = require(packageName) as { path?: string };
     return typeof resolved?.path === "string" ? resolved.path : null;
   } catch {
-    return null;
+    // Bundled contexts (Turbopack dev / standalone server) rewrite
+    // createRequire and reject dynamic module names ("expression is too
+    // dynamic") — proven live. Fall through to filesystem discovery.
   }
+  return installerPathFromFileSystem(packageName);
+}
+
+/**
+ * Bundler-proof tier-2 discovery: the installer packages have a fixed
+ * layout (node_modules/@ffprobe-installer/<platform>/<binary>), so probe
+ * the filesystem directly — no require, nothing for a bundler to rewrite.
+ * Anchors: the process working directory (dev server: repo root; packaged
+ * server: the standalone tree, where desktop-dist traces the packages).
+ */
+function installerPathFromFileSystem(packageName: string): string | null {
+  // The npm layout is node_modules/@ffprobe-installer/linux-x64/ffprobe —
+  // the PLATFORM package is a sibling of the wrapper, not a child of it
+  // (verified live: the wrapper's own createRequire resolves exactly this).
+  const tool = packageName.endsWith("ffmpeg") ? "ffmpeg" : "ffprobe";
+  const scope = packageName.startsWith("@") ? packageName.slice(0, packageName.indexOf("/")) : "";
+  const platformDir =
+    process.platform === "win32" ? "win32-x64"
+    : process.platform === "darwin" ? (process.arch === "arm64" ? "darwin-arm64" : "darwin-x64")
+    : process.arch === "arm64" ? "linux-arm64" : "linux-x64";
+  const binary = tool + (process.platform === "win32" ? ".exe" : "");
+  const candidates = [
+    join(process.cwd(), "node_modules", scope, platformDir, binary),
+    join(process.cwd(), "node_modules", packageName, platformDir, binary),
+    join(process.cwd(), "node_modules", packageName, binary),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 async function resolveTool(tool: FfmpegTool): Promise<ResolvedBinary | null> {

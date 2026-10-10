@@ -946,3 +946,46 @@
 .stream-dispatch-row input{flex:1;min-width:220px;background:#181b13;border:1px solid #4b5832;color:var(--ink);padding:7px;border-radius:6px;font-size:11.5px}
 .stream-footer{display:flex;justify-content:flex-end}
 @media(max-width:900px){.stream-browser-body{grid-template-columns:1fr}}
+
+/* Honest processor status (a queued job must never look like progress) */
+.build-progress.processor-notice{border-color:var(--danger)}
+
+/* Parked platform surfaces: one click away, never primary (vision D2) */
+.navlinks.parked{margin-left:auto;opacity:.55;font-size:.9em}
+.navlinks.parked a{font-size:10.5px;letter-spacing:.05em}
+
+/* Cold-open: drop a song anywhere on the music surface (vision P1) */
+.music-home-surface{position:relative}
+.music-home-surface.drop-active{outline:2px dashed var(--playback);outline-offset:-8px;border-radius:14px}
+.drop-overlay{position:fixed;inset:0;z-index:60;display:grid;place-content:center;justify-items:center;gap:8px;background:color-mix(in srgb,#070a10 82%,transparent);backdrop-filter:blur(3px);pointer-events:none}
+.drop-overlay b{font-size:22px;color:var(--ink)}
+.drop-overlay small{color:var(--muted)}
+
+/* Progressive disclosure inside the Studio presentation (vision P3) */
+.studio-tabs{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
+.tab-chip{font:600 11px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:transparent;border:1px solid transparent;border-radius:999px;padding:9px 14px;cursor:pointer}
+.tab-chip.on{color:var(--ink);border-color:var(--line);background:rgba(255,255,255,.04)}
+.tab-chip:hover{color:var(--ink)}
+.tab-hint{color:var(--muted);font-size:12px;margin-left:auto}
+.studio-tab-empty{color:var(--muted)}
+
+/* Build form: one toggle, not an interrogation (vision P3) */
+.build-advanced-toggle{background:none;border:none;border-bottom:1px dashed var(--line);color:var(--muted);font:600 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:6px 2px;cursor:pointer;text-align:left;width:100%}
+.build-advanced-toggle:hover{color:var(--ink)}
+
+/* Publication history (audit trail) */
+.audit-trail{margin-top:18px;border-top:1px solid var(--line);padding-top:12px}
+.audit-trail h3{font:600 11px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.audit-trail ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.audit-trail li{display:flex;gap:10px;align-items:baseline;font-size:13px;flex-wrap:wrap}
+.audit-trail time{color:var(--muted);font-family:var(--mono);font-size:11px}
+.audit-trail b{text-transform:capitalize}
+.audit-trail span{color:var(--muted)}
+
+/* Export jobs in flight (publication panel) */
+.export-jobs{margin-top:14px}
+.export-jobs h3{font:600 11px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.export-jobs ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.export-jobs li{display:flex;gap:10px;align-items:baseline;font-size:13px}
+.export-jobs li.failed span{color:var(--danger,#ff6b6b)}
+.export-jobs span{color:var(--muted)}

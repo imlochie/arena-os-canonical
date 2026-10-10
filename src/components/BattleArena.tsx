@@ -787,7 +787,7 @@ export default function BattleArena() {
                 </button>
               </div>
             ))}
-            {filteredHistory.length === 0 && <p className="text-xs text-slate-500">No battles match.</p>}
+            {filteredHistory.length === 0 && <p className="text-xs text-slate-500">{history.length === 0 ? "No battles yet — start one above and your history appears here." : "No battles match."}</p>}
           </div>
         </div>
 
