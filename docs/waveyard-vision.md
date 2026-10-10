@@ -220,6 +220,18 @@ protocol research; sequenced deliberately after V1/V2.
   ANY stem; removal is muting the layer or using the minus-layer. Honest
   limit: second passes extract the registry's trained categories
   (vocals/drums/bass), not arbitrary instruments by name.
+- **The A//B comparison shipped (the YouTube showcase):** pick side A
+  (the original) and side B (a remix, a mashup render, a stem, a layer —
+  or any dropped audio file). Each side shows its album cover: the REAL
+  embedded ID3 artwork when the MP3 carries it (parsed locally), an
+  uploaded image, or a deterministic generative cover grown from the
+  track's identity. The canvas is a split-screen audiovisual — A's
+  spectrum left of the divider, B's right — and dragging the divider
+  crossfades the audio live (equal power). The showcase mode runs the
+  YouTube timeline (A solo → crossfade → B solo, covers featured, phase
+  labels, progress) and RECORDS it — canvas + the comparison's own audio
+  graph through MediaRecorder to a downloadable .webm. One click from
+  remix to uploadable video.
 - **The sound visualizer shipped (content that listens):** an interactive
   visualizer above the studio, driven by the REAL per-stem analysers (post
   gain/pan/inserts — it hears exactly what you hear; a muted stem stops
@@ -267,6 +279,48 @@ protocol research; sequenced deliberately after V1/V2.
 - Customization: layouts and theming on the existing visual-state system.
 - FL bridging (virtual MIDI port + loopback audio) only if the native
   editor hits a wall (decision 4).
+
+#### Visualizer roadmap (brainstormed — the next content layers)
+
+Modes on the existing engine (each a pure scene machine like the current six):
+- **Lyric constellation** — vocal analysis already gives phrases + pitch
+  frames; words bloom as the voice sings, pitch sets their height.
+- **Chop galaxy** — the scanned chops as stars positioned by pitch and
+  quality; sequenced patterns light them up in the chef's order.
+- **Signal-flow circuitry** — the REAL audio graph (stems → inserts →
+  buses → master) drawn as living circuitry; wire thickness = level.
+  The "how it's made" view.
+- **Spectrogram waterfall** — full-history spectral paint, per-stem
+  toggle; the archaeologist's view.
+- **Beat city** — the analysed bar/beat grid as a skyline; sections
+  labeled from the section analysis.
+- **Harmony halo** — the circle of fifths with the live chord lit and
+  modulations sweeping (harmony analysis exists).
+- **DNA helix** — for A/B: the two tracks as intertwined strands, beats
+  as rungs, matching sections glowing where they lock (mashup proof).
+- **3D passes** (WebGL, later): volumetric nebula with orbital camera,
+  terrain flythrough on the beat grid.
+
+Interaction layers: pointer gestures already do gravity/torque/ripples/
+planting/freezing — next: lasso-to-isolate (mute what you circle),
+beat-tap (tap to re-anchor the beat phase), throw/shake, slow-motion
+hold, Web MIDI mapping (keys → scenes, faders → stems).
+
+Customization layers (the personal DAW principle applied to the visuals):
+- **Palette themes** per scene + stem color overrides, including
+  album-art-derived palettes (dominant colors extracted from the cover —
+  the visualizer dresses in the album's colors).
+- **Reactivity knobs** — global energy multiplier, per-stem sensitivity,
+  trail/decay length, particle caps, bloom size.
+- **Director policy** — aggressiveness (dwell), scene whitelist/blacklist,
+  "these three only" presets.
+- **Overlay layers** — title/artist captions, cover watermark, timecode,
+  BPM/key badge, section labels, custom caption text; font/position/opacity.
+- **Post FX** — film grain, scanlines, chromatic aberration, vignette,
+  21:9 letterbox (YouTube-native framing), glow strength.
+- **Export settings** — 1080p/4K, fps, and recording the visualizer with
+  audio (extending the A//B recorder to the main visualizer).
+- **Profiles** — the whole customization stack persisted per project.
 
 ### V5 — The Crew (agents on the bench)
 

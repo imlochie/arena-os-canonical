@@ -869,3 +869,19 @@
 .stem-layer-notice{margin:8px 0 0;color:var(--cyan);font-size:12px}
 .chop-scan-stem{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--muted)}
 .chop-scan-stem select{background:#181b13;border:1px solid #4b5832;color:var(--ink);padding:7px}
+
+/* A // B comparison (showcase for remixes, YouTube-ready) */
+.compare-ab{position:relative;margin-top:14px;border:1px solid color-mix(in srgb,var(--line),white 10%);border-radius:16px;background:#0a0d14;padding:16px 18px;display:grid;gap:12px}
+.compare-pickers{display:grid;grid-template-columns:1fr 1fr auto;gap:14px;align-items:start}
+.compare-pickers label{display:grid;gap:6px;font-size:11px;color:var(--muted)}
+.compare-pickers select{background:#181b13;border:1px solid #4b5832;color:var(--ink);padding:8px}
+.compare-pickers input[type="file"]{font-size:11px;color:var(--muted)}
+.compare-side-a{color:#83e8ff;font-weight:800;letter-spacing:.05em}
+.compare-side-b{color:#d6fb54;font-weight:800;letter-spacing:.05em}
+.compare-volumes{display:grid;gap:8px;padding-top:16px}
+.compare-volumes label{display:grid;grid-template-columns:14px 110px;align-items:center;gap:8px;font-size:11px;color:var(--muted)}
+.compare-canvas{width:100%;height:320px;border-radius:12px;background:#070a10;cursor:ew-resize;touch-action:none;display:block}
+.compare-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.compare-actions small{color:var(--muted);font-size:11px}
+.compare-ab video{border-radius:10px;max-width:480px}
+@media(max-width:900px){.compare-pickers{grid-template-columns:1fr}}
