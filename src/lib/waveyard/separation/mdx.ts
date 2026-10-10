@@ -89,10 +89,102 @@ export const MDX_MODELS: MdxModelSpec[] = [
     sourceUrl: "https://huggingface.co/Politrees/UVR_resources/resolve/main/models/MDXNet/Kim_Vocal_2.onnx",
     license: "verify-before-bundling (UVR/MDX-Net community model; seed fallback if redistribution is unclear)",
   },
+  {
+    id: "kuielab_b_drums",
+    label: "Kuielab B · Drums",
+    file: "kuielab_b_drums.onnx",
+    sha256: "a6fecee758059b33ed99f6dabba297439b3e7cacfac4b1097bd324aff8052208",
+    sizeBytes: 21_900_000,
+    primaryStem: "drums",
+    secondaryStem: "instrumental",
+    params: { nFft: 6144, dimF: 2048, dimT: 256, hop: 1024, compensate: 1.035, overlap: 0.25 },
+    sourceUrl: "https://huggingface.co/Politrees/UVR_resources/resolve/main/models/MDXNet/kuielab_b_drums.onnx",
+    license: "verify-before-bundling (KUIELab MDX-Net challenge model via UVR resources)",
+  },
+  {
+    id: "kuielab_b_bass",
+    label: "Kuielab B · Bass",
+    file: "kuielab_b_bass.onnx",
+    sha256: "b4b7080fe501d0bece62076c5d4eda4d6590c5207ed78ec84a57bac0740a061d",
+    sizeBytes: 29_700_000,
+    primaryStem: "bass",
+    secondaryStem: "instrumental",
+    params: { nFft: 6144, dimF: 2048, dimT: 256, hop: 1024, compensate: 1.035, overlap: 0.25 },
+    sourceUrl: "https://huggingface.co/Politrees/UVR_resources/resolve/main/models/MDXNet/kuielab_b_bass.onnx",
+    license: "verify-before-bundling (KUIELab MDX-Net challenge model via UVR resources)",
+  },
+  {
+    id: "kuielab_b_other",
+    label: "Kuielab B · Other (melody)",
+    file: "kuielab_b_other.onnx",
+    sha256: "b0d0b63950ac332333fea2d58f68c92fd3ab0aae071398c2a8beeae1ad15b655",
+    sizeBytes: 29_700_000,
+    primaryStem: "other",
+    secondaryStem: "instrumental",
+    params: { nFft: 6144, dimF: 2048, dimT: 256, hop: 1024, compensate: 1.035, overlap: 0.25 },
+    sourceUrl: "https://huggingface.co/Politrees/UVR_resources/resolve/main/models/MDXNet/kuielab_b_other.onnx",
+    license: "verify-before-bundling (KUIELab MDX-Net challenge model via UVR resources)",
+  },
 ];
 
+/**
+ * Kuielab "b" models (MDX-challenge family, hosted in UVR resources):
+ * geometry verified against the MDX Colab model-parameter table —
+ * n_fft 6144, dim_f 2048, dim_t 2^8, hop 1024 (the kuielab_a_vocals-only
+ * exception dim_t 9 does not apply to the _b set). The compensate value
+ * only scales the SECONDARY stem, which the 4-stem recipe never uses
+ * (primary-only extraction) — recorded here for completeness, unused.
+ * SHA256s verified from the Politrees/UVR_resources blob pages.
+ */
 export function findMdxModel(idOrFile: string): MdxModelSpec | undefined {
   return MDX_MODELS.find((m) => m.id === idOrFile || m.file === idOrFile);
+}
+
+// ------------------------------------------------------------- recipes
+
+export type SeparationRecipeRun = {
+  /** Registry model id to run. */
+  model: string;
+  /** Stem type persisted for this run's output. */
+  stemType: string;
+  /** Which of the model's two outputs to keep. */
+  take: "primary" | "secondary";
+};
+
+export type SeparationRecipe = {
+  id: string;
+  label: string;
+  description: string;
+  runs: SeparationRecipeRun[];
+};
+
+/**
+ * The 4-stem recipe (the stem.fm set: vocals, drums, bass, melody):
+ * Kim Vocal 2 for vocals, one Kuielab b model per remaining stem, each run
+ * on the FULL mix (the challenge models were trained full-mix → target —
+ * no compounding of the vocal model's errors into the other stems).
+ */
+export const SEPARATION_RECIPES: SeparationRecipe[] = [
+  {
+    id: "stems_4",
+    label: "4 stems",
+    description: "vocals, drums, bass, melody — four runs, one per stem",
+    runs: [
+      { model: "kim_vocal_2", stemType: "vocals", take: "primary" },
+      { model: "kuielab_b_drums", stemType: "drums", take: "primary" },
+      { model: "kuielab_b_bass", stemType: "bass", take: "primary" },
+      { model: "kuielab_b_other", stemType: "other", take: "primary" },
+    ],
+  },
+];
+
+export function findSeparationRecipe(id: string): SeparationRecipe | undefined {
+  return SEPARATION_RECIPES.find((recipe) => recipe.id === id);
+}
+
+/** Every model id a separation job may target (a model or a recipe). */
+export function isValidSeparationModelId(id: string): boolean {
+  return findMdxModel(id) !== undefined || findSeparationRecipe(id) !== undefined;
 }
 
 /** The inference seam: one batch, [rows=ch·2][dim_f][dim_t] in, same out.

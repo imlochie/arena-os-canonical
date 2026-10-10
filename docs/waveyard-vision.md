@@ -32,7 +32,7 @@ Where Waveyard can be better **in its own right**:
 |---|---|---|
 | Hardware | Their closed device, $299 | The computer you already own |
 | Separation quality | Fixed DSP, frozen at purchase | Swappable models — quality improves as software |
-| Stems | Exactly 4, fixed roles | Any number; 2-stem instant, 4-stem HQ, beyond-4 possible |
+| Stems | Exactly 4, fixed roles | 2-stem instant (one pass) or the same 4 — vocals, drums, bass, melody — via the stems_4 recipe (one MDX model per stem, full-mix trained) |
 | After the loop | Nothing — you can mix, not make | A studio: arrangement, mixer + 26 processors, piano roll, MIDI |
 | Library | Their catalog | Your files, local, forever |
 | Automation | None | Governed agents that do the technical work (V5) |
@@ -192,6 +192,20 @@ protocol research; sequenced deliberately after V1/V2.
   piano roll — every note plays its chop resampled to the drawn pitch
   (up an octave = faster + brighter = the chipmunk effect) and the whole
   pattern renders to real PCM WAV on demand.
+- **4-stem separation shipped (the stem.fm set):** the registry now carries
+  the Kuielab b models (drums, bass, other — checksums verified, geometry
+  from the MDX challenge table) alongside Kim Vocal 2, and the stems_4
+  recipe runs one model per stem on the full mix. Uploads offer "Separate
+  into: Vocals + instrumental (fast) | 4 stems"; every stem row records the
+  exact model that produced it. The same "Prepare stem engine" run seeds
+  all four models. Seeding + real-music quality remain owner-machine
+  acceptance gates, as with Kim.
+- **The stem.fm deck shipped (the instant loop):** a Stem Player hero above
+  the studio — one colored waveform lane per stem (vocals/drums/bass/melody
+  palette), per-lane volume + M + ISO (isolate), one big play button, seek
+  by clicking any waveform. It drives the SAME audio graph and MixerValues
+  as the mixer console: one source of truth, two views. The deep studio
+  (inserts, timeline, automation) sits below for going further.
 - **The mashup brain shipped (song × song, the main goal):** the Mashup
   Studio reads two tracks' real analysis — tempo, key, labelled sections —
   and PROPOSES the mashup: which tempo wins (the bed's), the vocal's

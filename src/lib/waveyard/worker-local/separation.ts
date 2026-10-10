@@ -39,7 +39,7 @@ import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
 import { enqueueWaveform } from "@/lib/waveyard/queue";
 import { decodeSourceToStereoPcm } from "@/lib/waveyard/measure/pcm";
 import type { SeparationJobPayload } from "@/lib/waveyard/types";
-import { demixMdx, findMdxModel, type MdxInfer, type MdxModelSpec } from "@/lib/waveyard/separation/mdx";
+import { demixMdx, findMdxModel, findSeparationRecipe, type MdxInfer, type MdxModelSpec } from "@/lib/waveyard/separation/mdx";
 import {
   loadOrtModule,
   sessionInfer,
@@ -153,18 +153,36 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     throw new Error("Separation payload does not match its durable job target.");
   }
 
-  const spec = findMdxModel(payload.model);
-  if (!spec) {
-    await updateJob(database, job.id, {
-      status: "failed",
-      stage: "failed",
-      errorCode: "unknown_model",
-      errorMessage:
-        `The separation model "${payload.model}" is not known to this machine's engine. ` +
-        "Separation runs the model this app ships with — no configuration is needed.",
-      completedAt: new Date(),
-    });
-    throw new Error(`Unknown separation model: ${payload.model}`);
+  // A job targets either one registry model (its two stems) or a RECIPE
+  // (one run per stem — e.g. stems_4: Kim vocals + one Kuielab model each
+  // for drums/bass/other, every run on the full mix, primary-only).
+  type SeparationRun = { spec: MdxModelSpec; stemType: string; take: "primary" | "secondary" };
+  const runs: SeparationRun[] = [];
+  const recipe = findSeparationRecipe(payload.model);
+  if (recipe !== undefined) {
+    for (const run of recipe.runs) {
+      const runSpec = findMdxModel(run.model);
+      if (runSpec === undefined) throw new Error(`Recipe ${recipe.id} references unknown model ${run.model}.`);
+      runs.push({ spec: runSpec, stemType: run.stemType, take: run.take });
+    }
+  } else {
+    const spec = findMdxModel(payload.model);
+    if (!spec) {
+      await updateJob(database, job.id, {
+        status: "failed",
+        stage: "failed",
+        errorCode: "unknown_model",
+        errorMessage:
+          `The separation model "${payload.model}" is not known to this machine's engine. ` +
+          "Separation runs the model this app ships with — no configuration is needed.",
+        completedAt: new Date(),
+      });
+      throw new Error(`Unknown separation model: ${payload.model}`);
+    }
+    runs.push(
+      { spec, stemType: spec.primaryStem, take: "primary" },
+      { spec, stemType: spec.secondaryStem, take: "secondary" },
+    );
   }
 
   const [source] = await database
@@ -218,31 +236,57 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       right[i] = decoded.pcm[i * 2 + 1];
     }
 
-    const engine = await openEngine(spec, payload.requestedDevice);
+    // One engine per DISTINCT model (recipes may repeat a model; open once).
+    type OpenedEngines = Awaited<ReturnType<typeof openEngine>>;
+    const enginesById = new Map<string, OpenedEngines>();
+    const openedEngines: OpenedEngines[] = [];
     let released = false;
     try {
-      // Real progress: chunk-level updates into the durable row's metadata
-      // (throttled to whole percents + the first and last chunk).
+      const getEngine = async (modelSpec: MdxModelSpec): Promise<OpenedEngines> => {
+        const existing = enginesById.get(modelSpec.id);
+        if (existing !== undefined) return existing;
+        const engine = await openEngine(modelSpec, payload.requestedDevice);
+        enginesById.set(modelSpec.id, engine);
+        openedEngines.push(engine);
+        return engine;
+      };
+
+      // Real progress across ALL runs (a recipe runs one model per stem):
+      // chunk-level updates into the durable row's metadata, throttled to
+      // whole GLOBAL percents + the first and last chunk of each run.
       let lastReportedPercent = -1;
-      const stems = await demixMdx([left, right], spec, engine.infer, (done, total) => {
-        const percent = total > 0 ? Math.floor((done / total) * 100) : 100;
-        if (done !== 1 && done !== total && percent === lastReportedPercent) return;
-        lastReportedPercent = percent;
-        const base = jobMetadata(job.metadata);
-        void updateJob(database, job.id, {
-          metadata: JSON.stringify({ ...base, progress: { done, total, percent } }),
-        }).catch(() => undefined);
-      });
+      const stemOutputs: Array<{ stemType: string; channels: Float32Array[]; model: string; modelVersion: string; sampleCount: number }> = [];
+      let resolvedDevice: string | null = null;
+      for (let runIndex = 0; runIndex < runs.length; runIndex += 1) {
+        const run = runs[runIndex];
+        const engine = await getEngine(run.spec);
+        resolvedDevice = engine.resolvedDevice;
+        const separated = await demixMdx([left, right], run.spec, engine.infer, (done, total) => {
+          const runFraction = total > 0 ? done / total : 1;
+          const percent = Math.floor(((runIndex + runFraction) / runs.length) * 100);
+          if (done !== 1 && done !== total && percent === lastReportedPercent) return;
+          lastReportedPercent = percent;
+          const base = jobMetadata(job.metadata);
+          void updateJob(database, job.id, {
+            metadata: JSON.stringify({
+              ...base,
+              progress: { done, total, percent, phase: `${runIndex + 1}/${runs.length}`, model: run.spec.id },
+            }),
+          }).catch(() => undefined);
+        });
+        stemOutputs.push({
+          stemType: run.stemType,
+          channels: run.take === "primary" ? separated.primary : separated.secondary,
+          model: run.spec.id,
+          modelVersion: run.spec.sha256,
+          sampleCount: separated.sampleCount,
+        });
+      }
       await updateJob(database, job.id, {
         status: "finalizing",
         stage: "validating",
-        resolvedDevice: engine.resolvedDevice,
+        resolvedDevice,
       });
-
-      const stemOutputs = [
-        { stemType: spec.primaryStem, channels: stems.primary },
-        { stemType: spec.secondaryStem, channels: stems.secondary },
-      ];
       const values: (typeof stemAssets.$inferInsert)[] = [];
       for (const stem of stemOutputs) {
         const wav = encodeWav16(interleavePlanar(stem.channels), 44_100);
@@ -258,11 +302,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           separationJobId: job.id,
           stemType: stem.stemType,
           engine: "mdx",
-          model: spec.id,
-          modelVersion: spec.sha256,
+          model: stem.model,
+          modelVersion: stem.modelVersion,
           storageKey,
           checksumSha256: checksum,
-          durationSeconds: Math.round(stems.sampleCount / 44_100),
+          durationSeconds: Math.round(stem.sampleCount / 44_100),
           sampleRate: 44_100,
           channels: 2,
           codec: "pcm_s16le",
@@ -299,11 +343,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
             updatedAt: new Date(),
             metadata: JSON.stringify({
               engine: "mdx",
-              model: spec.id,
-              resolvedDevice: engine.resolvedDevice,
+              model: job.model,
+              models: [...new Set(runs.map((run) => run.spec.id))],
+              resolvedDevice,
               outputCount: values.length,
-              primaryStem: spec.primaryStem,
-              secondaryStem: spec.secondaryStem,
+              stems: stemOutputs.map((stem) => stem.stemType),
             }),
           })
           .where(eq(processingJobs.id, job.id));
@@ -333,10 +377,12 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         }
       }
       completed = true;
-      await engine.release();
+      for (const engine of openedEngines) await engine.release();
       released = true;
     } finally {
-      if (!released) await engine.release().catch(() => undefined);
+      if (!released) {
+        for (const engine of openedEngines) await engine.release().catch(() => undefined);
+      }
     }
   } catch (error) {
     let errorCode = "separation_failed";

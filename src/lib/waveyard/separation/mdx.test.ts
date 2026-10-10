@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { chunkGeometry, demixMdx, findMdxModel, normalizePeak, type MdxInfer } from "./mdx";
+import { chunkGeometry, demixMdx, findMdxModel, normalizePeak, type MdxInfer, findSeparationRecipe, isValidSeparationModelId, MDX_MODELS } from "./mdx";
 import { mdxIfft, mdxStft } from "./stft";
 
 const KIM = findMdxModel("kim_vocal_2")!;
@@ -209,4 +209,43 @@ test("the first three frequency bins never reach the model", async () => {
   const left = bandLimitedNoise(261120, 2800, 7680, 1717);
   const right = bandLimitedNoise(261120, 2800, 7680, 1818);
   await demixMdx([left, right], KIM, probeInfer);
+});
+
+
+test("kuielab b models are registered with verified checksums and the MDX-challenge geometry", () => {
+  const byId = new Map(MDX_MODELS.map((model) => [model.id, model]));
+  for (const id of ["kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"]) {
+    const model = byId.get(id);
+    assert.ok(model !== undefined, `${id} registered`);
+    // Geometry from the MDX Colab parameter table (kuielab b set).
+    assert.deepEqual(
+      { nFft: model.params.nFft, dimF: model.params.dimF, dimT: model.params.dimT, hop: model.params.hop },
+      { nFft: 6144, dimF: 2048, dimT: 256, hop: 1024 },
+      `${id} geometry`,
+    );
+    assert.ok(/^[0-9a-f]{64}$/.test(model.sha256), `${id} sha256 pinned`);
+    assert.ok(model.sourceUrl.includes(model.file), `${id} source URL matches its file`);
+  }
+  // Every registry checksum is distinct — no copy-paste corruption.
+  const shas = new Set(MDX_MODELS.map((model) => model.sha256));
+  assert.equal(shas.size, MDX_MODELS.length);
+});
+
+test("the 4-stem recipe is the stem.fm set and every run resolves to a real model", () => {
+  const recipe = findSeparationRecipe("stems_4");
+  assert.ok(recipe !== undefined);
+  assert.deepEqual(
+    recipe.runs.map((run) => run.stemType),
+    ["vocals", "drums", "bass", "other"],
+  );
+  for (const run of recipe.runs) {
+    const model = findMdxModel(run.model);
+    assert.ok(model !== undefined, `recipe model ${run.model} exists`);
+    assert.equal(run.take, "primary", "recipes take primaries (compensate never applies)");
+  }
+  // Recipe ids and model ids share one validated namespace.
+  assert.equal(isValidSeparationModelId("stems_4"), true);
+  assert.equal(isValidSeparationModelId("kim_vocal_2"), true);
+  assert.equal(isValidSeparationModelId("stems_5"), false);
+  assert.equal(isValidSeparationModelId(""), false);
 });

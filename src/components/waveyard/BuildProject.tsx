@@ -6,6 +6,13 @@ import { summariseSourceIntake } from "@/lib/waveyard/types";
 import { computeBrowserAudioMetadata, computeBrowserWaveform } from "@/lib/waveyard/browser-waveform";
 import { fetchStemEngineStatus, prepareStemEngine, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
 
+/** The upload's separation target. Empty = the machine default (vocals +
+ *  instrumental, fastest). Ids are server-validated against the registry. */
+const SEPARATION_TARGETS = [
+  { id: "", label: "Vocals + instrumental — fastest" },
+  { id: "stems_4", label: "4 stems — vocals, drums, bass, melody" },
+];
+
 const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
 
 export function BuildProject() {
@@ -14,6 +21,7 @@ export function BuildProject() {
   const [urls, setUrls] = useState("");
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState<string | null>(null);
+  const [separationTarget, setSeparationTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [engine, setEngine] = useState<StemEngineModelStatus[] | null>(null);
   const [engineRefresh, setEngineRefresh] = useState(0);
@@ -59,7 +67,7 @@ export function BuildProject() {
     if (!buildResponse.ok) { setBusy(false); setMessage(buildRecord.error ?? "Project was created but its build could not start."); router.push(`/waveyard/projects/${projectId}`); return; }
     const failures: string[] = []; let accepted = 0;
     for (const file of files) {
-      const payload = new FormData(); payload.set("projectId", projectId); payload.set("file", file); payload.set("device", "auto"); // model is resolved by the server for this machine
+      const payload = new FormData(); payload.set("projectId", projectId); payload.set("file", file); payload.set("device", "auto"); if (separationTarget !== "") payload.set("model", separationTarget); // empty = the machine default
       // The browser decodes the real audio (Web Audio) and sends the measured
       // duration/sampleRate/channels — used server-side only when no ffprobe
       // exists, and recorded as probeSource "client-webaudio".
@@ -109,6 +117,11 @@ export function BuildProject() {
     )}
     <input className="build-title" aria-label="Optional project title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Optional project title" />
     <label className="build-dropzone">Drop audio here<input aria-label="Local audio files" type="file" multiple accept={AUDIO_ACCEPT} onChange={(event: ChangeEvent<HTMLInputElement>) => setFiles(Array.from(event.target.files ?? []))} /><b>{files.length ? `${files.length} local file${files.length === 1 ? "" : "s"} ready` : "MP3 · WAV · FLAC · M4A · AAC · OGG"}</b><small>Local audio stays private and enters the same Source Asset pipeline.</small></label>
+    <label className="build-separation">Separate into
+      <select aria-label="Separation target" value={separationTarget} onChange={(event) => setSeparationTarget(event.target.value)}>
+        {SEPARATION_TARGETS.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}
+      </select>
+    </label>
     <div className="build-or">or</div>
     <label>Paste authorized source links<textarea aria-label="Authorized source links" value={urls} onChange={(event) => setUrls(event.target.value)} rows={4} placeholder={"https://youtube.com/...\nhttps://youtube.com/..."} /><small>One link per line. This deployment uses only a configured authorized resolver; unsupported links can always be added as local audio.</small></label>
     {(files.length || urlLines.length) ? <p className="build-summary">{files.length} local · {urlLines.length} link{urlLines.length === 1 ? "" : "s"} · one source pool</p> : null}

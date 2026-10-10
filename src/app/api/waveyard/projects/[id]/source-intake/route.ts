@@ -11,7 +11,7 @@ import { acceptedAudioFilename, MAX_UPLOAD_BYTES } from "@/lib/waveyard/audio";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { configuredAuthorizedSourceResolver, validateAuthorizedSourceUrl } from "@/lib/waveyard/authorized-source-resolver";
 import { ingestSourceFile } from "@/lib/waveyard/source-ingest"
-import { defaultSeparationModel } from "@/lib/waveyard/separation/selection";
+import { defaultSeparationModel, isAcceptableSeparationModel } from "@/lib/waveyard/separation/selection";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 
 export const runtime = "nodejs";
@@ -38,7 +38,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     let received = 0;
     const limit = new Transform({ transform(chunk, _encoding, done) { received += chunk.length; done(received > MAX_UPLOAD_BYTES ? new Error("Authorized source exceeded the intake limit.") : undefined, chunk); } });
     await pipeline(Readable.fromWeb(audio.body as import("node:stream/web").ReadableStream), limit, createWriteStream(filePath));
-    const result = await ingestSourceFile({ projectId, filePath, filename: resolved.filename, mimeType: resolved.mimeType ?? audio.headers.get("content-type") ?? "application/octet-stream", model: body.model !== undefined && body.model !== null && String(body.model).trim() !== "" ? String(body.model) : defaultSeparationModel(), device: "auto", provenance: { method: "authorized-url", sourceUrl, title: resolved.title, artist: resolved.artist, resolver: resolved.resolver, metadata: resolved.metadata } });
+    const requestedModel = body.model !== undefined && body.model !== null && String(body.model).trim() !== "" ? String(body.model) : defaultSeparationModel();
+    if (!isAcceptableSeparationModel(requestedModel)) {
+      return NextResponse.json({ error: `Unknown separation target "${requestedModel}" — use the app's built-in choices.` }, { status: 400 });
+    }
+    const result = await ingestSourceFile({ projectId, filePath, filename: resolved.filename, mimeType: resolved.mimeType ?? audio.headers.get("content-type") ?? "application/octet-stream", model: requestedModel, device: "auto", provenance: { method: "authorized-url", sourceUrl, title: resolved.title, artist: resolved.artist, resolver: resolved.resolver, metadata: resolved.metadata } });
     // The ingest itself succeeded — a queue failure must not turn the whole
     // intake into an error. The durable separation row records its own honest
     // failure boundary (same policy as POST /api/uploads), and the response

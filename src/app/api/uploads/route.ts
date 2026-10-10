@@ -13,7 +13,7 @@ import {
   waveformJobs,
 } from "@/db/waveyardSchema";
 import { enqueueSeparation, enqueueWaveform } from "@/lib/waveyard/queue";
-import { defaultSeparationModel } from "@/lib/waveyard/separation/selection";
+import { defaultSeparationModel, isAcceptableSeparationModel } from "@/lib/waveyard/separation/selection";
 import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
@@ -30,6 +30,9 @@ export async function POST(request: Request) {
     const projectId = String(form.get("projectId") ?? "");
     const modelField = form.get("model");
     const requestedModel = modelField !== null && String(modelField).trim() !== "" ? String(modelField) : defaultSeparationModel();
+    if (!isAcceptableSeparationModel(requestedModel)) {
+      return NextResponse.json({ error: `Unknown separation target "${requestedModel}" — use the app's built-in choices.` }, { status: 400 });
+    }
     const requestedDevice = String(form.get("device") ?? process.env.STEM_DEVICE ?? "auto");
     const upload = form.get("file");
     if (!projectId || !(upload instanceof File)) return NextResponse.json({ error: "Project and audio file are required." }, { status: 400 });

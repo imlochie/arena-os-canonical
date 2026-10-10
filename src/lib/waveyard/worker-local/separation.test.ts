@@ -80,7 +80,8 @@ function snrDb(a: Float32Array, b: Float32Array, from: number, to: number): numb
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function fixture() {
+async function fixture(options: { model?: string } = {}) {
+  const model = options.model ?? "kim_vocal_2";
   const storageDir = await mkdtemp(join(tmpdir(), "wy-sep-storage-"));
   process.env.WAVEYARD_STORAGE_DIR = storageDir;
   const modelsDir = await mkdtemp(join(tmpdir(), "wy-sep-models-"));
@@ -133,9 +134,9 @@ async function fixture() {
       projectId: project.id,
       sourceAssetId: source.id,
       type: "separation",
-      model: "kim_vocal_2",
+      model,
       requestedDevice: "auto",
-      idempotencyKey: `separation:${source.id}:kim_vocal_2`,
+      idempotencyKey: `separation:${source.id}:${model}`,
     })
     .returning();
 
@@ -164,7 +165,7 @@ function payloadOf(f: Fixture, overrides: Record<string, unknown> = {}) {
     processingJobId: f.job.id,
     projectId: f.project.id,
     sourceAssetId: f.source.id,
-    model: "kim_vocal_2",
+    model: f.job.model,
     requestedDevice: "auto" as const,
     ...overrides,
   };
@@ -197,8 +198,8 @@ test("full pipeline: fake identity session → stems stored, decoded back, and a
     assert.equal(metadata.engine, "mdx");
     assert.equal(metadata.model, "kim_vocal_2");
     assert.equal(metadata.outputCount, 2);
-    assert.equal(metadata.primaryStem, "vocals");
-    assert.equal(metadata.secondaryStem, "instrumental");
+    assert.deepEqual(metadata.stems, ["vocals", "instrumental"]);
+    assert.deepEqual(metadata.models, ["kim_vocal_2"]);
 
     const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
     assert.equal(stems.length, 2);
@@ -361,5 +362,42 @@ test("the local broker registers the separation queue alongside the other engine
     else process.env.ARENA_DESKTOP_MODE = prevDesktop;
     if (prevRedis !== undefined) process.env.REDIS_URL = prevRedis;
     resetLocalJobBrokerForTests();
+  }
+});
+
+
+test("4-stem recipe: four stems stored, each attributed to its own model", async () => {
+  const f = await fixture({ model: "stems_4" });
+  try {
+    const opened: string[] = [];
+    const engine: (spec: MdxModelSpec) => Promise<OpenedEngine> = async (spec) => {
+      opened.push(spec.id);
+      return { infer: (async (spek: Float32Array) => spek) as MdxInfer, release: async () => {}, resolvedDevice: "cpu" };
+    };
+    await handleSeparationJob(payloadOf(f), { db: f.database, openEngine: engine });
+
+    const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    assert.equal(row.status, "complete");
+    const metadata = JSON.parse(row.metadata);
+    assert.equal(metadata.model, "stems_4");
+    assert.deepEqual(metadata.stems, ["vocals", "drums", "bass", "other"]);
+    assert.equal(metadata.outputCount, 4);
+    assert.deepEqual(metadata.models, ["kim_vocal_2", "kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"]);
+
+    const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+    assert.equal(stems.length, 4, "the stem.fm set: vocals, drums, bass, melody");
+    const byType = new Map(stems.map((stem) => [stem.stemType, stem]));
+    assert.equal(byType.get("vocals")?.model, "kim_vocal_2");
+    assert.equal(byType.get("drums")?.model, "kuielab_b_drums");
+    assert.equal(byType.get("bass")?.model, "kuielab_b_bass");
+    assert.equal(byType.get("other")?.model, "kuielab_b_other");
+    for (const stem of stems) {
+      assert.equal(stem.durationSeconds, 1, "every stem is full length");
+      assert.ok(stem.fileSizeBytes > 44, "stored WAV has real bytes");
+    }
+    // Four DISTINCT engines opened (one per recipe model).
+    assert.equal(new Set(opened).size, 4);
+  } finally {
+    await f.close();
   }
 });

@@ -249,6 +249,8 @@ async function prepareEngine(model: string, jobId: string) {
     payload.set("projectId", projectId);
     payload.set("file", selected);
     payload.set("device", "auto");
+    const target = new FormData(form).get("separationTarget");
+    if (target !== null && String(target) !== "") payload.set("model", String(target)); // empty = machine default
     const response = await fetch("/api/uploads", { method: "POST", body: payload });
     const body = await response.json().catch(() => ({}));
     setAddingSource(false);
@@ -302,6 +304,12 @@ async function prepareEngine(model: string, jobId: string) {
             <p>Queue another private song in this project. It uses the same validated local separation pipeline and never replaces an existing source.</p>
           </div>
           <form className="add-source-form" onSubmit={(event) => void addSource(event)}>
+            <label>Separate into
+              <select name="separationTarget" aria-label="Separation target" defaultValue="">
+                <option value="">Vocals + instrumental — fastest</option>
+                <option value="stems_4">4 stems — vocals, drums, bass, melody</option>
+              </select>
+            </label>
             <label>
               Add source audio
               <input
