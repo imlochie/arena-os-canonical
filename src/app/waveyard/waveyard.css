@@ -848,3 +848,18 @@
 .stem-deck-hint{color:var(--text-tertiary);font-size:11px}
 .build-separation{display:grid;gap:5px;font-size:12px;font-weight:700}
 .build-separation select{background:#181b13;border:1px solid #4b5832;color:var(--ink);padding:9px}
+
+/* Sound visualizer (interactive, content-generating, vision §V4) */
+.visualizer{position:relative;margin-top:14px;border:1px solid color-mix(in srgb,var(--line),white 10%);border-radius:16px;background:#0a0d14;padding:14px 16px;display:grid;gap:10px;overflow:hidden}
+.visualizer.fullscreen{position:fixed;inset:0;z-index:60;border-radius:0;margin:0}
+.visualizer-bar{display:flex;justify-content:space-between;align-items:start;gap:14px;flex-wrap:wrap}
+.visualizer-title{display:grid;gap:3px}
+.visualizer-title b{font-size:15px}
+.visualizer-title small{color:var(--muted);font-size:11px;max-width:520px}
+.visualizer-modes{display:flex;gap:6px;flex-wrap:wrap}
+.visualizer-modes .deck-chip{--lane:var(--playback)}
+.visualizer-reason{margin:0;color:var(--cyan);font-size:12px}
+.visualizer-canvas{width:100%;height:360px;border-radius:10px;background:radial-gradient(80% 60% at 50% 0%,#0d1420,#070a10);cursor:crosshair;touch-action:none;display:block}
+.visualizer.fullscreen .visualizer-canvas{height:auto;flex:1;min-height:0}
+.visualizer.fullscreen{display:flex;flex-direction:column}
+.visualizer-still{min-height:200px;display:grid;place-items:center;color:var(--muted);font-size:13px;border:1px dashed var(--line);border-radius:10px;padding:20px;text-align:center}

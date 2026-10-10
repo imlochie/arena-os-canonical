@@ -443,6 +443,28 @@ export function useStemTransport(ids: string[], duration: number) {
     [pause],
   );
   /**
+   * Frequency-domain tap for one stem (post gain/pan/inserts — the signal
+   * you actually hear). Returns null before the graph exists. The caller
+   * owns the returned array.
+   */
+  const readSpectrum = useCallback((id: string): Uint8Array | null => {
+    const graph = graphs.current[id];
+    if (!graph) return null;
+    const bins = new Uint8Array(graph.analyser.frequencyBinCount);
+    graph.analyser.getByteFrequencyData(bins);
+    return bins;
+  }, []);
+
+  /** Frequency-domain tap of the master bus (the summed mix you hear). */
+  const readMasterSpectrum = useCallback((): Uint8Array | null => {
+    const analyser = masterAnalyser.current;
+    if (!analyser) return null;
+    const bins = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(bins);
+    return bins;
+  }, []);
+
+  /**
    * Real meter readings from the audio graph's AnalyserNode taps.
    * Returns zeros when the graph does not exist yet (before first play).
    */
@@ -504,6 +526,10 @@ export function useStemTransport(ids: string[], duration: number) {
 
   return {
     register,
+    readSpectrum,
+    readMasterSpectrum,
+    /** The audio context's actual rate (bin→Hz math for spectrum consumers). */
+    contextSampleRate: () => context.current?.sampleRate ?? 44_100,
     readMeters,
     applyInserts,
     playing,

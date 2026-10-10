@@ -206,6 +206,21 @@ protocol research; sequenced deliberately after V1/V2.
   by clicking any waveform. It drives the SAME audio graph and MixerValues
   as the mixer console: one source of truth, two views. The deep studio
   (inserts, timeline, automation) sits below for going further.
+- **The sound visualizer shipped (content that listens):** an interactive
+  visualizer above the studio, driven by the REAL per-stem analysers (post
+  gain/pan/inserts — it hears exactly what you hear; a muted stem stops
+  contributing). A pure, fully-tested engine perceives each stem (bands,
+  brightness, onsets, beat phase) and generates five kinds of content from
+  it — Nebula (per-stem particle fields; the pointer is gravity), Terrain
+  (the spectrum carved into a scrolling landscape; the pointer is the sun),
+  Orbits (stems as bodies around the vocal star; drag to spin), Tide
+  (mirrored band bars; press for ripples), Bloom (flowers grow from onsets,
+  bright sounds bloom bright; press to plant). The Director ("Auto") reads
+  the music's character — energy, brightness, percussiveness, vocal
+  dominance — and switches content to match, with dwell hysteresis and a
+  stated reason; pinning any scene overrides it. Deterministic by
+  construction (seeded noise, no Math.random), reduced-motion aware,
+  fullscreen-able.
 - **The mashup brain shipped (song × song, the main goal):** the Mashup
   Studio reads two tracks' real analysis — tempo, key, labelled sections —
   and PROPOSES the mashup: which tempo wins (the bed's), the vocal's
