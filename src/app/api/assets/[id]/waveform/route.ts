@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { validateWaveform } from "@/lib/waveyard/audio";
@@ -19,6 +20,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     
     const [stem] = await db.select().from(stemAssets).where(eq(stemAssets.id, id)).limit(1);
     const [source] = stem ? [undefined] : await db.select().from(sourceAssets).where(eq(sourceAssets.id, id)).limit(1);

@@ -1,34 +1,34 @@
 /**
  * GET /api/archive/context
  *
- * Arena-side, read-only archive context assembly. The route:
- *   1. authenticates (bearer forwarding, or explicit local dev mode);
- *   2. calls Archive Assistant through the server-side read-only client;
- *   3. fetches the bounded six-part context (overview, workload,
- *      reconciliation summary, plex + jellyfin refresh state, and — with
- *      ?history=1 — one bounded history page per provider);
- *   4. returns normalized facts with evidence handles;
- *   5. never mutates either system.
+ * Read-only archive context assembly — NATIVE since the Archive Assistant
+ * merge. The route:
+ *   1. builds the six-part context through the native client (Arena's own
+ *      tables: overview, workload, reconciliation summary, plex + jellyfin
+ *      refresh state, and — with ?history=1 — one bounded history page per
+ *      provider);
+ *   2. returns normalized facts with evidence handles;
+ *   3. never mutates anything.
  *
- * Archive Assistant database concepts (owners rows, review item payloads,
- * raw provider payloads, filesystem paths) never cross this route.
+ * Every native response is validated against the same generated contract
+ * the old HTTP bridge enforced, so a native bug still fails closed.
  */
 
-import { getArchiveAssistantConfig, archiveAssistantBaseHost } from "../../../../lib/archive-assistant/config";
-import { createArchiveAssistantClient, resolveRequestAuth } from "../../../../lib/archive-assistant/client";
-import { buildArchiveContext } from "../../../../lib/archive-assistant/context";
-import { archiveAssistantErrorResponse } from "../../../../lib/archive-assistant/http";
-import type { ArchiveContextResponse } from "../../../../lib/archive-assistant/types";
+import { buildArchiveContext } from "@/lib/archive-assistant/context";
+import { createNativeArchiveContextClient } from "@/lib/mediaArchive/contextClient";
+import {
+  ArchiveAssistantContractError,
+  ArchiveAssistantNotFoundError,
+  isArchiveAssistantError,
+} from "@/lib/archive-assistant/errors";
+import type { ArchiveContextResponse } from "@/lib/archive-assistant/types";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   const started = Date.now();
   try {
-    const config = getArchiveAssistantConfig();
-    const auth = resolveRequestAuth(req, config);
-    const client = createArchiveAssistantClient(config, auth);
-
+    const client = createNativeArchiveContextClient();
     const includeHistory = new URL(req.url).searchParams.get("history") === "1";
     const built = await buildArchiveContext(client, { includeHistory });
 
@@ -37,8 +37,8 @@ export async function GET(req: Request) {
       facts: built.facts,
       meta: {
         generatedAt: built.context.generatedAt,
-        authMode: config.authMode,
-        upstreamHost: archiveAssistantBaseHost(config),
+        authMode: "native",
+        upstreamHost: "arena-native",
         latencyMs: Date.now() - started,
         factsTruncated: built.factsTruncated,
         refreshHistoryIncluded: includeHistory,
@@ -47,6 +47,16 @@ export async function GET(req: Request) {
     };
     return Response.json(body);
   } catch (error) {
-    return archiveAssistantErrorResponse(error);
+    if (error instanceof ArchiveAssistantContractError) {
+      return Response.json(
+        { ok: false, error: "archive_assistant_contract_violation", message: error.message },
+        { status: 500 }, // native bug, not upstream drift — still fails closed
+      );
+    }
+    if (isArchiveAssistantError(error)) {
+      return Response.json({ ok: false, error: error.kind, message: error.message }, { status: 500 });
+    }
+    console.error(error);
+    return Response.json({ ok: false, error: "archive_context_failed", message: "Unexpected error." }, { status: 500 });
   }
 }

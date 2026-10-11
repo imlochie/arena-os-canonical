@@ -1,5 +1,6 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import {
@@ -34,6 +35,31 @@ function eventMetadata(
   return JSON.stringify({ before, after, ...extra });
 }
 
+/** Export jobs still in flight (or failed) for this project — the honest
+ *  status behind "your export is being rendered". Completed exports appear
+ *  in the picker; these appear until they finish. */
+async function activeExportJobs(projectId: string) {
+  return db
+    .select({
+      id: exportJobs.id,
+      status: exportJobs.status,
+      stage: exportJobs.stage,
+      format: exportJobs.format,
+      midiKind: exportJobs.midiKind,
+      errorMessage: exportJobs.errorMessage,
+      createdAt: exportJobs.createdAt,
+    })
+    .from(exportJobs)
+    .where(
+      and(
+        eq(exportJobs.projectId, projectId),
+        notInArray(exportJobs.status, ["complete"]),
+      ),
+    )
+    .orderBy(desc(exportJobs.createdAt))
+    .limit(25);
+}
+
 async function completedExports(projectId: string) {
   return db
     .select({
@@ -64,6 +90,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     const editable = role === "editor" || role === "owner";
     return NextResponse.json({
@@ -75,6 +102,7 @@ export async function GET(
         tags: parseProjectTags(project.tags),
       },
       exports: editable ? await completedExports(project.id) : [],
+      exportJobs: editable ? await activeExportJobs(project.id) : [],
     });
   } catch (error) {
     if (error instanceof Response) return error;
@@ -89,6 +117,7 @@ export async function PUT(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project } = await requireProjectRole(user.id, id, "editor");
     const parsed = publicationSchema.safeParse(
       await request.json().catch(() => null),
@@ -220,6 +249,7 @@ export async function PUT(
         tags: parseProjectTags(result.tags),
       },
       exports: await completedExports(project.id),
+        exportJobs: await activeExportJobs(project.id),
     });
   } catch (error) {
     if (error instanceof Response) return error;

@@ -1,4 +1,4 @@
-import Link from "next/link";
+import WaveyardNav from "@/components/waveyard/WaveyardNav";
 import { BuildProject } from "@/components/waveyard/BuildProject";
 
 export const metadata = { title: "Create · Waveyard" };
@@ -6,10 +6,7 @@ export const metadata = { title: "Create · Waveyard" };
 export default function CreatePage() {
   return (
     <main className="shell">
-      <nav className="nav">
-        <Link href="/waveyard" className="brand"><i>Waveyard</i><small>open stem studio</small></Link>
-        <div className="navlinks"><Link href="/waveyard">Home</Link></div>
-      </nav>
+      <WaveyardNav />
       <section className="create">
         <div>
           <span className="eyebrow">Build a first listen</span>

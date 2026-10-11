@@ -1,0 +1,959 @@
+// ============================================================================
+// Lochie Life College — member-driven class execution (SERVER ONLY)
+// ============================================================================
+// LAYER 6 §6 §7 §8 §10 §11 §12 §13 §14 §19 §21 §37.
+//
+// This is the organ that makes the others behave like one organism:
+//
+//   MEMORY → ATTENTION → COORDINATION → TEACHING → RECORD
+//
+// What changes from Layer 5. Previously `runCoordinationWindow` knew, in
+// TypeScript, that factual uncertainty means "run the researcher". The
+// configuration the founder wrote was consulted for attention but not for
+// sequence. Here the sequence itself comes from the member's effective policy
+// and the coordination graph: who is woken, who they may ask, who they defer
+// to, and who is permitted to speak.
+//
+// Three invariants this file exists to protect.
+//
+//   1. ATTENTION IS NOT SPEECH (§7 §14). Most members will watch. Silence is
+//      recorded as a successful outcome and never padded into dialogue.
+//
+//   2. ONE STUDENT-FACING VOICE (§13). Internal coordination may involve
+//      several members; the student hears the Instructor. Everything else is
+//      internal faculty work, recorded and inspectable but not addressed to
+//      the student.
+//
+//   3. FAILURE IS EXPLICIT (§37). A faculty execution failure, a memory
+//      retrieval failure or a coordination failure is reported as such. The
+//      class never degrades into an apparently successful one.
+// ============================================================================
+
+import { db } from "@/db";
+import { collegeFacultyContributions, collegeSessionEvents } from "@/db/college";
+import { generate } from "@/lib/ai";
+import {
+  evaluateAttention,
+  recordAttentionDecision,
+  resolveSpeakingOrder,
+  type AttentionOutcome,
+  type EffectivePolicy,
+} from "./attention-resolver";
+import {
+  buildCoordinationGraph,
+  canConsult,
+  type CoordinationGraph,
+} from "./coordination-graph";
+import { buildMemberContext, summarisePacket, type MemberContextPacket } from "./member-context";
+import {
+  executionLabel,
+  outputContractInstruction,
+  parseFacultyOutput,
+  validateFacultyOutput,
+  type FacultyAction,
+  type ValidatedOutput,
+} from "./faculty-output";
+import * as facultyMemory from "./faculty-memory";
+import * as ledger from "./ledger";
+import { compilePersonality } from "./members";
+import { getFacultyPosition } from "./faculty";
+import { hasAuthority, type AuthorityKey } from "./authority";
+import { setAttention } from "./orchestrator";
+
+// ---------------------------------------------------------------------------
+// What each position is asked to do. Unchanged in spirit from teaching.ts —
+// kept here so the runtime can ask a DIFFERENT question per activation reason.
+// ---------------------------------------------------------------------------
+
+const POSITION_TASK: Record<string, string> = {
+  instructor:
+    "Teach this objective. Explain the principle behind it, then give ONE short applied activity the student can actually do. Begin at the student's current level. Under 250 words.",
+  researcher:
+    "State what evidence is relevant to this objective and what is NOT established. Do not teach. Under 150 words.",
+  critic:
+    "Pressure-test the reasoning. Name assumptions and anything asserted with more confidence than the evidence supports. If the reasoning is sound, say exactly: NO CONCERN. Under 150 words.",
+  socratic:
+    "Produce 3 questions that would develop the student's independent judgement on this objective. Questions only.",
+  observer:
+    "Record ONLY what can be observed: what was set, what was produced, what remains unattempted. Do not interpret. Under 120 words.",
+  assessor:
+    "Describe what evidence WOULD demonstrate this capability and what has actually been evidenced. Formative only. Under 150 words.",
+  specialist: "Provide domain-specific depth relevant to this objective. Under 150 words.",
+};
+
+/**
+ * Which authority best answers a given event.
+ *
+ * This is what makes consultation MEMBER-DRIVEN rather than hardcoded. The old
+ * coordination window knew, in TypeScript, that factual uncertainty means "run
+ * the researcher". That is the right outcome for the wrong reason — it was a
+ * fixed pair, not a consequence of what anybody was permitted to do.
+ *
+ * Here the runtime asks a question instead: this event calls for RESEARCH; does
+ * the activated member hold research authority? If not, does its configuration
+ * permit it to consult somebody who does? The Instructor→Researcher hop still
+ * happens, but now it happens BECAUSE the Instructor lacks research authority
+ * and is configured to consult the Researcher — and it stops happening the
+ * moment either of those facts changes.
+ */
+/**
+ * The engine the College uses when nothing is configured. This is a default,
+ * not a dependency: §34 requires that no provider be hardcoded into the class
+ * runtime, and that model execution stay behind the existing AI abstraction.
+ * Set COLLEGE_MODEL_ID to change it without touching this file.
+ */
+const DEFAULT_COLLEGE_MODEL = "openai";
+
+const EVENT_NEEDS_AUTHORITY: Record<string, AuthorityKey> = {
+  factual_uncertainty_detected: "research",
+  research_required: "research",
+  contradiction_detected: "critique",
+  misconception_detected: "critique",
+  learning_evidence_observed: "formative_assessment",
+  record_worthy_event_detected: "record",
+};
+
+/** Which actions the runtime will accept from a position at a given moment. */
+function allowedActionsFor(positionKey: string, isStudentFacing: boolean): FacultyAction[] {
+  const position = getFacultyPosition(positionKey);
+  const base: FacultyAction[] = ["observe", "consult", "defer", "propose"];
+  if (isStudentFacing && position?.participatesInClass) base.push("speak");
+  if (position?.key === "registrar" || position?.mayFileRecords) base.push("record");
+  // Any position may assert record-worthiness; only Administration files.
+  if (!base.includes("record")) base.push("record");
+  return base;
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface MemberExecution {
+  positionKey: string;
+  memberName: string;
+  memberVersion: number | null;
+  /** The attention outcome that led here. */
+  attention: AttentionOutcome;
+  /** Null when the member never executed — watching is not running. */
+  output: ValidatedOutput | null;
+  /** What the student actually sees, if anything. */
+  visibleToStudent: boolean;
+  contextSummary: ReturnType<typeof summarisePacket> | null;
+  ms: number;
+  /** §37 — populated when this member failed to execute. */
+  failure: string | null;
+}
+
+export interface ConsultationRecord {
+  from: string;
+  to: string;
+  reason: string;
+  question: string;
+  finding: string;
+  confidence: string;
+  evidence: string;
+  /** False when the graph refused the edge. */
+  permitted: boolean;
+  basis: string;
+}
+
+export interface ClassExecution {
+  /** Every member considered, including those that stayed dormant. */
+  members: MemberExecution[];
+  /** The single student-facing response. */
+  studentFacingResponse: string | null;
+  respondingPosition: string | null;
+  consultations: ConsultationRecord[];
+  deferrals: Array<{ from: string; to: string; matter: string; note: string }>;
+  escalations: Array<{ from: string; to: string; matter: string; basis: string }>;
+  interruptions: Array<{
+    from: string;
+    to: string;
+    reason: string;
+    accepted: boolean;
+    basis: string;
+  }>;
+  /** Observations generated this class — candidates only (§19). */
+  candidateMemories: Array<{
+    positionKey: string;
+    content: string;
+    kind: string;
+    stored: boolean;
+    note: string;
+  }>;
+  silent: Array<{ positionKey: string; memberName: string; reason: string }>;
+  failures: string[];
+  graph: CoordinationGraph;
+  /** True when ANY execution came from the offline fallback. */
+  usedFallback: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Running one member
+// ---------------------------------------------------------------------------
+
+async function executeMember(opts: {
+  policy: EffectivePolicy;
+  sessionId: string;
+  courseId: string | null;
+  weekIndex: number | null;
+  objective: string;
+  orientationBriefing: string;
+  attention: AttentionOutcome;
+  task: string;
+  visibleToStudent: boolean;
+  localOnly?: boolean;
+  extraContext?: string;
+  memberRow?: Parameters<typeof compilePersonality>[0] | null;
+}): Promise<MemberExecution> {
+  const started = Date.now();
+  const { policy, attention } = opts;
+  const base: Omit<MemberExecution, "output" | "contextSummary" | "ms" | "failure"> = {
+    positionKey: policy.positionKey,
+    memberName: policy.memberName || policy.positionKey,
+    memberVersion: policy.memberVersion,
+    attention,
+    visibleToStudent: opts.visibleToStudent,
+  };
+
+  let packet: MemberContextPacket;
+  try {
+    packet = await buildMemberContext({
+      policy,
+      courseId: opts.courseId,
+      weekIndex: opts.weekIndex,
+      sessionObjective: opts.objective,
+      triggeringEvent: attention.reason,
+      attentionState: attention.state,
+    });
+  } catch (e) {
+    return {
+      ...base,
+      output: null,
+      contextSummary: null,
+      ms: Date.now() - started,
+      failure: `CONTEXT CONSTRUCTION FAILURE for ${base.memberName}: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    };
+  }
+
+  // §22 memory_recalled. Retrieval is an event: the reason a member said what
+  // it said is often a memory it was handed, and that has to be recoverable
+  // later without re-deriving it. One row per class, not one per memory —
+  // the ledger records that recall happened and what was handed over.
+  if (packet.memory.length > 0) {
+    await ledger
+      .record({
+        eventType: "memory_recalled",
+        summary: `${base.memberName} was handed ${packet.memory.length} faculty memory item(s) as a hint, not as institutional fact.`,
+        detail: {
+          // §18 explainable retrieval: source, reason and evidence state, so
+          // "why did this member remember that?" is answerable from the record.
+          memories: packet.memory.map((m) => ({
+            source: m.source,
+            confidence: m.confidence,
+            observationCount: m.observationCount,
+            retrievedBecause: m.retrievedBecause,
+            evidenceState: m.evidenceState,
+          })),
+          limit: 4,
+        },
+        sessionId: opts.sessionId,
+        courseId: opts.courseId,
+        positionKey: policy.positionKey,
+        actor: "system",
+      })
+      .catch(() => {});
+  }
+
+  const allowed = allowedActionsFor(policy.positionKey, opts.visibleToStudent);
+  const defaultAction: FacultyAction = opts.visibleToStudent ? "speak" : "observe";
+
+  const userContent = [
+    opts.orientationBriefing,
+    "",
+    "---",
+    "",
+    packet.context,
+    opts.extraContext ? `\n---\n\n${opts.extraContext}` : "",
+    "",
+    "---",
+    "",
+    opts.visibleToStudent
+      ? "This response WILL be shown to the student. Address them directly."
+      : "THIS IS INTERNAL FACULTY WORK. It will NOT be shown to the student. Do not address the student.",
+    "",
+    `YOUR TASK: ${opts.task}`,
+    outputContractInstruction(allowed),
+  ]
+    .filter((s) => s !== "")
+    .join("\n");
+
+  // Personality is compiled separately and appended AFTER the institutional
+  // charter, so institutional rules are read first and win on conflict.
+  const personality = opts.memberRow ? compilePersonality(opts.memberRow) : "";
+
+  // §34. The runtime must not name a provider. Which engine serves the College
+  // is an institutional configuration decision, not a fact about teaching, so
+  // it is read from the environment and falls back to the abstraction's own
+  // default. Changing provider must never require editing the class runtime.
+  const modelId = process.env.COLLEGE_MODEL_ID?.trim() || DEFAULT_COLLEGE_MODEL;
+
+  let text: string;
+  let via: string;
+  try {
+    const res = await generate({
+      modelId,
+      messages: [{ role: "user", content: userContent }],
+      system: personality ? `${packet.system}\n\n---\n\n${personality}` : packet.system,
+      temperature: 0.6,
+      localOnly: opts.localOnly,
+      category: "reasoning",
+    });
+    text = res.text;
+    via = res.via;
+  } catch (e) {
+    // §37 — an execution failure is named, never smoothed over.
+    return {
+      ...base,
+      output: null,
+      contextSummary: summarisePacket(packet),
+      ms: Date.now() - started,
+      failure: `FACULTY EXECUTION FAILURE for ${base.memberName}: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    };
+  }
+
+  const proposal = parseFacultyOutput(text, defaultAction, opts.visibleToStudent ? "student" : "system");
+  const output = validateFacultyOutput({
+    proposal,
+    positionKey: policy.positionKey,
+    grantedAuthority: policy.grantedAuthority,
+    allowedActions: allowed,
+    via,
+  });
+
+  // Persist the contribution. Refused actions are still recorded — the
+  // thinking may matter even when the act was not permitted.
+  await db.insert(collegeFacultyContributions).values({
+    sessionId: opts.sessionId,
+    positionKey: policy.positionKey,
+    contributionType: output.executedAction === "speak" ? "interpretation" : "observation",
+    stance: policy.positionKey === "critic" ? "dissent" : "neutral",
+    content: proposal.content.slice(0, 20000),
+    truthClass: output.executedAction === "observe" ? "fact" : "interpretation",
+    confidence: proposal.confidence === "high" ? "known" : "inferred",
+  });
+
+  return {
+    ...base,
+    output,
+    contextSummary: summarisePacket(packet),
+    ms: Date.now() - started,
+    failure: null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The class execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Run one teaching exchange under member configuration.
+ *
+ * `events` are what actually happened — the student responded, a contradiction
+ * was detected, and so on. Each event is evaluated against EVERY member's
+ * effective policy independently (§6), and the resulting attention decisions
+ * drive who runs.
+ */
+export async function executeClass(opts: {
+  sessionId: string;
+  courseId: string | null;
+  weekIndex: number | null;
+  objective: string;
+  orientationBriefing: string;
+  policies: Map<string, EffectivePolicy>;
+  memberRows?: Map<string, Parameters<typeof compilePersonality>[0]>;
+  /** Events driving this exchange. The first is treated as the trigger. */
+  events: Array<{ eventType: string; payload?: string; phaseKey?: string }>;
+  /** What the student said, when they said something. */
+  studentResponse?: string | null;
+  phaseKey?: string;
+  localOnly?: boolean;
+  /**
+   * Positions the preflight resolved as MANDATORY. §37 requires that a
+   * mandatory responsibility going unfulfilled be an explicit failure state —
+   * mandatory never means always speaking, but it does mean the responsibility
+   * cannot silently go missing.
+   */
+  mandatoryFaculty?: string[];
+}): Promise<ClassExecution> {
+  const graph = buildCoordinationGraph(opts.policies);
+  const members: MemberExecution[] = [];
+  const consultations: ConsultationRecord[] = [];
+  // §37 COORDINATION FAILURE. A member serving in this class with no node in
+  // the graph cannot consult, defer, hand off or escalate — it is isolated,
+  // and silence from an isolated member is indistinguishable from silence by
+  // choice unless the condition is named.
+  const coordinationFailures: string[] = [...opts.policies.keys()]
+    .filter((key) => !graph.nodes.some((n) => n.positionKey === key))
+    .map(
+      (key) =>
+        `COORDINATION FAILURE: ${
+          opts.policies.get(key)?.memberName || key
+        } is serving in this class but has no node in the coordination graph. It cannot consult, defer or escalate, so any silence from it is isolation rather than a decision.`
+    );
+  const deferrals: ClassExecution["deferrals"] = [];
+  const interruptions: ClassExecution["interruptions"] = [];
+  const candidateMemories: ClassExecution["candidateMemories"] = [];
+  const silent: ClassExecution["silent"] = [];
+  const failures: string[] = [...coordinationFailures];
+  let usedFallback = false;
+
+  // ---- 1. ATTENTION: evaluate every event against every member (§6) ------
+  // Independently. One member's activation never implies another's.
+  const outcomes = new Map<string, AttentionOutcome>();
+  // Which events each member actually engaged with. The winning outcome alone
+  // is not enough: a member may activate on three events and only ONE of them
+  // requires an authority it lacks. Collapsing to the highest-ranked outcome
+  // loses exactly the fact consultation depends on.
+  const engagedEvents = new Map<string, string[]>();
+
+  for (const event of opts.events) {
+    for (const [key, policy] of opts.policies) {
+      const outcome = evaluateAttention(policy, {
+        eventType: event.eventType,
+        phaseKey: event.phaseKey ?? opts.phaseKey,
+        payload: event.payload,
+      });
+      await recordAttentionDecision({
+        sessionId: opts.sessionId,
+        eventType: event.eventType,
+        outcome,
+        provenance: policy.provenance,
+      });
+      if (outcome.action === "activate" || outcome.action === "speak" || outcome.action === "consult") {
+        const list = engagedEvents.get(key) ?? [];
+        list.push(event.eventType);
+        engagedEvents.set(key, list);
+      }
+      // The most engaged outcome across all events wins for this exchange.
+      const existing = outcomes.get(key);
+      if (!existing || engagementRank(outcome) > engagementRank(existing)) {
+        outcomes.set(key, outcome);
+      }
+    }
+  }
+
+  // ---- 2. DEFERRALS and ESCALATIONS — successful coordination (§11) ------
+  for (const [key, outcome] of outcomes) {
+    if (outcome.action === "defer" && outcome.deferTo) {
+      deferrals.push({
+        from: key,
+        to: outcome.deferTo,
+        matter: outcome.reason,
+        note: "Deferral is successful coordination, not a failure to answer.",
+      });
+      await ledger.record({
+        eventType: "faculty_deferred",
+        summary: `${outcome.memberName || key} deferred to ${outcome.deferTo}.`,
+        detail: { reason: outcome.reason },
+        sessionId: opts.sessionId,
+        courseId: opts.courseId,
+        positionKey: key,
+        memberId: outcome.memberId,
+        actor: "system",
+      });
+    }
+  }
+
+  // ---- 3. CONSULTATIONS — driven by the graph, not by hardcoded rules ----
+  // A member that wants evidence asks the position its configuration permits
+  // it to ask. If no such edge exists, the consultation does not happen and
+  // that is recorded rather than silently routed elsewhere.
+  const consultRequests: Array<{
+    from: string;
+    outcome: AttentionOutcome;
+    needed: AuthorityKey | null;
+  }> = [];
+
+  for (const [key, outcome] of outcomes) {
+    const policy = opts.policies.get(key)!;
+
+    // An explicit consult/escalate outcome always asks.
+    if (outcome.action === "consult" || outcome.action === "escalate") {
+      consultRequests.push({ from: key, outcome, needed: null });
+      continue;
+    }
+
+    // Otherwise: did this member activate on an event it is not equipped to
+    // answer? That is the question §8 asks — "can this member handle the
+    // event?" — and the authority matrix answers it.
+    if (outcome.action !== "activate" && outcome.action !== "speak") continue;
+
+    // Of the events this member engaged with, is there one calling for an
+    // authority it does not hold?
+    const engaged = engagedEvents.get(key) ?? [];
+    const unmet = engaged
+      .map((eventType) => EVENT_NEEDS_AUTHORITY[eventType])
+      .find((needed) => needed && !hasAuthority(key, policy.grantedAuthority, needed).allowed);
+    if (!unmet) continue;
+
+    consultRequests.push({ from: key, outcome, needed: unmet });
+  }
+
+  for (const { from, outcome, needed } of consultRequests) {
+    const fromPolicy = opts.policies.get(from)!;
+    // Ask a permitted consultee that is present AND actually holds the
+    // authority the matter requires. Consulting someone equally unequipped
+    // would be coordination theatre.
+    const candidates = fromPolicy.mayConsult.filter(
+      (t) => canConsult(graph, from, t) && opts.policies.has(t)
+    );
+    const target = needed
+      ? candidates.find((t) =>
+          hasAuthority(t, opts.policies.get(t)!.grantedAuthority, needed).allowed
+        )
+      : candidates[0];
+    if (!target) {
+      consultations.push({
+        from,
+        to: "(none available)",
+        reason: outcome.reason,
+        question: "",
+        finding: "",
+        confidence: "",
+        evidence: "",
+        permitted: false,
+        basis: needed
+          ? `${outcome.memberName || from} lacks ${needed} authority for this matter, and no permitted consultee holding ${needed} is serving in this class. The matter stays with the originating position, unresolved rather than guessed at.`
+          : `${outcome.memberName || from} would consult, but no permitted consultee is serving in this class. The matter stays with the originating position.`,
+      });
+      continue;
+    }
+
+    const targetPolicy = opts.policies.get(target)!;
+    const question = needed
+      ? `${outcome.memberName || from} has encountered a matter requiring ${needed} authority, which it does not hold: ${outcome.reason} Answer only within your remit.`
+      : `${outcome.memberName || from} has encountered: ${outcome.reason} Answer only within your remit.`;
+    const exec = await executeMember({
+      policy: targetPolicy,
+      sessionId: opts.sessionId,
+      courseId: opts.courseId,
+      weekIndex: opts.weekIndex,
+      objective: opts.objective,
+      orientationBriefing: opts.orientationBriefing,
+      attention: outcomes.get(target) ?? outcome,
+      task: `${POSITION_TASK[target] ?? "Answer within your remit."}\n\nCONSULTATION REQUEST: ${question}`,
+      visibleToStudent: false,
+      localOnly: opts.localOnly,
+      memberRow: opts.memberRows?.get(target) ?? null,
+    });
+    members.push(exec);
+    if (exec.failure) failures.push(exec.failure);
+    if (exec.output?.fallback) usedFallback = true;
+
+    consultations.push({
+      from,
+      to: target,
+      reason: outcome.reason,
+      question,
+      finding: exec.output?.proposal.content.slice(0, 2000) ?? "(no finding returned)",
+      confidence: exec.output?.proposal.confidence ?? "uncertain",
+      evidence: exec.output?.proposal.evidence ?? "",
+      permitted: true,
+      basis: needed
+        ? `${from} lacks ${needed} authority; ${target} holds it and the coordination graph permits the consultation.`
+        : `Permitted by the coordination graph: ${from} may consult ${target}.`,
+    });
+
+    await ledger.record({
+      eventType: "faculty_consulted",
+      summary: `${from} consulted ${target}.`,
+      detail: { reason: outcome.reason, confidence: exec.output?.proposal.confidence },
+      sessionId: opts.sessionId,
+      courseId: opts.courseId,
+      positionKey: target,
+      actor: "system",
+    });
+  }
+
+  // ---- 4. INTERRUPTIONS — authority, permission, qualifying event (§12) --
+  for (const [key, outcome] of outcomes) {
+    const policy = opts.policies.get(key)!;
+    if (outcome.action !== "escalate") continue;
+    const authority = policy.interruptionAuthority;
+    const permitted = authority !== "none" && graph.edges.some(
+      (e) => e.from === key && e.kind === "interrupt"
+    );
+    interruptions.push({
+      from: key,
+      to: "instructor",
+      reason: outcome.reason,
+      accepted: permitted,
+      basis: permitted
+        ? `${outcome.memberName || key} holds "${authority}" interruption authority and a qualifying event occurred.`
+        : `${outcome.memberName || key} has no interruption authority. The concern is recorded and reaches the Instructor as internal faculty work, not as an interruption.`,
+    });
+    // §22. The request itself is a fact, independent of the answer. Recording
+    // only accepted interruptions would leave every refusal invisible — and a
+    // refusal is precisely the thing an authority model has to be able to show.
+    await ledger.record({
+      eventType: "faculty_interruption_requested",
+      summary: `${outcome.memberName || key} requested to interrupt: ${outcome.reason}`,
+      detail: { authority, target: "instructor", event: outcome.reason },
+      sessionId: opts.sessionId,
+      courseId: opts.courseId,
+      positionKey: key,
+      actor: "system",
+    });
+    await ledger.record({
+      eventType: permitted
+        ? "faculty_interruption_accepted"
+        : "faculty_interruption_rejected",
+      summary: permitted
+        ? `${outcome.memberName || key} interrupted: ${outcome.reason}`
+        : `${outcome.memberName || key} was refused: no interruption authority. The concern still reaches the Instructor as internal faculty work.`,
+      detail: { authority, accepted: permitted, basis: interruptions[interruptions.length - 1].basis },
+      sessionId: opts.sessionId,
+      courseId: opts.courseId,
+      positionKey: key,
+      actor: "system",
+    });
+  }
+
+  // ---- 5. INTERNAL WORK — activated members that do not face the student -
+  const order = resolveSpeakingOrder([...outcomes.values()]);
+  const instructorOutcome = outcomes.get("instructor");
+  const studentFacing = Boolean(opts.studentResponse) || Boolean(instructorOutcome);
+
+  for (const outcome of order) {
+    const key = outcome.positionKey;
+    if (key === "instructor") continue; // speaks last, once
+    if (members.some((m) => m.positionKey === key)) continue; // already consulted
+    const policy = opts.policies.get(key)!;
+
+    if (outcome.action !== "activate" && outcome.action !== "speak") {
+      // WATCHING IS A REAL OUTCOME (§7 §14). Record it; do not manufacture
+      // dialogue merely to demonstrate that the member exists.
+      silent.push({
+        positionKey: key,
+        memberName: outcome.memberName || key,
+        reason: outcome.reason,
+      });
+      await setAttention({
+        sessionId: opts.sessionId,
+        positionKey: key,
+        state: outcome.state === "dormant" ? "dormant" : "watching",
+        reason: outcome.reason,
+        spoke: false,
+      }).catch(() => {});
+      await ledger.record({
+        // §22: faculty_watching is per-event attention; faculty_silent is the
+        // session-level fact that this member attended the whole class and
+        // never spoke. Session closure needs the second, not a pile of the first.
+        eventType: "faculty_silent",
+        summary: `${outcome.memberName || key} attended without speaking.`,
+        detail: { state: outcome.state, action: outcome.action, reason: outcome.reason },
+        sessionId: opts.sessionId,
+        courseId: opts.courseId,
+        positionKey: key,
+        actor: "system",
+      });
+      continue;
+    }
+
+    const exec = await executeMember({
+      policy,
+      sessionId: opts.sessionId,
+      courseId: opts.courseId,
+      weekIndex: opts.weekIndex,
+      objective: opts.objective,
+      orientationBriefing: opts.orientationBriefing,
+      attention: outcome,
+      task: POSITION_TASK[key] ?? "Contribute according to your remit.",
+      visibleToStudent: false,
+      localOnly: opts.localOnly,
+      memberRow: opts.memberRows?.get(key) ?? null,
+    });
+    members.push(exec);
+    if (exec.failure) failures.push(exec.failure);
+    if (exec.output?.fallback) usedFallback = true;
+
+    await ledger.record({
+      eventType: "faculty_activated",
+      summary: `${exec.memberName} contributed internally (${exec.output?.executedAction ?? "failed"}).`,
+      detail: { action: exec.output?.executedAction, ms: exec.ms },
+      sessionId: opts.sessionId,
+      courseId: opts.courseId,
+      positionKey: key,
+      actor: "system",
+    });
+  }
+
+  // ---- 6. ONE STUDENT-FACING VOICE (§13) ---------------------------------
+  let studentFacingResponse: string | null = null;
+  let respondingPosition: string | null = null;
+
+  if (studentFacing && opts.policies.has("instructor")) {
+    const policy = opts.policies.get("instructor")!;
+    const internal = members
+      .filter((m) => m.output && !m.visibleToStudent)
+      .map(
+        (m) =>
+          `--- ${m.memberName} (${m.positionKey}), confidence ${m.output!.proposal.confidence} ---\n${m.output!.proposal.content.slice(0, 1200)}`
+      )
+      .join("\n\n");
+
+    const exec = await executeMember({
+      policy,
+      sessionId: opts.sessionId,
+      courseId: opts.courseId,
+      weekIndex: opts.weekIndex,
+      objective: opts.objective,
+      orientationBriefing: opts.orientationBriefing,
+      attention:
+        instructorOutcome ??
+        ({
+          positionKey: "instructor",
+          memberId: policy.memberId,
+          memberName: policy.memberName,
+          state: "speaking",
+          action: "speak",
+          reason: "The Instructor holds the student-facing voice.",
+          decidedBy: "position",
+          priority: "normal",
+        } as AttentionOutcome),
+      task: opts.studentResponse
+        ? `The student said: "${opts.studentResponse.slice(0, 2000)}"\n\nRespond to them directly. You have the internal faculty input below — use what is useful, and do not repeat it verbatim or name the other positions. ${POSITION_TASK.instructor}`
+        : POSITION_TASK.instructor,
+      visibleToStudent: true,
+      localOnly: opts.localOnly,
+      extraContext: internal
+        ? `INTERNAL FACULTY INPUT (not visible to the student — synthesise, do not quote):\n\n${internal}`
+        : undefined,
+      memberRow: opts.memberRows?.get("instructor") ?? null,
+    });
+    members.push(exec);
+    if (exec.failure) failures.push(exec.failure);
+    if (exec.output?.fallback) usedFallback = true;
+
+    if (exec.output?.permitted && exec.output.executedAction === "speak") {
+      studentFacingResponse = exec.output.proposal.content;
+      respondingPosition = "instructor";
+      await setAttention({
+        sessionId: opts.sessionId,
+        positionKey: "instructor",
+        state: "engaged",
+        reason: "Delivered the student-facing response.",
+        spoke: true,
+      }).catch(() => {});
+      // The one student-facing act of the class belongs in the timeline.
+      await ledger.record({
+        eventType: "faculty_activated",
+        summary: `${exec.memberName} delivered the student-facing response.`,
+        detail: {
+          studentFacing: true,
+          confidence: exec.output.proposal.confidence,
+          fallback: exec.output.fallback,
+          ms: exec.ms,
+        },
+        sessionId: opts.sessionId,
+        courseId: opts.courseId,
+        positionKey: "instructor",
+        memberId: policy.memberId,
+        actor: "system",
+      });
+    } else if (exec.output) {
+      // The Instructor proposed something it may not do. Do not substitute
+      // another voice — say plainly that no student-facing response was made.
+      failures.push(
+        `NO STUDENT-FACING RESPONSE: the Instructor's proposed action "${exec.output.proposal.action}" was ${
+          exec.output.permitted ? "permitted but not speech" : "refused"
+        }. ${exec.output.refusal ?? ""}`
+      );
+    }
+  }
+
+  // ---- 7. MEMORY FEEDBACK LOOP (§19) -------------------------------------
+  // Observations become CANDIDATE faculty memories. They do not become
+  // institutional knowledge, and nothing here promotes anything.
+  for (const m of members) {
+    if (!m.output || !m.output.permitted) continue;
+    const content = m.output.proposal.content.trim();
+    if (content.length < 40) continue;
+    if (/\bNO CONCERN\b/i.test(content)) continue;
+
+    // FALLBACK OUTPUT MUST NEVER BECOME MEMORY.
+    //
+    // The offline engine emits boilerplate, not teaching. Storing it would
+    // pollute faculty memory with text no faculty member ever reasoned about,
+    // and — because memory accumulates toward a corroboration threshold —
+    // repeated fallback runs could carry that boilerplate across the crossing
+    // gate and into institutional truth. The observation is discarded, loudly.
+    if (m.output.fallback) {
+      candidateMemories.push({
+        positionKey: m.positionKey,
+        content: content.slice(0, 120),
+        kind: memoryKindFor(m.positionKey),
+        stored: false,
+        note: "FALLBACK EXECUTION — not stored. Fallback output demonstrates routing, not teaching, and must never accumulate toward institutional truth.",
+      });
+      continue;
+    }
+
+    const policy = opts.policies.get(m.positionKey);
+    if (!policy?.memoryEnabled) {
+      candidateMemories.push({
+        positionKey: m.positionKey,
+        content: content.slice(0, 200),
+        kind: memoryKindFor(m.positionKey),
+        stored: false,
+        note: "This member is configured not to retain memory.",
+      });
+      continue;
+    }
+
+    const kind = memoryKindFor(m.positionKey);
+    try {
+      const res = await facultyMemory.remember({
+        memberId: policy.memberId,
+        positionKey: m.positionKey,
+        courseId: opts.courseId,
+        sessionId: opts.sessionId,
+        content: summariseObservation(m.positionKey, content),
+        kind,
+        memoryEnabled: policy.memoryEnabled,
+        memoryScopeLimit: policy.memoryScopeLimit,
+      });
+      candidateMemories.push({
+        positionKey: m.positionKey,
+        content: summariseObservation(m.positionKey, content).slice(0, 200),
+        kind,
+        stored: res.ok,
+        note: res.ok
+          ? "Recorded as faculty memory. This is the member's own observation, not institutional knowledge."
+          : (res.refused ?? "Refused."),
+      });
+      // NOTE: no ledger write here. `facultyMemory.remember()` already records
+      // memory_recorded, and writing it again produced two entries for one
+      // observation — which would have quietly inflated the institutional
+      // timeline and any audit that counts events.
+    } catch (e) {
+      failures.push(
+        `MEMORY WRITE FAILURE for ${m.memberName}: ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
+  }
+
+  // ---- §37 MANDATORY FACULTY FAILURE ------------------------------------
+  // Mandatory does not mean always speaking (a mandatory Observer that watches
+  // in silence has done its job). It means the RESPONSIBILITY was carried. A
+  // mandatory position that neither executed nor was recorded as deliberately
+  // silent has simply gone missing, and that must be said out loud rather than
+  // inferred from an absence in the transcript.
+  for (const key of opts.mandatoryFaculty ?? []) {
+    const ran = members.some((m) => m.positionKey === key);
+    const deliberatelySilent = silent.some((sm) => sm.positionKey === key);
+    if (ran || deliberatelySilent) continue;
+    const name = opts.policies.get(key)?.memberName || key;
+    failures.push(
+      `MANDATORY FACULTY FAILURE: ${name} (${key}) is mandatory for this class but neither executed nor was recorded as attending in silence. The responsibility was not carried, and no substitute was appointed.`
+    );
+    await ledger
+      .record({
+        eventType: "faculty_silent",
+        summary: `MANDATORY FACULTY FAILURE — ${name} did not carry its mandatory responsibility in this class.`,
+        detail: { positionKey: key, mandatory: true, substituted: false },
+        sessionId: opts.sessionId,
+        courseId: opts.courseId,
+        positionKey: key,
+        severity: "high",
+        actor: "system",
+      })
+      .catch(() => {});
+  }
+
+  // Record the exchange in the session trail.
+  await db
+    .insert(collegeSessionEvents)
+    .values({
+      sessionId: opts.sessionId,
+      stage: "lesson",
+      note: `Exchange complete. ${members.filter((m) => m.output).length} member(s) executed, ${silent.length} attended without speaking, ${consultations.filter((c) => c.permitted).length} consultation(s).`,
+      actor: "system",
+    })
+    .catch(() => {});
+
+  return {
+    members,
+    studentFacingResponse,
+    respondingPosition,
+    consultations,
+    deferrals,
+    escalations: graph.escalations,
+    interruptions,
+    candidateMemories,
+    silent,
+    failures,
+    graph,
+    usedFallback,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function engagementRank(o: AttentionOutcome): number {
+  const rank: Record<string, number> = {
+    ignore: 0,
+    notice: 1,
+    defer: 2,
+    consult: 3,
+    escalate: 4,
+    activate: 5,
+    speak: 6,
+  };
+  return rank[o.action] ?? 0;
+}
+
+/** The memory kind a position's observations naturally produce. */
+function memoryKindFor(positionKey: string): facultyMemory.FacultyMemoryKind {
+  const map: Record<string, facultyMemory.FacultyMemoryKind> = {
+    instructor: "teaching_observation",
+    critic: "unresolved_question",
+    observer: "response_pattern",
+    researcher: "unresolved_question",
+    socratic: "unresolved_question",
+    assessor: "response_pattern",
+    specialist: "course_lesson",
+  };
+  return map[positionKey] ?? "teaching_observation";
+}
+
+/**
+ * Reduce a contribution to a memorable observation.
+ *
+ * Deliberately crude: the first substantive sentence, prefixed with what kind
+ * of thing it is. A faculty memory is a hint, and a hint that runs to 400
+ * words is not a hint. The full contribution is still on the record.
+ */
+function summariseObservation(positionKey: string, content: string): string {
+  const firstSentence =
+    content
+      .replace(/\s+/g, " ")
+      .split(/(?<=[.!?])\s/)
+      .find((s) => s.trim().length > 30) ?? content.slice(0, 200);
+  const prefix: Record<string, string> = {
+    instructor: "Teaching approach used",
+    critic: "Reasoning concern raised",
+    observer: "Observed in session",
+    researcher: "Evidence position",
+  };
+  return `${prefix[positionKey] ?? "Observed"}: ${firstSentence.trim()}`.slice(0, 900);
+}
+
+export { executionLabel };

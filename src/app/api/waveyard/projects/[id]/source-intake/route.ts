@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -9,7 +10,8 @@ import { NextResponse } from "next/server";
 import { acceptedAudioFilename, MAX_UPLOAD_BYTES } from "@/lib/waveyard/audio";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { configuredAuthorizedSourceResolver, validateAuthorizedSourceUrl } from "@/lib/waveyard/authorized-source-resolver";
-import { ingestSourceFile } from "@/lib/waveyard/source-ingest";
+import { ingestSourceFile } from "@/lib/waveyard/source-ingest"
+import { defaultSeparationModel, isAcceptableSeparationModel } from "@/lib/waveyard/separation/selection";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 
 export const runtime = "nodejs";
@@ -18,6 +20,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   let directory: string | undefined;
   try {
     const user = await requireUser(); const { id: projectId } = await params;
+    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const sourceUrl = validateAuthorizedSourceUrl(String(body.url ?? ""));
@@ -35,9 +38,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     let received = 0;
     const limit = new Transform({ transform(chunk, _encoding, done) { received += chunk.length; done(received > MAX_UPLOAD_BYTES ? new Error("Authorized source exceeded the intake limit.") : undefined, chunk); } });
     await pipeline(Readable.fromWeb(audio.body as import("node:stream/web").ReadableStream), limit, createWriteStream(filePath));
-    const result = await ingestSourceFile({ projectId, filePath, filename: resolved.filename, mimeType: resolved.mimeType ?? audio.headers.get("content-type") ?? "application/octet-stream", model: String(body.model ?? process.env.SEPARATION_MODEL ?? "htdemucs"), device: "auto", provenance: { method: "authorized-url", sourceUrl, title: resolved.title, artist: resolved.artist, resolver: resolved.resolver, metadata: resolved.metadata } });
-    if (!result.separationQueued) return NextResponse.json({ error: "The authorized source was stored, but separation could not be queued. Start the worker/Redis and retry this source." }, { status: 503 });
-    return NextResponse.json({ source: result.source, job: result.job, waveformJob: { id: result.waveformJob.id, queued: result.waveformQueued }, acquisition: { method: "authorized-url", sourceUrl, title: resolved.title ?? null, artist: resolved.artist ?? null } }, { status: 201 });
+    const requestedModel = body.model !== undefined && body.model !== null && String(body.model).trim() !== "" ? String(body.model) : defaultSeparationModel();
+    if (!isAcceptableSeparationModel(requestedModel)) {
+      return NextResponse.json({ error: `Unknown separation target "${requestedModel}" — use the app's built-in choices.` }, { status: 400 });
+    }
+    const result = await ingestSourceFile({ projectId, filePath, filename: resolved.filename, mimeType: resolved.mimeType ?? audio.headers.get("content-type") ?? "application/octet-stream", model: requestedModel, device: "auto", provenance: { method: "authorized-url", sourceUrl, title: resolved.title, artist: resolved.artist, resolver: resolved.resolver, metadata: resolved.metadata } });
+    // The ingest itself succeeded — a queue failure must not turn the whole
+    // intake into an error. The durable separation row records its own honest
+    // failure boundary (same policy as POST /api/uploads), and the response
+    // carries separationQueued so the UI can surface the real state.
+    return NextResponse.json({ source: result.source, job: result.job, separationQueued: result.separationQueued, waveformJob: { id: result.waveformJob.id, queued: result.waveformQueued }, acquisition: { method: "authorized-url", sourceUrl, title: resolved.title ?? null, artist: resolved.artist ?? null } }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     const message = error instanceof Error ? error.message : "Authorized source acquisition failed.";

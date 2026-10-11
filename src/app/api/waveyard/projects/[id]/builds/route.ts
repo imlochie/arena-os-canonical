@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -12,6 +13,7 @@ function whole(value: unknown, fallback = 0) { const number = Number(value); ret
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id: projectId } = await params;
+    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const [build] = await db.insert(projectBuilds).values({ projectId, requestedById: user.id, status: "processing", stage: "resolving-sources", requestedSourceCount: whole(body.requestedSourceCount), details: JSON.stringify({ mode: body.mode === "rebuild" ? "rebuild" : "build" }) }).returning();
@@ -22,6 +24,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id: projectId } = await params;
+    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const buildId = String(body.buildId ?? "");
@@ -37,6 +40,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id: projectId } = await params;
+    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     const [build] = await db.select().from(projectBuilds).where(eq(projectBuilds.projectId, projectId)).orderBy(desc(projectBuilds.updatedAt)).limit(1);
     return NextResponse.json({ build: build ?? null });

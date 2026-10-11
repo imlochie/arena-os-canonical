@@ -1,0 +1,7 @@
+Arena bundles ONNX Runtime (the onnxruntime-node npm package) as the
+inference runtime for its local stem separation engine.
+
+ONNX Runtime is licensed under the MIT License.
+Source code is available at https://github.com/microsoft/onnxruntime.
+
+This product is not affiliated with Microsoft or the ONNX Runtime project.

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 import Nav from "@/components/Nav";
+import DesktopRuntimeStatus from "@/components/DesktopRuntimeStatus";
 import { OfflineBanner, SwRegister } from "@/components/OfflineKit";
 
 export const metadata: Metadata = {
@@ -23,6 +24,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <OfflineBanner />
         <Nav />
         <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-6 sm:px-6">{children}</main>
+        <DesktopRuntimeStatus />
         <footer className="border-t border-white/10 py-5">
           <p className="mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 text-center text-xs text-slate-500 sm:px-6">
             <span>ArenaForge Personal · your votes train <em>your</em> leaderboard · $0 forever</span>

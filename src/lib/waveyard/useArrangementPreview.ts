@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { clipFadeShapeOrLinear, fadeCurveSamples, fadeGainAt } from "./fades";
 import { effectiveMuted, type RemixTrackInput } from "./remix";
 
 type PreviewClip = RemixTrackInput["clips"][number];
@@ -15,9 +16,10 @@ type PreviewState = {
 type ScheduledSource = { source: AudioBufferSourceNode; gain: GainNode };
 
 function clipLevelAt(clip: PreviewClip, offsetMs: number) {
-  if (clip.fadeInMs > 0 && offsetMs < clip.fadeInMs) return offsetMs / clip.fadeInMs;
+  const shape = clipFadeShapeOrLinear(clip.fadeShape);
+  if (clip.fadeInMs > 0 && offsetMs < clip.fadeInMs) return fadeGainAt(shape, offsetMs / clip.fadeInMs);
   const fadeOutStart = clip.durationMs - clip.fadeOutMs;
-  if (clip.fadeOutMs > 0 && offsetMs > fadeOutStart) return Math.max(0, (clip.durationMs - offsetMs) / clip.fadeOutMs);
+  if (clip.fadeOutMs > 0 && offsetMs > fadeOutStart) return fadeGainAt(shape, (clip.durationMs - offsetMs) / clip.fadeOutMs);
   return 1;
 }
 
@@ -90,16 +92,38 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
         const remainingMs = clip.durationMs - elapsedMs;
         const level = baseGain * clipLevelAt(clip, elapsedMs);
         gain.gain.setValueAtTime(level, startAt);
-        if (clip.fadeInMs > elapsedMs)
-          gain.gain.linearRampToValueAtTime(baseGain, startAt + (clip.fadeInMs - elapsedMs) / 1000);
+        const fadeShape = clipFadeShapeOrLinear(clip.fadeShape);
         const fadeOutStart = clip.durationMs - clip.fadeOutMs;
-        if (clip.fadeOutMs > 0) {
-          const untilFadeMs = fadeOutStart - elapsedMs;
-          const endAt = startAt + remainingMs / 1000;
-          if (untilFadeMs > 0) {
-            gain.gain.setValueAtTime(baseGain, startAt + untilFadeMs / 1000);
-            gain.gain.linearRampToValueAtTime(0, endAt);
-          } else gain.gain.linearRampToValueAtTime(0, endAt);
+        if (fadeShape === "linear") {
+          if (clip.fadeInMs > elapsedMs)
+            gain.gain.linearRampToValueAtTime(baseGain, startAt + (clip.fadeInMs - elapsedMs) / 1000);
+          if (clip.fadeOutMs > 0) {
+            const untilFadeMs = fadeOutStart - elapsedMs;
+            const endAt = startAt + remainingMs / 1000;
+            if (untilFadeMs > 0) {
+              gain.gain.setValueAtTime(baseGain, startAt + untilFadeMs / 1000);
+              gain.gain.linearRampToValueAtTime(0, endAt);
+            } else gain.gain.linearRampToValueAtTime(0, endAt);
+          }
+        } else {
+          // Shaped fades: exact curve segments sampled from the same
+          // fadeGainAt the ffmpeg render uses (qsin/hsin), so preview and
+          // export agree by construction.
+          if (clip.fadeInMs > elapsedMs) {
+            const curve = fadeCurveSamples(fadeShape, elapsedMs / clip.fadeInMs, 1, 65);
+            for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
+            gain.gain.setValueCurveAtTime(curve, startAt, (clip.fadeInMs - elapsedMs) / 1000);
+          }
+          if (clip.fadeOutMs > 0 && fadeOutStart > elapsedMs) {
+            const curve = fadeCurveSamples(fadeShape, 1, 0, 65);
+            for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
+            gain.gain.setValueCurveAtTime(curve, startAt + (fadeOutStart - elapsedMs) / 1000, clip.fadeOutMs / 1000);
+          } else if (clip.fadeOutMs > 0) {
+            // Resuming inside the fade-out: curve from the current position.
+            const curve = fadeCurveSamples(fadeShape, remainingMs / clip.fadeOutMs, 0, 65);
+            for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
+            gain.gain.setValueCurveAtTime(curve, startAt, remainingMs / 1000);
+          }
         }
         source.start(startAt, (clip.sourceOffsetMs + elapsedMs) / 1000, remainingMs / 1000);
         source.onended = () => { source.disconnect(); gain.disconnect(); };

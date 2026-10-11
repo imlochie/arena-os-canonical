@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
@@ -58,6 +59,7 @@ async function proposalFor(remix: typeof remixSessions.$inferSelect, anchorClipI
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params; const remix = await access(user.id, id, "viewer");
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({})); const mode = modeFrom(body.mode);
     if (!mode) return NextResponse.json({ error: "Choose an overlay or handoff mode." }, { status: 400 });
     const proposal = await proposalFor(remix, String(body.anchorClipId ?? ""), String(body.stemAssetId ?? ""), String(body.sourceSectionId ?? ""), mode);
@@ -70,6 +72,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params; const remix = await access(user.id, id, "editor");
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({})); const mode = modeFrom(body.mode);
     if (!mode) return NextResponse.json({ error: "Choose an overlay or handoff mode." }, { status: 400 });
     const anchorClipId = String(body.anchorClipId ?? ""); const stemId = String(body.stemAssetId ?? ""); const sectionId = String(body.sourceSectionId ?? "");

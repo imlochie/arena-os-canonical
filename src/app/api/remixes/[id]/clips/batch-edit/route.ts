@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { eq, inArray } from "drizzle-orm";
 import {
@@ -91,10 +92,12 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({}));
     const operation = String(body.operation ?? "") as Operation;
     const rawClipIds: unknown[] = Array.isArray(body.clipIds) ? body.clipIds as unknown[] : [];
-    const clipIds = [...new Set(rawClipIds.filter((clipId): clipId is string => typeof clipId === "string" && clipId.length > 0))];
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const clipIds = [...new Set(rawClipIds.filter((clipId): clipId is string => typeof clipId === "string" && UUID_RE.test(clipId)))];
     if (!operations.has(operation) || !clipIds.length)
       return NextResponse.json({ error: "A supported group operation and one or more clips are required." }, { status: 400 });
     

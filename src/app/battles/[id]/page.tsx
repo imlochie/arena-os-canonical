@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { db } from "@/db";
 import { battles, battleMessages, assistants, models } from "@/db/schema";
 import { asc, eq, inArray } from "drizzle-orm";
@@ -101,9 +102,9 @@ export default async function BattlePage({ params }: { params: Promise<{ id: str
 
       <div className="mt-6 flex flex-wrap justify-center gap-2">
         {!voted && (
-          <a href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">
+          <Link href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">
             ⚔️ Vote in the arena
-          </a>
+          </Link>
         )}
         <a
           href={battle.category === "image" ? "/image" : "/"}
@@ -111,9 +112,9 @@ export default async function BattlePage({ params }: { params: Promise<{ id: str
         >
           ⚔️ Run your own battle
         </a>
-        <a href="/leaderboard" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">
+        <Link href="/leaderboard" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">
           🏆 Leaderboard
-        </a>
+        </Link>
       </div>
     </div>
   );

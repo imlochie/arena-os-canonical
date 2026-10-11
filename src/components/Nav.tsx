@@ -48,9 +48,11 @@ const GROUPS: { title: string; rooms: RoomLink[] }[] = [
     title: "Create",
     rooms: [
       { href: "/waveyard", label: "Waveyard", emoji: "🎚️", desc: "The music studio: stems, remixes, exports.", keywords: "music audio stems separation remix" },
+      { href: "/studio", label: "Visual Studio", emoji: "🎬", desc: "Full generation lab: backends, jobs, gallery.", keywords: "video image audio generation wangp comfyui jobs" },
       { href: "/arcade", label: "Arcade", emoji: "🎮", desc: "Forge any game — templates or AI.", keywords: "game tetris play generate" },
       { href: "/image", label: "Image", emoji: "🖼️", desc: "Generate images.", keywords: "picture draw art" },
       { href: "/luma", label: "LUMA", emoji: "📷", desc: "The image workshop.", keywords: "photo picture edit" },
+      { href: "/toolbox", label: "Toolbox", emoji: "🧰", desc: "Convert video, audio and images locally — the converter websites and HandBrake, replaced.", keywords: "convert ffmpeg handbrake mp4 mkv webm mp3 wav webp gif transcode remux encode compress" },
     ],
   },
   {
@@ -59,7 +61,9 @@ const GROUPS: { title: string; rooms: RoomLink[] }[] = [
       { href: "/projects", label: "Projects", emoji: "📁", desc: "Long-lived work with artifacts.", keywords: "folders work organize" },
       { href: "/collab", label: "Collab", emoji: "🤝", desc: "Models collaborate, best result wins.", keywords: "collaborate together lab" },
       { href: "/classroom", label: "Classroom", emoji: "🎓", desc: "Learn with the arena.", keywords: "learn study teach" },
+      { href: "/college", label: "College", emoji: "🏫", desc: "The Lochie Life College: timetable, faculty, governance.", keywords: "college institution timetable faculty governance curriculum campus study" },
       { href: "/cut", label: "Cut Lab", emoji: "✂️", desc: "Edit and split media.", keywords: "cut split edit media" },
+      { href: "/archive", label: "Archive", emoji: "🗄️", desc: "The archive assistant.", keywords: "archive assistant findings records" },
     ],
   },
   {
@@ -76,8 +80,16 @@ const GROUPS: { title: string; rooms: RoomLink[] }[] = [
     rooms: [
       { href: "/rooms", label: "All rooms", emoji: "🗺️", desc: "The full directory.", keywords: "directory all overview" },
       { href: "/runtime", label: "Runtime", emoji: "⚙️", desc: "Which brains run, and where.", keywords: "engine model levels local" },
+      { href: "/model-hub", label: "Model Hub", emoji: "🧰", desc: "Download and connect AI models (Ollama, keys, agent bridge).", keywords: "model hub ollama download connect local lmstudio bridge keys" },
+      { href: "/creative", label: "Creative Suite", emoji: "🎨", desc: "Research with citations, decks, podcasts, voices, captions.", keywords: "research citations deck slides pptx podcast voice tts captions srt creative gamma perplexity notebooklm elevenlabs capcut" },
+      { href: "/foundry", label: "App Foundry", emoji: "🔨", desc: "Describe an app, any model builds it — sandboxed preview, versioned iterations.", keywords: "foundry vibe coding app builder generate html prototype bolt lovable v0 base44" },
+      { href: "/deep-agent", label: "Deep Agent", emoji: "🤖", desc: "Bounded autonomous agent: plan → act → verify, capped and transcribed.", keywords: "deep agent autonomous autogpt plan act verify bounded transcript" },
+      { href: "/mind", label: "The Mind", emoji: "🧠", desc: "Throw anything in — auto-tagged, searchable, no folders.", keywords: "mind mymind capture notes links quotes images mood board auto tag smart spaces serendipity bookmarking second brain" },
+      { href: "/subscriptions", label: "Subscriptions", emoji: "💳", desc: "Offline recurring-cost tracker with receipt extraction.", keywords: "subscriptions bobby recurring costs bills tracker receipt extract forecast monthly total" },
+      { href: "/market", label: "Market", emoji: "🛒", desc: "Model marketplace and comparison.", keywords: "market models compare shop" },
       { href: "/guide", label: "Guide", emoji: "📘", desc: "Clone and self-host instructions.", keywords: "clone deploy self host docs" },
       { href: "/privacy", label: "Privacy", emoji: "🛡️", desc: "Never trained on. Local-first.", keywords: "data protection security" },
+      { href: "/device-security", label: "Device Security", emoji: "🔐", desc: "What Arena can honestly observe here.", keywords: "device security observe privacy fingerprint" },
     ],
   },
 ];

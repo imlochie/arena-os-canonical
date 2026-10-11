@@ -29,6 +29,8 @@ import { generate } from "@/lib/ai";
 import type { GenerateResult } from "@/lib/runtime";
 import { listAgents } from "@/lib/spaces";
 import { executeTool, ensureWorkspace, toolListFiles, workspaceDir as wsDir, type ToolOutcome } from "./tools";
+import { actionSignature, classifyToolAction, approvalRequired, claimExecution, completeExecution, findLatestBySignature, requestApproval } from "./governance";
+import { ensureIsolatedWorkspace, teardownIsolatedWorkspace, type ExecTarget } from "./workspace-isolation";
 
 export interface MissionAgentSpec {
   name: string;
@@ -79,10 +81,22 @@ export interface MissionOpts {
   maxActionsPerTurn?: number;
   /** Extra command binaries this mission opts into (beyond the base allowlist). */
   extraCommands?: string[];
+  /** Workspace isolation (Phase B): "auto" (default) isolates when a
+   *  container runtime exists and records an honest host fallback otherwise;
+   *  "container" requires isolation; "host" never isolates. */
+  isolation?: "auto" | "container" | "host";
+  /** Container image when isolating (default node:22-slim). */
+  isolationImage?: string;
+  /** Container network: "none" (default, strict) or "bridge" (opt-in). */
+  isolationNetwork?: "none" | "bridge";
 }
 
 export interface MissionDeps {
   generate?: typeof generate;
+  /** Browser engine override for tests (real missions use the playwright engine). */
+  browserEngine?: import("./browser").BrowserEngine;
+  /** External action deps (fetcher/env) override for tests. */
+  externalDeps?: import("./external").ExternalDeps;
 }
 
 const AGENT_KNOWLEDGE = `WORK DISCIPLINE (how strong coding agents operate):
@@ -103,6 +117,14 @@ const TOOL_DOC = `Available tools (emit actions as JSON):
 - search_code {pattern, glob?}      regex search across the workspace — file:line results (use this to explore existing code)
 - run_tests {command?}              run the workspace's tests (auto-detects npm test / node --test); 60s budget — use it to verify your work
 - fetch_url {url}                   GET a URL (this is how you read feeds/pages)
+- browser_navigate {url}            open a REAL page in the space's own browser (per-space profile; you see the real DOM text)
+- browser_extract {selector?, limit?}  read text from elements on the current page
+- browser_screenshot {}             save a screenshot of the current page into the workspace
+- browser_click {selector}          click on the page — REQUIRES HUMAN APPROVAL (it changes state)
+- browser_fill {selector, value}    type into a field — REQUIRES HUMAN APPROVAL (account logins, forms)
+- external_call {to, message}      place a real phone call speaking the message — REQUIRES HUMAN APPROVAL + owner-configured Twilio
+- external_sms {to, message}       send a real SMS — REQUIRES HUMAN APPROVAL + owner-configured Twilio
+- payment_link {amount, description, currency?}  create a real Stripe payment link URL — REQUIRES HUMAN APPROVAL + owner-configured Stripe, capped by MAX_PAYMENT_AMOUNT_USD
 - github_publish {repo, message, files:[{path,content}], branch?}  commit+push to GitHub (needs a connected token)
 
 Respond with ONE JSON object only, no prose outside it:
@@ -187,6 +209,47 @@ export async function runMission(
   opts: MissionOpts,
   deps: MissionDeps = {}
 ): Promise<MissionSummary> {
+
+  // Phase B — real workspace isolation: start the mission container when the
+  // policy and the machine allow it. Honest fallback: no runtime → host jail,
+  // recorded in the mission's statusDetail, never a silent downgrade.
+  let execTarget: ExecTarget = { env: "host" };
+  let isolationNote = "";
+  const isolationMode = opts.isolation ?? "auto";
+  if (isolationMode !== "host") {
+    try {
+      const isolated = await ensureIsolatedWorkspace(spaceId, {
+        mode: isolationMode,
+        image: opts.isolationImage,
+        networkMode: opts.isolationNetwork,
+      });
+      if (isolated) {
+        execTarget = { env: "isolated", isolation: isolated };
+        isolationNote = `commands execute inside ${isolated.kind} container ${isolated.ref} (${isolated.image}, network ${isolated.networkMode})`;
+      } else if (isolationMode === "auto") {
+        isolationNote = "no container runtime available — commands execute on the HOST jail (allowlist, workspace cwd, timeouts)";
+      }
+    } catch (e) {
+      if (isolationMode === "container") throw e; // strict mode: fail loudly
+      isolationNote = `isolation unavailable (${e instanceof Error ? e.message : "error"}) — commands execute on the HOST jail`;
+    }
+  }
+  try {
+    return await runMissionInner(spaceId, opts, deps, { execTarget, isolationNote });
+  } finally {
+    if (execTarget.env === "isolated") {
+      await teardownIsolatedWorkspace(spaceId).catch(() => {});
+    }
+  }
+}
+
+async function runMissionInner(
+  spaceId: string,
+  opts: MissionOpts,
+  deps: MissionDeps,
+  isolation: { execTarget: ExecTarget; isolationNote: string },
+): Promise<MissionSummary> {
+  const { execTarget, isolationNote } = isolation;
   const gen = deps.generate ?? generate;
   const timeBudgetMs = Math.min(3_600_000, Math.max(30_000, opts.timeBudgetMs ?? 600_000));
   const maxTurns = Math.min(16, Math.max(1, opts.maxTurnsPerAgent ?? 3));
@@ -196,25 +259,29 @@ export async function runMission(
     .filter((c) => /^[a-z0-9_.@-]+$/i.test(c) && c.length <= 30)
     .slice(0, 12);
 
+  // Load or create the mission row (continue = resume a checkpoint or an
+  // approval wait). Loaded FIRST so a resumed mission reuses its stored plan.
+  const existing = await getLatestMission(spaceId);
+  const resuming = existing && (existing.status === "checkpointed" || existing.status === "awaiting_approval");
+  const resumingPlan = resuming && existing!.agentPlan.length ? existing!.agentPlan : undefined;
+
   // Plan: explicit > the space's fleet > default three-role pipeline.
   const fleet = await listAgents(spaceId).catch(() => []);
   const plan: MissionAgentSpec[] =
-    opts.agentPlan?.length
-      ? opts.agentPlan
-      : fleet.length
+    resumingPlan?.length
+      ? resumingPlan
+      : opts.agentPlan?.length
+        ? opts.agentPlan
+        : fleet.length
         ? fleet.map((a: { name: string; role: string; modelId: string; systemPrompt: string }) => ({ name: a.name, role: a.role, modelId: a.modelId, systemPrompt: a.systemPrompt }))
         : defaultPlan("openai"); // any text alias: routes via Groq/OpenRouter key when sent, else keyless pollinations, else honest local fallback
 
   await ensureWorkspace(spaceId);
-
-  // Load or create the mission row (continue = resume a checkpoint).
-  const existing = await getLatestMission(spaceId);
-  const resuming = existing && existing.status === "checkpointed";
   let row: any;
   if (resuming) {
     if (missionDbHealthy) {
       try {
-        [row] = await db.update(spaceMissions).set({ status: "running", statusDetail: "", updatedAt: new Date() }).where(eq(spaceMissions.id, existing.id)).returning();
+        [row] = await db.update(spaceMissions).set({ status: "running", statusDetail: "resumed", updatedAt: new Date() }).where(eq(spaceMissions.id, existing.id)).returning();
       } catch {
         missionDbHealthy = false;
       }
@@ -328,6 +395,7 @@ export async function runMission(
         (memory ? `MEMORY — lessons from previous missions in this space:\n${memory}\n\n` : "") +
         (map && map !== "(workspace is empty)" ? `WORKSPACE MAP (current files):\n${map}\n\n` : "") +
         `Mission goal: ${mission.goal}\nYou are agent ${ai + 1}/${plan.length}: ${agent.name} (${agent.role}).` +
+        (isolationNote ? `\n\nEXECUTION ENVIRONMENT: ${isolationNote}` : "") +
         (steps.length ? `\n\nRecent journal (most recent last):\n${steps.slice(-4).map((s) => `${s.agent}: ${s.thought} [${s.actions.map((a) => a.tool + (a.ok ? "✓" : "✗")).join(", ")}]`).join("\n")}` : "") +
         (observations ? `\n\nOBSERVATIONS — actual tool outputs from your recent turns (read them; fix what failed):\n${observations}` : "");
 
@@ -371,7 +439,89 @@ export async function runMission(
           statusDetail = `time budget hit mid-turn while ${agent.name} was acting — resume to continue`;
           break;
         }
-        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow }));
+        // GOVERNANCE GATE (docs/spaces-autonomy.md Phase A): approval-required
+        // action classes never execute without a recorded human decision. The
+        // mission checkpoints itself awaiting_approval; on resume the same
+        // action signature is matched to its decision — approved executes
+        // (single-claim), pending keeps waiting, denied is refused honestly.
+        const actionClass = classifyToolAction(a.tool);
+        if (approvalRequired(actionClass)) {
+          const sig = actionSignature(mission.id, a.tool, a.args);
+          // The LATEST approval for this exact action instance binds: pending →
+          // wait for the human; denied → refused, terminal; executed/failed →
+          // never repeated; approved → single-claim execution.
+          let approval = await findLatestBySignature(sig);
+          if (!approval) {
+            approval = await requestApproval({
+              spaceId,
+              missionId: mission.id,
+              signature: sig,
+              actionClass,
+              summary: `${a.tool}: ${JSON.stringify(a.args).slice(0, 300)}`,
+              payload: a.args,
+            });
+          }
+          if (approval.status === "pending") {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `⏸ awaiting human approval (class ${actionClass}, request ${approval.id.slice(0, 8)}) — the mission is checkpointed. Approve or deny it in the Spaces workbench (Approvals panel) or via the API; the daemon/workbench resumes automatically once decided.`,
+              ok: false,
+              ms: 0,
+            });
+            status = "awaiting_approval";
+            statusDetail = `action ${a.tool} requires human approval (request ${approval.id.slice(0, 8)}) — decide in the Spaces workbench`;
+            break;
+          }
+          if (approval.status === "denied") {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `refused: the human denied this action (request ${approval.id.slice(0, 8)}). Do not retry the same action; adjust the approach.`,
+              ok: false,
+              ms: 0,
+            });
+            continue;
+          }
+          if (approval.status === "executing") {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `execution of request ${approval.id.slice(0, 8)} is already in progress elsewhere — not repeated here`,
+              ok: false,
+              ms: 0,
+            });
+            continue;
+          }
+          if (approval.status === "executed" || approval.status === "failed") {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `already executed earlier (request ${approval.id.slice(0, 8)}, ${approval.status}) — not repeated`,
+              ok: approval.status === "executed",
+              ms: 0,
+            });
+            continue;
+          }
+          // approved → single-claim execution (exactly one caller wins)
+          const claimed = await claimExecution(approval.id);
+          if (!claimed) {
+            outcomes.push({
+              tool: a.tool,
+              input: a.args ?? {},
+              output: `lost the execution claim for request ${approval.id.slice(0, 8)} — another runner is executing it`,
+              ok: false,
+              ms: 0,
+            });
+            continue;
+          }
+          const tExec = Date.now();
+          const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps });
+          await completeExecution(approval.id, gated.ok, { tool: gated.tool, output: gated.output.slice(0, 2000) }, gated.ok ? undefined : gated.output.slice(0, 500));
+          outcomes.push({ ...gated, ms: Date.now() - tExec });
+          continue;
+        }
+        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps }));
       }
 
       const step: MissionStep = {
@@ -404,12 +554,13 @@ export async function runMission(
     }
   }
 
+  const statusDetailWithEnv = isolationNote ? `${statusDetail} · ${isolationNote}` : statusDetail;
   await save({
     status,
-    statusDetail,
+    statusDetail: statusDetailWithEnv,
     handoff,
     artifacts: await listArtifacts(spaceId),
-    endedAt: status === "running" ? null : new Date(),
+    endedAt: status === "running" || status === "awaiting_approval" ? null : new Date(),
   });
   return mission;
 }

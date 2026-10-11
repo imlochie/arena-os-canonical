@@ -1,3 +1,4 @@
+import Link from "next/link";
 import LeaderboardBoard from "@/components/LeaderboardBoard";
 import IntegrityPanel from "@/components/IntegrityPanel";
 
@@ -37,8 +38,8 @@ export default function LeaderboardPage() {
           </p>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <a href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Cast more votes</a>
-          <a href="/standards" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">📏 Full standards audit</a>
+          <Link href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Cast more votes</Link>
+          <Link href="/standards" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">📏 Full standards audit</Link>
         </div>
       </div>
     </div>

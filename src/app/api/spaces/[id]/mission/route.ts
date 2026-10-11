@@ -12,7 +12,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
 // POST → start (or continue) a mission.
 // Body: { goal, timeBudgetMinutes?, agentPlan?, githubToken?, keys?, localOnly? }
-// A "checkpointed" mission resumes where it stopped (goal/plan from the row).
+// A "checkpointed" or "awaiting_approval" mission resumes where it stopped
+// (goal/plan from the row; approval decisions apply on the resumed run).
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   let body: any = {};
@@ -26,7 +27,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     if (!space) return Response.json({ error: "space not found" }, { status: 404 });
 
     const existing = await getLatestMission(id);
-    const continuing = existing?.status === "checkpointed" && !body?.goal;
+    const continuing = (existing?.status === "checkpointed" || existing?.status === "awaiting_approval") && !body?.goal;
     if (!continuing && !String(body?.goal ?? "").trim()) {
       return Response.json({ error: "goal is required" }, { status: 400 });
     }
@@ -41,6 +42,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       githubToken: body?.githubToken || undefined,
       maxTurnsPerAgent: body?.maxTurnsPerAgent ? Math.round(Number(body.maxTurnsPerAgent)) : undefined,
       maxActionsPerTurn: body?.maxActionsPerTurn ? Math.round(Number(body.maxActionsPerTurn)) : undefined,
+      isolation: body?.isolation === "container" || body?.isolation === "host" ? body.isolation : "auto",
+      isolationImage: typeof body?.isolationImage === "string" && body.isolationImage.trim() ? body.isolationImage.trim().slice(0, 100) : undefined,
+      isolationNetwork: body?.isolationNetwork === "bridge" ? "bridge" : "none",
       extraCommands: Array.isArray(body?.extraCommands)
         ? body.extraCommands.map((c: unknown) => String(c)).slice(0, 12)
         : undefined,

@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
@@ -58,6 +59,7 @@ async function proposalFor(remix: typeof remixSessions.$inferSelect, anchorClipI
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "viewer");
     const body = await request.json().catch(() => ({}));
     const intent = intentFrom(body.intent);
@@ -72,6 +74,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "editor");
     const body = await request.json().catch(() => ({}));
     const intent = intentFrom(body.intent);

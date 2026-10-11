@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export const dynamic = "force-dynamic";
 
 function Tag({ children, tone }: { children: React.ReactNode; tone: "yes" | "part" | "no" }) {
@@ -169,9 +171,9 @@ export default function MarketPage() {
           ))}
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <a href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Try streaming battles</a>
-          <a href="/image" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🖼️ Try the Image Arena</a>
-          <a href="/standards" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">📏 Standards audit</a>
+          <Link href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Try streaming battles</Link>
+          <Link href="/image" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🖼️ Try the Image Arena</Link>
+          <Link href="/standards" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">📏 Standards audit</Link>
         </div>
       </div>
     </div>

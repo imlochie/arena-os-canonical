@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Markdown from "@/components/Markdown";
@@ -81,7 +82,7 @@ export default function ProjectPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <a href="/projects" className="text-xs font-bold text-slate-400 hover:text-white">← All projects</a>
+      <Link href="/projects" className="text-xs font-bold text-slate-400 hover:text-white">← All projects</Link>
       <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <span className="grid h-14 w-14 place-items-center rounded-2xl bg-white/5 text-3xl ring-1 ring-white/10">{p.emoji}</span>

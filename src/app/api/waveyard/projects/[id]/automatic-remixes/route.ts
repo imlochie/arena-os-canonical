@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { asc, eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -43,6 +44,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
+    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const constraints = constraintsFrom(await request.json().catch(() => ({})));
     

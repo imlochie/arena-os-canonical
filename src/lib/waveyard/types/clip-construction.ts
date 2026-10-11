@@ -1,3 +1,4 @@
+import type { ClipFadeShape } from "../fades";
 import {
   projectSourceBeatToTimelineMs,
   usableBeatGrid,
@@ -12,6 +13,8 @@ export type MusicalClipInput = {
   gain: number;
   fadeInMs: number;
   fadeOutMs: number;
+  // Missing on historical snapshots means "linear" (original behaviour).
+  fadeShape?: ClipFadeShape;
   tempoSyncEnabled: boolean;
   keySyncEnabled: boolean;
   beatSnapEnabled: boolean;

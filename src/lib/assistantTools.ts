@@ -54,6 +54,18 @@ export const PLATFORM_MODULES: { name: string; path: string; what: string }[] = 
   { name: "Cut", path: "/cut", what: "Cut Lab: browser video editing projects." },
   { name: "Assistants", path: "/assistants", what: "Assistant definitions." },
   { name: "Guide", path: "/guide", what: "Platform guide." },
+  { name: "Waveyard", path: "/waveyard", what: "The music platform: library, playlists, queue, stem-aware player; drop a song to separate it locally." },
+  { name: "Luma", path: "/luma", what: "LUMA listening surface." },
+  { name: "Market", path: "/market", what: "The remix market." },
+  { name: "Runtime", path: "/runtime", what: "Which brains run, and where (engine/model levels)." },
+  { name: "Model Hub", path: "/model-hub", what: "Download and connect AI models app-wide: local runtimes (Ollama/LM Studio/llama.cpp), BYOK keys, the agent bridge." },
+  { name: "Creative Suite", path: "/creative", what: "Research with citations, decks from a prompt (HTML + PPTX), podcasts and voices from any text, captions (SRT/VTT)." },
+  { name: "App Foundry", path: "/foundry", what: "Vibe coding: describe an app, any model builds it; sandboxed no-network preview with a window.arena.kv backend; versioned iterations." },
+  { name: "Deep Agent", path: "/deep-agent", what: "The bounded autonomous agent: plan → act → verify, capped steps, full transcript, save-as-artifact." },
+  { name: "The Mind", path: "/mind", what: "The personal capture wall (mymind dupe): paste anything, auto-tagged and searchable; smart spaces and serendipity." },
+  { name: "Subscriptions", path: "/subscriptions", what: "The recurring-cost tracker (Bobby dupe): totals, forecasts, paste-a-receipt extraction." },
+  { name: "Device Security", path: "/device-security", what: "Run the local security check." },
+  { name: "Privacy", path: "/privacy", what: "Privacy controls (Local Mode, ephemeral chats)." },
 ];
 
 export const PLATFORM_DOCS: { file: string; what: string }[] = [
@@ -126,6 +138,20 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     description: "List every module in this platform with a one-line description of what it does, plus the guide docs. Use this to answer 'what can you do here' / 'what tools do I have'.",
     parameters: {},
     run: async () => ({ modules: PLATFORM_MODULES, docs: PLATFORM_DOCS }),
+  },
+  {
+    name: "repo_map",
+    description: "The live repo map of this app's source code (paths, line counts, exports per file) — ground truth for codebase questions like 'where is X implemented' or 'what does src/lib/ai.ts export'. Optionally narrow with a path prefix.",
+    parameters: {
+      prefix: { type: "string", description: "optional path prefix filter, e.g. 'src/lib/waveyard'" },
+    },
+    run: async (args) => {
+      const { buildRepoMap } = await import("./repoMap");
+      const map = await buildRepoMap();
+      const prefix = typeof args.prefix === "string" ? args.prefix.trim() : "";
+      const files = prefix ? map.files.filter((f) => f.path.startsWith(prefix)) : map.files;
+      return { generatedAt: map.generatedAt, fileCount: files.length, files: files.slice(0, 120) };
+    },
   },
   {
     name: "list_projects",

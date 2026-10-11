@@ -305,7 +305,9 @@ export function wangpCatalog(modality?: string): StudioModelInfo[] {
 export interface ComfyTemplate {
   id: string;
   name: string;
-  modality: "video" | "image";
+  // audio = song-generation workflows (ACE-Step etc.); the modality is a
+  // picker label — ComfyUI output discovery is generic.
+  modality: "video" | "image" | "audio";
   description: string;
   // API-format workflow JSON with {{PLACEHOLDER}} tokens
   workflow: Record<string, unknown>;
@@ -399,7 +401,72 @@ const wanI2VWorkflow = {
   },
 };
 
+// ---- Wave 3 additions (13-tools + vibe mandates). All three are owner-side
+// GPU workflows: they require the named custom node packs in ComfyUI and never
+// fake output — until ComfyUI is reachable the Studio stays honestly offline.
+const rmbgWorkflow = {
+  "10": { class_type: "LoadImage", inputs: { image: "{{IMAGE}}" }, _meta: { title: "Input photo" } },
+  "11": { class_type: "Image Remove Background (rembg)", inputs: { image: ["10", 0] }, _meta: { title: "RMBG (ComfyUI-RMBG custom node)" } },
+  "12": { class_type: "SaveImage", inputs: { images: ["11", 0], filename_prefix: "arena_rmbg" }, _meta: { title: "Save" } },
+};
+
+const reactorWorkflow = {
+  "10": { class_type: "LoadImage", inputs: { image: "{{SOURCE_IMAGE}}" }, _meta: { title: "Base photo" } },
+  "11": { class_type: "LoadImage", inputs: { image: "{{REFERENCE_IMAGE}}" }, _meta: { title: "Face to use" } },
+  "12": {
+    class_type: "ReActorFaceSwap",
+    inputs: { input_image: ["10", 0], source_image: ["11", 0], swap_model: "inswapper_128.onnx", face_restore_model: "none" },
+    _meta: { title: "ReActor face swap (ComfyUI-ReActor custom node)" },
+  },
+  "13": { class_type: "SaveImage", inputs: { images: ["12", 0], filename_prefix: "arena_faceswap" }, _meta: { title: "Save" } },
+};
+
+const aceStepWorkflow = {
+  "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "ace_step_v1.safetensors" }, _meta: { title: "ACE-Step checkpoint" } },
+  "6": {
+    class_type: "ACEStepAudio",
+    inputs: {
+      model: ["4", 0],
+      prompt: "{{PROMPT}}",
+      lyrics: "{{LYRICS}}",
+      audio_duration: 60,
+      guidance_scale: 3.5,
+      seed: 0,
+    },
+    _meta: { title: "ACE-Step song generation (ComfyUI-ACE-Step custom node)" },
+  },
+  "9": { class_type: "SaveAudio", inputs: { audio: ["6", 0], filename_prefix: "arena_song" }, _meta: { title: "Save song" } },
+};
+
+const WAVE3_TEMPLATES: ComfyTemplate[] = [
+  {
+    id: "rmbg_background_removal",
+    name: "Remove Background (RMBG)",
+    modality: "image",
+    description:
+      "One-click background removal (the Canva #7 feature). Requires the ComfyUI-RMBG custom node pack. Upload a photo to ComfyUI input and set {{IMAGE}} to its file name.",
+    workflow: rmbgWorkflow,
+  },
+  {
+    id: "reactor_face_swap",
+    name: "Face Swap (ReActor)",
+    modality: "image",
+    description:
+      "Personal-use face swap. Requires the ComfyUI-ReActor custom node pack and inswapper_128.onnx in models/insightface. Two inputs: {{SOURCE_IMAGE}} (base photo) and {{REFERENCE_IMAGE}} (the face to use).",
+    workflow: reactorWorkflow,
+  },
+  {
+    id: "ace_step_song",
+    name: "Song with Vocals (ACE-Step)",
+    modality: "audio",
+    description:
+      "The Suno #12 counterpart: full songs with vocals from a style prompt + lyrics. Requires the ComfyUI-ACE-Step custom node pack and ace_step_v1.safetensors (~7GB, Apache-2.0). {{PROMPT}} = style tags, {{LYRICS}} = the lyric sheet.",
+    workflow: aceStepWorkflow,
+  },
+];
+
 export const COMFY_TEMPLATES: ComfyTemplate[] = [
+  ...WAVE3_TEMPLATES,
   {
     id: "wan21_t2v",
     name: "Wan 2.1 Text-to-Video (1.3B)",

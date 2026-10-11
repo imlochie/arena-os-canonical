@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -36,6 +37,7 @@ async function authorizedVocalStem(id: string, userId: string, role: "viewer" | 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const target = await authorizedVocalStem(id, user.id, "viewer");
     if (!target) return NextResponse.json({ error: "Isolated vocal stem not found." }, { status: 404 });
     
@@ -51,6 +53,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const target = await authorizedVocalStem(id, user.id, "editor");
     if (!target) return NextResponse.json({ error: "Isolated vocal stem not found." }, { status: 404 });
     const { stem, source } = target; 

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -10,6 +11,8 @@ const INTENTS = [
   { id: "debate", emoji: "⚔️", label: "DEBATE", desc: "Blind battle test", href: "/" },
   { id: "build", emoji: "⚙️", label: "BUILD", desc: "Systems + machines", href: "/collab?strategy=systems" },
   { id: "explore", emoji: "🔮", label: "EXPLORE", desc: "Prototype futures", href: "/council?jobId=simulation_partner" },
+  { id: "music", emoji: "🎚️", label: "MAKE MUSIC", desc: "Stems, remixes, exports", href: "/waveyard" },
+  { id: "visual", emoji: "🎬", label: "GENERATE", desc: "Video, images, audio", href: "/studio" },
 ];
 
 export default function CommandPage() {
@@ -82,9 +85,9 @@ export default function CommandPage() {
           </button>
         </div>
         <div className="mt-2 flex flex-wrap justify-center gap-2 text-[11px] font-bold">
-          <a href="/" className="rounded-full bg-white/5 px-3 py-1.5 text-slate-300 ring-1 ring-white/10 hover:bg-white/10">⚔️ Arena = competition</a>
-          <a href="/collab" className="rounded-full bg-white/5 px-3 py-1.5 text-slate-300 ring-1 ring-white/10 hover:bg-white/10">🤝 Collab = collective creation</a>
-          <a href="/council" className="rounded-full bg-white/5 px-3 py-1.5 text-slate-300 ring-1 ring-white/10 hover:bg-white/10">🧠 Council = structured cognition</a>
+          <Link href="/" className="rounded-full bg-white/5 px-3 py-1.5 text-slate-300 ring-1 ring-white/10 hover:bg-white/10">⚔️ Arena = competition</Link>
+          <Link href="/collab" className="rounded-full bg-white/5 px-3 py-1.5 text-slate-300 ring-1 ring-white/10 hover:bg-white/10">🤝 Collab = collective creation</Link>
+          <Link href="/council" className="rounded-full bg-white/5 px-3 py-1.5 text-slate-300 ring-1 ring-white/10 hover:bg-white/10">🧠 Council = structured cognition</Link>
         </div>
       </div>
 
@@ -106,9 +109,9 @@ export default function CommandPage() {
               <p className="text-xs text-slate-500">Loading projects…</p>
             )}
           </div>
-          <a href="/projects" className="mt-2 inline-block text-xs font-bold text-violet-300 hover:underline">
+          <Link href="/projects" className="mt-2 inline-block text-xs font-bold text-violet-300 hover:underline">
             All projects →
-          </a>
+          </Link>
 
           <h2 className="mb-2 mt-5 text-xs font-black uppercase tracking-wider text-slate-400">Recent intelligence</h2>
           <div className="glass rounded-2xl p-4">

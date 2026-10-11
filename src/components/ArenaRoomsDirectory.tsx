@@ -10,6 +10,7 @@ import {
   ChevronRight,
   CircleAlert,
   Compass,
+  GraduationCap,
   Cpu,
   Headphones,
   Image,
@@ -36,6 +37,7 @@ const ROOM_ICONS: Record<string, LucideIcon> = {
   spaces: Boxes,
   "archive-assistant": Archive,
   classroom: BookOpen,
+  college: GraduationCap,
   studio: Sparkles,
   "cut-lab": Scissors,
   waveyard: Headphones,
@@ -98,6 +100,10 @@ export default function ArenaRoomsDirectory() {
           <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-300 sm:text-base">
             Rooms are addresses into the tools already in Arena OS. Choose a surface,
             review where it leads, and decide when anything should move.
+          </p>
+          <p className="mt-2 max-w-2xl text-xs leading-5 text-slate-500">
+            Naming note: <b className="text-slate-400">Spaces</b> is one of these rooms — the
+            agent workbench that runs fleets and missions in the background.
           </p>
           <div className="mt-7 flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-300">
             <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/15 px-3 py-2">

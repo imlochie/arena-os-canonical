@@ -9,7 +9,19 @@ import { AutomaticRemixPrompt } from "./remix/AutomaticRemixPrompt";
 import { ArrangementTimeline, type ClipSelection } from "./studio/ArrangementTimeline";
 import { ArrangementInspector } from "./studio/ArrangementInspector";
 import { ClipInspector } from "./studio/ClipInspector";
-import { StemMixer } from "./studio/StemMixer";
+import { MixerConsole } from "./studio/MixerConsole";
+import { CleanupStudio } from "./studio/CleanupStudio";
+import { AIStudio } from "./studio/AIStudio";
+import { SoundDesignStudio } from "./studio/SoundDesignStudio";
+import { MasterStudio } from "./studio/MasterStudio";
+import type { InsertChain } from "@/lib/waveyard/mixer/inserts";
+import { GeneratedLayers } from "./studio/GeneratedLayers";
+import { VocalChops } from "./studio/VocalChops";
+import { MashupStudio } from "./studio/MashupStudio";
+import { StemPlayerDeck } from "./studio/StemPlayerDeck";
+import { VisualizerStudio } from "./studio/VisualizerStudio";
+import { CompareAB } from "./studio/CompareAB";
+import { ConnectedLibraries } from "./studio/ConnectedLibraries";
 import { DrumAnalysisPanel } from "./studio/DrumAnalysisPanel";
 import { HarmonyAnalysisPanel } from "./studio/HarmonyAnalysisPanel";
 import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
@@ -47,6 +59,14 @@ function canHandleShortcut(target: EventTarget | null) {
   return !(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable));
 }
 
+type StudioTab = "edit" | "analyze" | "showcase";
+const STUDIO_TAB_LABEL = { edit: "Edit", analyze: "Analyze", showcase: "Showcase" } as const;
+const STUDIO_TAB_BLURB = {
+  edit: "Arrangement, clips, mixer, effects, master.",
+  analyze: "Sections, meeting points, vocals, drums, harmony, AI tools.",
+  showcase: "Stem deck, visualizer, A/B — the shareable face.",
+} as const;
+
 export function StudioCore({ projectId, remixSessionId, stems, sources, onDerivedAnalysisRequested }: { projectId: string; remixSessionId?: string | null; stems: Stem[]; sources: Source[]; onDerivedAnalysisRequested?: () => void }) {
   const ids = useMemo(() => stems.map((stem) => stem.id), [stems]);
   const duration = useMemo(() => Math.max(0, ...stems.map((stem) => stem.durationSeconds)), [stems]);
@@ -83,6 +103,12 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   // Presentation is browser-only observation over the same project, selection,
   // transport, and persisted remix state. It never forks musical authority.
   const [presentation, setPresentation] = useState<"studio" | "play" | "visual">("play");
+  /** Progressive disclosure inside the Studio presentation (vision Principle
+   *  3): Edit / Analyze / Showcase. Panels genuinely unmount per tab; the
+   *  audio graph (useStemTransport) and mixer state live in StudioCore, so
+   *  switching tabs never stops playback. The Play and Visual presentations
+   *  above remain the listener-facing faces. */
+  const [studioTab, setStudioTab] = useState<StudioTab>("edit");
   // Visual preferences are browser-only presentation choices; they never
   // mutate the project, RemixVersion, or transport's musical state.
   const [visualPreset, setVisualPreset] = useState<CinematicVisualPreset>("halo");
@@ -192,6 +218,16 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const environment = artworkEnvironment(`${source?.checksumSha256 ?? projectId}:${source?.originalFilename ?? "waveyard"}`);
 
   useEffect(() => { transport.applyMix(mixerControls); }, [mixerControls, transport]);
+  // Insert chains are canonical remix state; the live graph follows them.
+  const chainsByStem = useMemo(() => {
+    const record: Record<string, InsertChain> = {};
+    for (const track of remix?.tracks ?? []) record[track.stemAssetId] = track.inserts ?? [];
+    return record;
+  }, [remix]);
+  useEffect(() => {
+    if (!remix) return;
+    transport.applyInserts(chainsByStem, remix.masterInserts ?? []);
+  }, [chainsByStem, remix, transport]);
   useEffect(() => { remixRef.current = remix; }, [remix]);
   useEffect(() => { if (remix) transport.setMasterVolume(remix.masterVolume); }, [remix, transport]);
   const loopStartMs = remix?.loopStartMs ?? 0;
@@ -247,7 +283,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     setClipSelection(null);
     setSelectedClipIds([]);
     reset();
-    setControls(Object.fromEntries(next.tracks.map((track) => [track.stemAssetId, { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo }])));
+    setControls(Object.fromEntries(next.tracks.map((track) => [track.stemAssetId, { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, phaseInvert: track.phaseInverted === true }])));
     setSaveState("saved");
     const versionResponse = await fetch(`/api/remixes/${id}/versions`, { cache: "no-store" });
     const versionBody = await versionResponse.json().catch(() => ({}));
@@ -290,13 +326,45 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     queuePersist(after);
   }, [queuePersist, record]);
 
+  const patchClip = (clipId: string, patch: Partial<{ gain: number; fadeInMs: number; fadeOutMs: number }>) => {
+    changeRemix((current) => ({
+      ...current,
+      tracks: current.tracks.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => clip.id === clipId ? { ...clip, ...patch } : clip),
+      })),
+    }));
+  };
+  const splitClip = (clipId: string, positionMs: number) => {
+    void editClip(clipId, "split", { timelineMs: positionMs });
+  };
+  const duplicateClip = (clipId: string) => {
+    void editClip(clipId, "duplicate", {});
+  };
+  const deleteClip = (clipId: string) => {
+    if (!remix) return;
+    void batchEditClips(remix, [clipId], "delete");
+  };
+  const updateInserts = (id: string, chain: InsertChain) => {
+    changeRemix((current) => ({
+      ...current,
+      tracks: current.tracks.map((track) => track.stemAssetId === id ? { ...track, inserts: chain } : track),
+    }));
+  };
+  const updateMasterInserts = (chain: InsertChain) => {
+    changeRemix((current) => ({ ...current, masterInserts: chain }));
+  };
   const updateControl = (id: string, patch: Partial<MixerValues>) => {
     setControls((current) => ({
       ...current,
       [id]: { ...(current[id] ?? { volume: 1, pan: 0, muted: false, solo: false }), ...patch },
     }));
+    // Persisted track patch: phaseInvert (live control name) maps to the persisted
+    // phaseInverted column; monoMonitor is monitor-only and deliberately NOT persisted.
+    const { monoMonitor: _monitorOnly, phaseInvert, ...persistable } = patch;
+    const trackPatch = { ...persistable, ...(phaseInvert !== undefined ? { phaseInverted: phaseInvert } : {}) };
     // This remains the source-stem inspection mixer. Arrangement tracks have independent controls in the timeline.
-    changeRemix((current) => ({ ...current, tracks: current.tracks.map((track) => track.stemAssetId === id ? { ...track, ...patch } : track) }));
+    changeRemix((current) => ({ ...current, tracks: current.tracks.map((track) => track.stemAssetId === id ? { ...track, ...trackPatch } : track) }));
   };
   const requestSourceEvents = useCallback(async (sourceId: string) => {
     const response = await fetch(`/api/sources/${sourceId}/events`, { method: "POST" });
@@ -330,16 +398,34 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     sourceAssetId: string,
     stemAssetId?: string,
   ) => {
+    // Instant path (feature-utilisation: the synchronous MIDI route): the
+    // analysis already exists → download the Standard MIDI File right now.
+    if (stemAssetId !== undefined) {
+      const direct = await fetch(`/api/waveyard/projects/${projectId}/midi/${stemAssetId}?kind=${kind}`);
+      if (direct.ok) {
+        const blob = await direct.blob();
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${kind}-${stemAssetId}.mid`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+        return null;
+      }
+    }
+    // Queued path: an immutable remix version is exported through the worker.
     const versionId = versions.at(-1)?.id;
-    if (!versionId) return "Save an immutable remix version before requesting MIDI export.";
+    if (!versionId) return "Run the analysis first (or save an immutable remix version), then export MIDI again.";
     const response = await fetch(`/api/remix-versions/${versionId}/exports`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ format: "midi", midiKind: kind, sourceAssetId, stemAssetId }),
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) return body.error ?? "Could not queue MIDI export.";
-    return null;
-  }, [versions]);
+    return "MIDI export queued — it lands in your exports when the worker finishes.";
+  }, [projectId, versions]);
   const createRemix = async () => {
     const response = await fetch(`/api/waveyard/projects/${projectId}/remixes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "First arrangement" }) });
     const body = await response.json().catch(() => ({}));
@@ -699,16 +785,41 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
       onToggleFullscreen={() => setVisualFullscreen((current) => !current)}
       onOpenStudio={() => { setPresentation("studio"); setVisualFullscreen(false); }}
     /> : <>
+    {/* Palette (stems + libraries) stays mounted across studio tabs — it is
+        the shared selection surface every tab reads (vision Principle 3). */}
     <SourcePool sources={sources} stems={stems} selectedStemId={selectedId} onSelectStem={(stemId) => { setSelectedId(stemId); setSelectedSourceSectionId(null); }} />
-    {remix && <><ProjectMusicalWorld remix={remix} stems={stems} /><ExtendedArrangementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} onApplied={async () => { await loadRemix(remix.id); }} /><MultiSourcePlacementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} stemAssetId={selected?.id ?? ""} sourceSectionId={selectedSourceSectionId} onApplied={async () => { await loadRemix(remix.id); }} /></>}
-    <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
-    {source && <SourceSectionMap source={source} onUseForSlice={(section) => { setSelectedSourceSectionId(section.id); setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` }); }} onArrangementAction={arrangeSection} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
-    <MeetingPointsPanel points={meetingPoints} busyId={acceptingMeetingPoint} message={meetingMessage} onAccept={acceptMeetingPoint} />
-    {source && selected && <VocalAnalysisSummary stem={selected} editable onRequestAnalysis={() => requestVocalAnalysis(selected.id)} onExportMidi={selected.stemType === "vocals" ? () => requestMidiExport("vocal", source.id, selected.id) : undefined} />}
-    {source && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} onExportMidi={selected.stemType === "drums" || selected.stemType === "percussion" ? () => requestMidiExport("drums", source.id, selected.id) : undefined} />}
-    {source && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} onExportMidi={() => requestMidiExport("harmony", source.id)} />}
-    <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
-    <section className="studio-grid"><StemMixer stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} />}</section>
+    <ConnectedLibraries projectId={projectId} />
+    <div className="studio-tabs" role="tablist" aria-label="Studio focus">
+      {(["edit", "analyze", "showcase"] as const).map((tab) => (
+        <button key={tab} type="button" role="tab" aria-selected={studioTab === tab} className={`tab-chip ${studioTab === tab ? "on" : ""}`} onClick={() => setStudioTab(tab)}>{STUDIO_TAB_LABEL[tab]}</button>
+      ))}
+      <small className="tab-hint">{STUDIO_TAB_BLURB[studioTab]}</small>
+    </div>
+    {studioTab === "edit" && <>
+      {remix && <><ProjectMusicalWorld remix={remix} stems={stems} /><ExtendedArrangementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} onApplied={async () => { await loadRemix(remix.id); }} /><MultiSourcePlacementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} stemAssetId={selected?.id ?? ""} sourceSectionId={selectedSourceSectionId} onApplied={async () => { await loadRemix(remix.id); }} /></>}
+      <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
+      <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
+      <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} inserts={chainsByStem} onInserts={updateInserts} masterInserts={remix?.masterInserts ?? []} onMasterInserts={updateMasterInserts} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} remix={remix} activeClipId={selectedClipIds.length === 1 ? selectedClipIds[0] : null} onClipPatch={patchClip} onSplitClip={splitClip} onDuplicateClip={duplicateClip} onDeleteClip={deleteClip} />}</section>
+      <SoundDesignStudio projectId={projectId} />
+      <MasterStudio projectId={projectId} sourceAudioUrl={sources.length > 0 ? `/api/assets/${sources[0].id}` : null} />
+      <CleanupStudio projectId={projectId} />
+    </>}
+    {studioTab === "analyze" && <>
+      {source && <SourceSectionMap source={source} onUseForSlice={(section) => { setStudioTab("edit"); setSelectedSourceSectionId(section.id); setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` }); }} onArrangementAction={async (section, action, repetitions) => { setStudioTab("edit"); return arrangeSection(section, action, repetitions); }} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
+      <MeetingPointsPanel points={meetingPoints} busyId={acceptingMeetingPoint} message={meetingMessage} onAccept={async (point) => { setStudioTab("edit"); await acceptMeetingPoint(point); }} />
+      {source && selected && <VocalAnalysisSummary stem={selected} editable onRequestAnalysis={() => requestVocalAnalysis(selected.id)} onExportMidi={selected.stemType === "vocals" ? () => requestMidiExport("vocal", source.id, selected.id) : undefined} />}
+      {source && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} onExportMidi={selected.stemType === "drums" || selected.stemType === "percussion" ? () => requestMidiExport("drums", source.id, selected.id) : undefined} />}
+      {source && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} onExportMidi={() => requestMidiExport("harmony", source.id, selected.id)} />}
+      <AIStudio projectId={projectId} />
+      <GeneratedLayers projectId={projectId} canEdit />
+      <VocalChops projectId={projectId} canEdit />
+      <MashupStudio projectId={projectId} sources={sources} canEdit />
+    </>}
+    {studioTab === "showcase" && <>
+      <VisualizerStudio projectId={projectId} stems={stems} sources={sources} transport={transport} onControl={updateControl} />
+      <CompareAB projectId={projectId} sources={sources} stems={stems} transport={transport} />
+      <StemPlayerDeck projectId={projectId} stems={stems} sources={sources} duration={duration} controls={mixerControls} transport={transport} onControl={updateControl} />
+    </>}
     <section className="remix-panel">
       <div className="panel-title"><div><span className="eyebrow">Non-destructive arrangement</span><h3>Remix timeline</h3></div>{!remix ? <div className="remix-actions"><button className="button" disabled={buildingAutomaticRemix !== null} onClick={() => void createAutomaticRemix("original")}>{buildingAutomaticRemix === "original" ? "Building automatic arrangement…" : "Build automatic arrangement"}</button><button className="button secondary" onClick={() => void createRemix()}>Start blank arrangement</button></div> : <div className="remix-actions"><button className="button secondary" onClick={() => void createRemix()}>New remix session</button><button className="button secondary" disabled={!history.length} onClick={undo}>Undo</button><button className="button secondary" disabled={!future.length} onClick={redo}>Redo</button><button className="button secondary" onClick={() => void createVersion()}>Save version</button><button className="button" onClick={saveNow}>Save now</button></div>}</div>
       {remix ? <>

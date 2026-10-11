@@ -10,6 +10,7 @@ export default function ProjectsPage() {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [emoji, setEmoji] = useState("📁");
+  const [creating, setCreating] = useState(false); // guards Enter-spam / double-click
 
   useEffect(() => {
     fetch("/api/projects").then((r) => r.json()).then((j) => {
@@ -19,7 +20,9 @@ export default function ProjectsPage() {
   }, []);
 
   async function create() {
-    if (!name.trim()) return;
+    if (!name.trim() || creating) return;
+    setCreating(true);
+    try {
     const r = await fetch("/api/projects", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -30,6 +33,9 @@ export default function ProjectsPage() {
       setProjects((p) => [{ ...j.project, counts: { battles: 0, collabs: 0, councils: 0, artifacts: 0, memory: 0 } }, ...p]);
       setName("");
       setDesc("");
+    }
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -54,7 +60,7 @@ export default function ProjectsPage() {
         <div className="mt-2 flex flex-col gap-2 sm:flex-row">
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name…" className="flex-1 rounded-xl border border-white/10 bg-black/40 px-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-violet-500 focus:outline-none" />
           <input value={desc} onChange={(e) => setDesc(e.target.value)} onKeyDown={(e) => e.key === "Enter" && create()} placeholder="One-line brief…" className="flex-[2] rounded-xl border border-white/10 bg-black/40 px-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-violet-500 focus:outline-none" />
-          <button onClick={create} disabled={!name.trim()} className="btn-arena rounded-xl px-5 py-2.5 text-sm font-extrabold text-white">
+          <button onClick={create} disabled={!name.trim() || creating} className="btn-arena rounded-xl px-5 py-2.5 text-sm font-extrabold text-white">
             Create
           </button>
         </div>

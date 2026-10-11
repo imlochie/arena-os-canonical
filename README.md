@@ -67,25 +67,19 @@ or a local TurboAgent server.
 
 ### Archive Assistant (bridge to the archive app)
 
-The Archive Assistant room is a live, read-only bridge to the
-[Archive Assistant](https://github.com/imlochie/SomeSafePortablesoftware) app
-(Arena's sibling repository): overview, workload, reconciliation summary,
-finding lineage, and Plex/Jellyfin provider state. The bridge is mounted on
-this baseline; whether it is *connected* depends on server configuration —
-the room page shows the real state. Architecture and guarantees:
-[`docs/archive-assistant-integration.md`](docs/archive-assistant-integration.md).
-
-```bash
-# .env — for a locally running Archive Assistant (AUTH_MODE=local):
-ARCHIVE_ASSISTANT_API_URL=http://127.0.0.1:8080/api
-ARCHIVE_ASSISTANT_AUTH_MODE=local
-ARCHIVE_ASSISTANT_OWNER_ID=__local__
-```
-
-Read-only by construction: Arena can never approve, reject, reopen, execute,
-rename, move, download, or sync anything in Archive Assistant. Full bounded
-context: `GET /api/archive/context` (with `?history=1` for one page of
-provider refresh history). Run the bridge test suite with `npm test`.
+The Archive Assistant is MERGED into Arena OS — native, no external app,
+no bridge. The `/rooms/archive-assistant` room is the control panel: connect
+Plex or Jellyfin (token sealed AES-256-GCM in the local database), run real
+syncs, reconcile the local archive index against your libraries, and work the
+review queue (decisions recorded; nothing renamed/moved/deleted/downloaded).
+The six read operations the old bridge served — overview, workload,
+reconciliation summary, finding lineage, provider refresh state + history —
+are served from Arena's own tables and still validated against the generated
+contract: `GET /api/archive/context` (with `?history=1`). The old external
+integration doc is kept for history:
+[`docs/archive-assistant-integration.md`](docs/archive-assistant-integration.md);
+the merge design lives in
+[`docs/archive-assistant-merge.md`](docs/archive-assistant-merge.md).
 
 ### Waveyard (music room)
 

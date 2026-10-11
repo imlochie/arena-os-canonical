@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export const dynamic = "force-dynamic";
 
 function Verdict({ level, children }: { level: "yes" | "partial" | "no"; children: React.ReactNode }) {
@@ -147,9 +149,9 @@ export default function StandardsPage() {
           in relevance beats — the public standard.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
-          <a href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Start voting</a>
-          <a href="/leaderboard" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🏆 See the board</a>
-          <a href="/api/export?format=json" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">⬇️ Audit the data</a>
+          <Link href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Start voting</Link>
+          <Link href="/leaderboard" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🏆 See the board</Link>
+          <Link href="/api/export?format=json" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">⬇️ Audit the data</Link>
         </div>
       </div>
     </div>

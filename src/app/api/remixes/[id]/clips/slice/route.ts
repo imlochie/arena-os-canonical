@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -31,6 +32,7 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({}));
     const clipId = String(body.clipId ?? "");
     const startBeatIndex = Number(body.startBeatIndex);

@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { asc, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -14,6 +15,7 @@ import { requireProjectRole } from "@/lib/waveyard/local-context";
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, id, "viewer");
     const sessions = await db.select().from(remixSessions).where(eq(remixSessions.projectId, id)).orderBy(desc(remixSessions.updatedAt));
     return NextResponse.json({ remixes: sessions });
@@ -23,6 +25,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id: projectId } = await params;
+    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const name = String(body.name ?? "Untitled remix").trim().slice(0, 120) || "Untitled remix";

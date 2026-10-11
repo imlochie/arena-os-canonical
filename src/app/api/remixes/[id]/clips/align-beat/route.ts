@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -28,6 +29,8 @@ function parsedBeatGrid(value: string | null) {
 }
 
 /** Aligns one authoritative source beat to a chosen remix-time position. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -35,8 +38,11 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({}));
     const clipId = String(body.clipId ?? "");
+    if (!UUID_RE.test(clipId))
+      return NextResponse.json({ error: "Clip not found." }, { status: 404 });
     const sourceBeatIndex = Number(body.sourceBeatIndex);
     const rawTarget = Number(body.timelineTargetMs);
     const timelineTargetMs = Number.isFinite(rawTarget) ? Math.round(rawTarget) : Number.NaN;

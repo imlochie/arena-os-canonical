@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export const dynamic = "force-dynamic";
 
 function Code({ children, title }: { children: string; title?: string }) {
@@ -53,6 +55,7 @@ export default function GuidePage() {
         <div className="mt-3 grid gap-2 text-sm sm:grid-cols-3">
           {[
             { e: "1️⃣", t: "Duplicate", d: "Clone the pattern: blind battle UI → vote → ELO update. ~200 lines of real logic. The rest is styling." },
+            { e: "🎚️", t: "Waveyard", d: "The music studio ships in this app: drop a song → real local stem separation → play, remix, and export. See /waveyard." },
             { e: "2️⃣", t: "Stay free", d: "Route all calls through free tiers (Pollinations keyless, Groq/OpenRouter/Gemini free keys, Ollama local). $0/mo is realistic." },
             { e: "3️⃣", t: "Keep quality", d: "Quality = model choice + system prompts + your votes. Free frontier models in 2026 sit within ~55 ELO of paid flagships." },
           ].map((c) => (
@@ -201,8 +204,10 @@ newA = eloA + 32 * (scoreA - expectedA)  // score: win=1 tie=0.5 loss=0`}
           ))}
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <a href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Back to the arena</a>
-          <a href="/assistants" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🧬 Build an assistant</a>
+          <Link href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Back to the arena</Link>
+          <Link href="/waveyard" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🎚️ Open the music studio</Link>
+          <Link href="/studio" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🎬 Open the visual studio</Link>
+          <Link href="/assistants" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🧬 Build an assistant</Link>
         </div>
       </div>
     </div>

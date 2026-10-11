@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { asc, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -40,6 +41,7 @@ function parsedBeatGrid(value: string | null) {
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     
     const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows, harmonyAnalysisRows, harmonyEventRows, drumAnalysisRows, drumEventRows, vocalAnalysisRows, vocalFrameRows, vocalPhraseRows, acquisitionRows, buildRows] = await Promise.all([

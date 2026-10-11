@@ -1233,3 +1233,101 @@ warnings · live smoke (pages, studio health, space create/delete) green.
 Note: the Windows ENOENT fix itself is verified by construction + the
 documented Node behavior for .cmd shims — the sandbox is Linux, so the
 user's `npm test` on Windows is the true confirmation.
+
+---
+
+## Windows upload bug — safeLocalPath separator check (2026-10-07)
+
+User's Windows run surfaced "Upload failed before processing started." —
+diagnosed (by the user, correctly) as a real Windows portability bug in the
+Waveyard storage port: `safeLocalPath` checked containment with
+`target.startsWith(resolvedRoot + "/")`. Windows `resolve()` returns
+backslash paths, so every VALID upload was rejected as "Unsafe storage
+key." while the entire suite stayed green on Linux.
+
+Fix (as prescribed): containment now uses `relative(resolvedRoot, target)`
+with `..`/`..${sep}`/`isAbsolute` checks — platform-correct, traversal
+protection preserved. Verified before editing via path.win32 simulation:
+old check rejects valid win32 paths (the smoking gun), new algorithm
+accepts them and still rejects `..\..\Windows\…` and different-drive
+escapes.
+
+Also added the missing test coverage that let this through: a win32-
+semantics regression test (runs on ANY platform — this is what would have
+caught the bug on Linux CI), plus native-platform containment tests and a
+storage provider round-trip. To make the module testable under Node's
+strip-only mode, LocalStorageProvider's constructor parameter property was
+refactored to an explicit field (no behavior change) and both
+safeLocalPath + the class are exported.
+
+Swept the codebase for sibling bugs: the only other containment check
+(spaces/tools.ts safePath) already used path.sep — correct.
+
+Gates: tsc clean · **253/253 tests** · build clean · live upload E2E
+through the fixed path (source stored, file on disk in
+projects/{id}/source/, no storage-key rejection; 503 queue-unavailable is
+the honest no-worker response).
+
+---
+
+## Windows desktop program — audit + architecture plan + Phase 1 (2026-10-07)
+
+The full Windows-desktop brief landed (24 phases). Per its own process
+rules: audit first, plan second, then Phase 1 — implemented and proven
+before anything else.
+
+**Audit (all ten required identifications, grounded in code at f56b245):**
+startup = next dev/build/start with ensure-env pre-hooks; readiness
+contract already exists (`GET /api/health` = DB `select 1`); database =
+Postgres via pg+drizzle, migrations `drizzle/0000…0010` via
+`scripts/db-setup.mjs`; worker = preserved `waveyard-worker/` workspace
+(BullMQ over 9 queues + Python Demucs/analysis services + ffmpeg + Redis,
+`doctor.ts` honest capability); ffmpeg/ffprobe = bare PATH spawns in
+`src/lib/waveyard/audio.ts` (no bundling/env override); storage =
+`.data/waveyard-storage` + `.data/space-workspaces` + LUMA projects in
+browser localStorage; env = DATABASE_URL (required), REDIS_URL (optional,
+honest degradation), WAVEYARD_STORAGE_DIR, SEPARATION_MODEL, STEM_DEVICE,
+size caps, ARCHIVE_ASSISTANT_API_URL (never localhost); browser/server
+boundary mapped; security-sensitive IPC candidates = Spaces run_command
+(stays server-side, never bridged) + future pickers/reveal; smallest
+Electron path = hardened window → health-poll → embed.
+
+**LUMA integration audit (user-supplied, verified in code):** all claims
+confirmed — `noopArenaMediaBridge` throws "Arena integration is not
+configured", `EditRecipe` has crop+analysis, store has
+add/update/remove/reorderLayer, `advanced` block reserved-but-unimplemented,
+projects persist to localStorage ("Projects (this browser)"). Plan doc
+adds workstream L (filesystem projects via desktop adapter, wire the
+media bridge, layers/crop/adaptive surfaces) to ride the desktop phases.
+
+**Plan:** `docs/windows-desktop-architecture.md` — process tree, data-dir
+model (env override → portable marker → platform default), capability
+model, security model, phase-by-phase roadmap mapped to real files,
+honest unknowns (Redis-on-Windows decision by live test, embedded-PG
+runtime deps, Python/Demucs distribution size).
+
+**Phase 1 shipped (`desktop/`):** Electron 44 main process (identity,
+single-instance lock, arena:// protocol groundwork, native menu with real
+Open Data/Logs Folder, crash handling with actual diagnostics + logs
+location, render-process-gone recovery); secure window (contextIsolation,
+no nodeIntegration, sandbox, navigation origin-allowlist, window.open
+denied + external to browser, permissions denied, webview blocked);
+typed IPC contracts (zod-validated, one-file allowlist) + preload bridge;
+pure modules — paths (win32-correct data dirs, portable mode, tested with
+path.win32 on any host), logger (JSONL + ring buffer + secret redaction),
+child-process registry (output capture, tree-kill taskkill /T /F on
+win32, force-kill with confirmed exit); honest splash page; app icon.
+
+20 new tests (win32 path semantics, taskkill tree-kill, origin equality,
+redaction, contract validation). Gates: tsc 0 · **273/273** · build clean
+(zero warnings) · desktop compiles to CJS.
+
+**Honest verification status:** the sandbox cannot download the Electron
+binary (network policy blocks objects.githubusercontent.com — types
+installed, binary not). The real launch smoke is built in:
+`npm run desktop:smoke` launches the actual shell, verifies bridge + IPC
+roundtrip, writes JSON. Runs on any machine with a display — pending on
+the user's Windows box. Known debt (pre-existing, not from this change):
+`npm run lint` carries 31 errors in older src/ code under the stricter
+eslint-config-next 16.3.8 — lint was never a repo gate; cleanup is a
+separate task.

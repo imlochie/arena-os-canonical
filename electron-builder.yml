@@ -1,0 +1,106 @@
+# Arena Windows desktop packaging (electron-builder).
+#
+# Producing the NSIS artifact requires a networked Windows (or cross-build)
+# machine: electron + electron-builder download Electron binaries from
+# github.com, which this sandbox cannot reach. The configuration is complete
+# and committed; run `npm run desktop:dist` on a machine with access.
+#
+# What ships (spec §15: no repo junk, caches, secrets, or fixtures):
+#   - Electron + compiled desktop shell + splash
+#   - Next standalone server (server.js + minimal node_modules)
+#   - .next/static + public/
+#   - desktop-migrations/ (canonical schema)
+#   - FFmpeg + FFprobe binaries (@ffmpeg-installer builds, GPL — see
+#     build/licenses/FFMPEG-LICENSE.txt)
+#   - ONNX Runtime (onnxruntime-node, MIT) — the stem engine's inference
+#     runtime, traced with the server and pruned to the target platform by
+#     scripts/desktop-prepare-server.mjs (see build/licenses/)
+#   - Embedded PostgreSQL windows-x64 binaries
+
+appId: ai.arena.os
+productName: Arena
+copyright: Copyright © Arena
+
+directories:
+  output: desktop-release
+  buildResources: desktop/build
+
+# Package the LOCAL Electron distribution instead of downloading one from
+# github.com (electron 44 has no npm install script; the binary is hydrated
+# lazily into node_modules/electron/dist by electron itself). The wrapper
+# scripts/desktop-dist.mjs validates existence + version before building —
+# no silent mismatches, no disabled integrity checks.
+electronDist: node_modules/electron/dist
+
+files:
+  - desktop/dist/**
+  - desktop/splash/**
+  - desktop/build/icon.png
+  - package.json
+  - "!**/*.test.*"
+  - "!**/__tests__/**"
+
+extraResources:
+  # Next standalone server (built by desktop:prepare-server).
+  #
+  # electron-builder's copyFiles filter PRUNES any `node_modules` directory
+  # that sits directly at the ROOT of an extraResources source
+  # (app-builder-lib util/filter.js: relative === "node_modules" → excluded;
+  # only nested node_modules survive). A single `from: desktop-package/server`
+  # entry therefore shipped server.js WITHOUT its traced runtime — the
+  # installed app died on every launch with "Cannot find module 'next'"
+  # (require stack: resources/app/server/server.js; the generated standalone
+  # server.js requires 'next' bare). So the tree ships as TWO entries: the
+  # server tree itself (node_modules pruned there), plus its node_modules as
+  # their own source, whose root IS node_modules — its children are copied
+  # normally. Guarded by desktop/packaged-server.test.ts, which runs the
+  # real FileMatcher/copyFiles against this file.
+  - from: desktop-package/server
+    to: app/server
+  - from: desktop-package/server/node_modules
+    to: app/server/node_modules
+  # Static assets Next expects beside the server (staged inside server/)
+  # (kept for clarity; desktop-prepare-server stages .next/static + public
+  #  INSIDE the server tree, matching the standalone layout)
+  # Canonical SQL migrations
+  - from: desktop-package/desktop-migrations
+    to: app/desktop-migrations
+  # FFmpeg/FFprobe (GPL builds — license file included)
+  - from: desktop-package/bin
+    to: app/bin
+  - from: desktop/build/licenses
+    to: licenses
+  # Embedded PostgreSQL binaries (platform npm package, extracted at packaging)
+  - from: desktop-package/embedded-postgres
+    to: app/embedded-postgres
+
+asar: true
+asarUnpack:
+  - "**/*.exe"
+
+# The Electron app package (asar) contains ONLY the compiled desktop shell,
+# which imports zero native modules (node builtins + zod + local code). The
+# heavy runtime — Next server, pg, bullmq — ships as extraResources and runs
+# in a SEPARATE process via ELECTRON_RUN_AS_NODE, not inside Electron, so
+# rebuilding native modules for Electron's ABI is both unnecessary and (on a
+# Linux/macOS host) impossible: node-gyp cannot cross-compile. The native
+# modules that do run (sharp, msgpackr-extract) are N-API prebuilds, which
+# are ABI-stable across Node and Electron runtimes.
+npmRebuild: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: desktop/build/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Arena
+  # No auto-updater claims (spec §14): version infrastructure only.
+  deleteAppDataOnUninstall: false

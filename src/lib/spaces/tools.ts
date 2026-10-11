@@ -121,9 +121,22 @@ export function commandAllowed(cmd: string, extraAllow: string[] = []): boolean 
   return (COMMAND_ALLOWLIST as readonly string[]).includes(base) || extraAllow.includes(base);
 }
 
-export async function toolRunCommand(dir: string, cmd: string, timeoutMs = 20_000, extraAllow: string[] = []): Promise<string> {
+export async function toolRunCommand(
+  dir: string,
+  cmd: string,
+  timeoutMs = 20_000,
+  extraAllow: string[] = [],
+  execTarget?: import("./workspace-isolation").ExecTarget,
+): Promise<string> {
   if (!commandAllowed(cmd, extraAllow)) {
     return `refused: "${cmd.trim().split(/\s+/)[0]}" is not on the tool allowlist (${COMMAND_ALLOWLIST.join(", ")}${extraAllow.length ? " + " + extraAllow.join(", ") : ""})`;
+  }
+  // Phase B: when the mission runs isolated, commands execute INSIDE the
+  // container (same allowlist, same timeout); file tools above keep using
+  // the same directory from the host — it is bind-mounted, both views match.
+  if (execTarget && execTarget.env === "isolated") {
+    const { runInTarget } = await import("./workspace-isolation");
+    return runInTarget(execTarget, cmd, timeoutMs);
   }
   return new Promise((resolve) => {
     const parts = cmd.trim().split(/\s+/);
@@ -349,7 +362,12 @@ export async function toolSearchCode(
  * when *.test.{js,mjs,cjs,ts} files exist. A custom command may be given
  * (still allowlist-checked). 60s budget — tests are slower than commands.
  */
-export async function toolRunTests(dir: string, args: { command?: string }, extraAllow: string[] = []): Promise<string> {
+export async function toolRunTests(
+  dir: string,
+  args: { command?: string },
+  extraAllow: string[] = [],
+  execTarget?: import("./workspace-isolation").ExecTarget,
+): Promise<string> {
   const hasPkg = await readFile(path.join(dir, "package.json"), "utf8").catch(() => "");
   let cmd = String(args.command ?? "").trim();
   if (!cmd) {
@@ -376,7 +394,7 @@ export async function toolRunTests(dir: string, args: { command?: string }, extr
       else return "no tests found — write *.test.js files or add a package.json test script first";
     }
   }
-  const out = await toolRunCommand(dir, cmd, 60_000, extraAllow);
+  const out = await toolRunCommand(dir, cmd, 60_000, extraAllow, execTarget);
   return `[${cmd}]\n${out}`;
 }
 
@@ -484,7 +502,13 @@ export interface ToolOutcome {
 export async function executeTool(
   spaceId: string,
   action: ToolAction,
-  opts: { githubToken?: string; extraAllow?: string[] } = {}
+  opts: {
+    githubToken?: string;
+    extraAllow?: string[];
+    execTarget?: import("./workspace-isolation").ExecTarget;
+    browserEngine?: import("./browser").BrowserEngine;
+    externalDeps?: import("./external").ExternalDeps;
+  } = {}
 ): Promise<ToolOutcome> {
   const dir = await ensureWorkspace(spaceId);
   const t0 = Date.now();
@@ -508,7 +532,7 @@ export async function executeTool(
       case "delete_file":
         return toolDeleteFile(dir, String(action.args.path ?? ""));
       case "run_command":
-        return toolRunCommand(dir, String(action.args.command ?? ""), 20_000, opts.extraAllow ?? []);
+        return toolRunCommand(dir, String(action.args.command ?? ""), 20_000, opts.extraAllow ?? [], opts.execTarget);
       case "search_code":
         return toolSearchCode(dir, {
           pattern: String(action.args.pattern ?? ""),
@@ -516,9 +540,51 @@ export async function executeTool(
           maxResults: action.args.maxResults ? Number(action.args.maxResults) : undefined,
         });
       case "run_tests":
-        return toolRunTests(dir, { command: action.args.command ? String(action.args.command) : undefined }, opts.extraAllow ?? []);
+        return toolRunTests(dir, { command: action.args.command ? String(action.args.command) : undefined }, opts.extraAllow ?? [], opts.execTarget);
       case "fetch_url":
         return toolFetchUrl(String(action.args.url ?? ""));
+      case "browser_navigate":
+        return (await import("./browser")).toolBrowserNavigate(spaceId, String(action.args.url ?? ""), opts.browserEngine);
+      case "browser_extract":
+        return (await import("./browser")).toolBrowserExtract(
+          spaceId,
+          String(action.args.selector ?? "body"),
+          action.args.limit ? Number(action.args.limit) : 10,
+          opts.browserEngine,
+        );
+      case "browser_screenshot":
+        return (await import("./browser")).toolBrowserScreenshot(spaceId, opts.browserEngine);
+      case "browser_click":
+        return (await import("./browser")).toolBrowserClick(spaceId, String(action.args.selector ?? ""), opts.browserEngine);
+      case "external_call":
+        return (await import("./external")).toolExternalCall(
+          { to: String(action.args.to ?? ""), message: String(action.args.message ?? "") },
+          opts.externalDeps,
+        );
+      case "external_sms":
+        return (await import("./external")).toolExternalSms(
+          { to: String(action.args.to ?? ""), message: String(action.args.message ?? "") },
+          opts.externalDeps,
+        );
+      case "payment_link": {
+        const res = await (await import("./external")).toolPaymentLink(
+          {
+            amount: (action.args.amount ?? 0) as string | number,
+            description: String(action.args.description ?? ""),
+            currency: action.args.currency ? String(action.args.currency) : undefined,
+          },
+          opts.externalDeps,
+        );
+        if (!res.ok) throw new Error(res.output); // refused → recorded as a tool failure, never a silent success
+        return res.output;
+      }
+      case "browser_fill":
+        return (await import("./browser")).toolBrowserFill(
+          spaceId,
+          String(action.args.selector ?? ""),
+          String(action.args.value ?? ""),
+          opts.browserEngine,
+        );
       case "github_publish":
         return toolGithubPublish(
           dir,

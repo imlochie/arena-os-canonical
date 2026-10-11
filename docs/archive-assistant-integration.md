@@ -1,5 +1,14 @@
 # Archive Assistant ↔ Arena: read-only context bridge
 
+> **⚠ SUPERSEDED — the merge landed.** Archive Assistant is now NATIVE inside
+> Arena OS (no external app, no bridge URL, no bearer/local modes). The six
+> read operations are served from Arena's own tables by
+> `src/lib/mediaArchive/contextClient.ts`, still validated against the same
+> generated contract. See [`docs/archive-assistant-merge.md`](./archive-assistant-merge.md)
+> for the design. This document is kept as the historical record of the seam
+> the bridge used to be, and because its honesty rules (read-only, fail
+> closed, evidence handles, never guess absence) carried over verbatim.
+
 > **Roles.** Archive Assistant owns truth and authority. Arena owns
 > interpretation and explanation. This document describes the one seam that
 > connects them.

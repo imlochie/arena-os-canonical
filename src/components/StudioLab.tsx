@@ -186,6 +186,10 @@ function timeAgo(iso: string): string {
 export default function StudioLab() {
   const [settings, setSettings] = useState<StudioSettings>(DEFAULT_SETTINGS);
   const [showSettings, setShowSettings] = useState(false);
+  // Model detail (audit wiring: /api/studio/models/{type} was UI-orphaned) —
+  // on-demand WanGP defaults/schema, honestly labeled live-bridge vs offline.
+  const [modelDetail, setModelDetail] = useState<{ detail: Record<string, unknown>; live: boolean } | null>(null);
+  const [modelDetailBusy, setModelDetailBusy] = useState(false);
   const [status, setStatus] = useState<BackendStatus[]>([]);
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [models, setModels] = useState<{ wangp: ModelInfo[]; demo: ModelInfo[]; comfyui: ModelInfo[]; dashscope: ModelInfo[] }>({
@@ -454,6 +458,20 @@ export default function StudioLab() {
   const active = jobs.filter((j) => !TERMINAL.has(j.status));
   const done = jobs.filter((j) => TERMINAL.has(j.status));
   const selectedModel = backendModels.find((m) => m.modelType === effectiveModelType);
+  const loadModelDetail = async () => {
+    if (!effectiveModelType || modelDetailBusy) return;
+    setModelDetailBusy(true);
+    setModelDetail(null);
+    try {
+      const res = await fetch(`/api/studio/models/${encodeURIComponent(effectiveModelType)}`);
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.detail) setModelDetail({ detail: body.detail, live: body.live === true });
+    } catch {
+      /* offline: leave the expander empty */
+    } finally {
+      setModelDetailBusy(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -575,6 +593,19 @@ export default function StudioLab() {
         </div>
       )}
 
+      {/* Honesty banner (audit P1): the Demo backend is procedural previews,
+          not model output — say so loudly while it is the active backend. */}
+      {effectiveBackend === "demo" && (
+        <div className="mt-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-200" role="status">
+          <strong>Demo backend active.</strong> Generations are procedural previews rendered locally —{" "}
+          <em>not</em> model output. Every result stays labeled with the backend that made it.{" "}
+          <button onClick={() => setShowSettings(true)} className="font-bold underline decoration-dotted">
+            Connect a backend
+          </button>{" "}
+          (WanGP bridge, ComfyUI, or a BYOK DashScope key) for real generation.
+        </div>
+      )}
+
       {/* main grid */}
       <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(360px,420px)_1fr]">
         {/* ---- left: composer ---- */}
@@ -664,6 +695,25 @@ export default function StudioLab() {
               {selectedModel.description}
               {selectedModel.minVram ? ` · ~${selectedModel.minVram}GB VRAM class` : ""}
             </p>
+          )}
+          {effectiveModelType && (
+            <div className="mt-2">
+              <button
+                onClick={() => (modelDetail !== null ? setModelDetail(null) : void loadModelDetail())}
+                disabled={modelDetailBusy}
+                className="rounded-lg bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-50"
+              >
+                {modelDetailBusy ? "Loading…" : modelDetail ? "Hide model details" : "Model details"}
+              </button>
+              {modelDetail && (
+                <div className="mt-2 rounded-lg bg-black/30 p-2.5 ring-1 ring-white/5" data-testid="studio-model-detail">
+                  <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                    {modelDetail.live ? "Live WanGP defaults" : "Offline catalog defaults"}
+                  </p>
+                  <pre className="overflow-x-auto text-[11px] leading-4 text-slate-300">{JSON.stringify(modelDetail.detail, null, 2)}</pre>
+                </div>
+              )}
+            </div>
           )}
 
           {/* prompt */}

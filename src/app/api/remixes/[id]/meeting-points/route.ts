@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { asc, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
@@ -130,6 +131,7 @@ async function discover(remix: typeof remixSessions.$inferSelect, stemId: string
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "viewer");
     const body = await request.json().catch(() => ({}));
     const result = await discover(remix, String(body.stemAssetId ?? ""), String(body.sourceSectionId ?? ""));
@@ -142,6 +144,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
+    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "editor");
     const body = await request.json().catch(() => ({}));
     const stemId = String(body.stemAssetId ?? ""); const sectionId = String(body.sourceSectionId ?? ""); const pointId = String(body.meetingPointId ?? "");

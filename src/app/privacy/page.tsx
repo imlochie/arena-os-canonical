@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import PrivacyControls from "@/components/PrivacyControls";
 
@@ -175,12 +176,12 @@ export default function PrivacyPage() {
           </>
         )}
         <div className="mt-3 flex flex-wrap gap-2">
-          <a href="/api/export?format=json" className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold text-white hover:bg-white/10">
+          <Link href="/api/export?format=json" className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold text-white hover:bg-white/10">
             ⬇️ Export battles (JSON)
-          </a>
-          <a href="/api/export?format=csv" className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold text-white hover:bg-white/10">
+          </Link>
+          <Link href="/api/export?format=csv" className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold text-white hover:bg-white/10">
             ⬇️ Export battles (CSV)
-          </a>
+          </Link>
         </div>
       </div>
 
@@ -265,8 +266,8 @@ export default function PrivacyPage() {
           </p>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <a href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Back to the arena</a>
-          <a href="/collab" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🤝 Collab Lab</a>
+          <Link href="/" className="btn-arena rounded-xl px-5 py-2 text-sm font-extrabold text-white">⚔️ Back to the arena</Link>
+          <Link href="/collab" className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-bold text-white hover:bg-white/10">🤝 Collab Lab</Link>
         </div>
       </div>
     </div>
