@@ -10,6 +10,7 @@
  */
 
 import { and, desc, eq } from "drizzle-orm";
+import { stat } from "node:fs/promises";
 import { db } from "@/db";
 import { mediaLibraryItems, mediaProviders, mediaRefreshes } from "@/db/schema";
 import { openSecret, sealSecret } from "../secretBox";
@@ -69,12 +70,24 @@ export async function saveMediaProvider(input: {
   token: string;
   username?: string;
 }): Promise<MediaProviderPublic> {
-  const baseUrl = input.baseUrl.trim().replace(/\/+$/, "");
-  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
-    throw new MediaProviderError("bad_response", "baseUrl must be an http(s) URL.");
+  if (input.kind === "local") {
+    // The local library's "server" is a folder on this machine — no URL,
+    // no token; the folder just has to exist.
+    const root = input.baseUrl.trim();
+    if (!root || !root.startsWith("/")) {
+      throw new MediaProviderError("bad_response", "baseUrl must be an absolute folder path for a local library.");
+    }
+    const info = await stat(root).catch(() => null);
+    if (!info || !info.isDirectory()) throw new MediaProviderError("connect_failed", `Folder not found: ${root}`);
   }
-  if (!input.token.trim()) throw new MediaProviderError("not_configured", "token is required.");
-  const sealed = sealSecret(input.token.trim());
+  const baseUrl = input.kind === "local" ? input.baseUrl.trim() : input.baseUrl.trim().replace(/\/+$/, "");
+  if (input.kind !== "local") {
+    if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
+      throw new MediaProviderError("bad_response", "baseUrl must be an http(s) URL.");
+    }
+    if (!input.token.trim()) throw new MediaProviderError("not_configured", "token is required.");
+  }
+  const sealed = sealSecret(input.kind === "local" ? "local" : input.token.trim());
   const existing = await db.select().from(mediaProviders).where(eq(mediaProviders.kind, input.kind)).limit(1);
   const values = {
     name: (input.name ?? "").trim(),
@@ -108,6 +121,10 @@ export async function testMediaProviderConnection(input: {
   username?: string;
 }): Promise<{ ok: true; libraries: string[] } | { ok: false; code: string; detail: string }> {
   try {
+    if (input.kind === "local") {
+      const { testLocalLibraryRoot } = await import("./local");
+      return await testLocalLibraryRoot(input.baseUrl.trim());
+    }
     const base = input.baseUrl.trim().replace(/\/+$/, "");
     if (input.kind === "plex") {
       const libraries = await fetchPlexLibraries(base, input.token.trim());
@@ -162,7 +179,18 @@ export async function runProviderSync(
   const items: NormalizedMediaItem[] = [];
 
   try {
-    if (kind === "plex") {
+    if (kind === "local") {
+      // The local library: scan the folder with the real ffprobe — no
+      // third-party server involved at any point.
+      const { scanLocalLibrary } = await import("./local");
+      const scan = await scanLocalLibrary(provider.baseUrl);
+      const topFolders = new Set(scan.items.map((item) => item.libraryName));
+      for (const folder of topFolders) libraries.push({ key: folder, title: folder });
+      items.push(...scan.items);
+      for (const skip of scan.skipped) {
+        failedLibraries.push({ library: skip.file, reason: `ffprobe could not read it: ${skip.reason}` });
+      }
+    } else if (kind === "plex") {
       libraries.push(...(await fetchPlexLibraries(base, token)));
       for (const library of libraries) {
         try {

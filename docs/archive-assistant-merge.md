@@ -82,3 +82,13 @@ implementation that reads the local database:
   the native six-op client against the generated contract, bridge status),
   plus the rewritten native route tests (`src/app/api/archive/routes.test.ts`,
   `src/app/api/chat/route.test.ts`)
+
+## Post-merge: the local library (Wave 6 groundwork)
+
+The provider model now has a third, server-less kind: **local**. A folder on
+disk becomes a first-class provider — scanned by the real ffprobe through the
+same sync machinery, reconciled like any provider, streamed with HTTP Range
+by Arena itself, with Arena's own watch state and Toolbox-powered
+transcode-on-demand. That's the Plex-independence groundwork; the full story
+lives in `docs/local-library.md`. The gaps above (acquisition, executable
+file operations, discovery) remain open and unchanged.

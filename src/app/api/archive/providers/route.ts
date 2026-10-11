@@ -1,6 +1,7 @@
 import {
   MediaProviderError,
   isMediaProviderKind,
+  type MediaProviderKind,
 } from "@/lib/mediaArchive/types";
 import {
   deleteMediaProvider,
@@ -41,13 +42,14 @@ export async function POST(req: Request) {
   const action = String(body.action ?? "");
   const kindRaw = String(body.kind ?? "");
   if (action !== "reconcile" && !isMediaProviderKind(kindRaw)) {
-    return Response.json({ error: "bad_input", message: "kind must be plex or jellyfin." }, { status: 400 });
+    return Response.json({ error: "bad_input", message: "kind must be plex, jellyfin, or local." }, { status: 400 });
   }
+  const kind = kindRaw as MediaProviderKind;
 
   try {
     if (action === "test") {
       const result = await testMediaProviderConnection({
-        kind: kindRaw as "plex" | "jellyfin",
+        kind,
         baseUrl: String(body.baseUrl ?? ""),
         token: String(body.token ?? ""),
         username: body.username === undefined ? undefined : String(body.username),
@@ -56,7 +58,7 @@ export async function POST(req: Request) {
     }
     if (action === "save") {
       const provider = await saveMediaProvider({
-        kind: kindRaw as "plex" | "jellyfin",
+        kind,
         name: body.name === undefined ? undefined : String(body.name),
         baseUrl: String(body.baseUrl ?? ""),
         token: String(body.token ?? ""),
@@ -65,11 +67,11 @@ export async function POST(req: Request) {
       return Response.json({ provider }, { status: 201 });
     }
     if (action === "delete") {
-      const removed = await deleteMediaProvider(kindRaw as "plex" | "jellyfin");
+      const removed = await deleteMediaProvider(kind);
       return Response.json({ removed });
     }
     if (action === "sync") {
-      const outcome = await runProviderSync(kindRaw as "plex" | "jellyfin");
+      const outcome = await runProviderSync(kind);
       return Response.json({ outcome });
     }
     if (action === "reconcile") {

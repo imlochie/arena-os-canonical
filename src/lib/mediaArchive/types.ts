@@ -9,12 +9,12 @@
  * the native client must still validate against them.
  */
 
-export type MediaProviderKind = "plex" | "jellyfin";
+export type MediaProviderKind = "plex" | "jellyfin" | "local";
 
-export const MEDIA_PROVIDER_KINDS: readonly MediaProviderKind[] = ["plex", "jellyfin"];
+export const MEDIA_PROVIDER_KINDS: readonly MediaProviderKind[] = ["plex", "jellyfin", "local"];
 
 export function isMediaProviderKind(value: string): value is MediaProviderKind {
-  return value === "plex" || value === "jellyfin";
+  return value === "plex" || value === "jellyfin" || value === "local";
 }
 
 /** One normalized library item, provider-agnostic. */

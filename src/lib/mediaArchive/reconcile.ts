@@ -86,7 +86,7 @@ export async function runReconciliation(): Promise<ReconciliationSummaryNumbers>
     const key = mediaIdentityKey(item.title, item.year);
     const bucket = providerByIdentity.get(key) ?? [];
     bucket.push({
-      provider: (item.providerKind === "jellyfin" ? "jellyfin" : "plex") as MediaProviderKind,
+      provider: item.providerKind as MediaProviderKind,
       ratingKey: item.ratingKey,
       title: item.title,
       year: item.year,

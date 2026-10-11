@@ -44,6 +44,14 @@ type ReviewItem = {
   currentObservationId: number | null;
 };
 
+type LocalShelfItem = {
+  id: number;
+  title: string;
+  year: number | null;
+  itemType: string;
+  libraryName: string;
+};
+
 type SyncOutcome = {
   provider: string;
   status: string;
@@ -66,10 +74,12 @@ export default function ArchiveAssistantBridge({ status }: { status: ArchiveBrid
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   // add-provider form
-  const [kind, setKind] = useState<"plex" | "jellyfin">("plex");
+  const [kind, setKind] = useState<"plex" | "jellyfin" | "local">("plex");
   const [baseUrl, setBaseUrl] = useState("");
   const [token, setToken] = useState("");
   const [username, setUsername] = useState("");
+  // the local library shelf (Plex-free watching)
+  const [shelf, setShelf] = useState<LocalShelfItem[]>([]);
 
   const refresh = useCallback(async () => {
     try {
@@ -79,6 +89,12 @@ export default function ArchiveAssistantBridge({ status }: { status: ArchiveBrid
       ]);
       setProviders(p.providers ?? []);
       setReviews(r.items ?? []);
+      if ((p.providers ?? []).some((x: Provider) => x.kind === "local")) {
+        const shelfResponse = await fetch("/api/library", { cache: "no-store" }).then((x) => x.json()).catch(() => null);
+        setShelf(shelfResponse?.items ?? []);
+      } else {
+        setShelf([]);
+      }
     } catch {
       /* best effort */
     }
@@ -115,7 +131,7 @@ export default function ArchiveAssistantBridge({ status }: { status: ArchiveBrid
   );
 
   const saveProvider = useCallback(async () => {
-    if (!baseUrl.trim() || !token) return;
+    if (!baseUrl.trim() || (kind !== "local" && !token)) return;
     const data = await post("save", { action: "save", kind, baseUrl, token, username });
     if (data) {
       setToken("");
@@ -125,7 +141,7 @@ export default function ArchiveAssistantBridge({ status }: { status: ArchiveBrid
   }, [baseUrl, token, kind, username, post, refresh]);
 
   const testProvider = useCallback(async () => {
-    if (!baseUrl.trim() || !token) return;
+    if (!baseUrl.trim() || (kind !== "local" && !token)) return;
     const data = await post("test", { action: "test", kind, baseUrl, token, username });
     if (data && data.ok) {
       setMessage(`✓ Connected — libraries: ${(data.libraries as string[]).join(", ") || "(none)"}`);
@@ -314,23 +330,33 @@ export default function ArchiveAssistantBridge({ status }: { status: ArchiveBrid
             {providers.length ? "Add another server" : "Connect a server"}
           </summary>
           <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <select className={input} value={kind} onChange={(e) => setKind(e.target.value as "plex" | "jellyfin")}>
+            <select className={input} value={kind} onChange={(e) => setKind(e.target.value as "plex" | "jellyfin" | "local")}>
               <option value="plex">Plex</option>
               <option value="jellyfin">Jellyfin</option>
+              <option value="local">Local folder (no server)</option>
             </select>
-            <input className={input} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://192.168.1.10:32400" />
-            <input className={input} type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={kind === "plex" ? "X-Plex-Token" : "API key"} />
+            <input
+              className={input}
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={kind === "local" ? "/home/you/media" : "http://192.168.1.10:32400"}
+            />
+            {kind === "local" ? (
+              <input className={input} disabled placeholder="No token — it's your own disk" />
+            ) : (
+              <input className={input} type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={kind === "plex" ? "X-Plex-Token" : "API key"} />
+            )}
             {kind === "jellyfin" ? (
               <input className={input} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="User id (optional — first user is used)" />
             ) : (
-              <input className={input} disabled placeholder="Token stays on this machine (sealed)" />
+              <input className={input} disabled placeholder={kind === "local" ? "Indexed locally by ffmpeg — nothing leaves this machine" : "Token stays on this machine (sealed)"} />
             )}
           </div>
           <div className="mt-2 flex gap-2">
-            <button className={action} disabled={busy !== null || !baseUrl.trim() || !token} onClick={() => void testProvider()}>
+            <button className={action} disabled={busy !== null || !baseUrl.trim() || (kind !== "local" && !token)} onClick={() => void testProvider()}>
               {busy === "test" ? "Testing…" : "Test connection"}
             </button>
-            <button className={action} disabled={busy !== null || !baseUrl.trim() || !token} onClick={() => void saveProvider()}>
+            <button className={action} disabled={busy !== null || !baseUrl.trim() || (kind !== "local" && !token)} onClick={() => void saveProvider()}>
               {busy === "save" ? "Saving…" : "Save"}
             </button>
           </div>
@@ -339,6 +365,34 @@ export default function ArchiveAssistantBridge({ status }: { status: ArchiveBrid
           {busy === "reconcile" ? "Reconciling…" : "Run reconciliation"}
         </button>
       </div>
+
+      {/* the local shelf — watch without any server */}
+      {shelf.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400">
+            Local library <span className="ml-1 text-cyan-300">({shelf.length})</span>
+          </h3>
+          <ul className="mt-3 space-y-2">
+            {shelf.slice(0, 12).map((entry) => (
+              <li key={entry.id} className="flex flex-wrap items-baseline gap-2 rounded-xl border border-white/10 bg-black/30 p-3">
+                <p className="min-w-0 flex-1 truncate text-sm font-bold text-white">
+                  {entry.title}
+                  {entry.year !== null && <span className="ml-1 text-slate-400">({entry.year})</span>}
+                </p>
+                <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300">
+                  {entry.itemType}
+                </span>
+                <a
+                  className="rounded-lg bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-500"
+                  href={`/watch/${entry.id}`}
+                >
+                  ▶ Watch
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* review workload */}
       <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">

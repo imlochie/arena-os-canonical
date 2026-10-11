@@ -213,7 +213,7 @@ export function getJob(id: string): ConvertJob | null {
 }
 
 /** Spawn ffmpeg with live progress (-progress pipe:1) and a hard timeout. */
-function runFfmpegWithProgress(
+export function runFfmpegWithProgress(
   args: string[],
   totalUs: number | null,
   onProgress: (update: { fraction: number | null; speed: string | null }) => void,
