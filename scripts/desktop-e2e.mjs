@@ -221,7 +221,9 @@ async function main() {
       ? { done: true, job }
       : { done: false, job };
   });
-  step("separation fails HONESTLY on desktop (no Python executor)", separation.job?.status === "failed" && /no local executor/i.test(String(separation.job?.errorMessage ?? "")), {
+  // Both honest cold-machine failures: model absent (V6 runtime policy) or
+  // executor missing. A success or any other error is dishonest here.
+  step("separation fails HONESTLY on desktop (no local separation capability)", separation.job?.status === "failed" && (/no local executor/i.test(String(separation.job?.errorMessage ?? "")) || /is not present on this machine/i.test(String(separation.job?.errorMessage ?? ""))), {
     info: String(separation.job?.errorMessage ?? "").slice(0, 160),
   });
 

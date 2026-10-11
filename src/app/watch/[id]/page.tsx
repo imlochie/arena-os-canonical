@@ -187,7 +187,7 @@ export default function WatchPage() {
         ) : (
           <div className="flex aspect-video w-full flex-col items-center justify-center gap-3 px-8 text-center">
             <MonitorPlay size={34} className="text-slate-500" aria-hidden="true" />
-            <p className="text-sm text-slate-300">This file won't play natively in a browser.</p>
+            <p className="text-sm text-slate-300">This file won&apos;t play natively in a browser.</p>
             <p className="max-w-md text-xs leading-5 text-slate-500">{playability.reason}</p>
             {transcode?.status === "running" ? (
               <div className="w-full max-w-sm">
@@ -228,7 +228,7 @@ export default function WatchPage() {
         {playability.mode === "transcode" && `⚠ Needs a playable copy — the source is never modified.`}
       </p>
       <p className="mt-1 text-xs text-slate-600">
-        Watch progress is recorded in Arena's own database — not by Plex, not by anyone.
+        Watch progress is recorded in Arena&apos;s own database — not by Plex, not by anyone.
       </p>
     </main>
   );

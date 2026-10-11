@@ -21,3 +21,4 @@ desktop-windows-acceptance-report.json
 # Local tool caches (content-hash based; never committed)
 .eslintcache
 playwright-report/
+tsconfig.tsbuildinfo

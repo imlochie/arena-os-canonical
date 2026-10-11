@@ -344,10 +344,16 @@ export async function runDesktopAcceptance(inputs: AcceptanceInputs): Promise<Ac
         const job = findJob(body, "separation");
         return { done: ["complete", "failed"].includes(str(job.status)), value: job };
       }, 90_000);
+      // Honest-failure taxonomy for a fresh install with no local separation
+      // capability: either the model is absent (V6 runtime policy checks the
+      // ONNX model first) or the local executor is missing. Anything else —
+      // or a success — is dishonest on a cold machine.
+      const separationError = str(rec(separation).errorMessage);
       s.step(
-        "separation reports an HONEST failure (no local Python executor)",
-        rec(separation).status === "failed" && /no local executor/i.test(str(rec(separation).errorMessage)),
-        str(rec(separation).errorMessage).slice(0, 160),
+        "separation reports an HONEST failure (no local separation capability)",
+        rec(separation).status === "failed" &&
+          (/no local executor/i.test(separationError) || /is not present on this machine/i.test(separationError)),
+        separationError.slice(0, 160),
       );
 
       const waveformJob = await pollUntil((body) => {

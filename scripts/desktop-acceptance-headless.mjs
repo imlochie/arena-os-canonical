@@ -58,7 +58,9 @@ try {
     platform: process.platform,
     resultPath: reportPath,
     logger,
-    env: { ...process.env },
+    // The evaluator must see the SAME ARENA_DATA_DIR the dirs were resolved
+    // with, or the env-override step can never verify its own override.
+    env: { ...process.env, ARENA_DATA_DIR: dataRoot },
   });
 
   for (const [name, section] of Object.entries(report.sections)) {
