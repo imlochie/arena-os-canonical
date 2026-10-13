@@ -71,6 +71,14 @@ Two options, in order of preference:
     source of truth either way.
   - GPU: detect an NVIDIA runtime at start; offer a CUDA-enabled worker
     package when present. Never guess — report.
+  - **Already real (A7, this slice):** the deep pass does not wait for this
+    phase. `separation/deep.ts` discovers whatever Demucs the machine has
+    (`WAVEYARD_DEEP_PYTHON` → `PYTHON_BIN` → platform names), runs
+    `htdemucs_6s` as a child process with live progress, and reports the
+    exact prepare step when the machine is not ready — so "the owner
+    installed Demucs" is a working configuration today, and the provisioning
+    work above becomes the zero-setup path to the same bridge. See
+    `docs/ADR-007-deep-separation-engine-bridge.md`.
 
 ## Phase 5 — Packaging and updates
 

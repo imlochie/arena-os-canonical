@@ -14,6 +14,8 @@ import {
 } from "@/db/waveyardSchema";
 import { enqueueSeparation, enqueueWaveform } from "@/lib/waveyard/queue";
 import { defaultSeparationModel, isAcceptableSeparationModel } from "@/lib/waveyard/separation/selection";
+import { isDeepSeparationMode } from "@/lib/waveyard/separation/modes";
+import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
@@ -32,6 +34,15 @@ export async function POST(request: Request) {
     const requestedModel = modelField !== null && String(modelField).trim() !== "" ? String(modelField) : defaultSeparationModel();
     if (!isAcceptableSeparationModel(requestedModel)) {
       return NextResponse.json({ error: `Unknown separation target "${requestedModel}" — use the app's built-in choices.` }, { status: 400 });
+    }
+    // The deep pass needs the owner-prepared engine on THIS machine. Refuse
+    // before a byte is stored (the queue would only fail later, after the
+    // upload) with the exact prepare step — never a doomed job.
+    if (isDeepSeparationMode(requestedModel)) {
+      const deep = deepEngineStatusForThisRuntime();
+      if (!deep.prepared) {
+        return NextResponse.json({ error: deep.reason, deep: { prepared: false } }, { status: 503 });
+      }
     }
     const requestedDevice = String(form.get("device") ?? process.env.STEM_DEVICE ?? "auto");
     const upload = form.get("file");

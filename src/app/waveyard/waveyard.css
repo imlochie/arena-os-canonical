@@ -839,6 +839,8 @@
 .deck-chip:hover{color:var(--text-primary)}
 .deck-chip.off{background:color-mix(in srgb,var(--danger) 22%,transparent);border-color:var(--danger);color:var(--danger)}
 .deck-chip.on{background:var(--lane);border-color:var(--lane);color:#10131a}
+.deck-chip:disabled{opacity:.45}
+.deck-chip-deep{border-color:color-mix(in srgb,var(--lane) 65%,transparent);font-weight:900}
 .stem-deck-fader{width:120px;accent-color:var(--lane)}
 .stem-deck-transport{display:flex;align-items:center;gap:16px;margin-top:16px;flex-wrap:wrap}
 .stem-deck-play{width:58px;height:58px;border-radius:50%;border:0;background:var(--text-primary);color:#10131a;font-size:20px;display:grid;place-items:center;box-shadow:0 10px 30px rgba(245,244,240,.18);transition:transform .12s ease}

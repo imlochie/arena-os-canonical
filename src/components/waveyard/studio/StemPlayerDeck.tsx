@@ -12,12 +12,19 @@
  * Every control is REAL: volume/mute/solo write the same MixerValues the
  * mixer console uses (one graph, two views), play/seek drive the shared
  * transport, and the waveforms are the assets' real computed peaks.
+ *
+ * Each lane also offers the two recursive passes: the ⋁ chip separates the
+ * stem into the registry's trained categories (stem-layers), and the ⇊ chip
+ * runs the owner-prepared DEEP engine on it (deep-stems) — six sources per
+ * lane, so guitar and piano surfaces come out as their own lanes. Both ride
+ * the same durable job pipeline and both land here as new lanes.
  */
 
 import { useState } from "react";
 
 import { WaveformCanvas } from "../WaveformCanvas";
 import type { MixerValues, useStemTransport } from "@/lib/waveyard/useStemTransport";
+import { DEEP_STEM_COLORS } from "@/lib/waveyard/separation/modes";
 import { clock, type Source, type Stem } from "./types";
 
 /** Second-pass separation targets offered per stem (stem-layers route). */
@@ -30,12 +37,10 @@ const LAYER_TARGETS = [
 
 type Transport = ReturnType<typeof useStemTransport>;
 
-/** stem.fm's four, with the studio's existing palette. */
+/** stem.fm's four, the studio's palette, and the deep pass's extra lanes
+ *  (guitar + piano — only the six-source engine can produce them). */
 const STEM_COLORS: Record<string, string> = {
-  vocals: "#ff98bd",
-  drums: "#8be5ff",
-  bass: "#b7a0ff",
-  other: "#f8ca7b",
+  ...DEEP_STEM_COLORS,
   melody: "#f8ca7b",
   instrumental: "#9ee79b",
 };
@@ -71,6 +76,7 @@ export function StemPlayerDeck({
   const [layersFor, setLayersFor] = useState<string | null>(null);
   const [layerError, setLayerError] = useState<string | null>(null);
   const [layerNotice, setLayerNotice] = useState<string | null>(null);
+  const [deepBusy, setDeepBusy] = useState<string | null>(null);
 
   const separateLayers = async (stem: Stem, target: string) => {
     setLayerError(null);
@@ -88,6 +94,32 @@ export function StemPlayerDeck({
     }
     setLayersFor(null);
     setLayerNotice(`Separating ${body.layering?.target ?? "layers"} out of ${stemDisplayName(stem.stemType)} — new lanes appear when done.`);
+  };
+
+  /** The deep pass: the owner-prepared engine, six sources per lane. */
+  const separateDeep = async (stem: Stem) => {
+    setLayerError(null);
+    setLayerNotice(`Going deeper on ${stemDisplayName(stem.stemType)}…`);
+    setDeepBusy(stem.id);
+    try {
+      const response = await fetch(`/api/waveyard/projects/${projectId}/deep-stems`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stemAssetId: stem.id }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setLayerNotice(null);
+        setLayerError(body.error ?? "The deep pass could not start.");
+        return;
+      }
+      setLayersFor(null);
+      setLayerNotice(
+        `Going deeper on ${stemDisplayName(stem.stemType)} — six deep lanes (guitar and piano included) appear when it finishes.`,
+      );
+    } finally {
+      setDeepBusy(null);
+    }
   };
 
   if (stems.length === 0) return null;
@@ -146,6 +178,15 @@ export function StemPlayerDeck({
                       onClick={() => { setLayersFor(layersFor === stem.id ? null : stem.id); setLayerError(null); }}
                     >⋁</button>
                   )}
+                  {!stem.stemType.includes("/") && (
+                    <button
+                      className="deck-chip deck-chip-deep"
+                      disabled={deepBusy === stem.id}
+                      aria-label={`Go deeper on ${stemDisplayName(stem.stemType)} — six-source deep pass`}
+                      title="Go deeper: run the six-source deep engine on this stem (guitar and piano become their own lanes)"
+                      onClick={() => void separateDeep(stem)}
+                    >⇊</button>
+                  )}
                   <a
                     className="deck-chip"
                     aria-label={`Download ${stemDisplayName(stem.stemType)} as WAV`}
@@ -173,7 +214,7 @@ export function StemPlayerDeck({
                       {target.label}
                     </button>
                   ))}
-                  <small>New lanes appear below when the pass finishes. Grabbing a specific instrument (a flute line, a lead) is the chop scanner’s job — it works on any tonal stem.</small>
+                  <small>New lanes appear below when the pass finishes. Grabbing a specific instrument (a flute line, a lead) is the chop scanner’s job — it works on any tonal stem. The ⇊ chip next to this one goes deeper: six sources per lane, guitar and piano included.</small>
                 </div>
               )}
               <WaveformCanvas
