@@ -30,6 +30,26 @@ jobs:
     name: Typecheck, lint, test, build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # The suite's PG-gated tests (archive routes, email accounts, the local
+    # media library, missions) assert against a REAL PostgreSQL — they fail
+    # loudly rather than skip when it is missing. CI provides one, exactly
+    # like a dev machine running `npm run db:setup`.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +67,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Prepare test database
+        run: npm run db:setup
 
       - name: Test
         run: |
