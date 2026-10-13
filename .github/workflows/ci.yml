@@ -71,10 +71,15 @@ jobs:
       - name: Prepare test database
         run: npm run db:setup
 
+      # The suite's PG-gated files share one database and several of them wipe
+      # shared tables in their cleanup, so two files running at once can
+      # corrupt each other's fixtures (observed: the local-library file's rows
+      # vanishing mid-run). Files run one at a time here so the shared-database
+      # contract is deterministic; the run is otherwise identical to `npm test`.
       - name: Test
         run: |
           set -o pipefail
-          npm test 2>&1 | tee /tmp/waveyard-test-tap.log
+          npm test -- --test-concurrency=1 2>&1 | tee /tmp/waveyard-test-tap.log
 
       # The TAP output is the only place a failing test names itself: the
       # artifact keeps it downloadable, and the annotations put the failing
