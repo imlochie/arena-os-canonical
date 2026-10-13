@@ -49,7 +49,20 @@ jobs:
         run: npm run lint
 
       - name: Test
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/waveyard-test-tap.log
+
+      # The TAP output is the only place a failing test names itself. It is
+      # uploaded when the run fails so a failure can be read back (the log
+      # API serves it from a host that is not always reachable).
+      - name: Upload test output (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-tap-output
+          path: /tmp/waveyard-test-tap.log
+          if-no-files-found: ignore
 
       - name: Build
         run: npm run build
