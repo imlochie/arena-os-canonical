@@ -4,14 +4,13 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { summariseSourceIntake } from "@/lib/waveyard/types";
 import { computeBrowserAudioMetadata, computeBrowserWaveform } from "@/lib/waveyard/browser-waveform";
-import { fetchStemEngineStatus, prepareStemEngine, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
+import { fetchDeepEngineStatus, fetchStemEngineStatus, prepareStemEngine, type StemEngineDeepStatus, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
+import { DEEP_MODEL_ID, separationTargetOptions } from "@/lib/waveyard/separation/modes";
 
 /** The upload's separation target. Empty = the machine default (vocals +
- *  instrumental, fastest). Ids are server-validated against the registry. */
-const SEPARATION_TARGETS = [
-  { id: "", label: "Vocals + instrumental — fastest" },
-  { id: "stems_4", label: "4 stems — vocals, drums, bass, melody" },
-];
+ *  instrumental, fastest). Ids are server-validated against the registry
+ *  (separation/selection.ts), so this list and the server never drift. */
+const SEPARATION_TARGETS = separationTargetOptions();
 
 const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
 
@@ -27,14 +26,18 @@ export function BuildProject() {
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [engine, setEngine] = useState<StemEngineModelStatus[] | null>(null);
+  const [deepEngine, setDeepEngine] = useState<StemEngineDeepStatus | null>(null);
   const [engineRefresh, setEngineRefresh] = useState(0);
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [engineError, setEngineError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const status = await fetchStemEngineStatus();
-      if (!cancelled) setEngine(status);
+      const [status, deepStatus] = await Promise.all([fetchStemEngineStatus(), fetchDeepEngineStatus()]);
+      if (!cancelled) {
+        setEngine(status);
+        setDeepEngine(deepStatus);
+      }
     })();
     return () => {
       cancelled = true;
@@ -129,6 +132,11 @@ export function BuildProject() {
           {SEPARATION_TARGETS.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}
         </select>
       </label>
+      {separationTarget === DEEP_MODEL_ID && deepEngine !== null && !deepEngine.prepared && (
+        <p className="notice" role="status" data-testid="deep-engine-hint">
+          Deep separation needs the deep engine prepared on this machine. {deepEngine.reason ?? "It is not ready yet."}
+        </p>
+      )}
       <div className="build-or">or</div>
       <label>Paste authorized source links<textarea aria-label="Authorized source links" value={urls} onChange={(event) => setUrls(event.target.value)} rows={4} placeholder={"https://youtube.com/...\nhttps://youtube.com/..."} /><small>One link per line. This deployment uses only a configured authorized resolver; unsupported links can always be added as local audio.</small></label>
     </>}

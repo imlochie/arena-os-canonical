@@ -7,6 +7,7 @@ import { SourceSectionSummary } from "./studio/SourceSectionSummary";
 import { VocalAnalysisSummary } from "./studio/VocalAnalysisSummary";
 import type { Source, SourceAnalysis, SourceSectionAnalysis, Stem } from "./studio/types";
 import { prepareStemEngine } from "@/lib/waveyard/separation/client";
+import { separationTargetOptions } from "@/lib/waveyard/separation/modes";
 import { PublicationPanel } from "./PublicationPanel";
 import { WaveyardHandoffPanel } from "./WaveyardHandoffPanel";
 import { evaluateAutomaticBuildFinalization } from "@/lib/waveyard/automatic-build-finalization";
@@ -331,8 +332,9 @@ async function prepareEngine(model: string, jobId: string) {
           <form className="add-source-form" onSubmit={(event) => void addSource(event)}>
             <label>Separate into
               <select name="separationTarget" aria-label="Separation target" defaultValue="">
-                <option value="">Vocals + instrumental — fastest</option>
-                <option value="stems_4">4 stems — vocals, drums, bass, melody</option>
+                {separationTargetOptions().map((target) => (
+                  <option key={target.id} value={target.id}>{target.label}</option>
+                ))}
               </select>
             </label>
             <label>

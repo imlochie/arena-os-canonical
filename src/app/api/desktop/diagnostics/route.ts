@@ -18,6 +18,7 @@ import { execTool, resolveToolPath } from "@/lib/waveyard/ffmpeg";
 import { listProviders } from "@/lib/waveyard/ai/providers";
 import { localWorkerActive, localWorkerStats } from "@/lib/waveyard/worker-local";
 import { queueConfigured } from "@/lib/waveyard/queue";
+import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 
 export const dynamic = "force-dynamic";
 
@@ -65,6 +66,20 @@ async function checkTool(tool: "ffmpeg" | "ffprobe"): Promise<Report> {
   }
 }
 
+/** The deep pass's real state — optional by design, so it rides inside the
+ *  worker report's detail rather than flipping the overall status. */
+function deepEngineDetail(): Record<string, unknown> {
+  const status = deepEngineStatusForThisRuntime();
+  return {
+    prepared: status.prepared,
+    modelId: status.modelId,
+    modelName: status.modelName,
+    python: status.prepared ? status.python : null,
+    demucsVersion: status.prepared ? status.demucsVersion : null,
+    reason: status.prepared ? null : status.reason,
+  };
+}
+
 function checkWorker(): Report {
   if (localWorkerActive()) {
     const stats = localWorkerStats();
@@ -72,15 +87,20 @@ function checkWorker(): Report {
       return { status: "DEGRADED", reason: "Desktop local worker is active but no handlers are registered (instrumentation did not run)." };
     return {
       status: stats.failed > 0 ? "DEGRADED" : "READY",
-      reason: `Local executor running ${stats.queues.length} queues: ${stats.queues.join(", ")}. Separation and Python-only analyses are not available on desktop.`,
-      detail: { ...stats, cloudWorker: false },
+      reason: `Local executor running ${stats.queues.length} queues: ${stats.queues.join(", ")}. The deep six-source pass reports its own state in the detail.`,
+      detail: { ...stats, cloudWorker: false, deepEngine: deepEngineDetail() },
     };
   }
   if (queueConfigured())
-    return { status: "READY", reason: "Cloud worker queue (Redis/BullMQ) is configured.", detail: { cloudWorker: true } };
+    return {
+      status: "READY",
+      reason: "Cloud worker queue (Redis/BullMQ) is configured.",
+      detail: { cloudWorker: true, deepEngine: deepEngineDetail() },
+    };
   return {
     status: "UNAVAILABLE",
     reason: "No job executor: REDIS_URL is not set and desktop mode is off. Processing jobs will fail with queue-unavailable.",
+    detail: { deepEngine: deepEngineDetail() },
   };
 }
 
