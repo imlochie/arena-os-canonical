@@ -86,8 +86,13 @@ REFERENCES.md     open-source resource map (upstreams, licenses, agent patterns)
 1. `npx tsc --noEmit` — clean
 2. `npm run build` — succeeds (needs `DATABASE_URL` set, e.g. in `.env`)
 3. `npm run lint` — no **new** errors vs baseline
-4. Exercise new API routes with `curl` against `npm run dev`
-5. Studio changes: test the demo backend (always available) and, if backend-related,
+4. `npm test` — the PG-gated files (archive routes, email accounts, the local
+   media library, missions) share ONE database and several of them wipe shared
+   tables in their cleanup, so with more than one of them in flight the suite
+   is flaky; run serially (`npm test -- --test-concurrency=1`) or make your
+   test independent. CI runs serially.
+5. Exercise new API routes with `curl` against `npm run dev`
+6. Studio changes: test the demo backend (always available) and, if backend-related,
    the mock bridge / a mock ComfyUI
 
 ## Hard rules

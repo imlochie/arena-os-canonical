@@ -30,6 +30,26 @@ jobs:
     name: Typecheck, lint, test, build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # The suite's PG-gated tests (archive routes, email accounts, the local
+    # media library, missions) assert against a REAL PostgreSQL — they fail
+    # loudly rather than skip when it is missing. CI provides one, exactly
+    # like a dev machine running `npm run db:setup`.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
     steps:
       - uses: actions/checkout@v4
 
@@ -48,8 +68,33 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Prepare test database
+        run: npm run db:setup
+
+      # The suite's PG-gated files share one database and several of them wipe
+      # shared tables in their cleanup, so two files running at once can
+      # corrupt each other's fixtures (observed: the local-library file's rows
+      # vanishing mid-run). Files run one at a time here so the shared-database
+      # contract is deterministic; the run is otherwise identical to `npm test`.
       - name: Test
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test -- --test-concurrency=1 2>&1 | tee /tmp/waveyard-test-tap.log
+
+      # The TAP output is the only place a failing test names itself: the
+      # artifact keeps it downloadable, and the annotations put the failing
+      # test and its detail directly on the pull request.
+      - name: Surface test failures
+        if: failure()
+        run: node scripts/ci-annotate-test-failures.mjs /tmp/waveyard-test-tap.log
+
+      - name: Upload test output (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-tap-output
+          path: /tmp/waveyard-test-tap.log
+          if-no-files-found: ignore
 
       - name: Build
         run: npm run build

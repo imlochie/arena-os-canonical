@@ -12,6 +12,8 @@ import { requireUser } from "@/lib/waveyard/local-context";
 import { configuredAuthorizedSourceResolver, validateAuthorizedSourceUrl } from "@/lib/waveyard/authorized-source-resolver";
 import { ingestSourceFile } from "@/lib/waveyard/source-ingest"
 import { defaultSeparationModel, isAcceptableSeparationModel } from "@/lib/waveyard/separation/selection";
+import { isDeepSeparationMode } from "@/lib/waveyard/separation/modes";
+import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 
 export const runtime = "nodejs";
@@ -41,6 +43,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const requestedModel = body.model !== undefined && body.model !== null && String(body.model).trim() !== "" ? String(body.model) : defaultSeparationModel();
     if (!isAcceptableSeparationModel(requestedModel)) {
       return NextResponse.json({ error: `Unknown separation target "${requestedModel}" — use the app's built-in choices.` }, { status: 400 });
+    }
+    // Same honesty gate as POST /api/uploads: the deep pass runs only on a
+    // prepared machine, and the reason (with its prepare step) is better
+    // said before the acquisition is stored than after a doomed queue.
+    if (isDeepSeparationMode(requestedModel)) {
+      const deep = deepEngineStatusForThisRuntime();
+      if (!deep.prepared) return NextResponse.json({ error: deep.reason, deep: { prepared: false } }, { status: 503 });
     }
     const result = await ingestSourceFile({ projectId, filePath, filename: resolved.filename, mimeType: resolved.mimeType ?? audio.headers.get("content-type") ?? "application/octet-stream", model: requestedModel, device: "auto", provenance: { method: "authorized-url", sourceUrl, title: resolved.title, artist: resolved.artist, resolver: resolved.resolver, metadata: resolved.metadata } });
     // The ingest itself succeeded — a queue failure must not turn the whole

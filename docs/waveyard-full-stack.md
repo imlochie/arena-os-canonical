@@ -78,3 +78,15 @@ If you run `npm run dev` on your machine but want the real worker:
 
 The worker directory is the original Waveyard worker preserved verbatim — see
 `waveyard-worker/README.md`.
+
+## The deep pass without any of this (A7)
+
+The app itself can run the deeper six-source separation (htdemucs_6s →
+vocals, drums, bass, guitar, piano, melody) whenever the machine has Demucs
+prepared: `python3 -m pip install demucs`, or point `WAVEYARD_DEEP_PYTHON`
+(or `PYTHON_BIN`) at an interpreter that has it. The pass rides the app's
+own local job pipeline — no Redis, no worker container — and reports the
+exact prepare step on the surfaces that offer it (the upload's "Deep — 6
+stems" target and the stem deck's ⇊ per-lane action). Deployments that run
+the Python worker keep choosing the worker's model with `SEPARATION_MODEL`
+instead. Decisions: `docs/ADR-007-deep-separation-engine-bridge.md`.

@@ -220,6 +220,23 @@ protocol research; sequenced deliberately after V1/V2.
   ANY stem; removal is muting the layer or using the minus-layer. Honest
   limit: second passes extract the registry's trained categories
   (vocals/drums/bass), not arbitrary instruments by name.
+- **The deep pass shipped (A7 — the owner-prepared engine):** the stem
+  machine's second engine is real. When the machine has Demucs prepared
+  (the owner's own Python install, or `WAVEYARD_DEEP_PYTHON` pointing at
+  one), the deep pass runs it (htdemucs_6s) and SIX sources come back:
+  vocals, drums, bass, guitar, piano, melody. Guitar and piano are lanes no
+  MDX pass can produce — the quality/depth upgrade path the vision promised
+  ("swappable models — quality improves as software"). It rides the SAME
+  durable pipeline as every other separation: one processing_jobs row, the
+  same queue payload (with `parentStemAssetId` for layer naming), the
+  handler's deep branch, the shared stem-creation tail, and one waveform
+  job per lane. It is offered as an intake target ("Deep — 6 stems (guitar
+  + piano)") and per lane on the deck (⇊ Go deeper → "other/guitar" =
+  guitar inside the melody). Nothing is faked: an unprepared machine gets
+  the exact prepare step before a job row exists, and a deep run that
+  cannot happen records the honest unavailable state instead of a
+  fabricated lane. Decisions and the delegated calls are recorded in
+  `docs/ADR-007-deep-separation-engine-bridge.md`.
 - **The A//B comparison shipped (the YouTube showcase):** pick side A
   (the original) and side B (a remix, a mashup render, a stem, a layer —
   or any dropped audio file). Each side shows its album cover: the REAL

@@ -173,7 +173,7 @@ export const ARENA_ROOMS: ArenaRoom[] = [
     handoffTarget: "operational",
     name: "Waveyard",
     eyebrow: "Listen",
-    description: "A music workspace: upload audio (waveform peaks computed in your browser), arrange clips across tracks, play back via Web Audio, and save arrangement versions. Stem/analysis worker features report honestly as unavailable.",
+    description: "A music workspace: upload audio (waveform peaks computed in your browser) and it separates into stems on this machine — a fast two- or four-stem pass with no setup, or the deeper six-source pass (guitar + piano too) once Demucs is prepared here. Stems play in a real stem deck; arrange clips across tracks, mix, and save arrangement versions.",
     state: "available",
     destination: { href: "/waveyard", label: "Open Waveyard" },
   },
