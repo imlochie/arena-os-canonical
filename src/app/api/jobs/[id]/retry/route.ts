@@ -6,7 +6,8 @@ import {
 } from "@/db/waveyardSchema";
 import { getSeparationQueue } from "@/lib/waveyard/queue";
 import { localWorkerActive } from "@/lib/waveyard/worker-local/broker";
-import { retrySeparationJob } from "@/lib/waveyard/separation/retry";
+import { findActiveProcessingJob } from "@/lib/waveyard/separation/claim";
+import { isUniqueViolation, newerAttemptReason, retrySeparationJob } from "@/lib/waveyard/separation/retry";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 
@@ -29,10 +30,22 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       return NextResponse.json({ job: updated });
     }
 
+    // Same rule as the local path: a target's key is unique among ACTIVE
+    // jobs, so a failed row cannot come back while a newer attempt is queued
+    // or running (the UPDATE below would be refused by the index anyway —
+    // say why instead of a 503).
+    const newer = await findActiveProcessingJob(db, job.idempotencyKey);
+    if (newer !== null && newer.id !== job.id) return NextResponse.json({ error: newerAttemptReason(newer.status) }, { status: 409 });
+
     const queueJob = await (await getSeparationQueue()).getJob(job.id);
     if (!queueJob) return NextResponse.json({ error: "Queue record is unavailable; create a new separation job instead." }, { status: 409 });
     await queueJob.retry();
-    const [updated] = await db.update(processingJobs).set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date() }).where(eq(processingJobs.id, id)).returning();
-    return NextResponse.json({ job: updated });
+    try {
+      const [updated] = await db.update(processingJobs).set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date() }).where(eq(processingJobs.id, id)).returning();
+      return NextResponse.json({ job: updated });
+    } catch (error) {
+      if (isUniqueViolation(error)) return NextResponse.json({ error: newerAttemptReason("queued") }, { status: 409 });
+      throw error;
+    }
   } catch (error) { if (error instanceof Response) return error; console.error("retry failed", error); return NextResponse.json({ error: "Retry could not be queued." }, { status: 503 }); }
 }

@@ -7,28 +7,35 @@
  * durable job pipeline: one processing_jobs row, one queue payload, the
  * worker handler's deep branch, the shared stem-creation tail and per-stem
  * waveform jobs. Six sources come back — vocals, drums, bass, guitar, piano,
- * melody — so two lanes no other pass can produce (guitar, piano) appear.
+ * other (the residual) — so two lanes no other pass can produce (guitar,
+ * piano) appear.
  *
- *   GET  → is this machine prepared? (model, six lanes, honest reason)
+ *   GET  → is this machine prepared? (model, six lanes, honest reason, the
+ *          exact checkpoint path that was checked)
  *   POST { sourceAssetId }            → whole-song deep pass (six stems)
  *   POST { stemAssetId }              → deep LAYERS of that stem
  *                                      ("other/guitar" = guitar inside the
- *                                      melody — recursive separation, deep)
+ *                                      melody lane — recursive separation,
+ *                                      deep)
  *
- * One in-flight deep job per target — a repeat request while queued is an
- * honest 409, exactly like stem-layers. When the engine is not prepared the
- * request is refused BEFORE a job row exists (503 + the prepare step) —
- * a queued job that can never run would be dishonest.
+ * One ACTIVE deep job per target — a repeat request while one is queued or
+ * running is an honest 409, exactly like stem-layers; once that attempt is
+ * complete or failed the same target can be run again as a fresh row
+ * (separation/claim.ts — the database arbitrates, so concurrent requests
+ * never start two). When the engine is not prepared the request is refused
+ * BEFORE a job row exists (503 + the prepare step) — a queued job that can
+ * never run would be dishonest.
  */
 
 import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@/db";
-import { processingJobs, sourceAssets, stemAssets } from "@/db/waveyardSchema";
+import { sourceAssets, stemAssets } from "@/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@/lib/waveyard/local-context";
 import { enqueueSeparation } from "@/lib/waveyard/queue";
-import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
+import { claimProcessingJob } from "@/lib/waveyard/separation/claim";
+import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { DEEP_MODEL_ID, deepStemsEnabled } from "@/lib/waveyard/separation/modes";
 import { isUuid } from "@/lib/api/ids";
 
@@ -48,6 +55,7 @@ export async function GET() {
         python: status.prepared ? status.python : null,
         demucsVersion: status.prepared ? status.demucsVersion : null,
         reason: status.prepared ? null : status.reason,
+        checkpoint: { file: DEEP_CHECKPOINT_FILE, path: status.checkpointPath, present: status.checkpointPresent },
       },
     });
   } catch (error) {
@@ -109,37 +117,40 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       targetSourceAssetId = source.id;
     }
 
-    // Idempotency is per TARGET (not per project): replacing an earlier deep
-    // run of the same target is a re-run; two targets run independently.
+    // Idempotency is per TARGET (not per project) and per ACTIVE attempt:
+    // one queued/running deep job per target, two targets run independently,
+    // and a target whose last attempt is complete or failed can be run again
+    // as a fresh row (the earlier attempt stays as history).
     const idempotencyKey = `separation-deep:${parentStem?.id ?? targetSourceAssetId}`;
-    const [job] = await db
-      .insert(processingJobs)
-      .values({
-        projectId,
-        sourceAssetId: targetSourceAssetId,
-        type: "separation",
-        status: "queued",
-        stage: "queued",
-        idempotencyKey,
-        model: DEEP_MODEL_ID,
-        requestedDevice: "auto",
-        metadata: JSON.stringify({
-          kind: parentStem ? "deep-layers" : "deep-stems",
-          deep: true,
-          engine: "demucs",
-          modelName: status.modelName,
-          parentStemAssetId: parentStem?.id,
-          parentStemType: parentStem?.stemType,
-        }),
-      })
-      .onConflictDoNothing({ target: processingJobs.idempotencyKey })
-      .returning();
-    if (job === undefined) {
+    const claim = await claimProcessingJob(db, {
+      projectId,
+      sourceAssetId: targetSourceAssetId,
+      type: "separation",
+      status: "queued",
+      stage: "queued",
+      idempotencyKey,
+      model: DEEP_MODEL_ID,
+      requestedDevice: "auto",
+      metadata: JSON.stringify({
+        kind: parentStem ? "deep-layers" : "deep-stems",
+        deep: true,
+        engine: "demucs",
+        modelName: status.modelName,
+        checkpoint: DEEP_CHECKPOINT_FILE,
+        parentStemAssetId: parentStem?.id,
+        parentStemType: parentStem?.stemType,
+      }),
+    });
+    if (!claim.created) {
       return NextResponse.json(
-        { error: "This deep pass is already running — its lanes appear when it finishes." },
+        {
+          error: "This deep pass is already running — its lanes appear when it finishes.",
+          job: claim.active ? { id: claim.active.id, status: claim.active.status, stage: claim.active.stage } : null,
+        },
         { status: 409 },
       );
     }
+    const job = claim.job;
 
     try {
       await enqueueSeparation({

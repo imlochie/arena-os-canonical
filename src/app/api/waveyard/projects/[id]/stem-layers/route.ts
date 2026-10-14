@@ -8,8 +8,10 @@
  *   → enqueues a second separation pass whose INPUT is that stem's audio;
  *   the child stems land as "<parent>/<child>" layers (e.g. "other/vocals"
  *   = backing vocals pulled out of the melody) and appear as new lanes in
- *   the stem player. One in-flight layer job per (stem, target) — a repeat
- *   request while queued is an honest 409.
+ *   the stem player. One ACTIVE layer job per (stem, target) — a repeat
+ *   request while one is queued or running is an honest 409; once it is
+ *   complete or failed the same (stem, target) can be run again as a fresh
+ *   row (separation/claim.ts — the database arbitrates concurrent requests).
  *
  * Honest capability note: the second pass extracts the registry's trained
  * categories (vocals/drums/bass) out of ANY stem — it is not a "flute
@@ -21,9 +23,10 @@ import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@/db";
-import { processingJobs, stemAssets } from "@/db/waveyardSchema";
+import { stemAssets } from "@/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@/lib/waveyard/local-context";
 import { enqueueSeparation } from "@/lib/waveyard/queue";
+import { claimProcessingJob } from "@/lib/waveyard/separation/claim";
 import { findMdxModel, findSeparationRecipe } from "@/lib/waveyard/separation/mdx";
 import { isUuid } from "@/lib/api/ids";
 
@@ -69,24 +72,27 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
 
     const idempotencyKey = `separation-layer:${stemAssetId}:${target}`;
-    const [job] = await db
-      .insert(processingJobs)
-      .values({
-        projectId,
-        sourceAssetId: stem.sourceAssetId,
-        type: "separation",
-        status: "queued",
-        stage: "queued",
-        idempotencyKey,
-        model: target,
-        requestedDevice: "auto",
-        metadata: JSON.stringify({ kind: "stem-layer", parentStemAssetId: stem.id, parentStemType: stem.stemType, targetLabel: known.label }),
-      })
-      .onConflictDoNothing({ target: processingJobs.idempotencyKey })
-      .returning();
-    if (job === undefined) {
-      return NextResponse.json({ error: "These layers are already separating — they will appear as new lanes when done." }, { status: 409 });
+    const claim = await claimProcessingJob(db, {
+      projectId,
+      sourceAssetId: stem.sourceAssetId,
+      type: "separation",
+      status: "queued",
+      stage: "queued",
+      idempotencyKey,
+      model: target,
+      requestedDevice: "auto",
+      metadata: JSON.stringify({ kind: "stem-layer", parentStemAssetId: stem.id, parentStemType: stem.stemType, targetLabel: known.label }),
+    });
+    if (!claim.created) {
+      return NextResponse.json(
+        {
+          error: "These layers are already separating — they will appear as new lanes when done.",
+          job: claim.active ? { id: claim.active.id, status: claim.active.status, stage: claim.active.stage } : null,
+        },
+        { status: 409 },
+      );
     }
+    const job = claim.job;
 
     try {
       await enqueueSeparation({

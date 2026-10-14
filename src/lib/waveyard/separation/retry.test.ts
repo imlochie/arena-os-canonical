@@ -2,10 +2,13 @@
  * Separation retry tests — the durable-row half of the retry story, proven
  * on a PGlite database with the local broker in desktop mode (a stub
  * handler records what would be executed). What is proven: a failed job is
- * re-enqueued with a payload rebuilt from its own row and reset ONLY after
- * the queue accepts it; non-failed jobs are refused; the post-seed sweep
- * touches only this model's jobs in retryable states; a queue that cannot
- * accept the job leaves the row honestly failed.
+ * re-enqueued with a payload rebuilt from its own row (a layer job keeps
+ * its parent stem) and the row is claimed BEFORE the queue is asked, then
+ * restored exactly if the queue refuses; non-failed jobs are refused; a
+ * failed row is never resurrected while a newer attempt at the same target
+ * is active (one active job per target, see claim.ts), and is retryable
+ * again once that attempt is over; the post-seed sweep touches only this
+ * model's jobs in retryable states.
  */
 
 import "../worker-local/_separation-test-env";
@@ -59,21 +62,27 @@ async function fixture() {
     submitted.push({ jobId: String(payload.processingJobId), payload });
   });
 
-  async function addJob(overrides: { model?: string; status?: string; errorCode?: string | null } = {}) {
+  async function addJob(
+    overrides: { model?: string; status?: string; errorCode?: string | null; idempotencyKey?: string; metadata?: string } = {},
+  ) {
     const model = overrides.model ?? "kim_vocal_2";
+    const status = overrides.status ?? "failed";
+    const failed = status === "failed";
     const [row] = await database
       .insert(processingJobs)
       .values({
         projectId: project.id,
         sourceAssetId: source.id,
         type: "separation",
-        status: overrides.status ?? "failed",
-        stage: "failed",
-        errorCode: overrides.errorCode ?? "separation_unavailable",
-        errorMessage: "model not present",
-        idempotencyKey: `separation:${source.id}:${model}:${randomUUID()}`,
+        status,
+        stage: failed ? "failed" : status,
+        errorCode: failed ? (overrides.errorCode ?? "separation_unavailable") : null,
+        errorMessage: failed ? "model not present" : null,
+        completedAt: failed || status === "complete" ? new Date() : null,
+        idempotencyKey: overrides.idempotencyKey ?? `separation:${source.id}:${model}:${randomUUID()}`,
         model,
         requestedDevice: "auto",
+        ...(overrides.metadata !== undefined ? { metadata: overrides.metadata } : {}),
       })
       .returning();
     return row;
@@ -104,7 +113,7 @@ test.afterEach(() => {
   delete process.env.ARENA_DESKTOP_MODE;
 });
 
-test("a failed separation job is re-enqueued from its own row and reset only after acceptance", async () => {
+test("a failed separation job is re-enqueued from its own row (claimed first, then handed to the queue)", async () => {
   const f = await fixture();
   try {
     const job = await f.addJob();
@@ -146,7 +155,71 @@ test("a queue that cannot accept the job leaves the row honestly failed", async 
     assert.equal(result.queued, false);
     assert.match(result.reason, /no local executor/);
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, job.id));
-    assert.equal(row.status, "failed", "row untouched when the queue refused");
+    assert.equal(row.status, "failed", "row back to failed when the queue refused");
+    assert.equal(row.stage, "failed");
+    assert.equal(row.errorCode, "separation_unavailable", "the original failure stays visible…");
+    assert.equal(row.errorMessage, "model not present");
+    assert.ok(row.completedAt !== null);
+    assert.equal((await retrySeparationJob(f.database, job.id)).queued, false, "…and nothing is left 'queued' that no executor holds");
+  } finally {
+    await f.close();
+  }
+});
+
+test("a retried layer job carries its parent stem in the payload again", async () => {
+  const f = await fixture();
+  try {
+    const parentStemAssetId = randomUUID();
+    const job = await f.addJob({
+      model: "deep_6s",
+      metadata: JSON.stringify({ kind: "deep-layers", parentStemAssetId, parentStemType: "other" }),
+    });
+    assert.deepEqual(await retrySeparationJob(f.database, job.id), { queued: true });
+    assert.equal(f.submitted[0]?.payload.parentStemAssetId, parentStemAssetId, "without it the retry would separate the whole source");
+    const whole = await f.addJob();
+    await retrySeparationJob(f.database, whole.id);
+    assert.equal("parentStemAssetId" in (f.submitted[1]?.payload ?? {}), false, "a whole-song job carries none");
+  } finally {
+    await f.close();
+  }
+});
+
+test("a failed row is not resurrected while a newer attempt at its target is active — and is retryable once that attempt is over", async () => {
+  const f = await fixture();
+  try {
+    const key = `separation-deep:${randomUUID()}`;
+    const earlier = await f.addJob({ model: "deep_6s", idempotencyKey: key });
+    const newer = await f.addJob({ model: "deep_6s", idempotencyKey: key, status: "processing" });
+
+    const refused = await retrySeparationJob(f.database, earlier.id);
+    assert.equal(refused.queued, false);
+    assert.match(refused.reason, /newer attempt .* already running/);
+    assert.equal(f.submitted.length, 0, "nothing was enqueued");
+    const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, earlier.id));
+    assert.equal(row.status, "failed", "the old row is untouched");
+
+    // Even if the pre-check is skipped by timing, the database refuses the
+    // resurrection itself: the active-only unique index makes the UPDATE a
+    // unique_violation, which the retry reports as the same honest reason.
+    await assert.rejects(
+      () =>
+        f.database
+          .update(processingJobs)
+          .set({ status: "queued" })
+          .where(eq(processingJobs.id, earlier.id)),
+      (error: unknown) => {
+        assert.match(error instanceof Error ? error.message + String((error as { cause?: unknown }).cause ?? "") : "", /processing_jobs_active_idempotency_unique/);
+        return true;
+      },
+    );
+
+    await f.database
+      .update(processingJobs)
+      .set({ status: "failed", stage: "failed", errorCode: "separation_failed", completedAt: new Date() })
+      .where(eq(processingJobs.id, newer.id));
+    assert.deepEqual(await retrySeparationJob(f.database, earlier.id), { queued: true }, "the key is free again");
+    assert.equal(f.submitted.length, 1);
+    assert.equal((await retrySeparationJob(f.database, newer.id)).queued, false, "…and now the OTHER failed row is the one that must wait");
   } finally {
     await f.close();
   }
