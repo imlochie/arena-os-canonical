@@ -8,8 +8,13 @@
  *   → enqueues a second separation pass whose INPUT is that stem's audio;
  *   the child stems land as "<parent>/<child>" layers (e.g. "other/vocals"
  *   = backing vocals pulled out of the melody) and appear as new lanes in
- *   the stem player. One in-flight layer job per (stem, target) — a repeat
- *   request while queued is an honest 409.
+ *   the stem player. One ACTIVE layer job per (stem, target) — a repeat
+ *   request while one is queued or running is an honest 409; once it is
+ *   complete or failed the same (stem, target) can be run again as a fresh
+ *   row (separation/claim.ts — the database arbitrates concurrent requests).
+ *   If the queue refuses the claimed job (no executor in this runtime) the
+ *   row is recorded as a failed, retryable attempt and the request is a
+ *   503 — never a 202 over a row nothing will run.
  *
  * Honest capability note: the second pass extracts the registry's trained
  * categories (vocals/drums/bass) out of ANY stem — it is not a "flute
@@ -21,9 +26,9 @@ import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@/db";
-import { processingJobs, stemAssets } from "@/db/waveyardSchema";
+import { stemAssets } from "@/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@/lib/waveyard/local-context";
-import { enqueueSeparation } from "@/lib/waveyard/queue";
+import { startSeparationJob } from "@/lib/waveyard/separation/claim";
 import { findMdxModel, findSeparationRecipe } from "@/lib/waveyard/separation/mdx";
 import { isUuid } from "@/lib/api/ids";
 
@@ -69,9 +74,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
 
     const idempotencyKey = `separation-layer:${stemAssetId}:${target}`;
-    const [job] = await db
-      .insert(processingJobs)
-      .values({
+    const started = await startSeparationJob(
+      db,
+      {
         projectId,
         sourceAssetId: stem.sourceAssetId,
         type: "separation",
@@ -81,26 +86,35 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         model: target,
         requestedDevice: "auto",
         metadata: JSON.stringify({ kind: "stem-layer", parentStemAssetId: stem.id, parentStemType: stem.stemType, targetLabel: known.label }),
-      })
-      .onConflictDoNothing({ target: processingJobs.idempotencyKey })
-      .returning();
-    if (job === undefined) {
-      return NextResponse.json({ error: "These layers are already separating — they will appear as new lanes when done." }, { status: 409 });
-    }
-
-    try {
-      await enqueueSeparation({
+      },
+      (job) => ({
         processingJobId: job.id,
         projectId,
         sourceAssetId: stem.sourceAssetId,
         model: target,
         requestedDevice: "auto",
         parentStemAssetId: stem.id,
-      });
-    } catch {
-      // The durable job stays queued; the local worker's requeue sweep
-      // picks it up (same contract as first-pass separation).
+      }),
+    );
+    if (started.outcome === "active") {
+      return NextResponse.json(
+        {
+          error: "These layers are already separating — they will appear as new lanes when done.",
+          job: started.active ? { id: started.active.id, status: started.active.status, stage: started.active.stage } : null,
+        },
+        { status: 409 },
+      );
     }
+    if (started.outcome === "not-queued") {
+      return NextResponse.json(
+        {
+          error: `These layers could not be queued on this runtime: ${started.reason}`,
+          job: { id: started.job.id, status: started.job.status, errorCode: started.job.errorCode },
+        },
+        { status: 503 },
+      );
+    }
+    const job = started.job;
 
     return NextResponse.json(
       { job: { id: job.id }, layering: { stemType: stem.stemType, target: known.label } },

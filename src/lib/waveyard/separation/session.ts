@@ -67,9 +67,12 @@ export interface OrtModuleLike {
   Tensor: new (type: "float32", data: Float32Array, dims: number[]) => { data: Float32Array; dims: number[] };
 }
 
-/** Where model files live (mirror of getStorage()'s env convention). */
-export function resolveModelsDir(): string {
-  const root = process.env.WAVEYARD_MODELS_DIR ?? ".data/waveyard-models";
+/** Where model files live (mirror of getStorage()'s env convention). Takes
+ *  the environment explicitly so a caller that probes with an injected env
+ *  (the deep bridge, tests) resolves — and REPORTS — the same directory it
+ *  actually checked. */
+export function resolveModelsDir(env: NodeJS.ProcessEnv = process.env): string {
+  const root = env.WAVEYARD_MODELS_DIR ?? ".data/waveyard-models";
   return resolve(/*turbopackIgnore: true*/ process.cwd(), root);
 }
 

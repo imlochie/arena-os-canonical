@@ -25,7 +25,7 @@
  *    metadata while separating, so the UI polls one honest number.
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -34,12 +34,14 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { processingJobs, sourceAssets, stemAssets, waveformJobs } from "@/db/waveyardSchema";
 import { checksumFile } from "@/lib/waveyard/audio";
-import { encodeWav16 } from "@/lib/waveyard/mixer/synth";
+import { decodeWav16, encodeWav16 } from "@/lib/waveyard/mixer/synth";
 import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
 import { enqueueWaveform } from "@/lib/waveyard/queue";
 import { decodeSourceToStereoPcm } from "@/lib/waveyard/measure/pcm";
 import type { SeparationJobPayload } from "@/lib/waveyard/types";
 import { demixMdx, findMdxModel, findSeparationRecipe, type MdxInfer, type MdxModelSpec } from "@/lib/waveyard/separation/mdx";
+import { runDeepSeparation } from "@/lib/waveyard/separation/deep";
+import { DEEP_MODEL_ID, isDeepSeparationMode } from "@/lib/waveyard/separation/modes";
 import {
   loadOrtModule,
   sessionInfer,
@@ -57,6 +59,9 @@ export type SeparationHandlerDeps = {
   /** Opens the verified model and returns the inference seam. */
   openEngine?: (spec: MdxModelSpec, requestedDevice: "auto" | "cpu" | "cuda") => Promise<OpenedEngine>;
   decode?: typeof decodeSourceToStereoPcm;
+  /** The deep pass (owner-prepared Demucs, separation/deep.ts). Injectable
+   *  so the e2e test drives the FULL pipeline with a stub engine. */
+  runDeep?: typeof runDeepSeparation;
 };
 
 export type OpenedEngine = {
@@ -133,6 +138,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     : ((await import("@/db")) as unknown as { db: WaveyardDb }).db;
   const decode = deps.decode ?? decodeSourceToStereoPcm;
   const openEngine = deps.openEngine ?? defaultOpenEngine;
+  const runDeep = deps.runDeep ?? runDeepSeparation;
 
   const [job] = await database.select().from(processingJobs).where(eq(processingJobs.id, payload.processingJobId)).limit(1);
   if (!job) throw new Error("Processing job no longer exists.");
@@ -153,13 +159,19 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     throw new Error("Separation payload does not match its durable job target.");
   }
 
-  // A job targets either one registry model (its two stems) or a RECIPE
-  // (one run per stem — e.g. stems_4: Kim vocals + one Kuielab model each
-  // for drums/bass/other, every run on the full mix, primary-only).
+  // A job targets one registry model (its two stems), a RECIPE (one run per
+  // stem — e.g. stems_4: Kim vocals + one Kuielab model each for
+  // drums/bass/other, every run on the full mix, primary-only), or the DEEP
+  // mode — the owner-prepared Demucs bridge (six sources). The deep branch
+  // hooks in BEFORE the registry lookup, so `deep_6s` is never mistaken for
+  // an unknown model.
   type SeparationRun = { spec: MdxModelSpec; stemType: string; take: "primary" | "secondary" };
   const runs: SeparationRun[] = [];
-  const recipe = findSeparationRecipe(payload.model);
-  if (recipe !== undefined) {
+  const deepPass = isDeepSeparationMode(payload.model);
+  const recipe = deepPass ? undefined : findSeparationRecipe(payload.model);
+  if (deepPass) {
+    // No MDX runs: the deep engine produces all six sources itself.
+  } else if (recipe !== undefined) {
     for (const run of recipe.runs) {
       const runSpec = findMdxModel(run.model);
       if (runSpec === undefined) throw new Error(`Recipe ${recipe.id} references unknown model ${run.model}.`);
@@ -224,6 +236,8 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     parentStem = stem;
     for (const run of runs) run.stemType = `${stem.stemType}/${run.stemType}`;
   }
+  /** Layer naming: deep stems get the same "<parent>/<child>" treatment. */
+  const nameStem = (child: string) => (parentStem === null ? child : `${parentStem.stemType}/${child}`);
 
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "arena-separation-"));
   const inputPath = join(temporaryDirectory, "source-upload");
@@ -261,154 +275,218 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     }
 
     // One engine per DISTINCT model (recipes may repeat a model; open once).
+    // The deep pass opens no MDX engine at all — its engine is the
+    // owner-prepared bridge, and its outputs land as six WAV files.
     type OpenedEngines = Awaited<ReturnType<typeof openEngine>>;
-    const enginesById = new Map<string, OpenedEngines>();
-    const openedEngines: OpenedEngines[] = [];
-    let released = false;
-    try {
-      const getEngine = async (modelSpec: MdxModelSpec): Promise<OpenedEngines> => {
-        const existing = enginesById.get(modelSpec.id);
-        if (existing !== undefined) return existing;
-        const engine = await openEngine(modelSpec, payload.requestedDevice);
-        enginesById.set(modelSpec.id, engine);
-        openedEngines.push(engine);
-        return engine;
-      };
+    type StemOutput = { stemType: string; channels: Float32Array[]; model: string; modelVersion: string; sampleCount: number };
+    const stemOutputs: StemOutput[] = [];
+    let resolvedDevice: string | null = null;
+    let engineKind: "mdx" | "demucs" = "mdx";
+    let runModels: string[] = [];
 
-      // Real progress across ALL runs (a recipe runs one model per stem):
-      // chunk-level updates into the durable row's metadata, throttled to
-      // whole GLOBAL percents + the first and last chunk of each run.
-      let lastReportedPercent = -1;
-      const stemOutputs: Array<{ stemType: string; channels: Float32Array[]; model: string; modelVersion: string; sampleCount: number }> = [];
-      let resolvedDevice: string | null = null;
-      for (let runIndex = 0; runIndex < runs.length; runIndex += 1) {
-        const run = runs[runIndex];
-        const engine = await getEngine(run.spec);
-        resolvedDevice = engine.resolvedDevice;
-        const separated = await demixMdx([left, right], run.spec, engine.infer, (done, total) => {
-          const runFraction = total > 0 ? done / total : 1;
-          const percent = Math.floor(((runIndex + runFraction) / runs.length) * 100);
-          if (done !== 1 && done !== total && percent === lastReportedPercent) return;
-          lastReportedPercent = percent;
+    if (deepPass) {
+      engineKind = "demucs";
+      runModels = [DEEP_MODEL_ID];
+      // Demucs reads a FILE, so hand it the exact PCM this handler already
+      // decoded (44.1 kHz stereo) — never the raw stored container, whose
+      // decode-ability would otherwise be the owner's engine's problem.
+      const deepInputPath = join(temporaryDirectory, "deep-input.wav");
+      await writeFile(deepInputPath, encodeWav16(decoded.pcm, 44_100));
+      // The engine's own percent into the durable row's metadata (same
+      // contract as the MDX path): the deep pass reports real progress.
+      let lastDeepPercent = -1;
+      const deep = await runDeep({
+        inputPath: deepInputPath,
+        outputDirectory: join(temporaryDirectory, "deep-output"),
+        requestedDevice: payload.requestedDevice,
+        onProgress: (percent) => {
+          if (percent === lastDeepPercent) return;
+          lastDeepPercent = percent;
           const base = jobMetadata(job.metadata);
           void updateJob(database, job.id, {
             metadata: JSON.stringify({
               ...base,
-              progress: { done, total, percent, phase: `${runIndex + 1}/${runs.length}`, model: run.spec.id },
+              progress: { done: percent, total: 100, percent, phase: "deep", model: DEEP_MODEL_ID },
             }),
           }).catch(() => undefined);
-        });
-        stemOutputs.push({
-          stemType: run.stemType,
-          channels: run.take === "primary" ? separated.primary : separated.secondary,
-          model: run.spec.id,
-          modelVersion: run.spec.sha256,
-          sampleCount: separated.sampleCount,
-        });
-      }
-      await updateJob(database, job.id, {
-        status: "finalizing",
-        stage: "validating",
-        resolvedDevice,
+        },
       });
-      const values: (typeof stemAssets.$inferInsert)[] = [];
-      for (const stem of stemOutputs) {
-        const wav = encodeWav16(interleavePlanar(stem.channels), 44_100);
-        // Layered stem types ("other/vocals") must become safe filenames.
-        const stemPath = join(temporaryDirectory, `${stem.stemType.replace(/[^a-zA-Z0-9_-]+/g, "-")}.wav`);
-        await writeFile(stemPath, wav);
-        const checksum = await checksumFile(stemPath);
-        const storageKey = privateObjectKey(job.projectId, "stem", "wav");
-        await storage.putFile(storageKey, stemPath, "audio/wav");
-        uploadedKeys.push(storageKey);
-        values.push({
-          projectId: job.projectId,
-          sourceAssetId: source.id,
-          separationJobId: job.id,
-          stemType: stem.stemType,
-          engine: "mdx",
-          model: stem.model,
-          modelVersion: stem.modelVersion,
-          storageKey,
-          checksumSha256: checksum,
-          durationSeconds: Math.round(stem.sampleCount / 44_100),
-          sampleRate: 44_100,
-          channels: 2,
-          codec: "pcm_s16le",
-          format: "wav",
-          fileSizeBytes: wav.length,
-        });
-      }
-
-      const durableWork = await database.transaction(async (tx) => {
-        // Retry idempotency: a re-run replaces its stems atomically.
-        await tx.delete(stemAssets).where(eq(stemAssets.separationJobId, job.id));
-        const storedStems = await tx
-          .insert(stemAssets)
-          .values(values)
-          .returning({ id: stemAssets.id });
-        const waveformWork = await tx
-          .insert(waveformJobs)
-          .values(
-            storedStems.map((stem) => ({
-              projectId: job.projectId,
-              stemAssetId: stem.id,
-              status: "queued",
-              stage: "queued",
-              idempotencyKey: `waveform:stem:${stem.id}`,
-            })),
-          )
-          .returning({ id: waveformJobs.id, stemAssetId: waveformJobs.stemAssetId });
-        await tx
-          .update(processingJobs)
-          .set({
-            status: "complete",
-            stage: "complete",
-            completedAt: new Date(),
-            updatedAt: new Date(),
-            metadata: JSON.stringify({
-              engine: "mdx",
-              model: job.model,
-              models: [...new Set(runs.map((run) => run.spec.id))],
-              resolvedDevice,
-              outputCount: values.length,
-              stems: stemOutputs.map((stem) => stem.stemType),
-            }),
-          })
-          .where(eq(processingJobs.id, job.id));
-        return waveformWork;
-      });
-      // Separation is complete even if a later derived-artifact queue needs
-      // a retry. Each durable job records its own failure boundary.
-      for (const waveformJob of durableWork) {
-        try {
-          await enqueueWaveform({
-            waveformJobId: waveformJob.id,
-            projectId: job.projectId,
-            stemAssetId: waveformJob.stemAssetId!,
-          });
-        } catch (queueError) {
-          await database
-            .update(waveformJobs)
-            .set({
-              status: "failed",
-              stage: "queue-unavailable",
-              errorCode: "queue_unavailable",
-              errorMessage: queueError instanceof Error ? queueError.message.slice(0, 1000) : "Queue unavailable.",
-              completedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(waveformJobs.id, waveformJob.id));
+      resolvedDevice = deep.resolvedDevice;
+      for (const stem of deep.stems) {
+        // The bridge guarantees six WAV files; the handler still verifies
+        // each one is exactly what persistence will claim (16-bit stereo
+        // 44.1 kHz) — a corrupt output must never become a stem row.
+        const decodedStem = decodeWav16(new Uint8Array(await readFile(stem.path)));
+        if (decodedStem === null) {
+          throw new Error(`The deep engine's ${stem.stemType} stem is not a readable 16-bit PCM WAV.`);
         }
+        if (decodedStem.sampleRate !== 44_100) {
+          throw new Error(`The deep engine's ${stem.stemType} stem is ${decodedStem.sampleRate} Hz — the pipeline stores 44100 Hz.`);
+        }
+        if (decodedStem.channels !== 2) {
+          throw new Error(`The deep engine's ${stem.stemType} stem has ${decodedStem.channels} channels — the pipeline stores stereo.`);
+        }
+        const stemFrames = decodedStem.frames;
+        const stemLeft = new Float32Array(stemFrames);
+        const stemRight = new Float32Array(stemFrames);
+        for (let i = 0; i < stemFrames; i += 1) {
+          stemLeft[i] = decodedStem.samples[i * 2];
+          stemRight[i] = decodedStem.samples[i * 2 + 1];
+        }
+        stemOutputs.push({
+          stemType: nameStem(stem.stemType),
+          channels: [stemLeft, stemRight],
+          model: DEEP_MODEL_ID,
+          modelVersion: deep.modelVersion,
+          sampleCount: stemFrames,
+        });
       }
-      completed = true;
-      for (const engine of openedEngines) await engine.release();
-      released = true;
-    } finally {
-      if (!released) {
+    } else {
+      const enginesById = new Map<string, OpenedEngines>();
+      const openedEngines: OpenedEngines[] = [];
+      try {
+        const getEngine = async (modelSpec: MdxModelSpec): Promise<OpenedEngines> => {
+          const existing = enginesById.get(modelSpec.id);
+          if (existing !== undefined) return existing;
+          const engine = await openEngine(modelSpec, payload.requestedDevice);
+          enginesById.set(modelSpec.id, engine);
+          openedEngines.push(engine);
+          return engine;
+        };
+
+        // Real progress across ALL runs (a recipe runs one model per stem):
+        // chunk-level updates into the durable row's metadata, throttled to
+        // whole GLOBAL percents + the first and last chunk of each run.
+        let lastReportedPercent = -1;
+        for (let runIndex = 0; runIndex < runs.length; runIndex += 1) {
+          const run = runs[runIndex];
+          const engine = await getEngine(run.spec);
+          resolvedDevice = engine.resolvedDevice;
+          const separated = await demixMdx([left, right], run.spec, engine.infer, (done, total) => {
+            const runFraction = total > 0 ? done / total : 1;
+            const percent = Math.floor(((runIndex + runFraction) / runs.length) * 100);
+            if (done !== 1 && done !== total && percent === lastReportedPercent) return;
+            lastReportedPercent = percent;
+            const base = jobMetadata(job.metadata);
+            void updateJob(database, job.id, {
+              metadata: JSON.stringify({
+                ...base,
+                progress: { done, total, percent, phase: `${runIndex + 1}/${runs.length}`, model: run.spec.id },
+              }),
+            }).catch(() => undefined);
+          });
+          stemOutputs.push({
+            stemType: run.stemType,
+            channels: run.take === "primary" ? separated.primary : separated.secondary,
+            model: run.spec.id,
+            modelVersion: run.spec.sha256,
+            sampleCount: separated.sampleCount,
+          });
+        }
+      } finally {
+        // Engines are released the moment their runs are done — the deep
+        // branch below must never hold an inference session open.
         for (const engine of openedEngines) await engine.release().catch(() => undefined);
       }
+      runModels = [...new Set(runs.map((run) => run.spec.id))];
     }
+
+    await updateJob(database, job.id, {
+      status: "finalizing",
+      stage: "validating",
+      resolvedDevice,
+    });
+    const values: (typeof stemAssets.$inferInsert)[] = [];
+    for (const stem of stemOutputs) {
+      const wav = encodeWav16(interleavePlanar(stem.channels), 44_100);
+      // Layered stem types ("other/vocals") must become safe filenames.
+      const stemPath = join(temporaryDirectory, `${stem.stemType.replace(/[^a-zA-Z0-9_-]+/g, "-")}.wav`);
+      await writeFile(stemPath, wav);
+      const checksum = await checksumFile(stemPath);
+      const storageKey = privateObjectKey(job.projectId, "stem", "wav");
+      await storage.putFile(storageKey, stemPath, "audio/wav");
+      uploadedKeys.push(storageKey);
+      values.push({
+        projectId: job.projectId,
+        sourceAssetId: source.id,
+        separationJobId: job.id,
+        stemType: stem.stemType,
+        engine: engineKind,
+        model: stem.model,
+        modelVersion: stem.modelVersion,
+        storageKey,
+        checksumSha256: checksum,
+        durationSeconds: Math.round(stem.sampleCount / 44_100),
+        sampleRate: 44_100,
+        channels: 2,
+        codec: "pcm_s16le",
+        format: "wav",
+        fileSizeBytes: wav.length,
+      });
+    }
+
+    const durableWork = await database.transaction(async (tx) => {
+      // Retry idempotency: a re-run replaces its stems atomically.
+      await tx.delete(stemAssets).where(eq(stemAssets.separationJobId, job.id));
+      const storedStems = await tx
+        .insert(stemAssets)
+        .values(values)
+        .returning({ id: stemAssets.id });
+      const waveformWork = await tx
+        .insert(waveformJobs)
+        .values(
+          storedStems.map((stem) => ({
+            projectId: job.projectId,
+            stemAssetId: stem.id,
+            status: "queued",
+            stage: "queued",
+            idempotencyKey: `waveform:stem:${stem.id}`,
+          })),
+        )
+        .returning({ id: waveformJobs.id, stemAssetId: waveformJobs.stemAssetId });
+      await tx
+        .update(processingJobs)
+        .set({
+          status: "complete",
+          stage: "complete",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+          metadata: JSON.stringify({
+            engine: engineKind,
+            model: job.model,
+            models: runModels,
+            resolvedDevice,
+            outputCount: values.length,
+            stems: stemOutputs.map((stem) => stem.stemType),
+          }),
+        })
+        .where(eq(processingJobs.id, job.id));
+      return waveformWork;
+    });
+    // Separation is complete even if a later derived-artifact queue needs
+    // a retry. Each durable job records its own failure boundary.
+    for (const waveformJob of durableWork) {
+      try {
+        await enqueueWaveform({
+          waveformJobId: waveformJob.id,
+          projectId: job.projectId,
+          stemAssetId: waveformJob.stemAssetId!,
+        });
+      } catch (queueError) {
+        await database
+          .update(waveformJobs)
+          .set({
+            status: "failed",
+            stage: "queue-unavailable",
+            errorCode: "queue_unavailable",
+            errorMessage: queueError instanceof Error ? queueError.message.slice(0, 1000) : "Queue unavailable.",
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(waveformJobs.id, waveformJob.id));
+      }
+    }
+    completed = true;
   } catch (error) {
     let errorCode = "separation_failed";
     if (error instanceof SeparationUnavailableError) errorCode = "separation_unavailable";

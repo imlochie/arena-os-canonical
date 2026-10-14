@@ -9,7 +9,8 @@
  * This module is NOT re-exported from schema.ts; Waveyard code imports tables
  * from "@/db/waveyardSchema" directly. drizzle.config.ts points at both files.
  */
-import { boolean, index, integer, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql, type SQL } from "drizzle-orm";
+import { boolean, index, integer, pgTable, real, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -62,6 +63,23 @@ export const sourceAssets = pgTable("source_assets", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex("source_assets_storage_key_unique").on(table.storageKey), index("source_assets_project_id_idx").on(table.projectId)]);
 
+/** Processing-job statuses after which the row is history: its work is
+ *  over, nothing will touch it again, and — the point — its idempotency key
+ *  is FREE for a fresh attempt at the same target. */
+export const PROCESSING_JOB_TERMINAL_STATUSES = ["complete", "failed", "cancelled"] as const;
+
+/**
+ * The predicate behind `processing_jobs_active_idempotency_unique`: the
+ * idempotency key is unique among ACTIVE jobs only. One place for it, so an
+ * `onConflictDoNothing({ target, where })` carries the exact expression the
+ * partial index was built with and PostgreSQL can infer that index — a
+ * conflict then means "an attempt at this target is queued or running",
+ * never "this target was done once".
+ */
+export function processingJobIsActive(status: AnyPgColumn): SQL {
+  return sql`${status} not in ('complete', 'failed', 'cancelled')`;
+}
+
 export const processingJobs = pgTable("processing_jobs", {
   id: uuid("id").defaultRandom().primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
@@ -82,7 +100,14 @@ export const processingJobs = pgTable("processing_jobs", {
   completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [uniqueIndex("processing_jobs_idempotency_unique").on(table.idempotencyKey), index("processing_jobs_project_id_idx").on(table.projectId), index("processing_jobs_status_idx").on(table.status)]);
+}, (table) => [
+  // Idempotency is per ACTIVE attempt: a target has at most one queued/running
+  // job, while its completed and failed attempts stay as history and never
+  // block the next one (migrations 0015 desktop / 0022 server).
+  uniqueIndex("processing_jobs_active_idempotency_unique").on(table.idempotencyKey).where(processingJobIsActive(table.status)),
+  index("processing_jobs_project_id_idx").on(table.projectId),
+  index("processing_jobs_status_idx").on(table.status),
+]);
 
 export const stemAssets = pgTable("stem_assets", {
   id: uuid("id").defaultRandom().primaryKey(),
