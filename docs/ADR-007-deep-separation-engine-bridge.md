@@ -1,6 +1,7 @@
 # ADR-007 — The deep separation engine bridge (A7)
 
-Status: **accepted, implemented and tested** (2026-10; the engine-quality
+Status: **accepted, implemented and tested** (2026-10; amended after the A7
+code review — see the "Review follow-up" entries below. The engine-quality
 verification on real music remains an owner-machine acceptance item).
 Scope: the second separation engine — the deep pass — and every call this
 slice made on the owner's behalf while wiring it.
@@ -20,10 +21,31 @@ when — that preparation exists, without inventing a second pipeline for it.
 ### D1 — The deep pass IS the owner's Demucs install; nothing is bundled
 
 `htdemucs_6s` produces six sources: vocals, drums, bass, guitar, piano,
-melody. Guitar and piano are lanes no MDX model in the registry can produce.
-The app does not bundle PyTorch/Demucs (≈800 MB; the desktop roadmap's
-Phase 4 provisioning question stays open) and does not fabricate anything:
-it discovers the prepared interpreter and runs it.
+other (the residual — everything the five named sources did not claim; it
+is shown as **Other**, not Melody: the MDX `other` lane is the melody bed
+of a 4-stem recipe, the deep `other` lane is what is left after guitar and
+piano were taken out as well). Guitar and piano are lanes no MDX model in
+the registry can produce. The app does not bundle PyTorch/Demucs (≈800 MB;
+the desktop roadmap's Phase 4 provisioning question stays open) and does
+not fabricate anything: it discovers the prepared interpreter and runs it.
+
+### D1a — Review follow-up: the model weights are a LOCAL checkpoint, never a download
+
+Demucs resolves a model *name* against its remote weight store and
+downloads on first use. The app never triggers that: the bridge runs the
+engine with `--repo <WAVEYARD_MODELS_DIR>` and the checkpoint's own
+**signature** (`--name 5c90dfd2`), which makes Demucs load
+`5c90dfd2-34c22ccb.th` from the app's models directory and verify its
+checksum itself — the same directory, and the same "the owner places the
+file" step, as the MDX models. `htdemucs_6s` is exactly the one-model bag
+`['5c90dfd2']`, so the result is the six-source model, not a lookalike. The
+checkpoint is part of readiness: Demucs installed but no checkpoint ⇒ not
+prepared, with the exact configured path in the reason (the probe, the run
+and the prepare hint all resolve the models dir from the SAME environment —
+an injected env in tests, `process.env` in production — so the reported
+path is always the one that was checked). The interpreter probe is cached;
+the checkpoint is re-checked on every readiness query, so placing the file
+flips the deep pass to ready without a restart.
 
 ### D2 — Interpreter resolution is explicit-first
 
@@ -53,14 +75,44 @@ One `processing_jobs` row, the same `enqueueSeparation` payload, the
 handler's deep branch before the registry lookup, the shared stem-creation
 tail (encode → checksum → storage → insert → per-stem waveform jobs), and
 the same layer naming. No parallel persistence, no second queue, no new
-tables, no migration.
+tables.
+
+### D4a — Review follow-up: one ACTIVE job per target, not one job ever
+
+The first cut keyed the deep job `separation-deep:<target>` against the
+whole-key unique index and used `onConflictDoNothing` → the second request
+for a target was a 409 **forever**, including after the job had completed or
+failed (the same latent defect existed in the sibling `stem-layers` route).
+The rule is now "one *active* attempt per target": the uniqueness lives in
+a partial unique index over non-terminal rows
+(`processing_jobs_active_idempotency_unique`, migration
+`desktop-migrations/0015` / `drizzle/0022`, which also drops the old
+whole-key index), and `separation/claim.ts` inserts with the index's own
+predicate in `ON CONFLICT … WHERE … DO NOTHING`. Consequences:
+
+- a repeat request while an attempt is queued/running is an honest 409 that
+  names the holding job;
+- once that attempt is complete, failed or cancelled, the same target can be
+  run again as a **fresh row** — earlier attempts stay as history;
+- concurrent requests are arbitrated by PostgreSQL, not by a
+  select-then-insert in the route (proved against the real embedded cluster
+  with 16 simultaneous claims);
+- the same-row retry path (`separation/retry.ts`, `/api/jobs/[id]/retry`)
+  claims the key by resetting the failed row FIRST (a `unique_violation`
+  means a newer attempt already holds the target → refused with that
+  reason), only then hands the job to the queue, and restores the row
+  exactly if the queue refuses; a retried layer job carries its
+  `parentStemAssetId` again.
 
 ### D5 — Naming and depth
 
 Whole-source deep pass → six top-level lanes. Deep pass on a stem → layers
-(`<parent>/<child>`, e.g. `other/guitar` = guitar inside the melody).
+(`<parent>/<child>`, e.g. `other/guitar` = guitar inside the melody lane).
 Layering a layer stays refused (one level deep), exactly as stem-layers
-already did.
+already did. Lane labels come from one helper (`separation/stem-display.ts`):
+an `other` stem reads **Melody** when the MDX engine produced it and
+**Other** when the deep engine did, and a layer is named by the engine that
+produced each segment.
 
 ### D6 — Offered always, refused honestly before any work is queued
 
@@ -83,29 +135,53 @@ existing song goes deeper per lane. If the owner later wants whole-song
 replacement, the honest form is an explicit "replace lanes" action that
 records what it superseded — not an implicit side effect of going deeper.
 
-### D8 — Verification
+### D8 — Verification (and what is explicitly NOT verified)
 
-- `separation/deep.test.ts` — stub "python" drivers (real executables, real
-  spawn): probe prepared/unprepared + caching + interpreter precedence, the
-  exact Demucs contract asked for, device resolution, engine-progress
-  forwarding, and every honest failure (no Demucs, missing/empty output,
-  non-zero exit, CUDA requested without CUDA).
+- `separation/deep.test.ts` — a REAL Python interpreter driving a FAKE
+  Demucs (`deep-fixtures.ts`: fake `demucs`/`torch` packages and package
+  metadata on an isolated `PYTHONPATH`, every invocation logged, works on
+  Windows too) through the bridge's real spawn: probe not-installed /
+  installed-without-checkpoint / prepared, caching with a live checkpoint
+  check, interpreter precedence, the exact Demucs contract asked for
+  (`--repo <models dir> --name 5c90dfd2`), the provenance string, device
+  resolution, engine-progress forwarding, and every honest failure (no
+  Demucs, no checkpoint with the exact configured path, a checkpoint Demucs
+  refuses, missing/empty output, non-zero exit, CUDA requested without
+  CUDA). Skipped visibly on a machine without Python 3.
 - `worker-local/separation.test.ts` — the handler's deep branch: a full run
-  through the REAL bridge with the stub engine (six attributed stem rows,
-  `htdemucs_6s@demucs-…` provenance, waveform jobs), deep layers named
-  `<parent>/<child>`, the honest unavailable path (nothing stored), and an
-  injected-seam test that proves the engine input is the handler's decoded
-  44.1 kHz stereo WAV and that stored lanes are exactly the engine's output
-  (SNR-checked), with no MDX engine opened.
+  through the REAL bridge with the stand-in engine (six attributed stem
+  rows, `htdemucs_6s@5c90dfd2-34c22ccb/demucs-…` provenance, waveform
+  jobs), deep layers named `<parent>/<child>`, the honest unavailable path
+  (nothing stored), and an injected-seam test that proves the engine input
+  is the handler's decoded 44.1 kHz stereo WAV and that stored lanes are
+  exactly the engine's output (SNR-checked), with no MDX engine opened.
+- `separation/claim.test.ts` — the one-active-job rule on PGlite (409 while
+  active, fresh row after complete/failed/cancelled, the index refuses two
+  active rows by itself) and on the real embedded PostgreSQL cluster
+  (16 concurrent claims → one job; a retry racing a fresh claim → one
+  active row). `separation/retry.test.ts` — the same-row retry refuses to
+  resurrect a row while a newer attempt is active and carries the parent
+  stem. `separation/stem-display.test.ts` — the Melody/Other labels.
+- **NOT verified:** real inference. The checkpoint in every test is a dummy
+  file and the Demucs is a fake; no six-stem output on real audio has been
+  produced or listened to in CI. That — plus the first run of the real
+  `5c90dfd2-34c22ccb.th` on the owner's machine (download it from Demucs'
+  release store or copy it out of the torch hub cache into
+  `WAVEYARD_MODELS_DIR`) — is the owner-machine acceptance step.
 
 ## Consequences
 
-- Deep separation now works end to end on any machine where the owner ran
-  `pip install demucs`. Quality, level and timing on real music are the
-  owner-machine acceptance items that remain (as with the MDX models).
+- Deep separation now runs end to end on any machine where the owner ran
+  `pip install demucs` AND placed `5c90dfd2-34c22ccb.th` in
+  `WAVEYARD_MODELS_DIR` (the readiness surfaces — deck chip, intake, models
+  route, diagnostics — name the exact missing path until then). Quality,
+  level and timing on real music are the owner-machine acceptance items that
+  remain (as with the MDX models).
 - The app never claims a six-source result it did not compute: every deep
-  stem row records `engine: "demucs"`, `model: "deep_6s"` and a modelVersion
-  pinning the family + engine version.
+  stem row records `engine: "demucs"`, `model: "deep_6s"` and a
+  `modelVersion` of the form `htdemucs_6s@5c90dfd2-34c22ccb/demucs-4.0.1`
+  — family, the exact checkpoint identity (signature-checksum, derived from
+  the same constants the bridge loads with) and the detected engine version.
 - Follow-ups deliberately not taken here: in-app Demucs provisioning (desktop
   roadmap Phase 4), a server-worker Demucs adapter that accepts `deep_6s`,
   24-bit/float output handling (the pipeline stores 16-bit PCM), and any

@@ -82,11 +82,28 @@ The worker directory is the original Waveyard worker preserved verbatim — see
 ## The deep pass without any of this (A7)
 
 The app itself can run the deeper six-source separation (htdemucs_6s →
-vocals, drums, bass, guitar, piano, melody) whenever the machine has Demucs
-prepared: `python3 -m pip install demucs`, or point `WAVEYARD_DEEP_PYTHON`
-(or `PYTHON_BIN`) at an interpreter that has it. The pass rides the app's
-own local job pipeline — no Redis, no worker container — and reports the
-exact prepare step on the surfaces that offer it (the upload's "Deep — 6
-stems" target and the stem deck's ⇊ per-lane action). Deployments that run
-the Python worker keep choosing the worker's model with `SEPARATION_MODEL`
-instead. Decisions: `docs/ADR-007-deep-separation-engine-bridge.md`.
+vocals, drums, bass, guitar, piano, other — the residual, shown as "Other")
+whenever the machine has the deep engine prepared. Two steps, both the
+owner's, nothing downloaded by the app:
+
+1. `python3 -m pip install demucs`, or point `WAVEYARD_DEEP_PYTHON` (or
+   `PYTHON_BIN`) at an interpreter that has it;
+2. place the model checkpoint `5c90dfd2-34c22ccb.th` in `WAVEYARD_MODELS_DIR`
+   (default `.data/waveyard-models`, the same directory as the MDX models).
+   It is Demucs' own `htdemucs_6s` weight file: download it from
+   `https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/5c90dfd2-34c22ccb.th`,
+   or copy it out of the torch hub cache (`~/.cache/torch/hub/checkpoints/`
+   on Linux/macOS, `%USERPROFILE%\.cache\torch\hub\checkpoints\` on
+   Windows) if Demucs has ever been run on that machine. The bridge loads it
+   with `--repo <WAVEYARD_MODELS_DIR> --name 5c90dfd2`, so Demucs verifies the
+   checksum and never reaches for its remote store.
+
+The pass rides the app's own local job pipeline — no Redis, no worker
+container — and reports the exact missing step (including the exact
+checkpoint path it looked for) on the surfaces that offer it (the upload's
+"Deep — 6 stems" target, the stem deck's ⇊ per-lane action, the models route
+and the desktop diagnostics). One active deep job per target: a repeat
+request while one is running is a 409; after it completes or fails the
+target can be run again. Deployments that run the Python worker keep
+choosing the worker's model with `SEPARATION_MODEL` instead. Decisions:
+`docs/ADR-007-deep-separation-engine-bridge.md`.

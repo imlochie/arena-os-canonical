@@ -73,12 +73,17 @@ Two options, in order of preference:
     package when present. Never guess — report.
   - **Already real (A7, this slice):** the deep pass does not wait for this
     phase. `separation/deep.ts` discovers whatever Demucs the machine has
-    (`WAVEYARD_DEEP_PYTHON` → `PYTHON_BIN` → platform names), runs
-    `htdemucs_6s` as a child process with live progress, and reports the
-    exact prepare step when the machine is not ready — so "the owner
-    installed Demucs" is a working configuration today, and the provisioning
-    work above becomes the zero-setup path to the same bridge. See
-    `docs/ADR-007-deep-separation-engine-bridge.md`.
+    (`WAVEYARD_DEEP_PYTHON` → `PYTHON_BIN` → platform names), loads the
+    `htdemucs_6s` checkpoint `5c90dfd2-34c22ccb.th` out of
+    `WAVEYARD_MODELS_DIR` (owner-placed, like the MDX models — from Demucs'
+    release store or the torch hub cache; the app never downloads it), runs
+    the engine as a child process with live progress, and reports the exact
+    missing step — interpreter, package or checkpoint path — when the
+    machine is not ready. So "the owner installed Demucs and placed the
+    checkpoint" is a working configuration today, and the provisioning work
+    above becomes the zero-setup path to the same bridge (it must also place
+    that checkpoint). Six lanes come back: vocals, drums, bass, guitar,
+    piano, other. See `docs/ADR-007-deep-separation-engine-bridge.md`.
 
 ## Phase 5 — Packaging and updates
 
