@@ -12,8 +12,9 @@
  *  - the DEEP pass (`deep_6s`) — the owner-prepared Python Demucs bridge
  *    (deep.ts, htdemucs_6s → six sources incl. guitar + piano). Nothing is
  *    bundled: the mode is offered, and when the machine has not been
- *    prepared the job records the honest unavailable state with the exact
- *    prepare step — never a fabricated stem.
+ *    prepared (Demucs installed AND the one local checkpoint in place) the
+ *    request is refused with the exact prepare step — never a fabricated
+ *    stem.
  *
  * This module is CLIENT-SAFE by construction (ids, labels, counts — no node
  * imports): the deck imports the deep id/label from here, while the engine
@@ -30,7 +31,12 @@ export const DEEP_MODEL_ID = "deep_6s";
 /** Product label — never the Demucs file family name. */
 export const DEEP_LABEL = "Deep — 6 stems";
 
-/** The six sources htdemucs_6s separates, in the order lanes are created. */
+/** The six sources htdemucs_6s separates, in the order lanes are created.
+ *  `other` is the engine's RESIDUAL — what is left once vocals, drums, bass,
+ *  guitar and piano are taken out — and is shown as "Other". (The MDX
+ *  4-stem recipe's `other` is the product's "Melody" lane: there, guitar
+ *  and piano are still inside it. The two must not share a label — see
+ *  stem-display.ts.) */
 export const DEEP_STEM_TYPES = ["vocals", "drums", "bass", "guitar", "piano", "other"] as const;
 
 export type DeepStemType = (typeof DEEP_STEM_TYPES)[number];
@@ -48,7 +54,7 @@ export type SeparationModeOffering = {
 export const DEEP_MODE: SeparationModeOffering = {
   id: DEEP_MODEL_ID,
   label: DEEP_LABEL,
-  description: "the deeper six-source pass — vocals, drums, bass, guitar, piano, melody",
+  description: "the deeper six-source pass — vocals, drums, bass, guitar, piano, other",
   stemCount: DEEP_STEM_TYPES.length,
   engine: "demucs",
 };

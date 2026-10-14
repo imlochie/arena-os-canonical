@@ -5,13 +5,15 @@ import { WaveformCanvas } from "../WaveformCanvas";
 import type { WaveyardVisualState } from "@/lib/waveyard/types";
 import type { MixerValues } from "@/lib/waveyard/useStemTransport";
 import type { Source, Stem } from "../studio/types";
+import { stemDisplayName } from "@/lib/waveyard/separation/stem-display";
 import { derivePlayerPhase, formatPlayerTime, playerPhaseLabel, sectionWidths } from "./player-state";
 
 const stemOrder = ["vocals", "melody", "other", "bass", "drums", "percussion"];
 
+/** Lane labels in the producing engine's vocabulary (stem-display.ts): the
+ *  MDX recipe's `other` is "Melody", the deep pass's residual is "Other". */
 function stemDisplay(stem: Stem) {
-  if (stem.stemType === "other") return "Melody";
-  return `${stem.stemType[0]?.toUpperCase() ?? ""}${stem.stemType.slice(1)}`;
+  return stemDisplayName(stem.stemType, { model: stem.model });
 }
 
 function currentSection(source: Source | undefined, visualState: WaveyardVisualState) {

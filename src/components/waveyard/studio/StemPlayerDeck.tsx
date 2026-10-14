@@ -25,6 +25,7 @@ import { useState } from "react";
 import { WaveformCanvas } from "../WaveformCanvas";
 import type { MixerValues, useStemTransport } from "@/lib/waveyard/useStemTransport";
 import { DEEP_STEM_COLORS } from "@/lib/waveyard/separation/modes";
+import { isDeepStemModel, stemDisplayName as displayName } from "@/lib/waveyard/separation/stem-display";
 import { clock, type Source, type Stem } from "./types";
 
 /** Second-pass separation targets offered per stem (stem-layers route). */
@@ -49,11 +50,22 @@ function stemColor(stemType: string): string {
   return STEM_COLORS[stemType.split("/")[0]] ?? "#7ae5e7";
 }
 
-function stemDisplayName(stemType: string): string {
-  return stemType
-    .split("/")
-    .map((part) => (part === "other" ? "Melody" : part.charAt(0).toUpperCase() + part.slice(1)))
-    .join(" · ");
+/** The lane label, in the vocabulary of the engine that produced each
+ *  segment (stem-display.ts): the deep pass's residual is "Other", the MDX
+ *  recipe's is "Melody". For a layered lane the parent's engine is looked
+ *  up among the rendered lanes when it is unambiguous. */
+function laneName(stem: Stem, stems: Stem[]): string {
+  const slash = stem.stemType.indexOf("/");
+  if (slash === -1) return displayName(stem.stemType, { model: stem.model });
+  const parentType = stem.stemType.slice(0, slash);
+  const parents = stems.filter(
+    (candidate) => candidate.sourceAssetId === stem.sourceAssetId && candidate.stemType === parentType,
+  );
+  const parentModel =
+    parents.length > 0 && parents.every((candidate) => isDeepStemModel(candidate.model) === isDeepStemModel(parents[0].model))
+      ? parents[0].model
+      : undefined;
+  return displayName(stem.stemType, { model: stem.model, parentModel });
 }
 
 export function StemPlayerDeck({
@@ -93,13 +105,13 @@ export function StemPlayerDeck({
       return;
     }
     setLayersFor(null);
-    setLayerNotice(`Separating ${body.layering?.target ?? "layers"} out of ${stemDisplayName(stem.stemType)} — new lanes appear when done.`);
+    setLayerNotice(`Separating ${body.layering?.target ?? "layers"} out of ${laneName(stem, stems)} — new lanes appear when done.`);
   };
 
   /** The deep pass: the owner-prepared engine, six sources per lane. */
   const separateDeep = async (stem: Stem) => {
     setLayerError(null);
-    setLayerNotice(`Going deeper on ${stemDisplayName(stem.stemType)}…`);
+    setLayerNotice(`Going deeper on ${laneName(stem, stems)}…`);
     setDeepBusy(stem.id);
     try {
       const response = await fetch(`/api/waveyard/projects/${projectId}/deep-stems`, {
@@ -115,7 +127,7 @@ export function StemPlayerDeck({
       }
       setLayersFor(null);
       setLayerNotice(
-        `Going deeper on ${stemDisplayName(stem.stemType)} — six deep lanes (guitar and piano included) appear when it finishes.`,
+        `Going deeper on ${laneName(stem, stems)} — six deep lanes (guitar and piano included) appear when it finishes.`,
       );
     } finally {
       setDeepBusy(null);
@@ -156,24 +168,24 @@ export function StemPlayerDeck({
             >
               <div className="stem-deck-lane-head">
                 <span className="stem-deck-dot" aria-hidden="true" />
-                <b>{stemDisplayName(stem.stemType)}</b>
+                <b>{laneName(stem, stems)}</b>
                 <div className="stem-deck-lane-controls">
                   <button
                     className={`deck-chip ${values.muted ? "off" : ""}`}
                     aria-pressed={values.muted}
-                    aria-label={`${values.muted ? "Unmute" : "Mute"} ${stemDisplayName(stem.stemType)}`}
+                    aria-label={`${values.muted ? "Unmute" : "Mute"} ${laneName(stem, stems)}`}
                     onClick={() => toggleMute(stem)}
                   >M</button>
                   <button
                     className={`deck-chip ${values.solo ? "on" : ""}`}
                     aria-pressed={values.solo}
-                    aria-label={`${values.solo ? "Release" : "Isolate"} ${stemDisplayName(stem.stemType)}`}
+                    aria-label={`${values.solo ? "Release" : "Isolate"} ${laneName(stem, stems)}`}
                     onClick={() => toggleIsolate(stem)}
                   >ISO</button>
                   {!stem.stemType.includes("/") && (
                     <button
                       className="deck-chip"
-                      aria-label={`Separate ${stemDisplayName(stem.stemType)} into layers`}
+                      aria-label={`Separate ${laneName(stem, stems)} into layers`}
                       title="Separate this stem into layers (recursive separation)"
                       onClick={() => { setLayersFor(layersFor === stem.id ? null : stem.id); setLayerError(null); }}
                     >⋁</button>
@@ -182,14 +194,14 @@ export function StemPlayerDeck({
                     <button
                       className="deck-chip deck-chip-deep"
                       disabled={deepBusy === stem.id}
-                      aria-label={`Go deeper on ${stemDisplayName(stem.stemType)} — six-source deep pass`}
+                      aria-label={`Go deeper on ${laneName(stem, stems)} — six-source deep pass`}
                       title="Go deeper: run the six-source deep engine on this stem (guitar and piano become their own lanes)"
                       onClick={() => void separateDeep(stem)}
                     >⇊</button>
                   )}
                   <a
                     className="deck-chip"
-                    aria-label={`Download ${stemDisplayName(stem.stemType)} as WAV`}
+                    aria-label={`Download ${laneName(stem, stems)} as WAV`}
                     title="Download this stem (WAV)"
                     href={`/api/assets/${stem.id}?download=1`}
                   >⇩</a>
@@ -200,7 +212,7 @@ export function StemPlayerDeck({
                     max={1.4}
                     step={0.01}
                     value={values.volume}
-                    aria-label={`${stemDisplayName(stem.stemType)} volume`}
+                    aria-label={`${laneName(stem, stems)} volume`}
                     onChange={(event) => onControl(stem.id, { volume: Number(event.target.value) })}
                     style={{ accentColor: stemColor(stem.stemType) }}
                   />
@@ -208,7 +220,7 @@ export function StemPlayerDeck({
               </div>
               {layersFor === stem.id && (
                 <div className="stem-layer-picker" data-testid={`stem-layers-${stem.id}`}>
-                  <b>Separate “{stemDisplayName(stem.stemType)}” into layers</b>
+                  <b>Separate “{laneName(stem, stems)}” into layers</b>
                   {LAYER_TARGETS.map((target) => (
                     <button key={target.id} className="deck-chip" onClick={() => void separateLayers(stem, target.id)} title={target.blurb}>
                       {target.label}
@@ -219,7 +231,7 @@ export function StemPlayerDeck({
               )}
               <WaveformCanvas
                 assetId={stem.id}
-                label={`${stemDisplayName(stem.stemType)} stem`}
+                label={`${laneName(stem, stems)} stem`}
                 position={transport.position}
                 duration={duration}
                 onSeek={(seconds) => transport.seek(seconds)}
