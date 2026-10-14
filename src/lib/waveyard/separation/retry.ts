@@ -1,18 +1,22 @@
 /**
  * Separation retry — the durable-row half of the retry story.
  *
- * The retry ROUTE decides between BullMQ's queueJob.retry() (server mode)
- * and the local broker (desktop). This module is the local half plus the
- * post-seeding sweep: once a model is seeded, every separation job that
- * failed honestly because the model was absent gets re-enqueued — the
- * zero-thought path from "model missing" back to "stems playing".
+ * The retry ROUTE decides how the job reaches an executor again — BullMQ's
+ * queueJob.retry() (server mode) or a fresh local-broker payload (desktop)
+ * — and hands that step in as `handOff`. Everything around it is here, in
+ * one order for both modes: validate → claim the row → hand off → restore
+ * the row if the hand-off fails. The post-seeding sweep rides the same
+ * function: once a model is seeded, every separation job that failed
+ * honestly because the model was absent gets re-enqueued — the zero-thought
+ * path from "model missing" back to "stems playing".
  *
  * Retrying resurrects the SAME row. Since a target's idempotency key is
  * unique among ACTIVE jobs only (processing_jobs_active_idempotency_unique),
  * a failed row can only come back to life while no newer attempt at its
- * target is queued or running: the row reset is the atomic claim — the
- * database refuses it when a fresh attempt slipped in — and the queue is
- * handed the job only after the claim succeeded.
+ * target is queued or running: the row reset IS the atomic claim — the
+ * database refuses it when a fresh attempt slipped in — and the executor is
+ * asked only after the claim succeeded. Asking first and claiming second
+ * would let a retry be triggered for a target another request just took.
  */
 
 import { and, eq } from "drizzle-orm";
@@ -21,9 +25,27 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { processingJobs } from "@/db/waveyardSchema";
 import { enqueueSeparation } from "@/lib/waveyard/queue";
-import { findActiveProcessingJob } from "./claim";
+import { findActiveProcessingJob, type ProcessingJobRow } from "./claim";
 
 export type SeparationDb = ReturnType<typeof drizzle>;
+
+export type RetryOutcome =
+  | { queued: true }
+  | {
+      queued: false;
+      /** Why not — the route maps it: a conflict (409) or an executor that
+       *  refused (503). */
+      kind: "not-found" | "not-retryable" | "newer-attempt" | "queue-refused";
+      reason: string;
+    };
+
+export type RetryOptions = {
+  /** How the claimed row reaches an executor. Default: a fresh local-broker /
+   *  queue payload rebuilt from the row. Server mode passes BullMQ's
+   *  `queueJob.retry()`. Invoked ONLY after the row is claimed; a throw
+   *  restores the row to exactly its failed state. */
+  handOff?: (job: ProcessingJobRow) => Promise<unknown>;
+};
 
 /** Job error codes that a retry can honestly fix (vs. a bad source file). */
 export const RETRYABLE_ERROR_CODES = ["separation_unavailable", "queue_unavailable", "dependency_missing"] as const;
@@ -56,25 +78,36 @@ export function newerAttemptReason(status: string): string {
   return `A newer attempt at this target is already ${status === "queued" ? "queued" : "running"} — its lanes replace this one when it finishes.`;
 }
 
-/**
- * Re-enqueue ONE failed separation job (desktop/local path: the payload is
- * fully derivable from the durable row — no BullMQ record is needed).
- * Returns whether the queue took it, or the honest reason it did not: the
- * job is not in a retryable state, a newer attempt at the same target is
- * already active, or the queue refused (the row is then restored exactly
- * as it was, so the original failure stays visible and retryable).
- */
-export async function retrySeparationJob(
-  db: SeparationDb,
-  jobId: string,
-): Promise<{ queued: true } | { queued: false; reason: string }> {
-  const [job] = await db.select().from(processingJobs).where(eq(processingJobs.id, jobId)).limit(1);
-  if (!job) return { queued: false, reason: "Job not found." };
-  if (job.type !== "separation") return { queued: false, reason: "Not a separation job." };
-  if (job.status !== "failed") return { queued: false, reason: "Only a failed job can be retried." };
+/** The default hand-off: a payload rebuilt from the durable row (every
+ *  field the handler checks is on it — no BullMQ record needed). */
+async function enqueueFromRow(job: ProcessingJobRow): Promise<void> {
+  const parentStemAssetId = parentStemAssetIdOf(job);
+  await enqueueSeparation({
+    processingJobId: job.id,
+    projectId: job.projectId,
+    sourceAssetId: job.sourceAssetId,
+    model: job.model,
+    requestedDevice: requestedDeviceOf(job.requestedDevice),
+    ...(parentStemAssetId !== undefined ? { parentStemAssetId } : {}),
+  });
+}
 
+/**
+ * Retry ONE failed separation job on its own row. Returns whether an
+ * executor took it, or the honest reason it did not: the job is not in a
+ * retryable state, a newer attempt at the same target is already active,
+ * or the hand-off refused (the row is then restored exactly as it was, so
+ * the original failure stays visible and retryable).
+ */
+export async function retrySeparationJob(db: SeparationDb, jobId: string, options: RetryOptions = {}): Promise<RetryOutcome> {
+  const [job] = await db.select().from(processingJobs).where(eq(processingJobs.id, jobId)).limit(1);
+  if (!job) return { queued: false, kind: "not-found", reason: "Job not found." };
+  if (job.type !== "separation") return { queued: false, kind: "not-retryable", reason: "Not a separation job." };
+  if (job.status !== "failed") return { queued: false, kind: "not-retryable", reason: "Only a failed job can be retried." };
+
+  // Friendly fast path; the claim below is what actually decides.
   const newer = await findActiveProcessingJob(db, job.idempotencyKey);
-  if (newer !== null && newer.id !== job.id) return { queued: false, reason: newerAttemptReason(newer.status) };
+  if (newer !== null && newer.id !== job.id) return { queued: false, kind: "newer-attempt", reason: newerAttemptReason(newer.status) };
 
   // The claim: under the active-only unique index this UPDATE is refused
   // (unique_violation) if a fresh attempt took the key in the meantime.
@@ -86,23 +119,15 @@ export async function retrySeparationJob(
       .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "failed")))
       .returning({ id: processingJobs.id });
   } catch (error) {
-    if (isUniqueViolation(error)) return { queued: false, reason: newerAttemptReason("queued") };
+    if (isUniqueViolation(error)) return { queued: false, kind: "newer-attempt", reason: newerAttemptReason("queued") };
     throw error;
   }
-  if (claimed.length === 0) return { queued: false, reason: "Only a failed job can be retried." };
+  if (claimed.length === 0) return { queued: false, kind: "not-retryable", reason: "Only a failed job can be retried." };
 
-  const parentStemAssetId = parentStemAssetIdOf(job);
   try {
-    await enqueueSeparation({
-      processingJobId: job.id,
-      projectId: job.projectId,
-      sourceAssetId: job.sourceAssetId,
-      model: job.model,
-      requestedDevice: requestedDeviceOf(job.requestedDevice),
-      ...(parentStemAssetId !== undefined ? { parentStemAssetId } : {}),
-    });
+    await (options.handOff ?? enqueueFromRow)(job);
   } catch (error) {
-    // The queue did not take it: the row goes back to exactly the failed
+    // The executor did not take it: the row goes back to exactly the failed
     // state it was in, so nothing is left "queued" that no executor holds.
     await db
       .update(processingJobs)
@@ -117,6 +142,7 @@ export async function retrySeparationJob(
       .where(eq(processingJobs.id, job.id));
     return {
       queued: false,
+      kind: "queue-refused",
       reason: error instanceof Error ? error.message : "The separation could not be re-queued.",
     };
   }

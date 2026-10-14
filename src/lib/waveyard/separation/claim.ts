@@ -16,19 +16,30 @@
  * clause, so PostgreSQL arbitrates concurrent requests itself — two
  * simultaneous claims can never both insert, with no lock, transaction or
  * retry loop in the caller.
+ *
+ * A claimed row is only honest once an executor holds it. `startSeparationJob`
+ * is the whole lifecycle the routes use: claim → hand the payload to the
+ * queue → and, if the queue refuses (no local executor, no broker, a
+ * runtime that processes elsewhere), RELEASE the claim by recording the
+ * row as failed with `queue_unavailable` — a retryable, visible failure
+ * that frees the target's key. Nothing here leaves a `queued` row that no
+ * executor will ever run: there is no background sweep that would rescue
+ * it, and an abandoned active row would hold the target's key forever.
  */
 
 import { and, eq } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { processingJobIsActive, processingJobs } from "@/db/waveyardSchema";
+import { enqueueSeparation } from "@/lib/waveyard/queue";
+import type { SeparationJobPayload } from "@/lib/waveyard/types";
 
 export type ProcessingJobRow = typeof processingJobs.$inferSelect;
 export type ProcessingJobInsert = typeof processingJobs.$inferInsert;
 
 /** The database the claim runs against — the app's pool, or an injected
  *  (PGlite / embedded) instance in tests, same seam as the job handlers. */
-export type ClaimDb = Pick<ReturnType<typeof drizzle>, "insert" | "select">;
+export type ClaimDb = Pick<ReturnType<typeof drizzle>, "insert" | "select" | "update">;
 
 export type ClaimOutcome =
   /** A fresh attempt: this request owns the new row. */
@@ -79,4 +90,75 @@ export async function findActiveProcessingJob(
     .where(and(eq(processingJobs.idempotencyKey, idempotencyKey), processingJobIsActive(processingJobs.status)))
     .limit(1);
   return active ?? null;
+}
+
+// ------------------------------------------------- claim → queue → release
+
+export type StartOutcome =
+  /** The attempt exists AND the queue holds it: the honest 202. */
+  | { outcome: "queued"; job: ProcessingJobRow }
+  /** Refused: an attempt at this target is already queued or running (409). */
+  | { outcome: "active"; active: ProcessingJobRow | null }
+  /** The claim was taken but the queue refused it; the row is a failed,
+   *  retryable `queue_unavailable` attempt and the target is free again
+   *  (503 — nothing is pretending to run). */
+  | { outcome: "not-queued"; job: ProcessingJobRow; reason: string };
+
+export type StartSeparationDeps = {
+  /** Test seam; production uses the app's queue (local broker or BullMQ). */
+  enqueue?: (payload: SeparationJobPayload) => Promise<unknown>;
+};
+
+/**
+ * Release a claim the queue did not take. The row becomes a failed attempt
+ * with `queue_unavailable` (one of RETRYABLE_ERROR_CODES, so the retry
+ * button and the post-seed sweep can bring it back once an executor
+ * exists), which also frees the target's idempotency key. Guarded on the
+ * row still being `queued`: if an executor did pick it up after all, its
+ * own state wins and nothing is clobbered.
+ */
+export async function releaseUnqueuedClaim(
+  database: ClaimDb,
+  jobId: string,
+  reason: string,
+): Promise<ProcessingJobRow | null> {
+  const now = new Date();
+  const [released] = await database
+    .update(processingJobs)
+    .set({
+      status: "failed",
+      stage: "queue-unavailable",
+      errorCode: "queue_unavailable",
+      errorMessage: reason.slice(0, 1000),
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(and(eq(processingJobs.id, jobId), eq(processingJobs.status, "queued")))
+    .returning();
+  return released ?? null;
+}
+
+/**
+ * The routes' whole start step: claim the target, hand the payload to the
+ * queue, and never leave a claimed row behind that nothing will run.
+ */
+export async function startSeparationJob(
+  database: ClaimDb,
+  values: ProcessingJobInsert,
+  payloadFor: (job: ProcessingJobRow) => SeparationJobPayload,
+  deps: StartSeparationDeps = {},
+): Promise<StartOutcome> {
+  const claim = await claimProcessingJob(database, values);
+  if (!claim.created) return { outcome: "active", active: claim.active };
+  const enqueue = deps.enqueue ?? enqueueSeparation;
+  try {
+    await enqueue(payloadFor(claim.job));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "The queue did not accept the job.";
+    const released = await releaseUnqueuedClaim(database, claim.job.id, reason);
+    // Nothing to release = an executor took the row after all; it is running.
+    if (released === null) return { outcome: "queued", job: claim.job };
+    return { outcome: "not-queued", job: released, reason };
+  }
+  return { outcome: "queued", job: claim.job };
 }

@@ -100,9 +100,19 @@ predicate in `ON CONFLICT … WHERE … DO NOTHING`. Consequences:
 - the same-row retry path (`separation/retry.ts`, `/api/jobs/[id]/retry`)
   claims the key by resetting the failed row FIRST (a `unique_violation`
   means a newer attempt already holds the target → refused with that
-  reason), only then hands the job to the queue, and restores the row
-  exactly if the queue refuses; a retried layer job carries its
-  `parentStemAssetId` again.
+  reason), only then hands the job to an executor, and restores the row
+  exactly if that hand-off fails; a retried layer job carries its
+  `parentStemAssetId` again. Both runtimes go through the same function in
+  the same order — the server route passes BullMQ's `queueJob.retry()` in
+  as the hand-off instead of asking BullMQ before the row is claimed, so a
+  retry can never be triggered for a target another request just took;
+- a claimed row is released if the queue refuses it: `startSeparationJob`
+  (the routes' whole start step) records the row as a failed, retryable
+  `queue_unavailable` attempt and answers 503, instead of a 202 over a
+  `queued` row that nothing will run. There is no background sweep that
+  would rescue such a row, and under the active-only index it would have
+  held the target's key forever — in the `external` / `none` processing
+  modes that was a permanent 409 after one failed request.
 
 ### D5 — Naming and depth
 
@@ -157,11 +167,18 @@ records what it superseded — not an implicit side effect of going deeper.
   exactly the engine's output (SNR-checked), with no MDX engine opened.
 - `separation/claim.test.ts` — the one-active-job rule on PGlite (409 while
   active, fresh row after complete/failed/cancelled, the index refuses two
-  active rows by itself) and on the real embedded PostgreSQL cluster
-  (16 concurrent claims → one job; a retry racing a fresh claim → one
-  active row). `separation/retry.test.ts` — the same-row retry refuses to
-  resurrect a row while a newer attempt is active and carries the parent
-  stem. `separation/stem-display.test.ts` — the Melody/Other labels.
+  active rows by itself); the start step with the local broker (payload
+  delivered; a refused queue leaves a failed `queue_unavailable` row, a free
+  key, and a retryable attempt — never a stranded `queued` row); and on the
+  real embedded PostgreSQL cluster (16 concurrent claims → one job; a retry
+  racing a fresh claim in both the local and the server-mode hand-off
+  flavour → one active row, and the hand-off runs exactly when the retry
+  owns the key, on an already-claimed row). `separation/retry.test.ts` —
+  the same-row retry refuses to resurrect a row while a newer attempt is
+  active, carries the parent stem, and invokes the server-mode hand-off
+  only after the claim. `separation/stem-display.test.ts` — the
+  Melody/Other labels, including the parent lookup both playback surfaces
+  share (`laneDisplayName`).
 - **NOT verified:** real inference. The checkpoint in every test is a dummy
   file and the Demucs is a fake; no six-stem output on real audio has been
   produced or listened to in CI. That — plus the first run of the real

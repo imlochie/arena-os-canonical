@@ -6,11 +6,21 @@ import {
 } from "@/db/waveyardSchema";
 import { getSeparationQueue } from "@/lib/waveyard/queue";
 import { localWorkerActive } from "@/lib/waveyard/worker-local/broker";
-import { findActiveProcessingJob } from "@/lib/waveyard/separation/claim";
-import { isUniqueViolation, newerAttemptReason, retrySeparationJob } from "@/lib/waveyard/separation/retry";
+import { retrySeparationJob, type RetryOptions } from "@/lib/waveyard/separation/retry";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 
+/**
+ * Retry a failed separation job on its own row. Both runtimes go through
+ * retrySeparationJob (separation/retry.ts) in ONE order — claim the failed
+ * row first (the active-only unique index refuses it if a newer attempt
+ * holds the target), hand the job to an executor second, restore the row
+ * if that fails. Only the hand-off differs:
+ *  - desktop/local: a fresh local-broker payload rebuilt from the row;
+ *  - server: BullMQ's queueJob.retry() on the existing queue record.
+ * The queue record is looked up (read-only) BEFORE the claim, so a missing
+ * record is a plain 409 and never touches the row.
+ */
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
@@ -19,33 +29,18 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     await requireProjectRole(user.id, job.projectId, "editor");
     if (job.status !== "failed") return NextResponse.json({ error: "Only a failed job can be retried." }, { status: 409 });
 
-    if (localWorkerActive()) {
-      // Desktop: there is no BullMQ record to .retry() — the local broker
-      // takes a fresh payload rebuilt from the durable row (every field the
-      // handler checks is on it). The row is reset only after the queue
-      // accepted the job.
-      const result = await retrySeparationJob(db, job.id);
-      if (!result.queued) return NextResponse.json({ error: result.reason }, { status: 409 });
-      const [updated] = await db.select().from(processingJobs).where(eq(processingJobs.id, id)).limit(1);
-      return NextResponse.json({ job: updated });
+    let options: RetryOptions = {};
+    if (!localWorkerActive()) {
+      const queueJob = await (await getSeparationQueue()).getJob(job.id);
+      if (!queueJob) return NextResponse.json({ error: "Queue record is unavailable; create a new separation job instead." }, { status: 409 });
+      options = { handOff: () => queueJob.retry() };
     }
 
-    // Same rule as the local path: a target's key is unique among ACTIVE
-    // jobs, so a failed row cannot come back while a newer attempt is queued
-    // or running (the UPDATE below would be refused by the index anyway —
-    // say why instead of a 503).
-    const newer = await findActiveProcessingJob(db, job.idempotencyKey);
-    if (newer !== null && newer.id !== job.id) return NextResponse.json({ error: newerAttemptReason(newer.status) }, { status: 409 });
-
-    const queueJob = await (await getSeparationQueue()).getJob(job.id);
-    if (!queueJob) return NextResponse.json({ error: "Queue record is unavailable; create a new separation job instead." }, { status: 409 });
-    await queueJob.retry();
-    try {
-      const [updated] = await db.update(processingJobs).set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date() }).where(eq(processingJobs.id, id)).returning();
-      return NextResponse.json({ job: updated });
-    } catch (error) {
-      if (isUniqueViolation(error)) return NextResponse.json({ error: newerAttemptReason("queued") }, { status: 409 });
-      throw error;
+    const result = await retrySeparationJob(db, job.id, options);
+    if (!result.queued) {
+      return NextResponse.json({ error: result.reason }, { status: result.kind === "queue-refused" ? 503 : 409 });
     }
+    const [updated] = await db.select().from(processingJobs).where(eq(processingJobs.id, id)).limit(1);
+    return NextResponse.json({ job: updated });
   } catch (error) { if (error instanceof Response) return error; console.error("retry failed", error); return NextResponse.json({ error: "Retry could not be queued." }, { status: 503 }); }
 }

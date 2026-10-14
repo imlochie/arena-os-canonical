@@ -8,7 +8,10 @@
  * failed row is never resurrected while a newer attempt at the same target
  * is active (one active job per target, see claim.ts), and is retryable
  * again once that attempt is over; the post-seed sweep touches only this
- * model's jobs in retryable states.
+ * model's jobs in retryable states. The server-mode flavour (an injected
+ * hand-off standing in for BullMQ's queueJob.retry()) follows the SAME
+ * order: the hand-off runs only after the row is claimed, never when a
+ * newer attempt holds the target, and a failing hand-off restores the row.
  */
 
 import "../worker-local/_separation-test-env";
@@ -245,6 +248,67 @@ test("the post-seed sweep requeues ONLY this model's retryable failures", async 
     assert.equal(byId.get(realFailure.id)!.status, "failed", "a real separation failure is not blindly retried");
     assert.equal(byId.get(otherModel.id)!.status, "failed", "other models' jobs are not touched");
     assert.equal(f.submitted.length, 2);
+  } finally {
+    await f.close();
+  }
+});
+
+test("server-mode hand-off: invoked only AFTER the row is claimed, never when a newer attempt holds the target, restored when it fails", async () => {
+  const f = await fixture();
+  try {
+    // 1. The hand-off sees a row that is already queued — the claim came first.
+    const job = await f.addJob();
+    const seenAtHandOff: string[] = [];
+    const result = await retrySeparationJob(f.database, job.id, {
+      handOff: async (row) => {
+        const [current] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, row.id));
+        seenAtHandOff.push(current.status);
+      },
+    });
+    assert.deepEqual(result, { queued: true });
+    assert.deepEqual(seenAtHandOff, ["queued"], "the executor is asked only once the row is ours");
+    assert.equal(f.submitted.length, 0, "the injected hand-off replaced the local broker entirely");
+
+    // 2. A newer attempt holds the target: the hand-off is NEVER invoked
+    //    (this is the race the server route used to lose — it had already
+    //    asked BullMQ to retry before the database said no).
+    const key = `separation-deep:${randomUUID()}`;
+    const earlier = await f.addJob({ model: "deep_6s", idempotencyKey: key });
+    await f.addJob({ model: "deep_6s", idempotencyKey: key, status: "queued" });
+    let handOffs = 0;
+    const refused = await retrySeparationJob(f.database, earlier.id, { handOff: async () => { handOffs += 1; } });
+    assert.equal(refused.queued, false);
+    if (refused.queued) return;
+    assert.equal(refused.kind, "newer-attempt");
+    assert.equal(handOffs, 0, "nothing was handed to the queue");
+    const [untouched] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, earlier.id));
+    assert.equal(untouched.status, "failed");
+
+    // 3. The hand-off throws (BullMQ refused / record gone): the row is
+    //    restored exactly, and the outcome says the queue refused.
+    const other = await f.addJob({ errorCode: "separation_unavailable" });
+    const failed = await retrySeparationJob(f.database, other.id, {
+      handOff: async () => {
+        throw new Error("Job is not in the failed state");
+      },
+    });
+    assert.equal(failed.queued, false);
+    if (failed.queued) return;
+    assert.equal(failed.kind, "queue-refused");
+    assert.match(failed.reason, /not in the failed state/);
+    const [restored] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, other.id));
+    assert.equal(restored.status, "failed");
+    assert.equal(restored.stage, "failed");
+    assert.equal(restored.errorCode, "separation_unavailable");
+    assert.equal(restored.errorMessage, "model not present");
+    assert.ok(restored.completedAt !== null);
+
+    // 4. The outcome kinds the route maps to status codes.
+    const complete = await f.addJob({ status: "complete" });
+    const notRetryable = await retrySeparationJob(f.database, complete.id);
+    assert.equal(notRetryable.queued === false && notRetryable.kind, "not-retryable");
+    const missing = await retrySeparationJob(f.database, randomUUID());
+    assert.equal(missing.queued === false && missing.kind, "not-found");
   } finally {
     await f.close();
   }

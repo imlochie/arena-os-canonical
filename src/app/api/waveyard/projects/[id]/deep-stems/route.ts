@@ -24,7 +24,10 @@
  * (separation/claim.ts — the database arbitrates, so concurrent requests
  * never start two). When the engine is not prepared the request is refused
  * BEFORE a job row exists (503 + the prepare step) — a queued job that can
- * never run would be dishonest.
+ * never run would be dishonest. The same honesty applies after the claim:
+ * if the queue refuses the job (no executor in this runtime), the row is
+ * recorded as a failed, retryable attempt and the request is a 503 — never
+ * a 202 over a row nothing will run.
  */
 
 import { NextResponse } from "next/server";
@@ -33,8 +36,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { sourceAssets, stemAssets } from "@/db/waveyardSchema";
 import { requireProjectRole, requireUser } from "@/lib/waveyard/local-context";
-import { enqueueSeparation } from "@/lib/waveyard/queue";
-import { claimProcessingJob } from "@/lib/waveyard/separation/claim";
+import { startSeparationJob } from "@/lib/waveyard/separation/claim";
 import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { DEEP_MODEL_ID, deepStemsEnabled } from "@/lib/waveyard/separation/modes";
 import { isUuid } from "@/lib/api/ids";
@@ -122,49 +124,57 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // and a target whose last attempt is complete or failed can be run again
     // as a fresh row (the earlier attempt stays as history).
     const idempotencyKey = `separation-deep:${parentStem?.id ?? targetSourceAssetId}`;
-    const claim = await claimProcessingJob(db, {
-      projectId,
-      sourceAssetId: targetSourceAssetId,
-      type: "separation",
-      status: "queued",
-      stage: "queued",
-      idempotencyKey,
-      model: DEEP_MODEL_ID,
-      requestedDevice: "auto",
-      metadata: JSON.stringify({
-        kind: parentStem ? "deep-layers" : "deep-stems",
-        deep: true,
-        engine: "demucs",
-        modelName: status.modelName,
-        checkpoint: DEEP_CHECKPOINT_FILE,
-        parentStemAssetId: parentStem?.id,
-        parentStemType: parentStem?.stemType,
-      }),
-    });
-    if (!claim.created) {
-      return NextResponse.json(
-        {
-          error: "This deep pass is already running — its lanes appear when it finishes.",
-          job: claim.active ? { id: claim.active.id, status: claim.active.status, stage: claim.active.stage } : null,
-        },
-        { status: 409 },
-      );
-    }
-    const job = claim.job;
-
-    try {
-      await enqueueSeparation({
+    const started = await startSeparationJob(
+      db,
+      {
+        projectId,
+        sourceAssetId: targetSourceAssetId,
+        type: "separation",
+        status: "queued",
+        stage: "queued",
+        idempotencyKey,
+        model: DEEP_MODEL_ID,
+        requestedDevice: "auto",
+        metadata: JSON.stringify({
+          kind: parentStem ? "deep-layers" : "deep-stems",
+          deep: true,
+          engine: "demucs",
+          modelName: status.modelName,
+          checkpoint: DEEP_CHECKPOINT_FILE,
+          parentStemAssetId: parentStem?.id,
+          parentStemType: parentStem?.stemType,
+        }),
+      },
+      (job) => ({
         processingJobId: job.id,
         projectId,
         sourceAssetId: targetSourceAssetId,
         model: DEEP_MODEL_ID,
         requestedDevice: "auto",
         ...(parentStem ? { parentStemAssetId: parentStem.id } : {}),
-      });
-    } catch {
-      // The durable job stays queued; the local worker's requeue sweep
-      // picks it up (same contract as first-pass separation).
+      }),
+    );
+    if (started.outcome === "active") {
+      return NextResponse.json(
+        {
+          error: "This deep pass is already running — its lanes appear when it finishes.",
+          job: started.active ? { id: started.active.id, status: started.active.status, stage: started.active.stage } : null,
+        },
+        { status: 409 },
+      );
     }
+    if (started.outcome === "not-queued") {
+      // Claimed, but no executor took it: the row is a failed, retryable
+      // attempt (queue_unavailable) and the target is free again.
+      return NextResponse.json(
+        {
+          error: `The deep pass could not be queued on this runtime: ${started.reason}`,
+          job: { id: started.job.id, status: started.job.status, errorCode: started.job.errorCode },
+        },
+        { status: 503 },
+      );
+    }
+    const job = started.job;
 
     return NextResponse.json(
       {

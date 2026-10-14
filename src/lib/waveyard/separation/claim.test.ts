@@ -9,12 +9,21 @@
  *     is claimable again as a FRESH row — the old row stays as history;
  *   - the old whole-key uniqueness is gone (the migration dropped it).
  *
+ * The routes' whole start step (startSeparationJob) on PGlite with the
+ * local broker: a claimed row reaches the executor with its payload; when
+ * the queue refuses (no executor in this runtime) the row is recorded as a
+ * failed, retryable `queue_unavailable` attempt — never left `queued` —
+ * and the target's key is free for a fresh request; a retry brings the
+ * same row back once an executor exists.
+ *
  * Concurrency on the real embedded PostgreSQL cluster (the same binaries
  * the desktop ships), many connections at once: a burst of simultaneous
  * claims yields exactly one new job and every loser names it; a burst
  * after the attempt is over yields exactly one fresh row; and a retry of an
- * earlier failed row racing a fresh claim can never leave two active rows.
- * Skipped visibly when the embedded binaries are not installed.
+ * earlier failed row racing a fresh claim — in both the local and the
+ * server-mode (injected hand-off) flavour — can never leave two active rows
+ * nor hand a losing retry to the queue. Skipped visibly when the embedded
+ * binaries are not installed.
  */
 
 import "../worker-local/_separation-test-env";
@@ -35,8 +44,9 @@ import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { processingJobIsActive, processingJobs, projects, sourceAssets } from "@/db/waveyardSchema";
 import { SEPARATION_QUEUE } from "@/lib/waveyard/queue";
 import { getLocalJobBroker, resetLocalJobBrokerForTests } from "@/lib/waveyard/worker-local/broker";
-import { claimProcessingJob, findActiveProcessingJob, type ClaimDb, type ProcessingJobInsert } from "./claim";
-import { retrySeparationJob, type SeparationDb } from "./retry";
+import { claimProcessingJob, findActiveProcessingJob, startSeparationJob, type ClaimDb, type ProcessingJobInsert } from "./claim";
+import { retrySeparationJob, type RetryOutcome, type SeparationDb } from "./retry";
+import type { SeparationJobPayload } from "@/lib/waveyard/types";
 
 const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
 
@@ -181,6 +191,115 @@ test("the database itself refuses two active rows for one target — no applicat
   }
 });
 
+function payloadFor(values: ProcessingJobInsert, parentStemAssetId?: string) {
+  return (job: { id: string }): SeparationJobPayload => ({
+    processingJobId: job.id,
+    projectId: values.projectId,
+    sourceAssetId: values.sourceAssetId,
+    model: values.model,
+    requestedDevice: "auto",
+    ...(parentStemAssetId !== undefined ? { parentStemAssetId } : {}),
+  });
+}
+
+test("startSeparationJob: a claimed row reaches the executor with its payload — the honest 202", async () => {
+  const f = await pgliteFixture();
+  process.env.ARENA_DESKTOP_MODE = "1";
+  resetLocalJobBrokerForTests();
+  const submitted: Array<Record<string, unknown>> = [];
+  getLocalJobBroker().register(SEPARATION_QUEUE, async (payload) => {
+    submitted.push(payload);
+  });
+  try {
+    const parentStemAssetId = randomUUID();
+    const values = deepJobValues(f.project.id, f.source.id, `separation-deep:${parentStemAssetId}`);
+    const started = await startSeparationJob(f.database, values, payloadFor(values, parentStemAssetId));
+    assert.equal(started.outcome, "queued");
+    if (started.outcome !== "queued") return;
+    assert.equal(submitted.length, 1, "the broker received the job");
+    assert.equal(submitted[0].processingJobId, started.job.id);
+    assert.equal(submitted[0].parentStemAssetId, parentStemAssetId, "the layer target rides along");
+
+    const again = await startSeparationJob(f.database, values, payloadFor(values, parentStemAssetId));
+    assert.equal(again.outcome, "active", "a repeat while queued is the 409");
+    if (again.outcome === "active") assert.equal(again.active?.id, started.job.id);
+    assert.equal(submitted.length, 1, "nothing was enqueued twice");
+  } finally {
+    resetLocalJobBrokerForTests();
+    delete process.env.ARENA_DESKTOP_MODE;
+    await f.close();
+  }
+});
+
+test("startSeparationJob: when the queue refuses, the row is a failed retryable attempt and the target is FREE — never a stranded `queued` row", async () => {
+  const f = await pgliteFixture();
+  process.env.ARENA_DESKTOP_MODE = "1";
+  resetLocalJobBrokerForTests(); // no executor registered for the separation queue
+  try {
+    const key = `separation-deep:${f.source.id}`;
+    const values = deepJobValues(f.project.id, f.source.id, key);
+    const first = await startSeparationJob(f.database, values, payloadFor(values));
+    assert.equal(first.outcome, "not-queued");
+    if (first.outcome !== "not-queued") return;
+    assert.match(first.reason, /no local executor/);
+    assert.equal(first.job.status, "failed", "not `queued` — nothing would ever run it");
+    assert.equal(first.job.stage, "queue-unavailable");
+    assert.equal(first.job.errorCode, "queue_unavailable", "a retryable code (RETRYABLE_ERROR_CODES)");
+    assert.match(first.job.errorMessage ?? "", /no local executor/);
+    assert.ok(first.job.completedAt !== null);
+    assert.equal(await findActiveProcessingJob(f.database, key), null, "the key is released");
+
+    // The target is usable again immediately: a fresh request creates a
+    // fresh row (it fails the same honest way while there is no executor).
+    const second = await startSeparationJob(f.database, values, payloadFor(values));
+    assert.equal(second.outcome, "not-queued");
+    if (second.outcome === "not-queued") assert.notEqual(second.job.id, first.job.id, "a fresh attempt, not a 409");
+
+    // And once an executor exists, the failed rows are retryable on their own
+    // row — the retry button / post-seed sweep path.
+    const submitted: string[] = [];
+    getLocalJobBroker().register(SEPARATION_QUEUE, async (payload) => {
+      submitted.push(String(payload.processingJobId));
+    });
+    const retried = await retrySeparationJob(f.database, first.job.id);
+    assert.deepEqual(retried, { queued: true });
+    assert.deepEqual(submitted, [first.job.id]);
+    const blocked = await retrySeparationJob(f.database, second.outcome === "not-queued" ? second.job.id : "");
+    assert.equal(blocked.queued === false && blocked.kind, "newer-attempt", "one active attempt per target still holds");
+
+    // A working executor from the start: the honest 202 path on the same target
+    // is only possible once the retried attempt is over.
+    await f.finish(first.job.id, "complete");
+    const third = await startSeparationJob(f.database, values, payloadFor(values));
+    assert.equal(third.outcome, "queued");
+  } finally {
+    resetLocalJobBrokerForTests();
+    delete process.env.ARENA_DESKTOP_MODE;
+    await f.close();
+  }
+});
+
+test("startSeparationJob: a test-seam enqueue that throws is released the same way (no broker involved)", async () => {
+  const f = await pgliteFixture();
+  try {
+    const values = deepJobValues(f.project.id, f.source.id, `separation-layer:${randomUUID()}:guitar`);
+    const started = await startSeparationJob(f.database, values, payloadFor(values), {
+      enqueue: async () => {
+        throw new Error("Redis connection refused");
+      },
+    });
+    assert.equal(started.outcome, "not-queued");
+    if (started.outcome !== "not-queued") return;
+    assert.equal(started.reason, "Redis connection refused");
+    const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, started.job.id));
+    assert.equal(row.status, "failed");
+    assert.equal(row.errorCode, "queue_unavailable");
+    assert.equal(row.errorMessage, "Redis connection refused");
+  } finally {
+    await f.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Real concurrency: embedded PostgreSQL, many connections.
 // ---------------------------------------------------------------------------
@@ -310,12 +429,34 @@ test("concurrent requests on real PostgreSQL never create two active attempts fo
     resetLocalJobBrokerForTests();
     getLocalJobBroker().register(SEPARATION_QUEUE, async () => undefined);
     try {
-      for (let round = 0; round < 6; round += 1) {
-        const [retried, claimed]: [Awaited<ReturnType<typeof retrySeparationJob>>, Awaited<ReturnType<typeof claimProcessingJob>>] =
-          await Promise.all([
-            retrySeparationJob(pg.database, winner!.id),
-            claimProcessingJob(pg.database, deepJobValues(project.id, source.id, key)),
-          ]);
+      // Server-mode flavour: the hand-off stands in for BullMQ's
+      // queueJob.retry(); it must run only when the retry actually owns the
+      // key, and must see the row already claimed.
+      let handOffs = 0;
+      let handOffsOnQueuedRow = 0;
+      const serverHandOff = async (row: { id: string }) => {
+        handOffs += 1;
+        const [current] = await pg.database.select().from(processingJobs).where(eq(processingJobs.id, row.id));
+        if (current.status === "queued") handOffsOnQueuedRow += 1;
+      };
+      const settle = async (ids: string[]) =>
+        pg.database
+          .update(processingJobs)
+          .set({ status: "failed", stage: "failed", errorCode: "separation_failed", completedAt: new Date() })
+          .where(inArray(processingJobs.id, ids));
+      const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      let serverRetryWins = 0;
+      let serverRounds = 0;
+      // Free-running races. The retry needs three round trips before its
+      // claim, the fresh claim one, so the claim is handicapped by a few
+      // random milliseconds to make both orderings happen.
+      for (let round = 0; round < 12; round += 1) {
+        const serverMode = round % 2 === 1;
+        if (serverMode) serverRounds += 1;
+        const [retried, claimed]: [RetryOutcome, Awaited<ReturnType<typeof claimProcessingJob>>] = await Promise.all([
+          retrySeparationJob(pg.database, winner!.id, serverMode ? { handOff: serverHandOff } : {}),
+          sleep(Math.random() * 6).then(() => claimProcessingJob(pg.database, deepJobValues(project.id, source.id, key))),
+        ]);
         const active = await activeRows();
         assert.equal(active.length, 1, `round ${round}: one active row (retry ${retried.queued}, claim ${claimed.created})`);
         assert.equal(
@@ -323,13 +464,48 @@ test("concurrent requests on real PostgreSQL never create two active attempts fo
           1,
           `round ${round}: exactly one of them won — retry: ${JSON.stringify(retried)}, claim: ${claimed.created}`,
         );
-        if (!retried.queued) assert.match(retried.reason, /newer attempt/);
-        // Settle for the next round: the active row (whichever it is) fails.
-        await pg.database
-          .update(processingJobs)
-          .set({ status: "failed", stage: "failed", errorCode: "separation_failed", completedAt: new Date() })
-          .where(inArray(processingJobs.id, active.map((row) => row.id)));
+        if (retried.queued) {
+          if (serverMode) serverRetryWins += 1;
+          assert.equal(active[0].id, winner!.id, `round ${round}: the retried row is the active one`);
+          assert.equal(claimed.created, false);
+          if (!claimed.created) assert.equal(claimed.active?.id, winner!.id, "the losing claim names the retried row");
+        } else {
+          assert.equal(retried.kind, "newer-attempt");
+          assert.match(retried.reason, /newer attempt/);
+        }
+        await settle(active.map((row) => row.id));
       }
+      assert.equal(handOffs, serverRetryWins, "the server-mode hand-off ran exactly when the retry owned the key — a losing retry never reaches BullMQ");
+      assert.equal(handOffsOnQueuedRow, handOffs, "and always on an already-claimed row");
+      t.diagnostic(`retry-vs-claim race: server-mode retry won ${serverRetryWins}/${serverRounds} rounds, hand-offs ${handOffs}`);
+
+      // 4. Deterministic interleaving, server mode: the fresh claim arrives
+      //    WHILE the retry is inside its hand-off (row claimed, BullMQ being
+      //    asked). It must lose and name the retried row.
+      const handOffsBefore = handOffs;
+      let claimDuringHandOff: Awaited<ReturnType<typeof claimProcessingJob>> | null = null;
+      const retried = await retrySeparationJob(pg.database, winner!.id, {
+        handOff: async (row) => {
+          await serverHandOff(row);
+          claimDuringHandOff = await claimProcessingJob(pg.database, deepJobValues(project.id, source.id, key));
+        },
+      });
+      assert.deepEqual(retried, { queued: true });
+      assert.equal(handOffs, handOffsBefore + 1);
+      assert.ok(claimDuringHandOff !== null);
+      assert.equal(claimDuringHandOff!.created, false, "a claim that arrives during the hand-off is refused");
+      if (!claimDuringHandOff!.created) assert.equal(claimDuringHandOff!.active?.id, winner!.id);
+      assert.equal((await activeRows()).length, 1);
+      await settle([winner!.id]);
+
+      // 5. And the mirror image: the fresh claim lands first; the server-mode
+      //    retry must refuse WITHOUT ever invoking the hand-off.
+      const fresh = await claimProcessingJob(pg.database, deepJobValues(project.id, source.id, key));
+      assert.equal(fresh.created, true);
+      const lost = await retrySeparationJob(pg.database, winner!.id, { handOff: serverHandOff });
+      assert.equal(lost.queued === false && lost.kind, "newer-attempt");
+      assert.equal(handOffs, handOffsBefore + 1, "the hand-off did not run for the losing retry");
+      assert.equal((await activeRows()).length, 1);
     } finally {
       resetLocalJobBrokerForTests();
       delete process.env.ARENA_DESKTOP_MODE;

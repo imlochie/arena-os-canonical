@@ -25,7 +25,7 @@ import { useState } from "react";
 import { WaveformCanvas } from "../WaveformCanvas";
 import type { MixerValues, useStemTransport } from "@/lib/waveyard/useStemTransport";
 import { DEEP_STEM_COLORS } from "@/lib/waveyard/separation/modes";
-import { isDeepStemModel, stemDisplayName as displayName } from "@/lib/waveyard/separation/stem-display";
+import { laneDisplayName } from "@/lib/waveyard/separation/stem-display";
 import { clock, type Source, type Stem } from "./types";
 
 /** Second-pass separation targets offered per stem (stem-layers route). */
@@ -52,20 +52,10 @@ function stemColor(stemType: string): string {
 
 /** The lane label, in the vocabulary of the engine that produced each
  *  segment (stem-display.ts): the deep pass's residual is "Other", the MDX
- *  recipe's is "Melody". For a layered lane the parent's engine is looked
- *  up among the rendered lanes when it is unambiguous. */
+ *  recipe's is "Melody"; a layered lane's parent is resolved among the
+ *  rendered lanes. Shared with the living player — same label everywhere. */
 function laneName(stem: Stem, stems: Stem[]): string {
-  const slash = stem.stemType.indexOf("/");
-  if (slash === -1) return displayName(stem.stemType, { model: stem.model });
-  const parentType = stem.stemType.slice(0, slash);
-  const parents = stems.filter(
-    (candidate) => candidate.sourceAssetId === stem.sourceAssetId && candidate.stemType === parentType,
-  );
-  const parentModel =
-    parents.length > 0 && parents.every((candidate) => isDeepStemModel(candidate.model) === isDeepStemModel(parents[0].model))
-      ? parents[0].model
-      : undefined;
-  return displayName(stem.stemType, { model: stem.model, parentModel });
+  return laneDisplayName(stem, stems);
 }
 
 export function StemPlayerDeck({

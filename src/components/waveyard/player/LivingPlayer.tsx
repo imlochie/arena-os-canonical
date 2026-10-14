@@ -5,15 +5,17 @@ import { WaveformCanvas } from "../WaveformCanvas";
 import type { WaveyardVisualState } from "@/lib/waveyard/types";
 import type { MixerValues } from "@/lib/waveyard/useStemTransport";
 import type { Source, Stem } from "../studio/types";
-import { stemDisplayName } from "@/lib/waveyard/separation/stem-display";
+import { laneDisplayName } from "@/lib/waveyard/separation/stem-display";
 import { derivePlayerPhase, formatPlayerTime, playerPhaseLabel, sectionWidths } from "./player-state";
 
 const stemOrder = ["vocals", "melody", "other", "bass", "drums", "percussion"];
 
 /** Lane labels in the producing engine's vocabulary (stem-display.ts): the
- *  MDX recipe's `other` is "Melody", the deep pass's residual is "Other". */
-function stemDisplay(stem: Stem) {
-  return stemDisplayName(stem.stemType, { model: stem.model });
+ *  MDX recipe's `other` is "Melody", the deep pass's residual is "Other" —
+ *  and a layered lane's parent is resolved among the rendered lanes, the
+ *  same way the studio deck does it, so both surfaces show one label. */
+function stemDisplay(stem: Stem, stems: Stem[]) {
+  return laneDisplayName(stem, stems);
 }
 
 function currentSection(source: Source | undefined, visualState: WaveyardVisualState) {
@@ -92,8 +94,8 @@ export function LivingPlayer({
         const intensity = visualState.stemIntensity[stem.id] ?? 0;
         const muted = control.muted || (Object.values(controls).some((value) => value.solo && !value.muted) && !control.solo);
         return <article key={stem.id} className={`stem-orbit stem-${stem.stemType} ${selected ? "selected" : ""} ${muted ? "muted" : ""} ${control.solo ? "solo" : ""}`} style={{ "--stem-index": index, "--stem-intensity": intensity } as CSSProperties}>
-          <button className="stem-orb" onClick={() => onSelectStem(stem.id)} aria-pressed={selected} aria-label={`Select ${stemDisplay(stem)} stem`}><i aria-hidden="true" /><b>{stemDisplay(stem)}</b><small>{muted ? "Muted" : control.solo ? "Isolated" : `${Math.round(intensity * 100)}% active`}</small></button>
-          <div className="stem-orbit-controls"><button type="button" aria-label={`Mute ${stemDisplay(stem)}`} aria-pressed={control.muted} onClick={() => onControl(stem.id, { muted: !control.muted })}>M</button><button type="button" aria-label={`Solo ${stemDisplay(stem)}`} aria-pressed={control.solo} onClick={() => onControl(stem.id, { solo: !control.solo })}>S</button><label><span className="sr-only">{stemDisplay(stem)} volume</span><input aria-label={`${stemDisplay(stem)} player volume`} type="range" min="0" max="2" step="0.01" value={control.volume} onChange={(event) => onControl(stem.id, { volume: Number(event.target.value) })} /></label></div>
+          <button className="stem-orb" onClick={() => onSelectStem(stem.id)} aria-pressed={selected} aria-label={`Select ${stemDisplay(stem, stems)} stem`}><i aria-hidden="true" /><b>{stemDisplay(stem, stems)}</b><small>{muted ? "Muted" : control.solo ? "Isolated" : `${Math.round(intensity * 100)}% active`}</small></button>
+          <div className="stem-orbit-controls"><button type="button" aria-label={`Mute ${stemDisplay(stem, stems)}`} aria-pressed={control.muted} onClick={() => onControl(stem.id, { muted: !control.muted })}>M</button><button type="button" aria-label={`Solo ${stemDisplay(stem, stems)}`} aria-pressed={control.solo} onClick={() => onControl(stem.id, { solo: !control.solo })}>S</button><label><span className="sr-only">{stemDisplay(stem, stems)} volume</span><input aria-label={`${stemDisplay(stem, stems)} player volume`} type="range" min="0" max="2" step="0.01" value={control.volume} onChange={(event) => onControl(stem.id, { volume: Number(event.target.value) })} /></label></div>
         </article>;
       })}
       {!orderedStems.length && <p className="player-empty">Validated stems will appear here.</p>}
