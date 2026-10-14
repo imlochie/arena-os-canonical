@@ -313,3 +313,61 @@ test("server-mode hand-off: invoked only AFTER the row is claimed, never when a 
     await f.close();
   }
 });
+
+test("R4: a queue_unavailable row with no BullMQ record is retried via fresh enqueue — claimed before the queue is asked", async () => {
+  const f = await fixture();
+  try {
+    // Simulate the R4 scenario: original enqueue failed (Redis unavailable),
+    // so the row is failed / queue_unavailable and no BullMQ job exists.
+    const job = await f.addJob({ errorCode: "queue_unavailable" });
+
+    // Capture the row status at the moment the queue is asked. The broker's
+    // handler runs asynchronously after submit, so we push to submitted
+    // synchronously and record the DB state inside the handler, then wait
+    // for the broker to drain.
+    const seenAtEnqueue: string[] = [];
+    const broker = getLocalJobBroker();
+    broker.register(SEPARATION_QUEUE, async (payload) => {
+      // Record that the queue was asked — this is synchronous enough that
+      // submitted.length will be 1 quickly, but we also check DB state.
+      f.submitted.push({ jobId: String(payload.processingJobId), payload: payload as Record<string, unknown> });
+      const [current] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, String(payload.processingJobId)));
+      seenAtEnqueue.push(current.status);
+    });
+
+    // No custom handOff — default enqueueFromRow (fresh enqueue) is used,
+    // which is the path the server route now takes when the BullMQ record is
+    // missing. This must follow the same claim-first order as the
+    // queueJob.retry() path.
+    const result = await retrySeparationJob(f.database, job.id);
+
+    // The broker processes asynchronously; wait for it.
+    await broker.drain(2000);
+
+    assert.deepEqual(result, { queued: true });
+    assert.equal(f.submitted.length, 1, "fresh enqueue submitted the job despite no BullMQ record");
+    assert.deepEqual(seenAtEnqueue, ["queued"], "row is claimed BEFORE fresh enqueue — same order as queueJob.retry() path");
+    assert.equal(f.submitted[0].payload.model, "kim_vocal_2");
+    assert.equal(f.submitted[0].payload.projectId, f.project.id);
+
+    const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, job.id));
+    assert.equal(row.status, "queued");
+    assert.equal(row.stage, "queued");
+    assert.equal(row.errorCode, null);
+    assert.equal(row.completedAt, null);
+
+    // A newer attempt still blocks it — claim-first holds even on this path.
+    const key = `separation-deep:${randomUUID()}`;
+    const earlier = await f.addJob({ model: "deep_6s", idempotencyKey: key, errorCode: "queue_unavailable" });
+    await f.addJob({ model: "deep_6s", idempotencyKey: key, status: "queued" });
+    const before = f.submitted.length;
+    const refused = await retrySeparationJob(f.database, earlier.id);
+    assert.equal(refused.queued, false);
+    if (!refused.queued) assert.equal(refused.kind, "newer-attempt");
+    // Drain again to be sure nothing slipped through.
+    await broker.drain(500);
+    assert.equal(f.submitted.length, before, "nothing enqueued when a newer attempt holds the target");
+  } finally {
+    await f.close();
+  }
+});

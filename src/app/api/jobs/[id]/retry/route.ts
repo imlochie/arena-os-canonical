@@ -17,9 +17,10 @@ import { requireProjectRole } from "@/lib/waveyard/local-context";
  * holds the target), hand the job to an executor second, restore the row
  * if that fails. Only the hand-off differs:
  *  - desktop/local: a fresh local-broker payload rebuilt from the row;
- *  - server: BullMQ's queueJob.retry() on the existing queue record.
- * The queue record is looked up (read-only) BEFORE the claim, so a missing
- * record is a plain 409 and never touches the row.
+ *  - server: BullMQ's queueJob.retry() when the queue record exists, or a
+ *    fresh enqueue (same claim-first lifecycle) when it does not — e.g. the
+ *    original enqueue failed with `queue_unavailable` (R4) and left no
+ *    BullMQ record. The queue lookup is read-only before the claim.
  */
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -32,8 +33,13 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     let options: RetryOptions = {};
     if (!localWorkerActive()) {
       const queueJob = await (await getSeparationQueue()).getJob(job.id);
-      if (!queueJob) return NextResponse.json({ error: "Queue record is unavailable; create a new separation job instead." }, { status: 409 });
-      options = { handOff: () => queueJob.retry() };
+      if (queueJob) {
+        options = { handOff: () => queueJob.retry() };
+      }
+      // else: no BullMQ record — e.g. original enqueue failed with
+      // queue_unavailable (R4) and left no record. Fall through to a fresh
+      // enqueue via the same claim-first lifecycle (default handOff in
+      // retry.ts), just like waveform / source-analysis / export retries.
     }
 
     const result = await retrySeparationJob(db, job.id, options);
