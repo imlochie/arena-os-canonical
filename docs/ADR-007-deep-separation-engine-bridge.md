@@ -103,9 +103,24 @@ predicate in `ON CONFLICT … WHERE … DO NOTHING`. Consequences:
   reason), only then hands the job to an executor, and restores the row
   exactly if that hand-off fails; a retried layer job carries its
   `parentStemAssetId` again. Both runtimes go through the same function in
-  the same order — the server route passes BullMQ's `queueJob.retry()` in
-  as the hand-off instead of asking BullMQ before the row is claimed, so a
-  retry can never be triggered for a target another request just took;
+  the same order — the server route passes `serverQueueHandOff` in as the
+  hand-off instead of asking BullMQ before the row is claimed, so a retry
+  can never be triggered for a target another request just took;
+- the server-mode hand-off does not depend on a BullMQ record existing. A
+  `queue_unavailable` row never had one (the original enqueue never reached
+  Redis), and a record can age out of the queue; the first cut asked BullMQ
+  for the record before anything else and answered 409 "create a new job
+  instead" when it was missing — so the one failure classified as retryable
+  was the one the retry button could not retry. Now, on the already-claimed
+  row: a FINISHED record (`failed` / `completed`) is retried in place with
+  `queueJob.retry(state)`; a record BullMQ still holds (waiting, delayed,
+  active, …) is left alone, the row is honestly `queued`; no record (or an
+  `unknown` state) means a FRESH submission rebuilt from the row — the same
+  payload the local path rebuilds, keyed by the row id so BullMQ dedups it.
+  Every queue call in that hand-off is bounded (15 s): a Redis that does not
+  answer is a refusal, the row is restored exactly, the route answers 503 —
+  a claimed row is never held hostage by a hanging queue call, and the
+  route closes the queue connection it opened;
 - a claimed row is released if the queue refuses it: `startSeparationJob`
   (the routes' whole start step) records the row as a failed, retryable
   `queue_unavailable` attempt and answers 503, instead of a 202 over a
@@ -176,9 +191,20 @@ records what it superseded — not an implicit side effect of going deeper.
   owns the key, on an already-claimed row). `separation/retry.test.ts` —
   the same-row retry refuses to resurrect a row while a newer attempt is
   active, carries the parent stem, and invokes the server-mode hand-off
-  only after the claim. `separation/stem-display.test.ts` — the
-  Melody/Other labels, including the parent lookup both playback surfaces
-  share (`laneDisplayName`).
+  only after the claim; `serverQueueHandOff` against a fake BullMQ queue: a
+  `queue_unavailable` row with NO record is retried by a fresh submission
+  that observes the row already `queued` (claimed first) with the layer
+  target in the payload, a `failed`/`completed` record is retried in place
+  with its state and no duplicate submission, a waiting/delayed/active
+  record is left alone, and a lookup that never answers is a bounded
+  `queue-refused` with the row restored and still retryable.
+  `separation/stem-display.test.ts` — the Melody/Other labels, including
+  the parent lookup both playback surfaces share (`laneDisplayName`).
+- **NOT verified:** the server retry route end-to-end against a real
+  BullMQ/Redis — the hand-off is proved against a fake queue with BullMQ's
+  documented `getJob` / `getState` / `retry(state)` contract; the first
+  retry of a `queue_unavailable` row on a real Redis is an owner
+  acceptance step.
 - **NOT verified:** real inference. The checkpoint in every test is a dummy
   file and the Demucs is a fake; no six-stem output on real audio has been
   produced or listened to in CI. That — plus the first run of the real

@@ -44,7 +44,14 @@ import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { processingJobIsActive, processingJobs, projects, sourceAssets } from "@/db/waveyardSchema";
 import { SEPARATION_QUEUE } from "@/lib/waveyard/queue";
 import { getLocalJobBroker, resetLocalJobBrokerForTests } from "@/lib/waveyard/worker-local/broker";
-import { claimProcessingJob, findActiveProcessingJob, startSeparationJob, type ClaimDb, type ProcessingJobInsert } from "./claim";
+import {
+  claimProcessingJob,
+  findActiveProcessingJob,
+  startSeparationJob,
+  type ClaimDb,
+  type ClaimOutcome,
+  type ProcessingJobInsert,
+} from "./claim";
 import { retrySeparationJob, type RetryOutcome, type SeparationDb } from "./retry";
 import type { SeparationJobPayload } from "@/lib/waveyard/types";
 
@@ -453,10 +460,16 @@ test("concurrent requests on real PostgreSQL never create two active attempts fo
       for (let round = 0; round < 12; round += 1) {
         const serverMode = round % 2 === 1;
         if (serverMode) serverRounds += 1;
-        const [retried, claimed]: [RetryOutcome, Awaited<ReturnType<typeof claimProcessingJob>>] = await Promise.all([
-          retrySeparationJob(pg.database, winner!.id, serverMode ? { handOff: serverHandOff } : {}),
-          sleep(Math.random() * 6).then(() => claimProcessingJob(pg.database, deepJobValues(project.id, source.id, key))),
-        ]);
+        const retryRun: Promise<RetryOutcome> = retrySeparationJob(
+          pg.database,
+          winner!.id,
+          serverMode ? { handOff: serverHandOff } : {},
+        );
+        const claimRun: Promise<ClaimOutcome> = sleep(Math.random() * 6).then(() =>
+          claimProcessingJob(pg.database, deepJobValues(project.id, source.id, key)),
+        );
+        const retried: RetryOutcome = await retryRun;
+        const claimed: ClaimOutcome = await claimRun;
         const active = await activeRows();
         assert.equal(active.length, 1, `round ${round}: one active row (retry ${retried.queued}, claim ${claimed.created})`);
         assert.equal(
@@ -483,18 +496,19 @@ test("concurrent requests on real PostgreSQL never create two active attempts fo
       //    WHILE the retry is inside its hand-off (row claimed, BullMQ being
       //    asked). It must lose and name the retried row.
       const handOffsBefore = handOffs;
-      let claimDuringHandOff: Awaited<ReturnType<typeof claimProcessingJob>> | null = null;
+      const during: { claim: ClaimOutcome | null } = { claim: null };
       const retried = await retrySeparationJob(pg.database, winner!.id, {
         handOff: async (row) => {
           await serverHandOff(row);
-          claimDuringHandOff = await claimProcessingJob(pg.database, deepJobValues(project.id, source.id, key));
+          during.claim = await claimProcessingJob(pg.database, deepJobValues(project.id, source.id, key));
         },
       });
       assert.deepEqual(retried, { queued: true });
       assert.equal(handOffs, handOffsBefore + 1);
-      assert.ok(claimDuringHandOff !== null);
-      assert.equal(claimDuringHandOff!.created, false, "a claim that arrives during the hand-off is refused");
-      if (!claimDuringHandOff!.created) assert.equal(claimDuringHandOff!.active?.id, winner!.id);
+      const claimDuringHandOff = during.claim;
+      assert.ok(claimDuringHandOff !== null, "the claim ran inside the hand-off");
+      assert.equal(claimDuringHandOff.created, false, "a claim that arrives during the hand-off is refused");
+      if (!claimDuringHandOff.created) assert.equal(claimDuringHandOff.active?.id, winner!.id);
       assert.equal((await activeRows()).length, 1);
       await settle([winner!.id]);
 

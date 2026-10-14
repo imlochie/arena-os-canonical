@@ -1,12 +1,13 @@
 /**
  * Separation retry — the durable-row half of the retry story.
  *
- * The retry ROUTE decides how the job reaches an executor again — BullMQ's
- * queueJob.retry() (server mode) or a fresh local-broker payload (desktop)
- * — and hands that step in as `handOff`. Everything around it is here, in
- * one order for both modes: validate → claim the row → hand off → restore
- * the row if the hand-off fails. The post-seeding sweep rides the same
- * function: once a model is seeded, every separation job that failed
+ * The retry ROUTE decides how the job reaches an executor again — the
+ * server-mode BullMQ hand-off below (an existing record's retry(), or a
+ * FRESH submission when there is no record) or a fresh local-broker payload
+ * (desktop) — and hands that step in as `handOff`. Everything around it is
+ * here, in one order for both modes: validate → claim the row → hand off →
+ * restore the row if the hand-off fails. The post-seeding sweep rides the
+ * same function: once a model is seeded, every separation job that failed
  * honestly because the model was absent gets re-enqueued — the zero-thought
  * path from "model missing" back to "stems playing".
  *
@@ -24,7 +25,7 @@ import { and, eq } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { processingJobs } from "@/db/waveyardSchema";
-import { enqueueSeparation } from "@/lib/waveyard/queue";
+import { enqueueSeparation, type QueueLike } from "@/lib/waveyard/queue";
 import { findActiveProcessingJob, type ProcessingJobRow } from "./claim";
 
 export type SeparationDb = ReturnType<typeof drizzle>;
@@ -79,8 +80,9 @@ export function newerAttemptReason(status: string): string {
 }
 
 /** The default hand-off: a payload rebuilt from the durable row (every
- *  field the handler checks is on it — no BullMQ record needed). */
-async function enqueueFromRow(job: ProcessingJobRow): Promise<void> {
+ *  field the handler checks is on it — no queue record needed). In server
+ *  mode this is a BullMQ `add` keyed by the row id; locally, the broker. */
+export async function enqueueFromRow(job: ProcessingJobRow): Promise<void> {
   const parentStemAssetId = parentStemAssetIdOf(job);
   await enqueueSeparation({
     processingJobId: job.id,
@@ -90,6 +92,65 @@ async function enqueueFromRow(job: ProcessingJobRow): Promise<void> {
     requestedDevice: requestedDeviceOf(job.requestedDevice),
     ...(parentStemAssetId !== undefined ? { parentStemAssetId } : {}),
   });
+}
+
+export type ServerHandOffResult = "retried" | "already-queued" | "enqueued";
+
+/** A Redis that does not answer must not hold a claimed row hostage: every
+ *  queue call in the server hand-off is bounded, and a timeout is a refusal
+ *  (the caller restores the row and reports it). */
+export const SERVER_QUEUE_HANDOFF_TIMEOUT_MS = 15_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${what} did not answer within ${Math.round(timeoutMs / 1000)}s — the queue (Redis) is not reachable.`)),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * Server mode (BullMQ): how a claimed row reaches an executor again.
+ *  - an existing record that is FINISHED (failed / completed) → `retry(state)`;
+ *  - an existing record BullMQ still holds (waiting, delayed, active, …) →
+ *    nothing to do: it will run, the row is honestly `queued`;
+ *  - NO record — the original enqueue never reached Redis (the row says
+ *    `queue_unavailable`), or the record aged out of the queue — → a FRESH
+ *    submission rebuilt from the row, exactly as the local path does it.
+ * So a `queue_unavailable` row is as retryable as any other failed row, and
+ * the retry button never answers "create a new job instead".
+ */
+export function serverQueueHandOff(
+  queue: Pick<QueueLike, "getJob">,
+  options: { enqueue?: (job: ProcessingJobRow) => Promise<unknown>; timeoutMs?: number } = {},
+): (job: ProcessingJobRow) => Promise<ServerHandOffResult> {
+  const timeoutMs = options.timeoutMs ?? SERVER_QUEUE_HANDOFF_TIMEOUT_MS;
+  const enqueue = options.enqueue ?? enqueueFromRow;
+  return async (job) => {
+    const existing = await withTimeout(queue.getJob(job.id), timeoutMs, "The queue record lookup");
+    if (existing) {
+      const state = String(await withTimeout(existing.getState(), timeoutMs, "The queue record state"));
+      if (state === "failed" || state === "completed") {
+        await withTimeout(existing.retry(state), timeoutMs, "The queue retry");
+        return "retried";
+      }
+      if (state !== "unknown") return "already-queued";
+      // "unknown": the record vanished between lookup and state — treat as absent.
+    }
+    await withTimeout(enqueue(job), timeoutMs, "The queue submission");
+    return "enqueued";
+  };
 }
 
 /**

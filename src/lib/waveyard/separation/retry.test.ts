@@ -8,10 +8,14 @@
  * failed row is never resurrected while a newer attempt at the same target
  * is active (one active job per target, see claim.ts), and is retryable
  * again once that attempt is over; the post-seed sweep touches only this
- * model's jobs in retryable states. The server-mode flavour (an injected
- * hand-off standing in for BullMQ's queueJob.retry()) follows the SAME
- * order: the hand-off runs only after the row is claimed, never when a
+ * model's jobs in retryable states. The server-mode flavour follows the
+ * SAME order: the hand-off runs only after the row is claimed, never when a
  * newer attempt holds the target, and a failing hand-off restores the row.
+ * serverQueueHandOff itself is proven against a fake BullMQ queue: a
+ * `queue_unavailable` row with NO queue record is retried by a FRESH
+ * submission (claimed first), a finished record is retried in place, a
+ * record BullMQ still holds is left alone, and a Redis that never answers
+ * is a bounded refusal with the row restored.
  */
 
 import "../worker-local/_separation-test-env";
@@ -28,7 +32,9 @@ import { drizzle } from "drizzle-orm/pglite";
 import { processingJobs, projects, sourceAssets } from "@/db/waveyardSchema";
 import { SEPARATION_QUEUE } from "@/lib/waveyard/queue";
 import { getLocalJobBroker, resetLocalJobBrokerForTests } from "@/lib/waveyard/worker-local/broker";
-import { requeueFailedSeparationsForModel, retrySeparationJob, type SeparationDb } from "./retry";
+import type { QueueJobLike, QueueLike } from "@/lib/waveyard/queue";
+import type { ProcessingJobRow } from "./claim";
+import { requeueFailedSeparationsForModel, retrySeparationJob, serverQueueHandOff, type SeparationDb } from "./retry";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
@@ -66,7 +72,7 @@ async function fixture() {
   });
 
   async function addJob(
-    overrides: { model?: string; status?: string; errorCode?: string | null; idempotencyKey?: string; metadata?: string } = {},
+    overrides: { model?: string; status?: string; stage?: string; errorCode?: string | null; errorMessage?: string; idempotencyKey?: string; metadata?: string } = {},
   ) {
     const model = overrides.model ?? "kim_vocal_2";
     const status = overrides.status ?? "failed";
@@ -78,9 +84,9 @@ async function fixture() {
         sourceAssetId: source.id,
         type: "separation",
         status,
-        stage: failed ? "failed" : status,
+        stage: overrides.stage ?? (failed ? "failed" : status),
         errorCode: failed ? (overrides.errorCode ?? "separation_unavailable") : null,
-        errorMessage: failed ? "model not present" : null,
+        errorMessage: failed ? (overrides.errorMessage ?? "model not present") : null,
         completedAt: failed || status === "complete" ? new Date() : null,
         idempotencyKey: overrides.idempotencyKey ?? `separation:${source.id}:${model}:${randomUUID()}`,
         model,
@@ -309,6 +315,151 @@ test("server-mode hand-off: invoked only AFTER the row is claimed, never when a 
     assert.equal(notRetryable.queued === false && notRetryable.kind, "not-retryable");
     const missing = await retrySeparationJob(f.database, randomUUID());
     assert.equal(missing.queued === false && missing.kind, "not-found");
+  } finally {
+    await f.close();
+  }
+});
+
+/** A stand-in for the BullMQ queue API the server hand-off touches. */
+function fakeQueue(record: { state: string; retryError?: Error } | null, lookup: "answers" | "hangs" = "answers") {
+  const calls = { getJob: 0, getState: 0, retry: [] as string[] };
+  const job: QueueJobLike | null = record
+    ? {
+        async getState() {
+          calls.getState += 1;
+          return record.state;
+        },
+        async retry(state?: "completed" | "failed") {
+          calls.retry.push(state ?? "failed");
+          if (record.retryError) throw record.retryError;
+        },
+        async remove() {},
+      }
+    : null;
+  const queue: Pick<QueueLike, "getJob"> = {
+    getJob() {
+      calls.getJob += 1;
+      if (lookup === "hangs") return new Promise(() => undefined);
+      return Promise.resolve(job ?? undefined);
+    },
+  };
+  return { queue, calls };
+}
+
+test("server mode: a queue_unavailable row with NO queue record is retried by a FRESH submission — claimed first", async () => {
+  const f = await fixture();
+  try {
+    // The row startSeparationJob leaves behind when Redis was unreachable
+    // (or REDIS_URL unset) at request time: no BullMQ record was ever made.
+    const parentStemAssetId = randomUUID();
+    const job = await f.addJob({
+      model: "deep_6s",
+      stage: "queue-unavailable",
+      errorCode: "queue_unavailable",
+      errorMessage: "Queue unavailable: Redis is not reachable.",
+      metadata: JSON.stringify({ kind: "deep-layers", parentStemAssetId }),
+    });
+    const { queue, calls } = fakeQueue(null);
+    const submissions: Array<{ status: string; row: ProcessingJobRow }> = [];
+    const result = await retrySeparationJob(f.database, job.id, {
+      handOff: serverQueueHandOff(queue, {
+        enqueue: async (row) => {
+          const [current] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, row.id));
+          submissions.push({ status: current.status, row });
+        },
+      }),
+    });
+    assert.deepEqual(result, { queued: true }, "retryable through the button, not only via a brand-new request");
+    assert.equal(calls.getJob, 1, "the record was looked up…");
+    assert.deepEqual(calls.retry, [], "…and nothing was retried in place: there was nothing to retry");
+    assert.equal(submissions.length, 1, "one fresh submission");
+    assert.equal(submissions[0].status, "queued", "the row was claimed BEFORE the fresh enqueue");
+    assert.equal(submissions[0].row.id, job.id, "rebuilt from the row…");
+    assert.equal(JSON.parse(submissions[0].row.metadata ?? "{}").parentStemAssetId, parentStemAssetId, "…with its layer target");
+    const [after] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, job.id));
+    assert.equal(after.status, "queued");
+    assert.equal(after.errorCode, null);
+    assert.equal(f.submitted.length, 0, "the local broker was not involved — this is the server flavour");
+  } finally {
+    await f.close();
+  }
+});
+
+test("server mode: an existing FINISHED record is retried in place — no fresh submission", async () => {
+  const f = await fixture();
+  try {
+    for (const state of ["failed", "completed"] as const) {
+      const job = await f.addJob();
+      const { queue, calls } = fakeQueue({ state });
+      let fresh = 0;
+      const result = await retrySeparationJob(f.database, job.id, {
+        handOff: serverQueueHandOff(queue, { enqueue: async () => { fresh += 1; } }),
+      });
+      assert.deepEqual(result, { queued: true }, state);
+      assert.deepEqual(calls.retry, [state], `retry() is told the record's actual finished state (${state})`);
+      assert.equal(fresh, 0, "no duplicate submission beside the existing record");
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("server mode: a record BullMQ still holds (waiting / delayed / active) is left alone — the claimed row is honestly queued", async () => {
+  const f = await fixture();
+  try {
+    for (const state of ["waiting", "delayed", "active", "prioritized"]) {
+      const job = await f.addJob();
+      const { queue, calls } = fakeQueue({ state });
+      let fresh = 0;
+      const handOff = serverQueueHandOff(queue, { enqueue: async () => { fresh += 1; } });
+      let outcome: string | null = null;
+      const result = await retrySeparationJob(f.database, job.id, {
+        handOff: async (row) => {
+          outcome = await handOff(row);
+        },
+      });
+      assert.deepEqual(result, { queued: true }, state);
+      assert.equal(outcome, "already-queued");
+      assert.deepEqual(calls.retry, [], `no retry() on a ${state} record`);
+      assert.equal(fresh, 0, `no second submission for a ${state} record`);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("server mode: a Redis that never answers is a bounded refusal — the claimed row is restored, never held hostage", async () => {
+  const f = await fixture();
+  try {
+    const job = await f.addJob({ errorCode: "queue_unavailable", stage: "queue-unavailable" });
+    const { queue } = fakeQueue(null, "hangs");
+    const started = Date.now();
+    const result = await retrySeparationJob(f.database, job.id, {
+      handOff: serverQueueHandOff(queue, { timeoutMs: 60, enqueue: async () => assert.fail("never reached") }),
+    });
+    assert.ok(Date.now() - started < 5_000, "bounded");
+    assert.equal(result.queued, false);
+    if (result.queued) return;
+    assert.equal(result.kind, "queue-refused");
+    assert.match(result.reason, /did not answer within/);
+    const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, job.id));
+    assert.equal(row.status, "failed", "restored");
+    assert.equal(row.stage, "queue-unavailable");
+    assert.equal(row.errorCode, "queue_unavailable", "…and still retryable");
+
+    // A fresh submission that is refused restores the row the same way.
+    const { queue: emptyQueue } = fakeQueue(null);
+    const refused = await retrySeparationJob(f.database, job.id, {
+      handOff: serverQueueHandOff(emptyQueue, {
+        enqueue: async () => {
+          throw new Error("Queue unavailable: Redis is not reachable.");
+        },
+      }),
+    });
+    assert.equal(refused.queued === false && refused.kind, "queue-refused");
+    const [again] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, job.id));
+    assert.equal(again.status, "failed");
+    assert.equal(again.errorCode, "queue_unavailable");
   } finally {
     await f.close();
   }
