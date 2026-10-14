@@ -11,8 +11,8 @@ import { decodeWav16, encodeWav16 } from "@/lib/waveyard/mixer/synth";
 import { getStorage } from "@/lib/waveyard/storage";
 import { processingJobs, stemAssets, waveformJobs } from "@/db/waveyardSchema";
 import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@/lib/waveyard/separation/mdx";
-import { resetDeepProbeCacheForTests } from "@/lib/waveyard/separation/deep";
-import { writeStubDeepPython } from "@/lib/waveyard/separation/deep-fixtures";
+import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@/lib/waveyard/separation/deep";
+import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@/lib/waveyard/separation/deep-fixtures";
 import { DEEP_STEM_TYPES } from "@/lib/waveyard/separation/modes";
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
 import { handleSeparationJob } from "./separation";
@@ -305,32 +305,43 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
  * the owner has prepared it — and honest unavailability when they have not.
  */
 
-const DEEP_PYTHON_ENV_KEYS = ["WAVEYARD_DEEP_PYTHON", "STUB_CALL_LOG"] as const;
-
+/** The handler reads process.env (no injected env), so the stand-in engine's
+ *  variables are installed there for the test and restored after. The
+ *  dummy checkpoint goes into the fixture's own models dir — the same
+ *  WAVEYARD_MODELS_DIR the MDX path uses. */
 function captureDeepEnv(): Record<string, string | undefined> {
   const saved: Record<string, string | undefined> = {};
-  for (const key of DEEP_PYTHON_ENV_KEYS) saved[key] = process.env[key];
+  for (const key of STUB_DEEP_ENV_KEYS) saved[key] = process.env[key];
   return saved;
 }
 
+function installDeepEnv(env: NodeJS.ProcessEnv) {
+  for (const key of STUB_DEEP_ENV_KEYS) {
+    if (env[key] === undefined) delete process.env[key];
+    else process.env[key] = env[key];
+  }
+  resetDeepProbeCacheForTests();
+}
+
 function restoreDeepEnv(saved: Record<string, string | undefined>) {
-  for (const key of DEEP_PYTHON_ENV_KEYS) {
+  for (const key of STUB_DEEP_ENV_KEYS) {
     if (saved[key] === undefined) delete process.env[key];
     else process.env[key] = saved[key];
   }
   resetDeepProbeCacheForTests();
 }
 
-test("deep pass: the prepared engine runs end to end and stores six attributed stems", async () => {
+test("deep pass: the prepared engine runs end to end and stores six attributed stems", async (t) => {
   const f = await fixture({ model: "deep_6s" });
   const stubDirectory = await mkdtemp(join(tmpdir(), "wy-deep-handler-"));
   const savedEnv = captureDeepEnv();
   try {
-    const callLog = join(stubDirectory, "calls.log");
-    const stub = await writeStubDeepPython(stubDirectory, f.sourcePath, { demucsVersion: "4.0.1", cuda: false });
-    process.env.WAVEYARD_DEEP_PYTHON = stub;
-    process.env.STUB_CALL_LOG = callLog;
-    resetDeepProbeCacheForTests();
+    const engine = await writeStubDeepEngine(stubDirectory, f.sourcePath, { demucsVersion: "4.0.1", cuda: false, modelsDir: f.modelsDir });
+    if (engine === null) {
+      t.skip(NO_TEST_PYTHON);
+      return;
+    }
+    installDeepEnv(engine.env);
 
     await handleSeparationJob(payloadOf(f), { db: f.database });
 
@@ -351,7 +362,11 @@ test("deep pass: the prepared engine runs end to end and stores six attributed s
     for (const stem of stems) {
       assert.equal(stem.engine, "demucs", "attributed to the deep engine");
       assert.equal(stem.model, "deep_6s");
-      assert.match(stem.modelVersion ?? "", /htdemucs_6s@demucs-4\.0\.1/, "provenance pins the model family + engine version");
+      assert.equal(
+        stem.modelVersion,
+        "htdemucs_6s@5c90dfd2-34c22ccb/demucs-4.0.1",
+        "provenance pins the model family, the exact checkpoint identity and the engine version",
+      );
       assert.equal(stem.sampleRate, 44_100);
       assert.equal(stem.channels, 2);
       assert.equal(stem.format, "wav");
@@ -363,12 +378,14 @@ test("deep pass: the prepared engine runs end to end and stores six attributed s
       assert.equal(decoded?.frames, SAMPLES, "full-length lane");
     }
 
-    // The bridge ran the six-source family and was handed the handler's own
+    // The bridge loaded the local checkpoint out of the fixture's models dir
+    // (never the remote family name) and was handed the handler's own
     // decoded 44.1 kHz WAV — not the stored container.
-    const calls = (await readFile(callLog, "utf8")).split("\n").filter(Boolean);
+    const calls = await engine.calls();
     const runCall = calls.find((call) => call.includes("-m demucs"));
     assert.ok(runCall, "Demucs was invoked");
-    assert.match(runCall!, /--name htdemucs_6s/);
+    assert.match(runCall!, new RegExp(`--name ${DEEP_MODEL_SIGNATURE}(\\s|$)`));
+    assert.ok(runCall!.includes(`--repo ${f.modelsDir}`), `the fixture's WAVEYARD_MODELS_DIR is the local repo: ${runCall}`);
     assert.match(runCall!, /deep-input\.wav/);
 
     // One waveform job per deep lane, each with its own failure boundary.
@@ -382,7 +399,7 @@ test("deep pass: the prepared engine runs end to end and stores six attributed s
   }
 });
 
-test("deep layers: a deep pass on a STEM names every lane <parent>/<child>", async () => {
+test("deep layers: a deep pass on a STEM names every lane <parent>/<child>", async (t) => {
   const f = await fixture({ model: "deep_6s" });
   const stubDirectory = await mkdtemp(join(tmpdir(), "wy-deep-layers-"));
   const savedEnv = captureDeepEnv();
@@ -408,9 +425,12 @@ test("deep layers: a deep pass on a STEM names every lane <parent>/<child>", asy
       })
       .returning();
 
-    const stub = await writeStubDeepPython(stubDirectory, f.sourcePath, { demucsVersion: "4.0.1", cuda: false });
-    process.env.WAVEYARD_DEEP_PYTHON = stub;
-    resetDeepProbeCacheForTests();
+    const engine = await writeStubDeepEngine(stubDirectory, f.sourcePath, { demucsVersion: "4.0.1", cuda: false, modelsDir: f.modelsDir });
+    if (engine === null) {
+      t.skip(NO_TEST_PYTHON);
+      return;
+    }
+    installDeepEnv(engine.env);
 
     await handleSeparationJob(
       { ...payloadOf(f), parentStemAssetId: parentStem.id },
@@ -438,14 +458,17 @@ test("deep layers: a deep pass on a STEM names every lane <parent>/<child>", asy
   }
 });
 
-test("deep pass with no prepared engine: honest separation_unavailable, nothing stored", async () => {
+test("deep pass with no prepared engine: honest separation_unavailable, nothing stored", async (t) => {
   const f = await fixture({ model: "deep_6s" });
   const stubDirectory = await mkdtemp(join(tmpdir(), "wy-deep-missing-"));
   const savedEnv = captureDeepEnv();
   try {
-    const stub = await writeStubDeepPython(stubDirectory, f.sourcePath, { demucsVersion: null });
-    process.env.WAVEYARD_DEEP_PYTHON = stub;
-    resetDeepProbeCacheForTests();
+    const engine = await writeStubDeepEngine(stubDirectory, f.sourcePath, { demucsVersion: null, modelsDir: f.modelsDir });
+    if (engine === null) {
+      t.skip(NO_TEST_PYTHON);
+      return;
+    }
+    installDeepEnv(engine.env);
 
     await assert.rejects(
       () => handleSeparationJob(payloadOf(f), { db: f.database }),
@@ -507,6 +530,7 @@ test("deep seam: the decoded 44.1 kHz PCM is the engine input, no MDX engine ope
         model: "deep_6s",
         modelName: "htdemucs_6s",
         modelVersion: "stub-engine-1",
+        checkpointPath: join(request.outputDirectory, "not-a-real-checkpoint.th"),
         resolvedDevice: "cpu",
         stems,
       };

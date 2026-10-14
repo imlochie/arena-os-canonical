@@ -18,7 +18,7 @@ import { execTool, resolveToolPath } from "@/lib/waveyard/ffmpeg";
 import { listProviders } from "@/lib/waveyard/ai/providers";
 import { localWorkerActive, localWorkerStats } from "@/lib/waveyard/worker-local";
 import { queueConfigured } from "@/lib/waveyard/queue";
-import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
+import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 
 export const dynamic = "force-dynamic";
 
@@ -77,6 +77,7 @@ function deepEngineDetail(): Record<string, unknown> {
     python: status.prepared ? status.python : null,
     demucsVersion: status.prepared ? status.demucsVersion : null,
     reason: status.prepared ? null : status.reason,
+    checkpoint: { file: DEEP_CHECKPOINT_FILE, path: status.checkpointPath, present: status.checkpointPresent },
   };
 }
 

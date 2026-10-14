@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { MDX_MODELS } from "@/lib/waveyard/separation/mdx";
-import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
+import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { deepStemsEnabled } from "@/lib/waveyard/separation/modes";
 import { getModelFileStatus, modelLabel } from "@/lib/waveyard/separation/seed";
 import { requireUser } from "@/lib/waveyard/local-context";
@@ -41,6 +41,7 @@ export async function GET() {
         stems: deepStatus.stems,
         prepared: deepStatus.prepared,
         reason: deepStatus.prepared ? null : deepStatus.reason,
+        checkpoint: { file: DEEP_CHECKPOINT_FILE, path: deepStatus.checkpointPath, present: deepStatus.checkpointPresent },
       },
     });
   } catch (error) {

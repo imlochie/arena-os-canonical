@@ -10,6 +10,18 @@
  * faked: when the machine is not prepared, the bridge reports exactly that
  * and the job records the honest unavailable state with the prepare step.
  *
+ * Two things make a machine "prepared", and the probe checks both:
+ *  1. an interpreter with Demucs installed (see interpreter resolution);
+ *  2. the ONE local checkpoint the deep pass loads — `5c90dfd2-34c22ccb.th`,
+ *     the htdemucs_6s weights — inside the app's models directory
+ *     (WAVEYARD_MODELS_DIR). The run hands that directory to Demucs with
+ *     `--repo` and asks for the checkpoint's signature, so Demucs loads the
+ *     local file (verifying the checksum its filename encodes) and never
+ *     reaches for its remote weight store. A machine without the file is not
+ *     prepared, and the reason names the exact path that was checked.
+ *     Presence is a readiness gate, not proof of valid weights: Demucs'
+ *     own checksum check on load is the integrity gate.
+ *
  * Why a child process and not spawnSync: the local worker drains jobs inside
  * the app's own server process (src/instrumentation.ts). A synchronous
  * Demucs run would block every HTTP request for the whole pass — the UI
@@ -25,10 +37,11 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { statSync } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { SeparationUnavailableError } from "./session";
+import { resolveModelsDir, SeparationUnavailableError } from "./session";
 import { processingModeExplanation, resolveProcessingMode } from "../worker-local/runtime-policy";
 import {
   DEEP_LABEL,
@@ -40,16 +53,61 @@ import {
 /** The Demucs model family the deep pass runs (six sources). */
 export const DEEP_MODEL_NAME = "htdemucs_6s";
 
+/** The signature of the one checkpoint behind `htdemucs_6s` (its bag file in
+ *  Demucs' own remote index is exactly `models: ['5c90dfd2']` — no weights or
+ *  segment overrides — so loading the signature IS loading the family). */
+export const DEEP_MODEL_SIGNATURE = "5c90dfd2";
+
+/** The sha256 prefix Demucs encodes in the checkpoint's filename and verifies
+ *  on load (`demucs/repo.py`, LocalRepo.get_model → check_checksum). */
+export const DEEP_CHECKPOINT_CHECKSUM = "34c22ccb";
+
+/** The only file the deep pass will load: `<signature>-<checksum>.th`. */
+export const DEEP_CHECKPOINT_FILE = `${DEEP_MODEL_SIGNATURE}-${DEEP_CHECKPOINT_CHECKSUM}.th`;
+
+/** Where Demucs itself publishes that file (remote index `files.txt`, root
+ *  `hybrid_transformer/`). Documentation for the owner's preparation step —
+ *  the app NEVER downloads it. */
+export const DEEP_CHECKPOINT_URL = `https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/${DEEP_CHECKPOINT_FILE}`;
+
 const PROBE_TIMEOUT_MS = 20_000;
 const DEFAULT_RUN_TIMEOUT_MS = 60 * 60 * 1000;
 
-/** How the machine is prepared — the exact step to take when it is not. */
-export function deepPrepareHint(): string {
+/** The absolute path of the local checkpoint for the given environment —
+ *  the SAME resolution the probe, the run and every diagnostic use. */
+export function deepCheckpointPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(resolveModelsDir(env), DEEP_CHECKPOINT_FILE);
+}
+
+/** The provenance string every deep stem row carries: model family, the
+ *  exact checkpoint identity (signature + checksum) and the engine version
+ *  that ran it. Two outputs from different weights can never share it. */
+export function deepModelVersion(demucsVersion: string): string {
+  return `${DEEP_MODEL_NAME}@${DEEP_MODEL_SIGNATURE}-${DEEP_CHECKPOINT_CHECKSUM}/demucs-${demucsVersion}`;
+}
+
+/** The checkpoint half of the prepare step — names the exact path for the
+ *  environment being asked about. */
+export function deepCheckpointHint(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    `Place the ${DEEP_MODEL_NAME} checkpoint ${DEEP_CHECKPOINT_FILE} at ${deepCheckpointPath(env)} ` +
+    "(the app's models directory, WAVEYARD_MODELS_DIR) — it is the file Demucs downloads for " +
+    `${DEEP_MODEL_NAME}, so copy it from Demucs' own cache (…/torch/hub/checkpoints/) or fetch ` +
+    `${DEEP_CHECKPOINT_URL} yourself. The deep pass loads only that local file — nothing is downloaded from here.`
+  );
+}
+
+/** How the machine is prepared — the exact steps to take when it is not,
+ *  for the SAME environment the probe and run resolve against (an injected
+ *  WAVEYARD_MODELS_DIR is reported, never the default). */
+export function deepPrepareHint(env: NodeJS.ProcessEnv = process.env): string {
   const interpreter = process.platform === "win32" ? "py -3" : "python3";
   return (
     `Install Demucs on this machine ("${interpreter} -m pip install demucs"), or point ` +
-    "WAVEYARD_DEEP_PYTHON at an interpreter that has it, then retry. The deep pass runs " +
-    "your own local engine — nothing is downloaded from here."
+    "WAVEYARD_DEEP_PYTHON at an interpreter that has it, and place the " +
+    `${DEEP_MODEL_NAME} checkpoint ${DEEP_CHECKPOINT_FILE} at ${deepCheckpointPath(env)} ` +
+    "(WAVEYARD_MODELS_DIR), then retry. The deep pass runs your own local engine and loads only " +
+    "that local checkpoint — nothing is downloaded from here."
   );
 }
 
@@ -99,16 +157,24 @@ export type DeepEngineReady = {
   modelName: string;
   label: string;
   stems: readonly DeepStemType[];
+  /** The local checkpoint the run will load (present, by definition). */
+  checkpointPath: string;
+  checkpointPresent: true;
 };
 
 export type DeepEngineMissing = {
   prepared: false;
+  /** The interpreter that has Demucs, when the gap is only the checkpoint. */
   python: string | null;
+  demucsVersion: string | null;
   reason: string;
   modelId: string;
   modelName: string;
   label: string;
   stems: readonly DeepStemType[];
+  /** The exact path that was checked for the checkpoint. */
+  checkpointPath: string;
+  checkpointPresent: boolean;
 };
 
 export type DeepEngineStatus = DeepEngineReady | DeepEngineMissing;
@@ -145,29 +211,30 @@ function parseJsonLine(stdout: string): Record<string, unknown> | null {
   }
 }
 
-const probeCache = new Map<string, DeepEngineStatus>();
+/** The expensive half of the probe (one interpreter spawn per candidate),
+ *  cached per interpreter set. The checkpoint is NOT part of this cache: a
+ *  stat is microseconds, and the owner placing the file must flip readiness
+ *  without a restart. */
+type InterpreterProbe =
+  | { found: true; candidate: DeepPythonCandidate; demucsVersion: string }
+  | { found: false; reason: string };
+
+const interpreterCache = new Map<string, InterpreterProbe>();
 
 /** Test seam: probes are cached per interpreter set; tests reset between
  *  stub drivers. */
 export function resetDeepProbeCacheForTests(): void {
-  probeCache.clear();
+  interpreterCache.clear();
 }
 
-/**
- * Is this machine prepared for the deep pass? Cheap, synchronous, cached per
- * interpreter set — safe to call from a route to gate a request before any
- * work is queued. Never throws.
- */
-export function probeDeepEngine(options: { env?: NodeJS.ProcessEnv; force?: boolean } = {}): DeepEngineStatus {
-  const env = options.env ?? process.env;
+function probeInterpreter(env: NodeJS.ProcessEnv, force: boolean): InterpreterProbe {
   const candidates = deepPythonCandidates(env);
   const cacheKey = candidates.map((candidate) => `${candidate.bin} ${candidate.prefixArgs.join(" ")}`).join("|");
-  if (!options.force) {
-    const cached = probeCache.get(cacheKey);
+  if (!force) {
+    const cached = interpreterCache.get(cacheKey);
     if (cached !== undefined) return cached;
   }
 
-  const base = { modelId: DEEP_MODEL_ID, modelName: DEEP_MODEL_NAME, label: DEEP_LABEL, stems: DEEP_STEM_TYPES } as const;
   let lastError: string | null = null;
   for (const candidate of candidates) {
     const result = spawnSync(candidate.bin, [...candidate.prefixArgs, "-c", PROBE_SNIPPET], {
@@ -184,27 +251,84 @@ export function probeDeepEngine(options: { env?: NodeJS.ProcessEnv; force?: bool
     const parsed = parseJsonLine(result.stdout ?? "");
     const demucsVersion = typeof parsed?.demucs === "string" ? parsed.demucs : null;
     if (demucsVersion !== null) {
-      const status: DeepEngineStatus = {
-        ...base,
-        prepared: true,
-        python: candidate.bin,
-        pythonSource: candidate.source,
-        demucsVersion,
-      };
-      probeCache.set(cacheKey, status);
-      return status;
+      const probe: InterpreterProbe = { found: true, candidate, demucsVersion };
+      interpreterCache.set(cacheKey, probe);
+      return probe;
     }
     // The interpreter ran but has no Demucs — remember it as the reason.
     lastError = `Demucs is not installed for "${candidate.bin}".`;
   }
 
-  const reason =
-    lastError === null || candidates.length === 0
-      ? `Deep separation needs a Python interpreter with Demucs installed, and none was found on this machine. ${deepPrepareHint()}`
-      : `${lastError} ${deepPrepareHint()}`;
-  const status: DeepEngineStatus = { ...base, prepared: false, python: null, reason };
-  probeCache.set(cacheKey, status);
-  return status;
+  const probe: InterpreterProbe = {
+    found: false,
+    reason:
+      lastError === null || candidates.length === 0
+        ? "Deep separation needs a Python interpreter with Demucs installed, and none was found on this machine."
+        : lastError,
+  };
+  interpreterCache.set(cacheKey, probe);
+  return probe;
+}
+
+/** Is the local checkpoint there? A regular, non-empty file at the exact
+ *  path for this environment. (Validity is Demucs' checksum check on load.) */
+function checkpointPresent(path: string): boolean {
+  try {
+    const details = statSync(path);
+    return details.isFile() && details.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Is this machine prepared for the deep pass? Cheap, synchronous, cached per
+ * interpreter set (the checkpoint is re-checked every call) — safe to call
+ * from a route to gate a request before any work is queued. Never throws.
+ */
+export function probeDeepEngine(options: { env?: NodeJS.ProcessEnv; force?: boolean } = {}): DeepEngineStatus {
+  const env = options.env ?? process.env;
+  const checkpointPath = deepCheckpointPath(env);
+  const present = checkpointPresent(checkpointPath);
+  const base = {
+    modelId: DEEP_MODEL_ID,
+    modelName: DEEP_MODEL_NAME,
+    label: DEEP_LABEL,
+    stems: DEEP_STEM_TYPES,
+    checkpointPath,
+  } as const;
+
+  const interpreter = probeInterpreter(env, options.force === true);
+  if (!interpreter.found) {
+    return {
+      ...base,
+      prepared: false,
+      python: null,
+      demucsVersion: null,
+      checkpointPresent: present,
+      reason: `${interpreter.reason} ${deepPrepareHint(env)}`,
+    };
+  }
+  if (!present) {
+    return {
+      ...base,
+      prepared: false,
+      python: interpreter.candidate.bin,
+      demucsVersion: interpreter.demucsVersion,
+      checkpointPresent: false,
+      reason:
+        `Demucs ${interpreter.demucsVersion} is ready for "${interpreter.candidate.bin}", but the deep model ` +
+        `checkpoint is not at ${checkpointPath}. ${deepCheckpointHint(env)}`,
+    };
+  }
+  return {
+    ...base,
+    prepared: true,
+    python: interpreter.candidate.bin,
+    pythonSource: interpreter.candidate.source,
+    demucsVersion: interpreter.demucsVersion,
+    checkpointPresent: true,
+  };
 }
 
 /**
@@ -217,14 +341,18 @@ export function probeDeepEngine(options: { env?: NodeJS.ProcessEnv; force?: bool
 export function deepEngineStatusForThisRuntime(env: NodeJS.ProcessEnv = process.env): DeepEngineStatus {
   const mode = resolveProcessingMode(env);
   if (mode !== "in-process") {
+    const checkpointPath = deepCheckpointPath(env);
     return {
       prepared: false,
       python: null,
+      demucsVersion: null,
       reason: `The deep pass runs on this machine's own engine, inside the app process. ${processingModeExplanation(mode)}`,
       modelId: DEEP_MODEL_ID,
       modelName: DEEP_MODEL_NAME,
       label: DEEP_LABEL,
       stems: DEEP_STEM_TYPES,
+      checkpointPath,
+      checkpointPresent: checkpointPresent(checkpointPath),
     };
   }
   return probeDeepEngine({ env });
@@ -250,7 +378,10 @@ export type DeepRunResult = {
   engine: "demucs";
   model: string;
   modelName: string;
+  /** `htdemucs_6s@5c90dfd2-34c22ccb/demucs-<version>` — see deepModelVersion. */
   modelVersion: string;
+  /** The local checkpoint that produced the stems. */
+  checkpointPath: string;
   resolvedDevice: "cpu" | "cuda";
   stems: DeepRunStem[];
 };
@@ -313,11 +444,11 @@ async function resolveTorchDevice(
     throw new SeparationUnavailableError(
       `The deep engine's PyTorch runtime could not be interrogated (${
         outcome.error?.message ?? (outcome.stderr || `exit ${outcome.status}`).trim().slice(-200)
-      }). ${deepPrepareHint()}`,
+      }). ${deepPrepareHint(env)}`,
     );
   }
   if (typeof parsed.error === "string") {
-    throw new SeparationUnavailableError(`PyTorch is not installed for "${candidate.bin}". ${deepPrepareHint()}`);
+    throw new SeparationUnavailableError(`PyTorch is not installed for "${candidate.bin}". ${deepPrepareHint(env)}`);
   }
   const cuda = parsed.cuda === true;
   if (requested === "cuda" && !cuda) {
@@ -360,7 +491,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
   const ready: DeepEngineReady = status;
   const candidate =
     deepPythonCandidates(env).find((entry) => entry.bin === ready.python) ?? deepPythonCandidates(env)[0];
-  if (candidate === undefined) throw new SeparationUnavailableError(deepPrepareHint());
+  if (candidate === undefined) throw new SeparationUnavailableError(deepPrepareHint(env));
 
   const requestedDevice = request.requestedDevice ?? "auto";
   const timeoutMs = request.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
@@ -368,12 +499,17 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
     requestedDevice === "cpu" ? "cpu" : await resolveTorchDevice(candidate, env, requestedDevice, PROBE_TIMEOUT_MS);
 
   await mkdir(request.outputDirectory, { recursive: true });
+  // `--repo <models dir>` makes Demucs read ONLY that local repository, and
+  // `--name <signature>` selects the checkpoint by the signature its
+  // filename carries — Demucs verifies the encoded checksum before loading.
   const args = [
     ...candidate.prefixArgs,
     "-m",
     "demucs",
     "--name",
-    DEEP_MODEL_NAME,
+    DEEP_MODEL_SIGNATURE,
+    "--repo",
+    resolveModelsDir(env),
     "--device",
     resolvedDevice,
     "--out",
@@ -398,11 +534,18 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
 
   const tail = (outcome.stderr || outcome.stdout).trim().slice(-2000);
   if (outcome.error !== null && outcome.status === null) {
-    throw new SeparationUnavailableError(`The deep engine could not run (${outcome.error.message}). ${deepPrepareHint()}`);
+    throw new SeparationUnavailableError(`The deep engine could not run (${outcome.error.message}). ${deepPrepareHint(env)}`);
   }
   if (outcome.status !== 0) {
     if (/No module named ['"]?(demucs|torch)/i.test(tail)) {
-      throw new SeparationUnavailableError(`The deep engine is incomplete: ${tail.slice(-400)}. ${deepPrepareHint()}`);
+      throw new SeparationUnavailableError(`The deep engine is incomplete: ${tail.slice(-400)}. ${deepPrepareHint(env)}`);
+    }
+    if (/Invalid checksum|Could not find (a )?pre-trained model|ModelLoadingError/i.test(tail)) {
+      // The file is there but is not the checkpoint it claims to be (or the
+      // local repository is unreadable) — Demucs' own integrity gate.
+      throw new SeparationUnavailableError(
+        `The deep model checkpoint at ${ready.checkpointPath} was refused by Demucs: ${tail.slice(-400)}. ${deepCheckpointHint(env)}`,
+      );
     }
     throw new Error(`Demucs failed (exit ${outcome.status}): ${tail}`);
   }
@@ -432,7 +575,8 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
     engine: "demucs",
     model: DEEP_MODEL_ID,
     modelName: DEEP_MODEL_NAME,
-    modelVersion: `${DEEP_MODEL_NAME}@demucs-${ready.demucsVersion}`,
+    modelVersion: deepModelVersion(ready.demucsVersion),
+    checkpointPath: ready.checkpointPath,
     resolvedDevice,
     stems,
   };
