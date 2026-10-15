@@ -170,7 +170,10 @@ test("verdict tables stay in sync with desktop/acceptance.ts (drift guard)", () 
 });
 
 test("windows-acceptance judges recovery via evaluateRecovery, not body.ok (wiring guard)", () => {
-  const source = readFileSync(path.join(repoRoot, "scripts", "windows-acceptance.mjs"), "utf8");
+  const source = readFileSync(
+    path.join(repoRoot, "scripts", "windows-acceptance.mjs"),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
   assert.ok(
     source.includes('from "./lib/recovery-verdict.mjs"'),
     "the harness must import the recovery verdict helper",
@@ -251,7 +254,10 @@ test("presentation: the report body is never rewritten — only the console line
 });
 
 test("windows-acceptance presents the recovery run self-explanatorily (wiring guard)", () => {
-  const source = readFileSync(path.join(repoRoot, "scripts", "windows-acceptance.mjs"), "utf8");
+  const source = readFileSync(
+    path.join(repoRoot, "scripts", "windows-acceptance.mjs"),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
   // Both dumps are labeled with WHICH launch they belong to (initial vs recovery).
   assert.ok(source.includes("normal launch — in-app acceptance detail"), "the normal-run dump must be labeled");
   assert.ok(source.includes("recovery launch — in-app acceptance detail"), "the recovery dump must be labeled");

@@ -11,6 +11,7 @@
 
 import { and, desc, eq } from "drizzle-orm";
 import { stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { db } from "@/db";
 import { mediaLibraryItems, mediaProviders, mediaRefreshes } from "@/db/schema";
 import { openSecret, sealSecret } from "../secretBox";
@@ -74,7 +75,7 @@ export async function saveMediaProvider(input: {
     // The local library's "server" is a folder on this machine — no URL,
     // no token; the folder just has to exist.
     const root = input.baseUrl.trim();
-    if (!root || !root.startsWith("/")) {
+    if (!root || !isAbsolute(root)) {
       throw new MediaProviderError("bad_response", "baseUrl must be an absolute folder path for a local library.");
     }
     const info = await stat(root).catch(() => null);
