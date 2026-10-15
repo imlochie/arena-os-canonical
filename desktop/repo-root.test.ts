@@ -27,7 +27,10 @@ test("repoRootFromMeta resolves this test file's own URL to the repo root", () =
   // agnostic way to get our own path (no import.meta / __filename).
   const root = repoRootFromMeta(pathToFileURL(process.argv[1]).href);
   assert.ok(path.isAbsolute(root), "absolute");
-  assert.equal(path.basename(root), "arena-os-canonical");
+  assert.equal(
+    root,
+    path.resolve(path.dirname(process.argv[1] ?? "."), ".."),
+  );
   assert.ok(existsSync(path.join(root, "package.json")), "resolves to the real repo root");
 });
 
