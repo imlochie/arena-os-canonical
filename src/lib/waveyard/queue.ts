@@ -66,7 +66,9 @@ async function getConnection(): Promise<IORedis> {
 }
 
 export type QueueJobLike = {
-  retry(): Promise<unknown>;
+  /** BullMQ: move a FINISHED record back to the wait list. The state must
+   *  match the record's actual finished state (default "failed"). */
+  retry(state?: "completed" | "failed"): Promise<unknown>;
   remove(): Promise<unknown>;
   getState(): Promise<unknown>;
 };

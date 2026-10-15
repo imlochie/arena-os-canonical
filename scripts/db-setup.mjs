@@ -65,17 +65,32 @@ try {
   process.exit(1);
 }
 
+let databaseEncoding = "UTF8";
 try {
   const existing = await admin.query(
-    "SELECT 1 FROM pg_database WHERE datname = $1",
+    "SELECT pg_encoding_to_char(encoding) AS encoding FROM pg_database WHERE datname = $1",
     [databaseName],
   );
+
   if (existing.rowCount === 0) {
-    await admin.query(`CREATE DATABASE "${databaseName.replace(/"/g, '""')}"`);
-    console.log(`[db] Created database "${databaseName}".`);
+    const quotedName = databaseName.replace(/"/g, '""');
+    await admin.query(
+      `CREATE DATABASE "${quotedName}" WITH TEMPLATE template0 ENCODING 'UTF8'`,
+    );
+    console.log(`[db] Created database "${databaseName}" with UTF-8 encoding.`);
   } else {
-    console.log(`[db] Database "${databaseName}" already exists.`);
+    databaseEncoding = existing.rows[0]?.encoding ?? "UTF8";
+    if (databaseEncoding !== "UTF8") {
+      throw new Error(
+        `[db] Database "${databaseName}" uses ${databaseEncoding}, but Arena requires UTF8 encoding. ` +
+          `Create a new UTF8 database or recreate the database with TEMPLATE template0 ENCODING 'UTF8'.`,
+      );
+    }
+    console.log(`[db] Database "${databaseName}" already exists and is UTF-8.`);
   }
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
 } finally {
   await admin.end();
 }
