@@ -134,8 +134,9 @@ test("sessionInfer: geometry-mismatched output is rejected loudly", async () => 
 test("resolveModelsDir honors WAVEYARD_MODELS_DIR and defaults beside the storage dir", () => {
   const prev = process.env.WAVEYARD_MODELS_DIR;
   try {
-    process.env.WAVEYARD_MODELS_DIR = "/tmp/custom-models";
-    assert.equal(resolveModelsDir(), "/tmp/custom-models");
+    const customModelsDir = join(tmpdir(), "wy-custom-models");
+    process.env.WAVEYARD_MODELS_DIR = customModelsDir;
+    assert.equal(resolveModelsDir(), customModelsDir);
     delete process.env.WAVEYARD_MODELS_DIR;
     const dir = resolveModelsDir();
     assert.ok(dir.endsWith(join(".data", "waveyard-models")), `default under .data, got ${dir}`);
