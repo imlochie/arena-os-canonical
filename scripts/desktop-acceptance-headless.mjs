@@ -14,6 +14,7 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import process from "node:process";
 
 import { repoRootFromMeta } from "./lib/repo-root.mjs";
@@ -29,9 +30,9 @@ if (!identity.ok) {
   process.exit(1);
 }
 
-const { runDesktopAcceptance } = await import(path.join(root, "desktop", "acceptance.ts"));
-const { removeDirWithRetry } = await import(path.join(root, "desktop", "runtime", "fs-cleanup.ts"));
-const { resolveArenaDataDirs } = await import(path.join(root, "desktop", "paths.ts"));
+const { runDesktopAcceptance } = await import(pathToFileURL(path.join(root, "desktop", "acceptance.ts")));
+const { removeDirWithRetry } = await import(pathToFileURL(path.join(root, "desktop", "runtime", "fs-cleanup.ts")));
+const { resolveArenaDataDirs } = await import(pathToFileURL(path.join(root, "desktop", "paths.ts")));
 
 const dataRoot = mkdtempSync(path.join(tmpdir(), "arena-acceptance-"));
 const reportPath = path.join(root, "desktop-acceptance-headless-report.json");

@@ -68,5 +68,6 @@
   },
   "version": "0.1.0",
   "description": "Arena \u2014 local-first music production workspace",
-  "author": "Arena"
+  "author": "Arena",
+  "main": "desktop/dist/main.js"
 }
