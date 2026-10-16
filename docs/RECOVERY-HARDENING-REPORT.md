@@ -137,6 +137,11 @@ unique in it was dropped.
 
 ## 3c. CI findings (run 38920769089) and what fixed them
 
+**Final state: CI green (run 38931579335)** — `npm ci` → schema init →
+typecheck → lint → full test suite → **production build**, plus the
+Compose images build. The build stage had never executed before (it was
+skipped behind the failing test stage).
+
 - **23 of 27 failures** were database-backed tests (`PG required`): CI
   ran `npm test` with no PostgreSQL and no schema. Fixed by provisioning
   a `postgres:16` service + `drizzle-kit push --force` before the suite.
