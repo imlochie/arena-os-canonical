@@ -18,6 +18,7 @@ import { isDeepSeparationMode } from "@/lib/waveyard/separation/modes";
 import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
 import { requireUser } from "@/lib/waveyard/local-context";
+import { guardedFormData } from "@/lib/security/request-limits";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 
 export const runtime = "nodejs";
@@ -28,7 +29,9 @@ export async function POST(request: Request) {
   let persisted = false;
   try {
     const user = await requireUser();
-    const form = await request.formData();
+    const guard = await guardedFormData(request, MAX_UPLOAD_BYTES);
+    if (!guard.ok && guard.error) return guard.error;
+    const form = guard.form!;
     const projectId = String(form.get("projectId") ?? "");
     const modelField = form.get("model");
     const requestedModel = modelField !== null && String(modelField).trim() !== "" ? String(modelField) : defaultSeparationModel();

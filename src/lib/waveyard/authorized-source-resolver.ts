@@ -1,3 +1,5 @@
+import { assertOutboundUrl } from "@/lib/security/outbound-url";
+
 export type AuthorizedSourceResolution = {
   audioUrl: string;
   filename: string;
@@ -21,6 +23,10 @@ export function validateAuthorizedSourceUrl(value: string) {
  * Waveyard never scrapes platforms, accepts user credentials, or bypasses DRM.
  * A deployment must configure a compliant resolver that returns an authorized,
  * temporary audio URL for material the user can lawfully provide.
+ *
+ * SECURITY: the resolver is a service, not a trust anchor. The URLs it
+ * returns are re-checked against the outbound URL policy (public endpoints
+ * only) before this module hands them to the caller for download.
  */
 export function configuredAuthorizedSourceResolver(fetcher: typeof fetch = fetch): AuthorizedSourceResolver | null {
   const endpoint = process.env.AUTHORIZED_SOURCE_RESOLVER_URL;
@@ -33,6 +39,7 @@ export function configuredAuthorizedSourceResolver(fetcher: typeof fetch = fetch
         throw new Error(typeof body.error === "string" ? body.error : "The authorized resolver could not acquire this source.");
       const audioUrl = validateAuthorizedSourceUrl(body.audioUrl);
       if (!audioUrl) throw new Error("The authorized resolver returned an invalid audio location.");
+      await assertOutboundUrl(audioUrl, "public");
       return { audioUrl, filename: body.filename, mimeType: typeof body.mimeType === "string" ? body.mimeType : undefined, title: typeof body.title === "string" ? body.title : undefined, artist: typeof body.artist === "string" ? body.artist : undefined, resolver: endpoint, metadata: body.metadata && typeof body.metadata === "object" ? body.metadata : undefined };
     },
   };

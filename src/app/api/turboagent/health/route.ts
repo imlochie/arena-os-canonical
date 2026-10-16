@@ -2,7 +2,13 @@
 // https://github.com/TurboAgentAI/turboagent). Server-side probe avoids any
 // browser CORS/mixed-content issues. The URL comes from the client (browser
 // localStorage via the keys bar) or the TURBOAGENT_URL env var.
+//
+// SECURITY: the target is caller-controlled, so it is gated by the shared
+// outbound policy (loopback literals/localhost only, no DNS). Without the
+// gate this probe is a textbook SSRF primitive against the user's machine.
 export const dynamic = "force-dynamic";
+
+import { OutboundUrlError, assertUrlDestination } from "@/lib/security/outbound-url";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -11,6 +17,14 @@ export async function GET(req: Request) {
     return Response.json({ online: false, detail: "no URL configured (set one in the 🔑 keys bar)" });
   }
   if (!/^https?:\/\//i.test(target)) target = `http://${target}`;
+  try {
+    assertUrlDestination(new URL(target), "loopback");
+  } catch (error) {
+    const detail = error instanceof OutboundUrlError
+      ? "TurboAgent probes are limited to this machine (127.0.0.1 / localhost)."
+      : "That is not a valid URL.";
+    return Response.json({ online: false, url: target, detail });
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 2500);
   try {

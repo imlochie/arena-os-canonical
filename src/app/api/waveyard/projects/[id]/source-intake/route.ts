@@ -10,6 +10,7 @@ import { NextResponse } from "next/server";
 import { acceptedAudioFilename, MAX_UPLOAD_BYTES } from "@/lib/waveyard/audio";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { configuredAuthorizedSourceResolver, validateAuthorizedSourceUrl } from "@/lib/waveyard/authorized-source-resolver";
+import { OutboundUrlError, assertOutboundUrl, safeFetch } from "@/lib/security/outbound-url";
 import { ingestSourceFile } from "@/lib/waveyard/source-ingest"
 import { defaultSeparationModel, isAcceptableSeparationModel } from "@/lib/waveyard/separation/selection";
 import { isDeepSeparationMode } from "@/lib/waveyard/separation/modes";
@@ -27,11 +28,32 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const body = await request.json().catch(() => ({}));
     const sourceUrl = validateAuthorizedSourceUrl(String(body.url ?? ""));
     if (!sourceUrl) return NextResponse.json({ error: "Enter a valid http or https source URL." }, { status: 400 });
+    // SSRF gate #1: the caller-supplied source URL must be a public endpoint —
+    // an intake must never be usable to probe loopback, cloud metadata or the
+    // user's LAN through this server.
+    try {
+      await assertOutboundUrl(sourceUrl, "public");
+    } catch (error) {
+      const detail = error instanceof OutboundUrlError ? error.message : "That source URL is not allowed.";
+      return NextResponse.json({ error: `Source refused: ${detail}` }, { status: 400 });
+    }
     const resolver = configuredAuthorizedSourceResolver();
     if (!resolver) return NextResponse.json({ error: "This deployment has no authorized link resolver. Download material you are authorized to use and add it as an audio file instead." }, { status: 503 });
     const resolved = await resolver.resolve(sourceUrl);
     if (!acceptedAudioFilename(resolved.filename)) return NextResponse.json({ error: "The authorized resolver returned an unsupported audio format. Add a WAV, MP3, FLAC, M4A, AAC, or OGG file manually instead." }, { status: 415 });
-    const audio = await fetch(resolved.audioUrl);
+    // SSRF gate #2: the resolver's audio URL is re-checked too (a resolver is
+    // a service, not a trust anchor), and every redirect hop is revalidated.
+    let audio: Response;
+    try {
+      audio = await safeFetch(resolved.audioUrl, {}, {
+        policy: "public",
+        timeoutMs: 120_000,
+        maxRedirects: 3,
+      });
+    } catch (error) {
+      const detail = error instanceof OutboundUrlError ? error.message : "download failed";
+      return NextResponse.json({ error: `Authorized source acquisition refused: ${detail}` }, { status: 422 });
+    }
     if (!audio.ok || !audio.body) return NextResponse.json({ error: "Authorized source acquisition failed. You can add the same material manually as an audio file." }, { status: 422 });
     const declared = Number(audio.headers.get("content-length") ?? "0");
     if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) return NextResponse.json({ error: `Authorized source is larger than the ${MAX_UPLOAD_BYTES}-byte intake limit.` }, { status: 413 });

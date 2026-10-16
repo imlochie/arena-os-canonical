@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 
 import { requireUser } from "@/lib/waveyard/local-context";
 import { addTrackFromAudioFile } from "@/lib/waveyard/library/service";
+import { OutboundUrlError, assertOutboundUrl } from "@/lib/security/outbound-url";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -59,6 +60,17 @@ export async function POST(req: Request) {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return NextResponse.json({ error: "only http(s) URLs are supported" }, { status: 400 });
+  }
+  // SSRF gate: ingest fetches a caller-controlled URL through a child
+  // process, so the destination is validated (public endpoints only, every
+  // DNS answer checked) BEFORE yt-dlp runs. Residual risk, documented: yt-dlp
+  // follows redirects internally, so a public host redirecting to an internal
+  // one mid-download is outside this gate's reach.
+  try {
+    await assertOutboundUrl(url, "public");
+  } catch (error) {
+    const detail = error instanceof OutboundUrlError ? error.message : "destination refused";
+    return NextResponse.json({ error: `Ingest refused: ${detail}` }, { status: 400 });
   }
 
   const bin = await resolveYtDlp();

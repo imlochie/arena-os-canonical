@@ -45,7 +45,11 @@ test("generate(): a registered hub model routes to its local OpenAI-compat serve
     },
     async (port) => {
       const baseUrl = `http://127.0.0.1:${port}`;
-      const entry = hubModelFor("ollama", baseUrl, "llama3.2:3b", "Test Runtime");
+      // Unique per run: a deterministic id would collide with hub rows other
+      // test files leave in a shared test database's `models` table and get
+      // resolved from there instead of this registration.
+      const remoteModel = `llama3.2:3b-${port}`;
+      const entry = hubModelFor("ollama", baseUrl, remoteModel, "Test Runtime");
       registerDynamicModels([entry]);
       try {
         const result = await generate(
@@ -55,7 +59,7 @@ test("generate(): a registered hub model routes to its local OpenAI-compat serve
         assert.equal(result.fallback, false);
         assert.equal(result.runtimeLevel, "on-device");
         assert.match(result.via ?? "", new RegExp(`local-server:127\\.0\\.0\\.1:${port}/llama3\\.2:3b`));
-        assert.equal(result.text, "echo:llama3.2:3b:hello hub");
+        assert.equal(result.text, `echo:${remoteModel}:hello hub`);
       } finally {
         clearDynamicModels();
       }
