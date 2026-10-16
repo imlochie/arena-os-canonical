@@ -57,6 +57,8 @@ export interface ArenaRuntimeConfig {
   migrationsDir: string;
   ffmpegPath: string | null;
   ffprobePath: string | null;
+  /** Bundled tools dir (yt-dlp etc. can be dropped here later); passed as ARENA_APP_BIN_DIR. */
+  appBinDir?: string;
   storageDir: string;
   /** Stem-machine model files (separation/seed.ts installs here). */
   modelsDir: string;
@@ -196,6 +198,7 @@ export async function resolveRuntimeConfig(inputs: RuntimeConfigInputs): Promise
     migrationsDir: path.join(inputs.appRoot, "desktop-migrations"),
     ffmpegPath: resolveInstallerBinary(platform, inputs.appRoot, "ffmpeg"),
     ffprobePath: resolveInstallerBinary(platform, inputs.appRoot, "ffprobe"),
+    appBinDir: path.join(inputs.appRoot, "bin"),
     storageDir: path.join(dirs.waveyard, "storage"),
     modelsDir: path.join(dirs.waveyard, "models"),
     server,

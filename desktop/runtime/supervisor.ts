@@ -121,6 +121,7 @@ export class ArenaRuntimeSupervisor {
       WAVEYARD_MODELS_DIR: config.modelsDir,
       PORT: String(config.port),
       HOSTNAME: config.host,
+      ...(config.appBinDir !== undefined ? { ARENA_APP_BIN_DIR: config.appBinDir } : {}),
       ...(config.ffmpegPath !== null ? { ARENA_FFMPEG_PATH: config.ffmpegPath } : {}),
       ...(config.ffprobePath !== null ? { ARENA_FFPROBE_PATH: config.ffprobePath } : {}),
       // Desktop mode never uses Redis even if the dev machine has one.

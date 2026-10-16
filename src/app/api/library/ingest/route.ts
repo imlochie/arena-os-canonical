@@ -8,6 +8,7 @@ import { requireUser } from "@/lib/waveyard/local-context";
 import { addTrackFromAudioFile } from "@/lib/waveyard/library/service";
 import { OutboundUrlError, assertOutboundUrl } from "@/lib/security/outbound-url";
 import { requireApiAccess } from "@/lib/security/api-access";
+import { resolveExecutable } from "@/lib/capabilities/resolver";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -64,12 +65,11 @@ async function directoryBytes(dir: string): Promise<number> {
 }
 
 async function resolveYtDlp(): Promise<string | null> {
-  const candidates = [process.env.ARENA_YTDLP_PATH, "yt-dlp", "yt-dlp.exe"].filter((c): c is string => Boolean(c));
-  for (const candidate of candidates) {
-    const probe = await run(candidate, ["--version"], 8000);
-    if (probe.code === 0 && probe.stdout.trim().length > 0) return candidate;
-  }
-  return null;
+  // override -> bundled (app/bin) -> system PATH, always an absolute path.
+  const found = resolveExecutable("yt-dlp", { envVar: "ARENA_YTDLP_PATH" });
+  if (found === null) return null;
+  const probe = await run(found.path, ["--version"], 8000);
+  return probe.code === 0 && probe.stdout.trim().length > 0 ? found.path : null;
 }
 
 export async function GET(req: Request) {
