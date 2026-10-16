@@ -150,6 +150,13 @@ unique in it was dropped.
   every docker-equipped user, not test flakiness. Fixed in
   `workspace-isolation.ts` with a regression test that enforces the
   ordering at container-start time.
+- **The remaining 5** (second CI run: `local.test.ts` 315-319, cascading
+  TypeErrors on rows that existed earlier in the same file) were one
+  cross-file test-isolation race: `mediaArchive.test.ts` and
+  `local.test.ts` run as parallel `node --test` processes over the same
+  tables and each file's domain wipes delete the other's fixtures mid-run.
+  Fixed with per-file test databases (`isolatedTestDatabase`), verified
+  with both files in one parallel invocation (14/14 twice).
 
 ## 5b. Residual risk register (honest, as of 2026-10-16)
 
