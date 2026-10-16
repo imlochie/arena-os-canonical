@@ -33,10 +33,10 @@ Notes:
 
 - `npm run build` only needs `DATABASE_URL` to **exist** — the database
   connection is opened lazily. The API routes need a reachable PostgreSQL.
-- `drizzle.config.json` carries its own connection URL
-  (`postgresql://postgres:postgres@127.0.0.1:5432/app_db`) used by
-  `drizzle-kit push`. If your local Postgres credentials differ, update
-  **both** `.env` and `drizzle.config.json`.
+- `drizzle.config.ts` reads the same `DATABASE_URL` for `drizzle-kit push`;
+  if your local Postgres credentials differ, change them in `.env` (the
+  config falls back to `postgresql://postgres:postgres@127.0.0.1:5432/app_db`
+  only when no `DATABASE_URL` is set).
 - Example for creating the database, if needed:
 
   ```bash
