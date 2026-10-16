@@ -202,6 +202,11 @@ export interface Validation {
   bytes: number;
 }
 
+// Games run in a sandboxed iframe but must not reach the network, navigate the
+// host page or embed other documents; reject the primitives that would.
+const FORBIDDEN_GAME_APIS =
+  /\bfetch\s*\(|XMLHttpRequest|\bWebSocket\b|\bEventSource\b|sendBeacon|importScripts|\bimport\s*\(|<\s*(iframe|object|embed|form|base|link)\b|http-equiv|\b(window\.)?(top|parent)\s*\.\s*(location|document|postMessage)|\blocation\s*(\.\s*(href|assign|replace)\s*)?=[^=]|\bwindow\.open\s*\(/i;
+
 export function validateGameCode(html: string): Validation {
   const issues: string[] = [];
   const bytes = html.length;
@@ -213,6 +218,7 @@ export function validateGameCode(html: string): Validation {
   if (!/keydown|touchstart|pointerdown/i.test(html)) issues.push("no input handling detected");
   if (/https?:\/\//i.test(html.replace(/https?:\/\/www\.w3\.org/g, ""))) issues.push("external URLs (must be fully offline)");
   if (!/__hud|score/i.test(html)) issues.push("no score/HUD detected");
+  if (FORBIDDEN_GAME_APIS.test(html)) issues.push("network, navigation or embedding APIs are not allowed (must be fully offline)");
   return { ok: issues.length === 0, issues, bytes };
 }
 

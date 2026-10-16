@@ -7,6 +7,7 @@ import { extname, join } from "node:path";
 import { acceptedAudioFilename, MAX_UPLOAD_BYTES, sanitizedFilename } from "@/lib/waveyard/audio";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { addTrackFromAudioFile, listTracks } from "@/lib/waveyard/library/service";
+import { rejectOversizedBody } from "@/lib/security/request-limits";
 
 export const runtime = "nodejs";
 
@@ -39,6 +40,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   let temporaryDirectory: string | undefined;
   try {
+    const oversized = rejectOversizedBody(request, MAX_UPLOAD_BYTES);
+    if (oversized) return oversized;
     const user = await requireUser();
     const form = await request.formData();
     const upload = form.get("file");

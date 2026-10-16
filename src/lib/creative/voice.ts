@@ -95,7 +95,8 @@ async function tryOsVoice(text: string, opts: SpeakOptions): Promise<SpeakResult
       `$s.SetOutputToWaveFile('${out}'); $s.Speak([Net.ServicePointManager]::SecurityProtocol -ne $null ? $args[0] : $args[0]); $s.Dispose()`;
     // PowerShell receives the text as an argument (no injection: it is passed
     // as a single quoted argument, never interpolated into the script).
-    await exec("powershell", ["-NoProfile", "-Command", ps, "-args", text]);
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+    await exec(`${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`, ["-NoProfile", "-Command", ps, "-args", text]);
     const { readFileSync, rmSync } = await import("node:fs");
     const buffer = readFileSync(out);
     rmSync(out, { force: true });

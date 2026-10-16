@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { NextResponse } from "next/server";
 
 import { requireUser } from "@/lib/waveyard/local-context";
+import { assertSafeUrl, SsrfError } from "@/lib/security/safe-fetch";
+import { requireApiAccess } from "@/lib/security/api-access";
+import { resolveExecutable } from "@/lib/capabilities/resolver";
 import { addTrackFromAudioFile } from "@/lib/waveyard/library/service";
 
 export const dynamic = "force-dynamic";
@@ -21,36 +24,69 @@ export const maxDuration = 600;
  */
 
 const MAX_BYTES = 200 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 540_000;
 
-function run(bin: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+function run(
+  bin: string,
+  args: string[],
+  timeoutMs: number,
+  watch?: { dir: string; maxBytes: number },
+): Promise<{ code: number; stdout: string; stderr: string; exceededLimit: boolean }> {
   return new Promise((resolve) => {
-    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) =>
-      resolve({ code: error === null ? 0 : (error as { code?: number })?.code ?? 1, stdout: String(stdout), stderr: String(stderr) }),
-    );
+    let exceededLimit = false;
+    const child = execFile(bin, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+      if (poll) clearInterval(poll);
+      resolve({ code: error === null ? 0 : (error as { code?: number })?.code ?? 1, stdout: String(stdout), stderr: String(stderr), exceededLimit });
+    });
+    // --max-filesize cannot bound streams of unknown length; cap what lands on disk.
+    const poll = watch
+      ? setInterval(() => {
+          void directoryBytes(watch.dir).then((bytes) => {
+            if (bytes > watch.maxBytes && !exceededLimit) {
+              exceededLimit = true;
+              child.kill();
+            }
+          });
+        }, 1000)
+      : null;
   });
 }
 
-async function resolveYtDlp(): Promise<string | null> {
-  const candidates = [process.env.ARENA_YTDLP_PATH, "yt-dlp", "yt-dlp.exe"].filter((c): c is string => Boolean(c));
-  for (const candidate of candidates) {
-    const probe = await run(candidate, ["--version"], 8000);
-    if (probe.code === 0 && probe.stdout.trim().length > 0) return candidate;
+async function directoryBytes(dir: string): Promise<number> {
+  try {
+    const names = await readdir(dir);
+    const sizes = await Promise.all(names.map((name) => stat(join(dir, name)).then((s) => s.size).catch(() => 0)));
+    return sizes.reduce((sum, size) => sum + size, 0);
+  } catch {
+    return 0;
   }
-  return null;
+}
+async function resolveYtDlp(): Promise<string | null> {
+  // override -> bundled (app/bin) -> system PATH, always an absolute path.
+  const found = resolveExecutable("yt-dlp", { envVar: "ARENA_YTDLP_PATH" });
+  if (found === null) return null;
+  const probe = await run(found.path, ["--version"], 8000);
+  return probe.code === 0 && probe.stdout.trim().length > 0 ? found.path : null;
 }
 
-export async function GET() {
-  return NextResponse.json({ available: (await resolveYtDlp()) !== null, hint: "Set ARENA_YTDLP_PATH or install yt-dlp on the PATH." });
+export async function GET(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
+  return NextResponse.json({ available: (await resolveYtDlp()) !== null, hint: "Set ARENA_YTDLP_PATH, place yt-dlp in the Arena app bin folder, or install it on the system PATH." });
 }
 
 export async function POST(req: Request) {
-  let body: { url?: string; title?: string; artist?: string } = {};
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
+  const declared = Number(req.headers.get("content-length") ?? 0);
+  if (declared > 64 * 1024) return NextResponse.json({ error: "request body too large" }, { status: 413 });
+  let body: { url?: unknown; title?: unknown; artist?: unknown } = {};
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
-  const raw = (body.url ?? "").trim();
+  const raw = typeof body?.url === "string" ? body.url.trim() : "";
   let url: URL;
   try {
     url = new URL(raw);
@@ -59,6 +95,14 @@ export async function POST(req: Request) {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return NextResponse.json({ error: "only http(s) URLs are supported" }, { status: 400 });
+  }
+
+  try {
+    // yt-dlp fetches this URL itself: refuse loopback/private/metadata targets.
+    await assertSafeUrl(url);
+  } catch (error) {
+    const message = error instanceof SsrfError ? error.message : "URL not allowed.";
+    return NextResponse.json({ error: `URL refused: ${message}` }, { status: 400 });
   }
 
   const bin = await resolveYtDlp();
@@ -75,9 +119,13 @@ export async function POST(req: Request) {
     const output = join(dir, "dl.%(ext)s");
     const download = await run(
       bin,
-      ["-f", "bestaudio/best", "--no-playlist", "--max-filesize", String(MAX_BYTES), "-o", output, "--no-progress", raw],
-      540_000,
+      ["-f", "bestaudio/best", "--no-playlist", "--max-filesize", String(MAX_BYTES), "--socket-timeout", "30", "-o", output, "--no-progress", "--", raw],
+      DOWNLOAD_TIMEOUT_MS,
+      { dir, maxBytes: MAX_BYTES },
     );
+    if (download.exceededLimit) {
+      return NextResponse.json({ error: `download exceeded the ${MAX_BYTES}-byte limit and was stopped` }, { status: 413 });
+    }
     if (download.code !== 0) {
       return NextResponse.json({ error: `yt-dlp failed: ${download.stderr.trim().slice(0, 500) || "unknown error"}` }, { status: 422 });
     }
@@ -93,8 +141,8 @@ export async function POST(req: Request) {
       filePath: join(dir, file),
       filename: file,
       mimeType: "application/octet-stream",
-      title: body.title?.slice(0, 200),
-      artist: body.artist?.slice(0, 200),
+      title: typeof body.title === "string" ? body.title.slice(0, 200) : undefined,
+      artist: typeof body.artist === "string" ? body.artist.slice(0, 200) : undefined,
     });
     return NextResponse.json({ track: result.track, created: result.created, separationQueued: result.separationQueued }, { status: 201 });
   } finally {

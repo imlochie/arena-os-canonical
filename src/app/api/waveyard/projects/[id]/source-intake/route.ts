@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { NextResponse } from "next/server";
 import { acceptedAudioFilename, MAX_UPLOAD_BYTES } from "@/lib/waveyard/audio";
 import { requireUser } from "@/lib/waveyard/local-context";
+import { safeFetch, assertSafeUrl, SsrfError } from "@/lib/security/safe-fetch";
 import { configuredAuthorizedSourceResolver, validateAuthorizedSourceUrl } from "@/lib/waveyard/authorized-source-resolver";
 import { ingestSourceFile } from "@/lib/waveyard/source-ingest"
 import { defaultSeparationModel, isAcceptableSeparationModel } from "@/lib/waveyard/separation/selection";
@@ -17,6 +18,8 @@ import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 
 export const runtime = "nodejs";
+
+const INTAKE_FETCH_TIMEOUT_MS = 5 * 60_000;
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   let directory: string | undefined;
@@ -27,11 +30,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const body = await request.json().catch(() => ({}));
     const sourceUrl = validateAuthorizedSourceUrl(String(body.url ?? ""));
     if (!sourceUrl) return NextResponse.json({ error: "Enter a valid http or https source URL." }, { status: 400 });
+    await assertSafeUrl(sourceUrl);
     const resolver = configuredAuthorizedSourceResolver();
     if (!resolver) return NextResponse.json({ error: "This deployment has no authorized link resolver. Download material you are authorized to use and add it as an audio file instead." }, { status: 503 });
     const resolved = await resolver.resolve(sourceUrl);
     if (!acceptedAudioFilename(resolved.filename)) return NextResponse.json({ error: "The authorized resolver returned an unsupported audio format. Add a WAV, MP3, FLAC, M4A, AAC, or OGG file manually instead." }, { status: 415 });
-    const audio = await fetch(resolved.audioUrl);
+    // The resolver is a remote service: its audioUrl is untrusted input, so it
+    // must be public and every redirect hop is re-validated.
+    const audio = await safeFetch(resolved.audioUrl, { signal: AbortSignal.timeout(INTAKE_FETCH_TIMEOUT_MS) });
     if (!audio.ok || !audio.body) return NextResponse.json({ error: "Authorized source acquisition failed. You can add the same material manually as an audio file." }, { status: 422 });
     const declared = Number(audio.headers.get("content-length") ?? "0");
     if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) return NextResponse.json({ error: `Authorized source is larger than the ${MAX_UPLOAD_BYTES}-byte intake limit.` }, { status: 413 });
@@ -59,6 +65,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ source: result.source, job: result.job, separationQueued: result.separationQueued, waveformJob: { id: result.waveformJob.id, queued: result.waveformQueued }, acquisition: { method: "authorized-url", sourceUrl, title: resolved.title ?? null, artist: resolved.artist ?? null } }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
+    if (error instanceof SsrfError) return NextResponse.json({ error: `Source URL refused: ${error.message}` }, { status: 400 });
     const message = error instanceof Error ? error.message : "Authorized source acquisition failed.";
     console.error("authorized source intake failed", error);
     return NextResponse.json({ error: `${message} Add the material manually as an audio file if you are authorized to use it.` }, { status: 422 });

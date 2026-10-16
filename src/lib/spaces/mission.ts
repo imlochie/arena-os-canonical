@@ -210,6 +210,10 @@ export async function runMission(
   deps: MissionDeps = {}
 ): Promise<MissionSummary> {
 
+  // The container runtime creates a missing bind-mount source as root-owned.
+  // Create the workspace first so the host can write files that the container sees.
+  await ensureWorkspace(spaceId);
+
   // Phase B — real workspace isolation: start the mission container when the
   // policy and the machine allow it. Honest fallback: no runtime → host jail,
   // recorded in the mission's statusDetail, never a silent downgrade.
@@ -276,7 +280,6 @@ async function runMissionInner(
         ? fleet.map((a: { name: string; role: string; modelId: string; systemPrompt: string }) => ({ name: a.name, role: a.role, modelId: a.modelId, systemPrompt: a.systemPrompt }))
         : defaultPlan("openai"); // any text alias: routes via Groq/OpenRouter key when sent, else keyless pollinations, else honest local fallback
 
-  await ensureWorkspace(spaceId);
   let row: any;
   if (resuming) {
     if (missionDbHealthy) {

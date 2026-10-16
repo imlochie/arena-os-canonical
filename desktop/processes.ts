@@ -53,7 +53,7 @@ export async function killTree(
   const platform = opts.platform ?? process.platform;
   const run = opts.run ?? runCommand;
   if (platform === "win32" && child.pid !== undefined) {
-    await run("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
+    await run(`${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\taskkill.exe`, ["/pid", String(child.pid), "/T", "/F"]);
     return;
   }
   child.kill("SIGTERM");

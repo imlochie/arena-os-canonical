@@ -19,6 +19,7 @@ import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
+import { rejectOversizedBody } from "@/lib/security/request-limits";
 
 export const runtime = "nodejs";
 
@@ -27,6 +28,8 @@ export async function POST(request: Request) {
   let storedKey: string | undefined;
   let persisted = false;
   try {
+    const oversized = rejectOversizedBody(request, MAX_UPLOAD_BYTES);
+    if (oversized) return oversized;
     const user = await requireUser();
     const form = await request.formData();
     const projectId = String(form.get("projectId") ?? "");

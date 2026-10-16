@@ -35,6 +35,7 @@ export async function POST(request: Request) {
 
     const upstream = await fetch(`${url.origin}/api/pull`, {
       method: "POST",
+      redirect: "manual", // a redirect must not move a loopback-gated request elsewhere
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model }),
       // Long downloads: no AbortController timeout — the client can cancel

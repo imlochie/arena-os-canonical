@@ -86,7 +86,7 @@ export async function probeRuntime(
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
     try {
-      return await fetchImpl(`${base}${path}`, { signal: ctrl.signal });
+      return await fetchImpl(`${base}${path}`, { signal: ctrl.signal, redirect: "manual" });
     } finally {
       clearTimeout(timer);
     }

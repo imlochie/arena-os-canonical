@@ -15,7 +15,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import type { ArenaRuntimeConfig } from "./config";
@@ -42,6 +42,8 @@ export class EmbeddedPostgres {
   private lastError: string | null = null;
   private firstRun = false;
   private stopping = false;
+  private bootLog = "";
+  private exitInfo: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   private readonly config: ArenaRuntimeConfig;
   private readonly logger: PostgresLogger;
   private readonly spawnImpl: typeof spawn;
@@ -87,6 +89,49 @@ export class EmbeddedPostgres {
     });
   }
 
+  private fail(message: string): Error {
+    this.state = "failed";
+    this.lastError = message;
+    this.logger.error("postgres", message);
+    return new Error(message);
+  }
+
+  /**
+   * Compare the data directory's PG_VERSION with the bundled server's major
+   * version before starting. PostgreSQL cannot open a cluster written by a
+   * different major version; fail with guidance instead of a silent exit.
+   */
+  private async assertDataDirCompatible(): Promise<void> {
+    const { dataDir } = this.config.database;
+    const dataMajor = parsePgVersionFile(safeRead(path.join(dataDir, "PG_VERSION")));
+    if (dataMajor === null) {
+      throw this.fail(
+        `Postgres data directory ${dataDir} has an unreadable or invalid PG_VERSION file, so its version cannot be verified. ` +
+          "Arena will not start or re-initialise it. Restore from a backup or inspect the directory manually.",
+      );
+    }
+    let bundledMajor: number | null = null;
+    let detail = "";
+    try {
+      const result = await this.run(this.config.postgres.postgres, ["--version"]);
+      bundledMajor = result.code === 0 ? parsePostgresMajor(result.output) : null;
+      detail = result.output.trim().slice(-300);
+    } catch (error) {
+      detail = error instanceof Error ? error.message : String(error);
+    }
+    if (bundledMajor === null) {
+      throw this.fail(`Could not determine the bundled PostgreSQL version from ${this.config.postgres.postgres}: ${detail || "no output"}`);
+    }
+    if (bundledMajor !== dataMajor) {
+      throw this.fail(
+        `Postgres data directory ${dataDir} was created by PostgreSQL ${dataMajor}, but this Arena build bundles PostgreSQL ${bundledMajor}, ` +
+          "which cannot open it. Your data has NOT been modified. " +
+          `Install an Arena build that bundles PostgreSQL ${dataMajor}, or migrate the data with pg_upgrade on a copy of the directory. ` +
+          "Do not delete the data directory.",
+      );
+    }
+  }
+
   /** A live-but-not-ours postmaster.pid blocks startup; probe before deciding. */
   private stalePostmasterPid(): boolean {
     const pidFile = path.join(this.config.database.dataDir, "postmaster.pid");
@@ -104,16 +149,18 @@ export class EmbeddedPostgres {
     const { dataDir, socketDir, port } = this.config.database;
     mkdirSync(path.dirname(dataDir), { recursive: true });
 
+    this.bootLog = "";
     const alreadyInitialised = existsSync(path.join(dataDir, "PG_VERSION"));
     if (!alreadyInitialised) {
-      this.logger.info("postgres", "first run: initialising database cluster", { dataDir });
-      if (this.stalePostmasterPid()) {
-        // Only reached when PG_VERSION is missing but a pid file exists —
-        // inconsistent cluster remains; refuse rather than delete user data.
-        this.state = "failed";
-        this.lastError = "Postgres data directory is inconsistent (postmaster.pid without PG_VERSION).";
-        throw new Error(this.lastError);
+      if (directoryHasEntries(dataDir)) {
+        // Existing files without version metadata: never initdb over (or
+        // beside) what may be a user's only copy of their data.
+        throw this.fail(
+          `Postgres data directory ${dataDir} is not empty but has no PG_VERSION file, so its server version cannot be verified. ` +
+            "Arena will not initialise a new database over it. Restore PG_VERSION from a backup or move the directory aside manually.",
+        );
       }
+      this.logger.info("postgres", "first run: initialising database cluster", { dataDir });
       mkdirSync(dataDir, { recursive: true });
       const pwFile = path.join(path.dirname(dataDir), ".initdb-password");
       writeFileSync(pwFile, this.config.database.password, { mode: 0o600 });
@@ -131,7 +178,10 @@ export class EmbeddedPostgres {
       } finally {
         rmSync(pwFile, { force: true });
       }
-    } else if (this.stalePostmasterPid()) {
+    } else {
+      await this.assertDataDirCompatible();
+    }
+    if (alreadyInitialised && this.stalePostmasterPid()) {
       const pidFile = path.join(dataDir, "postmaster.pid");
       this.logger.warn("postgres", "removing stale postmaster.pid after crash", { pidFile });
       rmSync(pidFile, { force: true });
@@ -148,14 +198,17 @@ export class EmbeddedPostgres {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
-    let bootLog = "";
-    this.child.stdout?.on("data", (chunk: Buffer) => (bootLog += String(chunk)));
-    this.child.stderr?.on("data", (chunk: Buffer) => (bootLog += String(chunk)));
+    this.child.stdout?.on("data", (chunk: Buffer) => (this.bootLog += String(chunk)));
+    this.child.stderr?.on("data", (chunk: Buffer) => (this.bootLog += String(chunk)));
+    this.child.once("error", (error) => {
+      this.bootLog += `spawn error: ${error.message}\n`;
+    });
     this.child.once("exit", (code, signal) => {
+      this.exitInfo = { code, signal };
       if (this.state === "running" && !this.stopping) {
         this.logger.error("postgres", "embedded postgres exited unexpectedly", { code, signal });
         this.state = "failed";
-        this.lastError = `postgres exited (code ${code}, signal ${signal}): ${bootLog.slice(-1000)}`;
+        this.lastError = `postgres exited (code ${code}, signal ${signal}): ${this.bootLog.slice(-1000)}`;
       }
       this.child = null;
     });
@@ -179,7 +232,10 @@ export class EmbeddedPostgres {
     let lastError: unknown = null;
     while (Date.now() < deadline) {
       if (this.child === null || this.child.exitCode !== null) {
-        throw new Error(`embedded postgres exited during startup: ${this.lastError ?? "no output"}`);
+        const exit = this.exitInfo === null ? "" : ` (code ${this.exitInfo.code}, signal ${this.exitInfo.signal})`;
+        const output = this.bootLog.trim().slice(-2000);
+        this.logger.error("postgres", "embedded postgres exited during startup", { output, ...this.exitInfo });
+        throw new Error(`embedded postgres exited during startup${exit}: ${output === "" ? "no output" : output}`);
       }
       const client = new Client(this.clientConfig("postgres"));
       try {
@@ -320,6 +376,34 @@ export class EmbeddedPostgres {
     // Bounded wait is over: report honestly, do not throw — the caller's
     // retrying directory cleanup will surface a real error if handles remain.
     this.logger.warn("postgres", "postmaster.pid still present after shutdown wait", { pidFile });
+    return false;
+  }
+}
+
+/** "postgres (PostgreSQL) 16.14" -> 16; "postgres (PostgreSQL) 9.6.24" -> 9. */
+export function parsePostgresMajor(output: string): number | null {
+  const match = /PostgreSQL\)?\s+(\d+)(?:\.\d+)*/.exec(output);
+  return match === null ? null : Number.parseInt(match[1] ?? "", 10);
+}
+
+/** PG_VERSION holds "16" (or "9.6" for legacy clusters). */
+export function parsePgVersionFile(content: string | null): number | null {
+  const match = /^\s*(\d+)(?:\.\d+)?\s*$/.exec(content ?? "");
+  return match === null ? null : Number.parseInt(match[1] ?? "", 10);
+}
+
+function safeRead(file: string): string | null {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function directoryHasEntries(dir: string): boolean {
+  try {
+    return readdirSync(dir).length > 0;
+  } catch {
     return false;
   }
 }
