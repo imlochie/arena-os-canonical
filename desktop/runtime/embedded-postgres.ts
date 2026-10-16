@@ -2,12 +2,20 @@
  * Embedded PostgreSQL lifecycle — real binaries, no fake state.
  *
  * First run: initdb (password file, UTF8, C locale, scram-sha-256) into the
- * app-data postgres dir. Start: postgres spawned as a TRACKED child bound to
- * 127.0.0.1 on the persisted port (plus a runtime-owned socket dir on
- * POSIX). Readiness: actual pg client connects with the real password.
- * Stop: pg_ctl fast shutdown (signals only as fallback — on Windows kill()
- * is a hard TerminateProcess that can leave background workers holding the
- * data directory), then a bounded wait for the cluster to be released.
+ * app-data postgres dir — only ever on a truly empty directory. Start:
+ * postgres spawned as a TRACKED child bound to 127.0.0.1 on the persisted
+ * port (plus a runtime-owned socket dir on POSIX). Readiness: actual pg
+ * client connects with the real password. Stop: pg_ctl fast shutdown
+ * (signals only as fallback — on Windows kill() is a hard TerminateProcess
+ * that can leave background workers holding the data directory), then a
+ * bounded wait for the cluster to be released.
+ *
+ * Data safety: before any start, the data directory's PG_VERSION is compared
+ * against the bundled server binary's major version (`postgres --version`).
+ * A mismatch fails fast with recovery options and NEVER falls back to
+ * initialising a new cluster — existing user data is never traded for a
+ * green startup indicator. Startup failures preserve the server's own
+ * output in `status.lastError`.
  *
  * The same server is reused across restarts; a stale postmaster.pid from a
  * crashed session is detected by probing the recorded PID, never by
@@ -15,12 +23,47 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import type { ArenaRuntimeConfig } from "./config";
 
 export type PostgresState = "uninitialised" | "starting" | "running" | "stopped" | "failed";
+
+/** Read the cluster major version written by initdb (e.g. "16"). Returns
+ *  null when the marker is absent OR unreadable/empty — the caller must
+ *  treat both as "version metadata missing", never as "compatible". */
+export function readDataDirVersion(dataDir: string): string | null {
+  try {
+    const raw = readFileSync(path.join(dataDir, "PG_VERSION"), "utf8").trim();
+    return /^\d+$/.test(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse the major version out of `postgres --version` output
+ *  ("postgres (PostgreSQL) 16.14" → "16"). Returns null on anything else. */
+export function parsePostgresMajorVersion(versionOutput: string): string | null {
+  const match = /\(PostgreSQL\)\s+(\d+)/i.exec(versionOutput);
+  return match ? match[1] : null;
+}
+
+/**
+ * The compatibility verdict the runtime enforces BEFORE touching a cluster:
+ * a data directory can only be opened by a server of the same major version.
+ * PostgreSQL itself enforces this at startup with a terse FATAL; we surface
+ * it first, with the recovery options, and never "fix" it by reinitialising.
+ */
+export function describeVersionMismatch(params: { dataDir: string; dataDirVersion: string; serverMajor: string; serverVersionLine: string }): string {
+  return (
+    `PostgreSQL version mismatch: the database at ${params.dataDir} was created by PostgreSQL ${params.dataDirVersion} ` +
+    `(PG_VERSION=${params.dataDirVersion}), but this Arena build bundles PostgreSQL ${params.serverMajor} ` +
+    `(${params.serverVersionLine.trim()}). Arena will NOT delete, overwrite, or reinitialise the existing data directory. ` +
+    `Recovery options: (1) run an Arena build that bundles PostgreSQL ${params.dataDirVersion} to open this database as-is, or ` +
+    `(2) migrate a COPY of the data directory with pg_upgrade (never the only original) — see docs/POSTGRES-16-TO-18-MIGRATION.md.`
+  );
+}
 
 export interface PostgresStatus {
   state: PostgresState;
@@ -42,6 +85,12 @@ export class EmbeddedPostgres {
   private lastError: string | null = null;
   private firstRun = false;
   private stopping = false;
+  /** Everything the server binary printed this session. Startup failures
+   *  MUST preserve a tail of this in lastError — the actual FATAL line is
+   *  the only place PostgreSQL explains why it refused to start. */
+  private bootLog = "";
+  private cachedServerMajor: string | null = null;
+  private cachedServerVersionLine = "";
   private readonly config: ArenaRuntimeConfig;
   private readonly logger: PostgresLogger;
   private readonly spawnImpl: typeof spawn;
@@ -76,6 +125,32 @@ export class EmbeddedPostgres {
     return env;
   }
 
+  /** Bounded tail of the server's own output, for error messages. */
+  private bootTailSuffix(): string {
+    return this.bootLog.trim() === "" ? "" : ` — server output: …${this.bootLog.slice(-2000)}`;
+  }
+
+  /** Major version of the bundled server binary — verified by RUNNING it,
+   *  never assumed from a package version. */
+  private async serverMajorVersion(): Promise<string> {
+    if (this.cachedServerMajor !== null) return this.cachedServerMajor;
+    let result: { code: number; output: string };
+    try {
+      result = await this.run(this.config.postgres.postgres, ["--version"]);
+    } catch (error) {
+      throw new Error(
+        `Bundled PostgreSQL binary could not run (${this.config.postgres.postgres}): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const major = parsePostgresMajorVersion(result.output);
+    if (result.code !== 0 || major === null) {
+      throw new Error(`Bundled PostgreSQL binary version could not be determined (exit ${result.code}): ${result.output.slice(-500)}`);
+    }
+    this.cachedServerMajor = major;
+    this.cachedServerVersionLine = result.output.trim();
+    return major;
+  }
+
   private run(binary: string, args: string[]): Promise<{ code: number; output: string }> {
     return new Promise((resolve, reject) => {
       const child = this.spawnImpl(binary, args, { env: this.postgresEnv(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -103,17 +178,50 @@ export class EmbeddedPostgres {
   async ensureStarted(): Promise<void> {
     const { dataDir, socketDir, port } = this.config.database;
     mkdirSync(path.dirname(dataDir), { recursive: true });
+    this.bootLog = "";
 
-    const alreadyInitialised = existsSync(path.join(dataDir, "PG_VERSION"));
-    if (!alreadyInitialised) {
-      this.logger.info("postgres", "first run: initialising database cluster", { dataDir });
-      if (this.stalePostmasterPid()) {
-        // Only reached when PG_VERSION is missing but a pid file exists —
-        // inconsistent cluster remains; refuse rather than delete user data.
+    const dataDirVersion = readDataDirVersion(dataDir);
+    if (dataDirVersion !== null) {
+      // Existing cluster: the bundled server must be the same MAJOR version
+      // or PostgreSQL will refuse the data directory. Detect that here, with
+      // the recovery options attached — and never "solve" it by
+      // reinitialising (that would destroy the user's data).
+      const serverMajor = await this.serverMajorVersion();
+      if (serverMajor !== dataDirVersion) {
         this.state = "failed";
-        this.lastError = "Postgres data directory is inconsistent (postmaster.pid without PG_VERSION).";
+        this.lastError = describeVersionMismatch({
+          dataDir,
+          dataDirVersion,
+          serverMajor,
+          serverVersionLine: this.cachedServerVersionLine,
+        });
+        this.logger.error("postgres", "refusing to start: data-directory/server major version mismatch", {
+          dataDirVersion,
+          serverMajor,
+        });
         throw new Error(this.lastError);
       }
+      if (this.stalePostmasterPid()) {
+        const pidFile = path.join(dataDir, "postmaster.pid");
+        this.logger.warn("postgres", "removing stale postmaster.pid after crash", { pidFile });
+        rmSync(pidFile, { force: true });
+      }
+    } else if (dirHasContents(dataDir)) {
+      // Files exist but PG_VERSION does not (half-initialised cluster,
+      // damaged marker, or foreign contents). This is NOT a blank slate:
+      // initdb here would either fail or tempt a cleanup that destroys
+      // evidence. Refuse — the only path that may initialise is a truly
+      // empty/absent directory below.
+      const entries = listDirBounded(dataDir);
+      this.state = "failed";
+      this.lastError =
+        `Postgres data directory ${dataDir} contains files (${entries}) but no readable PG_VERSION. ` +
+        `Arena will not reinitialise, delete, or overwrite it. Inspect the directory or restore it from a backup before starting.`;
+      this.logger.error("postgres", "refusing to start: data directory has contents but no PG_VERSION", { dataDir, entries });
+      throw new Error(this.lastError);
+    } else {
+      // First run — the ONLY branch that may initialise a cluster.
+      this.logger.info("postgres", "first run: initialising database cluster", { dataDir });
       mkdirSync(dataDir, { recursive: true });
       const pwFile = path.join(path.dirname(dataDir), ".initdb-password");
       writeFileSync(pwFile, this.config.database.password, { mode: 0o600 });
@@ -131,10 +239,6 @@ export class EmbeddedPostgres {
       } finally {
         rmSync(pwFile, { force: true });
       }
-    } else if (this.stalePostmasterPid()) {
-      const pidFile = path.join(dataDir, "postmaster.pid");
-      this.logger.warn("postgres", "removing stale postmaster.pid after crash", { pidFile });
-      rmSync(pidFile, { force: true });
     }
 
     if (socketDir !== null) mkdirSync(socketDir, { recursive: true });
@@ -148,14 +252,24 @@ export class EmbeddedPostgres {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
-    let bootLog = "";
-    this.child.stdout?.on("data", (chunk: Buffer) => (bootLog += String(chunk)));
-    this.child.stderr?.on("data", (chunk: Buffer) => (bootLog += String(chunk)));
+    this.child.stdout?.on("data", (chunk: Buffer) => (this.bootLog += String(chunk)));
+    this.child.stderr?.on("data", (chunk: Buffer) => (this.bootLog += String(chunk)));
+    this.child.once("error", (error) => {
+      // spawn-level failure (binary missing, not executable, …) never emits
+      // "exit" — record it or readiness would wait out the full timeout.
+      if (!this.stopping) {
+        this.state = "failed";
+        this.lastError = `postgres could not be started (${this.config.postgres.postgres}): ${error.message}`;
+        this.logger.error("postgres", "embedded postgres could not be spawned", { error: error.message });
+      }
+      this.child = null;
+    });
     this.child.once("exit", (code, signal) => {
-      if (this.state === "running" && !this.stopping) {
+      if (!this.stopping && (this.state === "starting" || this.state === "running")) {
         this.logger.error("postgres", "embedded postgres exited unexpectedly", { code, signal });
         this.state = "failed";
-        this.lastError = `postgres exited (code ${code}, signal ${signal}): ${bootLog.slice(-1000)}`;
+        // Preserve the server's own output: it is the only record of WHY.
+        this.lastError = `postgres exited (code ${code}, signal ${signal})${this.bootTailSuffix()}`;
       }
       this.child = null;
     });
@@ -166,9 +280,10 @@ export class EmbeddedPostgres {
       this.logger.info("postgres", "embedded postgres ready", { port, firstRun: this.firstRun });
     } catch (error) {
       this.state = "failed";
-      this.lastError = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastError = message.includes("server output:") ? message : `${message}${this.bootTailSuffix()}`;
       await this.stop();
-      throw error;
+      throw new Error(this.lastError);
     }
   }
 
@@ -179,7 +294,7 @@ export class EmbeddedPostgres {
     let lastError: unknown = null;
     while (Date.now() < deadline) {
       if (this.child === null || this.child.exitCode !== null) {
-        throw new Error(`embedded postgres exited during startup: ${this.lastError ?? "no output"}`);
+        throw new Error(`embedded postgres exited during startup: ${this.lastError ?? "no output"}${this.lastError === null ? this.bootTailSuffix() : ""}`);
       }
       const client = new Client(this.clientConfig("postgres"));
       try {
@@ -197,7 +312,7 @@ export class EmbeddedPostgres {
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
     }
-    throw new Error(`embedded postgres did not become ready in ${timeoutMs}ms: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+    throw new Error(`embedded postgres did not become ready in ${timeoutMs}ms: ${lastError instanceof Error ? lastError.message : String(lastError)}${this.bootTailSuffix()}`);
   }
 
   clientConfig(database: string) {
@@ -330,6 +445,26 @@ function readPidFromFile(pidFile: string): number | null {
     return Number.isInteger(pid) && pid > 0 ? pid : null;
   } catch {
     return null;
+  }
+}
+
+/** True when the directory exists and holds at least one entry. */
+function dirHasContents(dir: string): boolean {
+  try {
+    return readdirSync(dir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Bounded, human-readable entry list for error messages (never unbounded). */
+function listDirBounded(dir: string, max = 5): string {
+  try {
+    const entries = readdirSync(dir);
+    const shown = entries.slice(0, max).join(", ");
+    return entries.length > max ? `${shown}, … (${entries.length} entries)` : shown;
+  } catch {
+    return "unreadable";
   }
 }
 
