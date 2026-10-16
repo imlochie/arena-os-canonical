@@ -23,13 +23,44 @@ export const maxDuration = 600;
  */
 
 const MAX_BYTES = 200 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 540_000;
+const REQUEST_BODY_LIMIT = 64 * 1024;
 
-function run(bin: string, args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+function run(
+  bin: string,
+  args: string[],
+  timeoutMs: number,
+  watch?: { dir: string; maxBytes: number },
+): Promise<{ code: number; stdout: string; stderr: string; exceededLimit: boolean }> {
   return new Promise((resolve) => {
-    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) =>
-      resolve({ code: error === null ? 0 : (error as { code?: number })?.code ?? 1, stdout: String(stdout), stderr: String(stderr) }),
-    );
+    let exceededLimit = false;
+    const child = execFile(bin, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+      if (poll) clearInterval(poll);
+      resolve({ code: error === null ? 0 : (error as { code?: number })?.code ?? 1, stdout: String(stdout), stderr: String(stderr), exceededLimit });
+    });
+    // --max-filesize cannot bound streams of unknown length; cap what lands on
+    // disk and kill the tool when the temp directory outgrows the limit.
+    const poll = watch
+      ? setInterval(() => {
+          void directoryBytes(watch.dir).then((bytes) => {
+            if (bytes > watch.maxBytes && !exceededLimit) {
+              exceededLimit = true;
+              child.kill();
+            }
+          });
+        }, 1000)
+      : null;
   });
+}
+
+async function directoryBytes(dir: string): Promise<number> {
+  try {
+    const names = await readdir(dir);
+    const sizes = await Promise.all(names.map((name) => stat(join(dir, name)).then((s) => s.size).catch(() => 0)));
+    return sizes.reduce((sum, size) => sum + size, 0);
+  } catch {
+    return 0;
+  }
 }
 
 async function resolveYtDlp(): Promise<string | null> {
@@ -50,13 +81,17 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const denied = await requireApiAccess(req);
   if (denied) return denied;
+  const declared = Number(req.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > REQUEST_BODY_LIMIT) {
+    return NextResponse.json({ error: "request body too large" }, { status: 413 });
+  }
   let body: { url?: string; title?: string; artist?: string } = {};
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
-  const raw = (body.url ?? "").trim();
+  const raw = typeof body.url === "string" ? body.url.trim() : "";
   let url: URL;
   try {
     url = new URL(raw);
@@ -92,9 +127,14 @@ export async function POST(req: Request) {
     const output = join(dir, "dl.%(ext)s");
     const download = await run(
       bin,
-      ["-f", "bestaudio/best", "--no-playlist", "--max-filesize", String(MAX_BYTES), "-o", output, "--no-progress", raw],
-      540_000,
+      // "--" ends option parsing: a URL starting with "-" can never become a flag.
+      ["-f", "bestaudio/best", "--no-playlist", "--max-filesize", String(MAX_BYTES), "--socket-timeout", "30", "-o", output, "--no-progress", "--", raw],
+      DOWNLOAD_TIMEOUT_MS,
+      { dir, maxBytes: MAX_BYTES },
     );
+    if (download.exceededLimit) {
+      return NextResponse.json({ error: `download exceeded the ${MAX_BYTES}-byte limit and was stopped` }, { status: 413 });
+    }
     if (download.code !== 0) {
       return NextResponse.json({ error: `yt-dlp failed: ${download.stderr.trim().slice(0, 500) || "unknown error"}` }, { status: 422 });
     }
@@ -110,8 +150,8 @@ export async function POST(req: Request) {
       filePath: join(dir, file),
       filename: file,
       mimeType: "application/octet-stream",
-      title: body.title?.slice(0, 200),
-      artist: body.artist?.slice(0, 200),
+      title: typeof body.title === "string" ? body.title.slice(0, 200) : undefined,
+      artist: typeof body.artist === "string" ? body.artist.slice(0, 200) : undefined,
     });
     return NextResponse.json({ track: result.track, created: result.created, separationQueued: result.separationQueued }, { status: 201 });
   } finally {
