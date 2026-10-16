@@ -31,6 +31,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
 import { WORKSPACE_ROOT } from "./tools";
 
 export type IsolationKind = "docker" | "podman" | "wsl" | "none";
@@ -161,6 +162,11 @@ export async function ensureIsolatedWorkspace(
     image: opts.image ?? "node:22-slim",
     networkMode: opts.networkMode ?? "none",
   };
+  // The bind-mount source MUST exist (and be user-owned) before the
+  // container starts: docker creates a missing host path as a root-owned
+  // directory, after which the app user cannot write into the workspace
+  // (missions then lose every write_file — see the regression test).
+  await mkdir(workspaceHostDir(spaceId), { recursive: true });
   const existing = await runner(env.kind, ["ps", "-a", "--filter", `name=^${env.ref}$`, "--format", "{{.Names}}"], { timeoutMs: 8_000 });
   if (!existing.output.includes(env.ref)) {
     const started = await runner(env.kind, containerRunArgs(env, workspaceHostDir(spaceId)), { timeoutMs: 120_000 });
