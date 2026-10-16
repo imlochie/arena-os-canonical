@@ -14,7 +14,7 @@
  */
 
 import { existsSync, statSync } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { posix, win32 } from "node:path";
 
 export type CapabilitySource = "env" | "bundled" | "system";
 
@@ -62,14 +62,15 @@ export function findOnPath(name: string, options: Pick<ResolveOptions, "env" | "
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const isFile = options.isFile ?? defaultIsFile;
+  const paths = platform === "win32" ? win32 : posix;
   const raw = env.PATH ?? env.Path ?? "";
-  const sep = platform === "win32" ? ";" : delimiter;
+  const sep = paths.delimiter;
   for (const dir of raw.split(sep)) {
     const cleaned = dir.trim().replace(/^"|"$/g, "");
     // Relative PATH entries (including "") would resolve against the CWD.
-    if (cleaned === "" || !isAbsolute(cleaned)) continue;
+    if (cleaned === "" || !paths.isAbsolute(cleaned)) continue;
     for (const file of fileNames(name, platform)) {
-      const candidate = join(cleaned, file);
+      const candidate = paths.join(cleaned, file);
       if (isFile(candidate)) return candidate;
     }
   }
@@ -80,15 +81,16 @@ export function resolveExecutable(name: string, options: ResolveOptions = {}): R
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const isFile = options.isFile ?? defaultIsFile;
+  const paths = platform === "win32" ? win32 : posix;
   const make = (path: string, source: CapabilitySource): ResolvedExecutable => ({ name, path, source, label: LABELS[source] });
 
   const override = options.envVar ? env[options.envVar]?.trim() : undefined;
-  if (override && isAbsolute(override) && isFile(override)) return make(override, "env");
+  if (override && paths.isAbsolute(override) && isFile(override)) return make(override, "env");
 
-  const dirs = [env.ARENA_APP_BIN_DIR?.trim(), ...(options.bundledDirs ?? [])].filter((d): d is string => !!d && isAbsolute(d));
+  const dirs = [env.ARENA_APP_BIN_DIR?.trim(), ...(options.bundledDirs ?? [])].filter((d): d is string => !!d && paths.isAbsolute(d));
   for (const dir of dirs) {
     for (const file of fileNames(name, platform)) {
-      const candidate = join(dir, file);
+      const candidate = paths.join(dir, file);
       if (isFile(candidate)) return make(candidate, "bundled");
     }
   }
