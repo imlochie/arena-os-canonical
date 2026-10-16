@@ -76,6 +76,26 @@ overwritten, reinitialised, or migrated in place to make the app boot.**
 - A first run (no data directory) is the only path that runs `initdb`.
 - No fallback ever initialises a new cluster over an existing one.
 
+## Patch-version packaging (PostgreSQL 16.15)
+
+PostgreSQL 16.15 (upstream, 2026-08-13) fixes issues present in 16.14.
+The `@embedded-postgres/*` packages have **not yet published a 16.15
+build** (verified 2026-10-16: newest 16.x on npm is `16.14.0-beta.17` for
+every platform). Until they do:
+
+- 16.14.0-beta.17 remains the recovery pin — the newest packaged 16.x,
+  and same-major with any 16.x data directory.
+- When `@embedded-postgres/*@16.15.x` lands: bump the pins in
+  `package.json` (`devDependencies` + `optionalDependencies` +
+  `allowScripts` keys), run `npm ci`, re-run
+  `desktop/runtime/embedded-postgres.test.ts` and `migrate.test.ts`, and
+  smoke-start against a **backup copy** of the data directory. This is a
+  minor bump within major 16 — no dump/restore and no `pg_upgrade`; the
+  data directory opens as-is. Do not migrate the real database for a
+  patch release.
+- Do not build bespoke PostgreSQL binaries for Arena: the packaging
+  risk outweighs the patch delta while 16.14 is healthy.
+
 ## Verification in this repository
 
 Executed in the development environment (Linux x64, Node 22):

@@ -112,6 +112,57 @@ test-DB availability, hub-registry replace-merge).
 `npx tsc --noEmit` clean. `npm run lint`: 0 errors (45 pre-existing warnings,
 none introduced).
 
+## 3b. Reconciliation with PR #10 (`fix/pg-recovery-hardening`) — 2026-10-16
+
+The two recovery implementations were consolidated onto this branch
+(rebased onto current `main`, `b87afc7`), one canonical implementation per
+responsibility:
+
+| Responsibility | Canonical | Absorbed from PR #10 |
+| --- | --- | --- |
+| PG pin + diagnostics + tests | this branch (version guard, bootLog, real-binary tests) | — |
+| Backup/restore | this branch (PR #10 had none) | — |
+| Ownership on arcade/artifacts | this branch (`owner_id` + scoped mutations) | — |
+| Trust boundary / API access | PR #10 (`api-access.ts`, `loopback-host.ts`, proxy Host gate) | adopted, wired into the hardened routes |
+| SSRF / outbound fetch | this branch (`outbound-url.ts`) | its `safe-fetch.ts` superseded; `192.88.99.0/24` nuance covered by the shared classifier |
+| Upload limits | this branch (`guardedFormData`, chunked cap) | — |
+| Model-hub registry | this branch (scoped replace-merge fix) | — |
+| Game-code validator | merged | PR #10's FORBIDDEN_GAME_APIS + tests |
+| yt-dlp ingest | merged | `--` option guard, disk watchdog, socket timeout |
+| Capability resolver (`/api/capabilities`) | PR #10 | adopted wholesale (reviewed) |
+| CI test environment | merged | PR #10's postgres:16 service + schema push |
+
+PR #10 should be closed as superseded once this branch lands; nothing
+unique in it was dropped.
+
+## 3c. CI findings (run 38920769089) and what fixed them
+
+- **23 of 27 failures** were database-backed tests (`PG required`): CI
+  ran `npm test` with no PostgreSQL and no schema. Fixed by provisioning
+  a `postgres:16` service + `drizzle-kit push --force` before the suite.
+- **The 4 Spaces mission failures** (missing `/workspace/hello.js`,
+  `run_tests` "no tests found", absent workspace map, approval-flow
+  assertion) shared ONE root cause: `runMission` started the isolation
+  container before `ensureWorkspace` created the directory, so `docker
+  run -v` created the bind-mount source **root-owned** and every later
+  `write_file` failed with EACCES. Machines without Docker take the
+  host-jail path and hide the bug — this was a real product defect for
+  every docker-equipped user, not test flakiness. Fixed in
+  `workspace-isolation.ts` with a regression test that enforces the
+  ordering at container-start time.
+
+## 5b. Residual risk register (honest, as of 2026-10-16)
+
+| Risk | Status | Next action |
+| --- | --- | --- |
+| Authentication: `requireUser` is the single-owner shim; app-wide route auth standardisation (WebAuthn `authenticatedRequestIdentity` everywhere) is unfinished | mitigated: trust boundary (`api-access`), ownership columns, cross-origin mutation gate | adopt session auth route-by-route in the auth workstream; never expose the app beyond loopback before that |
+| SSRF: DNS TOCTOU between policy check and connection (fetch re-resolves) | documented in `outbound-url.ts`; every DNS answer is checked at gate time | pin connections via a custom undici dispatcher where the threat model requires it |
+| yt-dlp: redirects inside the child process are not revalidated | initial destination checked (public-only, all DNS answers), size watchdog, timeouts | run ingest behind a filtering proxy if untrusted users ever share one instance |
+| Native runtime: `onnxruntime-node` nuget postinstall denied (bindings ship in-tarball on linux — verified via `ldd`); Windows/Darwin binding hydration unverified here | accepted | verify on a Windows machine during packaging |
+| Windows packaging (`desktop:dist`, `windows:acceptance`) | unverified in this Linux sandbox | run on the owner's machine; the PG 16 pin + optionalDependencies change is exactly what that build should exercise |
+| npm audit: 22 advisories (10 high) reported by CI's install | not yet triaged | audit and remediate deliberately — no `npm audit fix --force` |
+| PostgreSQL 16.15 (upstream patch release) not yet packaged by `@embedded-postgres` | pinned at 16.14.0-beta.17 (newest available) | bump pins when 16.15.x lands — same-major, no data migration (see POSTGRES-RECOVERY.md) |
+
 ## 5. Explicitly NOT done / remaining work
 
 - **Recovery of the real `%LOCALAPPDATA%\Arena` data directory** — unverified
