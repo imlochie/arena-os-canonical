@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { assertSafeUrl, SsrfError } from "@/lib/security/safe-fetch";
 import { requireApiAccess } from "@/lib/security/api-access";
+import { resolveExecutable } from "@/lib/capabilities/resolver";
 import { addTrackFromAudioFile } from "@/lib/waveyard/library/service";
 
 export const dynamic = "force-dynamic";
@@ -61,18 +62,17 @@ async function directoryBytes(dir: string): Promise<number> {
   }
 }
 async function resolveYtDlp(): Promise<string | null> {
-  const candidates = [process.env.ARENA_YTDLP_PATH, "yt-dlp", "yt-dlp.exe"].filter((c): c is string => Boolean(c));
-  for (const candidate of candidates) {
-    const probe = await run(candidate, ["--version"], 8000);
-    if (probe.code === 0 && probe.stdout.trim().length > 0) return candidate;
-  }
-  return null;
+  // override -> bundled (app/bin) -> system PATH, always an absolute path.
+  const found = resolveExecutable("yt-dlp", { envVar: "ARENA_YTDLP_PATH" });
+  if (found === null) return null;
+  const probe = await run(found.path, ["--version"], 8000);
+  return probe.code === 0 && probe.stdout.trim().length > 0 ? found.path : null;
 }
 
 export async function GET(req: Request) {
   const denied = await requireApiAccess(req);
   if (denied) return denied;
-  return NextResponse.json({ available: (await resolveYtDlp()) !== null, hint: "Set ARENA_YTDLP_PATH or install yt-dlp on the PATH." });
+  return NextResponse.json({ available: (await resolveYtDlp()) !== null, hint: "Set ARENA_YTDLP_PATH, place yt-dlp in the Arena app bin folder, or install it on the system PATH." });
 }
 
 export async function POST(req: Request) {
