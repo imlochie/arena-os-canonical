@@ -53,3 +53,21 @@ Needs roughly 2x the data directory size in free disk (about 150 MB for the curr
 - Uploads and ingest: Content-Length pre-check before buffering, yt-dlp disk-size watcher,
   socket timeout, and `--` before the URL. Chunked uploads without Content-Length are still
   buffered before the post-parse size check.
+
+## Capability resolver and packaged-install verification (status)
+**DONE (committed 01b1596)**
+- `src/lib/capabilities/resolver.ts`: env override > bundled `app/bin` (`ARENA_APP_BIN_DIR`) > system PATH; absolute paths, labelled source, system = DEGRADED. Used by ffmpeg/ffprobe, python (deep stems), yt-dlp; taskkill/PowerShell use System32 absolute paths.
+- `GET /api/capabilities` (database, migrations, broker, ffmpeg, ffprobe, python, demucs, yt-dlp, local-ai-runtime, network-providers) with path/version/remediation. Unit tests pass.
+- Optional: Ollama, LM Studio, WanGP, cloud keys. Developer-only: Docker, Git.
+- `desktop:dist` produced the installer (616 MB) and `win-unpacked` with PG 16.14, `bin/ffmpeg.exe`, `ffprobe.exe`, server and migrations; `windows:acceptance --audit-only` passed.
+
+**PARTIAL**
+- `desktop:dist` exits 1 at electron-builder's update-info step ("Cannot detect repository"; add `repository` to package.json or `--publish never`). The installer is written first.
+- Electron-as-node server launch and absence of PATH `node` are verified by source reading only.
+
+**NOT DONE / UNVERIFIED**
+- Full `windows:acceptance` (installs over the real Arena; needs user go-ahead and backup of the PG16.14-swapped install).
+- Live `/api/capabilities`, migrations on the new build, crash/restart and stale `postmaster.pid` cleanup on the packaged app.
+- Full `npm test` baseline (~9 `mediaArchive/local.test.ts` failures: missing `media_library_items` in the test DB).
+- Not bundled yet by design: Python, Demucs, yt-dlp, llama.cpp.
+- Drizzle duplicate prefixes 0011-0014, package.json `engines`/`allowScripts`, and the PG16->18 `pg_upgrade` trial remain.
