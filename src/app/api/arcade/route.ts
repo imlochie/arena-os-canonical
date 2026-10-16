@@ -3,11 +3,13 @@ import { arcadeGames } from "@/db/schema";
 import { desc } from "drizzle-orm";
 import {
   detectGameType,
+  GAME_TYPES,
   generateGameOffline,
   validateGameCode,
   type GameType,
 } from "@/lib/games";
 import { isEphemeralBody, logPrivacyEvent } from "@/lib/privacy";
+import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -16,9 +18,16 @@ export const maxDuration = 60;
 // Engines: verified cores + parametric remix (server, instant) and
 // on-device AI (runs in the visitor's browser via WebGPU).
 
+const MAX_BODY_BYTES = 1_000_000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const GAME_TYPE_IDS = new Set<string>(GAME_TYPES.map((g) => g.id));
+
 export async function GET(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   const url = new URL(req.url);
-  const limit = Math.min(Number(url.searchParams.get("limit") ?? 20), 50);
+  const requested = Number(url.searchParams.get("limit") ?? 20);
+  const limit = Number.isFinite(requested) ? Math.min(Math.max(Math.trunc(requested), 1), 50) : 20;
   const full = url.searchParams.get("full") === "1";
   try {
     const rows = await db.select().from(arcadeGames).orderBy(desc(arcadeGames.createdAt)).limit(limit);
@@ -41,11 +50,29 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   try {
-    const body = await req.json();
+    const declaredLength = Number(req.headers.get("content-length") ?? 0);
+    if (declaredLength > MAX_BODY_BYTES) return Response.json({ error: "request body too large" }, { status: 413 });
+    const raw = await req.text();
+    if (raw.length > MAX_BODY_BYTES) return Response.json({ error: "request body too large" }, { status: 413 });
+    let body: any;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      return Response.json({ error: "invalid JSON body" }, { status: 400 });
+    }
+    if (body === null || typeof body !== "object") return Response.json({ error: "invalid JSON body" }, { status: 400 });
     const prompt: string = (body.prompt ?? "").toString().trim();
     const ephemeral = isEphemeralBody(body);
     const parentId: string | undefined = body.parentId;
+    if (parentId !== undefined && parentId !== null && !UUID.test(String(parentId))) {
+      return Response.json({ error: "invalid parentId" }, { status: 400 });
+    }
+    if (body.gameType !== undefined && body.gameType !== null && !GAME_TYPE_IDS.has(String(body.gameType))) {
+      return Response.json({ error: "invalid gameType" }, { status: 400 });
+    }
 
     if (!prompt && !body.clientCode) {
       return Response.json({ error: "prompt required" }, { status: 400 });

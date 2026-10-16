@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import { arcadeGames } from "@/db/schema";
 import { forgeGameWithAI } from "@/lib/games/forge-ai";
+import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 240;
@@ -10,6 +11,8 @@ export const maxDuration = 240;
 // Honest 503 when no model is reachable — the offline template forge is the
 // separate instant path.
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   let body: any;
   try {
     body = await req.json();
@@ -35,7 +38,7 @@ export async function POST(req: Request) {
           gameType: result.gameType,
           engine: "ai-codegen",
           code: result.code,
-          parentId: body?.parentId ? String(body.parentId) : null,
+          parentId: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(body?.parentId ?? "")) ? String(body.parentId) : null,
         })
         .returning();
       game = row;
