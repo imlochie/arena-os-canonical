@@ -40,7 +40,11 @@ async function localPostgresUp(url: string): Promise<boolean> {
 
 const databaseUrl = resolveDatabaseUrl();
 const pgUp = await localPostgresUp(databaseUrl);
-process.env.DATABASE_URL = databaseUrl;
+// Parallel-file isolation: local.test.ts runs concurrently against the same
+// table family — give this file its own database (its wipes are frequent).
+process.env.DATABASE_URL = pgUp
+  ? await (await import("./testIsolation")).isolatedTestDatabase(databaseUrl, "media_archive")
+  : databaseUrl;
 
 /* ---------------------------- fixture server ----------------------------- */
 
