@@ -15,6 +15,15 @@ import {
 
 import { executionSessions } from "./identitySchema";
 
+/**
+ * The single local owner of every record in this local-first deployment.
+ * Actor/owner columns across the schema record this id honestly (there is no
+ * multi-user account system); ownership checks at the API boundary enforce
+ * that a caller can only modify records held by their own identity, so the
+ * column is a real authorisation boundary the day identity becomes richer.
+ */
+export const LOCAL_OWNER_ID = "00000000-0000-4000-8000-000000000001";
+
 // ---- Model Hub: local runtime connections + registered local models ----
 // (docs/model-hub.md) A "connection" is a local OpenAI-compatible server
 // (Ollama / LM Studio / llama.cpp). A "binding" registers one of its models
@@ -318,6 +327,8 @@ export const artifacts = pgTable("artifacts", {
   body: text("body").notNull().default(""),
   sourceType: text("source_type").notNull().default("manual"), // council|battle|collab|chat|arcade|manual
   sourceId: text("source_id"),
+  /** Record owner — mutations are scoped to it (see desktop-migrations/0016). */
+  ownerId: text("owner_id").notNull().default(LOCAL_OWNER_ID),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -346,6 +357,8 @@ export const arcadeGames = pgTable("arcade_games", {
   code: text("code").notNull(),
   parentId: uuid("parent_id"),
   projectId: uuid("project_id"),
+  /** Record owner — mutations are scoped to it (see desktop-migrations/0016). */
+  ownerId: text("owner_id").notNull().default(LOCAL_OWNER_ID),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

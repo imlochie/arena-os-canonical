@@ -1,6 +1,9 @@
 import { db } from "@/db";
 import { artifacts } from "@/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { desc } from "drizzle-orm";
+import { isUuid } from "@/lib/api/ids";
+import { deleteArtifact, insertArtifact } from "@/lib/arcadeStore";
+import { requireUser } from "@/lib/waveyard/local-context";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +29,7 @@ export async function GET(req: Request) {
 // POST → create unscoped (or scoped) artifact from any tool
 export async function POST(req: Request) {
   try {
+    const user = await requireUser();
     const body = await req.json();
     const title = (body.title ?? "Untitled artifact").toString().slice(0, 160);
     const artifactBody = (body.body ?? "").toString().slice(0, 20000);
@@ -34,10 +38,15 @@ export async function POST(req: Request) {
     const projectId = body.projectId ? String(body.projectId) : null;
     const sourceType = (body.sourceType ?? "manual").toString().slice(0, 20);
     const sourceId = body.sourceId ? String(body.sourceId).slice(0, 80) : null;
-    const [row] = await db
-      .insert(artifacts)
-      .values({ projectId, kind, title, body: artifactBody, sourceType, sourceId })
-      .returning();
+    const row = await insertArtifact(db, {
+      projectId,
+      kind,
+      title,
+      body: artifactBody,
+      sourceType,
+      sourceId,
+      ownerId: user.id,
+    });
     return Response.json({ artifact: row }, { status: 201 });
   } catch (e) {
     console.error(e);
@@ -47,10 +56,14 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const user = await requireUser();
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
     if (!id) return Response.json({ error: "id required" }, { status: 400 });
-    await db.delete(artifacts).where(eq(artifacts.id, id));
+    if (!isUuid(id)) return Response.json({ error: "not found" }, { status: 404 });
+    const outcome = await deleteArtifact(db, id, user.id);
+    if (outcome === "not_found") return Response.json({ error: "not found" }, { status: 404 });
+    if (outcome === "forbidden") return Response.json({ error: "this artifact belongs to another owner" }, { status: 403 });
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);

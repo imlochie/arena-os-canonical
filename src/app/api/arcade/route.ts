@@ -7,7 +7,9 @@ import {
   validateGameCode,
   type GameType,
 } from "@/lib/games";
+import { insertArcadeGame } from "@/lib/arcadeStore";
 import { isEphemeralBody, logPrivacyEvent } from "@/lib/privacy";
+import { requireUser } from "@/lib/waveyard/local-context";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -42,6 +44,10 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    // Mutations are owner-scoped: every persisted game records who owns it,
+    // and unvalidated code is never persisted (the catalogue is a public
+    // read surface — arbitrary HTML must not be insertable through it).
+    const user = await requireUser();
     const body = await req.json();
     const prompt: string = (body.prompt ?? "").toString().trim();
     const ephemeral = isEphemeralBody(body);
@@ -75,10 +81,14 @@ export async function POST(req: Request) {
           validation: v,
         });
       }
-      const [row] = await db
-        .insert(arcadeGames)
-        .values({ prompt: prompt || "on-device AI game", gameType, engine: "on-device-ai", code, parentId: parentId ?? null })
-        .returning();
+      const row = await insertArcadeGame(db, {
+        prompt: prompt || "on-device AI game",
+        gameType,
+        engine: "on-device-ai",
+        code,
+        parentId: parentId ?? null,
+        ownerId: user.id,
+      });
       return Response.json({ game: row, validation: v }, { status: 201 });
     }
 
@@ -102,10 +112,19 @@ export async function POST(req: Request) {
         ms: g.ms,
       });
     }
-    const [row] = await db
-      .insert(arcadeGames)
-      .values({ prompt, gameType: g.gameType, engine: g.engine, code: g.code, parentId: parentId ?? null })
-      .returning();
+    // Persist only code that passed validation — a failed validation must
+    // never become a stored "game" the catalogue then serves to everyone.
+    if (!v.ok) {
+      return Response.json({ error: "generated code failed validation", issues: v.issues }, { status: 422 });
+    }
+    const row = await insertArcadeGame(db, {
+      prompt,
+      gameType: g.gameType,
+      engine: g.engine,
+      code: g.code,
+      parentId: parentId ?? null,
+      ownerId: user.id,
+    });
     return Response.json({ game: row, validation: v, ms: g.ms }, { status: 201 });
   } catch (e) {
     console.error(e);
