@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { insertArcadeGame } from "@/lib/arcadeStore";
 import { forgeGameWithAI } from "@/lib/games/forge-ai";
 import { requireUser } from "@/lib/waveyard/local-context";
+import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 240;
@@ -11,6 +12,8 @@ export const maxDuration = 240;
 // Honest 503 when no model is reachable — the offline template forge is the
 // separate instant path.
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   let body: any;
   try {
     body = await req.json();

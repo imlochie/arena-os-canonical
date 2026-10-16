@@ -11,6 +11,7 @@ import { acceptedAudioFilename, MAX_UPLOAD_BYTES } from "@/lib/waveyard/audio";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { configuredAuthorizedSourceResolver, validateAuthorizedSourceUrl } from "@/lib/waveyard/authorized-source-resolver";
 import { OutboundUrlError, assertOutboundUrl, safeFetch } from "@/lib/security/outbound-url";
+import { requireApiAccess } from "@/lib/security/api-access";
 import { ingestSourceFile } from "@/lib/waveyard/source-ingest"
 import { defaultSeparationModel, isAcceptableSeparationModel } from "@/lib/waveyard/separation/selection";
 import { isDeepSeparationMode } from "@/lib/waveyard/separation/modes";
@@ -20,6 +21,8 @@ import { requireProjectRole } from "@/lib/waveyard/local-context";
 export const runtime = "nodejs";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(request);
+  if (denied) return denied;
   let directory: string | undefined;
   try {
     const user = await requireUser(); const { id: projectId } = await params;

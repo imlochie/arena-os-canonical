@@ -121,9 +121,11 @@ if (fixture !== null) {
 }
 
 function arcadeRequest(pathname: string, body: unknown) {
-  return new Request(`http://arena.test${pathname}`, {
+  return new Request(`http://127.0.0.1${pathname}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    // Explicit Host: undici's Request() carries none (fetch adds it at send
+    // time) and the access guard correctly fails closed on a missing Host.
+    headers: { "content-type": "application/json", host: "127.0.0.1" },
     body: JSON.stringify(body),
   });
 }
@@ -157,7 +159,7 @@ test("arcade security: validation gate, owner scoping, ownership-checked delete"
     .insert(arcadeGames)
     .values({ prompt: "foreign", gameType: "arena", engine: "verified", code: validGameHtml(), ownerId: "99999999-9999-4000-8000-000000000009" })
     .returning();
-  const forbidden = await idRoutes.DELETE(new Request(`http://arena.test/api/arcade/${foreign.id}`, { method: "DELETE" }), {
+  const forbidden = await idRoutes.DELETE(new Request(`http://127.0.0.1/api/arcade/${foreign.id}`, { method: "DELETE", headers: { host: "127.0.0.1" } }), {
     params: Promise.resolve({ id: foreign.id }),
   });
   assert.equal(forbidden.status, 403);
@@ -165,17 +167,17 @@ test("arcade security: validation gate, owner scoping, ownership-checked delete"
   assert.ok(stillThere, "foreign record must survive a refused delete");
 
   // 5. Own delete works; unknown id is a clean 404.
-  const ok = await idRoutes.DELETE(new Request(`http://arena.test/api/arcade/${createdBody.game.id}`, { method: "DELETE" }), {
+  const ok = await idRoutes.DELETE(new Request(`http://127.0.0.1/api/arcade/${createdBody.game.id}`, { method: "DELETE", headers: { host: "127.0.0.1" } }), {
     params: Promise.resolve({ id: createdBody.game.id }),
   });
   assert.equal(ok.status, 200);
-  const missing = await idRoutes.DELETE(new Request("http://arena.test/api/arcade/11111111-1111-4111-8111-111111111111", { method: "DELETE" }), {
+  const missing = await idRoutes.DELETE(new Request("http://127.0.0.1/api/arcade/11111111-1111-4111-8111-111111111111", { method: "DELETE", headers: { host: "127.0.0.1" } }), {
     params: Promise.resolve({ id: "11111111-1111-4111-8111-111111111111" }),
   });
   assert.equal(missing.status, 404);
 
   // 6. The catalogue read path stays open (public reads are by design).
-  const listing = await routes.GET(new Request("http://arena.test/api/arcade"));
+  const listing = await routes.GET(new Request("http://127.0.0.1/api/arcade", { headers: { host: "127.0.0.1" } }));
   assert.equal(listing.status, 200);
   const listBody = (await listing.json()) as { games: unknown[] };
   assert.ok(Array.isArray(listBody.games));

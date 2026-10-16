@@ -29,7 +29,7 @@ test("internal and remote destinations are refused without any fetch", async () 
     "http://[::ffff:169.254.169.254]/",
     "http://[fd00::1]:9/",
   ]) {
-    const response = await GET(new Request(`http://arena.test/api/turboagent/health?url=${encodeURIComponent(target)}`));
+    const response = await GET(new Request(`http://127.0.0.1/api/turboagent/health?url=${encodeURIComponent(target)}`, { headers: { host: "127.0.0.1" } }));
     const body = (await response.json()) as { online: boolean; detail: string };
     assert.equal(body.online, false, target);
     assert.match(body.detail, /limited to this machine/, target);
@@ -53,7 +53,7 @@ test("a loopback probe really runs and reports the runtime's answer", async (t) 
   const port = typeof address === "object" && address !== null ? address.port : 0;
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
-  const response = await GET(new Request(`http://arena.test/api/turboagent/health?url=${encodeURIComponent(`http://127.0.0.1:${port}`)}`));
+  const response = await GET(new Request(`http://127.0.0.1/api/turboagent/health?url=${encodeURIComponent(`http://127.0.0.1:${port}`)}`, { headers: { host: "127.0.0.1" } }));
   const body = (await response.json()) as { online: boolean; detail: string; backend?: string };
   assert.equal(body.online, true);
   assert.equal(body.detail, "qwen2.5:7b");
@@ -64,7 +64,7 @@ test("no configured URL is an honest offline answer", async () => {
   const previous = process.env.TURBOAGENT_URL;
   delete process.env.TURBOAGENT_URL;
   try {
-    const response = await GET(new Request("http://arena.test/api/turboagent/health"));
+    const response = await GET(new Request("http://127.0.0.1/api/turboagent/health", { headers: { host: "127.0.0.1" } }));
     const body = (await response.json()) as { online: boolean };
     assert.equal(body.online, false);
   } finally {

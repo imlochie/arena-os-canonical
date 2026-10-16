@@ -9,8 +9,11 @@
 export const dynamic = "force-dynamic";
 
 import { OutboundUrlError, assertUrlDestination } from "@/lib/security/outbound-url";
+import { requireApiAccess } from "@/lib/security/api-access";
 
 export async function GET(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   const url = new URL(req.url);
   let target = url.searchParams.get("url")?.trim() || process.env.TURBOAGENT_URL || "";
   if (!target) {

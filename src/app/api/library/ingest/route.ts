@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { addTrackFromAudioFile } from "@/lib/waveyard/library/service";
 import { OutboundUrlError, assertOutboundUrl } from "@/lib/security/outbound-url";
+import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -40,11 +41,15 @@ async function resolveYtDlp(): Promise<string | null> {
   return null;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   return NextResponse.json({ available: (await resolveYtDlp()) !== null, hint: "Set ARENA_YTDLP_PATH or install yt-dlp on the PATH." });
 }
 
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   let body: { url?: string; title?: string; artist?: string } = {};
   try {
     body = await req.json();

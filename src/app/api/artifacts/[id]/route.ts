@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { isUuid } from "@/lib/api/ids";
 import { deleteArtifact, updateArtifact } from "@/lib/arcadeStore";
 import { requireUser } from "@/lib/waveyard/local-context";
+import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 }
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   try {
     const user = await requireUser();
     const { id } = await params;
@@ -40,7 +43,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   try {
     const user = await requireUser();
     const { id } = await params;

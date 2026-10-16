@@ -19,11 +19,14 @@ import { deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { guardedFormData } from "@/lib/security/request-limits";
+import { requireApiAccess } from "@/lib/security/api-access";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  const denied = await requireApiAccess(request);
+  if (denied) return denied;
   let temporaryDirectory: string | undefined;
   let storedKey: string | undefined;
   let persisted = false;

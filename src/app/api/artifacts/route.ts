@@ -4,6 +4,7 @@ import { desc } from "drizzle-orm";
 import { isUuid } from "@/lib/api/ids";
 import { deleteArtifact, insertArtifact } from "@/lib/arcadeStore";
 import { requireUser } from "@/lib/waveyard/local-context";
+import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +29,8 @@ export async function GET(req: Request) {
 
 // POST → create unscoped (or scoped) artifact from any tool
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   try {
     const user = await requireUser();
     const body = await req.json();
@@ -55,6 +58,8 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   try {
     const user = await requireUser();
     const url = new URL(req.url);

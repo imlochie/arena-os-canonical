@@ -10,6 +10,7 @@ import {
 import { insertArcadeGame } from "@/lib/arcadeStore";
 import { isEphemeralBody, logPrivacyEvent } from "@/lib/privacy";
 import { requireUser } from "@/lib/waveyard/local-context";
+import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -43,6 +44,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   try {
     // Mutations are owner-scoped: every persisted game records who owns it,
     // and unvalidated code is never persisted (the catalogue is a public
