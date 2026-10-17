@@ -93,19 +93,25 @@ or **unverified** (not executable in this environment, with the reason).
 
 ## 4. Regression coverage (all executed)
 
-New tests (30): `desktop/runtime/embedded-postgres.test.ts` (10 — incl. a
+New tests (45): `desktop/runtime/embedded-postgres.test.ts` (10 — incl. a
 real-binary test that tampers `PG_VERSION`, proves refusal + untouched data +
 recovery), `desktop/pg-backup.test.ts` (4), `src/lib/security/outbound-url.test.ts`
 (7 — metadata endpoints, alternate spellings, DNS multi-record, redirect
 hops), `src/lib/security/request-limits.test.ts` (4),
+`src/lib/security/api-access.test.ts` (4 — Host trust boundary, session,
+internal key), `src/lib/capabilities/capabilities.test.ts` (8 — resolver
+tiers and report semantics), `src/lib/games/validator.test.ts` (2 —
+forbidden network/navigation APIs),
 `src/app/api/turboagent/health/route.test.ts` (3 — refused destinations
 provably never contacted), `src/app/api/arcade/route.test.ts` (2 — real DB
-route-level: validation gate, owner scoping, foreign-delete refused).
+route-level: validation gate, owner scoping, foreign-delete refused), and
+`src/lib/spaces/workspace-isolation.test.ts` (+1 regression — the bind-mount
+source is user-created before the container starts).
 
 Full suite after the changes, in a valid test environment (throwaway
 PostgreSQL 16 on 127.0.0.1:5432 + `app_db` + `drizzle-kit push`, ffprobe
-executable): **1253 tests — 1253 pass, 0 fail, 0 skip** (was 1153/60/10 at
-baseline; +30 tests, baseline failures all resolved: embedded-PG symlink
+executable): **1268 tests — 1268 pass, 0 fail, 0 skip** (was 1153/60/10 at
+baseline; +45 tests, baseline failures all resolved: embedded-PG symlink
 hydration, migration 0016 statement splitting, ffprobe permissions,
 test-DB availability, hub-registry replace-merge).
 

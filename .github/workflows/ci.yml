@@ -4,10 +4,11 @@
 # compose-release workflow (that branch's monorepo topology — apps/web,
 # apps/worker, packages/* — was not adopted; see
 # docs/branch-integration/ for the full ledger). The static gate is the
-# branch's as-is; the release gate is reduced to what this tree's
-# docker-compose.yml actually defines (postgres, redis, setup, web,
-# worker — no test profile / e2e image here), so every job in this file
-# is green-by-construction against this repository, not aspirational.
+# branch's as-is, plus a postgres:16 service so its database-backed tests
+# and drizzle-kit schema push can run; the release gate is reduced to what
+# this tree's docker-compose.yml actually defines (postgres, redis, setup,
+# web, worker — no test profile / e2e image here), so every job in this
+# file is green-by-construction against this repository, not aspirational.
 #
 # The branch's full release gate (docker compose --profile test, the
 # waveyard-e2e-release-gate container, scripts/test-compose.ts) remains

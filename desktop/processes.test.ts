@@ -73,8 +73,8 @@ test("killTree uses taskkill /T /F on win32 (process trees have no groups)", asy
     },
   });
   assert.equal(calls.length, 1);
-    assert.match(String(calls[0][0]), /System32[\\/]taskkill\.exe$/i);
-    assert.deepEqual(calls[0][1], ["/pid", "4242", "/T", "/F"]);
+  assert.match(String(calls[0][0]), /System32[\\/]taskkill\.exe$/i);
+  assert.deepEqual(calls[0][1], ["/pid", "4242", "/T", "/F"]);
 });
 
 test("killTree sends SIGTERM on posix", async () => {

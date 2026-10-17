@@ -10,7 +10,7 @@ original is never upgraded in place.**
 
 ## Why this is feasible
 
-- Arena's schema (`desktop-migrations/0000–0015`) uses **no PostgreSQL
+- Arena's schema (`desktop-migrations/0000–0016`) uses **no PostgreSQL
   extensions** — core types only (`gen_random_uuid()` is built into core
   since PostgreSQL 13). There is no extension version matrix to resolve.
 - Both runtimes come from the same `@embedded-postgres/*` distribution, so
@@ -71,7 +71,7 @@ cp -a "<backupDest>" "<work>/data16"
 Verification queries (psql or any client against port 55432):
 
 ```sql
-select count(*) from arena_schema_migrations;   -- 0000..0015 present
+select count(*) from arena_schema_migrations;   -- 0000..0016 present
 select count(*) from projects;                   -- matches pre-migration count
 select count(*) from processing_jobs;            -- matches pre-migration count
 select count(*) from archive_items;              -- matches pre-migration count
