@@ -1,17 +1,22 @@
 import { db } from "@/db";
 import { artifacts } from "@/db/schema";
-import { eq } from "drizzle-orm";
 import { isUuid } from "@/lib/api/ids";
-import { deleteArtifact, updateArtifact } from "@/lib/arcadeStore";
+import { deleteArtifact, getArtifact, updateArtifact } from "@/lib/arcadeStore";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
   try {
+    const user = await requireUser();
     const { id } = await params;
-    const [row] = await db.select().from(artifacts).where(eq(artifacts.id, id)).limit(1);
+    if (!isUuid(id)) return Response.json({ error: "not found" }, { status: 404 });
+    // Owner-scoped read: a foreign artifact answers 404 (not 403), so the
+    // endpoint never confirms that someone else's record exists.
+    const row = await getArtifact(db, id, user.id);
     if (!row) return Response.json({ error: "not found" }, { status: 404 });
     return Response.json({ artifact: row });
   } catch (e) {

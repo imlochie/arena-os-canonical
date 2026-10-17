@@ -106,6 +106,9 @@ window.addEventListener("pointerdown", function(){ score += 1; });
 const fixture = await bootFixture();
 const routes = fixture === null ? null : await import("./route");
 const idRoutes = fixture === null ? null : await import("./[id]/route");
+const artifactRoutes = fixture === null ? null : await import("../artifacts/route");
+const artifactIdRoutes = fixture === null ? null : await import("../artifacts/[id]/route");
+const projectArtifactRoutes = fixture === null ? null : await import("../projects/[id]/artifacts/route");
 if (fixture !== null) {
   after(async () => {
     // End the app pool BEFORE the server goes away — otherwise its idle
@@ -204,4 +207,73 @@ test("artifact mutations are ownership-scoped the same way", async (t) => {
   assert.equal(mine.row?.title, "renamed");
   assert.equal(await deleteArtifact(db, artifact.id, owner), "ok");
   assert.equal(await deleteArtifact(db, artifact.id, owner), "not_found");
+});
+
+test("artifact reads are owner-private: no cross-owner or anonymous access", async (t) => {
+  if (fixture === null || artifactRoutes === null || artifactIdRoutes === null || projectArtifactRoutes === null) {
+    return t.skip("embedded postgres platform package unavailable");
+  }
+
+  const { db } = await import("@/db");
+  const { projects } = await import("@/db/schema");
+  const { insertArtifact, deleteArtifact } = await import("@/lib/arcadeStore");
+  const owner = "00000000-0000-4000-8000-000000000001";
+  const other = "99999999-9999-4000-8000-000000000009";
+
+  const [project] = await db.insert(projects).values({ name: "artifact read fixture" }).returning();
+  const mine = await insertArtifact(db, { projectId: project.id, kind: "brief", title: "mine", body: "private brief", sourceType: "manual", ownerId: owner });
+  const foreign = await insertArtifact(db, { projectId: project.id, kind: "brief", title: "foreign", body: "another owner's brief", sourceType: "manual", ownerId: other });
+
+  const get = (path: string, host = "127.0.0.1") =>
+    new Request(`http://127.0.0.1${path}`, { headers: { host } });
+  const byId = (id: string) => ({ params: Promise.resolve({ id }) });
+
+  try {
+    // 1. The library lists only the caller's artifacts.
+    const list = await artifactRoutes.GET(get("/api/artifacts"));
+    assert.equal(list.status, 200);
+    const listed = ((await list.json()) as { artifacts: Array<{ id: string }> }).artifacts.map((a) => a.id);
+    assert.ok(listed.includes(mine.id), "own artifact is listed");
+    assert.ok(!listed.includes(foreign.id), "a foreign artifact must never be listed");
+
+    // 2. The project-scoped route is the same table, so it must enforce the
+    //    same boundary (otherwise it would be a trivial bypass).
+    const projectList = await projectArtifactRoutes.GET(get(`/api/projects/${project.id}/artifacts`), byId(project.id));
+    assert.equal(projectList.status, 200);
+    const projectListed = ((await projectList.json()) as { artifacts: Array<{ id: string }> }).artifacts.map((a) => a.id);
+    assert.deepEqual(projectListed, [mine.id]);
+
+    // 3. Own id resolves; a foreign id answers 404 (existence is not leaked);
+    //    a malformed id is a clean 404 rather than a database error.
+    const own = await artifactIdRoutes.GET(get(`/api/artifacts/${mine.id}`), byId(mine.id));
+    assert.equal(own.status, 200);
+    const foreignRead = await artifactIdRoutes.GET(get(`/api/artifacts/${foreign.id}`), byId(foreign.id));
+    assert.equal(foreignRead.status, 404);
+    const junk = await artifactIdRoutes.GET(get("/api/artifacts/junk"), byId("junk"));
+    assert.equal(junk.status, 404);
+
+    // 4. In production web mode (no local trust, no session) every artifact
+    //    read fails closed — this is the anonymous-exposure regression.
+    const env = process.env as Record<string, string | undefined>;
+    const previousEnv = { NODE_ENV: env.NODE_ENV, ARENA_DESKTOP_MODE: env.ARENA_DESKTOP_MODE };
+    env.NODE_ENV = "production";
+    delete env.ARENA_DESKTOP_MODE;
+    try {
+      const anonymousList = await artifactRoutes.GET(get("/api/artifacts", "arena.example"));
+      assert.equal(anonymousList.status, 401);
+      const anonymousById = await artifactIdRoutes.GET(get(`/api/artifacts/${mine.id}`, "arena.example"), byId(mine.id));
+      assert.equal(anonymousById.status, 401);
+      const anonymousProject = await projectArtifactRoutes.GET(get(`/api/projects/${project.id}/artifacts`, "arena.example"), byId(project.id));
+      assert.equal(anonymousProject.status, 401);
+    } finally {
+      if (previousEnv.NODE_ENV === undefined) delete env.NODE_ENV;
+      else env.NODE_ENV = previousEnv.NODE_ENV;
+      if (previousEnv.ARENA_DESKTOP_MODE === undefined) delete env.ARENA_DESKTOP_MODE;
+      else env.ARENA_DESKTOP_MODE = previousEnv.ARENA_DESKTOP_MODE;
+    }
+  } finally {
+    await deleteArtifact(db, mine.id, owner);
+    await deleteArtifact(db, foreign.id, other);
+    await db.delete(projects).where(eq(projects.id, project.id));
+  }
 });

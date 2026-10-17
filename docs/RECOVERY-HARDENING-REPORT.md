@@ -30,6 +30,7 @@ or **unverified** (not executable in this environment, with the reason).
 | F3 | `scripts/environment-restore.mjs` installed `@embedded-postgres/linux-x64` **unpinned** (would silently pull 18.x) | line 87, before change | P1 | Pin to `16.14.0-beta.17` |
 | F4 | `/api/arcade` mutations had no owner and no authorisation: any caller could insert game HTML and delete any game by id; the forge persisted code that failed its own validation | `src/app/api/arcade/*` (before change) | P1 | Per-record `owner_id`, owner-scoped delete (403 on foreign rows), validation gate before persistence, route tests against a real DB |
 | F5 | `/api/artifacts` mutations unguarded (same class) | `src/app/api/artifacts/*` | P1 | Same ownership model (`desktop-migrations/0016`) |
+| F5b | Artifact **reads** were unguarded even after ownership existed: `GET /api/artifacts`, `GET /api/artifacts/[id]` and `GET /api/projects/[id]/artifacts` returned any row to an anonymous caller (the project route was a bypass around the same table) | `src/app/api/artifacts/*`, `src/app/api/projects/[id]/artifacts/route.ts` | P1 | Artifacts are owner-private: reads require `requireApiAccess` AND filter on `owner_id` in SQL (`listArtifacts` / `getArtifact`); foreign ids answer 404, not 403 |
 | F6 | SSRF: `/api/turboagent/health` fetched any caller-supplied URL; source-intake fetched the resolver's `audioUrl` unvalidated (DNS-rebinding gap); yt-dlp ingest fetched caller URLs unvalidated | routes before change | P1 | Shared `src/lib/security/outbound-url.ts` policy (address classification incl. IPv4-mapped/NAT64/6to4, DNS-answer checks, redirect revalidation) applied to all three; model-hub's loopback gate rebuilt on the same classifier |
 | F7 | Multipart uploads buffered unbounded (chunked bodies without Content-Length bypassed `upload.size` checks) | `request.formData()` semantics | P2 | `guardedFormData` caps declared and streamed bodies; wired into uploads, toolbox, library/tracks, device-artifacts |
 | F8 | Model-hub registry `load()` replace-merge erased every non-hub dynamic model registration whenever the DB was reachable (silent fallback to the wrong engine — surfaced by a routing test) | `src/lib/modelHub/registry.ts`; failing `aiHub.test.ts` case | P2 | Replace-merge scoped to hub-owned ids only |
@@ -73,10 +74,21 @@ or **unverified** (not executable in this environment, with the reason).
   (+ `drizzle/0023_…`): `owner_id` on `arcade_games` and `artifacts`,
   backfilled to `LOCAL_OWNER_ID`.
 - `src/lib/arcadeStore.ts`: ownership-scoped create/update/delete
-  (`not_found` / `forbidden` outcomes).
+  (`not_found` / `forbidden` outcomes) plus owner-scoped reads
+  (`listArtifacts`, `getArtifact`).
 - Arcade + artifacts routes: `requireUser`, owner recording, 403 on
   cross-owner mutations, 404 on unknown ids, validation gate (unvalidated
   game code is never persisted).
+- Artifact read policy (explicit): artifacts hold private working data
+  (briefs, research, prompts tied to private projects), so **all three
+  artifact read routes are access-gated and owner-scoped**. The project
+  route (`/api/projects/[id]/artifacts`) shares the table and is gated the
+  same way; its POST also records the caller as owner through the store.
+  Reads of a foreign id answer 404 so existence is not disclosed. Tests
+  cover listing, project scoping, foreign-id reads and the anonymous
+  (production web mode) case. The arcade catalogue remains public by
+  design — game HTML is generated content for a public gallery, not
+  project data — and that is asserted, not assumed.
 - `src/lib/security/outbound-url.ts` (+ tests): destination classification
   (loopback/private/link-local/CGNAT/multicast/reserved/public incl. decimal
   URL-normalised forms, IPv4-mapped IPv6, NAT64, 6to4), DNS-answer policy
@@ -93,7 +105,7 @@ or **unverified** (not executable in this environment, with the reason).
 
 ## 4. Regression coverage (all executed)
 
-New tests (45): `desktop/runtime/embedded-postgres.test.ts` (10 — incl. a
+New tests (46): `desktop/runtime/embedded-postgres.test.ts` (10 — incl. a
 real-binary test that tampers `PG_VERSION`, proves refusal + untouched data +
 recovery), `desktop/pg-backup.test.ts` (4), `src/lib/security/outbound-url.test.ts`
 (7 — metadata endpoints, alternate spellings, DNS multi-record, redirect
@@ -103,15 +115,16 @@ internal key), `src/lib/capabilities/capabilities.test.ts` (8 — resolver
 tiers and report semantics), `src/lib/games/validator.test.ts` (2 —
 forbidden network/navigation APIs),
 `src/app/api/turboagent/health/route.test.ts` (3 — refused destinations
-provably never contacted), `src/app/api/arcade/route.test.ts` (2 — real DB
-route-level: validation gate, owner scoping, foreign-delete refused), and
+provably never contacted), `src/app/api/arcade/route.test.ts` (3 — real DB
+route-level: validation gate, owner scoping, foreign-delete refused,
+owner-private artifact reads incl. the anonymous case), and
 `src/lib/spaces/workspace-isolation.test.ts` (+1 regression — the bind-mount
 source is user-created before the container starts).
 
 Full suite after the changes, in a valid test environment (throwaway
 PostgreSQL 16 on 127.0.0.1:5432 + `app_db` + `drizzle-kit push`, ffprobe
-executable): **1268 tests — 1268 pass, 0 fail, 0 skip** (was 1153/60/10 at
-baseline; +45 tests, baseline failures all resolved: embedded-PG symlink
+executable): **1269 tests — 1269 pass, 0 fail, 0 skip** (was 1153/60/10 at
+baseline; +46 tests, baseline failures all resolved: embedded-PG symlink
 hydration, migration 0016 statement splitting, ffprobe permissions,
 test-DB availability, hub-registry replace-merge).
 

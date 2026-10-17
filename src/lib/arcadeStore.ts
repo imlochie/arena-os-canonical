@@ -2,14 +2,15 @@
  * Arcade + artifact store — ownership-scoped persistence.
  *
  * The security boundary for these tables lives HERE, not in scattered route
- * handlers: create records an owner, and every mutating operation is scoped
- * to the caller's owner id in the SQL itself (`where id = ? and owner_id = ?`),
- * so a foreign record can never be modified or deleted regardless of how the
- * route is reached. The `db` parameter is injected so the same code is
- * exercised against a real database in tests.
+ * handlers: create records an owner, every mutating operation is scoped to
+ * the caller's owner id in the SQL itself (`where id = ? and owner_id = ?`),
+ * and reads are scoped the same way — an artifact is private working data
+ * (briefs, research, prompts), so listing it or opening it by id must not
+ * cross the owner boundary. The `db` parameter is injected so the same code
+ * is exercised against a real database in tests.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import type { db as appDb } from "@/db";
 import { arcadeGames, artifacts } from "@/db/schema";
@@ -81,6 +82,31 @@ export async function insertArtifact(database: StoreDb, input: ArtifactInput) {
     })
     .returning();
   return row;
+}
+
+/**
+ * Artifact reads are owner-scoped, exactly like the mutations below. The
+ * owner is part of the WHERE clause (never a post-fetch filter), so a
+ * foreign row cannot be listed even if the caller guessed its id.
+ */
+export async function listArtifacts(database: StoreDb, ownerId: string, limit = 200) {
+  return database
+    .select()
+    .from(artifacts)
+    .where(eq(artifacts.ownerId, ownerId))
+    .orderBy(desc(artifacts.createdAt))
+    .limit(limit);
+}
+
+/** Returns the artifact only when it belongs to `ownerId`; null otherwise
+ *  (so a route can answer 404 without leaking a foreign row's existence). */
+export async function getArtifact(database: StoreDb, id: string, ownerId: string) {
+  const [row] = await database
+    .select()
+    .from(artifacts)
+    .where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId)))
+    .limit(1);
+  return row ?? null;
 }
 
 export async function updateArtifact(

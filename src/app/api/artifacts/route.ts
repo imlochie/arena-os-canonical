@@ -1,22 +1,25 @@
 import { db } from "@/db";
-import { artifacts } from "@/db/schema";
-import { desc } from "drizzle-orm";
 import { isUuid } from "@/lib/api/ids";
-import { deleteArtifact, insertArtifact } from "@/lib/arcadeStore";
+import { deleteArtifact, insertArtifact, listArtifacts } from "@/lib/arcadeStore";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
 
-// GET → global artifact library (optionally ?projectId=, ?kind=, ?q=)
+// GET → the caller's artifact library (optionally ?projectId=, ?kind=, ?q=).
+// Artifacts are private working data: the read is access-gated AND scoped to
+// the caller's owner id, matching the ownership boundary on every mutation.
 export async function GET(req: Request) {
+  const denied = await requireApiAccess(req);
+  if (denied) return denied;
+  const user = await requireUser();
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 100);
   const projectId = url.searchParams.get("projectId");
   const kind = url.searchParams.get("kind");
   const q = (url.searchParams.get("q") ?? "").toLowerCase().trim();
   try {
-    let rows = await db.select().from(artifacts).orderBy(desc(artifacts.createdAt)).limit(200);
+    let rows = await listArtifacts(db, user.id, 200);
     if (projectId) rows = rows.filter((r) => r.projectId === projectId);
     if (kind) rows = rows.filter((r) => r.kind === kind);
     if (q) rows = rows.filter((r) => (r.title + " " + r.body).toLowerCase().includes(q));
