@@ -4,12 +4,18 @@
  *
  * The container lifecycle and command construction are tested against an
  * injected fake runner (no Docker needed); the honest-fallback and
- * strict-mode behaviors are tested against the REAL machine (which has no
- * container runtime in CI — that IS the fallback case).
+ * strict-mode behaviors are tested against the REAL machine. Note that
+ * GitHub runners DO have Docker — the fake runner is what keeps these
+ * tests deterministic either way.
  */
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
+
+import { WORKSPACE_ROOT } from "./tools";
 
 import {
   containerName,
@@ -170,5 +176,43 @@ test("this machine: auto mode is honest about what isolation it can actually pro
     // distro shares the host filesystem and network, so treating it as
     // isolation would be a lie. The honest answer is the host jail.
     assert.equal(env, null, "auto mode honestly falls back to the host jail");
+  }
+});
+
+test("REGRESSION: the bind-mount host dir is user-created BEFORE docker run", async () => {
+  // The mission runner started the container before the workspace existed.
+  // docker then creates the missing host path as a ROOT-OWNED directory and
+  // every later write_file fails with EACCES for the app user — on any
+  // docker-equipped machine (GitHub runners, real Linux hosts) missions lost
+  // their writes: /workspace/hello.js "not found", run_tests "no tests
+  // found", and an empty workspace map on the follow-up mission.
+  const spaceId = "regress-mount-order";
+  const hostDir = join(WORKSPACE_ROOT, spaceId);
+  await rm(hostDir, { recursive: true, force: true });
+
+  let dirReadyAtRun = false;
+  const runner: Runner = async (cmd, args) => {
+    if (args[0] === "version") return { code: 0, output: "27.3.1" };
+    if (args[0] === "ps") return { code: 0, output: "" };
+    if (args[0] === "run") {
+      // The exact invariant: at container-start time the mount source exists
+      // and the current user can create files in it.
+      try {
+        await writeFile(join(hostDir, ".write-probe"), "ok");
+        dirReadyAtRun = true;
+      } catch {
+        dirReadyAtRun = false;
+      }
+      return { code: 0, output: "abc123" };
+    }
+    return { code: 0, output: "" };
+  };
+
+  try {
+    const env = await ensureIsolatedWorkspace(spaceId, { mode: "auto" }, runner);
+    assert.equal(env?.ref, containerName(spaceId));
+    assert.equal(dirReadyAtRun, true, "workspace dir must be user-writable before docker run");
+  } finally {
+    await rm(hostDir, { recursive: true, force: true });
   }
 });

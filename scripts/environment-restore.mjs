@@ -84,7 +84,10 @@ async function main() {
       log("pg", "installing npm-hosted PostgreSQL binaries (~/.cache/env-tools)");
       mkdirSync(envTools, { recursive: true });
       execFileSync("npm", ["init", "-y"], { stdio: "ignore", cwd: envTools });
-      execFileSync("npm", ["install", "@embedded-postgres/linux-x64", "--no-audit", "--no-fund"], { stdio: "inherit", cwd: envTools });
+      // Pinned to the PostgreSQL 16 runtime Arena supports (see
+      // docs/POSTGRES-RECOVERY.md): an unpinned install silently pulls the
+      // newest major and can orphan an existing PG 16 data directory.
+      execFileSync("npm", ["install", "@embedded-postgres/linux-x64@16.14.0-beta.17", "--no-audit", "--no-fund"], { stdio: "inherit", cwd: envTools });
     }
     if (!existsSync(join(pgData, "PG_VERSION"))) {
       log("pg", `initdb → ${pgData}`);

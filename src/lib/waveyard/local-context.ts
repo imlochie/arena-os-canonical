@@ -9,9 +9,13 @@
 
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
+import { LOCAL_OWNER_ID as SCHEMA_LOCAL_OWNER_ID } from "@/db/schema";
 import { projects } from "@/db/waveyardSchema";
 
-export const LOCAL_OWNER_ID = "00000000-0000-4000-8000-000000000001";
+/** Canonical definition lives in @/db/schema (the schema owns its ids);
+ *  re-exported here because the ported Waveyard routes import it from this
+ *  module. */
+export const LOCAL_OWNER_ID = SCHEMA_LOCAL_OWNER_ID;
 
 export type LocalUser = {
   id: string;

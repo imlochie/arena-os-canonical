@@ -37,6 +37,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { resolveExecutable } from "@/lib/capabilities/resolver";
 import { statSync } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -117,14 +118,14 @@ export type DeepPythonCandidate = {
   bin: string;
   /** Prefix args (Windows launcher: py -3). */
   prefixArgs: string[];
-  source: "env" | "path";
+  source: "env" | "system";
 };
 
 /** Candidate interpreters, most explicit first. */
 export function deepPythonCandidates(env: NodeJS.ProcessEnv = process.env): DeepPythonCandidate[] {
   const candidates: DeepPythonCandidate[] = [];
   const seen = new Set<string>();
-  const push = (bin: string | undefined, prefixArgs: string[], source: "env" | "path") => {
+  const push = (bin: string | undefined, prefixArgs: string[], source: "env" | "system") => {
     const trimmed = bin?.trim();
     if (!trimmed || seen.has(trimmed)) return;
     seen.add(trimmed);
@@ -132,12 +133,14 @@ export function deepPythonCandidates(env: NodeJS.ProcessEnv = process.env): Deep
   };
   push(env.WAVEYARD_DEEP_PYTHON, [], "env");
   push(env.PYTHON_BIN, [], "env");
+  // System interpreters are a labelled fallback, resolved to absolute paths.
+  const system = (name: string) => resolveExecutable(name, { env })?.path;
   if (process.platform === "win32") {
-    push(env.WAVEYARD_DEEP_PYTHON ? undefined : "py", ["-3"], "path");
-    push("python", [], "path");
+    push(env.WAVEYARD_DEEP_PYTHON ? undefined : system("py"), ["-3"], "system");
+    push(system("python"), [], "system");
   } else {
-    push("python3", [], "path");
-    push("python", [], "path");
+    push(system("python3"), [], "system");
+    push(system("python"), [], "system");
   }
   return candidates;
 }
@@ -151,7 +154,7 @@ function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export type DeepEngineReady = {
   prepared: true;
   python: string;
-  pythonSource: "env" | "path";
+  pythonSource: "env" | "system";
   demucsVersion: string;
   modelId: string;
   modelName: string;

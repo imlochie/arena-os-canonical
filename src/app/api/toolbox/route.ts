@@ -12,6 +12,7 @@ import {
   storeUpload,
 } from "@/lib/toolbox/convert";
 import { isPresetId, presetCatalog } from "@/lib/toolbox/presets";
+import { guardedFormData } from "@/lib/security/request-limits";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -71,7 +72,9 @@ export async function POST(req: Request) {
 
   if (contentType.includes("multipart/form-data")) {
     try {
-      const form = await req.formData();
+      const guard = await guardedFormData(req, MAX_INPUT_BYTES);
+      if (!guard.ok && guard.error) return guard.error;
+      const form = guard.form!;
       const file = form.get("file");
       if (!(file instanceof File)) {
         return Response.json({ error: "bad_input", message: "file field is required." }, { status: 400 });

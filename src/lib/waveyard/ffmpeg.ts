@@ -4,8 +4,9 @@
  * Order (audited in docs/desktop-runtime-plan.md §3):
  *  1. ARENA_FFMPEG_PATH / ARENA_FFPROBE_PATH env (packaged mode: the
  *     desktop supervisor passes explicit paths to bundled binaries)
- *  2. @ffmpeg-installer / @ffprobe-installer (npm platform packages)
- *  3. PATH (development convenience)
+ *  2. ARENA_APP_BIN_DIR (the packaged app's bin/)
+ *  3. @ffmpeg-installer / @ffprobe-installer (npm platform packages)
+ *  4. system PATH - secondary, reported as source "system", absolute path
  *
  * Every invocation in the app spawns `path + args[]` — never a shell.
  * A missing binary is a hard, named error; nothing silently degrades.
@@ -17,12 +18,14 @@ import { constants, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 
+import { resolveExecutable } from "@/lib/capabilities/resolver";
+
 export type FfmpegTool = "ffmpeg" | "ffprobe";
 
 export type ResolvedBinary = {
   tool: FfmpegTool;
   path: string;
-  source: "env" | "installer" | "path";
+  source: "env" | "bundled" | "installer" | "system";
 };
 
 async function executable(path: string): Promise<boolean> {
@@ -81,17 +84,15 @@ function installerPathFromFileSystem(packageName: string): string | null {
 
 async function resolveTool(tool: FfmpegTool): Promise<ResolvedBinary | null> {
   const envName = tool === "ffmpeg" ? "ARENA_FFMPEG_PATH" : "ARENA_FFPROBE_PATH";
-  const envPath = process.env[envName];
-  if (envPath !== undefined && envPath !== "" && (await executable(envPath))) {
-    return { tool, path: envPath, source: "env" };
-  }
+  const local = resolveExecutable(tool, { envVar: envName, allowSystem: false });
+  if (local !== null && (await executable(local.path))) return { tool, path: local.path, source: local.source as "env" | "bundled" };
   const installer = installerPath(tool === "ffmpeg" ? "@ffmpeg-installer/ffmpeg" : "@ffprobe-installer/ffprobe");
   if (installer !== null && (await executable(installer))) {
     return { tool, path: installer, source: "installer" };
   }
-  // PATH discovery: only claim it if the binary actually executes.
-  const version = await toolVersion(tool === "ffmpeg" ? "ffmpeg" : "ffprobe");
-  if (version !== null) return { tool, path: tool === "ffmpeg" ? "ffmpeg" : "ffprobe", source: "path" };
+  // System fallback: absolute path, and only claimed if it actually executes.
+  const system = resolveExecutable(tool);
+  if (system !== null && (await toolVersion(system.path)) !== null) return { tool, path: system.path, source: "system" };
   return null;
 }
 
@@ -115,7 +116,7 @@ export class FfmpegMissingError extends Error {
     super(
       `${tool} is not available to Arena. Set ARENA_${tool.toUpperCase()}_PATH to a bundled binary ` +
         `(the desktop app does this automatically), install the @${tool}-installer platform package, ` +
-        `or put ${tool} on the PATH.`,
+        `or install ${tool} on the system PATH (fallback only).`,
     );
     this.name = "FfmpegMissingError";
   }

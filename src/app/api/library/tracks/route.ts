@@ -7,6 +7,7 @@ import { extname, join } from "node:path";
 import { acceptedAudioFilename, MAX_UPLOAD_BYTES, sanitizedFilename } from "@/lib/waveyard/audio";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { addTrackFromAudioFile, listTracks } from "@/lib/waveyard/library/service";
+import { guardedFormData } from "@/lib/security/request-limits";
 
 export const runtime = "nodejs";
 
@@ -40,7 +41,9 @@ export async function POST(request: Request) {
   let temporaryDirectory: string | undefined;
   try {
     const user = await requireUser();
-    const form = await request.formData();
+    const guard = await guardedFormData(request, MAX_UPLOAD_BYTES);
+    if (!guard.ok && guard.error) return guard.error;
+    const form = guard.form!;
     const upload = form.get("file");
     if (!(upload instanceof File)) return NextResponse.json({ error: "An audio file is required." }, { status: 400 });
     if (!acceptedAudioFilename(upload.name)) {

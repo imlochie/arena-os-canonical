@@ -43,7 +43,11 @@ async function localPostgresUp(url: string): Promise<boolean> {
 
 const databaseUrl = resolveDatabaseUrl();
 const pgUp = await localPostgresUp(databaseUrl);
-process.env.DATABASE_URL = databaseUrl;
+// Parallel-file isolation: mediaArchive.test.ts runs concurrently and its
+// domain wipes would delete this file's fixtures mid-run (CI-only cascade).
+process.env.DATABASE_URL = pgUp
+  ? await (await import("./testIsolation")).isolatedTestDatabase(databaseUrl, "media_local")
+  : databaseUrl;
 
 // Route modules import the db pool at import time — only after the env fix.
 const { saveMediaProvider, deleteMediaProvider, runProviderSync, testMediaProviderConnection } = await import("./sync");

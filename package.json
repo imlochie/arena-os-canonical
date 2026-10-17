@@ -47,8 +47,14 @@
     "zod": "^3.25.76",
     "zustand": "^5.0.15"
   },
+  "optionalDependencies": {
+    "@embedded-postgres/darwin-arm64": "16.14.0-beta.17",
+    "@embedded-postgres/darwin-x64": "16.14.0-beta.17",
+    "@embedded-postgres/linux-arm64": "16.14.0-beta.17",
+    "@embedded-postgres/windows-x64": "16.14.0-beta.17"
+  },
   "devDependencies": {
-    "@embedded-postgres/linux-x64": "^18.4.0-beta.17",
+    "@embedded-postgres/linux-x64": "16.14.0-beta.17",
     "@ffmpeg-installer/linux-x64": "^4.1.0",
     "@playwright/test": "^1.64.0",
     "@tailwindcss/postcss": "4.1.17",
@@ -69,5 +75,25 @@
   "version": "0.1.0",
   "description": "Arena \u2014 local-first music production workspace",
   "author": "Arena",
-  "main": "desktop/dist/main.js"
+  "main": "desktop/dist/main.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "allowScripts": {
+    "@embedded-postgres/darwin-arm64@16.14.0-beta.17": true,
+    "@embedded-postgres/darwin-x64@16.14.0-beta.17": true,
+    "@embedded-postgres/linux-arm64@16.14.0-beta.17": true,
+    "@embedded-postgres/linux-x64@16.14.0-beta.17": true,
+    "@embedded-postgres/windows-x64@16.14.0-beta.17": true,
+    "@ffmpeg-installer/linux-x64@4.1.0": true,
+    "@ffprobe-installer/linux-x64@5.2.0": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.18.20": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "unrs-resolver@1.12.2": true,
+    "msedge-tts": false,
+    "msgpackr-extract": false,
+    "onnxruntime-node": false
+  }
 }

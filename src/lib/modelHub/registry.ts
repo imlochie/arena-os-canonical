@@ -10,12 +10,16 @@ import { eq } from "drizzle-orm";
 
 import { db } from "@/db";
 import { modelHubBindings, modelHubConnections } from "@/db/schema";
-import { clearDynamicModels, registerDynamicModels, type FreeModel } from "@/lib/models";
+import { clearDynamicModels, dynamicModels, registerDynamicModels, type FreeModel } from "@/lib/models";
 import { hubModelFor, type RuntimeKind } from "./runtimes";
 
 let loaded: Promise<void> | null = null;
 const RELOAD_MS = 30_000;
 let lastLoadedAt = 0;
+/** Ids this loader put into the dynamic registry — the only entries it may
+ *  remove on reload. Anything else registered at runtime (API calls, tool
+ *  flows, tests) is not the hub's to erase. */
+let hubOwnedIds = new Set<string>();
 
 async function load(): Promise<void> {
   const rows = await db
@@ -31,10 +35,13 @@ async function load(): Promise<void> {
   const entries: FreeModel[] = rows.map((row) =>
     hubModelFor(row.kind as RuntimeKind, row.baseUrl, row.remoteModel, row.label),
   );
-  // Replace-merge semantics: rows that were unregistered/disconnected must
-  // disappear from the dynamic registry, not linger until process restart.
+  // Replace-merge, scoped: rows that were unregistered/disconnected must
+  // disappear from the dynamic registry (not linger until restart), while
+  // non-hub registrations survive a reload untouched.
+  const preserved = dynamicModels().filter((m) => !hubOwnedIds.has(m.id));
   clearDynamicModels();
-  registerDynamicModels(entries);
+  registerDynamicModels([...preserved, ...entries]);
+  hubOwnedIds = new Set(entries.map((entry) => entry.id));
   lastLoadedAt = Date.now();
 }
 

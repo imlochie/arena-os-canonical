@@ -23,7 +23,7 @@ Stack: Next.js (App Router) + TypeScript + Tailwind v4 + Drizzle ORM + PostgreSQ
 | Build | `npm run build` |
 | Lint | `npm run lint` (baseline has ~20 pre-existing errors; don't add new ones) |
 | Typecheck | `npx tsc --noEmit` (must pass) |
-| DB push | `npx drizzle-kit push` (config: `drizzle.config.json`) |
+| DB push | `npx drizzle-kit push` (config: `drizzle.config.ts`, reads `DATABASE_URL`) |
 | WanGP bridge (test w/o GPU) | `python3 bridges/wangp_bridge.py --mock` → http://127.0.0.1:7862 |
 
 ## Repo map

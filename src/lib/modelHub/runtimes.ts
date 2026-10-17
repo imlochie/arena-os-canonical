@@ -24,27 +24,32 @@ export type RuntimeProbe = {
   detail: string;
 };
 
-const PRIVATE_IPV4 = /^10\./;
-const PRIVATE_1928 = /^192\.168\./;
-const PRIVATE_172 = /^172\.(1[6-9]|2\d|3[01])\./;
+import { OutboundUrlError, assertUrlDestination, classifyAddress } from "@/lib/security/outbound-url";
 
-/** Loopback (and optionally LAN) gate for every URL the hub contacts. */
+/**
+ * Loopback (and optionally LAN) gate for every URL the hub contacts.
+ * Destination classification is the shared outbound policy (so decimal/
+ * hex/mapped spellings of internal addresses behave exactly as the rest of
+ * the app's SSRF gates expect); the MODEL_HUB_ALLOW_LAN opt-in additionally
+ * admits RFC1918/unique-local addresses and nothing else.
+ */
 export function assertLoopbackUrl(raw: string): URL {
   const url = new URL(raw);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("Model Hub URLs must be http(s).");
   }
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const isLoopback = host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0";
-  if (isLoopback) return url;
-  if (process.env.MODEL_HUB_ALLOW_LAN === "1" &&
-      (PRIVATE_IPV4.test(host) || PRIVATE_1928.test(host) || PRIVATE_172.test(host))) {
-    return url;
+  try {
+    return assertUrlDestination(url, "loopback");
+  } catch (error) {
+    if (error instanceof OutboundUrlError && process.env.MODEL_HUB_ALLOW_LAN === "1") {
+      const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+      if (classifyAddress(host) === "private") return url;
+    }
+    throw new Error(
+      "Model Hub can only talk to servers on this machine (127.0.0.1). " +
+      "Set MODEL_HUB_ALLOW_LAN=1 to also allow private-network runtimes.",
+    );
   }
-  throw new Error(
-    "Model Hub can only talk to servers on this machine (127.0.0.1). " +
-    "Set MODEL_HUB_ALLOW_LAN=1 to also allow private-network runtimes.",
-  );
 }
 
 /** Routing id for a model served by a local server (self-contained: generate()
