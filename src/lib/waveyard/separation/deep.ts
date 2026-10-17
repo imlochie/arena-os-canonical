@@ -38,9 +38,9 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { resolveExecutable } from "@/lib/capabilities/resolver";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { resolveModelsDir, SeparationUnavailableError } from "./session";
 import { processingModeExplanation, resolveProcessingMode } from "../worker-local/runtime-policy";
@@ -104,8 +104,10 @@ export function deepCheckpointHint(env: NodeJS.ProcessEnv = process.env): string
 export function deepPrepareHint(env: NodeJS.ProcessEnv = process.env): string {
   const interpreter = process.platform === "win32" ? "py -3" : "python3";
   return (
-    `Install Demucs on this machine ("${interpreter} -m pip install demucs"), or point ` +
-    "WAVEYARD_DEEP_PYTHON at an interpreter that has it, and place the " +
+    `Use the "Prepare deep separation" action in Arena (it installs Demucs and PyTorch into an ` +
+    `isolated environment and fetches the model for you), or install Demucs on this machine ` +
+    `("${interpreter} -m pip install demucs"), or point WAVEYARD_DEEP_PYTHON at an interpreter ` +
+    "that has it, and place the " +
     `${DEEP_MODEL_NAME} checkpoint ${DEEP_CHECKPOINT_FILE} at ${deepCheckpointPath(env)} ` +
     "(WAVEYARD_MODELS_DIR), then retry. The deep pass runs your own local engine and loads only " +
     "that local checkpoint — nothing is downloaded from here."
@@ -118,25 +120,75 @@ export type DeepPythonCandidate = {
   bin: string;
   /** Prefix args (Windows launcher: py -3). */
   prefixArgs: string[];
-  source: "env" | "system";
+  source: "env" | "managed" | "system";
 };
 
-/** Candidate interpreters, most explicit first. */
+/** Where Arena keeps the isolated environment it prepares for the
+ *  deep pass (the venv / managed CPython and its packages). Mirrors
+ *  resolveModelsDir's env convention so diagnostics, preparation and
+ *  execution all resolve the SAME directory and report it. */
+export function resolveDeepEnvDir(env: NodeJS.ProcessEnv = process.env): string {
+  const root = env.WAVEYARD_DEEP_ENV_DIR ?? ".data/waveyard-deep-env";
+  return resolve(/*turbopackIgnore: true*/ process.cwd(), root);
+}
+
+/** The prepared-environment pointer the provisioner writes on
+ *  success: the exact interpreter the deep pass should run, plus
+ *  the versions it verified. Read on every candidate resolution so
+ *  replacing/removing the interpreter is detected (no remembered
+ *  install result). */
+export type DeepManagedInterpreter = {
+  python: string;
+  pythonVersion: string;
+  demucsVersion: string;
+  venv: string;
+  preparedAt: string;
+};
+
+const POINTER_FILE = "interpreter.json";
+
+/** The managed interpreter for this environment, or null when none
+ *  was prepared (or the pointer is stale — the file it names is
+ *  gone, which must drop readiness rather than keep a phantom). */
+export function readManagedInterpreter(env: NodeJS.ProcessEnv = process.env): DeepManagedInterpreter | null {
+  const path = join(resolveDeepEnvDir(env), POINTER_FILE);
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw) as DeepManagedInterpreter;
+    if (
+      typeof parsed.python !== "string" ||
+      !isAbsolute(parsed.python) ||
+      !existsSync(parsed.python)
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Candidate interpreters, most explicit first. The managed
+ *  environment Arena prepared ranks just below the owner's own
+ *  explicit override: once provisioned, it IS the engine, but an
+ *  owner who points WAVEYARD_DEEP_PYTHON somewhere still wins. */
 export function deepPythonCandidates(env: NodeJS.ProcessEnv = process.env): DeepPythonCandidate[] {
   const candidates: DeepPythonCandidate[] = [];
   const seen = new Set<string>();
-  const push = (bin: string | undefined, prefixArgs: string[], source: "env" | "system") => {
+  const push = (bin: string | undefined, prefixArgs: string[], source: "env" | "managed" | "system") => {
     const trimmed = bin?.trim();
     if (!trimmed || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push({ bin: trimmed, prefixArgs, source });
   };
   push(env.WAVEYARD_DEEP_PYTHON, [], "env");
+  const managed = readManagedInterpreter(env);
+  push(managed?.python, [], "managed");
   push(env.PYTHON_BIN, [], "env");
   // System interpreters are a labelled fallback, resolved to absolute paths.
   const system = (name: string) => resolveExecutable(name, { env })?.path;
   if (process.platform === "win32") {
-    push(env.WAVEYARD_DEEP_PYTHON ? undefined : system("py"), ["-3"], "system");
+    push(env.WAVEYARD_DEEP_PYTHON ? undefined : managed ? undefined : system("py"), ["-3"], "system");
     push(system("python"), [], "system");
   } else {
     push(system("python3"), [], "system");
@@ -154,7 +206,7 @@ function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export type DeepEngineReady = {
   prepared: true;
   python: string;
-  pythonSource: "env" | "system";
+  pythonSource: "env" | "managed" | "system";
   demucsVersion: string;
   modelId: string;
   modelName: string;
