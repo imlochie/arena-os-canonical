@@ -227,6 +227,7 @@ test("artifact reads are owner-private: no cross-owner or anonymous access", asy
   const get = (path: string, host = "127.0.0.1") =>
     new Request(`http://127.0.0.1${path}`, { headers: { host } });
   const byId = (id: string) => ({ params: Promise.resolve({ id }) });
+  let createdArtifact: { id: string; ownerId: string } | undefined;
 
   try {
     // 1. The library lists only the caller's artifacts.
@@ -242,6 +243,19 @@ test("artifact reads are owner-private: no cross-owner or anonymous access", asy
     assert.equal(projectList.status, 200);
     const projectListed = ((await projectList.json()) as { artifacts: Array<{ id: string }> }).artifacts.map((a) => a.id);
     assert.deepEqual(projectListed, [mine.id]);
+
+    // 2b. Creating through the project route records the caller as owner.
+    const createdResponse = await projectArtifactRoutes.POST(
+      new Request(`http://127.0.0.1/api/projects/${project.id}/artifacts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", host: "127.0.0.1" },
+        body: JSON.stringify({ kind: "brief", title: "new", body: "created through the project route" }),
+      }),
+      byId(project.id),
+    );
+    assert.equal(createdResponse.status, 201);
+    createdArtifact = ((await createdResponse.json()) as { artifact: { id: string; ownerId: string } }).artifact;
+    assert.equal(createdArtifact.ownerId, owner);
 
     // 3. Own id resolves; a foreign id answers 404 (existence is not leaked);
     //    a malformed id is a clean 404 rather than a database error.
@@ -274,6 +288,7 @@ test("artifact reads are owner-private: no cross-owner or anonymous access", asy
   } finally {
     await deleteArtifact(db, mine.id, owner);
     await deleteArtifact(db, foreign.id, other);
+    if (createdArtifact) await deleteArtifact(db, createdArtifact.id, owner);
     await db.delete(projects).where(eq(projects.id, project.id));
   }
 });
