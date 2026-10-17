@@ -75,6 +75,61 @@ jobs:
       - name: Build
         run: npm run build
 
+  a7-acceptance:
+    # A7's retry/claim work against the runtime it is for: real PostgreSQL
+    # (repo schema, pushed below), real Redis, real BullMQ records and a real
+    # BullMQ worker. Deliberately its own job — it needs a Redis service the
+    # static gate does not, and `npm test` stays service-light. The suite only
+    # runs with A7_ACCEPTANCE=1 and fails loudly if either service is missing
+    # (tests/acceptance/a7-real-runtime.test.ts).
+    name: A7 real-runtime acceptance (PostgreSQL + Redis + BullMQ)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/app_db
+      A7_ACCEPTANCE: "1"
+      A7_ACCEPTANCE_REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Clean dependency install
+        run: npm ci
+
+      - name: Initialize test database schema
+        run: npx drizzle-kit push --force
+
+      - name: A7 real-runtime acceptance
+        run: npm run test:acceptance:a7
+
   compose-build:
     name: Compose images build
     runs-on: ubuntu-24.04

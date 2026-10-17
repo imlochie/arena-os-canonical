@@ -12,6 +12,7 @@
     "db:setup": "node scripts/db-setup.mjs",
     "typecheck": "node scripts/typecheck.mjs",
     "test": "node --import ./scripts/register-src-loader.mjs --test \"src/**/*.test.ts\" \"desktop/**/*.test.ts\"",
+    "test:acceptance:a7": "node --import ./scripts/register-src-loader.mjs --test \"tests/acceptance/a7-real-runtime.test.ts\"",
     "test:desktop": "node --import ./scripts/register-src-loader.mjs --test \"desktop/**/*.test.ts\" \"src/lib/waveyard/worker-local/*.test.ts\"",
     "smoke:archive": "node --import ./scripts/register-src-loader.mjs scripts/archive-context-smoke.ts",
     "desktop:compile": "tsc -p desktop/tsconfig.json",
