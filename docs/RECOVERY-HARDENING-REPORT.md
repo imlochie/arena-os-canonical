@@ -89,6 +89,13 @@ or **unverified** (not executable in this environment, with the reason).
   (production web mode) case. The arcade catalogue remains public by
   design — game HTML is generated content for a public gallery, not
   project data — and that is asserted, not assumed.
+  Scope note: this fixes the artifact-table routes the ownership model
+  covers. Older aggregate reads that embed artifact rows
+  (`GET /api/projects/[id]` returns up to 30, `GET /api/command` returns
+  the latest 8, `GET /api/council/artifacts` reads the separate
+  `council_artifacts` table) are unchanged and remain in the documented
+  app-wide route-auth sweep — see the residual risk register. They are
+  not claimed as fixed here.
 - `src/lib/security/outbound-url.ts` (+ tests): destination classification
   (loopback/private/link-local/CGNAT/multicast/reserved/public incl. decimal
   URL-normalised forms, IPv4-mapped IPv6, NAT64, 6to4), DNS-answer policy
@@ -187,6 +194,7 @@ skipped behind the failing test stage).
 | Risk | Status | Next action |
 | --- | --- | --- |
 | Authentication: `requireUser` is the single-owner shim; app-wide route auth standardisation (WebAuthn `authenticatedRequestIdentity` everywhere) is unfinished | mitigated: trust boundary (`api-access`), ownership columns, cross-origin mutation gate | adopt session auth route-by-route in the auth workstream; never expose the app beyond loopback before that |
+| Private artifact content is still embedded in unguarded aggregate reads that predate the ownership model: `GET /api/projects/[id]` (up to 30 artifacts), `GET /api/command` (latest 8), `GET /api/council/artifacts` (separate `council_artifacts` table, no owner column) | the dedicated artifact routes (`/api/artifacts`, `/api/artifacts/[id]`, `/api/projects/[id]/artifacts`) are owner-private; these aggregates are not | include them in the app-wide route-auth sweep before any non-loopback deployment |
 | SSRF: DNS TOCTOU between policy check and connection (fetch re-resolves) | documented in `outbound-url.ts`; every DNS answer is checked at gate time | pin connections via a custom undici dispatcher where the threat model requires it |
 | yt-dlp: redirects inside the child process are not revalidated | initial destination checked (public-only, all DNS answers), size watchdog, timeouts | run ingest behind a filtering proxy if untrusted users ever share one instance |
 | Native runtime: `onnxruntime-node` nuget postinstall denied (bindings ship in-tarball on linux — verified via `ldd`); Windows/Darwin binding hydration unverified here | accepted | verify on a Windows machine during packaging |
@@ -207,10 +215,12 @@ skipped behind the failing test stage).
   Windows until one build is done there.
 - **Route-level authentication standardisation** (WebAuthn sessions on every
   route): not attempted. Arcade/artifacts now enforce ownership at the
-  operation boundary and inherit the app-wide cross-origin mutation gate;
-  `requireUser` remains the single-owner shim (honest for a local-first
-  single-owner app; a multi-user deployment must adopt
-  `authenticatedRequestIdentity` app-wide — existing workstream).
+  operation boundary (mutations AND the artifact reads) and inherit the
+  app-wide cross-origin mutation gate; `requireUser` remains the single-owner
+  shim (honest for a local-first single-owner app; a multi-user deployment
+  must adopt `authenticatedRequestIdentity` app-wide — existing workstream).
+  Aggregate reads that still embed artifact rows are listed in the residual
+  risk register above.
 - **yt-dlp redirect revalidation**: the initial destination is checked;
   redirects inside the child process are a documented residual risk.
 - **DNS pinning** (TOCTOU between lookup and connect): residual, documented
