@@ -120,7 +120,10 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const { history, future, reset, record, undo: historyUndo, redo: historyRedo } = arrangementHistory;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transport = useStemTransport(ids, duration);
-  const { setLoop, seek: seekTransport } = transport;
+  const {
+    setLoop, seek: seekTransport, applyMix: applyStemMix,
+    applyInserts: applyStemInserts, setMasterVolume: setTransportMasterVolume,
+  } = transport;
   const seekArrangementPosition = useCallback((milliseconds: number) => seekTransport(milliseconds / 1000), [seekTransport]);
   const arrangementPreview = useArrangementPreview(seekArrangementPosition);
   const sourceById = useMemo(
@@ -217,7 +220,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const visualMotion = motionPolicy(reducedMotion);
   const environment = artworkEnvironment(`${source?.checksumSha256 ?? projectId}:${source?.originalFilename ?? "waveyard"}`);
 
-  useEffect(() => { transport.applyMix(mixerControls); }, [mixerControls, transport]);
+  useEffect(() => { applyStemMix(mixerControls); }, [mixerControls, applyStemMix]);
   // Insert chains are canonical remix state; the live graph follows them.
   const chainsByStem = useMemo(() => {
     const record: Record<string, InsertChain> = {};
@@ -226,10 +229,10 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   }, [remix]);
   useEffect(() => {
     if (!remix) return;
-    transport.applyInserts(chainsByStem, remix.masterInserts ?? []);
-  }, [chainsByStem, remix, transport]);
+    applyStemInserts(chainsByStem, remix.masterInserts ?? []);
+  }, [chainsByStem, remix, applyStemInserts]);
   useEffect(() => { remixRef.current = remix; }, [remix]);
-  useEffect(() => { if (remix) transport.setMasterVolume(remix.masterVolume); }, [remix, transport]);
+  useEffect(() => { if (remix) setTransportMasterVolume(remix.masterVolume); }, [remix, setTransportMasterVolume]);
   const loopStartMs = remix?.loopStartMs ?? 0;
   const loopEndMs = remix?.loopEndMs ?? null;
   useEffect(() => {

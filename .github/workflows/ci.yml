@@ -130,6 +130,32 @@ jobs:
       - name: A7 real-runtime acceptance
         run: npm run test:acceptance:a7
 
+  playback-acceptance:
+    # Real browser audio primitives, not a mocked transport or separation job.
+    # No model/credentials/database required. This does not establish Electron
+    # or source-to-separated-stems acceptance.
+    name: Waveyard browser audio acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Clean dependency install
+        run: npm ci
+      - name: Install browser runtime
+        run: npx playwright install --with-deps chromium
+      - name: Exercise actual stem playback and recovery
+        run: npm run --silent test:acceptance:transport | tee transport-acceptance.tap
+      - name: Retain playback evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transport-acceptance-${{ github.sha }}
+          path: transport-acceptance.tap
+
   compose-build:
     name: Compose images build
     runs-on: ubuntu-24.04

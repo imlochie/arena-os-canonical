@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type MixerValues = {
   volume: number;
@@ -24,6 +24,17 @@ type AudioGraph = {
   /** The tail node feeding mono (pan or gain). */
   tail: AudioNode;
 };
+
+function disconnectGraph(graph: AudioGraph) {
+  graph.source.mediaElement.pause();
+  graph.source.disconnect();
+  graph.gain.disconnect();
+  graph.pan?.disconnect();
+  graph.mono.disconnect();
+  graph.analyser.disconnect();
+  graph.inserts?.input.disconnect();
+  graph.inserts?.output.disconnect();
+}
 
 export type ChannelMeter = { peak: number; rms: number; clipped: boolean };
 
@@ -197,7 +208,11 @@ export function isEffectivelyMuted(
   return values.muted || (anySolo && !values.solo);
 }
 
-export function useStemTransport(ids: string[], duration: number) {
+export function useStemTransport(assetIds: string[], duration: number) {
+  // Polling returns fresh arrays for the same assets. Their identity must not
+  // close the audio context or restart a performance.
+  const idsKey = JSON.stringify(assetIds);
+  const ids = useMemo<string[]>(() => JSON.parse(idsKey), [idsKey]);
   const media = useRef<Record<string, HTMLAudioElement | null>>({});
   const graphs = useRef<Record<string, AudioGraph>>({});
   const context = useRef<AudioContext | null>(null);
@@ -213,6 +228,9 @@ export function useStemTransport(ids: string[], duration: number) {
   const masterTap = useRef<MediaStreamAudioDestinationNode | null>(null);
   const clockId = useRef<number | null>(null);
   const lastUiUpdate = useRef(0);
+  const positionRef = useRef(0);
+  const playRequest = useRef(0);
+  const wantsPlayback = useRef(false);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [masterVolume, setMasterVolume] = useState(1);
@@ -238,6 +256,11 @@ export function useStemTransport(ids: string[], duration: number) {
       splitter.connect(masterLeft.current, 0);
       splitter.connect(masterRight.current, 1);
       masterGain.current.connect(ctx.destination);
+    }
+    const existing = graphs.current[id];
+    if (existing && existing.source.mediaElement !== element) {
+      disconnectGraph(existing);
+      delete graphs.current[id];
     }
     if (!graphs.current[id]) {
       const ctx = context.current;
@@ -278,6 +301,7 @@ export function useStemTransport(ids: string[], duration: number) {
   );
   const seek = useCallback(
     (seconds: number) => {
+      if (!Number.isFinite(seconds)) return;
       const next = Math.min(
         duration || Number.MAX_SAFE_INTEGER,
         Math.max(0, seconds),
@@ -287,6 +311,7 @@ export function useStemTransport(ids: string[], duration: number) {
         if (element && Math.abs(element.currentTime - next) > 0.015)
           element.currentTime = next;
       }
+      positionRef.current = next;
       setPosition(next);
     },
     [duration, ids],
@@ -316,6 +341,10 @@ export function useStemTransport(ids: string[], duration: number) {
       // Master chain sits between masterGain and its analyser/splitter/destination.
       if (context.current && masterGain.current && masterAnalyser.current) {
         try { masterGain.current.disconnect(); } catch {}
+        if (masterInsertsSubgraph.current) {
+          masterInsertsSubgraph.current.input.disconnect();
+          masterInsertsSubgraph.current.output.disconnect();
+        }
         let head: AudioNode = masterGain.current;
         if (master.length > 0) {
           const sub = buildChainSubgraph(context.current, master);
@@ -368,39 +397,78 @@ export function useStemTransport(ids: string[], duration: number) {
     clockId.current = null;
   }, []);
   const pause = useCallback(() => {
-    for (const id of ids) media.current[id]?.pause();
+    playRequest.current += 1;
+    wantsPlayback.current = false;
+    for (const element of Object.values(media.current)) element?.pause();
     stopClock();
     setPlaying(false);
-  }, [ids, stopClock]);
+  }, [stopClock]);
   const stop = useCallback(() => {
     pause();
     seek(0);
   }, [pause, seek]);
 
   const play = useCallback(async () => {
+    const request = ++playRequest.current;
+    wantsPlayback.current = true;
     try {
       setError(null);
+      if (!ids.length) throw new Error("No audio is ready. Import audio or wait for processing to finish.");
+      const elements = ids.map((id) => {
+        const element = media.current[id];
+        if (!element) throw new Error(`Stem ${id} is not loaded. Reopen this track and retry.`);
+        if (element.error) throw new Error(`Stem ${id} could not be loaded. Check its source file and retry.`);
+        return element;
+      });
       for (const id of ids) ensureGraph(id);
       if (masterGain.current) masterGain.current.gain.value = masterVolume;
       applyMix(mixValues.current);
-      if (context.current?.state === "suspended")
-        await context.current.resume();
-      const start = position;
-      for (const id of ids) {
-        const element = media.current[id];
-        if (element) element.currentTime = start;
+      // Inserts can be restored before the first user gesture, when no graph
+      // exists yet. Apply that saved intent to the newly constructed graph.
+      applyInserts(insertChains.current, masterChain.current);
+      if (context.current?.state === "suspended") await context.current.resume();
+      if (request !== playRequest.current) return;
+      const start = duration > 0 && positionRef.current >= duration ? 0 : positionRef.current;
+      positionRef.current = start;
+      for (const element of elements) element.currentTime = start;
+      // Wait for every stem, including failures: an early rejection must not
+      // leave another pending play promise starting audio after failure cleanup.
+      const results = await Promise.allSettled(elements.map((element) => element.play()));
+      if (request !== playRequest.current) {
+        if (!wantsPlayback.current) for (const element of elements) element.pause();
+        return;
       }
-      await Promise.all(ids.map(async (id) => media.current[id]?.play()));
+      if (results.some((result) => result.status === "rejected")) {
+        throw new Error("One or more stems could not play. Check the audio files and retry.");
+      }
       setPlaying(true);
-    } catch {
-      setError("Browser playback was blocked or one stem could not be loaded.");
+    } catch (cause) {
+      if (request !== playRequest.current) return;
+      setError(cause instanceof Error ? cause.message : "Audio playback failed. Reopen the track and retry.");
       pause();
     }
-  }, [applyMix, ensureGraph, ids, masterVolume, pause, position]);
+  }, [applyInserts, applyMix, duration, ensureGraph, ids, masterVolume, pause]);
+
+  // An actual asset change stops the old deck, but does not poison the shared
+  // context. Equal ID lists from project polling do not enter this effect.
+  useEffect(() => {
+    pause();
+    for (const [id, graph] of Object.entries(graphs.current)) {
+      if (ids.includes(id)) continue;
+      disconnectGraph(graph);
+      delete graphs.current[id];
+      delete media.current[id];
+    }
+  }, [ids, pause]);
 
   useEffect(() => {
     if (!playing) return;
     const tick = (now: number) => {
+      if (ids.some((id) => !media.current[id] || media.current[id]?.error)) {
+        setError("A required stem became unavailable during playback. Reopen the track and retry.");
+        pause();
+        return;
+      }
       const anchor =
         ids
           .map((id) => media.current[id])
@@ -410,10 +478,17 @@ export function useStemTransport(ids: string[], duration: number) {
         pause();
         return;
       }
-      const current = anchor.currentTime;
+      let current = anchor.currentTime;
       if (loop.enabled && loop.end > loop.start && current >= loop.end) {
         seek(loop.start);
-        void play();
+        current = loop.start;
+        // Seeking active elements keeps playback running. Restart only if a
+        // media element ended before the animation clock saw the boundary.
+        if (ids.some((id) => media.current[id]?.paused)) void play();
+      } else if (ids.every((id) => media.current[id]?.ended)) {
+        positionRef.current = current;
+        setPosition(current);
+        pause();
         return;
       }
       for (const id of ids) {
@@ -428,6 +503,7 @@ export function useStemTransport(ids: string[], duration: number) {
       }
       if (now - lastUiUpdate.current > 100) {
         lastUiUpdate.current = now;
+        positionRef.current = current;
         setPosition(current);
       }
       clockId.current = requestAnimationFrame(tick);
@@ -438,10 +514,13 @@ export function useStemTransport(ids: string[], duration: number) {
 
   useEffect(
     () => () => {
-      pause();
+      playRequest.current += 1;
+      wantsPlayback.current = false;
+      stopClock();
+      for (const element of Object.values(media.current)) element?.pause();
       context.current?.close().catch(() => undefined);
     },
-    [pause],
+    [stopClock],
   );
   /**
    * Frequency-domain tap for one stem (post gain/pan/inserts — the signal

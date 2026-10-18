@@ -22,7 +22,8 @@
     "desktop:prepare-server": "node scripts/desktop-prepare-server.mjs",
     "desktop:dist": "npm run desktop:compile && npm run desktop:prepare-server && node scripts/desktop-dist.mjs",
     "desktop:acceptance-headless": "node --import ./scripts/register-src-loader.mjs scripts/desktop-acceptance-headless.mjs",
-    "windows:acceptance": "node scripts/windows-acceptance.mjs"
+    "windows:acceptance": "node scripts/windows-acceptance.mjs",
+    "test:acceptance:transport": "node --test tests/acceptance/stem-transport.test.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
@@ -66,6 +67,7 @@
     "drizzle-kit": "0.31.10",
     "electron": "^44.7.0",
     "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.12",
     "eslint": "9.39.4",
     "eslint-config-next": "^16.3.8",
     "ffprobe-installer": "^2.1.5",
