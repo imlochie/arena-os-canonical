@@ -263,6 +263,9 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   const [addTrackId, setAddTrackId] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
+  const [handoffConfirm, setHandoffConfirm] = useState(false);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const handoffInFlight = useRef(false);
   const [handoff, setHandoff] = useState<StudioHandoffResult | null>(null);
 
   // Which session track id is current; the ACTIVE physical deck plays it,
@@ -761,10 +764,17 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
 
   // -------------------------------------------------------- studio handoff
   const sendToStudio = useCallback(() => {
-    if (session === null) return;
+    if (session === null || handoffInFlight.current) return;
+    handoffInFlight.current = true;
+    setHandoffBusy(true);
     void (async () => {
       try {
-        const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, { method: "POST" });
+        const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "sequential", trackEdits: session.tracks.map((item) => ({
+            id: item.id, stemMix: mixes[item.id] ?? item.stemMix, transition: transitions[item.id] ?? item.transition,
+          })) }),
+        });
         if (!response.ok) {
           const body = (await response.json().catch(() => null)) as { error?: string } | null;
           setStatus(body?.error ?? "The Studio handoff failed.");
@@ -772,12 +782,16 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         }
         const result = (await response.json()).handoff as StudioHandoffResult;
         setHandoff(result);
+        setHandoffConfirm(false);
         setStatus("Session sent to Studio as a derived arrangement — the sources are untouched.");
       } catch {
-        setStatus("The Studio handoff could not be saved.");
+        setStatus("The Studio handoff could not be saved. Your listening session remains available; retry when the service recovers.");
+      } finally {
+        handoffInFlight.current = false;
+        setHandoffBusy(false);
       }
     })();
-  }, [session]);
+  }, [session, mixes, transitions]);
 
   // ------------------------------------- hardware media keys (P4, standard path)
   // The same OS/hardware media commands as the player, driving the session's
@@ -892,7 +906,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           <button type="button" className="button" onClick={() => void togglePlay()} data-testid="session-play">
             {playing ? "Pause" : "Play"}
           </button>
-          <button type="button" className="button secondary" onClick={sendToStudio} data-testid="session-handoff">
+          <button type="button" className="button secondary" onClick={() => setHandoffConfirm(true)} disabled={handoffBusy} data-testid="session-handoff">
             Send to Studio
           </button>
           <Link className="button secondary" href="/waveyard/sessions">All sessions</Link>
@@ -903,6 +917,14 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         <p className="sess-status" role="status" data-testid="session-status">
           {status}
         </p>
+      )}
+      {handoffConfirm && (
+        <div role="dialog" aria-modal="false" aria-labelledby="studio-handoff-title" className="sess-handoff" data-testid="handoff-confirmation">
+          <h3 id="studio-handoff-title">Create a sequential Studio edit?</h3>
+          <p>This keeps the track order, current stem levels and timed donor swaps. Live transition triggers, crossfades and the playback cursor are not reconstructed. This is not an identical recording of your performance. Your listening session and original audio remain available.</p>
+          <button type="button" className="button primary" onClick={sendToStudio} disabled={handoffBusy}>{handoffBusy ? "Saving and creating…" : "Create sequential Studio edit"}</button>
+          <button type="button" className="button secondary" onClick={() => setHandoffConfirm(false)} disabled={handoffBusy}>Keep listening session</button>
+        </div>
       )}
       {handoff !== null && (
         <p className="sess-handoff" role="status">

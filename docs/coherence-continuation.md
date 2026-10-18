@@ -212,3 +212,139 @@ not satisfy those requirements.
   manifest/mix/individual-stem files under `/home/user/arena-handoff-evidence/`.
 - No browser-room, Electron, packaged Windows, provider-backed Arcade, or
   agent-dispatched investigation acceptance was executed in this patch.
+
+## Continuous-execution continuation — referenced editing and staged runtime (2026-10-18)
+
+### Reconciliation, not a restart
+
+Refetched `main` and the session branch. Main is still `f0e4180`; PR #15 is
+`f814e2f`, open, with all checks successful on that exact head (including run
+39115409407). PR #14 remains open at `536c940`. Its 17-file diff was refreshed;
+no provisioning implementation was duplicated and neither PR was merged.
+The restored snapshot again presented published files as dirty against the
+old base. All 30 files matched remote bytes before a mixed reset advanced the
+index/HEAD. No differing user work was discarded.
+
+### Actual repairs
+
+1. **Referenced beat alignment and section editing.** Reproduced a 422 from the
+   real alignment route against a valid handoff stem. Alignment now resolves
+   the existing authorised `projectAudio` relationship, including a timed
+   donor clip whose source differs from its lane's original stem. Source,
+   analysis, checksum and original-project provenance still have to agree.
+   Section placement/looping uses the same authorised membership, then checks
+   the complete original-source/analysis/section chain. An unrelated same-owner
+   stem is not a grant, and stale checksums cannot modify the edit. The pure
+   section scope helper now names its argument `audioProjectId`: destination
+   membership is established by the server, not by pretending all records
+   were reparented into the derived project.
+2. **A deliberate handoff choice, with current controls.** Clicking Send to
+   Studio now presents a choice BEFORE creating anything, explaining that
+   the sequential edit is not a recording of live triggers/crossfades/cursor.
+   Cancel retains the listening session. The route requires explicit
+   `mode: "sequential"`; old/no-mode calls receive a recoverable confirmation
+   response, not a silently lossy arrangement. The accepted request carries
+   the visible per-track edits. These are validated against session membership
+   and saved atomically with the derived arrangement. A just-changed slider
+   no longer depends on the 600ms autosave timer winning the race. Failed
+   creation rolls back those edit writes as well. The existing desktop runner
+   was updated to exercise both refusal and the explicit choice.
+3. **Real queue waits, not cached completion.** A second render exposed that
+   LocalJobBroker cached the first drain Promise forever. It could certify new
+   work from an old success, or permanently reuse a timeout. Each wait now
+   observes current work. Both cases reproduced as failing regressions before
+   the fix and pass afterward.
+4. **Trustworthy staged source identity.** The old package guard hashed only
+   HEAD + porcelain status: changing an already-dirty file's bytes did not
+   invalidate a staged package. Two tests reproduced this false match.
+   Identity now includes tracked/unignored source bytes, executable bits,
+   deletions and symlink targets; generated ignored artifacts remain excluded.
+   Tests are included in the normal npm test command. After desktop staging,
+   full lint also incorrectly traversed copied compiled/vendor code (62
+   errors). Excluded generated desktop-package/release/dist trees, not desktop
+   source or source rules. Source lint returns to 0 errors/46 warnings.
+
+### Executed evidence and limits
+
+- Existing handoff + new edit/render integration: **27 pass / 0 fail / 0 skip**
+  with real isolated embedded PostgreSQL, canonical migrations, production
+  handlers, queue and FFmpeg. Before the referenced-edit repair: **26 pass /
+  1 fail**, returning the original 422. Existing handoff/render cases remain.
+- The new edit is saved/versioned/rendered as a **6.872-second** PCM WAV.
+  Decoding checks silence before the moved clip and in a gap, 220 Hz in the
+  moved original, 880 Hz in the donor range, then 220 Hz in BOTH placed/looped
+  sections. Actual magnitudes are about 0.25895 in audible windows and below
+  0.000001 in the gaps. This is signal-content verification, not file counting.
+- Focused section/transition/broker tests: **36 pass / 0 fail / 0 skip**.
+  Broker comparison alone: old 5 pass/2 fail; fixed 7 pass/0 fail.
+- Source-identity and music-runner CLI tests: **4 pass / 0 fail / 0 skip**.
+  Identity comparison alone: old 0 pass/2 fail; fixed 2 pass/0 fail.
+- Fresh standalone desktop staging and the existing real supervisor E2E
+  executed **57 successful checks**, including upload, honest missing-engine
+  failure, actual analysis/waveforms, explicit unseparated bridges, export,
+  session handoff, referenced alignment, save, shutdown and restart. The new
+  derived alignment and master level survived restart. **This is the actual
+  desktop service kernel against the staged distribution, NOT Electron UI
+  acceptance.** Inputs remain deterministic fixtures, not separation proof.
+- Electron smoke compiled the shell but failed to launch: the Electron binary
+  is absent after the dependency installation. Failure output was retained;
+  no inaccessible download was retried. No Windows acceptance exists.
+- Typecheck passed; lint 0 errors/46 warnings. Build is also exercised by
+  desktop:prepare-server. Logs: `/home/user/arena-next-*`,
+  `/home/user/arena-edit-{before,after}.txt`, `/home/user/arena-broker-*.txt`,
+  `/home/user/arena-identity-*.txt`. Audio/manifest evidence:
+  `/home/user/arena-next-evidence/`. These generated files are outside Git.
+
+### Reproducible real-music boundary on a prepared host
+
+Added `scripts/waveyard-real-music.mjs` (no alternate inference implementation):
+
+```sh
+npm run test:acceptance:music -- \
+  --url http://127.0.0.1:PORT \
+  --input /absolute/path/to/authorised-real-music.wav \
+  --checkpoint /absolute/models/5c90dfd2-34c22ccb.th \
+  --out /absolute/evidence/new-unique-run --real-music
+```
+
+Run against the already-running, prepared LOCAL Arena instance, after the
+user's normal preparation/consent flow. This does not install anything or
+accept terms. It verifies the production checkpoint prefix before contacting
+Arena; creates an identifiable new project; uploads the caller's real music
+with `deep_6s`; waits for the actual durable job; checks all six model/version
+attributions and input checksum; downloads/checksums/decodes each stem; builds
+and saves a remix from those exact stem IDs; versions, renders, downloads and
+decodes the mix; verifies duration/signal; and exercises immutable restoration.
+It retains the project and evidence on success AND failure and refuses to
+replace an existing evidence directory. No synthetic or identity fallback is
+provided. Its CLI/invalid-checkpoint/target/evidence-protection paths were
+executed; **the genuine-inference path has NOT run here**. This is an API/audio
+acceptance command, not proof of UI interaction, restart, subjective separation
+quality or Electron. Demucs version is retained in output modelVersion; capture
+the actual server torch/torchaudio versions separately on the capable host.
+
+### Concrete unfinished work (not hidden by this delivery)
+
+The checkpoint and CPU wheel hosts remain outside this sandbox's allowed
+network; no trained checkpoint, torch, torchaudio or Demucs is installed.
+PR #14's positive provisioning/inference path still requires a capable host;
+green doubles are not that evidence. Do not mark Priority 1 complete.
+
+The full transition history/timing/cursor contract is still missing. This
+patch implements the required user-controlled lossy choice, not faithful live
+performance reconstruction. Source inspection also found a separate hard-cut
+bug: `beginTransition` calls `finishTransition` without creating fade state,
+while `finishTransition` immediately returns on null fade state. Reproduce it
+in the actual session UI/audio runtime and repair it with an interaction
+regression next. Meeting-point/placement and project processing paths still
+have independent project-native restrictions; alignment/section repairs do
+not silently claim those are solved.
+
+Arcade provider-backed generation/gameplay, agent-dispatched authorised repair,
+and the remaining rooms were not executed or promoted to accepted this cycle.
+`docs/capability-expansion-investigation.md` was read; its earlier capability
+and test claims remain historical investigation, not this cycle's proof.
+Next highest-value boundary: actual session transition interaction and real
+music through the prepared engine/desktop UI, preserving the same model outputs
+through editing/export; then real-provider Arcade and the connected agent
+execution loop, rather than another parallel capability registry.

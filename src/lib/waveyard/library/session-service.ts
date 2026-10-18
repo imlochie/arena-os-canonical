@@ -522,10 +522,25 @@ export interface StudioHandoffResult {
  * stem asset (separation never ran AND no passthrough bridge) are refused
  * honestly by name, because a remix track requires real audio to bind.
  */
-export async function sendSessionToStudio(ownerId: string, sessionId: string): Promise<StudioHandoffResult> {
+export type StudioHandoffTrackEdit = { id: string; stemMix: StemMix; transition: TransitionConfig };
+
+export async function sendSessionToStudio(ownerId: string, sessionId: string, trackEdits: StudioHandoffTrackEdit[] = []): Promise<StudioHandoffResult> {
   await requireUser();
   await ownedSession(ownerId, sessionId);
   const detail = await sessionPayload(sessionId);
+  // Capture the visible controls with the handoff, not a possibly stale
+  // 600ms-debounced database state. Validate the whole snapshot before writes.
+  const seen = new Set<string>();
+  for (const edit of trackEdits) {
+    const item = detail.tracks.find((track) => track.id === edit.id);
+    const transition = normalizeTransitionConfig(edit.transition);
+    const stemMix = normalizeStemMix(edit.stemMix);
+    if (!item || seen.has(edit.id) || !transition || Object.keys(stemMix).length !== Object.keys(edit.stemMix).length)
+      throw new StemSwapRefusedError("The handoff edit snapshot is invalid or no longer belongs to this session. Reload and try again.");
+    seen.add(edit.id);
+    item.stemMix = stemMix;
+    item.transition = transition;
+  }
 
   const refused: string[] = [];
   const lanes: Array<{
@@ -584,9 +599,15 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
     `This session needs ${lanes.length} stem lanes; Studio currently supports ${MAX_REMIX_TRACKS}. Send a smaller session. Nothing was created.`,
   );
   const { project, remix } = await db.transaction(async (tx) => {
+    for (const id of seen) {
+      const item = detail.tracks.find((track) => track.id === id)!;
+      await tx.update(listenSessionTracks).set({ stemMix: serializeStemMix(item.stemMix), transition: JSON.stringify(item.transition) })
+        .where(and(eq(listenSessionTracks.id, id), eq(listenSessionTracks.sessionId, sessionId)));
+    }
+    if (seen.size) await tx.update(listenSessions).set({ updatedAt: new Date() }).where(eq(listenSessions.id, sessionId));
     const [project] = await tx.insert(projects).values({
       ownerId, title: `Session — ${detail.name}`, kind: "studio",
-      description: `Derived from listening session “${detail.name}” (${sessionId}). Sequential clips preserve stem levels and timed swaps; live transition timing and crossfades are not recorded. Original audio is referenced, not copied.`,
+      description: `Derived from listening session “${detail.name}” (${sessionId}). Sequential-v1 clips preserve stem levels and timed swaps; live transition timing and crossfades are not recorded. Original audio is referenced, not copied.`,
     }).returning();
     const [remix] = await tx.insert(remixSessions).values({ projectId: project.id, ownerId, name: detail.name }).returning();
     for (const [sortOrder, lane] of lanes.entries()) {

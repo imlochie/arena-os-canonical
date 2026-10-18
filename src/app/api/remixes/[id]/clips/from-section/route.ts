@@ -1,3 +1,4 @@
+import { projectAudio } from "@/lib/waveyard/project-audio";
 import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
@@ -7,10 +8,8 @@ import {
   remixSessions,
   remixTracks,
   sourceAnalyses,
-  sourceAssets,
   sourceSectionAnalyses,
   sourceSections,
-  stemAssets,
 } from "@/db/waveyardSchema";
 import {
   createSectionArrangementClips,
@@ -67,20 +66,21 @@ export async function POST(
     if (!remix) return NextResponse.json({ error: "Remix session not found." }, { status: 404 });
     await requireProjectRole(user.id, remix.projectId, "editor");
 
+    const audio = await projectAudio(remix.projectId);
+    const stem = audio.stems.find((asset) => asset.id === stemAssetId);
+    const source = stem && audio.sources.find((asset) => asset.id === stem.sourceAssetId);
     const [section] = await db.select().from(sourceSections).where(eq(sourceSections.id, sectionId)).limit(1);
-    if (!section || section.projectId !== remix.projectId)
-      return NextResponse.json({ errorCode: "section_action_unavailable", error: "This source section is unavailable in the remix project." }, { status: 422 });
-    const [[source], [analysis], [sectionAnalysis], [stem], [track]] = await Promise.all([
-      db.select().from(sourceAssets).where(and(eq(sourceAssets.id, section.sourceAssetId), eq(sourceAssets.projectId, remix.projectId))).limit(1),
-      db.select().from(sourceAnalyses).where(and(eq(sourceAnalyses.id, section.sourceAnalysisId), eq(sourceAnalyses.projectId, remix.projectId))).limit(1),
-      db.select().from(sourceSectionAnalyses).where(and(eq(sourceSectionAnalyses.id, section.sourceSectionAnalysisId), eq(sourceSectionAnalyses.projectId, remix.projectId))).limit(1),
-      db.select().from(stemAssets).where(and(eq(stemAssets.id, stemAssetId), eq(stemAssets.projectId, remix.projectId))).limit(1),
+    if (!section || !source || !stem || section.sourceAssetId !== source.id || section.projectId !== source.projectId)
+      return NextResponse.json({ errorCode: "section_action_unavailable", error: "This source section is not authorised for the remix project." }, { status: 422 });
+    const [[analysis], [sectionAnalysis], [track]] = await Promise.all([
+      db.select().from(sourceAnalyses).where(and(eq(sourceAnalyses.id, section.sourceAnalysisId), eq(sourceAnalyses.projectId, source.projectId))).limit(1),
+      db.select().from(sourceSectionAnalyses).where(and(eq(sourceSectionAnalyses.id, section.sourceSectionAnalysisId), eq(sourceSectionAnalyses.projectId, source.projectId))).limit(1),
       db.select().from(remixTracks).where(and(eq(remixTracks.id, remixTrackId), eq(remixTracks.remixSessionId, remix.id))).limit(1),
     ]);
     if (!source || !analysis || !sectionAnalysis || !stem || !track)
-      return NextResponse.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must belong to one project." }, { status: 422 });
+      return NextResponse.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must have a consistent authorised source and remix." }, { status: 422 });
     const scopeError = sectionActionScopeReason({
-      remixProjectId: remix.projectId,
+      audioProjectId: source.projectId,
       sectionProjectId: section.projectId,
       sourceProjectId: source.projectId,
       sourceAnalysisProjectId: analysis.projectId,
@@ -97,8 +97,8 @@ export async function POST(
       stemAssetId: stem.id,
     });
     if (scopeError || sectionAnalysis.sourceAnalysisId !== analysis.id || sectionAnalysis.sourceChecksumSha256 !== source.checksumSha256)
-      return NextResponse.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must belong to one project." }, { status: 422 });
-    if (analysis.status !== "complete")
+      return NextResponse.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must have a consistent authorised source and remix." }, { status: 422 });
+    if (analysis.status !== "complete" || analysis.sourceChecksumSha256 !== source.checksumSha256)
       return NextResponse.json({ errorCode: "section_action_unavailable", error: "A complete current source beat analysis is required." }, { status: 422 });
     const provenanceError = sectionActionProvenanceReason({
       sourceChecksumSha256: source.checksumSha256,
