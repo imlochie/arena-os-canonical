@@ -26,6 +26,13 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# GitHub's unspecified-shell bash template uses -e without pipefail.
+# Explicit bash uses --noprofile --norc -e -o pipefail: tee must never turn a
+# failed acceptance command into a successful job.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   static:
     name: Typecheck, lint, test, build
