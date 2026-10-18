@@ -195,7 +195,7 @@ test("mission runner executes real tool actions from agent turns", async () => {
     assert.equal(pending.length, 1, "the gated publish produced one approval request");
 
     // Approve and resume: the publish executes (honestly disconnected), and
-    // the mission now completes.
+    // its disconnected publish remains an unresolved failure, not success.
     await decideApproval(pending[0].id, "approve", "test-owner");
     mission = await runMission(
       spaceId,
@@ -203,8 +203,8 @@ test("mission runner executes real tool actions from agent turns", async () => {
       { generate: scripted },
     );
 
-    assert.equal(mission.status, "done");
-    assert.match(mission.statusDetail, /tool action/);
+    assert.equal(mission.status, "incomplete");
+    assert.match(mission.statusDetail, /unresolved tool failure/);
     const tools = mission.journal.flatMap((s) => s.actions.map((a) => a.tool));
     assert.ok(tools.includes("write_file"));
     assert.ok(tools.includes("run_command"));

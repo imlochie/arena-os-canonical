@@ -212,7 +212,7 @@ test("mission gate: a denied external_call is terminal — nothing is ever sent"
   const m2 = await runMission(spaceId, { goal: "call probe", timeBudgetMs: 30_000, maxTurnsPerAgent: 2 },
     { generate: gen, externalDeps: { fetcher, env: TWILIO_ENV } });
   assert.equal(calls.length, 0, "a denied call never reached Twilio");
-  assert.equal(m2.status, "done");
+  assert.equal(m2.status, "incomplete", "a denied, unexecuted required call is not a completed mission");
 });
 
 test("executeTool: refused payment links surface as honest failures, not successes", async () => {

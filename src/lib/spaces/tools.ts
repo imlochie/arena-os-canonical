@@ -152,7 +152,7 @@ export async function toolRunCommand(
     child.stdout.on("data", cap);
     child.stderr.on("data", cap);
     child.on("error", (e) => resolve(`error: ${e.message}`));
-    child.on("close", (code) => resolve(`exit ${code}\n${out.slice(0, 8000)}`));
+    child.on("close", (code, signal) => resolve(`${code === 0 ? "" : `error: command did not succeed${signal ? ` (${signal})` : ""}\n`}exit ${code}\n${out.slice(0, 8000)}`));
   });
 }
 
@@ -391,11 +391,11 @@ export async function toolRunTests(
       };
       await walk(dir, "");
       if (files.length) cmd = "node --test";
-      else return "no tests found — write *.test.js files or add a package.json test script first";
+      else return "error: no tests found — write *.test.js files or add a package.json test script first";
     }
   }
   const out = await toolRunCommand(dir, cmd, 60_000, extraAllow, execTarget);
-  return `[${cmd}]\n${out}`;
+  return `${out.startsWith("error:") || out.startsWith("refused:") ? "error: test execution failed\n" : ""}[${cmd}]\n${out}`;
 }
 
 // ---------------- GitHub tool ----------------

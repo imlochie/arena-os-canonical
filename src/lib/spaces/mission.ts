@@ -92,6 +92,8 @@ export interface MissionOpts {
 }
 
 export interface MissionDeps {
+  /** Alternate real SQL connection; errors are not downgraded to memory. */
+  database?: typeof db;
   generate?: typeof generate;
   /** Browser engine override for tests (real missions use the playwright engine). */
   browserEngine?: import("./browser").BrowserEngine;
@@ -186,22 +188,23 @@ function rowToSummary(row: typeof spaceMissions.$inferSelect): MissionSummary {
 let missionDbHealthy = true;
 const memoryMissions = new Map<string, any>();
 
-export async function getLatestMission(spaceId: string): Promise<MissionSummary | null> {
-  if (missionDbHealthy) {
+export async function getLatestMission(spaceId: string, database: typeof db = db): Promise<MissionSummary | null> {
+  if (database !== db || missionDbHealthy) {
     try {
-      const rows = await db
+      const rows = await database
         .select()
         .from(spaceMissions)
         .where(eq(spaceMissions.spaceId, spaceId))
         .orderBy(desc(spaceMissions.startedAt))
         .limit(1);
       if (rows.length) return rowToSummary(rows[0]);
-      return memoryMissions.get(spaceId) ?? null;
-    } catch {
+      return memoryMissions.has(spaceId) ? rowToSummary(memoryMissions.get(spaceId)) : null;
+    } catch (error) {
+      if (database !== db) throw error;
       missionDbHealthy = false;
     }
   }
-  return memoryMissions.get(spaceId) ?? null;
+  return memoryMissions.has(spaceId) ? rowToSummary(memoryMissions.get(spaceId)) : null;
 }
 
 export async function runMission(
@@ -250,6 +253,8 @@ async function runMissionInner(
   isolation: { execTarget: ExecTarget; isolationNote: string },
 ): Promise<MissionSummary> {
   const { execTarget, isolationNote } = isolation;
+  const database = deps.database ?? db;
+  let useDatabase = database !== db || missionDbHealthy;
   const gen = deps.generate ?? generate;
   const timeBudgetMs = Math.min(3_600_000, Math.max(30_000, opts.timeBudgetMs ?? 600_000));
   const maxTurns = Math.min(16, Math.max(1, opts.maxTurnsPerAgent ?? 3));
@@ -261,12 +266,12 @@ async function runMissionInner(
 
   // Load or create the mission row (continue = resume a checkpoint or an
   // approval wait). Loaded FIRST so a resumed mission reuses its stored plan.
-  const existing = await getLatestMission(spaceId);
+  const existing = await getLatestMission(spaceId, database);
   const resuming = existing && (existing.status === "checkpointed" || existing.status === "awaiting_approval");
   const resumingPlan = resuming && existing!.agentPlan.length ? existing!.agentPlan : undefined;
 
   // Plan: explicit > the space's fleet > default three-role pipeline.
-  const fleet = await listAgents(spaceId).catch(() => []);
+  const fleet = resumingPlan?.length || opts.agentPlan?.length ? [] : await listAgents(spaceId).catch(() => []);
   const plan: MissionAgentSpec[] =
     resumingPlan?.length
       ? resumingPlan
@@ -279,11 +284,12 @@ async function runMissionInner(
   await ensureWorkspace(spaceId);
   let row: any;
   if (resuming) {
-    if (missionDbHealthy) {
+    if (useDatabase) {
       try {
-        [row] = await db.update(spaceMissions).set({ status: "running", statusDetail: "resumed", updatedAt: new Date() }).where(eq(spaceMissions.id, existing.id)).returning();
-      } catch {
-        missionDbHealthy = false;
+        [row] = await database.update(spaceMissions).set({ status: "running", statusDetail: "resumed", updatedAt: new Date() }).where(eq(spaceMissions.id, existing.id)).returning();
+      } catch (error) {
+        if (database !== db) throw error;
+        useDatabase = false; missionDbHealthy = false;
       }
     }
     if (!row) {
@@ -306,15 +312,16 @@ async function runMissionInner(
       updatedAt: new Date(),
       endedAt: null,
     };
-    if (missionDbHealthy) {
+    if (useDatabase) {
       try {
-        const [inserted] = await db.insert(spaceMissions).values({
+        const [inserted] = await database.insert(spaceMissions).values({
           spaceId: fresh.spaceId, goal: fresh.goal, timeBudgetMs, agentPlan: plan,
           journal: { steps: [] }, artifacts: [], handoff: "",
         }).returning();
         row = inserted;
-      } catch {
-        missionDbHealthy = false;
+      } catch (error) {
+        if (database !== db) throw error;
+        useDatabase = false; missionDbHealthy = false;
       }
     }
     if (!row) {
@@ -325,6 +332,12 @@ async function runMissionInner(
 
   let mission = rowToSummary(row);
   const steps: MissionStep[] = [...mission.journal];
+  const unresolvedFailures = new Map<string, ToolOutcome & { agent: string }>();
+  const remember = (action: ToolOutcome, agent: string) => {
+    const key = actionSignature(mission.id, action.tool, action.input);
+    if (action.ok) unresolvedFailures.delete(key); else unresolvedFailures.set(key, { ...action, agent });
+  };
+  for (const step of steps) for (const action of step.actions) remember(action, step.agent);
   const started = Date.now();
   const deadline = started + timeBudgetMs;
   let handoff = resuming ? mission.handoff : "";
@@ -333,9 +346,9 @@ async function runMissionInner(
 
   const save = async (patch: Partial<typeof spaceMissions.$inferInsert>) => {
     const apply = (r: any) => rowToSummary({ ...r, ...patch, journal: { steps }, updatedAt: new Date() });
-    if (missionDbHealthy) {
+    if (useDatabase) {
       try {
-        const [updated] = await db
+        const [updated] = await database
           .update(spaceMissions)
           .set({ ...patch, journal: { steps }, updatedAt: new Date() })
           .where(eq(spaceMissions.id, mission.id))
@@ -345,8 +358,9 @@ async function runMissionInner(
           memoryMissions.set(spaceId, updated);
           return mission;
         }
-      } catch {
-        missionDbHealthy = false;
+      } catch (error) {
+        if (database !== db) throw error;
+        useDatabase = false; missionDbHealthy = false;
       }
     }
     const mem = memoryMissions.get(spaceId) ?? row;
@@ -397,6 +411,7 @@ async function runMissionInner(
         `Mission goal: ${mission.goal}\nYou are agent ${ai + 1}/${plan.length}: ${agent.name} (${agent.role}).` +
         (isolationNote ? `\n\nEXECUTION ENVIRONMENT: ${isolationNote}` : "") +
         (steps.length ? `\n\nRecent journal (most recent last):\n${steps.slice(-4).map((s) => `${s.agent}: ${s.thought} [${s.actions.map((a) => a.tool + (a.ok ? "✓" : "✗")).join(", ")}]`).join("\n")}` : "") +
+        (unresolvedFailures.size ? `\n\nUNRESOLVED TOOL FAILURES — done:true cannot override these. Correct the cause and successfully retry the failed action:\n${[...unresolvedFailures.values()].map((action) => `${action.tool}: ${action.output.slice(0, 800)}`).join("\n")}` : "") +
         (observations ? `\n\nOBSERVATIONS — actual tool outputs from your recent turns (read them; fix what failed):\n${observations}` : "");
 
       let result: GenerateResult;
@@ -433,6 +448,18 @@ async function runMissionInner(
       const parsed = parseAgentJson(result.text);
       const actions = Array.isArray(parsed?.actions) ? parsed!.actions!.slice(0, maxActions) : [];
       const outcomes: ToolOutcome[] = [];
+      const step: MissionStep = {
+        agent: agent.name, turn, actions: outcomes, handoff: "", done: false,
+        thought: String(parsed?.thought ?? result.text.slice(0, 200)).slice(0, 500),
+        runtime: { backend: result.backend, modelId: result.modelId, fallback: result.fallback }, ms: 0,
+      };
+      steps.push(step);
+      const recordOutcome = async (action: ToolOutcome) => {
+        outcomes.push(action); remember(action, agent.name); step.ms = Date.now() - t0;
+        // Store each completed tool result before issuing the next effect.
+        // Interrupted missions can retrieve what ACTUALLY executed.
+        await save({ status: "running", handoff });
+      };
       for (const a of actions) {
         if (Date.now() >= deadline) {
           status = "checkpointed";
@@ -462,7 +489,7 @@ async function runMissionInner(
             });
           }
           if (approval.status === "pending") {
-            outcomes.push({
+            await recordOutcome({
               tool: a.tool,
               input: a.args ?? {},
               output: `⏸ awaiting human approval (class ${actionClass}, request ${approval.id.slice(0, 8)}) — the mission is checkpointed. Approve or deny it in the Spaces workbench (Approvals panel) or via the API; the daemon/workbench resumes automatically once decided.`,
@@ -474,7 +501,7 @@ async function runMissionInner(
             break;
           }
           if (approval.status === "denied") {
-            outcomes.push({
+            await recordOutcome({
               tool: a.tool,
               input: a.args ?? {},
               output: `refused: the human denied this action (request ${approval.id.slice(0, 8)}). Do not retry the same action; adjust the approach.`,
@@ -484,7 +511,7 @@ async function runMissionInner(
             continue;
           }
           if (approval.status === "executing") {
-            outcomes.push({
+            await recordOutcome({
               tool: a.tool,
               input: a.args ?? {},
               output: `execution of request ${approval.id.slice(0, 8)} is already in progress elsewhere — not repeated here`,
@@ -494,7 +521,7 @@ async function runMissionInner(
             continue;
           }
           if (approval.status === "executed" || approval.status === "failed") {
-            outcomes.push({
+            await recordOutcome({
               tool: a.tool,
               input: a.args ?? {},
               output: `already executed earlier (request ${approval.id.slice(0, 8)}, ${approval.status}) — not repeated`,
@@ -506,7 +533,7 @@ async function runMissionInner(
           // approved → single-claim execution (exactly one caller wins)
           const claimed = await claimExecution(approval.id);
           if (!claimed) {
-            outcomes.push({
+            await recordOutcome({
               tool: a.tool,
               input: a.args ?? {},
               output: `lost the execution claim for request ${approval.id.slice(0, 8)} — another runner is executing it`,
@@ -518,27 +545,24 @@ async function runMissionInner(
           const tExec = Date.now();
           const gated = await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps });
           await completeExecution(approval.id, gated.ok, { tool: gated.tool, output: gated.output.slice(0, 2000) }, gated.ok ? undefined : gated.output.slice(0, 500));
-          outcomes.push({ ...gated, ms: Date.now() - tExec });
+          await recordOutcome({ ...gated, ms: Date.now() - tExec });
           continue;
         }
-        outcomes.push(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps }));
+        await recordOutcome(await executeTool(spaceId, a, { githubToken: opts.githubToken, extraAllow, execTarget, browserEngine: deps.browserEngine, externalDeps: deps.externalDeps }));
       }
 
-      const step: MissionStep = {
-        agent: agent.name,
-        turn,
-        actions: outcomes,
-        handoff: String(parsed?.handoff ?? "").slice(0, 2000),
-        done: parsed?.done === true,
-        thought: String(parsed?.thought ?? result.text.slice(0, 200)).slice(0, 500),
-        runtime: { backend: result.backend, modelId: result.modelId, fallback: result.fallback },
-        ms: Date.now() - t0,
-      };
-      steps.push(step);
+      step.handoff = String(parsed?.handoff ?? "").slice(0, 2000);
+      step.done = parsed?.done === true && ![...unresolvedFailures.values()].some((action) => action.agent === agent.name) && status === "done";
+      step.ms = Date.now() - t0;
       if (step.handoff) handoff = step.handoff;
-
-      if (status === "checkpointed") break agentLoop;
-      if (step.done) break; // next agent
+      await save({ status: status === "done" ? "running" : status, handoff });
+      if (status === "checkpointed" || status === "awaiting_approval") break agentLoop;
+      if (step.done) break;
+      if (turn === maxTurns) {
+        status = "incomplete";
+        statusDetail = `${agent.name} reached its ${maxTurns}-turn bound without successful protocol completion${unresolvedFailures.size ? `; ${unresolvedFailures.size} unresolved tool failure(s) remain` : ""}. Inspect the retained journal and retry.`;
+        break agentLoop;
+      }
     }
   }
 

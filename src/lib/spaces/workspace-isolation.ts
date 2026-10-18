@@ -207,12 +207,12 @@ export async function runInTarget(
 ): Promise<string> {
   if (target.env === "host") {
     const r = await runner(shellCommand(), shellWrap(command), { timeoutMs });
-    return r.code === 0 ? r.output : r.output + `\n(exit ${r.code})`;
+    return r.code === 0 ? r.output : `error: command failed\n${r.output}\n(exit ${r.code})`;
   }
   const { command: bin, args } = isolatedExecArgs(target.isolation, command);
   const r = await runner(bin, args, { timeoutMs });
   const prefix = `[isolated:${target.isolation.ref} · ${target.isolation.image} · net=${target.isolation.networkMode}]`;
-  return `${prefix}\n${r.code === 0 ? r.output : r.output + `\n(exit ${r.code})`}`;
+  return `${r.code === 0 ? "" : "error: isolated command failed\n"}${prefix}\n${r.code === 0 ? r.output : r.output + `\n(exit ${r.code})`}`;
 }
 
 import { join } from "node:path";
