@@ -1053,7 +1053,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           {handoff.refused ? ` — Not included: ${handoff.refused}` : ""}
           {handoff.notice ? ` ${handoff.notice}` : ""}
           {" "}
-          <Link href={`/waveyard/create?project=${handoff.projectId}`}>Open it in the Studio</Link>.
+          <Link href={`/waveyard/projects/${handoff.projectId}`}>Open it in the Studio</Link>.
         </p>
       )}
 

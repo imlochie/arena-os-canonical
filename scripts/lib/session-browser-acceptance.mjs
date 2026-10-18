@@ -69,6 +69,17 @@ export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId
     observations.push({ action: "reload real saved session and play again", signal: await signal([660, 1760]) });
     await page.screenshot({ path: screenshotPath, fullPage: true });
     await page.getByTestId("session-stop").click();
+    await page.getByTestId("session-handoff").click();
+    await expect(page.getByTestId("handoff-confirmation")).toContainText("not reconstructed");
+    await page.getByRole("button", { name: "Create sequential Studio edit", exact: true }).click();
+    const openStudio = page.getByRole("link", { name: "Open it in the Studio", exact: true });
+    const studioPath = await openStudio.getAttribute("href");
+    await expect(openStudio).toHaveAttribute("href", /\/waveyard\/projects\//);
+    await openStudio.click();
+    await expect(page.getByRole("button", { name: "Save now", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Remix timeline", exact: true })).toBeVisible();
+    observations.push({ action: "explicit sequential handoff opens the actual reusable Studio arrangement", studioPath });
+    await page.screenshot({ path: `${screenshotPath}.studio.png`, fullPage: true });
     if (errors.length) throw new Error(`Renderer errors: ${errors.join("; ")}`);
     return { browser: browser.version(), evidenceKind: "staged-browser-real-api-postgres-audio", limitations: ["synthetic passthrough input, not real music or separation", "browser, not Electron", "not subjective quality acceptance"], observations, screenshotPath, rendererErrors: errors };
   } finally { await browser.close(); }

@@ -48,6 +48,7 @@ before(async () => {
     const parts = url.pathname.split("/");
     if (parts[3] === "sessions") {
       const state = session(parts[4]);
+      if (parts[5] === "studio-handoff") return json({ handoff: { projectId: "derived-project", remixTrackCount: state.tracks.length, notice: "Explicit sequential arrangement, not live-performance reconstruction." } }, 201);
       if (req.method !== "GET") {
         let raw = ""; for await (const chunk of req) raw += chunk;
         const body = JSON.parse(raw || "{}");
@@ -235,4 +236,13 @@ for (const kind of ["stems", "source"]) test(`${kind} playback with an empty sav
     return outgoing?.rms > 0.005 && outgoing.rms < 0.06 && incoming?.rms > 0.02 && !document.querySelector('audio[src="/api/assets/a"]').paused;
   })).toBe(true);
   await current(page, "Song B"); await audible(page, 440);
+});
+
+
+test("explicit sequential handoff links to the actual existing-project workspace", async (t) => {
+  const page = await pageFor(t, "handoff-navigation");
+  await page.getByTestId("session-handoff").click();
+  await expect(page.getByTestId("handoff-confirmation")).toContainText("not reconstructed");
+  await page.getByRole("button", { name: "Create sequential Studio edit", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Open it in the Studio", exact: true })).toHaveAttribute("href", "/waveyard/projects/derived-project");
 });
