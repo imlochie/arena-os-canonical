@@ -25,7 +25,6 @@ export class LocalJobBroker {
   private running = false;
   /** In-flight jobIds — BullMQ's jobId semantics: no duplicate while active. */
   private readonly activeIds = new Set<string>();
-  private draining: Promise<boolean> | null = null;
   private readonly events: BrokerEvent[] = [];
   private readonly listeners = new Set<(event: BrokerEvent) => void>();
   private startedAt: Date | null = null;
@@ -90,18 +89,15 @@ export class LocalJobBroker {
     }
   }
 
-  /** Wait for in-flight + queued jobs (shutdown drain). */
-  drain(timeoutMs = 15_000): Promise<boolean> {
-    if (this.draining === null) {
-      this.draining = (async () => {
-        const deadline = Date.now() + timeoutMs;
-        while ((this.queue.length > 0 || this.running) && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        return this.queue.length === 0 && !this.running;
-      })();
+  /** Each wait observes current work. Never reuse a settled success/timeout
+   * from an earlier batch (exports and shutdown recovery can wait repeatedly).
+   */
+  async drain(timeoutMs = 15_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while ((this.queue.length > 0 || this.running) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))));
     }
-    return this.draining;
+    return this.queue.length === 0 && !this.running;
   }
 
   onEvent(listener: (event: BrokerEvent) => void): () => void {
