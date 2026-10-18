@@ -85,6 +85,10 @@ jobs:
           set -o pipefail
           npm test 2>&1 | tee .data/acceptance/waveyard-handoff/tests.tap
 
+      - name: Publish failing test identities to check annotations
+        if: failure()
+        run: node scripts/ci-test-summary.mjs .data/acceptance/waveyard-handoff/tests.tap
+
       - name: Retain Waveyard persistence/render evidence (including failures)
         if: always()
         uses: actions/upload-artifact@v4
@@ -150,6 +154,9 @@ jobs:
 
       - name: A7 real-runtime acceptance
         run: npm run test:acceptance:a7 | tee a7-acceptance.tap
+      - name: Publish failing A7 test identities to check annotations
+        if: failure()
+        run: node scripts/ci-test-summary.mjs a7-acceptance.tap
       - name: Retain A7 evidence (including failures)
         if: always()
         uses: actions/upload-artifact@v4
