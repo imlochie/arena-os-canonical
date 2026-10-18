@@ -26,6 +26,7 @@ export default function DeepAgentPage() {
   const [run, setRun] = useState<Run | null>(null);
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -44,7 +45,8 @@ export default function DeepAgentPage() {
   const start = useCallback(async () => {
     if (!goal.trim() || busy) return;
     setBusy(true);
-    setRun(null);
+    setError(null);
+    setSavedNote(null);
     try {
       const response = await fetch("/api/deep-agent", {
         method: "POST",
@@ -52,7 +54,11 @@ export default function DeepAgentPage() {
         body: JSON.stringify({ goal, steps, keys: keys() }),
       });
       const data = await response.json();
-      if (data.run) setRun(data.run);
+      if (!response.ok || !data.run) throw new Error(data.error ?? "Agent run failed. Check run history and retry.");
+      setRun(data.run);
+      refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Agent run failed. Retry when the model is available.");
       refresh();
     } finally {
       setBusy(false);
@@ -60,9 +66,16 @@ export default function DeepAgentPage() {
   }, [goal, steps, busy, refresh]);
 
   const open = useCallback(async (id: string) => {
-    const response = await fetch(`/api/deep-agent?id=${id}`);
-    const data = await response.json();
-    if (data.run) setRun(data.run);
+    try {
+      const response = await fetch(`/api/deep-agent?id=${id}`);
+      const data = await response.json();
+      if (!response.ok || !data.run) throw new Error(data.error ?? "Could not open this run. Retry.");
+      setRun(data.run);
+      setSavedNote(null);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not open this run. Retry.");
+    }
   }, []);
 
   const saveArtifact = useCallback(async () => {
@@ -78,9 +91,15 @@ export default function DeepAgentPage() {
 
   const remove = useCallback(
     async (id: string) => {
-      await fetch(`/api/deep-agent?id=${id}`, { method: "DELETE" });
-      if (run?.id === id) setRun(null);
-      refresh();
+      try {
+        const response = await fetch(`/api/deep-agent?id=${id}`, { method: "DELETE" });
+        if (!response.ok) throw new Error("Could not delete this run. Retry.");
+        if (run?.id === id) setRun(null);
+        refresh();
+        setError(null);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Could not delete this run. Retry.");
+      }
     },
     [run, refresh],
   );
@@ -90,7 +109,8 @@ export default function DeepAgentPage() {
       <h1 className="text-3xl font-black text-white">Deep Agent</h1>
       <p className="mt-2 text-sm text-slate-400">
         Give it a goal. It plans, works each step, and reviews its own output — capped steps, full transcript, no writes outside this page. The engine
-        label on every run is the truth.
+        label on every run is the truth. Reviews assess drafts only: a PASS is not independent evidence that software, tools or audio processing executed.
+        Failed or unavailable review stops the run and preserves its transcript.
       </p>
 
       <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
@@ -123,6 +143,7 @@ export default function DeepAgentPage() {
         </div>
       </div>
 
+      {error && <p role="alert" className="mt-4 text-sm text-rose-300">{error}</p>}
       {run && (
         <section className="mt-6 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
           <div className="flex flex-wrap items-center gap-3">

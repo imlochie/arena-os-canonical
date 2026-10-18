@@ -67,110 +67,129 @@ export function parseAgentPlan(reply: string, maxSteps: number): string[] {
 }
 
 export function parseVerdict(reply: string): { verdict: "pass" | "fail"; reason: string } {
-  const match = reply.match(/\b(PASS|FAIL)\b/i);
-  const verdict = (match?.[1]?.toUpperCase() ?? "PASS") === "FAIL" ? "fail" : "pass";
-  const reason = reply.replace(/\b(PASS|FAIL)\b/gi, "").trim().slice(0, 240);
-  return { verdict, reason: reason || (verdict === "pass" ? "verifier accepted the step" : "verifier rejected the step") };
+  // A review must explicitly lead with its verdict. Quoted instructions or
+  // "could not verify" prose must never become a successful review.
+  const match = reply.trim().match(/^(PASS|FAIL)\b/i);
+  if (!match) return { verdict: "fail", reason: "No explicit review verdict was returned; output remains unverified." };
+  const verdict = match[1].toUpperCase() === "PASS" ? "pass" : "fail";
+  const reason = reply.trim().slice(match[0].length).replace(/^\s*[:—-]\s*/, "").trim().slice(0, 240);
+  return { verdict, reason: reason || (verdict === "pass" ? "model reviewer accepted the draft (not execution evidence)" : "model reviewer rejected the draft") };
 }
 
 export async function runDeepAgent(
   goal: string,
   opts: { steps?: number; keys?: Record<string, string>; modelId?: string; timeBudgetMs?: number } = {},
+  deps: { generate?: typeof generate; database?: typeof db } = {},
 ): Promise<DeepAgentRunView> {
+  const database = deps.database ?? db;
+  const generateDraft = deps.generate ?? generate;
   const maxSteps = Math.max(2, Math.min(opts.steps ?? DEFAULT_STEPS, MAX_STEPS));
   const deadline = Date.now() + Math.min(opts.timeBudgetMs ?? TIME_BUDGET_MS, TIME_BUDGET_MS);
   const gen = (messages: ChatMsg[], temperature = 0.5) =>
-    generate({ modelId: opts.modelId ?? "local-engine", messages, keys: opts.keys as never, temperature, maxTokens: 2000 });
+    generateDraft({ modelId: opts.modelId ?? "local-engine", messages, keys: opts.keys as never, temperature, maxTokens: 2000 });
 
-  const [run] = await db.insert(deepAgentRuns).values({ goal, status: "running" }).returning();
+  const [run] = await database.insert(deepAgentRuns).values({ goal, status: "running" }).returning();
   const finish = async (status: string): Promise<DeepAgentRunView> => {
-    await db.update(deepAgentRuns).set({ status }).where(eq(deepAgentRuns.id, run.id));
-    return getRun(run.id) as Promise<DeepAgentRunView>;
+    await database.update(deepAgentRuns).set({ status }).where(eq(deepAgentRuns.id, run.id));
+    return getRun(run.id, database) as Promise<DeepAgentRunView>;
   };
 
-  // ---- plan ----
-  const planReply = await gen([
-    {
-      role: "user",
-      content:
-        `Goal: ${goal}\n\nBreak this into exactly ${maxSteps} concrete steps. Reply with ONLY a JSON array of ${maxSteps} short step titles (strings), no prose.`,
-    },
-  ]);
-  const plan = parseAgentPlan(planReply.text, maxSteps);
-  if (plan.length === 0) {
-    await db.insert(deepAgentSteps).values({ runId: run.id, idx: 0, title: "plan", output: planReply.text.slice(0, 2000), verdict: "fail", verdictReason: "could not extract a plan", attempts: 1 });
-    return finish("failed");
-  }
-  let engine = planReply.backend;
-  let via = planReply.via ?? planReply.backend;
-
-  // ---- act + verify, step by step ----
-  const outputs: string[] = [];
-  for (const [idx, title] of plan.entries()) {
-    if (Date.now() > deadline) {
-      await db.insert(deepAgentSteps).values({ runId: run.id, idx, title, output: "", verdict: "fail", verdictReason: "time budget exhausted — run stopped honestly", attempts: 0 });
-      return finish("incomplete");
-    }
-    const context =
-      outputs.length === 0
-        ? ""
-        : `\n\nWork already completed in previous steps:\n${outputs.map((o, i) => `— step ${i + 1}: ${o.slice(0, 400)}`).join("\n")}`;
-    const actMessages: ChatMsg[] = [
+  try {
+    // ---- plan ----
+    const planReply = await gen([
       {
         role: "user",
-        content: `Overall goal: ${goal}\n\nThis step: ${title}${context}\n\nDo the step. Reply with the step's actual output only (the research/draft/answer itself, no meta-commentary).`,
+        content:
+          `Goal: ${goal}\n\nBreak this into exactly ${maxSteps} concrete steps. Reply with ONLY a JSON array of ${maxSteps} short step titles (strings), no prose.`,
       },
-    ];
-    let act = await gen(actMessages, 0.6);
-    let attempts = 1;
-
-    const verify = async (output: string) => {
-      const reply = await gen(
-        [
-          {
-            role: "user",
-            content:
-              `Goal: ${goal}\nStep: ${title}\nProposed step output:\n"""\n${output.slice(0, 3000)}\n"""\n\n` +
-              `Does this output genuinely accomplish this step (useful, on-topic, not empty or evasive)? Reply with one word first — PASS or FAIL — then one sentence why.`,
-          },
-        ],
-        0.2,
-      );
-      return parseVerdict(reply.text);
-    };
-
-    let verdict = await verify(act.text);
-    if (verdict.verdict === "fail" && Date.now() < deadline) {
-      // one honest retry with the feedback
-      const retry = await gen([...actMessages, { role: "user", content: `Your previous attempt failed review: ${verdict.reason}. Try again, better.` }], 0.6);
-      const retryVerdict = await verify(retry.text);
-      attempts = 2;
-      if (retryVerdict.verdict === "pass" || retry.text.trim().length > act.text.trim().length) {
-        act = retry;
-        verdict = retryVerdict;
-      }
+    ]);
+    const plan = parseAgentPlan(planReply.text, maxSteps);
+    if (plan.length === 0) {
+      await database.insert(deepAgentSteps).values({ runId: run.id, idx: 0, title: "plan", output: planReply.text.slice(0, 2000), verdict: "fail", verdictReason: "could not extract a plan", attempts: 1 });
+      return finish("failed");
     }
-    engine = act.backend;
-    via = act.via ?? act.backend;
-    outputs.push(act.text);
-    await db.insert(deepAgentSteps).values({
-      runId: run.id,
-      idx,
-      title,
-      output: act.text.slice(0, 20_000),
-      verdict: verdict.verdict,
-      verdictReason: verdict.reason,
-      attempts,
-    });
+    let engine = planReply.backend;
+    let via = planReply.via ?? planReply.backend;
+
+    // ---- act + verify, step by step ----
+    const outputs: string[] = [];
+    for (const [idx, title] of plan.entries()) {
+      if (Date.now() > deadline) {
+        await database.insert(deepAgentSteps).values({ runId: run.id, idx, title, output: "", verdict: "fail", verdictReason: "time budget exhausted — run stopped honestly", attempts: 0 });
+        return finish("incomplete");
+      }
+      const context =
+        outputs.length === 0
+          ? ""
+          : `\n\nWork already completed in previous steps:\n${outputs.map((o, i) => `— step ${i + 1}: ${o.slice(0, 400)}`).join("\n")}`;
+      const actMessages: ChatMsg[] = [
+        {
+          role: "user",
+          content: `Overall goal: ${goal}\n\nThis step: ${title}${context}\n\nDo the step. Reply with the step's actual output only (the research/draft/answer itself, no meta-commentary).`,
+        },
+      ];
+      let act = await gen(actMessages, 0.6);
+      let attempts = 1;
+
+      const verify = async (output: string) => {
+        const reply = await gen(
+          [
+            {
+              role: "user",
+              content:
+                `Goal: ${goal}\nStep: ${title}\nProposed step output:\n"""\n${output.slice(0, 3000)}\n"""\n\n` +
+                `Does this output genuinely accomplish this step (useful, on-topic, not empty or evasive)? Reply with one word first — PASS or FAIL — then one sentence why.`,
+            },
+          ],
+          0.2,
+        );
+        if (reply.fallback || reply.backend === "arena-local-engine") {
+          return { verdict: "fail" as const, reason: "A capable review model is unavailable; this draft remains unverified. Configure a model and retry." };
+        }
+        return parseVerdict(reply.text);
+      };
+
+      let verdict = await verify(act.text);
+      if (verdict.verdict === "fail" && Date.now() < deadline) {
+        // one honest retry with the feedback
+        const retry = await gen([...actMessages, { role: "user", content: `Your previous attempt failed review: ${verdict.reason}. Try again, better.` }], 0.6);
+        const retryVerdict = await verify(retry.text);
+        attempts = 2;
+        if (retryVerdict.verdict === "pass" || retry.text.trim().length > act.text.trim().length) {
+          act = retry;
+          verdict = retryVerdict;
+        }
+      }
+      engine = act.backend;
+      via = act.via ?? act.backend;
+      await database.update(deepAgentRuns).set({ engine, via }).where(eq(deepAgentRuns.id, run.id));
+      await database.insert(deepAgentSteps).values({
+        runId: run.id,
+        idx,
+        title,
+        output: act.text.slice(0, 20_000),
+        verdict: verdict.verdict,
+        verdictReason: verdict.reason,
+        attempts,
+      });
+      // Failed work is retained for inspection, never fed to downstream steps
+      // as "work already completed" or marked done because the loop finished.
+      if (verdict.verdict === "fail") return finish("failed");
+      outputs.push(act.text);
+    }
+    await database.update(deepAgentRuns).set({ status: "done", engine, via }).where(eq(deepAgentRuns.id, run.id));
+    return (await getRun(run.id, database)) as DeepAgentRunView;
+  } catch (cause) {
+    // Provider exceptions must not leave a durable, permanently running job.
+    await database.update(deepAgentRuns).set({ status: "failed" }).where(eq(deepAgentRuns.id, run.id));
+    throw cause;
   }
-  await db.update(deepAgentRuns).set({ status: "done", engine, via }).where(eq(deepAgentRuns.id, run.id));
-  return (await getRun(run.id)) as DeepAgentRunView;
 }
 
-export async function getRun(id: string): Promise<DeepAgentRunView | null> {
-  const [run] = await db.select().from(deepAgentRuns).where(eq(deepAgentRuns.id, id)).limit(1);
+export async function getRun(id: string, database: typeof db = db): Promise<DeepAgentRunView | null> {
+  const [run] = await database.select().from(deepAgentRuns).where(eq(deepAgentRuns.id, id)).limit(1);
   if (!run) return null;
-  const steps = await db.select().from(deepAgentSteps).where(eq(deepAgentSteps.runId, id)).orderBy(asc(deepAgentSteps.idx));
+  const steps = await database.select().from(deepAgentSteps).where(eq(deepAgentSteps.runId, id)).orderBy(asc(deepAgentSteps.idx));
   return {
     id: run.id,
     goal: run.goal,
