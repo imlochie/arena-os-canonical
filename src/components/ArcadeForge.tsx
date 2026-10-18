@@ -26,6 +26,8 @@ import {
   setPreferredModel,
 } from "@/lib/webllm";
 
+import type { ForgeDraft } from "@/lib/games/forge-ai";
+
 type Strategy = "auto" | "instant" | "ai";
 
 const SHOWCASE: { label: string; prompt: string }[] = [
@@ -47,6 +49,7 @@ export default function ArcadeForge() {
   const [phase, setPhase] = useState("");
   const [game, setGame] = useState<any | null>(null);
   const [tab, setTab] = useState<"play" | "code">("play");
+  const [failedDraft, setFailedDraft] = useState<ForgeDraft | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [history, setHistory] = useState<any[]>([]);
@@ -161,13 +164,15 @@ export default function ArcadeForge() {
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (body.draft && typeof body.draft.code === "string" && Array.isArray(body.draft.validation?.issues)) setFailedDraft(body.draft);
       throw new Error(body.error ?? "Generative forge unavailable. Connect a model and retry.");
     }
     const rt = body.runtime ?? {};
+    setFailedDraft(null);
     setGame({ prompt: p, gameType: "custom", ...(body.game ?? {}), code: body.code, engine: "ai-codegen", genMs: rt.ms });
     fetchHistory();
     setNotice(
-      `${body.game?.ephemeral ? "Ephemeral — not saved. " : body.game ? "Saved. " : "Not saved — download this game before leaving. "}✨ ${body.title} built by AI (${rt.backend ?? "?"}${rt.fallback ? " · fallback" : ""}) — validated${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. This is generated code, not a template.`
+      `${body.game?.ephemeral ? "Ephemeral — not saved. " : body.game ? "Saved. " : "Not saved — download this game before leaving. "}✨ ${body.title} built by AI (${rt.backend ?? "?"} / ${rt.modelId ?? "unreported model"}${rt.fallback ? " · fallback" : ""}) — validated${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. This is generated code, not a template.`
     );
   }
 
@@ -486,6 +491,17 @@ export default function ArcadeForge() {
           )}
           {notice && <p className="mt-3 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-200">{notice}</p>}
           {error && <p className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">⚠️ {error}</p>}
+          {failedDraft && <details className="mt-3 rounded-lg border border-amber-500/30 p-3 text-sm text-amber-200" data-testid="arcade-failed-draft">
+            <summary>Inspect failed draft — not validated, not saved or launched</summary>
+            <p>Previous playable game is unchanged. Draft runtime: {failedDraft.runtime.backend ?? "unknown"} / {failedDraft.runtime.modelId}. Download before leaving to retain this attempt.</p>
+            <ul>{failedDraft.validation.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>
+            <button type="button" onClick={() => {
+              const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([failedDraft.code], { type: "text/plain" }));
+              link.download = "arena-failed-draft.html.txt"; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+            }}>Download failed draft as text</button>
+            <button type="button" onClick={() => setFailedDraft(null)}>Dismiss draft</button>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap">{failedDraft.code}</pre>
+          </details>}
         </div>
 
         {/* Result */}

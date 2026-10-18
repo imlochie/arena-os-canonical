@@ -322,3 +322,23 @@ test("generative route rejects invalid iteration context and unavailable model h
   assert.equal(unavailable.status, 503);
   assert.equal((await unavailable.json()).code, undefined);
 });
+
+test("artifact storage outage is an actionable 503; recovery returns the saved work", async (t) => {
+  if (!fixture || !artifactRoutes || !projectArtifactRoutes) return t.skip("embedded postgres platform package unavailable");
+  const { pool } = await import("@/db");
+  const projectId = "11111111-1111-4111-8111-111111111111";
+  const saved = await artifactRoutes.POST(arcadeRequest("/api/artifacts", { title: "Storage recovery probe", body: "Persisted evidence survives unavailable reads", kind: "research" }));
+  assert.equal(saved.status, 201);
+  const { artifact } = await saved.json();
+  const request = () => new Request("http://127.0.0.1/api/artifacts", { headers: { host: "127.0.0.1" } });
+  // Real PostgreSQL schema fault, not a mocked successful database response.
+  await pool.query("alter table artifacts rename to artifacts_outage_probe");
+  try {
+    const unavailable = await artifactRoutes.GET(request());
+    assert.equal(unavailable.status, 503);
+    const body = await unavailable.json(); assert.match(body.error, /storage unavailable/i); assert.equal(body.artifacts, undefined);
+    assert.equal((await projectArtifactRoutes.GET(request(), { params: Promise.resolve({ id: projectId }) })).status, 503);
+  } finally { await pool.query("alter table artifacts_outage_probe rename to artifacts"); }
+  const recovered = await artifactRoutes.GET(request()); assert.equal(recovered.status, 200);
+  assert.ok((await recovered.json()).artifacts.some((row: { id: string }) => row.id === artifact.id));
+});

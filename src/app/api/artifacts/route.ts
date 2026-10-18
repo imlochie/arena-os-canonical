@@ -26,7 +26,7 @@ export async function GET(req: Request) {
     return Response.json({ artifacts: rows.slice(0, limit) });
   } catch (e) {
     console.error(e);
-    return Response.json({ artifacts: [] });
+    return Response.json({ error: "Artifact storage unavailable. Your saved work has not been removed; retry when the service recovers." }, { status: 503 });
   }
 }
 

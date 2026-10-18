@@ -74,3 +74,22 @@ test("a failed repair cannot be presented as successful generation", async () =>
   });
   await assert.rejects(forgeGameWithAI(novelRequests[0], {}, { generate: gen }), /Repair model unavailable/);
 });
+
+test("repair cannot claim AI codegen after a Local Engine response even if fallback flag is false", async () => {
+  const valid = generateGameOffline("snake").code;
+  const invalid = valid.replaceAll("requestAnimationFrame", "badLoop");
+  let calls = 0;
+  const gen = (async () => ({ text: ++calls === 1 ? invalid : valid, backend: calls === 1 ? "groq" : "arena-local-engine", modelId: "controlled", runtimeLevel: "remote", via: "test", ms: 1, fallback: false })) as typeof generate;
+  await assert.rejects(forgeGameWithAI("custom mechanics", {}, { generate: gen }), /Repair model unavailable/);
+});
+test("failed validation retains an inspectable draft without presenting it as a playable game", async () => {
+  const invalid = generateGameOffline("snake").code.replaceAll("requestAnimationFrame", "badLoop");
+  await assert.rejects(forgeGameWithAI("custom mechanics", {}, { generate: responder(invalid) }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    const failure = error as Error & { draft?: { code: string; validation: { ok: boolean }; runtime: { modelId: string } } };
+    assert.equal(failure.draft?.code, invalid);
+    assert.equal(failure.draft?.validation.ok, false);
+    assert.equal(failure.draft?.runtime.modelId, "test-code-model");
+    return true;
+  });
+});

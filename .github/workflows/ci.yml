@@ -79,6 +79,7 @@ jobs:
       - name: Test
         env:
           WAVEYARD_ACCEPTANCE_ARTIFACT_DIR: .data/acceptance/waveyard-handoff
+          ARENA_TRANSITION_EVIDENCE_DIR: .data/acceptance/waveyard-handoff/transitions
         run: |
           mkdir -p .data/acceptance/waveyard-handoff
           set -o pipefail
@@ -177,6 +178,14 @@ jobs:
         run: npm run --silent test:acceptance:transport | tee transport-acceptance.tap
       - name: Exercise actual session controls, transitions and audible recovery
         run: npm run --silent test:acceptance:session | tee session-acceptance.tap
+      - name: Exercise Arcade draft and Artifact Library recovery (controlled HTTP)
+        run: node --test tests/acceptance/recovery-runtime.test.mjs | tee recovery-acceptance.tap
+      - name: Retain recovery evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-acceptance-${{ github.sha }}
+          path: recovery-acceptance.tap
       - name: Retain session evidence (including failures)
         if: always()
         uses: actions/upload-artifact@v4

@@ -51,6 +51,17 @@ export interface ForgeAIResult {
   title: string;
 }
 
+export interface ForgeDraft {
+  code: string;
+  validation: ForgeAIResult["validation"];
+  runtime: ForgeAIResult["runtime"];
+}
+/** An unvalidated draft is inspectable data, never a playable/saved game. */
+export class ForgeDraftError extends Error {
+  readonly draft: ForgeDraft;
+  constructor(message: string, draft: ForgeDraft) { super(message); this.name = "ForgeDraftError"; this.draft = draft; }
+}
+
 function titleFromPrompt(prompt: string): string {
   const clean = prompt.replace(/\b(make|create|build|generate|a|an|the|me|game|please)\b/gi, " ").replace(/\s+/g, " ").trim();
   return (clean.slice(0, 40) || "Custom Game").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -101,13 +112,15 @@ export async function forgeGameWithAI(
   let repairsUsed = 0;
   let repairRuntime: ForgeAIResult["repairRuntime"] | undefined;
 
+  const draft = (): ForgeDraft => ({ code, validation, runtime: { backend: executed.backend, modelId: executed.modelId, via: executed.via, fallback: executed.fallback, ms: executed.ms } });
   // One repair round with the validator's real complaints.
   if (!validation.ok && code) {
     repairsUsed = 1;
-    const repair = await call(
+    let repair: Awaited<ReturnType<typeof generate>>;
+    try { repair = await call(
       `Your previous HTML attempt:\n${code}\n\nYour previous attempt failed validation with these issues:\n- ${validation.issues.join("\n- ")}\n\nReturn the FIXED complete HTML document.`
-    );
-    if (repair.fallback) throw new Error("Repair model unavailable. The previous game has not been changed; reconnect a model and retry.");
+    ); } catch { throw new ForgeDraftError("Repair model unavailable. The previous game has not been changed; the failed draft is available for inspection/download.", draft()); }
+    if (repair.fallback || repair.backend === "arena-local-engine") throw new ForgeDraftError("Repair model unavailable. The previous game has not been changed; reconnect a model and retry. The failed draft is retained for inspection.", draft());
     repairRuntime = { backend: repair.backend, modelId: repair.modelId };
     const fixed = extractGameCode(repair.text);
     if (fixed) {
@@ -121,9 +134,7 @@ export async function forgeGameWithAI(
   }
 
   if (!validation.ok) {
-    const err = new Error(`AI draft failed validation: ${validation.issues.join("; ")}`);
-    (err as any).validation = validation;
-    throw err;
+    throw new ForgeDraftError(`AI draft failed validation: ${validation.issues.join("; ")}`, draft());
   }
 
   return {

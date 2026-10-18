@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Markdown from "@/components/Markdown";
 
 const KINDS = ["brief", "decision", "research", "concept", "plan", "critique", "prompt", "spec", "comparison", "answer"];
@@ -12,10 +12,27 @@ export default function ArtifactsPage() {
   const [kind, setKind] = useState("");
   const [projectId, setProjectId] = useState("");
 
-  useEffect(() => {
-    fetch("/api/artifacts?limit=100").then((r) => r.json()).then((j) => setArtifacts(j.artifacts ?? []));
-    fetch("/api/projects").then((r) => r.json()).then((j) => setProjects(j.projects ?? []));
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const response = await fetch("/api/artifacts?limit=100");
+      const result = await response.json();
+      if (!response.ok || !Array.isArray(result.artifacts)) throw new Error(result.error ?? "Artifact library could not be loaded. Retry.");
+      setArtifacts(result.artifacts);
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Artifact library unavailable. Retry."); }
+    finally { setLoading(false); }
   }, []);
+  useEffect(() => {
+    void load();
+    void fetch("/api/projects").then(async (response) => {
+      if (!response.ok) throw new Error("Project filters unavailable; saved artifacts are still accessible.");
+      const result = await response.json(); setProjects(result.projects ?? []);
+    }).catch(() => setProjectError("Project filters unavailable; saved artifacts are still accessible."));
+  }, [load]);
 
   const filtered = artifacts.filter((a) => {
     if (kind && a.kind !== kind) return false;
@@ -26,8 +43,16 @@ export default function ArtifactsPage() {
 
   async function remove(id: string) {
     if (!confirm("Delete this artifact?")) return;
-    await fetch(`/api/artifacts/${id}`, { method: "DELETE" });
-    setArtifacts((l) => l.filter((x) => x.id !== id));
+    setDeleting(id); setError(null);
+    try {
+      const response = await fetch(`/api/artifacts/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error ?? "Artifact was not deleted. Retry when storage is available.");
+      }
+      setArtifacts((l) => l.filter((x) => x.id !== id));
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Artifact was not deleted. Retry."); }
+    finally { setDeleting(null); }
   }
 
   function copy(body: string) {
@@ -57,6 +82,9 @@ export default function ArtifactsPage() {
           ))}
         </select>
       </div>
+      {loading && <p role="status">Loading saved artifacts…</p>}
+      {projectError && <p role="status">{projectError}</p>}
+      {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => void load()} disabled={loading}>Retry loading artifacts</button></div>}
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         {filtered.map((a) => (
           <details key={a.id} className="glass overflow-hidden rounded-2xl">
@@ -74,13 +102,13 @@ export default function ArtifactsPage() {
                 <a href={`/collab?challenge=${encodeURIComponent(a.body.slice(0, 2000))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🤝 Collab it</a>
                 <a href={`/council?material=${encodeURIComponent(a.body.slice(0, 2500))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🧠 Council it</a>
                 <button onClick={() => copy(a.body)} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">📋</button>
-                <button onClick={() => remove(a.id)} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-red-300 hover:bg-red-500/20">🗑️</button>
+                <button aria-label={`Delete ${a.title}`} disabled={deleting !== null} onClick={() => remove(a.id)} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-red-300 hover:bg-red-500/20">🗑️</button>
               </div>
             </div>
           </details>
         ))}
       </div>
-      {filtered.length === 0 && <p className="mt-6 text-center text-sm text-slate-500">No artifacts match. Run a council or save outputs as artifacts to grow the library.</p>}
+      {!loading && !error && filtered.length === 0 && <p className="mt-6 text-center text-sm text-slate-500">No artifacts match. Run a council or save outputs as artifacts to grow the library.</p>}
     </div>
   );
 }

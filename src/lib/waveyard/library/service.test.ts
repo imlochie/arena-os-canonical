@@ -1103,12 +1103,13 @@ test("smart collections: CRUD with strict validation, evaluated live over real t
 });
 
 test("completed mixed transitions survive handoff, donors, save/version restore and real WAV export", async () => {
+ for (const held of [false, true]) {
   const created = await sessions.createSession(OWNER, "Synthetic completed transition regression");
   for (const track of [trackA, trackB, trackA]) await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: track.id });
   const detail = await sessions.getSession(OWNER, created.id);
   const [a, b, c] = detail.tracks;
-  const cueA = { ...a.transition, crossfadeSeconds: 0.5, cue: { toSessionTrackId: b.id, fromDeck: 0, toDeck: 1, fromSeconds: 0.5, incomingSeconds: 0.25 } };
-  const cueB = { ...b.transition, crossfadeSeconds: 0, cue: { toSessionTrackId: c.id, fromDeck: 1, toDeck: 0, fromSeconds: 1.5, incomingSeconds: 0.5 } };
+  const cueA = { ...a.transition, crossfadeSeconds: 0.5, keepStems: held ? ["drums"] : [], cue: { toSessionTrackId: b.id, fromDeck: 0, toDeck: 1, fromSeconds: 0.5, incomingSeconds: 0.25 } };
+  const cueB = { ...b.transition, crossfadeSeconds: held ? 0.25 : 0, cue: { toSessionTrackId: c.id, fromDeck: 1, toDeck: 0, fromSeconds: 1.5, incomingSeconds: 0.5 } };
   await sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: a.id, stemType: "drums", toTrackId: trackB.id, atSeconds: 0.75 });
   const route = await import("@/app/api/library/sessions/[id]/studio-handoff/route");
   const countBefore = (await db.db.select().from(schema.projects)).length;
@@ -1135,7 +1136,7 @@ test("completed mixed transitions survive handoff, donors, save/version restore 
   assert.equal(state.automation.length, 9, "lane envelopes, including muted stems, persist through the existing automation contract");
   const outgoing = state.tracks[1]; // A drums, split at donor change
   assert.deepEqual(outgoing.clips.map((clip: { timelineStartMs: number; sourceOffsetMs: number; durationMs: number }) => [clip.timelineStartMs, clip.sourceOffsetMs, clip.durationMs]), [[0, 0, 750], [750, 750, 250]]);
-  assert.deepEqual(state.tracks[4].clips.map((clip: { timelineStartMs: number; sourceOffsetMs: number; durationMs: number }) => [clip.timelineStartMs, clip.sourceOffsetMs, clip.durationMs]), [[500, 250, 1250]]);
+  assert.deepEqual(state.tracks[4].clips.map((clip: { timelineStartMs: number; sourceOffsetMs: number; durationMs: number }) => [clip.timelineStartMs, clip.sourceOffsetMs, clip.durationMs]), [[500, 250, held ? 1500 : 1250]]);
   const save = await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify({ ...state.remix, tracks: state.tracks, automation: state.automation }) }), params);
   assert.equal(save.status, 200, await save.clone().text());
   const reopened = await read();
@@ -1168,7 +1169,7 @@ test("completed mixed transitions survive handoff, donors, save/version restore 
     const media = await import("@/app/api/exports/[id]/media/route");
     const download = await media.GET(new Request("http://arena.test/media?download=1"), { params: Promise.resolve({ id: job.id }) });
     assert.equal(download.status, 200);
-    const filename = path.join(root!, "completed-transitions.wav"), decoded = path.join(root!, "completed-transitions.f32");
+    const filename = path.join(root!, `completed-transitions${held ? "-held" : ""}.wav`), decoded = path.join(root!, "completed-transitions.f32");
     writeFileSync(filename, Buffer.from(await download.arrayBuffer()));
     const { validateAudio, exec } = await import("../audio");
     const { requireTool } = await import("../ffmpeg");
@@ -1183,13 +1184,14 @@ test("completed mixed transitions survive handoff, donors, save/version restore 
     };
     const signal = { initial: magnitude(220, 0.1, 0.3), fadeOut: magnitude(220, 0.55, 0.65), fadeIn: magnitude(880, 0.55, 0.65), donorOld: magnitude(220, 0.8, 0.9), donorNew: magnitude(880, 0.8, 0.9), beforeCut: magnitude(880, 1.5, 1.7), afterCut: magnitude(220, 1.8, 2), wrongAfterCut: magnitude(880, 1.8, 2) };
     assert.ok(signal.initial > 0.05, JSON.stringify(signal));
-    assert.ok(signal.fadeOut / signal.initial > 0.65 && signal.fadeOut / signal.initial < 0.95, JSON.stringify(signal));
+    assert.ok(held ? signal.fadeOut / signal.initial > 0.98 && signal.fadeOut / signal.initial < 1.02 : signal.fadeOut / signal.initial > 0.65 && signal.fadeOut / signal.initial < 0.95, JSON.stringify(signal));
     assert.ok(signal.fadeIn > 0.004 && signal.fadeIn < 0.025, JSON.stringify(signal));
     assert.ok(signal.donorOld < 0.002 && signal.donorNew > 0.03, JSON.stringify(signal));
-    assert.ok(signal.beforeCut > 0.03 && signal.afterCut > 0.02 && signal.wrongAfterCut < 0.002, JSON.stringify(signal));
+    assert.ok(signal.beforeCut > 0.03 && signal.afterCut > 0.02 && (held ? signal.wrongAfterCut > 0.003 : signal.wrongAfterCut < 0.002), JSON.stringify(signal));
     if (process.env.ARENA_TRANSITION_EVIDENCE_DIR) {
-      const out = process.env.ARENA_TRANSITION_EVIDENCE_DIR; mkdirSync(out, { recursive: true }); copyFileSync(filename, path.join(out, "completed-transitions.wav"));
-      writeFileSync(path.join(out, "result.json"), JSON.stringify({ syntheticAudio: true, sourceHead: spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(), workingDiffSha256: createHash("sha256").update(spawnSync("git", ["diff", "HEAD"], { encoding: "utf8" }).stdout).digest("hex"), state: restored, signal, wavSha256: createHash("sha256").update(readFileSync(filename)).digest("hex") }, null, 2));
+      const out = process.env.ARENA_TRANSITION_EVIDENCE_DIR; mkdirSync(out, { recursive: true }); copyFileSync(filename, path.join(out, `completed-transitions${held ? "-held" : ""}.wav`));
+      writeFileSync(path.join(out, `result${held ? "-held" : ""}.json`), JSON.stringify({ syntheticAudio: true, held, sourceHead: spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(), workingDiffSha256: createHash("sha256").update(spawnSync("git", ["diff", "HEAD"], { encoding: "utf8" }).stdout).digest("hex"), state: restored, signal, wavSha256: createHash("sha256").update(readFileSync(filename)).digest("hex") }, null, 2));
     }
   } finally { if (priorWorker === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = priorWorker; if (priorRedis === undefined) delete process.env.REDIS_URL; else process.env.REDIS_URL = priorRedis; }
+ }
 });

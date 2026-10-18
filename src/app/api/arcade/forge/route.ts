@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { insertArcadeGame } from "@/lib/arcadeStore";
-import { forgeGameWithAI } from "@/lib/games/forge-ai";
+import { ForgeDraftError, forgeGameWithAI } from "@/lib/games/forge-ai";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { isEphemeralBody } from "@/lib/privacy";
 import { validateGameCode } from "@/lib/games";
@@ -70,6 +70,7 @@ export async function POST(req: Request) {
       runtime: result.runtime,
     });
   } catch (e) {
+    if (e instanceof ForgeDraftError) return Response.json({ error: e.message, draft: e.draft }, { status: 422 });
     const message = e instanceof Error ? e.message : "generation failed";
     const noModel = (e as any)?.noModel === true || /no capable model|unavailable|not connected/i.test(message);
     if (noModel) {

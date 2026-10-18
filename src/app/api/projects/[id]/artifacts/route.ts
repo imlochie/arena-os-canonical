@@ -26,7 +26,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     return Response.json({ artifacts: rows });
   } catch (e) {
     console.error(e);
-    return Response.json({ artifacts: [] });
+    return Response.json({ error: "Artifact storage unavailable. Your saved work has not been removed; retry when the service recovers." }, { status: 503 });
   }
 }
 
