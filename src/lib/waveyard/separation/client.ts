@@ -125,11 +125,19 @@ export type DeepPreparationConsent = {
   license: string;
 };
 
+export type DeepPreparationStep = { id: string; label: string; detail: string };
+export type DeepPreparationPhase = { state: string; steps: DeepPreparationStep[] };
+export type DeepPreparationPlan = {
+  phases: DeepPreparationPhase[];
+  needsConsent: boolean;
+  consent: DeepPreparationConsent[];
+};
+
 export type DeepPreparationInspect = {
   status: DeepPreparationStatus;
   runtime: { processingMode: string; engine: { prepared: boolean; reason: string | null } };
   report?: unknown;
-  plan?: { phases: unknown[]; needsConsent: boolean; consent: DeepPreparationConsent[] };
+  plan?: DeepPreparationPlan;
 };
 
 /** The durable preparation status (cheap, pollable). */

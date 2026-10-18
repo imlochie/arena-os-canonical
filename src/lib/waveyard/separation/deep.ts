@@ -38,7 +38,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { resolveExecutable } from "@/lib/capabilities/resolver";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 

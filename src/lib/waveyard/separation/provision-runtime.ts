@@ -25,12 +25,13 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { checksumFile } from "../audio";
 import { resolveToolPath } from "@/lib/waveyard/ffmpeg";
 import {
+  DEEP_CHECKPOINT_CHECKSUM,
   DEEP_CHECKPOINT_FILE,
   DEEP_CHECKPOINT_URL,
   DEEP_MODEL_SIGNATURE,
@@ -45,7 +46,6 @@ import {
   PYTORCH_CPU_INDEX,
   TORCHAUDIO_VERSION,
   TORCH_VERSION,
-  checkpointChecksumMatches,
   type DiscoveredPython,
   type EnvironmentReport,
 } from "./provision";
@@ -104,7 +104,7 @@ export type ProvisionContext = {
 
 /** The default process runner: argument-array spawn, bounded by a
  *  timeout and a cancellation signal. Never uses a shell. */
-export function defaultRunProcess: RunProcess = (bin, args, opts) =>
+export const defaultRunProcess: RunProcess = (bin, args, opts) =>
   new Promise((resolvePromise) => {
     const child = spawn(bin, [...args], {
       cwd: opts.cwd,
@@ -264,7 +264,6 @@ export async function downloadToTemp(
   tempPath: string,
   opts: {
     ctx: ProvisionContext;
-    fetchImpl?: FetchLike;
     expectedBytes?: number;
     maxBytes?: number;
     onProgress?: (done: number, total: number | null) => void;
@@ -272,7 +271,7 @@ export async function downloadToTemp(
 ): Promise<DownloadResult> {
   const { ctx } = opts;
   throwIfCancelled(ctx);
-  const response = await trustedFetch(url, { fetch: opts.fetchImpl, signal: ctx.signal, timeoutMs: 60_000 });
+  const response = await trustedFetch(url, { fetch: ctx.fetch, signal: ctx.signal, timeoutMs: 60_000 });
   const declared = Number(response.headers.get("content-length") ?? NaN);
   const total = Number.isFinite(declared) ? declared : null;
   // A declared length that is wildly off the expectation is refused
@@ -288,23 +287,37 @@ export async function downloadToTemp(
   if (response.body === null) {
     throw new ProvisionError("DOWNLOAD_FAILED", "The source returned an empty body.");
   }
-  const source = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream);
+  await mkdir(dirname(tempPath), { recursive: true });
+  // Count bytes as they flow THROUGH the pipeline to the file — a
+  // separate 'data' listener would put the source into flowing mode
+  // and steal the bytes from the write stream (and an error on a
+  // bare 'data' listener becomes an uncaught exception).
   let bytes = 0;
   const maxBytes = opts.maxBytes ?? 4_000_000_000;
-  source.on("data", (chunk: Buffer) => {
-    bytes += chunk.length;
-    if (bytes > maxBytes) {
-      source.destroy(new Error("size cap exceeded"));
-      return;
-    }
-    opts.onProgress?.(bytes, total);
+  const counter = new Transform({
+    transform(chunk: Buffer, _encoding: string, callback: (error?: Error | null, data?: Buffer) => void) {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        callback(new Error("size cap exceeded"));
+        return;
+      }
+      opts.onProgress?.(bytes, total);
+      callback(null, chunk);
+    },
   });
-  await mkdir(dirname(tempPath), { recursive: true });
+  const source = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream);
   try {
-    await pipeline(source, createWriteStream(tempPath));
+    await pipeline(source, counter, createWriteStream(tempPath));
   } catch (error) {
     await rm(tempPath, { force: true }).catch(() => undefined);
     if (ctx.signal?.aborted) throw new ProvisionCancelledError();
+    if (error instanceof ProvisionError) throw error;
+    if (/size cap exceeded/.test(String((error as Error)?.message ?? error))) {
+      throw new ProvisionError(
+        "DOWNLOAD_TOO_LARGE",
+        `The download exceeded the ${maxBytes}-byte safety cap and was discarded.`,
+      );
+    }
     throw new ProvisionError(
       "DOWNLOAD_INTERRUPTED",
       `The download was interrupted: ${error instanceof Error ? error.message : String(error)}.`,
@@ -457,10 +470,10 @@ async function enableSitePackages(pythonDir: string, ctx: ProvisionContext): Pro
  *  (sha256-verified against PyPI's own metadata) and unpack it into
  *  site-packages — a wheel's layout IS the installed layout. */
 async function bootstrapPip(pythonDir: string, ctx: ProvisionContext): Promise<void> {
-  const fetch = ctx.fetch ?? ((url: string, init?: RequestInit) => fetch(url, init));
+  const fetchImpl = ctx.fetch ?? ((url: string, init?: { signal?: AbortSignal }) => globalThis.fetch(url, init));
   const metadataUrl = "https://pypi.org/pypi/pip/json";
   validateTrustedUrl(metadataUrl);
-  const metadataResponse = await fetch(metadataUrl, { signal: ctx.signal });
+  const metadataResponse = await fetchImpl(metadataUrl, { signal: ctx.signal });
   if (!metadataResponse.ok) {
     throw new ProvisionError("RUNTIME_PIP_FAILED", `Could not read pip's package metadata (HTTP ${metadataResponse.status}).`);
   }
@@ -474,7 +487,7 @@ async function bootstrapPip(pythonDir: string, ctx: ProvisionContext): Promise<v
     throw new ProvisionError("RUNTIME_PIP_FAILED", "PyPI did not publish a sha256 for the pip wheel — refusing an unverified install.");
   }
   const tempPath = join(pythonDir, `.pip-${wheel.filename}`);
-  const { sha256 } = await downloadToTemp(wheel.url, tempPath, { ctx, fetchImpl: fetch, expectedBytes: wheel.size });
+  const { sha256 } = await downloadToTemp(wheel.url, tempPath, { ctx, expectedBytes: wheel.size });
   if (sha256 !== expectedSha) {
     await rm(tempPath, { force: true }).catch(() => undefined);
     throw new ProvisionError("INTEGRITY_FAILED", "The pip wheel failed its integrity check — refusing to install it.");
@@ -494,13 +507,21 @@ async function bootstrapPip(pythonDir: string, ctx: ProvisionContext): Promise<v
  * it. The result is isolated inside Arena's data directory — nothing
  * is installed system-wide.
  */
-export async function acquireManagedPython(envDir: string, ctx: ProvisionContext): Promise<string> {
+export async function acquireManagedPython(
+  envDir: string,
+  ctx: ProvisionContext,
+  opts: { platform?: NodeJS.Platform; arch?: string; expectedBytes?: number } = {},
+): Promise<string> {
   throwIfCancelled(ctx);
-  const url = managedPythonUrl();
+  const url = managedPythonUrl(opts.platform ?? process.platform, opts.arch ?? process.arch);
   const pythonDir = join(envDir, "python");
   const zipPath = join(envDir, ".python-download.zip");
   ctx.log(`Downloading the managed CPython ${MANAGED_PYTHON_VERSION} runtime from python.org…`);
-  const { sha256 } = await downloadToTemp(url, zipPath, { ctx, expectedBytes: 11_000_000, maxBytes: 64_000_000 });
+  const { sha256 } = await downloadToTemp(url, zipPath, {
+    ctx,
+    expectedBytes: opts.expectedBytes ?? 11_000_000,
+    maxBytes: 64_000_000,
+  });
   // python.org does not publish a stable machine-readable sha256 for
   // the embeddable zip; integrity is established by HTTPS from the
   // official host plus the version self-check below (the runtime
@@ -594,26 +615,36 @@ export async function installDependencies(python: string, ctx: ProvisionContext)
  * prefix its filename encodes — `repo.check_checksum`), and place it
  * atomically into the app's models directory. A truncated, corrupt or
  * wrong-model file is detected and never installed.
+ *
+ * The expected prefix defaults to the upstream checkpoint's constant;
+ * a test may supply its own to exercise the SAME verification and
+ * atomic-placement code with a genuinely-matching file (the production
+ * prefix is the upstream fact, never a test invention).
  */
-export async function acquireCheckpoint(modelsDir: string, ctx: ProvisionContext): Promise<void> {
+export async function acquireCheckpoint(
+  modelsDir: string,
+  ctx: ProvisionContext,
+  opts: { checksumPrefix?: string; expectedBytes?: number } = {},
+): Promise<void> {
   throwIfCancelled(ctx);
+  const expectedPrefix = opts.checksumPrefix ?? DEEP_CHECKPOINT_CHECKSUM;
   const finalPath = join(modelsDir, DEEP_CHECKPOINT_FILE);
   const tempPath = join(modelsDir, `.download-${DEEP_CHECKPOINT_FILE}.tmp`);
   await mkdir(modelsDir, { recursive: true });
   ctx.log(`Downloading the ${DEEP_CHECKPOINT_FILE} model from Demucs' official store…`);
   const { bytes, sha256 } = await downloadToTemp(DEEP_CHECKPOINT_URL, tempPath, {
     ctx,
-    expectedBytes: 52_400_000,
+    expectedBytes: opts.expectedBytes ?? 52_400_000,
     maxBytes: 200_000_000,
     onProgress: (done, total) => ctx.log(`  model download: ${(done / 1_000_000).toFixed(1)} MB${total === null ? "" : ` / ${(total / 1_000_000).toFixed(1)} MB`}`),
   });
   // The upstream integrity contract: the first 8 hex chars of the
   // file's sha256 equal the checksum encoded in its filename.
-  if (!checkpointChecksumMatches(sha256)) {
+  if (!sha256.toLowerCase().startsWith(expectedPrefix.toLowerCase())) {
     await rm(tempPath, { force: true }).catch(() => undefined);
     throw new ProvisionError(
       "INTEGRITY_FAILED",
-      `The downloaded model failed Demucs' integrity check (sha256 ${sha256.slice(0, 12)}…, expected prefix ${DEEP_CHECKPOINT_FILE.split("-")[1].replace(/\.th$/, "")}). Nothing was installed.`,
+      `The downloaded model failed Demucs' integrity check (sha256 ${sha256.slice(0, 12)}…, expected prefix ${expectedPrefix}). Nothing was installed.`,
     );
   }
   // Atomic placement: the engine only ever sees a complete file.
@@ -627,8 +658,17 @@ export async function acquireCheckpoint(modelsDir: string, ctx: ProvisionContext
  * prefix Demucs itself encodes) before it is copied into the models
  * directory, so a mislabelled or wrong file is rejected, never
  * silently accepted because of its filename.
+ *
+ * As with acquisition, the expected prefix defaults to the upstream
+ * constant; a test may supply its own to exercise the real
+ * validation + atomic-import path with a genuinely-matching file.
  */
-export async function importCheckpoint(sourcePath: string, modelsDir: string, ctx: ProvisionContext): Promise<void> {
+export async function importCheckpoint(
+  sourcePath: string,
+  modelsDir: string,
+  ctx: ProvisionContext,
+  opts: { checksumPrefix?: string } = {},
+): Promise<void> {
   throwIfCancelled(ctx);
   if (!isAbsolute(sourcePath)) {
     throw new ProvisionError("IMPORT_INVALID", "The checkpoint to import must be an absolute path.");
@@ -637,8 +677,9 @@ export async function importCheckpoint(sourcePath: string, modelsDir: string, ct
   if (details === null || !details.isFile() || details.size <= 0) {
     throw new ProvisionError("IMPORT_INVALID", `No readable checkpoint was found at ${sourcePath}.`);
   }
+  const expectedPrefix = opts.checksumPrefix ?? DEEP_CHECKPOINT_CHECKSUM;
   const sha256 = await checksumFile(sourcePath);
-  if (!checkpointChecksumMatches(sha256)) {
+  if (!sha256.toLowerCase().startsWith(expectedPrefix.toLowerCase())) {
     throw new ProvisionError(
       "INTEGRITY_FAILED",
       `The file at ${sourcePath} is not the htdemucs_6s checkpoint (its sha256 does not match the ${DEEP_CHECKPOINT_FILE} identity Demucs verifies). Only that exact checkpoint is accepted.`,

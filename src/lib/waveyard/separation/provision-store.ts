@@ -54,8 +54,8 @@ import {
   ProvisionError,
   type ProvisionContext,
 } from "./provision-runtime";
-import { deepCheckpointPath, resolveDeepEnvDir, resolveModelsDir } from "./deep";
-import type { NodeJS } from "node:process";
+import { deepCheckpointPath, resolveDeepEnvDir } from "./deep";
+import { resolveModelsDir } from "./session";
 
 // ------------------------------------------------------------ status shape
 
@@ -199,8 +199,7 @@ export type StartOutcome =
   | { outcome: "started"; epoch: string }
   | { outcome: "already-running"; state: PreparationState }
   | { outcome: "already-ready" }
-  | { outcome: "consent-missing"; missing: readonly string[] }
-  | { outcome: "refused"; reason: string };
+  | { outcome: "consent-missing"; missing: readonly string[] };
 
 export type PreparationManager = {
   /** The durable status (with honest restart recovery). */
@@ -232,13 +231,14 @@ export function createPreparationManager(
   options: {
     envDir: string;
     modelsDir: string;
-    runtime?: typeof import("./provision-runtime");
+    /** Injectable machine operations (tests supply doubles). */
+    runtime?: Partial<typeof import("./provision-runtime")>;
     now?: () => number;
   } = { envDir: resolveDeepEnvDir(), modelsDir: resolveModelsDir() },
 ): PreparationManager {
   const envDir = options.envDir;
   const modelsDir = options.modelsDir;
-  const runtime = options.runtime ?? ({} as typeof import("./provision-runtime"));
+  const runtime = options.runtime ?? ({} as Partial<typeof import("./provision-runtime")>);
   const discover = runtime.discoverEnvironment ?? discoverEnvironment;
   const runManagedPython = runtime.acquireManagedPython ?? acquireManagedPython;
   const runVenv = runtime.createManagedVenv ?? createManagedVenv;
@@ -291,6 +291,29 @@ export function createPreparationManager(
       if (!live) {
         // The process that was preparing is gone — honest recovery.
         return { ...stored, state: stateAfterInterruption(stored.state) };
+      }
+    }
+    // A remembered `ready` must still be true on disk: if the
+    // interpreter or the checkpoint was replaced or removed, the
+    // engine is no longer prepared — report that honestly instead
+    // of a stale readiness. (The inference gate re-probes anyway;
+    // this keeps the STATUS record from lying.)
+    if (stored.state === "ready") {
+      const pythonGone = stored.environment.python !== null && !existsSync(stored.environment.python);
+      const checkpointGone = !existsSync(stored.environment.checkpointPath);
+      if (pythonGone || checkpointGone) {
+        const gone = pythonGone ? "the prepared Python interpreter" : "the model checkpoint";
+        return {
+          ...stored,
+          state: "not_prepared",
+          error: {
+            code: "ENVIRONMENT_CHANGED",
+            message:
+              `The deep engine is no longer prepared: ${gone} that preparation verified is gone ` +
+              `(${pythonGone ? stored.environment.python : stored.environment.checkpointPath}). ` +
+              "Run preparation again to restore it.",
+          },
+        };
       }
     }
     return stored;
@@ -381,13 +404,13 @@ export function createPreparationManager(
     epoch: string,
     controller: AbortController,
   ): Promise<void> {
-    const setPhase = async (state: PreparationState, stepId: PreparationStepId, label: string) => {
+    const setPhase = async (phaseState: PreparationState, stepId: PreparationStepId, label: string) => {
       const current = state.status ?? freshStatus(envDir, modelsDir);
       const steps = current.steps.map((step) => ({
         ...step,
         state: step.id === stepId ? ("active" as StepState) : step.state === "active" ? ("done" as StepState) : step.state,
       }));
-      await transition({ state, step: stepId, progress: { percent: 0, label }, steps });
+      await transition({ state: phaseState, step: stepId, progress: { percent: 0, label }, steps });
     };
 
     const heartbeat = setInterval(() => void heartbeatLock(envDir, epoch), 5_000);

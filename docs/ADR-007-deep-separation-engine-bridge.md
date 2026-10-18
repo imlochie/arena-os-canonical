@@ -1,10 +1,10 @@
 # ADR-007 — The deep separation engine bridge (A7)
 
 Status: **accepted, implemented and tested** (2026-10; amended after the A7
-code review — see the "Review follow-up" entries below. The engine-quality
-verification on real music remains an owner-machine acceptance item).
-Scope: the second separation engine — the deep pass — and every call this
-slice made on the owner's behalf while wiring it.
+code review — see the "Review follow-up" entries below, and amended again to
+make deep-engine preparation self-service — see D9). Scope: the second
+separation engine — the deep pass — and every call this slice made on the
+owner's behalf while wiring it.
 
 ## Context
 
@@ -211,6 +211,54 @@ records what it superseded — not an implicit side effect of going deeper.
   `5c90dfd2-34c22ccb.th` on the owner's machine (download it from Demucs'
   release store or copy it out of the torch hub cache into
   `WAVEYARD_MODELS_DIR`) — is the owner-machine acceptance step.
+
+### D9 — Amendment: self-service preparation (the owner is not the installer)
+
+D1a made the model a *local* checkpoint the app never downloads, and the
+prepare hints told the owner to run `pip install demucs` and fetch the
+checkpoint by hand. That placed the whole burden of assembly on the owner —
+the exact thing Arena exists to remove — and it made the deep pass silently
+unavailable on every clean machine. This amendment deliberately changes that
+policy, with the checks D1a was protecting kept intact:
+
+- **Arena MAY prepare the deep engine for the owner, with explicit consent.**
+  It creates an isolated, application-managed Python environment
+  (`.data/waveyard-deep-env`, git-ignored; `WAVEYARD_DEEP_ENV_DIR`),
+  installs the pinned stack (Demucs 4.0.1, PyTorch 2.0.1 CPU, torchaudio
+  2.0.1) into it — never into global Python — and runs everything from
+  there. When no compatible system interpreter exists (Python 3.12, the
+  common case, has no wheels for the pinned torchaudio line), Arena may
+  acquire the official CPython 3.11 embeddable runtime into the same
+  isolated directory. Nothing is installed system-wide.
+- **Arena MAY acquire the checkpoint — but only the pinned one, only from
+  Demucs' own authoritative store (`dl.fbaipublicfiles.com/demucs/…`),
+  only with the owner's informed consent, and only after verifying it with
+  Demucs' own integrity contract** (the sha256 prefix the filename encodes,
+  `34c22ccb`). It is downloaded to a temp file, checksum-verified, then
+  atomically placed in the app's models directory. A truncated, corrupt or
+  wrong-model file is detected and refused. The app still never bundles or
+  redistributes the weights, and still never downloads on startup.
+- **The licensing condition is shown to the owner before the download.**
+  Demucs' code is MIT; its pretrained weights are distributed by Meta for
+  research/non-commercial use (not MIT). The consent screen states this.
+- **D1a's honesty is preserved, not contradicted:** the deep pass still
+  loads only a local checkpoint with `--repo` and verifies it on load. What
+  changed is *who places the file* — now Arena can, with consent, instead
+  of the owner manually. An owner who prefers to place it themselves (or
+  already has it) can use the guided **import** path, which validates the
+  file's checksum before accepting it.
+- **Readiness still reflects reality.** The prepared interpreter is published
+  via a pointer file only AFTER a real inference smoke test passes, and the
+  bridge resolves it through the SAME candidate list as the probe and the
+  run (`deep.ts`). Removing the interpreter or the checkpoint drops
+  readiness immediately — a remembered install result is never trusted.
+- **The owner stays in control.** Preparation is a first-class lifecycle
+  (inspect → consent → prepare → verify → test → ready, with failed /
+  cancelled / recovering states), runs as a durable background task whose
+  state survives navigation, reconnect and an Arena restart, can be
+  cancelled, and never reports Ready on a partial failure. Full research,
+  sources and the owner-machine acceptance procedure are in
+  `docs/DEEP-ENGINE-PROVISIONING.md`.
 
 ## Consequences
 
