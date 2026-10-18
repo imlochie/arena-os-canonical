@@ -2,6 +2,8 @@ import { db } from "@/db";
 import { insertArcadeGame } from "@/lib/arcadeStore";
 import { forgeGameWithAI } from "@/lib/games/forge-ai";
 import { requireUser } from "@/lib/waveyard/local-context";
+import { isEphemeralBody } from "@/lib/privacy";
+import { validateGameCode } from "@/lib/games";
 import { requireApiAccess } from "@/lib/security/api-access";
 
 export const dynamic = "force-dynamic";
@@ -24,9 +26,16 @@ export async function POST(req: Request) {
   const prompt = String(body?.prompt ?? "").trim();
   if (!prompt) return Response.json({ error: "prompt is required" }, { status: 400 });
 
+  if (prompt.length > 2000) return Response.json({ error: "prompt too long" }, { status: 400 });
+  const priorCode = body?.priorCode;
+  if (priorCode !== undefined && (typeof priorCode !== "string" || !validateGameCode(priorCode).ok)) {
+    return Response.json({ error: "priorCode must be a validated complete game HTML file" }, { status: 400 });
+  }
+  const ephemeral = isEphemeralBody(body);
   const localOnly = body?.localOnly === true;
   try {
     const result = await forgeGameWithAI(prompt, {
+      priorCode,
       keys: localOnly ? undefined : body?.keys,
       localOnly,
       modelId: body?.modelId ? String(body.modelId) : undefined,
@@ -35,7 +44,8 @@ export async function POST(req: Request) {
     // Persist only code that passed validation. The response still carries
     // the generated code either way — the code is the deliverable — but a
     // failed validation never becomes a stored catalogue entry.
-    if (result.validation?.ok) {
+    let persistenceError: string | undefined;
+    if (result.validation?.ok && !ephemeral) {
       try {
         game = await insertArcadeGame(db, {
           prompt: prompt.slice(0, 2000),
@@ -46,11 +56,12 @@ export async function POST(req: Request) {
           ownerId: user.id,
         });
       } catch {
-        /* persistence is best-effort; the code itself is the deliverable */
+        persistenceError = "Game generated but could not be saved. Download the HTML before leaving and retry saving later.";
       }
     }
     return Response.json({
-      game: game ? { ...game, code: result.code } : null,
+      game: game ? { ...game, code: result.code } : ephemeral ? { id: `ephemeral-${Date.now().toString(36)}`, ephemeral: true, prompt, gameType: result.gameType, code: result.code } : null,
+      persistenceError,
       code: result.code,
       engine: result.engine,
       title: result.title,
@@ -65,7 +76,7 @@ export async function POST(req: Request) {
       return Response.json(
         {
           error:
-            "No model is reachable for generative codegen. Add a free key (Groq/OpenRouter) in Settings, load on-device WebLLM, or run with your own model — or use the instant offline forge for template cores.",
+            "No model is reachable for generative codegen. Add a free key (Groq/OpenRouter) in Settings, run a TurboAgent local model server, or select on-device AI in Arcade — or use the instant offline forge for template cores.",
         },
         { status: 503 },
       );

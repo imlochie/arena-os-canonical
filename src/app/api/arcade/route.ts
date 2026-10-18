@@ -68,16 +68,24 @@ export async function POST(req: Request) {
       if (!v.ok) {
         return Response.json({ error: "generated code failed validation", issues: v.issues }, { status: 400 });
       }
-      const gameType = (body.gameType as GameType) ?? detectGameType(prompt || "ai game");
+      const gameType = (body.gameType as GameType) ?? detectGameType(prompt || "ai game") ?? "custom";
+      // A client may label a verified core only if its bytes match that core.
+      let engine = "on-device-ai";
+      if (body.engine === "verified" || body.engine === "remix") {
+        try {
+          const core = generateGameOffline(prompt, body.gameType);
+          if (core.code === code) engine = core.engine;
+        } catch { /* custom code remains on-device-ai */ }
+      }
       if (ephemeral) {
-        await logPrivacyEvent("ephemeral_arcade", `engine=on-device-ai type=${gameType}`);
+        await logPrivacyEvent("ephemeral_arcade", `engine=${engine} type=${gameType}`);
         return Response.json({
           game: {
             id: `ephemeral-${Date.now().toString(36)}`,
             ephemeral: true,
             prompt: prompt || "on-device AI game",
             gameType,
-            engine: "on-device-ai",
+            engine,
             code,
             createdAt: new Date().toISOString(),
           },
@@ -87,7 +95,7 @@ export async function POST(req: Request) {
       const row = await insertArcadeGame(db, {
         prompt: prompt || "on-device AI game",
         gameType,
-        engine: "on-device-ai",
+        engine,
         code,
         parentId: parentId ?? null,
         ownerId: user.id,
@@ -97,6 +105,7 @@ export async function POST(req: Request) {
 
     // Path 2: instant offline pipeline (verified core + remix).
     const forceType = (body.gameType as GameType | undefined) || undefined;
+    if (!forceType && !detectGameType(prompt)) return Response.json({ error: "No offline template matches. Use AI generation or choose an explicit template." }, { status: 422 });
     const g = generateGameOffline(prompt, forceType === "arena" && !body.gameType ? undefined : forceType);
     const v = validateGameCode(g.code);
     if (ephemeral) {

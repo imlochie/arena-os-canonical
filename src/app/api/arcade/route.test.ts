@@ -139,7 +139,7 @@ test("arcade security: validation gate, owner scoping, ownership-checked delete"
   }
 
   // 1. Valid generated game is persisted and records its owner.
-  const created = await routes.POST(arcadeRequest("/api/arcade", { prompt: "a calm asteroid drifter" }));
+  const created = await routes.POST(arcadeRequest("/api/arcade", { prompt: "a calm asteroid drifter", gameType: "arena" }));
   assert.equal(created.status, 201);
   const createdBody = (await created.json()) as { game: { id: string; ownerId: string }; validation: { ok: boolean } };
   assert.equal(createdBody.validation.ok, true);
@@ -291,4 +291,34 @@ test("artifact reads are owner-private: no cross-owner or anonymous access", asy
     if (createdArtifact) await deleteArtifact(db, createdArtifact.id, owner);
     await db.delete(projects).where(eq(projects.id, project.id));
   }
+});
+
+
+test("arcade rejects unsupported offline mechanics and persists verified provenance", async (t) => {
+  if (!fixture || !routes) return t.skip("embedded postgres platform package unavailable");
+  const unsupported = await routes.POST(arcadeRequest("/api/arcade", { prompt: "a railway logistics puzzle with cargo contracts" }));
+  assert.equal(unsupported.status, 422);
+  assert.match((await unsupported.json()).error, /No offline template/);
+  const { generateGameOffline } = await import("@/lib/games");
+  const core = generateGameOffline("snake");
+  const saved = await routes.POST(arcadeRequest("/api/arcade", {
+    prompt: "snake", clientCode: core.code, gameType: core.gameType, engine: core.engine,
+  }));
+  assert.equal(saved.status, 201);
+  const { game } = await saved.json();
+  assert.equal(game.engine, "verified");
+  const reopened = await idRoutes!.GET(new Request(`http://127.0.0.1/api/arcade/${game.id}`), { params: Promise.resolve({ id: game.id }) });
+  const persisted = (await reopened.json()).game;
+  assert.equal(persisted.code, core.code);
+  assert.equal(persisted.engine, "verified");
+});
+
+test("generative route rejects invalid iteration context and unavailable model honestly", async (t) => {
+  if (!fixture) return t.skip("embedded postgres platform package unavailable");
+  const forge = await import("./forge/route");
+  const invalid = await forge.POST(arcadeRequest("/api/arcade/forge", { prompt: "add cargo", priorCode: "broken" }));
+  assert.equal(invalid.status, 400);
+  const unavailable = await forge.POST(arcadeRequest("/api/arcade/forge", { prompt: "railway logistics puzzle", localOnly: true }));
+  assert.equal(unavailable.status, 503);
+  assert.equal((await unavailable.json()).code, undefined);
 });

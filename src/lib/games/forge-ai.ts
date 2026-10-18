@@ -58,7 +58,7 @@ function titleFromPrompt(prompt: string): string {
 
 export async function forgeGameWithAI(
   prompt: string,
-  opts: { keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string }; localOnly?: boolean; modelId?: string } = {},
+  opts: { keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string }; localOnly?: boolean; modelId?: string; priorCode?: string } = {},
   deps: { generate?: typeof generate } = {}
 ): Promise<ForgeAIResult> {
   const gen = deps.generate ?? generate;
@@ -66,7 +66,9 @@ export async function forgeGameWithAI(
   const mods: Mods = parseMods(prompt);
 
   const userPrompt =
-    `Build this game: "${prompt}"\n\n` +
+    (opts.priorCode
+      ? `Modify the CURRENT GAME to fulfill this instruction: ${prompt}\nPreserve existing mechanics unless the instruction changes them.\nCURRENT GAME:\n${opts.priorCode}\n\n`
+      : `Build this game: "${prompt}"\n\n`) +
     (Object.keys(mods).length ? `Detected mods to honor: ${JSON.stringify(mods)}\n` : "") +
     `Return ONLY the complete HTML document. No commentary, no fences around anything else.`;
 
@@ -85,7 +87,7 @@ export async function forgeGameWithAI(
   // Honesty gate: if the request fell back to the deterministic Local
   // Engine, it cannot write an arbitrary game — say so instead of
   // "validating" prose and failing confusingly.
-  if (first.fallback) {
+  if (first.fallback || first.backend === "arena-local-engine") {
     const err = new Error(
       `no capable model is reachable (request fell back to the deterministic Local Engine). ` +
         `Connect a model — free Groq/OpenRouter key in Settings, on-device WebLLM, or a TurboAgent local server — then generate any game.`
@@ -93,6 +95,7 @@ export async function forgeGameWithAI(
     (err as any).noModel = true;
     throw err;
   }
+  let executed = first;
   let code = extractGameCode(first.text) ?? "";
   let validation = validateGameCode(code);
   let repairsUsed = 0;
@@ -102,13 +105,15 @@ export async function forgeGameWithAI(
   if (!validation.ok && code) {
     repairsUsed = 1;
     const repair = await call(
-      `Your previous attempt failed validation with these issues:\n- ${validation.issues.join("\n- ")}\n\nReturn the FIXED complete HTML document.`
+      `Your previous HTML attempt:\n${code}\n\nYour previous attempt failed validation with these issues:\n- ${validation.issues.join("\n- ")}\n\nReturn the FIXED complete HTML document.`
     );
+    if (repair.fallback) throw new Error("Repair model unavailable. The previous game has not been changed; reconnect a model and retry.");
     repairRuntime = { backend: repair.backend, modelId: repair.modelId };
     const fixed = extractGameCode(repair.text);
     if (fixed) {
       const fixedValidation = validateGameCode(fixed);
       if (fixedValidation.ok || fixedValidation.issues.length < validation.issues.length) {
+        executed = repair;
         code = fixed;
         validation = fixedValidation;
       }
@@ -124,10 +129,10 @@ export async function forgeGameWithAI(
   return {
     code,
     engine: "ai-codegen",
-    gameType: detectGameType(prompt),
+    gameType: detectGameType(prompt) ?? "custom",
     repairsUsed,
     validation,
-    runtime: { backend: first.backend, modelId: first.modelId, via: first.via, fallback: first.fallback, ms: first.ms },
+    runtime: { backend: executed.backend, modelId: executed.modelId, via: executed.via, fallback: executed.fallback, ms: first.ms + (executed === first ? 0 : executed.ms) },
     repairRuntime,
     title: titleFromPrompt(prompt),
   };

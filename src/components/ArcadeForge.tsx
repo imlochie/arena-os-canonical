@@ -129,11 +129,11 @@ export default function ArcadeForge() {
     });
   }
 
-  async function runInstant(p: string, type: GameType, parentId?: string) {
+  async function runInstant(p: string, type: GameType | null, parentId?: string) {
     const t0 = performance.now();
     // Instant path runs 100% locally in this browser tab — not even a server
     // round-trip is needed for generation. Then we persist the result.
-    const g = generateGameOffline(p, type === "arena" && gameType === "auto" ? undefined : type);
+    const g = generateGameOffline(p, type ?? undefined);
     const v = validateGameCode(g.code);
     if (!v.ok) throw new Error("core validation failed: " + v.issues.join("; "));
     const ms = Math.round(performance.now() - t0);
@@ -142,15 +142,14 @@ export default function ArcadeForge() {
       const logged = await persistGame({ prompt: p, clientCode: g.code, gameType: g.gameType, engine: g.engine });
       setGame({ ...logged, code: g.code, genMs: ms, engine: g.engine });
     } else {
-      const saved = await persistGame({ prompt: p, clientCode: g.code, gameType: g.gameType, parentId });
-      // server stamps engine as on-device-ai for clientCode; correct it for cores
+      const saved = await persistGame({ prompt: p, clientCode: g.code, gameType: g.gameType, engine: g.engine, parentId });
       setGame({ ...saved, code: g.code, genMs: ms, engine: g.engine });
       fetchHistory();
     }
     setNotice(`⚡ ${g.title} forged in ${ms}ms (${g.engine}) — validated, ${(g.code.length / 1024).toFixed(1)}KB single file.`);
   }
 
-  async function runServerAI(p: string) {
+  async function runServerAI(p: string, parentId?: string, priorCode?: string) {
     // Generative path: ANY game, built by a real model with the construction
     // knowledge base. Works with free keys (Groq/OpenRouter), BYOK, or a
     // TurboAgent local server. Honest 503 when nothing is reachable.
@@ -158,36 +157,31 @@ export default function ArcadeForge() {
     const res = await fetch("/api/arcade/forge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: p, keys: loadKeys(), ...privacyFlags() }),
+      body: JSON.stringify({ prompt: p, parentId, priorCode, keys: loadKeys(), ...privacyFlags() }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setNotice(`✨ Generative forge unavailable — ${body.error ?? "no model reachable"}. The offline forge below still delivers instantly.`);
-      return;
+      throw new Error(body.error ?? "Generative forge unavailable. Connect a model and retry.");
     }
     const rt = body.runtime ?? {};
-    setGame({ ...(body.game ?? {}), code: body.code, engine: "ai-codegen", genMs: rt.ms });
+    setGame({ prompt: p, gameType: "custom", ...(body.game ?? {}), code: body.code, engine: "ai-codegen", genMs: rt.ms });
     fetchHistory();
     setNotice(
-      `✨ ${body.title} built by AI (${rt.backend ?? "?"}${rt.fallback ? " · fallback" : ""}) — validated${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. This is generated code, not a template.`
+      `${body.game?.ephemeral ? "Ephemeral — not saved. " : body.game ? "Saved. " : "Not saved — download this game before leaving. "}✨ ${body.title} built by AI (${rt.backend ?? "?"}${rt.fallback ? " · fallback" : ""}) — validated${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. This is generated code, not a template.`
     );
   }
 
   async function runAI(p: string, parentId?: string, priorCode?: string) {
     const ok = await ensureEngine();
     if (!ok) {
-      // Graceful downgrade: still deliver a game, instantly.
-      const type = gameType === "auto" ? detectGameType(p) : gameType;
-      setNotice("🧠 On-device AI unavailable — delivered an instant verified core instead. Zero boundaries, zero waiting.");
-      await runInstant(p, type, parentId);
-      return;
+      throw new Error("On-device generation unavailable. Load a supported model or use online generation; the existing game is unchanged.");
     }
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setStreamed("");
     setPhase("🧠 On-device AI writing your game…");
     const user = priorCode
-      ? `Modify this complete single-file HTML5 game per the instruction.\n\nINSTRUCTION: ${p}\n\nCURRENT GAME FILE:\n${priorCode.slice(0, 30000)}`
+      ? `Modify this complete single-file HTML5 game per the instruction.\n\nINSTRUCTION: ${p}\n\nCURRENT GAME FILE:\n${priorCode}`
       : `Create a complete single-file HTML5 arcade game: ${p}\nMake it polished and complete. OUTPUT ONLY THE HTML FILE.`;
     try {
       const res = await generateCode({
@@ -202,12 +196,9 @@ export default function ArcadeForge() {
       const v = validateGameCode(code);
       const type = gameType === "auto" ? detectGameType(p) : gameType;
       if (!v.ok) {
-        // Auto-repair attempt failed → honest fallback, still instant.
-        setNotice(`⚠️ AI draft had issues (${v.issues.join("; ")}). Delivered a verified core instead — guaranteed playable.`);
-        await runInstant(p, type, parentId);
-        return;
+        throw new Error(`AI draft failed validation: ${v.issues.join("; ")}. Existing game unchanged; retry generation.`);
       }
-      const saved = await persistGame({ prompt: p, clientCode: code, gameType: type, parentId });
+      const saved = await persistGame({ prompt: p, clientCode: code, gameType: type ?? "custom", parentId });
       setGame({ ...saved, code, genMs: res.ms, tokps: res.tokps, tokens: res.tokens, engine: "on-device-ai" });
       if (!saved.ephemeral) fetchHistory();
       setNotice(`🧠 On-device AI forged a ${(code.length / 1024).toFixed(1)}KB game in ${(res.ms / 1000).toFixed(1)}s (${res.tokps} tok/s) — 100% offline, validated.`);
@@ -219,12 +210,11 @@ export default function ArcadeForge() {
 
   async function run(p?: string) {
     const q = (p ?? prompt).trim();
-    if (!q || busy) return;
+    if (!q || busy || iterating) return;
     setPrompt(q);
     setBusy(true);
     setError(null);
     setNotice(null);
-    setGame(null);
     setTab("play");
     setPhase("Forging…");
     try {
@@ -234,21 +224,12 @@ export default function ArcadeForge() {
       } else if (strategy === "ai") {
         await runAI(q);
       } else {
-        // Auto: classics → instant verified (fastest + most reliable);
-        // novel/arena prompts → on-device AI if available, else parametric arena.
-        if (type === "arena") {
-          if (gpu?.ok === false) {
-            await runInstant(q, "arena");
-          } else if (isEngineLoaded() || privacy.localMode || !privacy.online) {
-            if (isEngineLoaded()) await runAI(q);
-            else await runInstant(q, "arena");
-          } else {
-            // Online + engine not loaded: ask-free fast path first is wrong for
-            // novel ideas — try AI, auto-falls back to arena core.
-            await runAI(q);
-          }
-        } else {
+        if (type) {
           await runInstant(q, type);
+        } else if (isEngineLoaded() || privacy.localMode || !privacy.online) {
+          await runAI(q);
+        } else {
+          await runServerAI(q);
         }
       }
     } catch (e: any) {
@@ -267,21 +248,18 @@ export default function ArcadeForge() {
       return;
     }
     setIterating(true);
-    setInstruction("");
     setError(null);
     setNotice(null);
     try {
       const combined = `${game.prompt} — ITERATION: ${ins}`;
       if (game.engine === "on-device-ai") {
         await runAI(combined, game.id, game.code);
+      } else if (privacy.localMode || !privacy.online) {
+        await runAI(ins, game.id, game.code);
       } else {
-        const t0 = performance.now();
-        const g = generateGameOffline(combined, game.gameType);
-        const saved = await persistGame({ prompt: combined, clientCode: g.code, gameType: g.gameType, parentId: game.id });
-        setGame({ ...saved, code: g.code, genMs: Math.round(performance.now() - t0), engine: g.engine });
-        fetchHistory();
-        setNotice(`⚡ Remixed in ${Math.round(performance.now() - t0)}ms — modifiers re-applied to the verified core.`);
+        await runServerAI(ins, game.id, game.code);
       }
+      setInstruction("");
     } catch (e: any) {
       setError(e.message ?? "iterate failed");
     } finally {
@@ -294,7 +272,7 @@ export default function ArcadeForge() {
     const blob = new Blob([game.code], { type: "text/html" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `arenaforge-${game.gameType}-${game.id.slice(0, 8)}.html`;
+    a.download = `arenaforge-${game.gameType}-${(game.id ?? "unsaved").slice(0, 8)}.html`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
@@ -305,14 +283,15 @@ export default function ArcadeForge() {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     };
-    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(game.code).then(done).catch(done);
-    else done();
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(game.code).then(done).catch(() => setError("Clipboard write failed. Download the HTML instead."));
+    else setError("Clipboard unavailable. Download the HTML instead.");
   }
 
   async function openGame(id: string) {
     try {
       const r = await fetch(`/api/arcade/${id}`);
       const j = await r.json();
+      if (!r.ok || !j.game) throw new Error(j.error ?? "Game could not be loaded");
       if (j.game) {
         setGame(j.game);
         setTab("play");
@@ -320,14 +299,19 @@ export default function ArcadeForge() {
         setError(null);
         window.scrollTo({ top: 0, behavior: "smooth" });
       }
-    } catch {}
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not open game. Retry."); }
   }
 
   async function deleteGame(id: string) {
     if (!confirm("Delete this game?")) return;
-    await fetch(`/api/arcade/${id}`, { method: "DELETE" });
-    setHistory((h) => h.filter((x: any) => x.id !== id));
-    if (game?.id === id) setGame(null);
+    try {
+      const res = await fetch(`/api/arcade/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Delete failed");
+      setHistory((h) => h.filter((x: any) => x.id !== id));
+      if (game?.id === id) setGame(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Delete failed. Retry when the service is available.");
+    }
   }
 
   const filtered = history.filter((h: any) =>
@@ -452,23 +436,23 @@ export default function ArcadeForge() {
             ))}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button onClick={() => run()} disabled={busy || !prompt.trim()} className="btn-arena rounded-xl px-6 py-2.5 text-sm font-extrabold text-white">
+            <button onClick={() => run()} disabled={busy || iterating || !prompt.trim()} className="btn-arena rounded-xl px-6 py-2.5 text-sm font-extrabold text-white">
               {busy ? `🎮 ${phase || "Forging…"}` : "🎮 Forge game"}
             </button>
             <button
               onClick={async () => {
                 const q = prompt.trim();
-                if (!q || busy) return;
-                setBusy(true); setError(null); setNotice(null); setGame(null); setTab("play"); setPhase("✨ AI writing your game (server)…");
+                if (!q || busy || iterating) return;
+                setBusy(true); setError(null); setNotice(null); setTab("play"); setPhase("✨ AI writing your game (server)…");
                 try { await runServerAI(q); } catch (e: any) { setError(e.message ?? "generative forge failed"); } finally { setBusy(false); setPhase(""); }
               }}
-              disabled={busy || !prompt.trim()}
+              disabled={busy || iterating || !prompt.trim()}
               className="rounded-xl bg-gradient-to-r from-violet-500/80 to-fuchsia-500/80 px-6 py-2.5 text-sm font-extrabold text-white ring-1 ring-violet-300/40 hover:from-violet-500 hover:to-fuchsia-500 disabled:opacity-50"
-              title="Generative: a real model writes any game you describe (free keys work). Falls back honestly if no model is reachable."
+              title="Generate custom game code using a reachable model. Reports an error if no capable model is available."
             >
               ✨ Generate any game
             </button>
-            {busy && strategy !== "instant" && (
+            {busy && streamed && (
               <button
                 onClick={() => abortRef.current?.abort()}
                 className="rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-2.5 text-sm font-bold text-red-200 hover:bg-red-500/20"
@@ -492,7 +476,7 @@ export default function ArcadeForge() {
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
             <PrivacyControls compact />
-            <span className="text-[11px] text-slate-500">Arcade is offline-by-design — cores, remix and on-device AI never touch the cloud.</span>
+            <span className="text-[11px] text-slate-500">Templates run offline. Custom games require a model; Auto may use online generation when Local Mode is off.</span>
           </div>
           {busy && streamed && (
             <div className="mt-3 rounded-xl border border-violet-500/30 bg-black/40 p-3">
@@ -517,7 +501,7 @@ export default function ArcadeForge() {
                 </button>
               </div>
               <span className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 ring-1 ring-white/10">
-                {game.engine === "on-device-ai" ? "🧠 on-device AI" : game.engine === "remix" ? "⚡ remix" : "⚡ verified core"}
+                {game.engine === "ai-codegen" ? "✨ AI-generated" : game.engine === "on-device-ai" ? "🧠 on-device AI" : game.engine === "remix" ? "⚡ remix" : "⚡ verified core"}
                 {game.genMs !== undefined && game.engine !== "on-device-ai" ? ` · ${game.genMs}ms` : ""}
                 {game.tokps ? ` · ${game.tokps} tok/s` : ""} · {(game.code.length / 1024).toFixed(1)}KB
               </span>
@@ -545,7 +529,7 @@ export default function ArcadeForge() {
 
             {!game.ephemeral ? (
               <div className="glass mt-3 rounded-2xl p-4">
-                <p className="text-xs font-extrabold text-white">🔁 Iterate — remix or rewrite (saved as a child revision)</p>
+                <p className="text-xs font-extrabold text-white">🔁 Revise with AI — requires a model; saved as a child revision</p>
                 <div className="mt-2 flex gap-2">
                   <input
                     value={instruction}
@@ -569,11 +553,11 @@ export default function ArcadeForge() {
       {/* Sidebar */}
       <aside className="min-w-0 space-y-4">
         <div className="rounded-2xl border border-emerald-400/25 bg-gradient-to-br from-emerald-500/15 to-cyan-500/5 p-4">
-          <p className="text-sm font-extrabold text-emerald-200">🎮 The offline ultimate test</p>
+          <p className="text-sm font-extrabold text-emerald-200">🎮 Templates or custom generation</p>
           <p className="mt-1.5 text-xs leading-relaxed text-emerald-100/80">
-            <strong>Instant cores</strong> deliver Pac-Man-classics in milliseconds. <strong>On-device AI</strong> (WebGPU,
-            cached after one download) writes anything else — no prompts, no code, no data ever leaves your machine.
-            No limits, no boundaries.
+            <strong>Instant cores</strong> provide the listed classic templates and limited modifiers.
+            Custom mechanics and revisions require a capable model: on-device WebGPU or configured online generation.
+            If generation is unavailable or fails validation, your existing game stays unchanged.
           </p>
         </div>
         <div className="glass rounded-2xl p-4">
