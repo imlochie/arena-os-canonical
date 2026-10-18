@@ -219,3 +219,20 @@ test("natural end uses the same checked promotion path without restarting the ou
   await current(page, "Song B"); await audible(page, 440);
   await expect.poll(() => session("ended").currentSessionTrackId).toBe("b");
 });
+
+for (const kind of ["stems", "source"]) test(`${kind} playback with an empty saved mix really attenuates the outgoing graph during crossfade`, { timeout: 15000 }, async (t) => {
+  const id = `default-${kind}`;
+  for (const track of session(id).tracks) { track.stemMix = {}; track.playback.kind = kind; if (kind === "source") track.stems = []; }
+  const page = await pageFor(t, id); await start(page);
+  await expect.poll(() => page.evaluate(() => window.audioSnapshot().some((x) => Math.abs(x.hz - 220) < 30 && x.rms > 0.08))).toBe(true);
+  await page.locator("#sess-fade").fill("2"); await page.getByTestId("session-transition").click();
+  await page.evaluate(() => { window.acceptanceFadeStart = performance.now(); });
+  await expect.poll(() => page.evaluate(() => {
+    if (performance.now() - window.acceptanceFadeStart < 600) return false;
+    const snapshots = window.audioSnapshot();
+    const outgoing = snapshots.find((x) => Math.abs(x.hz - 220) < 30);
+    const incoming = snapshots.find((x) => Math.abs(x.hz - 440) < 30);
+    return outgoing?.rms > 0.005 && outgoing.rms < 0.06 && incoming?.rms > 0.02 && !document.querySelector('audio[src="/api/assets/a"]').paused;
+  })).toBe(true);
+  await current(page, "Song B"); await audible(page, 440);
+});

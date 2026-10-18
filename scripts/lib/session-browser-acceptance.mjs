@@ -51,6 +51,15 @@ export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId
     await page.locator("#sess-fade").fill("1"); const started = Date.now();
     await page.getByTestId("session-transition").click();
     await expect.poll(() => page.evaluate(() => window.sessionSignal().filter((x) => x.rms > 0.005).length)).toBe(2);
+    // Confirm an actual outgoing fade, not just an incoming fade followed by
+    // a hard stop. Default session mix is {}, i.e. implicit unity levels.
+    await page.evaluate(() => { window.observedFadeStart = performance.now(); });
+    await expect.poll(() => page.evaluate(() => {
+      if (performance.now() - window.observedFadeStart < 200) return false;
+      const signal = window.sessionSignal();
+      return signal.some((x) => (Math.abs(x.hz - 440) < 30 || Math.abs(x.hz - 1320) < 30) && x.rms > 0.002 && x.rms < 0.022)
+        && signal.some((x) => (Math.abs(x.hz - 660) < 30 || Math.abs(x.hz - 1760) < 30) && x.rms > 0.006);
+    })).toBe(true);
     await selected("session-b");
     observations.push({ action: "timed crossfade after recovery", elapsedMs: Date.now() - started, signal: await signal([660, 1760]) });
     await expect.poll(async () => (await stored()).currentSessionTrackId).toBe(nextId);

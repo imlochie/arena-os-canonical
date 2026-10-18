@@ -120,9 +120,9 @@ function SessionDeck({
   const applyStemVolumes = useCallback(
     (volumes: Record<string, number>) => {
       const values: Record<string, MixerValues> = {};
-      for (const stem of item?.stems ?? []) {
-        values[stem.id] = {
-          volume: volumes[stem.stemType] ?? 1,
+      for (const assetId of assetIds) {
+        values[assetId] = {
+          volume: volumes[stemTypeByAsset.get(assetId) ?? "source"] ?? 1,
           pan: 0,
           muted: false,
           solo: false,
@@ -130,7 +130,7 @@ function SessionDeck({
       }
       transport.applyMix(values);
     },
-    [item?.stems, transport],
+    [assetIds, stemTypeByAsset, transport],
   );
 
   // Hand the deck's live api up to the session controller. The api object is
@@ -522,7 +522,13 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       const toApi = decksRef.current[toDeck];
       const fromItem = deckItems[fromDeck];
       if (fromApi === null || toApi === null || fromItem === null) return;
-      const fromMix = { ...(mixes[fromItem.id] ?? {}) };
+      // Empty saved mix means unity for every audible layer, not an empty
+      // envelope. Source-only tracks have no stem rows at all.
+      const fromMix: Record<string, number> = {};
+      for (const assetId of fromItem.playback?.assetIds ?? []) {
+        const type = fromItem.stems.find((stem) => stem.id === assetId)?.stemType ?? "source";
+        fromMix[type] = mixes[fromItem.id]?.[type] ?? 1;
+      }
       const t0 = performance.now();
       const tick = () => {
         const fade = fadeRef.current;
