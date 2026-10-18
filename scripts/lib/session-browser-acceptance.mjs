@@ -64,6 +64,7 @@ export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId
         && signal.some((x) => (Math.abs(x.hz - 660) < 30 || Math.abs(x.hz - 1760) < 30) && x.rms > 0.006);
     })).toBe(true);
     await selected("session-b");
+    await expect.poll(async () => (await stored()).tracks[0].transition.cue?.toSessionTrackId).toBe(nextId);
     observations.push({ action: "timed crossfade after recovery", elapsedMs: Date.now() - started, signal: await signal([660, 1760]) });
     await expect.poll(async () => (await stored()).currentSessionTrackId).toBe(nextId);
     await page.reload(); await selected("session-b");
@@ -73,8 +74,8 @@ export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId
     await page.screenshot({ path: screenshotPath, fullPage: true });
     await page.getByTestId("session-stop").click();
     await page.getByTestId("session-handoff").click();
-    await expect(page.getByTestId("handoff-confirmation")).toContainText("not reconstructed");
-    await page.getByRole("button", { name: "Create sequential Studio edit", exact: true }).click();
+    await expect(page.getByTestId("handoff-confirmation")).toContainText("Completed transitions preserve");
+    await page.getByTestId("handoff-transitions").click();
     const openStudio = page.getByRole("link", { name: "Open it in the Studio", exact: true });
     const studioPath = await openStudio.getAttribute("href");
     await expect(openStudio).toHaveAttribute("href", /\/waveyard\/projects\//);
@@ -82,11 +83,18 @@ export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId
     await page.getByTestId("waveyard-mode-studio").click();
     await expect(page.getByRole("button", { name: "Save now", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Remix timeline", exact: true })).toBeVisible();
-    observations.push({ action: "explicit sequential handoff opens the actual reusable Studio arrangement", studioPath });
+    observations.push({ action: "completed-transition handoff opens the actual reusable Studio arrangement", studioPath });
     const studioProjectId = studioPath.split("/").at(-1);
     const json = async (path, init) => { const response = await fetch(`${url}${path}`, init); if (!response.ok) throw new Error(`Studio acceptance HTTP ${response.status}: ${path}`); return response.json(); };
     const listing = await json(`/api/waveyard/projects/${studioProjectId}/remixes`);
     const remixId = listing.remixes[0].id;
+    const initialArrangement = await json(`/api/remixes/${remixId}`);
+    const savedCue = (await stored()).tracks[0].transition.cue;
+    if (!savedCue || initialArrangement.automation.length !== 2) throw new Error("Completed transition did not reconstruct both lane envelopes");
+    const nextClip = initialArrangement.tracks[1].clips[0];
+    if (Math.abs(nextClip.timelineStartMs - savedCue.fromSeconds * 1000) > 1 || Math.abs(nextClip.sourceOffsetMs - savedCue.incomingSeconds * 1000) > 1)
+      throw new Error("Studio arrangement lost completed transition source/timeline identity");
+    const expectedDuration = savedCue.fromSeconds + 12 - savedCue.incomingSeconds;
     const master = page.getByRole("slider", { name: "Master volume", exact: true }).first();
     await master.fill("0.4");
     await page.getByRole("button", { name: "Save now", exact: true }).click();
@@ -111,9 +119,11 @@ export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId
     const decoded = execFileSync(ffmpegPath, ["-v", "error", "-i", downloadPath, "-f", "s16le", "-ac", "1", "-ar", "44100", "-"], { maxBuffer: 10 * 1024 * 1024 });
     let power = 0; for (let i = 0; i < decoded.length; i += 2) power += (decoded.readInt16LE(i) / 32768) ** 2;
     const rms = Math.sqrt(power / (decoded.length / 2));
-    if (Number(probe.format.duration) < 23 || Number(probe.format.duration) > 25 || rms < 0.005) throw new Error("Studio UI-saved arrangement exported unexpected duration or silence");
+    if (Math.abs(Number(probe.format.duration) - expectedDuration) > 0.03 || rms < 0.005) throw new Error("Studio UI-saved arrangement exported unexpected duration or silence");
     const arrangement = await json(`/api/remixes/${remixId}`);
-    observations.push({ action: "Studio UI master edit/save/reload/version, then API render/download/decode", remixId, versionId: version.id, exportId: rendered.id, masterVolume: arrangement.remix.masterVolume, boundAssetIds: arrangement.tracks.flatMap((track) => track.clips.map((clip) => clip.stemAssetId)), downloadPath, sha256: createHash("sha256").update(bytes).digest("hex"), probe, rms, limitation: "export was requested through the production API, not a Studio export button; inputs remain synthetic passthrough" });
+    const envelopes = (state) => state.automation.map((lane) => ({ track: lane.remixTrackId, points: lane.points.map(({ timelineMs, value }) => ({ timelineMs, value })) })).sort((a, b) => a.track.localeCompare(b.track));
+    if (JSON.stringify(envelopes(arrangement)) !== JSON.stringify(envelopes(initialArrangement))) throw new Error("Studio save/reload changed the transition envelopes");
+    observations.push({ action: "Studio UI master edit/save/reload/version, then API render/download/decode", savedCue, expectedDuration, remixId, versionId: version.id, exportId: rendered.id, masterVolume: arrangement.remix.masterVolume, boundAssetIds: arrangement.tracks.flatMap((track) => track.clips.map((clip) => clip.stemAssetId)), downloadPath, sha256: createHash("sha256").update(bytes).digest("hex"), probe, rms, limitation: "export was requested through the production API, not a Studio export button; inputs remain synthetic passthrough" });
 
     await page.screenshot({ path: `${screenshotPath}.studio.png`, fullPage: true });
     if (errors.length) throw new Error(`Renderer errors: ${errors.join("; ")}`);

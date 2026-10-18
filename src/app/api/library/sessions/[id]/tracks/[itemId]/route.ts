@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { normalizeTransitionConfig, type TransitionConfig } from "@/lib/waveyard/library/session-logic";
 import { isUuid } from "@/lib/api/ids";
 import { requireUser } from "@/lib/waveyard/local-context";
 import {
@@ -12,13 +13,7 @@ export const runtime = "nodejs";
 
 const patchSchema = z.object({
   stemMix: z.record(z.string(), z.number()).optional(),
-  transition: z
-    .object({
-      mode: z.enum(["manual", "beat", "bar", "meeting-point"]),
-      crossfadeSeconds: z.number().min(0).max(30),
-      keepStems: z.array(z.string().min(1).max(64)).optional(),
-    })
-    .optional(),
+  transition: z.custom<TransitionConfig>((value) => normalizeTransitionConfig(value) !== null).transform((value) => normalizeTransitionConfig(value)!).optional(),
 });
 
 /** PATCH /api/library/sessions/[id]/tracks/[itemId] — persist this track's

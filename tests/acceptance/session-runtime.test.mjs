@@ -9,6 +9,7 @@ import { expect } from "@playwright/test";
 
 let server, browser, origin;
 const sessions = new Map();
+const handoffRequests = new Map();
 function session(id) {
   if (!sessions.has(id)) sessions.set(id, {
     id, name: "Actual session UI acceptance", currentSessionTrackId: "a", positionSeconds: 0, swaps: [],
@@ -48,7 +49,11 @@ before(async () => {
     const parts = url.pathname.split("/");
     if (parts[3] === "sessions") {
       const state = session(parts[4]);
-      if (parts[5] === "studio-handoff") return json({ handoff: { projectId: "derived-project", remixTrackCount: state.tracks.length, notice: "Explicit sequential arrangement, not live-performance reconstruction." } }, 201);
+      if (parts[5] === "studio-handoff") {
+        let raw = ""; for await (const chunk of req) raw += chunk;
+        handoffRequests.set(parts[4], JSON.parse(raw));
+        return json({ handoff: { projectId: "derived-project", remixTrackCount: state.tracks.length, notice: "Controlled handoff response; database/render acceptance runs separately." } }, 201);
+      }
       if (req.method !== "GET") {
         let raw = ""; for await (const chunk of req) raw += chunk;
         const body = JSON.parse(raw || "{}");
@@ -108,6 +113,9 @@ test("hard cut advances actual UI, audio and restore point; another cut succeeds
   await page.getByTestId("session-transition").click();
   await current(page, "Song C"); await audible(page, 880);
   await expect.poll(() => session("cuts").currentSessionTrackId).toBe("c");
+  await expect.poll(() => session("cuts").tracks[0].transition.cue?.toSessionTrackId).toBe("b");
+  assert.deepEqual([session("cuts").tracks[0].transition.cue.fromDeck, session("cuts").tracks[0].transition.cue.toDeck], [0, 1]);
+  await expect.poll(() => session("cuts").tracks[1].transition.cue?.toSessionTrackId).toBe("c");
   assert.equal(await page.locator("audio").evaluateAll((nodes) => nodes.filter((node) => !node.paused).length), 1);
   await page.reload(); await current(page, "Song C");
   await expect(page.getByTestId("session-play")).toHaveText("Play");
@@ -242,7 +250,26 @@ for (const kind of ["stems", "source"]) test(`${kind} playback with an empty sav
 test("explicit sequential handoff links to the actual existing-project workspace", async (t) => {
   const page = await pageFor(t, "handoff-navigation");
   await page.getByTestId("session-handoff").click();
-  await expect(page.getByTestId("handoff-confirmation")).toContainText("not reconstructed");
+  await expect(page.getByTestId("handoff-confirmation")).toContainText("Completed transitions preserve");
   await page.getByRole("button", { name: "Create sequential Studio edit", exact: true }).click();
   await expect(page.getByRole("link", { name: "Open it in the Studio", exact: true })).toHaveAttribute("href", "/waveyard/projects/derived-project");
+});
+
+ test("completed browser crossfade and hard cut are included in the explicit faithful handoff", async (t) => {
+  const page = await pageFor(t, "completed-cues"); await start(page);
+  await page.locator("#sess-fade").fill("1");
+  await page.getByTestId("session-transition").click(); await current(page, "Song B");
+  await expect.poll(() => session("completed-cues").tracks[0].transition.cue?.toSessionTrackId).toBe("b");
+  assert.equal(session("completed-cues").tracks[0].transition.crossfadeSeconds, 1);
+  await page.locator("#sess-fade").fill("0");
+  await page.getByTestId("session-transition").click(); await current(page, "Song C");
+  await expect.poll(() => session("completed-cues").tracks[1].transition.cue?.toSessionTrackId).toBe("c");
+  await page.reload(); await current(page, "Song C");
+  await page.getByTestId("session-handoff").click();
+  await page.getByTestId("handoff-transitions").click();
+  await expect.poll(() => handoffRequests.get("completed-cues")?.mode).toBe("transitions");
+  const edits = handoffRequests.get("completed-cues").trackEdits;
+  assert.equal(edits[0].transition.cue.toSessionTrackId, "b");
+  assert.equal(edits[1].transition.cue.toSessionTrackId, "c");
+  assert.deepEqual([edits[0].transition.cue.fromDeck, edits[1].transition.cue.fromDeck], [0, 1]);
 });

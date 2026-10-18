@@ -17,6 +17,7 @@
 
 import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 
+import { sessionPlacements, sessionVolumePoints } from "./session-arrangement";
 import { MAX_REMIX_TRACKS, MAX_REMIX_CLIPS_PER_TRACK } from "../remix";
 import { db } from "@/db";
 import {
@@ -26,6 +27,7 @@ import {
   projects,
   remixSessions,
   remixClips,
+  remixAutomationPoints,
   remixTracks,
   sourceAnalyses,
   stemAssets,
@@ -524,7 +526,7 @@ export interface StudioHandoffResult {
  */
 export type StudioHandoffTrackEdit = { id: string; stemMix: StemMix; transition: TransitionConfig };
 
-export async function sendSessionToStudio(ownerId: string, sessionId: string, trackEdits: StudioHandoffTrackEdit[] = []): Promise<StudioHandoffResult> {
+export async function sendSessionToStudio(ownerId: string, sessionId: string, trackEdits: StudioHandoffTrackEdit[] = [], mode: "sequential" | "transitions" = "sequential"): Promise<StudioHandoffResult> {
   await requireUser();
   await ownedSession(ownerId, sessionId);
   const detail = await sessionPayload(sessionId);
@@ -545,17 +547,26 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
   const refused: string[] = [];
   const lanes: Array<{
     stemAssetId: string; name: string; volume: number;
+    points?: Array<{ timelineMs: number; value: number }>;
     clips: Array<{ stemAssetId: string; timelineStartMs: number; sourceOffsetMs: number; durationMs: number }>;
   }> = [];
+  let placements: ReturnType<typeof sessionPlacements> | undefined;
+  if (mode === "transitions") {
+    try { placements = sessionPlacements(detail.tracks.map((item) => ({ id: item.id, durationSeconds: item.track.durationSeconds, transition: item.transition }))); }
+    catch (error) { throw new StemSwapRefusedError(error instanceof Error ? error.message : "Invalid completed transitions."); }
+  }
   let timelineMs = 0;
-  for (const item of detail.tracks) {
+  for (const [itemIndex, item] of detail.tracks.entries()) {
+    const placement = placements?.[itemIndex];
+    if (placement) timelineMs = placement.timelineStartMs;
     const separated = item.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
     const selected = separated.length ? separated : item.stems.filter((stem) => stem.engine === "passthrough-unseparated").slice(0, 1);
     if (!selected.length) {
       refused.push(`“${item.track.title}” has no stems or explicit unseparated-source bridge.`);
       continue;
     }
-    const durationMs = Math.round(item.track.durationSeconds * 1000);
+    const durationMs = placement?.sourceEndMs ?? Math.round(item.track.durationSeconds * 1000);
+    const sourceStartMs = placement?.sourceStartMs ?? 0;
     if (durationMs <= 0) {
       refused.push(`“${item.track.title}” has no usable duration.`);
       continue;
@@ -577,7 +588,8 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
       if (invalid) break;
       const clips = changes.flatMap((change, index) => {
         const end = changes[index + 1]?.at ?? durationMs;
-        return end > change.at ? [{ stemAssetId: change.stemAssetId, timelineStartMs: timelineMs + change.at, sourceOffsetMs: change.at, durationMs: end - change.at }] : [];
+        const start = Math.max(sourceStartMs, change.at);
+        return end > start ? [{ stemAssetId: change.stemAssetId, timelineStartMs: timelineMs + start - sourceStartMs, sourceOffsetMs: start, durationMs: end - start }] : [];
       });
       if (clips.length > MAX_REMIX_CLIPS_PER_TRACK) throw new StemSwapRefusedError(`A stem lane exceeds Studio’s ${MAX_REMIX_CLIPS_PER_TRACK}-clip limit. Use a session with fewer swaps. Nothing was created.`);
       const assets = await db.select().from(stemAssets).where(inArray(stemAssets.id, [...new Set(clips.map((clip) => clip.stemAssetId))]));
@@ -585,12 +597,13 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
         const asset = assets.find((candidate) => candidate.id === clip.stemAssetId);
         return !asset || !Number.isFinite(asset.durationSeconds) || clip.sourceOffsetMs + clip.durationMs > asset.durationSeconds * 1000;
       })) { invalid = `a saved stem or swap is missing or shorter than its timeline range`; break; }
-      itemLanes.push({ stemAssetId: stem.id, name: `${item.track.title} — ${stem.stemType}`, volume: item.stemMix[stem.stemType] ?? 1, clips });
+      itemLanes.push({ stemAssetId: stem.id, name: `${item.track.title} — ${stem.stemType}`, volume: item.stemMix[stem.stemType] ?? 1, clips, ...(placement ? { points: sessionVolumePoints(placement, stem.stemType, item.stemMix[stem.stemType] ?? 1) } : {}) });
     }
     if (invalid) { refused.push(`“${item.track.title}”: ${invalid}.`); continue; }
     lanes.push(...itemLanes);
     timelineMs += durationMs;
   }
+  if (mode === "transitions" && refused.length) throw new StemSwapRefusedError(`Cannot preserve this arrangement: ${refused.join(" ")} Nothing was created; repair the unavailable audio or explicitly choose a sequential edit.`);
   if (!lanes.length) throw new StemSwapRefusedError(
     `No session track can be sent to Studio. ${refused.join(" ")} Original sources are untouched.`,
   );
@@ -607,7 +620,9 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
     if (seen.size) await tx.update(listenSessions).set({ updatedAt: new Date() }).where(eq(listenSessions.id, sessionId));
     const [project] = await tx.insert(projects).values({
       ownerId, title: `Session — ${detail.name}`, kind: "studio",
-      description: `Derived from listening session “${detail.name}” (${sessionId}). Sequential-v1 clips preserve stem levels and timed swaps; live transition timing and crossfades are not recorded. Original audio is referenced, not copied.`,
+      description: mode === "transitions"
+        ? `Derived from listening session “${detail.name}” (${sessionId}). Completed transition cues, source ranges, saved mixes and donor swaps preserved with remix clips/automation. Provenance: ${JSON.stringify({ sessionId, cursor: { sessionTrackId: detail.currentSessionTrackId, positionSeconds: detail.positionSeconds }, transitions: detail.tracks.map((item) => ({ sessionTrackId: item.id, trackId: item.track.id, transition: item.transition })) })}. Cursor is a source-session bookmark, not an instruction to start playback. Original audio is referenced, not copied.`
+        : `Derived from listening session “${detail.name}” (${sessionId}). Sequential-v1 clips preserve stem levels and timed swaps; live transition timing and crossfades are not recorded. Original audio is referenced, not copied.`,
     }).returning();
     const [remix] = await tx.insert(remixSessions).values({ projectId: project.id, ownerId, name: detail.name }).returning();
     for (const [sortOrder, lane] of lanes.entries()) {
@@ -615,12 +630,13 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
         remixSessionId: remix.id, stemAssetId: lane.stemAssetId, name: lane.name, volume: lane.volume, sortOrder,
       }).returning();
       await tx.insert(remixClips).values(lane.clips.map((clip) => ({ ...clip, remixTrackId: track.id, gain: 1 })));
+      if (lane.points?.length) await tx.insert(remixAutomationPoints).values(lane.points.map((point) => ({ ...point, remixSessionId: remix.id, remixTrackId: track.id, parameter: "volume" })));
     }
     return { project, remix };
   });
   return {
     projectId: project.id, remixSessionId: remix.id, remixTrackCount: lanes.length,
-    notice: "Created a sequential arrangement with saved stem levels and timed swaps. Live transition triggers, crossfades and the playback cursor are not recorded into this arrangement; edit transitions in Studio. Original sources and the listening session are unchanged.",
+    notice: mode === "transitions" ? "Completed transitions, source ranges, stem levels and timed donor swaps are preserved as Studio clips and volume automation. The source cursor is retained as provenance, not live playback. Pauses, seeks, cancelled/forced-shortened fades and mix gestures are not a performance recording." : "Created a sequential arrangement with saved stem levels and timed swaps. Live transition triggers, crossfades and the playback cursor are not recorded into this arrangement; edit transitions in Studio. Original sources and the listening session are unchanged.",
     ...(refused.length ? { refused: refused.join(" ") } : {}),
   };
 }

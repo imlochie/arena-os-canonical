@@ -288,6 +288,8 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   const startingIdentity = useRef<TransitionIdentity | null>(null);
   const decksRef = useRef<Array<DeckApi | null>>([null, null]);
   const fadeRef = useRef<{ raf: number; t0: number; fromDeck: 0 | 1; toDeck: 0 | 1; cfg: TransitionConfig; fromMix: Record<string, number>; fromId: string; toId: string } | null>(null);
+  const completedCue = useRef<{ fromId: string; transition: TransitionConfig } | null>(null);
+  const cueSave = useRef<Promise<boolean>>(Promise.resolve(true));
   const advancingRef = useRef(false);
   const [positionsByDeck, setPositionsByDeck] = useState<[number, number]>([0, 0]);
   const [playingByDeck, setPlayingByDeck] = useState<[boolean, boolean]>([false, false]);
@@ -497,13 +499,28 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     setStatus(message);
   }, []);
 
-  const finishTransition = useCallback((cut?: TransitionIdentity) => {
+  const finishTransition = useCallback((cut?: TransitionIdentity, naturalCompletion = false) => {
     const fade = fadeRef.current;
     const completed = cut ?? fade;
     if (completed === null || completed === undefined || advancingRef.current) return;
     const toApi = decksRef.current[completed.toDeck];
     if (currentIdRef.current !== completed.fromId || toApi?.itemId !== completed.toId) return;
     advancingRef.current = true;
+    const recorded = completedCue.current;
+    completedCue.current = null;
+    if (recorded && (cut || naturalCompletion)) {
+      setTransitions((previous) => ({ ...previous, [recorded.fromId]: recorded.transition }));
+      const sessionId = sessionRef.current?.id;
+      if (sessionId) cueSave.current = fetch(`/api/library/sessions/${sessionId}/tracks/${recorded.fromId}`, {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ transition: recorded.transition }),
+      }).then((response) => { if (!response.ok) throw new Error("save rejected"); return true; }).catch(() => {
+        setStatus("Playback advanced, but the completed transition could not be saved. Keep this session open and retry Send to Studio to save its visible cues."); return false;
+      });
+    } else if (recorded) {
+      // A forced early finish truncates the envelope, rather than performing
+      // the requested full ramp. Do not label it a captured linear fade.
+      setTransitions((previous) => ({ ...previous, [recorded.fromId]: { ...recorded.transition, cue: undefined } }));
+    }
     if (fade) cancelAnimationFrame(fade.raf);
     fadeRef.current = null;
     const fromApi = decksRef.current[completed.fromDeck];
@@ -548,7 +565,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         decksRef.current[fromDeck]?.applyStemVolumes(scaled);
         decksRef.current[toDeck]?.transport.setMasterVolume(env.toGain);
         if (env.done) {
-          finishTransition();
+          finishTransition(undefined, true);
           return;
         }
         fade.raf = requestAnimationFrame(tick);
@@ -623,6 +640,11 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       toApi.transport.seek(incomingOffset);
       if (!await toApi.transport.play()) throw new Error("The next track could not start. Check its audio and retry.");
       if (!stillCurrent()) return;
+      completedCue.current = { fromId: fromItem.id, transition: { ...cfg, keepStems: [...cfg.keepStems], cue: {
+        toSessionTrackId: toItem.id, fromDeck, toDeck,
+        fromSeconds: ended ? fromItem.track.durationSeconds : fromApi.transport.currentPosition(),
+        incomingSeconds: toApi.transport.currentPosition(),
+      } } };
       if (cfg.crossfadeSeconds <= 0) finishTransition(identity);
       else runFade(cfg, fromDeck, toDeck);
     } catch (error) {
@@ -837,15 +859,16 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   );
 
   // -------------------------------------------------------- studio handoff
-  const sendToStudio = useCallback(() => {
+  const sendToStudio = useCallback((mode: "transitions" | "sequential" = "transitions") => {
     if (session === null || handoffInFlight.current) return;
     handoffInFlight.current = true;
     setHandoffBusy(true);
     void (async () => {
       try {
+        await cueSave.current;
         const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, {
           method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ mode: "sequential", trackEdits: session.tracks.map((item) => ({
+          body: JSON.stringify({ mode, trackEdits: session.tracks.map((item) => ({
             id: item.id, stemMix: mixes[item.id] ?? item.stemMix, transition: transitions[item.id] ?? item.transition,
           })) }),
         });
@@ -954,14 +977,14 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       const kept = new Set(cfg.keepStems);
       if (kept.has(stemType)) kept.delete(stemType);
       else kept.add(stemType);
-      return { ...prev, [currentItem.id]: { ...cfg, keepStems: [...kept] } };
+      return { ...prev, [currentItem.id]: { ...cfg, cue: undefined, keepStems: [...kept] } };
     });
   };
   const setTransition = (patch: Partial<TransitionConfig>) => {
     if (currentItem === null) return;
     setTransitions((prev) => {
       const cfg = prev[currentItem.id] ?? currentItem.transition;
-      return { ...prev, [currentItem.id]: { ...cfg, ...patch } };
+      return { ...prev, [currentItem.id]: { ...cfg, cue: undefined, ...patch } };
     });
   };
 
@@ -1041,9 +1064,10 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       )}
       {handoffConfirm && (
         <div role="dialog" aria-modal="false" aria-labelledby="studio-handoff-title" className="sess-handoff" data-testid="handoff-confirmation">
-          <h3 id="studio-handoff-title">Create a sequential Studio edit?</h3>
-          <p>This keeps the track order, current stem levels and timed donor swaps. Live transition triggers, crossfades and the playback cursor are not reconstructed. This is not an identical recording of your performance. Your listening session and original audio remain available.</p>
-          <button type="button" className="button primary" onClick={sendToStudio} disabled={handoffBusy}>{handoffBusy ? "Saving and creating…" : "Create sequential Studio edit"}</button>
+          <h3 id="studio-handoff-title">Create a Studio arrangement?</h3>
+          <p>Completed transitions preserve physical deck/track identity, cue timing, source ranges, hard cuts, crossfades, held stems, saved levels and timed donor swaps. Play each transition once before using this option. Pauses, seeks, cancelled or forced-shortened fades and live mix gestures are not a performance recording; the source cursor remains a bookmark, not live playback. An explicit sequential edit is also available without transitions. Your session and original audio remain available.</p>
+          <button type="button" className="button primary" onClick={() => sendToStudio("transitions")} disabled={handoffBusy} data-testid="handoff-transitions">{handoffBusy ? "Saving and creating…" : "Preserve completed transitions"}</button>
+          <button type="button" className="button secondary" onClick={() => sendToStudio("sequential")} disabled={handoffBusy}>Create sequential Studio edit</button>
           <button type="button" className="button secondary" onClick={() => setHandoffConfirm(false)} disabled={handoffBusy}>Keep listening session</button>
         </div>
       )}

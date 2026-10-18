@@ -1101,3 +1101,95 @@ test("smart collections: CRUD with strict validation, evaluated live over real t
   assert.equal(await service.deleteSmartCollection(OWNER, created!.id), false);
   assert.equal((await service.listSmartCollections(OWNER)).length, 0);
 });
+
+test("completed mixed transitions survive handoff, donors, save/version restore and real WAV export", async () => {
+  const created = await sessions.createSession(OWNER, "Synthetic completed transition regression");
+  for (const track of [trackA, trackB, trackA]) await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: track.id });
+  const detail = await sessions.getSession(OWNER, created.id);
+  const [a, b, c] = detail.tracks;
+  const cueA = { ...a.transition, crossfadeSeconds: 0.5, cue: { toSessionTrackId: b.id, fromDeck: 0, toDeck: 1, fromSeconds: 0.5, incomingSeconds: 0.25 } };
+  const cueB = { ...b.transition, crossfadeSeconds: 0, cue: { toSessionTrackId: c.id, fromDeck: 1, toDeck: 0, fromSeconds: 1.5, incomingSeconds: 0.5 } };
+  await sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: a.id, stemType: "drums", toTrackId: trackB.id, atSeconds: 0.75 });
+  const route = await import("@/app/api/library/sessions/[id]/studio-handoff/route");
+  const countBefore = (await db.db.select().from(schema.projects)).length;
+  const missing = await route.POST(new Request("http://arena.test/handoff", { method: "POST", body: JSON.stringify({ mode: "transitions" }) }), { params: Promise.resolve({ id: created.id }) });
+  assert.equal(missing.status, 409);
+  assert.equal((await db.db.select().from(schema.projects)).length, countBefore, "missing cues never silently become a lossy arrangement");
+  const trackRoute = await import("@/app/api/library/sessions/[id]/tracks/[itemId]/route");
+  const patch = await trackRoute.PATCH(new Request("http://arena.test/track", { method: "PATCH", body: JSON.stringify({ transition: cueA }) }), { params: Promise.resolve({ id: created.id, itemId: a.id }) });
+  assert.equal(patch.status, 200);
+  assert.equal((await sessions.getSession(OWNER, created.id)).tracks[0].transition.cue?.toSessionTrackId, b.id);
+  const edits = [
+    { id: a.id, stemMix: { vocals: 0, drums: 0.4, bass: 0, other: 0 }, transition: cueA },
+    { id: b.id, stemMix: { drums: 0.25 }, transition: cueB },
+    { id: c.id, stemMix: { vocals: 0, drums: 0.2, bass: 0, other: 0 }, transition: { ...c.transition, crossfadeSeconds: 0 } },
+  ];
+  const response = await route.POST(new Request("http://arena.test/handoff", { method: "POST", body: JSON.stringify({ mode: "transitions", trackEdits: edits }) }), { params: Promise.resolve({ id: created.id }) });
+  assert.equal(response.status, 201, await response.clone().text());
+  const { handoff } = await response.json();
+  assert.equal((await sessions.getSession(OWNER, created.id)).tracks[0].transition.cue?.toSessionTrackId, b.id);
+  const remixRoute = await import("@/app/api/remixes/[id]/route");
+  const params = { params: Promise.resolve({ id: handoff.remixSessionId }) };
+  const read = async () => (await remixRoute.GET(new Request("http://arena.test/remix"), params)).json();
+  const state = await read();
+  assert.equal(state.automation.length, 9, "lane envelopes, including muted stems, persist through the existing automation contract");
+  const outgoing = state.tracks[1]; // A drums, split at donor change
+  assert.deepEqual(outgoing.clips.map((clip: { timelineStartMs: number; sourceOffsetMs: number; durationMs: number }) => [clip.timelineStartMs, clip.sourceOffsetMs, clip.durationMs]), [[0, 0, 750], [750, 750, 250]]);
+  assert.deepEqual(state.tracks[4].clips.map((clip: { timelineStartMs: number; sourceOffsetMs: number; durationMs: number }) => [clip.timelineStartMs, clip.sourceOffsetMs, clip.durationMs]), [[500, 250, 1250]]);
+  const save = await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify({ ...state.remix, tracks: state.tracks, automation: state.automation }) }), params);
+  assert.equal(save.status, 200, await save.clone().text());
+  const reopened = await read();
+  const versions = await import("@/app/api/remixes/[id]/versions/route");
+  const versionResponse = await versions.POST(new Request("http://arena.test/version", { method: "POST", body: JSON.stringify({ name: "Synthetic transition structure" }) }), params);
+  assert.equal(versionResponse.status, 201);
+  const { version } = await versionResponse.json();
+  const changed = { ...reopened.remix, tracks: reopened.tracks.map((track: { clips: unknown[] }) => ({ ...track, clips: [] })), automation: [] };
+  assert.equal((await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify(changed) }), params)).status, 200);
+  const restore = await import("@/app/api/remixes/[id]/versions/[versionId]/restore/route");
+  assert.equal((await restore.POST(new Request("http://arena.test/restore", { method: "POST" }), { params: Promise.resolve({ id: handoff.remixSessionId, versionId: version.id }) })).status, 200);
+  const restored = await read();
+  assert.deepEqual(restored.tracks.map((track: { clips: unknown[] }) => track.clips.map((clip) => { const row = clip as Record<string, unknown>; return [row.stemAssetId, row.timelineStartMs, row.sourceOffsetMs, row.durationMs, row.gain, row.fadeInMs, row.fadeOutMs]; })), reopened.tracks.map((track: { clips: unknown[] }) => track.clips.map((clip) => { const row = clip as Record<string, unknown>; return [row.stemAssetId, row.timelineStartMs, row.sourceOffsetMs, row.durationMs, row.gain, row.fadeInMs, row.fadeOutMs]; })));
+  const envelopes = (value: typeof restored) => value.automation.map((lane: { remixTrackId: string; parameter: string; points: Array<{ timelineMs: number; value: number }> }) => ({ track: lane.remixTrackId, parameter: lane.parameter, points: lane.points.map(({ timelineMs, value }) => ({ timelineMs, value })) })).sort((a: { track: string }, b: { track: string }) => a.track.localeCompare(b.track));
+  assert.deepEqual(envelopes(restored), envelopes(reopened));
+  const priorWorker = process.env.WAVEYARD_LOCAL_WORKER, priorRedis = process.env.REDIS_URL;
+  process.env.WAVEYARD_LOCAL_WORKER = "1"; delete process.env.REDIS_URL;
+  const { getLocalJobBroker } = await import("../worker-local/broker");
+  const { handleExportJob } = await import("../worker-local/export");
+  const { EXPORT_QUEUE } = await import("../queue");
+  getLocalJobBroker().register(EXPORT_QUEUE, handleExportJob);
+  try {
+    const exports = await import("@/app/api/remix-versions/[id]/exports/route");
+    const exp = await exports.POST(new Request("http://arena.test/export", { method: "POST", body: JSON.stringify({ format: "wav" }) }), { params: Promise.resolve({ id: version.id }) });
+    assert.equal(exp.status, 201, await exp.clone().text());
+    const { job } = await exp.json();
+    assert.equal(await getLocalJobBroker().drain(30_000), true);
+    const [finished] = await db.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id));
+    assert.equal(finished.status, "complete", finished.errorMessage ?? "");
+    const media = await import("@/app/api/exports/[id]/media/route");
+    const download = await media.GET(new Request("http://arena.test/media?download=1"), { params: Promise.resolve({ id: job.id }) });
+    assert.equal(download.status, 200);
+    const filename = path.join(root!, "completed-transitions.wav"), decoded = path.join(root!, "completed-transitions.f32");
+    writeFileSync(filename, Buffer.from(await download.arrayBuffer()));
+    const { validateAudio, exec } = await import("../audio");
+    const { requireTool } = await import("../ffmpeg");
+    assert.ok(Math.abs((await validateAudio(filename)).durationSeconds - 3.25) < 0.02);
+    await exec((await requireTool("ffmpeg")).path, ["-y", "-i", filename, "-f", "f32le", "-ac", "1", decoded]);
+    const pcm = readFileSync(decoded);
+    const magnitude = (hz: number, start: number, end: number) => {
+      let sin = 0, cos = 0;
+      const first = Math.round(start * 44100), last = Math.round(end * 44100);
+      for (let i = first; i < last; i++) { const value = pcm.readFloatLE(i * 4); sin += value * Math.sin(2 * Math.PI * hz * i / 44100); cos += value * Math.cos(2 * Math.PI * hz * i / 44100); }
+      return 2 * Math.hypot(sin, cos) / (last - first);
+    };
+    const signal = { initial: magnitude(220, 0.1, 0.3), fadeOut: magnitude(220, 0.55, 0.65), fadeIn: magnitude(880, 0.55, 0.65), donorOld: magnitude(220, 0.8, 0.9), donorNew: magnitude(880, 0.8, 0.9), beforeCut: magnitude(880, 1.5, 1.7), afterCut: magnitude(220, 1.8, 2), wrongAfterCut: magnitude(880, 1.8, 2) };
+    assert.ok(signal.initial > 0.05, JSON.stringify(signal));
+    assert.ok(signal.fadeOut / signal.initial > 0.65 && signal.fadeOut / signal.initial < 0.95, JSON.stringify(signal));
+    assert.ok(signal.fadeIn > 0.004 && signal.fadeIn < 0.025, JSON.stringify(signal));
+    assert.ok(signal.donorOld < 0.002 && signal.donorNew > 0.03, JSON.stringify(signal));
+    assert.ok(signal.beforeCut > 0.03 && signal.afterCut > 0.02 && signal.wrongAfterCut < 0.002, JSON.stringify(signal));
+    if (process.env.ARENA_TRANSITION_EVIDENCE_DIR) {
+      const out = process.env.ARENA_TRANSITION_EVIDENCE_DIR; mkdirSync(out, { recursive: true }); copyFileSync(filename, path.join(out, "completed-transitions.wav"));
+      writeFileSync(path.join(out, "result.json"), JSON.stringify({ syntheticAudio: true, sourceHead: spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(), workingDiffSha256: createHash("sha256").update(spawnSync("git", ["diff", "HEAD"], { encoding: "utf8" }).stdout).digest("hex"), state: restored, signal, wavSha256: createHash("sha256").update(readFileSync(filename)).digest("hex") }, null, 2));
+    }
+  } finally { if (priorWorker === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = priorWorker; if (priorRedis === undefined) delete process.env.REDIS_URL; else process.env.REDIS_URL = priorRedis; }
+});
