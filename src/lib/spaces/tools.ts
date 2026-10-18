@@ -17,7 +17,7 @@
  * app still shouldn't rm -rf the host it runs on.
  */
 
-import { spawn } from "node:child_process";
+import { runCommandProcess } from "./command-process";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -138,22 +138,9 @@ export async function toolRunCommand(
     const { runInTarget } = await import("./workspace-isolation");
     return runInTarget(execTarget, cmd, timeoutMs);
   }
-  return new Promise((resolve) => {
-    const parts = cmd.trim().split(/\s+/);
-    // Clean env: never leak the host process's test-runner context into
-    // child processes (a nested `node --test` would otherwise no-op).
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    const child = spawn(parts[0], parts.slice(1), { cwd: dir, timeout: timeoutMs, env, shell: IS_WINDOWS });
-    let out = "";
-    const cap = (s: string) => {
-      if (out.length < 8000) out += s;
-    };
-    child.stdout.on("data", cap);
-    child.stderr.on("data", cap);
-    child.on("error", (e) => resolve(`error: ${e.message}`));
-    child.on("close", (code, signal) => resolve(`${code === 0 ? "" : `error: command did not succeed${signal ? ` (${signal})` : ""}\n`}exit ${code}\n${out.slice(0, 8000)}`));
-  });
+  const parts = cmd.trim().split(/\s+/);
+  const result = await runCommandProcess(parts[0], parts.slice(1), { cwd: dir, timeoutMs, shell: IS_WINDOWS });
+  return `${result.code === 0 ? "" : `error: command did not succeed${result.signal ? ` (${result.signal})` : ""}\n`}exit ${result.code}\n${result.output}`;
 }
 
 // ---------------- fetch tool ----------------
