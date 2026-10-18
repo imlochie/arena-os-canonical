@@ -1,5 +1,7 @@
 "use client";
 
+import type { TrackSummary } from "@/lib/waveyard/library/service";
+
 import type { StudioHandoffResult } from "@/lib/waveyard/library/session-service";
 
 import Link from "next/link";
@@ -55,9 +57,7 @@ interface SessionDetail {
   updatedAt: string;
 }
 
-interface LibraryTrackOption {
-  track: { id: string; title: string; artist: string };
-}
+type LibraryTrackOption = Pick<TrackSummary, "id" | "title" | "artist">;
 
 type DeckApi = {
   itemId: string | null;
@@ -1202,8 +1202,8 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
             <select id="sess-add" value={addTrackId} onChange={(event) => setAddTrackId(event.target.value)}>
               <option value="">Choose a track…</option>
               {library.map((option) => (
-                <option key={option.track.id} value={option.track.id}>
-                  {option.track.title} — {option.track.artist || "Unknown artist"}
+                <option key={option.id} value={option.id}>
+                  {option.title} — {option.artist || "Unknown artist"}
                 </option>
               ))}
             </select>

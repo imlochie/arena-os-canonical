@@ -44,7 +44,7 @@ before(async () => {
       res.writeHead(match ? 206 : 200, { "content-type": "audio/wav", "accept-ranges": "bytes", "content-length": end - start + 1, ...(match ? { "content-range": `bytes ${start}-${end}/${data.length}` } : {}) });
       return res.end(data.subarray(start, end + 1));
     }
-    if (url.pathname === "/api/library/tracks") return json({ tracks: [] });
+    if (url.pathname === "/api/library/tracks") return json({ tracks: ["a", "b", "c"].map((key) => ({ id: `track-${key}`, title: `Song ${key.toUpperCase()}`, artist: "PCM fixture" })) });
     const parts = url.pathname.split("/");
     if (parts[3] === "sessions") {
       const state = session(parts[4]);

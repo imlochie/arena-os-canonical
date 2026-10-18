@@ -28,7 +28,7 @@ import { repoRootFromMeta } from "./lib/repo-root.mjs";
 import { verifyStagedPackage } from "./lib/staged-identity.mjs";
 
 const root = repoRootFromMeta(import.meta.url);
-const reportPath = process.argv[2] ?? path.join(root, "desktop-e2e-report.json");
+const reportPath = process.argv.slice(2).find((arg) => arg !== "--browser") ?? path.join(root, "desktop-e2e-report.json");
 const steps = [];
 let failed = false;
 
@@ -400,6 +400,14 @@ async function main() {
   });
   const sessionItemA = addSessionTrackB.body.session?.tracks?.[0];
   const sessionItemB = addSessionTrackB.body.session?.tracks?.[1];
+  // Opt-in real browser against THIS staged app and its real embedded DB.
+  // Unlike the isolated controller fixture, no HTTP responses are mocked.
+  if (process.argv.includes("--browser")) {
+    const { exerciseSessionBrowser } = await import("./lib/session-browser-acceptance.mjs");
+    const ui = await exerciseSessionBrowser({ url, sessionId, currentId: sessionItemA.id, nextId: sessionItemB.id, screenshotPath: `${reportPath}.session.png` });
+    step("actual staged session UI: hard cut, timed fade, audio and SQL reload", true, { info: JSON.stringify(ui) });
+  }
+
 
   const patchTrack = await api(`/api/library/sessions/${sessionId}/tracks/${sessionItemA?.id}`, {
     method: "PATCH", headers: jsonHeaders,
