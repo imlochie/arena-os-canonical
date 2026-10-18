@@ -141,7 +141,13 @@ jobs:
         run: npx drizzle-kit push --force
 
       - name: A7 real-runtime acceptance
-        run: npm run test:acceptance:a7
+        run: npm run test:acceptance:a7 | tee a7-acceptance.tap
+      - name: Retain A7 evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-acceptance-${{ github.sha }}
+          path: a7-acceptance.tap
 
   playback-acceptance:
     # Real browser audio primitives, not a mocked transport or separation job.
@@ -162,6 +168,14 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Exercise actual stem playback and recovery
         run: npm run --silent test:acceptance:transport | tee transport-acceptance.tap
+      - name: Exercise actual session controls, transitions and audible recovery
+        run: npm run --silent test:acceptance:session | tee session-acceptance.tap
+      - name: Retain session evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-acceptance-${{ github.sha }}
+          path: session-acceptance.tap
       - name: Retain playback evidence (including failures)
         if: always()
         uses: actions/upload-artifact@v4

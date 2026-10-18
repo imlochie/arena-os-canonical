@@ -232,3 +232,12 @@ test("master recording tap produces decodable non-silent mixed audio", { timeout
   assert.ok(recording.duration > 0.1, JSON.stringify(recording));
   assert.ok(recording.rms > 0.03, JSON.stringify(recording));
 });
+
+test("master gain intent takes effect in the same turn as play, before React commits", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(async () => { window.transport.setMasterVolume(0); await window.transport.play(); });
+  await expect.poll(() => page.evaluate(() => window.transport.playing)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.transport.readMeters().master.rms)).toBeLessThan(0.001);
+  await page.evaluate(() => window.transport.setMasterVolume(1));
+  await expect.poll(() => page.evaluate(() => window.transport.readMeters().master.rms)).toBeGreaterThan(0.05);
+});

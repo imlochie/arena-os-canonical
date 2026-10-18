@@ -60,12 +60,14 @@ interface LibraryTrackOption {
 }
 
 type DeckApi = {
+  itemId: string | null;
   transport: ReturnType<typeof useStemTransport>;
   /** Apply per-stem-TYPE volumes (the parent owns the mix semantics). */
   applyStemVolumes: (volumes: Record<string, number>) => void;
 };
 
-type FadePhase = "idle" | "fading";
+type TransitionIdentity = { fromDeck: 0 | 1; toDeck: 0 | 1; fromId: string; toId: string };
+type FadePhase = "idle" | "starting" | "fading";
 
 function formatClock(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -88,6 +90,7 @@ function SessionDeck({
   swaps,
   onApi,
   onPlaying,
+  onPosition,
   onEnded,
   testId,
 }: {
@@ -100,6 +103,7 @@ function SessionDeck({
   swaps: Record<string, string>;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
   onPlaying: (deckIndex: number, playing: boolean) => void;
+  onPosition: (deckIndex: number, seconds: number) => void;
   onEnded: (deckIndex: number) => void;
   testId: string;
 }) {
@@ -132,15 +136,17 @@ function SessionDeck({
   // Hand the deck's live api up to the session controller. The api object is
   // refreshed when the transport callbacks change (new track loaded).
   useEffect(() => {
-    onApi(deckIndex, { transport, applyStemVolumes });
+    onApi(deckIndex, { itemId: item?.id ?? null, transport, applyStemVolumes });
     return () => onApi(deckIndex, null);
-  }, [deckIndex, transport, applyStemVolumes, onApi]);
+  }, [deckIndex, item?.id, transport, applyStemVolumes, onApi]);
 
   // Play state flows up as state so the parent never reads transport state
   // through a ref during render.
   useEffect(() => {
     onPlaying(deckIndex, transport.playing);
   }, [deckIndex, transport.playing, onPlaying]);
+
+  useEffect(() => { onPosition(deckIndex, transport.position); }, [deckIndex, transport.position, onPosition]);
 
   // A fresh track loads at its assigned start position, at unity master.
   const startAtRef = useRef(startAt);
@@ -276,12 +282,25 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
 
+  const activeDeckRef = useRef<0 | 1>(0);
+  const transitionRequest = useRef(0);
+  const startingRef = useRef(false);
+  const startingIdentity = useRef<TransitionIdentity | null>(null);
   const decksRef = useRef<Array<DeckApi | null>>([null, null]);
-  const fadeRef = useRef<{ raf: number; t0: number; fromDeck: 0 | 1; toDeck: 0 | 1; cfg: TransitionConfig; fromMix: Record<string, number> } | null>(null);
+  const fadeRef = useRef<{ raf: number; t0: number; fromDeck: 0 | 1; toDeck: 0 | 1; cfg: TransitionConfig; fromMix: Record<string, number>; fromId: string; toId: string } | null>(null);
   const advancingRef = useRef(false);
+  const [positionsByDeck, setPositionsByDeck] = useState<[number, number]>([0, 0]);
   const [playingByDeck, setPlayingByDeck] = useState<[boolean, boolean]>([false, false]);
   const sessionRef = useRef<SessionDetail | null>(null);
   const currentIdRef = useRef<string | null>(null);
+  const activateDeck = useCallback((id: string, deck: 0 | 1) => {
+    // Persistence callbacks in this same event must see the new identity,
+    // not the previous render's current track/deck pair.
+    currentIdRef.current = id;
+    activeDeckRef.current = deck;
+    setCurrentId(id);
+    setActiveDeck(deck);
+  }, []);
   // Mirrors for callbacks/effects only — never read during render.
   useEffect(() => {
     sessionRef.current = session;
@@ -393,13 +412,17 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     });
   }, []);
 
+  const handleDeckPosition = useCallback((index: number, seconds: number) => {
+    setPositionsByDeck((previous) => previous[index] === seconds ? previous : index === 0 ? [seconds, previous[1]] : [previous[0], seconds]);
+  }, []);
+
   // ------------------------------------------------------------ persistence
   const persistState = useCallback(async () => {
     const s = sessionRef.current;
     const id = currentIdRef.current;
     if (s === null) return;
-    const deck = decksRef.current[activeDeck === 0 ? 0 : 1];
-    const position = deck?.transport.position ?? 0;
+    const deck = decksRef.current[activeDeckRef.current];
+    const position = deck?.transport.currentPosition() ?? 0;
     setSaveState("saving");
     try {
       const response = await fetch(`/api/library/sessions/${s.id}/state`, {
@@ -411,7 +434,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     } catch {
       setSaveState("error");
     }
-  }, [activeDeck]);
+  }, []);
 
   // Throttled save while playing + on unload. Live transport never waits on it.
   const persistStateRef = useRef(persistState);
@@ -459,38 +482,39 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   }, [mixes, nextItem, standbyDeckIndex]);
 
   // -------------------------------------------------------- transition core
-  const finishTransition = useCallback(() => {
+  const abortTransition = useCallback((message: string) => {
+    transitionRequest.current += 1;
+    startingRef.current = false;
+    startingIdentity.current = null;
     const fade = fadeRef.current;
-    if (fade === null || advancingRef.current) return;
-    advancingRef.current = true;
-    cancelAnimationFrame(fade.raf);
+    if (fade) {
+      cancelAnimationFrame(fade.raf);
+      decksRef.current[fade.fromDeck]?.applyStemVolumes(fade.fromMix);
+    }
     fadeRef.current = null;
-    const fromApi = decksRef.current[fade.fromDeck];
-    const toApi = decksRef.current[fade.toDeck];
-    if (fromApi) {
-      fromApi.transport.pause();
-      fromApi.transport.setMasterVolume(1);
-    }
-    if (toApi) {
-      toApi.transport.setMasterVolume(1);
-    }
+    for (const deck of decksRef.current) { deck?.transport.pause(); deck?.transport.setMasterVolume(1); }
     setPhase("idle");
-    // Advance exactly once: the standby deck (now audible) becomes current.
-    const s = sessionRef.current;
-    if (s !== null) {
-      const idx = s.tracks.findIndex((item) => item.id === currentIdRef.current);
-      const decision = nextSessionTrack(
-        s.tracks.map((item) => ({ id: item.id, trackId: item.track.id })),
-        currentIdRef.current,
-      );
-      if (decision.action === "play") {
-        setCurrentId(decision.sessionTrackId);
-        setActiveDeck(fade.toDeck);
-      }
-    }
+    setStatus(message);
+  }, []);
+
+  const finishTransition = useCallback((cut?: TransitionIdentity) => {
+    const fade = fadeRef.current;
+    const completed = cut ?? fade;
+    if (completed === null || completed === undefined || advancingRef.current) return;
+    const toApi = decksRef.current[completed.toDeck];
+    if (currentIdRef.current !== completed.fromId || toApi?.itemId !== completed.toId) return;
+    advancingRef.current = true;
+    if (fade) cancelAnimationFrame(fade.raf);
+    fadeRef.current = null;
+    const fromApi = decksRef.current[completed.fromDeck];
+    fromApi?.transport.pause();
+    fromApi?.transport.setMasterVolume(1);
+    toApi.transport.setMasterVolume(1);
+    setPhase("idle");
+    activateDeck(completed.toId, completed.toDeck);
     setStatus("Transition complete — the next track is now current.");
     void persistStateRef.current();
-  }, []);
+  }, [activateDeck]);
 
   const runFade = useCallback(
     (cfg: TransitionConfig, fromDeck: 0 | 1, toDeck: 0 | 1) => {
@@ -503,6 +527,11 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       const tick = () => {
         const fade = fadeRef.current;
         if (fade === null) return;
+        const from = decksRef.current[fromDeck], to = decksRef.current[toDeck];
+        if (from?.itemId !== fade.fromId || to?.itemId !== fade.toId || !from.transport.isPlaying() || !to.transport.isPlaying()) {
+          abortTransition("Transition interrupted by unavailable or stopped audio. Press Play to recover the current track.");
+          return;
+        }
         const elapsed = (performance.now() - t0) / 1000;
         const env = crossfadeEnvelope(elapsed, cfg.crossfadeSeconds);
         const kept = new Set(cfg.keepStems);
@@ -518,15 +547,15 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         }
         fade.raf = requestAnimationFrame(tick);
       };
-      fadeRef.current = { raf: 0, t0, fromDeck, toDeck, cfg, fromMix };
+      fadeRef.current = { raf: 0, t0, fromDeck, toDeck, cfg, fromMix, fromId: fromItem.id, toId: deckItems[toDeck]!.id };
       fadeRef.current.raf = requestAnimationFrame(tick);
       setPhase("fading");
     },
-    [deckItems, mixes, finishTransition],
+    [deckItems, mixes, finishTransition, abortTransition],
   );
 
-  const beginTransition = useCallback(async () => {
-    if (phase === "fading") return;
+  const beginTransition = useCallback(async (ended = false) => {
+    if (fadeRef.current || startingRef.current) return;
     const fromDeck = activeDeck;
     const toDeck = standbyDeckIndex;
     const fromApi = decksRef.current[fromDeck];
@@ -541,10 +570,11 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       setStatus("Add a second track to the session — the next deck is empty.");
       return;
     }
-    const cfg = transitions[fromItem.id] ?? fromItem.transition;
+    const savedConfig = transitions[fromItem.id] ?? fromItem.transition;
+    const cfg: TransitionConfig = ended ? { ...savedConfig, mode: "manual", crossfadeSeconds: 0 } : savedConfig;
     advancingRef.current = false;
 
-    let startInCurrent = fromApi.transport.position;
+    let startInCurrent = fromApi.transport.currentPosition();
     let incomingOffset = 0;
     if (cfg.mode === "beat" || cfg.mode === "bar") {
       const aligned = beatAlignedTransitionStart(
@@ -568,23 +598,45 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       setStatus(`Manual crossfade: ${cfg.crossfadeSeconds}s from ${formatClock(startInCurrent)}.`);
     }
 
-    fromApi.transport.seek(startInCurrent);
-    await fromApi.transport.play();
-
-    if (cfg.crossfadeSeconds <= 0) {
-      // Hard cut: the incoming track starts immediately, the outgoing stops.
+    const request = ++transitionRequest.current;
+    startingRef.current = true;
+    setPhase("starting");
+    const identity = { fromDeck, toDeck, fromId: fromItem.id, toId: toItem.id };
+    startingIdentity.current = identity;
+    const stillCurrent = () => request === transitionRequest.current && currentIdRef.current === fromItem.id
+      && decksRef.current[fromDeck]?.itemId === fromItem.id && decksRef.current[toDeck]?.itemId === toItem.id;
+    try {
+      if (!ended) {
+        fromApi.transport.seek(startInCurrent);
+        if (!await fromApi.transport.play()) throw new Error("The current track could not start. Check its audio and retry.");
+      }
+      if (!stillCurrent()) return;
+      // Silence the incoming graph before it starts; a crossfade must not
+      // briefly play full-volume incoming audio while its promises resolve.
+      toApi.transport.setMasterVolume(cfg.crossfadeSeconds > 0 ? 0 : 1);
       toApi.transport.seek(incomingOffset);
-      await toApi.transport.play();
-      fromApi.transport.pause();
-      finishTransition();
-      return;
+      if (!await toApi.transport.play()) throw new Error("The next track could not start. Check its audio and retry.");
+      if (!stillCurrent()) return;
+      if (cfg.crossfadeSeconds <= 0) finishTransition(identity);
+      else runFade(cfg, fromDeck, toDeck);
+    } catch (error) {
+      if (request === transitionRequest.current) {
+        fromApi.transport.pause(); toApi.transport.pause();
+        fromApi.transport.setMasterVolume(1); toApi.transport.setMasterVolume(1);
+        setPhase("idle");
+        setStatus(error instanceof Error ? error.message : "Transition failed. Retry playback.");
+      }
+    } finally {
+      if (request === transitionRequest.current) { startingRef.current = false; startingIdentity.current = null; }
     }
-    toApi.transport.seek(incomingOffset);
-    await toApi.transport.play();
-    runFade(cfg, fromDeck, toDeck);
-  }, [phase, activeDeck, standbyDeckIndex, deckItems, transitions, runFade, finishTransition]);
+  }, [activeDeck, standbyDeckIndex, deckItems, transitions, runFade, finishTransition]);
 
   const cancelTransition = useCallback(() => {
+    transitionRequest.current += 1;
+    if (startingRef.current) {
+      abortTransition("Transition start cancelled. Press Play to resume the current track.");
+      return;
+    }
     const fade = fadeRef.current;
     if (fade === null) return;
     cancelAnimationFrame(fade.raf);
@@ -599,51 +651,67 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     decksRef.current[fade.toDeck]?.transport.setMasterVolume(frozen.toGain);
     fadeRef.current = null;
     setPhase("idle");
-    setStatus("Transition frozen — both decks hold their levels. Adjust them manually or load again.");
-  }, []);
+    setStatus("Transition frozen — both decks hold their levels. Pause stops both decks; Play recovers the current track.");
+  }, [abortTransition]);
 
   const togglePlay = useCallback(async () => {
-    if (phase === "fading") {
-      cancelTransition();
+    if (phase !== "idle") {
+      abortTransition("Transition paused. Press Play to recover the current track.");
+      void persistStateRef.current();
+      return;
     }
     const api = decksRef.current[activeDeck];
     if (api === null) return;
     if (api.transport.playing) {
-      api.transport.pause();
+      for (const deck of decksRef.current) deck?.transport.pause();
       void persistStateRef.current();
     } else {
+      decksRef.current[activeDeck === 0 ? 1 : 0]?.transport.pause();
+      api.transport.setMasterVolume(1);
+      api.applyStemVolumes(mixes[currentIdRef.current ?? ""] ?? {});
       await api.transport.play();
     }
-  }, [activeDeck, phase, cancelTransition]);
+  }, [activeDeck, phase, abortTransition, mixes]);
 
-  const handleDeckEnded = useCallback(
-    (deckIndex: number) => {
-      // Natural end of the CURRENT deck (no transition running): advance to
-      // the pre-loaded next track with a hard cut, or stop at the end.
-      if (phase === "fading" || deckIndex !== activeDeck) return;
-      const api = decksRef.current[deckIndex];
-      if (api === null) return;
-      api.transport.pause();
-      const s = sessionRef.current;
-      if (s === null) return;
-      const idx = s.tracks.findIndex((item) => item.id === currentIdRef.current);
-      const decision = nextSessionTrack(
-        s.tracks.map((item) => ({ id: item.id, trackId: item.track.id })),
-        currentIdRef.current,
-      );
-      if (decision.action === "play") {
-        setCurrentId(decision.sessionTrackId);
-        setActiveDeck((prev) => (prev === 0 ? 1 : 0));
-        const toApi = decksRef.current[deckIndex === 0 ? 1 : 0];
-        if (toApi) void toApi.transport.play();
-        setStatus("Track finished — the next track took over.");
-      } else {
-        setStatus(decision.reason === "empty-session" ? "This session has no tracks yet." : "End of session.");
-      }
-      void persistStateRef.current();
-    },
-    [phase, activeDeck],
-  );
+  const handleDeckEnded = useCallback((deckIndex: number) => {
+    if (phase !== "idle" || startingRef.current || deckIndex !== activeDeckRef.current) return;
+    const s = sessionRef.current;
+    if (!s) return;
+    const decision = nextSessionTrack(s.tracks.map((item) => ({ id: item.id, trackId: item.track.id })), currentIdRef.current);
+    if (decision.action === "play") void beginTransition(true);
+    else { setStatus("End of session."); void persistStateRef.current(); }
+  }, [phase, beginTransition]);
+
+  // Queue changes must invalidate asynchronous starts/fades, not promote a
+  // different asset when the requested deck was replaced while loading.
+  useEffect(() => {
+    if ((startingRef.current || fadeRef.current) && session?.tracks) {
+      const identity = fadeRef.current ?? startingIdentity.current;
+      if (identity && (deckItems[identity.fromDeck]?.id !== identity.fromId || deckItems[identity.toDeck]?.id !== identity.toId))
+        abortTransition("Transition cancelled because its track changed. Press Play to recover.");
+    }
+  }, [deckItems, session?.tracks, abortTransition]);
+  useEffect(() => () => {
+    transitionRequest.current += 1;
+    const fade = fadeRef.current;
+    if (fade) cancelAnimationFrame(fade.raf);
+  }, []);
+
+  const seekCurrent = useCallback((seconds: number) => {
+    if (phase !== "idle") abortTransition("Transition cancelled for seeking. Press Play to resume.");
+    const index = activeDeckRef.current;
+    const api = decksRef.current[index];
+    api?.transport.seek(seconds);
+    // Controlled range input must reflect this event immediately, before the
+    // child's transport effect reports its next position to the parent.
+    handleDeckPosition(index, api?.transport.currentPosition() ?? 0);
+    void persistStateRef.current();
+  }, [phase, abortTransition, handleDeckPosition]);
+  const stopSession = useCallback(() => {
+    abortTransition("Session stopped. Press Play to restart the current track.");
+    for (const deck of decksRef.current) deck?.transport.stop();
+    void persistStateRef.current();
+  }, [abortTransition]);
 
   // ----------------------------------------------------------- queue edits
   const mutate = useCallback(async (input: RequestInfo, init: RequestInit, apply: (s: SessionDetail) => void) => {
@@ -682,14 +750,14 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
 
   const jumpTo = useCallback(
     (itemId: string) => {
-      if (phase === "fading") cancelTransition();
+      abortTransition("Changing the current track.");
       const api = decksRef.current[activeDeck];
-      api?.transport.pause();
-      setCurrentId(itemId);
+      api?.transport.seek(0);
+      activateDeck(itemId, activeDeck);
       setStatus("Jumped — the current deck now plays the selected track.");
       void persistStateRef.current();
     },
-    [phase, cancelTransition, activeDeck],
+    [abortTransition, activeDeck, activateDeck],
   );
 
   const moveTrack = useCallback(
@@ -891,65 +959,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     });
   };
 
-  return (
-    <section className="session-stage" aria-label={`Session · ${session.name}`} data-testid="session-stage">
-      <header className="sess-header">
-        <div>
-          <span className="eyebrow">Session</span>
-          <h1>{session.name}</h1>
-          <p className="sess-header-sub">
-            {session.tracks.length} track{session.tracks.length === 1 ? "" : "s"}
-            {` · restore point ${saveState === "saved" ? "saved" : saveState === "saving" ? "saving…" : "save failed"}`}
-          </p>
-        </div>
-        <div className="sess-header-actions">
-          <button type="button" className="button" onClick={() => void togglePlay()} data-testid="session-play">
-            {playing ? "Pause" : "Play"}
-          </button>
-          <button type="button" className="button secondary" onClick={() => setHandoffConfirm(true)} disabled={handoffBusy} data-testid="session-handoff">
-            Send to Studio
-          </button>
-          <Link className="button secondary" href="/waveyard/sessions">All sessions</Link>
-        </div>
-      </header>
-
-      {status !== null && (
-        <p className="sess-status" role="status" data-testid="session-status">
-          {status}
-        </p>
-      )}
-      {handoffConfirm && (
-        <div role="dialog" aria-modal="false" aria-labelledby="studio-handoff-title" className="sess-handoff" data-testid="handoff-confirmation">
-          <h3 id="studio-handoff-title">Create a sequential Studio edit?</h3>
-          <p>This keeps the track order, current stem levels and timed donor swaps. Live transition triggers, crossfades and the playback cursor are not reconstructed. This is not an identical recording of your performance. Your listening session and original audio remain available.</p>
-          <button type="button" className="button primary" onClick={sendToStudio} disabled={handoffBusy}>{handoffBusy ? "Saving and creating…" : "Create sequential Studio edit"}</button>
-          <button type="button" className="button secondary" onClick={() => setHandoffConfirm(false)} disabled={handoffBusy}>Keep listening session</button>
-        </div>
-      )}
-      {handoff !== null && (
-        <p className="sess-handoff" role="status">
-          Studio arrangement created with {handoff.remixTrackCount} remix track{handoff.remixTrackCount === 1 ? "" : "s"}
-          {handoff.refused ? ` — Not included: ${handoff.refused}` : ""}
-          {handoff.notice ? ` ${handoff.notice}` : ""}
-          {" "}
-          <Link href={`/waveyard/create?project=${handoff.projectId}`}>Open it in the Studio</Link>.
-        </p>
-      )}
-
-      <div className="sess-decks">
-        <div className="sess-deck-slot sess-deck-slot-active">
-          <SessionDeck
-            deckIndex={activeDeckIndex}
-            item={deckItems[activeDeckIndex]}
-            active
-            startAt={startAtFor(activeDeckIndex)}
-            swaps={activeSwaps}
-            onApi={handleDeckApi}
-            onPlaying={handleDeckPlaying}
-            onEnded={handleDeckEnded}
-            testId="session-deck-current"
-          />
-          {currentItem !== null && currentItem.stems.length > 0 && (
+  const mixControls = currentItem !== null && currentItem.stems.length > 0 && (
             <div className="sess-mix">
               <h4 className="library-panel-title">Stem mix — current track</h4>
               {currentItem.stems.map((stem) => {
@@ -989,10 +999,70 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
                 );
               })}
             </div>
-          )}
-        </div>
+          );
 
-        <div className="sess-transition" aria-label="Transition controls">
+  return (
+    <section className="session-stage" aria-label={`Session · ${session.name}`} data-testid="session-stage">
+      <header className="sess-header">
+        <div>
+          <span className="eyebrow">Session</span>
+          <h1>{session.name}</h1>
+          <p className="sess-header-sub">
+            {session.tracks.length} track{session.tracks.length === 1 ? "" : "s"}
+            {` · restore point ${saveState === "saved" ? "saved" : saveState === "saving" ? "saving…" : "save failed"}`}
+          </p>
+        </div>
+        <div className="sess-header-actions">
+          <button type="button" className="button" onClick={() => void togglePlay()} data-testid="session-play">
+            {playing ? "Pause" : "Play"}
+          </button>
+          <button type="button" className="button secondary" onClick={stopSession} data-testid="session-stop">Stop</button>
+          <label>Position
+            <input type="range" aria-label="Session position" min={0} max={currentItem?.track.durationSeconds ?? 0} step={0.1}
+              value={positionsByDeck[activeDeck]} onChange={(event) => seekCurrent(Number(event.target.value))} />
+          </label>
+          <button type="button" className="button secondary" onClick={() => setHandoffConfirm(true)} disabled={handoffBusy} data-testid="session-handoff">
+            Send to Studio
+          </button>
+          <Link className="button secondary" href="/waveyard/sessions">All sessions</Link>
+        </div>
+      </header>
+
+      {status !== null && (
+        <p className="sess-status" role="status" data-testid="session-status">
+          {status}
+        </p>
+      )}
+      {handoffConfirm && (
+        <div role="dialog" aria-modal="false" aria-labelledby="studio-handoff-title" className="sess-handoff" data-testid="handoff-confirmation">
+          <h3 id="studio-handoff-title">Create a sequential Studio edit?</h3>
+          <p>This keeps the track order, current stem levels and timed donor swaps. Live transition triggers, crossfades and the playback cursor are not reconstructed. This is not an identical recording of your performance. Your listening session and original audio remain available.</p>
+          <button type="button" className="button primary" onClick={sendToStudio} disabled={handoffBusy}>{handoffBusy ? "Saving and creating…" : "Create sequential Studio edit"}</button>
+          <button type="button" className="button secondary" onClick={() => setHandoffConfirm(false)} disabled={handoffBusy}>Keep listening session</button>
+        </div>
+      )}
+      {handoff !== null && (
+        <p className="sess-handoff" role="status">
+          Studio arrangement created with {handoff.remixTrackCount} remix track{handoff.remixTrackCount === 1 ? "" : "s"}
+          {handoff.refused ? ` — Not included: ${handoff.refused}` : ""}
+          {handoff.notice ? ` ${handoff.notice}` : ""}
+          {" "}
+          <Link href={`/waveyard/create?project=${handoff.projectId}`}>Open it in the Studio</Link>.
+        </p>
+      )}
+
+      <div className="sess-decks">
+        {([0, 1] as const).map((index) => (
+          <div key={index} className={`sess-deck-slot${index === activeDeck ? " sess-deck-slot-active" : ""}`} style={{ order: index === activeDeck ? 0 : 2 }}>
+            <SessionDeck deckIndex={index} item={deckItems[index]} active={index === activeDeck}
+              startAt={index === activeDeck ? startAtFor(index) : 0} swaps={index === activeDeck ? activeSwaps : {}}
+              onApi={handleDeckApi} onPlaying={handleDeckPlaying} onPosition={handleDeckPosition} onEnded={handleDeckEnded}
+              testId={index === activeDeck ? "session-deck-current" : "session-deck-next"} />
+            {index === activeDeck ? mixControls : null}
+          </div>
+        ))}
+
+        <div className="sess-transition" aria-label="Transition controls" style={{ order: 1 }}>
           <h4 className="library-panel-title">Transition into the next track</h4>
           {transition !== null && (
             <>
@@ -1040,12 +1110,12 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
                 </fieldset>
               )}
               <div className="sess-transition-actions">
-                {phase === "fading" ? (
+                {phase !== "idle" ? (
                   <>
                     <button type="button" className="button secondary" onClick={cancelTransition}>
-                      Freeze
+                      {phase === "starting" ? "Cancel start" : "Freeze"}
                     </button>
-                    <button type="button" className="button" onClick={finishTransition}>
+                    <button type="button" className="button" disabled={phase === "starting"} onClick={() => finishTransition()}>
                       Finish now
                     </button>
                   </>
@@ -1093,19 +1163,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           )}
         </div>
 
-        <div className="sess-deck-slot">
-          <SessionDeck
-            deckIndex={standbyDeckIndex}
-            item={deckItems[standbyDeckIndex]}
-            active={false}
-            startAt={0}
-            swaps={{}}
-            onApi={handleDeckApi}
-            onPlaying={handleDeckPlaying}
-            onEnded={handleDeckEnded}
-            testId="session-deck-next"
-          />
-        </div>
+
       </div>
 
       {/* P4: the real Stem2 hardware surface — output routing + honest caps.

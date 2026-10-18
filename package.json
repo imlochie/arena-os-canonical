@@ -25,7 +25,8 @@
     "windows:acceptance": "node scripts/windows-acceptance.mjs",
     "test:acceptance:music": "node scripts/waveyard-real-music.mjs",
     "test:acceptance:handoff": "node --import ./scripts/register-src-loader.mjs --test src/lib/waveyard/library/service.test.ts",
-    "test:acceptance:transport": "node --test tests/acceptance/stem-transport.test.mjs"
+    "test:acceptance:transport": "node --test tests/acceptance/stem-transport.test.mjs",
+    "test:acceptance:session": "node --test tests/acceptance/session-runtime.test.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
@@ -78,7 +79,7 @@
     "typescript": "5.9.3"
   },
   "version": "0.1.0",
-  "description": "Arena \u2014 local-first music production workspace",
+  "description": "Arena — local-first music production workspace",
   "author": "Arena",
   "main": "desktop/dist/main.js",
   "engines": {

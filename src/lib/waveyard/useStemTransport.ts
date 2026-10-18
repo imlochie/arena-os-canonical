@@ -233,7 +233,15 @@ export function useStemTransport(assetIds: string[], duration: number) {
   const wantsPlayback = useRef(false);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
-  const [masterVolume, setMasterVolume] = useState(1);
+  const [masterVolume, setMasterVolumeState] = useState(1);
+  const masterVolumeRef = useRef(1);
+  const setMasterVolume = useCallback((value: number | ((previous: number) => number)) => {
+    const next = typeof value === "function" ? value(masterVolumeRef.current) : value;
+    if (!Number.isFinite(next)) return;
+    masterVolumeRef.current = Math.max(0, next);
+    if (masterGain.current) masterGain.current.gain.value = masterVolumeRef.current;
+    setMasterVolumeState(masterVolumeRef.current);
+  }, []);
   const [loop, setLoop] = useState({ enabled: false, start: 0, end: 0 });
   const [error, setError] = useState<string | null>(null);
 
@@ -389,9 +397,6 @@ export function useStemTransport(assetIds: string[], duration: number) {
     [ids],
   );
 
-  useEffect(() => {
-    if (masterGain.current) masterGain.current.gain.value = masterVolume;
-  }, [masterVolume]);
   const stopClock = useCallback(() => {
     if (clockId.current) cancelAnimationFrame(clockId.current);
     clockId.current = null;
@@ -421,13 +426,13 @@ export function useStemTransport(assetIds: string[], duration: number) {
         return element;
       });
       for (const id of ids) ensureGraph(id);
-      if (masterGain.current) masterGain.current.gain.value = masterVolume;
+      if (masterGain.current) masterGain.current.gain.value = masterVolumeRef.current;
       applyMix(mixValues.current);
       // Inserts can be restored before the first user gesture, when no graph
       // exists yet. Apply that saved intent to the newly constructed graph.
       applyInserts(insertChains.current, masterChain.current);
       if (context.current?.state === "suspended") await context.current.resume();
-      if (request !== playRequest.current) return;
+      if (request !== playRequest.current) return false;
       const start = duration > 0 && positionRef.current >= duration ? 0 : positionRef.current;
       positionRef.current = start;
       for (const element of elements) element.currentTime = start;
@@ -436,18 +441,20 @@ export function useStemTransport(assetIds: string[], duration: number) {
       const results = await Promise.allSettled(elements.map((element) => element.play()));
       if (request !== playRequest.current) {
         if (!wantsPlayback.current) for (const element of elements) element.pause();
-        return;
+        return false;
       }
       if (results.some((result) => result.status === "rejected")) {
         throw new Error("One or more stems could not play. Check the audio files and retry.");
       }
       setPlaying(true);
+      return true;
     } catch (cause) {
-      if (request !== playRequest.current) return;
+      if (request !== playRequest.current) return false;
       setError(cause instanceof Error ? cause.message : "Audio playback failed. Reopen the track and retry.");
       pause();
+      return false;
     }
-  }, [applyInserts, applyMix, duration, ensureGraph, ids, masterVolume, pause]);
+  }, [applyInserts, applyMix, duration, ensureGraph, ids, pause]);
 
   // An actual asset change stops the old deck, but does not poison the shared
   // context. Equal ID lists from project polling do not enter this effect.
@@ -641,6 +648,8 @@ export function useStemTransport(assetIds: string[], duration: number) {
     applyInserts,
     playing,
     position,
+    currentPosition: () => positionRef.current,
+    isPlaying: () => wantsPlayback.current && ids.length > 0 && ids.every((id) => media.current[id] && !media.current[id]!.paused && !media.current[id]!.ended),
     duration,
     masterVolume,
     setMasterVolume,
