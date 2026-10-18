@@ -14,7 +14,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { executeTool, WORKSPACE_ROOT } from "./tools";
-import { runMission, type MissionAgentSpec } from "./mission";
+import { runMission as runDurableMission, type MissionAgentSpec } from "./mission";
 import type { GenerateResult } from "@/lib/runtime";
 import { decideApproval, listApprovals } from "./governance";
 import {
@@ -221,3 +221,6 @@ test("executeTool: refused payment links surface as honest failures, not success
   assert.equal(outcome.ok, false);
   assert.match(outcome.output, /exceeds the safety cap/);
 });
+
+// Explicitly ephemeral unless this fixture supplies real SQL.
+const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });

@@ -22,3 +22,9 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 export const db = drizzle(pool);
+
+// A temporary database restart must not terminate the server through an
+// unhandled idle-client error. Checked queries still reject authoritatively.
+if (pool.listenerCount("error") === 0) pool.on("error", (error) => {
+  console.error("[database] idle connection lost:", error.message);
+});

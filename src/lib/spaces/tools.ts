@@ -127,6 +127,7 @@ export async function toolRunCommand(
   timeoutMs = 20_000,
   extraAllow: string[] = [],
   execTarget?: import("./workspace-isolation").ExecTarget,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!commandAllowed(cmd, extraAllow)) {
     return `refused: "${cmd.trim().split(/\s+/)[0]}" is not on the tool allowlist (${COMMAND_ALLOWLIST.join(", ")}${extraAllow.length ? " + " + extraAllow.join(", ") : ""})`;
@@ -139,7 +140,7 @@ export async function toolRunCommand(
     return runInTarget(execTarget, cmd, timeoutMs);
   }
   const parts = cmd.trim().split(/\s+/);
-  const result = await runCommandProcess(parts[0], parts.slice(1), { cwd: dir, timeoutMs, shell: IS_WINDOWS });
+  const result = await runCommandProcess(parts[0], parts.slice(1), { cwd: dir, timeoutMs, shell: IS_WINDOWS, signal });
   return `${result.code === 0 ? "" : `error: command did not succeed${result.signal ? ` (${result.signal})` : ""}\n`}exit ${result.code}\n${result.output}`;
 }
 
@@ -354,6 +355,7 @@ export async function toolRunTests(
   args: { command?: string },
   extraAllow: string[] = [],
   execTarget?: import("./workspace-isolation").ExecTarget,
+  signal?: AbortSignal,
 ): Promise<string> {
   const hasPkg = await readFile(path.join(dir, "package.json"), "utf8").catch(() => "");
   let cmd = String(args.command ?? "").trim();
@@ -381,7 +383,7 @@ export async function toolRunTests(
       else return "error: no tests found — write *.test.js files or add a package.json test script first";
     }
   }
-  const out = await toolRunCommand(dir, cmd, 60_000, extraAllow, execTarget);
+  const out = await toolRunCommand(dir, cmd, 60_000, extraAllow, execTarget, signal);
   return `${out.startsWith("error:") || out.startsWith("refused:") ? "error: test execution failed\n" : ""}[${cmd}]\n${out}`;
 }
 
@@ -394,6 +396,7 @@ export function githubToken(opts: { githubToken?: string }): string | undefined 
 async function gh(pathname: string, token: string, init?: RequestInit): Promise<any> {
   const res = await fetch("https://api.github.com" + pathname, {
     ...init,
+    signal: init?.signal ?? AbortSignal.timeout(20000),
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
@@ -484,6 +487,9 @@ export interface ToolOutcome {
   output: string;
   ok: boolean;
   ms: number;
+  uncertain?: boolean;
+  requestId?: string;
+  provenance?: "executed" | "file-postcondition" | "human-reconciliation" | "observation" | "approval-ledger";
 }
 
 export async function executeTool(
@@ -491,12 +497,14 @@ export async function executeTool(
   action: ToolAction,
   opts: {
     githubToken?: string;
+    signal?: AbortSignal;
     extraAllow?: string[];
     execTarget?: import("./workspace-isolation").ExecTarget;
     browserEngine?: import("./browser").BrowserEngine;
     externalDeps?: import("./external").ExternalDeps;
   } = {}
 ): Promise<ToolOutcome> {
+  if (opts.signal?.aborted) return { tool: action.tool, input: action.args, ok: false, output: "error: mission cancelled before dispatch", ms: 0 };
   const dir = await ensureWorkspace(spaceId);
   const t0 = Date.now();
   const run = async (): Promise<string> => {
@@ -519,7 +527,7 @@ export async function executeTool(
       case "delete_file":
         return toolDeleteFile(dir, String(action.args.path ?? ""));
       case "run_command":
-        return toolRunCommand(dir, String(action.args.command ?? ""), 20_000, opts.extraAllow ?? [], opts.execTarget);
+        return toolRunCommand(dir, String(action.args.command ?? ""), 20_000, opts.extraAllow ?? [], opts.execTarget, opts.signal);
       case "search_code":
         return toolSearchCode(dir, {
           pattern: String(action.args.pattern ?? ""),
@@ -527,7 +535,7 @@ export async function executeTool(
           maxResults: action.args.maxResults ? Number(action.args.maxResults) : undefined,
         });
       case "run_tests":
-        return toolRunTests(dir, { command: action.args.command ? String(action.args.command) : undefined }, opts.extraAllow ?? [], opts.execTarget);
+        return toolRunTests(dir, { command: action.args.command ? String(action.args.command) : undefined }, opts.extraAllow ?? [], opts.execTarget, opts.signal);
       case "fetch_url":
         return toolFetchUrl(String(action.args.url ?? ""));
       case "browser_navigate":
@@ -598,5 +606,6 @@ export async function executeTool(
     ok = false;
     output = `error: ${e instanceof Error ? e.message : "tool failed"}`;
   }
-  return { tool: action.tool, input: action.args, output, ok, ms: Date.now() - t0 };
+  const uncertain = !ok && /timed out|timeout|command cancelled|fetch failed|network error|aborted/i.test(output) && !["read_file", "list_files", "search_code"].includes(action.tool);
+  return { tool: action.tool, input: action.args, output, ok, ms: Date.now() - t0, ...(uncertain ? { uncertain: true } : {}) };
 }

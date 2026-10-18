@@ -151,7 +151,8 @@ test("default mission plan is a three-role pipeline with handoff points", async 
 // ---------------- mission runner with a scripted model ----------------
 
 test("mission runner executes real tool actions from agent turns", async () => {
-  const { runMission } = await import("./mission");
+  const { runMission: runDurableMission } = await import("./mission");
+  const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });
   const { readFile, rm } = await import("node:fs/promises");
   const { existsSync } = await import("node:fs");
   const path = await import("node:path");
@@ -173,9 +174,9 @@ test("mission runner executes real tool actions from agent turns", async () => {
         backend: "scripted", modelId: "scripted", via: "test", fallback: false,
       } as any;
     }
-    // Reviewer: verify + attempt GitHub (honestly disconnected in tests)
+    // Reviewer: verify + reject an empty publication locally (never sends credentials/network)
     return {
-      text: JSON.stringify({ thought: "verify files", actions: [{ tool: "list_files", args: {} }, { tool: "github_publish", args: { repo: "a/b", message: "m", files: [{ path: "README.md", content: "x" }] } }], handoff: "", done: true }),
+      text: JSON.stringify({ thought: "verify files", actions: [{ tool: "list_files", args: {} }, { tool: "github_publish", args: { repo: "a/b", message: "m", files: [] } }], handoff: "", done: true }),
       backend: "scripted", modelId: "scripted", via: "test", fallback: false,
     } as any;
   }) as any;
@@ -194,7 +195,7 @@ test("mission runner executes real tool actions from agent turns", async () => {
     const pending = (await listApprovals(spaceId, "pending")).filter((p) => p.missionId === mission.id);
     assert.equal(pending.length, 1, "the gated publish produced one approval request");
 
-    // Approve and resume: the publish executes (honestly disconnected), and
+    // Approve and resume: the publish tool rejects its empty file list locally, and
     // its disconnected publish remains an unresolved failure, not success.
     await decideApproval(pending[0].id, "approve", "test-owner");
     mission = await runMission(
@@ -303,7 +304,8 @@ test("extra command allowlist is opt-in and scoped to the mission", async () => 
 });
 
 test("MISSION FEEDBACK LOOP: agents see tool outputs and use them next turn", async () => {
-  const { runMission } = await import("./mission");
+  const { runMission: runDurableMission } = await import("./mission");
+  const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });
   const { rm } = await import("node:fs/promises");
   const pathMod = await import("node:path");
   const spaceId = "mission-feedback-" + Date.now();
@@ -436,7 +438,8 @@ test("read_file is a windowed, line-numbered viewer", async () => {
 });
 
 test("missions inject WORKSPACE MAP and MEMORY, and lessons persist via AGENT_NOTES.md", async () => {
-  const { runMission } = await import("./mission");
+  const { runMission: runDurableMission } = await import("./mission");
+  const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });
   const { existsSync } = await import("node:fs");
   const pathMod = await import("node:path");
   const spaceId = "mission-smart-" + Date.now();

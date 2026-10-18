@@ -14,7 +14,7 @@ import { applyMigrations } from "../../../desktop/runtime/migrate";
 import { spaces } from "@/db/schema";
 import type { db } from "@/db";
 import { ensureWorkspace, executeTool, workspaceDir } from "./tools";
-import { getLatestMission, runMission } from "./mission";
+import { getLatestMission, runMission as runDurableMission } from "./mission";
 import type { generate } from "../ai";
 
 async function workspace(t: { after(fn: () => Promise<void>): void }) {
@@ -93,3 +93,6 @@ test("real dispatcher feedback can investigate, patch source (not its invariant)
     }, null, 2), { flag: "wx" });
   }
 });
+
+// Ephemeral cases opt in; the persistence case supplies its real SQL adapter.
+const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });

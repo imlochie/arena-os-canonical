@@ -504,3 +504,85 @@ Final-head staged run `/home/user/delivery-staged.{json,txt}` PASS,58 checks inc
 Exact80cdeeb CI: `39173089562` all4 jobs SUCCESS. Duplicate `39173085163`: main quality, browser and Compose SUCCESS; A7 acceptance step FAILED (install/schema succeeded, retained TAP artifact12153401835 exists). Actual assertion/cause unknown: signed Actions log host and Azure artifact host both return EOF under this host's outbound restrictions. GitHub check annotations expose only exit1, not the failing test. `gh run rerun 39173085163 --failed` refused (workflow cannot be rerun); direct known job117810106708 rerun returned403 `Resource not accessible by integration`. This is NOT silently labelled flaky/resolved, nor mistaken for an install failure. Failed-job metadata and access errors retained outside Git under `/home/user/delivery-{failed-job,a7-failed-log,a7-download-error}.*`.
 
 Concrete diagnostic improvement: failed test identities now publish bounded, escaped GitHub check annotations directly from retained TAP in both static and A7 jobs, so this restricted host can identify failures through api.github.com even if signed log/artifact downloads fail. No raw tool/assertion output or secrets included; job failure remains authoritative. Three controlled parsing/escaping tests PASS; no test selection weakened or failure ignored. A new head gets a fresh CI run; preserve the original failed run as unresolved historical evidence until its assertion is retrieved or reproduced. No claim that a rerun fixes its unknown cause.
+
+## Mandate 4 — durable mission recovery (2026-10-19, implementation checkpoint)
+
+Baseline reconciliation: PR #15 remained OPEN/unmerged at
+`ccda769b3072820f7248076cd4ee56c59ad81a25`; both reported four-job CI runs
+were green (eight successful checks, `/home/user/mandate4-baseline-ci.json`).
+No prior work was reset. This supersedes the earlier pending-CI observation.
+
+**Reproduced before repair:** actual embedded PostgreSQL, actual mission
+`node increment.cjs` side effect, native child termination at the next agent.
+The original runtime left a running row but restarted under a **different ID**,
+repeating committed work. The red test is retained at
+`/home/user/mandate4-recovery-before.txt` (0 pass / 1 fail).
+Controlled model replies are protocol fixtures, not autonomous reasoning.
+
+The existing mission JSON journal now holds model requests/replies, stable
+turn/request IDs, a cursor, requested-action lifecycle, saved execution policy,
+results and recovery provenance. A transaction locks the real space during
+creation/claim; an owner lease and conditional writes exclude another process
+and fence late results. Results commit before the next dispatch. A received
+model plan is not regenerated just to continue an unfinished action list.
+PostgreSQL unavailability **fails closed**, including after process restart;
+there is no implicit in-memory mission fork. Ephemeral unit fixtures must opt
+in explicitly and are labelled memory-only. Idle PostgreSQL disconnects no
+longer kill the server through an unhandled pool error.
+
+Recovery is deliberately not an exactly-once claim for arbitrary tools:
+* committed results are reused;
+* interrupted read-only file inspection can retry;
+* an interrupted `write_file` can recover from matching actual file bytes,
+  with a SHA-256 receipt and explicit notice that the original tool return
+  was not committed; drifted files stop rather than being overwritten;
+* uncertain commands/external effects stop for review, never blindly replay;
+* persisted approval results can restore their actual success/failure;
+  interrupted approval claims cannot be silently reused;
+* owner review records evidence and distinguishes human attestation from
+  machine verification. Saving review dispatches nothing; resume is explicit.
+  Explicit retry warns about duplicate effects. Cancellation fences late
+  replies/results; host commands receive process-group cancellation through
+  the lease heartbeat. Cancellation is not rollback of external effects.
+
+The actual Spaces panel now polls durable progress, exposes full requested
+arguments/results and review history, reports storage errors, saves inspected
+outcomes, resumes the saved mission, and can cancel a particular mission.
+Malformed/oversized model action lists are retained and rejected rather than
+silently truncating a plan and claiming completion. Model calls and host
+commands are bounded; uncertain timeout results require inspection.
+
+Executed source checkpoint evidence (not additive suite totals):
+* `/home/user/mandate4-contracts-final.txt`: 69 pass, zero fail, including
+  24 actual PostgreSQL/process interruption tests plus existing controlled
+  tool/governance tests. Afterwards, `/home/user/mandate4-durability-final.txt`
+  executed the expanded native PostgreSQL suite: **26 pass / zero fail**,
+  including actual 20-second command timeout with a committed partial effect
+  and a hung model bounded by the actual 30-second remaining mission deadline.
+  The timeout result is retained, subsequent work blocks, and a late model
+  reply dispatches no command. These suites overlap; do not sum them.
+* `/home/user/mandate4-browser-mission.txt`: 3 pass, zero fail. **Actual HTTP
+  handlers + actual PostgreSQL + actual Chromium component + actual files**:
+  killed command → owner review → persisted audit → explicit resume writes
+  retained report, count stays one; active lease gives HTTP409 then owner
+  cancellation; actual SQL stop/restart shows error then retrieves the mission.
+* Typecheck passed; targeted lint zero errors, one pre-existing workbench
+  effect warning. Evidence files stay outside Git.
+
+Remaining boundaries: no configured-provider reasoning acceptance has been
+performed in this cycle; browser acceptance is not Electron or Windows.
+Cancellation of an already-committed remote side effect cannot undo it.
+Legacy partially executed turns without requested-action checkpoints stop for
+inspection rather than pretending to reconstruct an unknown model plan.
+Next unblocked product target: Studio FX/output execution. Inspection found
+that immutable FX state exists but export snapshot parsing/rendering omits
+track/master insert chains; arrangement audition also ignores them. These
+are findings, **not repaired or accepted yet**. Continue with actual UI →
+persisted/versioned chain → rendered/decoded signal, not more registry tests.
+
+Provider configuration inspection (names/booleans only, no secret output):
+Groq/OpenRouter/Google/Gemini/OpenAI/TurboAgent keys and Ollama/llama.cpp
+endpoint overrides were absent. No download or fake real-provider run was
+attempted. Existing GitHub sandbox authentication is unrelated to model
+readiness. Publication fixtures reject empty file lists locally and never
+send sandbox GitHub credentials to a remote test repository.

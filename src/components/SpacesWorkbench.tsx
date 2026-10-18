@@ -780,6 +780,8 @@ function AgentFleet({ spaceId, models }: { spaceId: string; models: ModelInfo[] 
 // ---------------- mission panel ----------------
 
 interface MissionStepLite {
+  modelState?: string;
+  requestedActions?: { id: string; tool: string; args: Record<string, unknown>; state: string; resolutions?: { resolution: string; evidence: string; at: string }[] }[];
   agent: string;
   turn: number;
   thought: string;
@@ -795,13 +797,15 @@ interface MissionLite {
   status: string;
   statusDetail: string;
   timeBudgetMs: number;
+  persistence?: string;
+  updatedAt?: string;
   agentPlan: { name: string; role: string }[];
   journal: MissionStepLite[];
   artifacts: { path: string; bytes: number }[];
   handoff: string;
 }
 
-function MissionPanel({ spaceId }: { spaceId: string }) {
+export function MissionPanel({ spaceId }: { spaceId: string }) {
   const [goal, setGoal] = useState("");
   const [budget, setBudget] = useState(5);
   const [turns, setTurns] = useState(3);
@@ -814,15 +818,43 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
   const [running, setRunning] = useState(false);
   const [mission, setMission] = useState<MissionLite | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    fetch(`/api/spaces/${spaceId}/mission`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((b) => { if (alive && b.mission) setMission(b.mission); })
-      .catch(() => {});
-    return () => { alive = false; };
+    let alive = true, loading = false;
+    async function refresh() {
+      if (loading) return;
+      loading = true;
+      try {
+        const response = await fetch(`/api/spaces/${spaceId}/mission`, { cache: "no-store" });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error ?? "Mission could not be retrieved");
+        if (alive) setLoadError(null);
+        if (alive && body.mission) setMission((previous) => previous?.updatedAt && body.mission.updatedAt < previous.updatedAt ? previous : body.mission);
+      } catch (error) { if (alive) setLoadError(error instanceof Error ? error.message : "Mission could not be retrieved"); }
+      finally { loading = false; }
+    }
+    void refresh();
+    const timer = setInterval(() => void refresh(), 2000);
+    return () => { alive = false; clearInterval(timer); };
   }, [spaceId]);
+
+  async function resolveRequest(requestId: string, resolution: string, evidence: string) {
+    const response = await fetch(`/api/spaces/${spaceId}/mission`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operation: "reconcile", missionId: mission?.id, requestId, resolution, evidence }) });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? "Reconciliation failed");
+    setMission(body.mission); setError(null);
+  }
+
+  async function cancel() {
+    setError(null);
+    try {
+      const response = await fetch(`/api/spaces/${spaceId}/mission`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ missionId: mission?.id }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Cancellation failed");
+      setMission(body.mission);
+    } catch (error) { setError(error instanceof Error ? error.message : "Cancellation failed"); }
+  }
 
   async function start(continueMission: boolean) {
     setRunning(true);
@@ -859,7 +891,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
     }
   }
 
-  const checkpointed = mission?.status === "checkpointed" || mission?.status === "awaiting_approval";
+  const checkpointed = mission && ["running", "checkpointed", "awaiting_approval", "needs_reconciliation"].includes(mission.status);
 
   return (
     <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
@@ -881,6 +913,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
             {mission.status}
           </span>
         )}
+        {checkpointed && <button onClick={() => void cancel()} className="rounded-lg bg-red-500/10 px-2 py-1 text-[11px] text-red-200">Cancel mission</button>}
         <button
           onClick={() => setShowGit((v) => !v)}
           className="rounded-lg bg-white/5 px-2 py-1 text-[11px] font-bold text-slate-400 ring-1 ring-white/10 hover:bg-white/10"
@@ -995,7 +1028,9 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
         )}
       </div>
 
-      {error && <p className="mt-2 text-xs text-amber-300">{error}</p>}
+      {(error || loadError) && <p role="alert" className="mt-2 text-xs text-amber-300">{error || loadError}</p>}
+      {mission?.statusDetail && <p className="mt-2 text-xs text-amber-200">{mission.statusDetail}</p>}
+      {mission?.persistence && <p className="mt-1 text-[10px] text-slate-500">Storage: {mission.persistence}{mission.persistence === "memory-only" ? " — does not survive restart" : " — durable requests and results"}</p>}
 
       {mission && (
         <div className="scroll-thin mt-2.5 max-h-72 space-y-2 overflow-y-auto">
@@ -1013,10 +1048,13 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
                 {s.done && <span className="text-emerald-300">done</span>}
               </p>
               <p className="mt-1 text-[11px] italic text-slate-400">{s.thought}</p>
+              {s.modelState && <p className="text-[10px] text-slate-500">Model turn: {s.modelState}</p>}
+              {s.requestedActions?.map((request) => <MissionRequestDetails key={request.id} request={request} canResolve={mission.status === "needs_reconciliation"} onResolve={resolveRequest} />)}
               {s.actions.map((a, j) => (
-                <p key={j} className={`mt-1 break-all font-mono text-[10px] ${a.ok ? "text-slate-400" : "text-red-300/80"}`}>
-                  {a.ok ? "✓" : "✗"} {a.tool} {JSON.stringify(a.input).slice(0, 90)} → {a.output.slice(0, 140)}
-                </p>
+                <details key={j} className={`mt-1 break-all font-mono text-[10px] ${a.ok ? "text-slate-400" : "text-red-300/80"}`}>
+                  <summary>{a.ok ? "✓" : "✗"} {a.tool} → {a.output.slice(0, 140)}</summary>
+                  <pre className="whitespace-pre-wrap">{JSON.stringify(a.input, null, 2)}{"\n"}{a.output}</pre>
+                </details>
               ))}
             </div>
           ))}
@@ -1034,6 +1072,36 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
       )}
     </div>
   );
+}
+
+function MissionRequestDetails({ request, canResolve, onResolve }: {
+  request: NonNullable<MissionStepLite["requestedActions"]>[number];
+  canResolve: boolean;
+  onResolve: (id: string, resolution: string, evidence: string) => Promise<void>;
+}) {
+  const [resolution, setResolution] = useState("succeeded");
+  const [evidence, setEvidence] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  return <details open={request.state === "uncertain"} className="mt-1 rounded border border-white/10 p-2 text-[11px] text-slate-300">
+    <summary>{request.tool} · {request.state} · {request.id}</summary>
+    <pre className="whitespace-pre-wrap break-all">{JSON.stringify(request.args, null, 2)}</pre>
+    {request.resolutions?.map((entry, index) => <p key={index}>{entry.at}: owner chose {entry.resolution} — {entry.evidence}</p>)}
+    {request.state === "uncertain" && canResolve && <form onSubmit={async (event) => {
+      event.preventDefault(); setSaving(true); setError("");
+      try { await onResolve(request.id, resolution, evidence); }
+      catch (error) { setError(error instanceof Error ? error.message : "Could not save review"); }
+      finally { setSaving(false); }
+    }}>
+      <p className="my-1 text-amber-200">Inspect the actual files/service first. Success/failure here is your report, not machine verification. Retry can duplicate an effect and requires your explicit authorisation. Saving never resumes automatically.</p>
+      <select aria-label="Inspected outcome" value={resolution} onChange={(event) => setResolution(event.target.value)} className="bg-slate-900 p-1">
+        <option value="succeeded">I verified it succeeded</option><option value="failed">I verified it failed</option><option value="retry">I authorise retry despite duplicate risk</option>
+      </select>
+      <textarea aria-label="Inspection evidence" value={evidence} onChange={(event) => setEvidence(event.target.value)} required minLength={12} maxLength={4000} placeholder="What did you inspect? What happened?" className="mt-1 block w-full bg-slate-900 p-2" />
+      <button disabled={saving} className="mt-1 rounded bg-amber-500/20 p-2">{saving ? "Saving review…" : "Save inspected outcome"}</button>
+      {error && <p role="alert" className="text-red-300">{error}</p>}
+    </form>}
+  </details>;
 }
 
 // ---------------- approvals panel (check-in environment) ----------------

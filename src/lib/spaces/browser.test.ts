@@ -15,7 +15,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { executeTool } from "./tools";
-import { runMission, type MissionAgentSpec } from "./mission";
+import { runMission as runDurableMission, type MissionAgentSpec } from "./mission";
 import type { GenerateResult } from "@/lib/runtime";
 import { browserProfileDir, resetEngine, type BrowserEngine } from "./browser";
 import { decideApproval, listApprovals } from "./governance";
@@ -181,3 +181,6 @@ test("per-space profile isolation: each space gets its own browser-profile direc
   assert.ok(a.endsWith(path.join("space-a", "browser-profile")));
   assert.ok(b.endsWith(path.join("space-b", "browser-profile")));
 });
+
+// Explicitly ephemeral unless this fixture supplies real SQL.
+const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });
