@@ -1,3 +1,4 @@
+import { projectAudio } from "@/lib/waveyard/project-audio";
 /**
  * Local export job handler — a faithful port of the worker's processExport
  * WAV path (waveyard-worker/apps/worker/src/export.ts): snapshot parsing,
@@ -17,7 +18,7 @@ import { join } from "node:path";
 import { eq, inArray } from "drizzle-orm";
 
 import { db } from "@/db";
-import { exportAssets, exportJobs, remixSessions, remixVersions, sourceAnalyses, stemAssets } from "@/db/waveyardSchema";
+import { exportAssets, exportJobs, remixSessions, remixVersions, sourceAnalyses } from "@/db/waveyardSchema";
 import { checksumFile, exec, validateAudio } from "@/lib/waveyard/audio";
 import { requireTool } from "@/lib/waveyard/ffmpeg";
 import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
@@ -259,8 +260,9 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     if (!clips.length) throw new ExportFailure("empty_remix", "The persisted remix version has no audible clips to export.");
 
     const stemIds = [...new Set(clips.map((clip) => clip.stemAssetId))];
-    const stems = await db.select().from(stemAssets).where(inArray(stemAssets.id, stemIds));
-    if (stems.length !== stemIds.length || stems.some((stem) => stem.projectId !== job.projectId))
+    const audio = await projectAudio(job.projectId);
+    const stems = audio.stems.filter((stem) => stemIds.includes(stem.id));
+    if (stems.length !== stemIds.length)
       throw new ExportFailure("asset_missing", "The persisted remix references an unavailable project stem.");
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
     const transformedSourceIds = [...new Set(clips.filter((clip) => clip.tempoSyncEnabled || clip.keySyncEnabled).map((clip) => stemById.get(clip.stemAssetId)!.sourceAssetId))];
@@ -273,7 +275,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       let sourceDurationMs = clip.durationMs;
       if (clip.tempoSyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        if (!analysis || analysis.projectId !== job.projectId || analysis.status !== "complete") throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
+        if (!analysis || !audio.sources.some((source) => source.id === analysis.sourceAssetId) || analysis.status !== "complete") throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
         if (!Number.isFinite(analysis.bpm) || analysis.bpm! < 40 || analysis.bpm! > 300) throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
         const ratio = tempoRatio(snapshot.tempoBpm, analysis.bpm!);
         sourceDurationMs = requiredSourceDurationMs(clip.durationMs, ratio);
@@ -281,7 +283,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       }
       if (clip.keySyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        const resolution = resolveKeySync(analysis?.projectId === job.projectId ? analysis.status : undefined, normaliseMusicalKey(analysis?.musicalKey), snapshot.targetKey);
+        const resolution = resolveKeySync(analysis && audio.sources.some((source) => source.id === analysis.sourceAssetId) ? analysis.status : undefined, normaliseMusicalKey(analysis?.musicalKey), snapshot.targetKey);
         if ("errorCode" in resolution)
           throw new ExportFailure(
             resolution.errorCode,

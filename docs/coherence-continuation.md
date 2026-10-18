@@ -77,3 +77,138 @@ Arena already has `repoMap.ts` (bounded static file/export map), `toolRuntime.ts
 The room scope was rediscovered from `Nav.tsx`, `arenaRooms.ts`, `ArenaRoomsDirectory.tsx` and `src/app/**/page.tsx`, not restricted to Waveyard/Arcade. Existing room catalogues are not acceptance evidence. No other room is promoted to accepted by this delivery, including Deep Agent (only its review-state guarantees were repaired).
 
 Next concrete work: use the browser acceptance environment to exercise the actual local-first Waveyard room from user source import through persisted session playback and exported audio, with isolated data; complete the corresponding Electron check on a capable host and real Demucs on a prepared host. Then continue room-level execution checks using the existing directory/route map. `StudioCore` restoration-effect dependencies were corrected in this patch; full room interaction acceptance of saved effects still remains outstanding, and hook acceptance must not be treated as room acceptance. Do not reset this investigation or claim parity from the table above.
+
+## Execution-reset continuation — listening session → usable Studio arrangement (2026-10-18)
+
+### Repository reconciliation
+
+Refreshed `main` (`f0e4180`) and PRs #14/#15. The snapshot initially showed the
+already-published #15 files as dirty against the old base. Compared every one
+of the 20 files byte-for-byte with remote `58121d7` before advancing the local
+index/HEAD with a mixed reset; no worktree bytes were discarded or duplicated.
+Both PRs were open, with all their reported checks successful (including #15's
+browser-audio gate). Those statuses describe the **previous** heads, not this
+new patch. No PR was merged or closed.
+
+Read #14's 17-file diff and provisioning/dependency documentation. It is a
+separate consent/managed-runtime prerequisite, not an inference result. This
+patch does not duplicate it or integrate it on green CI alone. Its checkpoint
+host (`dl.fbaipublicfiles.com`) and CPU-wheel index (`download.pytorch.org`) are
+outside this sandbox's permitted outbound hosts. Current Python is 3.11.2;
+`torch`, `torchaudio`, `demucs`, the managed environment and local models are
+absent. No install, checkpoint download, consent, real Demucs invocation or
+music-quality acceptance is claimed. Licensing assertions in that PR still
+need review against actual upstream terms; do not treat them as verified here.
+
+### Defect and implementation
+
+`sendSessionToStudio` previously selected only the first real stem per song,
+created no clips, and committed the new project/remix outside the track
+transaction. The derived project owned no assets, so project GET returned no
+stems and `ProjectWorkspace` could not mount Studio. Arrangement PUT and the
+actual WAV renderer rejected the referenced library audio as out-of-project.
+The old test checked IDs/count only, not a usable arrangement.
+
+The handoff now:
+
+- Keeps all separated lanes (or one explicitly selected unseparated bridge,
+  never the bridge mixed on top of separated stems).
+- Creates sequential, duration-bounded clips in listening order and preserves
+  saved per-stem levels. Timed donor swaps become real source-range clips.
+- Atomically creates project, remix, lanes and clips. Empty/oversized sessions
+  are refused before writes; missing/short swap assets are refused by song.
+- Enforces the existing shared 32-lane/256-clips-per-lane editor limits rather
+  than creating arrangements the save/version parser cannot accept.
+- Resolves project-native audio plus already-bound remix/clip/immutable-version
+  references through `projectAudio`. Assets and source records must still
+  belong to the destination project's owner. Arbitrary other-project clip IDs
+  are not granted merely because the current user owns them. No audio files
+  or source/stem rows are copied or reparented.
+- Uses that resolution in workspace reads (including existing analysis and
+  waveform metadata), remix reads/saves, creation, version restore and the
+  desktop WAV renderer. Immutable versions retain reuse after live lanes
+  have been removed/replaced.
+- Shares the handoff result type with the client, fixing the old `refused`
+  string-versus-array mismatch. A visible notice and persisted project
+  description explain that **live transition triggers/crossfades and the
+  playback cursor are not reconstructed**. This is a sequential derived edit,
+  not a claim of performance-session fidelity.
+
+### Repeatable evidence
+
+```sh
+# Normal npm install scripts hydrate the packaged PostgreSQL libraries.
+# If dependencies were installed with --ignore-scripts, run the package's
+# scripts/hydrate-symlinks.js from its own package directory and restore the
+# ffmpeg/ffprobe platform executables' execution permission first.
+WAVEYARD_ACCEPTANCE_ARTIFACT_DIR=.data/acceptance/waveyard-handoff \
+  npm run test:acceptance:handoff
+```
+
+This uses the existing library service suite: a fresh embedded PostgreSQL
+cluster, canonical desktop migrations, isolated storage, actual route handlers,
+actual desktop local-job broker, actual FFmpeg rendering/FFprobe decoding and
+actual streaming download responses. It does **not** launch Electron or a room
+UI. The inputs are explicitly synthetic PCM-tone fixtures, not alleged Demucs
+results. Test fixture engine metadata now says `synthetic-test-fixture`.
+
+The suite checks all five lanes and six clips (including the timed swap),
+project assets needed to mount the editor, individual stem download bytes and
+non-silent decoding, save/reopen with changed master level, rejection of an
+unbound same-owner asset without damaging the saved edit, version creation,
+WAV export queue execution, download/decoding, restoration from immutable
+versions after deleting live lanes, and survival after deleting the original
+listening session. Additional cases cover the explicit source-only bridge,
+empty/foreign-owner/lane-limit refusals, genuine PostgreSQL-trigger write
+failure rollback, foreign-owner bound-reference exclusion, and malformed
+legacy snapshots. These are route/service/render tests, not browser clicks.
+
+Observed exported WAV: **5 seconds, 44,100 Hz, stereo PCM16**. Decoded magnitude
+at 220 Hz before swap ≈ **0.05179**, at donor 880 Hz after swap ≈ **0.05179**,
+next song at 880 Hz ≈ **0.03237**; unwanted donor before swap, original drums
+after swap and muted vocals each **< 0.000001**. This checks real signal and
+timeline content, not merely HTTP success, file existence or a nonzero RMS.
+
+`handoff.json` retains observed time, exact implementation file SHA-256 values,
+Git head **and dirty status** (so a pre-commit run cannot misattribute its
+source), runtime/version, actual input digests, durable job/export provenance,
+decoded signal measurements and limitations. The output WAV and individual
+drum WAV are retained alongside it. CI's existing test step now retains these
+artifacts **and full test output even on failure**. Generated outputs remain
+outside Git. The new CI run must be observed separately after publication.
+
+### Still not accepted
+
+This repairs a previously unusable handoff and exercises its save/render path;
+it does **not** establish full Waveyard acceptance, STEM.FM/STEM DAW parity,
+model inference, subjective audio quality, Electron/Windows operation, or
+browser-room navigation/restart behavior. Some advanced source-analysis actions
+(section placement, meeting-point application, alignment and project-derived
+processing) still enforce project-native provenance independently; carry the
+same authorized-reference semantics through those paths with their provenance
+tests rather than loosening every `projectId` comparison. Live transitions need
+a separately defined and persisted timing contract before claiming faithful
+handoff. Real-provider Arcade playability, agent-dispatched investigation and
+the whole-room acceptance inventory remain open; prior text-review fixes do
+not satisfy those requirements.
+
+### Verification of this patch
+
+- Final handoff/library integration run: **26 passed, 0 failed, 0 skipped**.
+  Temporarily substituting only the original `58121d7` handoff implementation
+  into the same final suite produced **22 passed / 4 failed** (bridge clips,
+  multi-stem/render workflow, lane-limit refusal, atomic rollback). Repaired
+  source bytes were restored in `finally` and the final suite rerun green.
+- Focused remix/versioning/render-helper/session-logic tests: **33 passed**.
+- Local worker suite: **42 passed, 0 failed, 0 skipped**; the initial 180-second
+  tool wait expired, but the same process finished at 182.4 seconds and its
+  final summary was read afterward. It was not launched twice. Includes real
+  ONNX Runtime with a hand-built identity model and controlled deep-engine
+  cases; **neither is learned Demucs/music-separation acceptance**. Some tests
+  overlap the focused invocation above; do not sum them as distinct cases.
+- Final production build and typecheck: **passed**. Full lint: **0 errors,
+  46 existing warnings**. `git diff --check`: passed.
+- Logs retained outside Git under `/home/user/arena-handoff-*.txt`; generated
+  manifest/mix/individual-stem files under `/home/user/arena-handoff-evidence/`.
+- No browser-room, Electron, packaged Windows, provider-backed Arcade, or
+  agent-dispatched investigation acceptance was executed in this patch.

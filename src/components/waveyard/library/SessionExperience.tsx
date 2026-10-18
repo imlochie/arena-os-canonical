@@ -1,5 +1,7 @@
 "use client";
 
+import type { StudioHandoffResult } from "@/lib/waveyard/library/session-service";
+
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStemTransport, type ChannelMeter, type MixerValues } from "@/lib/waveyard/useStemTransport";
@@ -261,7 +263,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   const [addTrackId, setAddTrackId] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
-  const [handoff, setHandoff] = useState<{ projectId: string; remixTrackCount: number; refused?: Array<{ title: string; reason: string }> } | null>(null);
+  const [handoff, setHandoff] = useState<StudioHandoffResult | null>(null);
 
   // Which session track id is current; the ACTIVE physical deck plays it,
   // the other physical deck pre-loads the next track.
@@ -768,11 +770,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           setStatus(body?.error ?? "The Studio handoff failed.");
           return;
         }
-        const result = (await response.json()).handoff as {
-          projectId: string;
-          remixTrackCount: number;
-          refused?: Array<{ title: string; reason: string }>;
-        };
+        const result = (await response.json()).handoff as StudioHandoffResult;
         setHandoff(result);
         setStatus("Session sent to Studio as a derived arrangement — the sources are untouched.");
       } catch {
@@ -909,11 +907,8 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       {handoff !== null && (
         <p className="sess-handoff" role="status">
           Studio arrangement created with {handoff.remixTrackCount} remix track{handoff.remixTrackCount === 1 ? "" : "s"}
-          {handoff.refused && handoff.refused.length > 0
-            ? ` — ${handoff.refused.length} track${handoff.refused.length === 1 ? "" : "s"} refused (${handoff.refused
-                .map((r) => `“${r.title}”`)
-                .join(", ")}).`
-            : ""}
+          {handoff.refused ? ` — Not included: ${handoff.refused}` : ""}
+          {handoff.notice ? ` ${handoff.notice}` : ""}
           {" "}
           <Link href={`/waveyard/create?project=${handoff.projectId}`}>Open it in the Studio</Link>.
         </p>

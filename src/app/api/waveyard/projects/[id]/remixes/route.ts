@@ -1,13 +1,13 @@
+import { MAX_REMIX_TRACKS } from "@/lib/waveyard/remix";
+import { projectAudio } from "@/lib/waveyard/project-audio";
 import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
-import { asc, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import {
   remixClips,
   remixSessions,
   remixTracks,
-  sourceAssets,
-  stemAssets,
 } from "@/db/waveyardSchema";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
@@ -30,13 +30,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const body = await request.json().catch(() => ({}));
     const name = String(body.name ?? "Untitled remix").trim().slice(0, 120) || "Untitled remix";
     
-    const availableStems = await db
-      .select({ stem: stemAssets, sourceFilename: sourceAssets.originalFilename })
-      .from(stemAssets)
-      .innerJoin(sourceAssets, eq(stemAssets.sourceAssetId, sourceAssets.id))
-      .where(eq(stemAssets.projectId, projectId))
-      .orderBy(asc(stemAssets.createdAt));
+    const audio = await projectAudio(projectId);
+    const availableStems = audio.stems.map((stem) => ({ stem, sourceFilename: audio.sources.find((source) => source.id === stem.sourceAssetId)!.originalFilename }));
     if (!availableStems.length) return NextResponse.json({ error: "A completed project with real stems is required before creating a remix." }, { status: 409 });
+    if (availableStems.length > MAX_REMIX_TRACKS) return NextResponse.json({ error: `This project needs more than Studio’s current ${MAX_REMIX_TRACKS} stem lanes. Use an existing arrangement or a smaller project.` }, { status: 409 });
     const [session] = await db.transaction(async (tx) => {
       const [created] = await tx.insert(remixSessions).values({ projectId, ownerId: user.id, name }).returning();
       // A session is a creation-time snapshot. Later source uploads remain separate

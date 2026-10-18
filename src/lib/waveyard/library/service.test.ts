@@ -14,14 +14,15 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 
 const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..", "..", "..", "..");
-const OWNER = "11111111-1111-4111-8111-111111111111";
+const OWNER = "00000000-0000-4000-8000-000000000001"; // actual local route owner
 const OTHER = "22222222-2222-4222-8222-222222222222";
 
 type ServiceModule = typeof import("./service");
@@ -357,7 +358,7 @@ test("playlists: create, add (duplicates allowed), reorder, remove, delete", asy
   assert.equal((await service.listTracks({ ownerId: OWNER })).length, 2);
 });
 
-test("real stems change availability and what the player loads", async () => {
+test("persisted stem fixtures select stem playback (not inference)", async () => {
   const sourceId = sourceIdByTrackId.get(trackA.id)!;
   const stemIds: string[] = [];
   for (const stemType of ["vocals", "drums", "bass", "other"]) {
@@ -366,8 +367,8 @@ test("real stems change availability and what the player loads", async () => {
       sourceAssetId: sourceId,
       separationJobId: (await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, sourceId)).limit(1))[0].id,
       stemType,
-      engine: "demucs",
-      model: "htdemucs",
+      engine: "synthetic-test-fixture",
+      model: "pcm-tone",
       modelVersion: "test",
       storageKey: `test/${stemType}.wav`,
       checksumSha256: `checksum-${stemType}`,
@@ -413,6 +414,20 @@ test("passthrough bridge = honest source-only playback", async () => {
   assert.equal(detail!.stemAvailability.status, "source-only");
   assert.equal(detail!.playback.kind, "source");
   assert.deepEqual(detail!.playback.assetIds, [stem.id]);
+  const session = await sessions.createSession(OWNER, "Explicit full-source bridge");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackB.id });
+  try {
+    const handoff = await sessions.sendSessionToStudio(OWNER, session.id);
+    assert.equal(handoff.remixTrackCount, 1);
+    const [lane] = await db.db.select().from(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
+    const [clip] = await db.db.select().from(schema.remixClips).where(eq(schema.remixClips.remixTrackId, lane.id));
+    assert.equal(lane.stemAssetId, stem.id);
+    assert.equal(clip.stemAssetId, stem.id);
+    assert.equal(clip.durationMs, 3000);
+    assert.match(lane.name, /source$/);
+  } finally {
+    await sessions.deleteSession(OWNER, session.id);
+  }
 });
 
 test("analysis surfaces tempo and key when the engine completed it", async () => {
@@ -559,8 +574,8 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
     sourceAssetId: sourceB,
     separationJobId: jobB.id,
     stemType: "drums",
-    engine: "demucs",
-    model: "htdemucs",
+    engine: "synthetic-test-fixture",
+    model: "pcm-tone",
     modelVersion: "test",
     storageKey: "test/b-drums.wav",
     checksumSha256: "checksum-b-drums",
@@ -629,33 +644,236 @@ test("session: ownership isolation", async () => {
   await sessions.deleteSession(OWNER, created.id);
 });
 
-test("session: send to Studio derives a remix that REFERENCES existing stems (no copies)", async () => {
-  const created = await sessions.createSession(OWNER, "Handoff set");
-  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
-  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
-
-  const handoff = await sessions.sendSessionToStudio(OWNER, created.id);
-  assert.ok(handoff.projectId);
-  assert.ok(handoff.remixSessionId);
-  assert.equal(handoff.remixTrackCount, 2, "A binds its real stems; B binds its passthrough bridge");
-
-  // The derived project is a STUDIO project (visible in studio listings).
-  const studioList = await service.listStudioProjects(OWNER);
-  assert.ok(studioList.some((project) => project.id === handoff.projectId));
-
-  // The remix tracks reference the EXISTING stem asset rows — no new audio.
-  const remixTrackRows = await db.db.select().from(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
-  assert.equal(remixTrackRows.length, 2);
-  const stemIdsBefore = new Set(
-    (await db.db.select({ id: schema.stemAssets.id }).from(schema.stemAssets)).map((row) => row.id),
-  );
-  for (const row of remixTrackRows) {
-    assert.ok(stemIdsBefore.has(row.stemAssetId), `remix track ${row.id} references a pre-existing stem`);
+test("session handoff: all lanes, timed swap, workspace, save/reopen, version and actual WAV export", async () => {
+  // Controlled signal fixtures exercise persistence and rendering, NOT Demucs.
+  const { getStorage } = await import("../storage");
+  const storage = getStorage();
+  const beforeStems = await db.db.select().from(schema.stemAssets);
+  const beforeSources = await db.db.select().from(schema.sourceAssets);
+  const frequencies: Record<string, number> = { vocals: 330, drums: 220, bass: 110, other: 550 };
+  for (const stem of beforeStems) {
+    const filename = storage.getLocalPath(stem.storageKey)!;
+    mkdirSync(path.dirname(filename), { recursive: true });
+    writeWav(filename, stem.durationSeconds, stem.storageKey.includes("b-drums") ? 880 : frequencies[stem.stemType] ?? 660);
   }
-  // The source audio count is unchanged (no copies anywhere).
-  assert.equal((await db.db.select().from(schema.sourceAssets)).length, 3, "A, B and the other owner's — nothing added");
+  const created = await sessions.createSession(OWNER, "Handoff acceptance");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const listening = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
+  const itemA = listening.tracks[0];
+  const itemB = listening.tracks[1];
+  await sessions.updateSessionTrack(OWNER, created.id, itemA.id, { stemMix: { vocals: 0, drums: 0.4, bass: 0, other: 0 } });
+  await sessions.updateSessionTrack(OWNER, created.id, itemB.id, { stemMix: { drums: 0.25 } });
+  await sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: itemA.id, stemType: "drums", toTrackId: trackB.id, atSeconds: 1 });
 
+  const handoffRoute = await import("@/app/api/library/sessions/[id]/studio-handoff/route");
+  const handoffResponse = await handoffRoute.POST(new Request("http://arena.test/handoff", { method: "POST" }), { params: Promise.resolve({ id: created.id }) });
+  assert.equal(handoffResponse.status, 201);
+  const { handoff } = await handoffResponse.json() as { handoff: import("./session-service").StudioHandoffResult };
+  assert.equal(handoff.remixTrackCount, 5, "all four A stems and B's real drum stem; no double-mixed passthrough");
+  assert.match(handoff.notice, /Live transition/);
+  assert.equal(handoff.refused, undefined);
+  assert.deepEqual(await db.db.select().from(schema.stemAssets), beforeStems, "no copied or reparented stem rows");
+  assert.deepEqual(await db.db.select().from(schema.sourceAssets), beforeSources, "no copied or reparented sources");
+  assert.ok((await service.listStudioProjects(OWNER)).some((project) => project.id === handoff.projectId));
+
+  const projectRoute = await import("@/app/api/waveyard/projects/[id]/route");
+  const projectResponse = await projectRoute.GET(new Request("http://arena.test/project"), { params: Promise.resolve({ id: handoff.projectId }) });
+  assert.equal(projectResponse.status, 200);
+  const project = await projectResponse.json();
+  assert.equal(project.stems.length, 5, "workspace can mount the actual editor");
+  assert.equal(project.sources.length, 2);
+  assert.ok(project.sources.some((source: { id: string }) => source.id === sourceIdByTrackId.get(trackA.id)));
+
+  const remixRoute = await import("@/app/api/remixes/[id]/route");
+  const params = { params: Promise.resolve({ id: handoff.remixSessionId }) };
+  const getState = async () => {
+    const response = await remixRoute.GET(new Request("http://arena.test/remix"), params);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const state = await getState();
+  const assetRoute = await import("@/app/api/assets/[id]/route");
+  const individualStem = beforeStems.find((stem) => stem.sourceAssetId === sourceIdByTrackId.get(trackA.id) && stem.stemType === "drums")!;
+  const individual = await assetRoute.GET(new Request("http://arena.test/asset?download=1"), { params: Promise.resolve({ id: individualStem.id }) });
+  assert.equal(individual.status, 200);
+  assert.match(individual.headers.get("content-disposition")!, /drums.wav/);
+  const individualBytes = Buffer.from(await individual.arrayBuffer());
+  assert.deepEqual(individualBytes, readFileSync(storage.getLocalPath(individualStem.storageKey)!));
+  const individualPath = path.join(root!, "individual-drums.wav");
+  writeFileSync(individualPath, individualBytes);
+  assert.equal((await (await import("../audio")).validateAudio(individualPath)).durationSeconds, 2);
+  assert.equal(state.tracks.length, 5);
+  assert.equal(state.tracks.flatMap((track: { clips: unknown[] }) => track.clips).length, 6, "swap becomes two real source ranges");
+  const drumsA = state.tracks.find((track: { name: string }) => track.name.endsWith("— drums"));
+  assert.deepEqual(drumsA.clips.map((clip: { timelineStartMs: number; sourceOffsetMs: number; durationMs: number }) => [clip.timelineStartMs, clip.sourceOffsetMs, clip.durationMs]), [[0, 0, 1000], [1000, 1000, 1000]]);
+  assert.equal(drumsA.volume, 0.4);
+  assert.equal(state.tracks[4].clips[0].timelineStartMs, 2000, "listening order becomes sequential music, not stacked songs");
+  const input = { ...state.remix, tracks: state.tracks, automation: state.automation, masterVolume: 0.5 };
+  const save = await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify(input) }), params);
+  assert.equal(save.status, 200, await save.clone().text());
+  const reopened = await getState();
+  assert.equal(reopened.remix.masterVolume, 0.5);
+  assert.deepEqual(reopened.tracks, (await save.json()).tracks);
+
+  // Existing bound references are allowed, not arbitrary audio in another
+  // project (including the same owner's unused passthrough).
+  const unbound = beforeStems.find((stem) => stem.engine === "passthrough-unseparated")!;
+  const invalid = structuredClone(input);
+  invalid.tracks[0].clips[0].stemAssetId = unbound.id;
+  const denied = await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify(invalid) }), params);
+  assert.equal(denied.status, 403);
+  assert.deepEqual((await getState()).tracks, reopened.tracks, "refused save is non-destructive");
+
+  const versionsRoute = await import("@/app/api/remixes/[id]/versions/route");
+  const versionResponse = await versionsRoute.POST(new Request("http://arena.test/versions", { method: "POST", body: JSON.stringify({ name: "Actual render acceptance" }) }), params);
+  assert.equal(versionResponse.status, 201, await versionResponse.clone().text());
+  const { version } = await versionResponse.json();
+  // Exercise the actual route -> desktop queue -> actual FFmpeg handler.
+  const { getLocalJobBroker } = await import("../worker-local/broker");
+  const { handleExportJob } = await import("../worker-local/export");
+  const { EXPORT_QUEUE } = await import("../queue");
+  const priorWorker = process.env.WAVEYARD_LOCAL_WORKER;
+  const priorRedis = process.env.REDIS_URL;
+  process.env.WAVEYARD_LOCAL_WORKER = "1";
+  delete process.env.REDIS_URL;
+  const broker = getLocalJobBroker();
+  broker.register(EXPORT_QUEUE, handleExportJob);
+  try {
+    const exportRoute = await import("@/app/api/remix-versions/[id]/exports/route");
+    const response = await exportRoute.POST(new Request("http://arena.test/exports", { method: "POST", body: JSON.stringify({ format: "wav" }) }), { params: Promise.resolve({ id: version.id }) });
+    assert.equal(response.status, 201, await response.clone().text());
+    const { job } = await response.json();
+    assert.equal(await broker.drain(30_000), true);
+    const [finished] = await db.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id));
+    assert.equal(finished.status, "complete", finished.errorMessage ?? JSON.stringify(finished));
+    const [asset] = await db.db.select().from(schema.exportAssets).where(eq(schema.exportAssets.exportJobId, job.id));
+    assert.ok(asset);
+    const mediaRoute = await import("@/app/api/exports/[id]/media/route");
+    const media = await mediaRoute.GET(new Request("http://arena.test/media?download=1"), { params: Promise.resolve({ id: job.id }) });
+    assert.equal(media.status, 200);
+    assert.equal(media.headers.get("content-type"), "audio/wav");
+    assert.match(media.headers.get("content-disposition")!, /attachment/);
+    const downloaded = path.join(root!, "downloaded-handoff.wav");
+    writeFileSync(downloaded, Buffer.from(await media.arrayBuffer()));
+    const { validateAudio, exec } = await import("../audio");
+    const { requireTool } = await import("../ffmpeg");
+    const metadata = await validateAudio(downloaded);
+    assert.ok(Math.abs(metadata.durationSeconds - 5) < 0.02, JSON.stringify(metadata));
+    assert.equal(metadata.sampleRate, 44100);
+    assert.equal(metadata.channels, 2);
+    const decoded = path.join(root!, "decoded.f32");
+    await exec((await requireTool("ffmpeg")).path, ["-y", "-i", downloaded, "-f", "f32le", "-ac", "1", decoded]);
+    const pcm = readFileSync(decoded);
+    function magnitude(hz: number, start: number, end: number) {
+      let sin = 0, cos = 0;
+      const first = Math.round(start * 44100), last = Math.round(end * 44100);
+      for (let index = first; index < last; index++) {
+        const sample = pcm.readFloatLE(index * 4);
+        sin += sample * Math.sin(2 * Math.PI * hz * index / 44100);
+        cos += sample * Math.cos(2 * Math.PI * hz * index / 44100);
+      }
+      return 2 * Math.hypot(sin, cos) / (last - first);
+    }
+    const signal = {
+      initialDrums: magnitude(220, 0.2, 0.8), initialDonor: magnitude(880, 0.2, 0.8),
+      swappedDrums: magnitude(220, 1.2, 1.8), swappedDonor: magnitude(880, 1.2, 1.8),
+      nextSong: magnitude(880, 2.2, 4.8), mutedVocal: magnitude(330, 0.2, 0.8),
+    };
+    assert.ok(signal.initialDrums > 0.02 && signal.initialDonor < 0.001, JSON.stringify(signal));
+    assert.ok(signal.swappedDonor > 0.02 && signal.swappedDrums < 0.001, JSON.stringify(signal));
+    assert.ok(signal.nextSong > 0.01 && signal.mutedVocal < 0.001, JSON.stringify(signal));
+    if (process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR) {
+      const directory = process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR;
+      mkdirSync(directory, { recursive: true });
+      copyFileSync(downloaded, path.join(directory, "handoff.wav"));
+      copyFileSync(individualPath, path.join(directory, "individual-drums.wav"));
+      const sourceFiles = [
+        "src/lib/waveyard/library/session-service.ts", "src/lib/waveyard/library/service.test.ts", "src/lib/waveyard/project-audio.ts",
+        "src/lib/waveyard/worker-local/export.ts", "src/lib/waveyard/remix.ts", "src/app/api/remixes/[id]/route.ts",
+        "src/app/api/remixes/[id]/versions/[versionId]/restore/route.ts", "src/app/api/waveyard/projects/[id]/route.ts",
+        "src/app/api/waveyard/projects/[id]/remixes/route.ts", "src/components/waveyard/library/SessionExperience.tsx",
+      ];
+      const sha256 = (filename: string) => createHash("sha256").update(readFileSync(filename)).digest("hex");
+      const git = (args: string[]) => spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" }).stdout?.trim() ?? null;
+      writeFileSync(path.join(directory, "handoff.json"), JSON.stringify({
+        observedAt: new Date().toISOString(), fixture: "synthetic PCM tones; NOT separation inference",
+        source: { head: git(["rev-parse", "HEAD"]), worktree: git(["status", "--porcelain"]), sha256: Object.fromEntries(sourceFiles.map((filename) => [filename, sha256(path.join(repoRoot, filename))])) },
+        runtime: { node: process.version, platform: process.platform, arch: process.arch, ffmpeg: spawnSync((await requireTool("ffmpeg")).path, ["-version"], { encoding: "utf8" }).stdout.split("\n")[0] },
+        inputs: beforeStems.map((stem) => ({ id: stem.id, engine: stem.engine, durationSeconds: stem.durationSeconds, storageKey: stem.storageKey, actualSha256: sha256(storage.getLocalPath(stem.storageKey)!) })),
+        handoff, job: finished, asset, metadata, signal,
+        limitations: ["No model inference", "No Electron, Windows or room UI acceptance", "Live transition triggers/crossfades are not reconstructed"],
+      }, null, 2));
+    }
+  } finally {
+    if (priorWorker === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = priorWorker;
+    if (priorRedis === undefined) delete process.env.REDIS_URL; else process.env.REDIS_URL = priorRedis;
+  }
+  // Asset provenance also survives loss/replacement of live lanes: immutable
+  // versions, not the current timeline alone, authorize restore/render reuse.
+  await db.db.delete(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
+  const { projectAudio } = await import("../project-audio");
+  assert.equal((await projectAudio(handoff.projectId)).stems.length, 5);
+  const restore = await import("@/app/api/remixes/[id]/versions/[versionId]/restore/route");
+  const restored = await restore.POST(new Request("http://arena.test/restore", { method: "POST" }), { params: Promise.resolve({ id: handoff.remixSessionId, versionId: version.id }) });
+  assert.equal(restored.status, 200, await restored.clone().text());
   await sessions.deleteSession(OWNER, created.id);
+  assert.equal((await getState()).tracks.length, 5, "derived arrangement survives listening-session deletion");
+});
+
+test("session handoff: empty, foreign-owner and lane-limit refusals create nothing", async () => {
+  const route = await import("@/app/api/library/sessions/[id]/studio-handoff/route");
+  const created = await sessions.createSession(OWNER, "Refusal acceptance");
+  const beforeProjects = (await db.db.select().from(schema.projects)).length;
+  const beforeRemixes = (await db.db.select().from(schema.remixSessions)).length;
+  const post = () => route.POST(new Request("http://arena.test/handoff", { method: "POST" }), { params: Promise.resolve({ id: created.id }) });
+  assert.equal((await post()).status, 409, "empty sessions fail honestly");
+  await assert.rejects(() => sessions.sendSessionToStudio(OTHER, created.id), sessions.SessionNotFoundError);
+  for (let count = 0; count < 9; count++) await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const oversized = await post();
+  assert.equal(oversized.status, 409);
+  assert.match((await oversized.json()).error, /36.*32/);
+  assert.equal((await db.db.select().from(schema.projects)).length, beforeProjects);
+  assert.equal((await db.db.select().from(schema.remixSessions)).length, beforeRemixes);
+  assert.equal((await sessions.getSession(OWNER, created.id)).tracks.length, 9, "refusal preserves the listening session");
+  await sessions.deleteSession(OWNER, created.id);
+});
+
+test("session handoff: a database write failure rolls back project, remix, lanes and clips", async () => {
+  const created = await sessions.createSession(OWNER, "Atomic acceptance");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const counts = async () => Promise.all([schema.projects, schema.remixSessions, schema.remixTracks, schema.remixClips].map(async (table) => (await db.db.select().from(table)).length));
+  const before = await counts();
+  // Genuine PostgreSQL failure at the last write boundary, no transaction mock.
+  await client!.query(`CREATE FUNCTION pg_temp.reject_handoff_clip() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'acceptance: injected clip write failure'; END $$`);
+  await client!.query(`CREATE TRIGGER acceptance_reject_clip BEFORE INSERT ON remix_clips FOR EACH ROW EXECUTE FUNCTION pg_temp.reject_handoff_clip()`);
+  try {
+    await assert.rejects(() => sessions.sendSessionToStudio(OWNER, created.id));
+    assert.deepEqual(await counts(), before, "no orphan project or partial arrangement survives");
+  } finally {
+    await client!.query("DROP TRIGGER acceptance_reject_clip ON remix_clips");
+    await client!.query("DROP FUNCTION pg_temp.reject_handoff_clip()");
+    await sessions.deleteSession(OWNER, created.id);
+  }
+});
+
+test("project audio: bound references cannot expose another owner's audio; malformed versions are ignored", async () => {
+  const [foreignSource] = await db.db.select().from(schema.sourceAssets).where(eq(schema.sourceAssets.projectId, (await service.listTracks({ ownerId: OTHER }))[0].studioProjectId));
+  const [foreignJob] = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, foreignSource.id));
+  const [foreignStem] = await db.db.insert(schema.stemAssets).values({
+    projectId: foreignSource.projectId, sourceAssetId: foreignSource.id, separationJobId: foreignJob.id,
+    stemType: "drums", engine: "synthetic-test-fixture", model: "none", modelVersion: "test",
+    storageKey: "test/foreign-owner.wav", checksumSha256: "fixture", durationSeconds: 2,
+    sampleRate: 44100, channels: 1, codec: "wav", format: "wav", fileSizeBytes: 100,
+  }).returning();
+  const [project] = await db.db.insert(schema.projects).values({ ownerId: OWNER, title: "Reference isolation fixture", kind: "studio" }).returning();
+  const [remix] = await db.db.insert(schema.remixSessions).values({ projectId: project.id, ownerId: OWNER, name: "Invalid reference fixture" }).returning();
+  await db.db.insert(schema.remixTracks).values({ remixSessionId: remix.id, stemAssetId: foreignStem.id, name: "Foreign fixture" });
+  await db.db.insert(schema.remixVersions).values({ remixSessionId: remix.id, createdById: OWNER, name: "Broken legacy snapshot", snapshot: "not JSON" });
+  await db.db.insert(schema.remixVersions).values({ remixSessionId: remix.id, createdById: OWNER, name: "Invalid legacy UUID", snapshot: JSON.stringify({ tracks: [{ id: "legacy", stemAssetId: "not-a-uuid", clips: [] }] }) });
+  const { projectAudio } = await import("../project-audio");
+  assert.deepEqual(await projectAudio(project.id), { stems: [], sources: [] });
+  await db.db.delete(schema.projects).where(eq(schema.projects.id, project.id));
+  await db.db.delete(schema.stemAssets).where(eq(schema.stemAssets.id, foreignStem.id));
 });
 
 test("session: meeting-point primitives power compatibility (analysis surfaced, not duplicated)", async () => {

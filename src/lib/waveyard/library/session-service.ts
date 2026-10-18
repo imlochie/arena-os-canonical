@@ -17,6 +17,7 @@
 
 import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 
+import { MAX_REMIX_TRACKS, MAX_REMIX_CLIPS_PER_TRACK } from "../remix";
 import { db } from "@/db";
 import {
   listenSessionSwaps,
@@ -24,6 +25,7 @@ import {
   listenSessionTracks,
   projects,
   remixSessions,
+  remixClips,
   remixTracks,
   sourceAnalyses,
   stemAssets,
@@ -510,6 +512,7 @@ export interface StudioHandoffResult {
   remixSessionId: string;
   remixTrackCount: number;
   refused?: string;
+  notice: string;
 }
 
 /**
@@ -521,66 +524,84 @@ export interface StudioHandoffResult {
  */
 export async function sendSessionToStudio(ownerId: string, sessionId: string): Promise<StudioHandoffResult> {
   await requireUser();
-  const detail = await sessionPayload(sessionId);
   await ownedSession(ownerId, sessionId);
+  const detail = await sessionPayload(sessionId);
 
-  const bindable: Array<{ sessionTrack: SessionTrackPayload; stemId: string; stemType: string }> = [];
   const refused: string[] = [];
-  for (const sessionTrack of detail.tracks) {
-    const trackDetail = await getTrack(ownerId, sessionTrack.track.id);
-    if (trackDetail === null || trackDetail.stems.length === 0) {
-      refused.push(sessionTrack.track.title);
+  const lanes: Array<{
+    stemAssetId: string; name: string; volume: number;
+    clips: Array<{ stemAssetId: string; timelineStartMs: number; sourceOffsetMs: number; durationMs: number }>;
+  }> = [];
+  let timelineMs = 0;
+  for (const item of detail.tracks) {
+    const separated = item.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
+    const selected = separated.length ? separated : item.stems.filter((stem) => stem.engine === "passthrough-unseparated").slice(0, 1);
+    if (!selected.length) {
+      refused.push(`“${item.track.title}” has no stems or explicit unseparated-source bridge.`);
       continue;
     }
-    // Prefer a real separated stem set; fall back to the passthrough stem.
-    const real = trackDetail.stems.find((stem) => stem.engine !== "passthrough-unseparated");
-    const passthrough = trackDetail.stems.find((stem) => stem.engine === "passthrough-unseparated");
-    const stem = real ?? passthrough;
-    if (stem === undefined) {
-      refused.push(sessionTrack.track.title);
+    const durationMs = Math.round(item.track.durationSeconds * 1000);
+    if (durationMs <= 0) {
+      refused.push(`“${item.track.title}” has no usable duration.`);
       continue;
     }
-    bindable.push({ sessionTrack, stemId: stem.id, stemType: stem.stemType });
-  }
-  if (bindable.length === 0) {
-    throw new StemSwapRefusedError(
-      `No session track has audio the Studio can bind (needs separated stems or the full-source bridge): ${refused.join(", ")}.`,
-    );
-  }
-
-  const [project] = await db
-    .insert(projects)
-    .values({
-      ownerId,
-      title: `Session · ${detail.name}`,
-      description: `Derived from listening session “${detail.name}” (${detail.tracks.length} tracks). Original tracks and stems are referenced, never copied or modified.`,
-      kind: "studio",
-      visibility: "private",
-    })
-    .returning({ id: projects.id });
-
-  const [remix] = await db
-    .insert(remixSessions)
-    .values({
-      projectId: project.id,
-      ownerId,
-      name: `Session · ${detail.name}`,
-    })
-    .returning({ id: remixSessions.id });
-
-  await db.transaction(async (tx) => {
-    for (const [index, entry] of bindable.entries()) {
-      await tx.insert(remixTracks).values({
-        remixSessionId: remix.id,
-        stemAssetId: entry.stemId,
-        name: `${entry.sessionTrack.track.title} — ${entry.stemType}`,
-        sortOrder: index,
-        volume: entry.sessionTrack.stemMix[entry.stemType] ?? 1,
+    if (timelineMs + durationMs > 86_400_000) throw new StemSwapRefusedError("This arrangement exceeds Studio’s 24-hour timeline limit. Send a shorter session. Nothing was created.");
+    const itemLanes: typeof lanes = [];
+    let invalid: string | undefined;
+    for (const stem of selected) {
+      const swaps = detail.swaps.filter((swap) => swap.sessionTrackId === item.id && swap.stemType === stem.stemType)
+        .sort((a, b) => a.atSeconds - b.atSeconds);
+      const changes = [{ at: 0, stemAssetId: stem.id }];
+      for (const swap of swaps) {
+        const donor = await getTrack(ownerId, swap.toTrackId);
+        const donorStem = donor?.stems.find((candidate) => candidate.stemType === stem.stemType && candidate.engine !== "passthrough-unseparated");
+        if (!donorStem) { invalid = `a saved ${stem.stemType} swap donor is unavailable`; break; }
+        const at = Math.round(swap.atSeconds * 1000);
+        if (at < durationMs) changes.push({ at, stemAssetId: donorStem.id });
+      }
+      if (invalid) break;
+      const clips = changes.flatMap((change, index) => {
+        const end = changes[index + 1]?.at ?? durationMs;
+        return end > change.at ? [{ stemAssetId: change.stemAssetId, timelineStartMs: timelineMs + change.at, sourceOffsetMs: change.at, durationMs: end - change.at }] : [];
       });
+      if (clips.length > MAX_REMIX_CLIPS_PER_TRACK) throw new StemSwapRefusedError(`A stem lane exceeds Studio’s ${MAX_REMIX_CLIPS_PER_TRACK}-clip limit. Use a session with fewer swaps. Nothing was created.`);
+      const assets = await db.select().from(stemAssets).where(inArray(stemAssets.id, [...new Set(clips.map((clip) => clip.stemAssetId))]));
+      if (clips.some((clip) => {
+        const asset = assets.find((candidate) => candidate.id === clip.stemAssetId);
+        return !asset || !Number.isFinite(asset.durationSeconds) || clip.sourceOffsetMs + clip.durationMs > asset.durationSeconds * 1000;
+      })) { invalid = `a saved stem or swap is missing or shorter than its timeline range`; break; }
+      itemLanes.push({ stemAssetId: stem.id, name: `${item.track.title} — ${stem.stemType}`, volume: item.stemMix[stem.stemType] ?? 1, clips });
     }
+    if (invalid) { refused.push(`“${item.track.title}”: ${invalid}.`); continue; }
+    lanes.push(...itemLanes);
+    timelineMs += durationMs;
+  }
+  if (!lanes.length) throw new StemSwapRefusedError(
+    `No session track can be sent to Studio. ${refused.join(" ")} Original sources are untouched.`,
+  );
+  // This is the existing arrangement persistence limit, not a silent truncation.
+  if (lanes.length > MAX_REMIX_TRACKS) throw new StemSwapRefusedError(
+    `This session needs ${lanes.length} stem lanes; Studio currently supports ${MAX_REMIX_TRACKS}. Send a smaller session. Nothing was created.`,
+  );
+  const { project, remix } = await db.transaction(async (tx) => {
+    const [project] = await tx.insert(projects).values({
+      ownerId, title: `Session — ${detail.name}`, kind: "studio",
+      description: `Derived from listening session “${detail.name}” (${sessionId}). Sequential clips preserve stem levels and timed swaps; live transition timing and crossfades are not recorded. Original audio is referenced, not copied.`,
+    }).returning();
+    const [remix] = await tx.insert(remixSessions).values({ projectId: project.id, ownerId, name: detail.name }).returning();
+    for (const [sortOrder, lane] of lanes.entries()) {
+      const [track] = await tx.insert(remixTracks).values({
+        remixSessionId: remix.id, stemAssetId: lane.stemAssetId, name: lane.name, volume: lane.volume, sortOrder,
+      }).returning();
+      await tx.insert(remixClips).values(lane.clips.map((clip) => ({ ...clip, remixTrackId: track.id, gain: 1 })));
+    }
+    return { project, remix };
   });
-
-  return { projectId: project.id, remixSessionId: remix.id, remixTrackCount: bindable.length, refused: refused.length > 0 ? refused.join(", ") : undefined };
+  return {
+    projectId: project.id, remixSessionId: remix.id, remixTrackCount: lanes.length,
+    notice: "Created a sequential arrangement with saved stem levels and timed swaps. Live transition triggers, crossfades and the playback cursor are not recorded into this arrangement; edit transitions in Studio. Original sources and the listening session are unchanged.",
+    ...(refused.length ? { refused: refused.join(" ") } : {}),
+  };
 }
 
 /** Analysis for the compatibility panel: BPM/key/beat grid per session track. */

@@ -23,6 +23,7 @@
     "desktop:dist": "npm run desktop:compile && npm run desktop:prepare-server && node scripts/desktop-dist.mjs",
     "desktop:acceptance-headless": "node --import ./scripts/register-src-loader.mjs scripts/desktop-acceptance-headless.mjs",
     "windows:acceptance": "node scripts/windows-acceptance.mjs",
+    "test:acceptance:handoff": "node --import ./scripts/register-src-loader.mjs --test src/lib/waveyard/library/service.test.ts",
     "test:acceptance:transport": "node --test tests/acceptance/stem-transport.test.mjs"
   },
   "dependencies": {
