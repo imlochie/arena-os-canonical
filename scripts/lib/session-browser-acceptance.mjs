@@ -126,6 +126,39 @@ export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId
     observations.push({ action: "Studio UI master edit/save/reload/version, then API render/download/decode", savedCue, expectedDuration, remixId, versionId: version.id, exportId: rendered.id, masterVolume: arrangement.remix.masterVolume, boundAssetIds: arrangement.tracks.flatMap((track) => track.clips.map((clip) => clip.stemAssetId)), downloadPath, sha256: createHash("sha256").update(bytes).digest("hex"), probe, rms, limitation: "export was requested through the production API, not a Studio export button; inputs remain synthetic passthrough" });
 
     await page.screenshot({ path: `${screenshotPath}.studio.png`, fullPage: true });
+    // Another real room/shared-output path on the same production services:
+    // creation is via API, inspection/reuse/deletion through the actual UI.
+    const artifactTitle = `Staged retained evidence ${Date.now()}`;
+    const { artifact } = await json("/api/artifacts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: artifactTitle, body: "Synthetic transition evidence, reusable across rooms.", kind: "research", sourceType: "manual" }) });
+    await page.goto(`${url}/artifacts`);
+    await page.getByText(artifactTitle, { exact: true }).click();
+    await expect(page.getByText("Synthetic transition evidence, reusable across rooms.", { exact: true })).toBeVisible();
+    const reuse = page.getByRole("link", { name: /Collab it/ });
+    await expect(reuse).toHaveAttribute("href", new RegExp(`source=artifact%3A${artifact.id}`));
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: `Delete ${artifactTitle}`, exact: true }).click();
+    await expect(page.getByText(artifactTitle, { exact: true })).toHaveCount(0);
+    await expect.poll(async () => (await json("/api/artifacts?limit=100")).artifacts.some((row) => row.id === artifact.id)).toBe(false);
+    await page.reload(); await expect(page.getByText(artifactTitle, { exact: true })).toHaveCount(0);
+    observations.push({ action: "Artifact Library real create/read/reuse-link/confirmed UI delete/reload with production database", artifactId: artifact.id, limitation: "reuse destination link verified, downstream model deliberation not invoked" });
+
+    // Explicitly OFFLINE TEMPLATE acceptance, not provider-generated gameplay.
+    const { game } = await json("/api/arcade", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: "snake fast", gameType: "snake" }) });
+    await page.goto(`${url}/arcade`);
+    await page.getByText("snake fast", { exact: true }).click();
+    const frame = page.frameLocator("iframe");
+    await frame.getByRole("button", { name: /START/ }).click();
+    await frame.getByRole("button", { name: /Pause/ }).click();
+    await expect(frame.getByRole("heading", { name: "PAUSED", exact: true })).toBeVisible();
+    await frame.getByRole("button", { name: /Restart/ }).click();
+    await expect(frame.getByRole("heading", { name: "GAME OVER", exact: true })).toBeVisible({ timeout: 10000 });
+    await frame.getByRole("button", { name: /Restart/ }).click();
+    await expect(frame.getByRole("heading", { name: "GAME OVER", exact: true })).toHaveCount(0);
+    await page.reload(); await page.getByText("snake fast", { exact: true }).click();
+    await expect(frame.getByRole("button", { name: /START/ })).toBeVisible();
+    const persistedGame = await json(`/api/arcade/${game.id}`);
+    if (persistedGame.game.code !== game.code || persistedGame.game.engine !== game.engine) throw new Error("Arcade template code/provenance changed on reopen");
+    observations.push({ action: "Arcade offline template real persist/open/start/pause/fail/restart/reload", gameId: game.id, engine: game.engine, codeSha256: createHash("sha256").update(game.code).digest("hex"), limitation: "verified template only; NOT real-provider custom generation" });
     if (errors.length) throw new Error(`Renderer errors: ${errors.join("; ")}`);
     return { browser: browser.version(), evidenceKind: "staged-browser-real-api-postgres-audio", limitations: ["synthetic passthrough input, not real music or separation", "browser, not Electron", "not subjective quality acceptance"], observations, screenshotPath, rendererErrors: errors };
   } finally { await browser.close(); }
