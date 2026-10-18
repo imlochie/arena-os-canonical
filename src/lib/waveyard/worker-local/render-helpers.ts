@@ -197,7 +197,10 @@ export function mixSumFilters(labels: string[], outputLabel: string): string[] {
 export function padToTimeline(sampleRate: number, timelineSamples: number, streamEndMs: number): string {
   const streamSamples = Math.ceil((streamEndMs / 1000) * sampleRate);
   const padSamples = Math.max(0, timelineSamples - streamSamples);
-  return `apad=pad_len=${padSamples}`;
+  // FFmpeg 4.1 can lose a stereo channel-layout constraint through
+  // pan/adelay/apad. Reassert it at the merge boundary; otherwise two valid
+  // stereo sources fail amerge negotiation (mono fixtures hide the defect).
+  return `apad=pad_len=${padSamples},aformat=channel_layouts=stereo`;
 }
 
 /** Total render length in samples: the end of the last clip. */

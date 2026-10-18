@@ -404,7 +404,7 @@ async function main() {
   // Unlike the isolated controller fixture, no HTTP responses are mocked.
   if (process.argv.includes("--browser")) {
     const { exerciseSessionBrowser } = await import("./lib/session-browser-acceptance.mjs");
-    const ui = await exerciseSessionBrowser({ url, sessionId, currentId: sessionItemA.id, nextId: sessionItemB.id, screenshotPath: `${reportPath}.session.png` });
+    const ui = await exerciseSessionBrowser({ url, sessionId, currentId: sessionItemA.id, nextId: sessionItemB.id, screenshotPath: `${reportPath}.session.png`, ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath });
     step("actual staged session UI: hard cut, timed fade, audio and SQL reload", true, { info: JSON.stringify(ui) });
   }
 

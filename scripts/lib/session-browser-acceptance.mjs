@@ -1,10 +1,13 @@
+import { writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 /** Opt-in REAL staged Next UI + production API + embedded PostgreSQL + Web
  * Audio. Inputs are the desktop runner's explicit synthetic passthrough
  * tracks. Never claim Electron, learned separation or listening quality. */
 import { chromium } from "playwright-core";
 import { expect } from "@playwright/test";
 
-export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId, screenshotPath }) {
+export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId, screenshotPath, ffmpegPath, ffprobePath }) {
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE_PATH || undefined, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage", "--autoplay-policy=no-user-gesture-required"] });
   const observations = [], errors = [];
   try {
@@ -76,9 +79,42 @@ export async function exerciseSessionBrowser({ url, sessionId, currentId, nextId
     const studioPath = await openStudio.getAttribute("href");
     await expect(openStudio).toHaveAttribute("href", /\/waveyard\/projects\//);
     await openStudio.click();
+    await page.getByTestId("waveyard-mode-studio").click();
     await expect(page.getByRole("button", { name: "Save now", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Remix timeline", exact: true })).toBeVisible();
     observations.push({ action: "explicit sequential handoff opens the actual reusable Studio arrangement", studioPath });
+    const studioProjectId = studioPath.split("/").at(-1);
+    const json = async (path, init) => { const response = await fetch(`${url}${path}`, init); if (!response.ok) throw new Error(`Studio acceptance HTTP ${response.status}: ${path}`); return response.json(); };
+    const listing = await json(`/api/waveyard/projects/${studioProjectId}/remixes`);
+    const remixId = listing.remixes[0].id;
+    const master = page.getByRole("slider", { name: "Master volume", exact: true }).first();
+    await master.fill("0.4");
+    await page.getByRole("button", { name: "Save now", exact: true }).click();
+    await expect.poll(async () => (await json(`/api/remixes/${remixId}`)).remix.masterVolume).toBe(0.4);
+    await page.reload(); await page.getByTestId("waveyard-mode-studio").click();
+    await expect(page.getByRole("slider", { name: "Master volume", exact: true }).first()).toHaveValue("0.4");
+    const versionResponse = page.waitForResponse((response) => response.url().endsWith(`/api/remixes/${remixId}/versions`) && response.request().method() === "POST");
+    page.once("dialog", (dialog) => dialog.accept("UI acceptance saved master"));
+    await page.getByRole("button", { name: "Save version", exact: true }).click();
+    const response = await versionResponse;
+    if (!response.ok()) throw new Error("Studio UI version save failed");
+    const version = (await response.json()).version;
+    const request = await json(`/api/remix-versions/${version.id}/exports`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ format: "wav" }) });
+    let rendered;
+    await expect.poll(async () => { rendered = (await json(`/api/remix-versions/${version.id}/exports`)).exports.find((entry) => entry.id === request.job.id); return rendered?.status; }, { timeout: 30000 }).toMatch(/^(complete|failed)$/);
+    if (rendered.status !== "complete") throw new Error(`Studio render failed: ${JSON.stringify(rendered)}`);
+    const media = await fetch(`${url}/api/exports/${rendered.id}/media`);
+    if (!media.ok) throw new Error("Studio render download failed");
+    const bytes = Buffer.from(await media.arrayBuffer()), downloadPath = `${screenshotPath}.studio.wav`;
+    await writeFile(downloadPath, bytes);
+    const probe = JSON.parse(execFileSync(ffprobePath, ["-v", "error", "-show_entries", "format=duration,size", "-show_entries", "stream=codec_name,sample_rate,channels", "-of", "json", downloadPath], { encoding: "utf8" }));
+    const decoded = execFileSync(ffmpegPath, ["-v", "error", "-i", downloadPath, "-f", "s16le", "-ac", "1", "-ar", "44100", "-"], { maxBuffer: 10 * 1024 * 1024 });
+    let power = 0; for (let i = 0; i < decoded.length; i += 2) power += (decoded.readInt16LE(i) / 32768) ** 2;
+    const rms = Math.sqrt(power / (decoded.length / 2));
+    if (Number(probe.format.duration) < 23 || Number(probe.format.duration) > 25 || rms < 0.005) throw new Error("Studio UI-saved arrangement exported unexpected duration or silence");
+    const arrangement = await json(`/api/remixes/${remixId}`);
+    observations.push({ action: "Studio UI master edit/save/reload/version, then API render/download/decode", remixId, versionId: version.id, exportId: rendered.id, masterVolume: arrangement.remix.masterVolume, boundAssetIds: arrangement.tracks.flatMap((track) => track.clips.map((clip) => clip.stemAssetId)), downloadPath, sha256: createHash("sha256").update(bytes).digest("hex"), probe, rms, limitation: "export was requested through the production API, not a Studio export button; inputs remain synthetic passthrough" });
+
     await page.screenshot({ path: `${screenshotPath}.studio.png`, fullPage: true });
     if (errors.length) throw new Error(`Renderer errors: ${errors.join("; ")}`);
     return { browser: browser.version(), evidenceKind: "staged-browser-real-api-postgres-audio", limitations: ["synthetic passthrough input, not real music or separation", "browser, not Electron", "not subjective quality acceptance"], observations, screenshotPath, rendererErrors: errors };
