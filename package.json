@@ -16,7 +16,7 @@
     "test:desktop": "node --import ./scripts/register-src-loader.mjs --test \"desktop/**/*.test.ts\" \"src/lib/waveyard/worker-local/*.test.ts\"",
     "smoke:archive": "node --import ./scripts/register-src-loader.mjs scripts/archive-context-smoke.ts",
     "desktop:compile": "tsc -p desktop/tsconfig.json",
-    "desktop": "npm run desktop:compile && electron .",
+    "desktop": "npm run desktop:compile && node scripts/desktop-launch.mjs .",
     "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "desktop:e2e": "node --import ./scripts/register-src-loader.mjs scripts/desktop-e2e.mjs",
     "desktop:prepare-server": "node scripts/desktop-prepare-server.mjs",
@@ -26,7 +26,9 @@
     "test:acceptance:music": "node scripts/waveyard-real-music.mjs",
     "test:acceptance:handoff": "node --import ./scripts/register-src-loader.mjs --test src/lib/waveyard/library/service.test.ts",
     "test:acceptance:transport": "node --test tests/acceptance/stem-transport.test.mjs",
-    "test:acceptance:session": "node --test tests/acceptance/session-runtime.test.mjs"
+    "test:acceptance:session": "node --test tests/acceptance/session-runtime.test.mjs",
+    "desktop:doctor": "node scripts/desktop-electron.mjs",
+    "desktop:prepare-electron": "node scripts/desktop-electron.mjs --install"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
@@ -79,7 +81,7 @@
     "typescript": "5.9.3"
   },
   "version": "0.1.0",
-  "description": "Arena — local-first music production workspace",
+  "description": "Arena \u2014 local-first music production workspace",
   "author": "Arena",
   "main": "desktop/dist/main.js",
   "engines": {

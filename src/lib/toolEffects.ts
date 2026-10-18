@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpath, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve, sep } from "node:path";
-import type { ToolCapability, ToolGrant } from "./toolRuntime";
+import { realpath, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import type { ToolGrant } from "./toolRuntime";
 
 export type WriteCapability="filesystem.patch"|"filesystem.write";
 export type EffectStatus="proposed"|"approved"|"applied"|"failed"|"stale";
@@ -17,10 +17,14 @@ export async function proposeFileEffect(input:{sessionId:string;actorId:string;g
 export function approveToolEffect(effect:ToolEffect,approverId:string):ToolEffect{if(effect.status!=="proposed")throw new Error("TOOL_EFFECT_STATE");if(approverId===effect.actorId)throw new Error("TOOL_SELF_APPROVAL_DENIED");return{...effect,status:"approved",approvedBy:approverId,approvedDigest:effect.operationDigest}}
 export async function applyFileEffect(effect:ToolEffect,grant:ToolGrant):Promise<ToolEffect>{
  if(effect.status!=="approved"||effect.approvedDigest!==effect.operationDigest)throw new Error("TOOL_APPROVAL_INVALID");
+ const operation={sessionId:effect.sessionId,actorId:effect.actorId,grantId:effect.grantId,resourceId:effect.resourceId,capability:effect.capability,path:effect.path,canonicalRoot:effect.canonicalRoot,expectedHash:effect.expectedHash,content:effect.content};
+ if(digest(operation)!==effect.operationDigest)throw new Error("TOOL_DIGEST_MISMATCH");
  if(grant.id!==effect.grantId||grant.sessionId!==effect.sessionId||grant.resourceId!==effect.resourceId)throw new Error("TOOL_SCOPE_DENIED");
- const root=await realpath(grant.root);if(root!==effect.canonicalRoot)throw new Error("TOOL_SCOPE_STALE");const target=resolve(root,effect.path);let before="";try{const canonical=await realpath(target);if(relative(root,canonical).startsWith(".."))throw new Error("TOOL_SCOPE_DENIED");before=await readFile(canonical,"utf8")}catch(e:any){if(e.code!=="ENOENT")throw e}
+ const root=await realpath(grant.root);if(root!==effect.canonicalRoot)throw new Error("TOOL_SCOPE_STALE");const requested=resolve(root,effect.path);assertInside(root,requested);const parent=await realpath(dirname(requested));assertInside(root,parent);const target=resolve(parent,basename(requested));let before="";try{const canonical=await realpath(target);assertInside(root,canonical);before=await readFile(canonical,"utf8")}catch(e:any){if(e.code!=="ENOENT")throw e}
  if(effect.expectedHash!==null&&hash(before)!==effect.expectedHash)return{...effect,status:"stale",error:"TOOL_PREIMAGE_STALE"};
- const tmp=resolve(dirname(target),`.arena-${effect.id}.tmp`);try{await writeFile(tmp,effect.content,{flag:"wx"});await rename(tmp,target);return{...effect,status:"applied",preimage:before}}catch(e){return{...effect,status:"failed",error:e instanceof Error?e.message:"TOOL_EFFECT_FAILED"}}
+ const tmp=resolve(dirname(target),`.arena-${effect.id}.tmp`);let created=false;try{await writeFile(tmp,effect.content,{flag:"wx"});created=true;await rename(tmp,target);return{...effect,status:"applied",preimage:before}}catch(e){return{...effect,status:"failed",error:e instanceof Error?e.message:"TOOL_EFFECT_FAILED"}}finally{if(created)await rm(tmp,{force:true}).catch(()=>{})}
 }
 export function hash(value:string){return createHash("sha256").update(value).digest("hex")}
 function digest(value:unknown){return hash(JSON.stringify(value))}
+
+function assertInside(root:string,target:string){const rel=relative(root,target);if(rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel))throw new Error("TOOL_SCOPE_DENIED")}

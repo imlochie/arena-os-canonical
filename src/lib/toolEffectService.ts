@@ -56,7 +56,14 @@ export async function applyPersistedEffect(input: {
     return row;
   });
 
-  const outcome = await applyFileEffect({ ...fromRow(claimed), status: "approved" }, input.grant);
+  let outcome: ToolEffect;
+  try {
+    outcome = await applyFileEffect({ ...fromRow(claimed), status: "approved" }, input.grant);
+  } catch (error) {
+    // A rejected digest/path must become a durable failed outcome, not leave
+    // the already-claimed row permanently stuck in "applying".
+    outcome = { ...fromRow(claimed), status: "failed", error: error instanceof Error ? error.message : "TOOL_EFFECT_FAILED" };
+  }
   return database.transaction(async (tx) => {
     const eventType = outcome.status === "applied" ? "tool_effect_applied" : outcome.status === "stale" ? "tool_effect_stale" : "tool_effect_failed";
     const [row] = await tx.update(toolEffects).set({
