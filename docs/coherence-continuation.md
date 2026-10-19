@@ -1580,3 +1580,114 @@ security correction by implication. Its forthcoming exact-head run must be
 queried after push; the PR progress comment will carry that resulting full head
 and run URL/status, rather than making this document self-reference its own
 commit hash or rewriting earlier evidence. PRs 15 and 14 remain open/unmerged.
+
+### Stronger interruption acceptance, publication UI correction and bounded cancellation
+
+A further audit narrowed one earlier acceptance claim: the original encoding-
+crash fixture stopped a real FFmpeg child **on spawn**, not after observing audio
+payload. Its earlier PASS is not proof of mid-payload encoding. That fixture has
+been replaced with stronger actual-progress checks, without rewriting the older
+logs above. Test-only `-re` paces a real ten-second input; it does not substitute
+an encoder, decoder, audio or output. Linux `/proc` confirms the actual process
+is stopped. The new fixture observes **262,220 output bytes** (greater than a
+header and less than the complete ten-second PCM payload), or **511,500 μs of
+actual FFmpeg decode progress**, before interruption. Both resume to verified
+10-second output from unchanged input. Metadata is written by that same native
+encoding invocation; no separate metadata-only transaction/interruption is
+claimed.
+
+The first verification-progress attempt used `-stats_period`, unsupported by
+this installed encoder; `/home/user/mandate10-real-progress-recovery.txt` retains
+the failure. The fixture now uses the supported default `-progress pipe:1`
+reporting. `/home/user/mandate10-tool-versions.txt` records the actual binaries:
+
+- FFmpeg `N-47683-g0e8eb07980-static`, copyright/build banner 2018;
+- ffprobe `N-66595-gc2b38619c0-static`, banner 2023.
+
+These particular active binaries passed the six-codec tests. This is not a
+blanket guarantee about other FFmpeg builds or decoder security/patch currency.
+
+Additional real cross-process cancellation of that paused encoder exposed a
+**cancellation timeout**, `/home/user/mandate10-phase-cancel.txt`: SIGTERM alone
+cannot terminate a stopped/TERM-ignoring process. The existing shared runner now
+allows graceful SIGTERM handling, escalates to SIGKILL after one second, and
+still waits for child/stdio close before rejecting and permitting cleanup.
+Timeouts use the same bounded shutdown with an explicit timeout error. The
+existing graceful-close regression remains green; immediate force-kill was not
+used as a substitute for graceful cleanup. A real TERM-ignoring Node child
+(unit shim, not an audio/inference claim) also verifies timeout escalation and
+PID disappearance before rejection. Actual FFmpeg cancellation crosses the SQL
+run fence/heartbeat, then explicit retry completes with two attempts.
+
+A new SIGKILL fixture additionally stops **after full temporary-file verification
+but before immutable publication**. It proves the stored temporary verification
+receipt is not downloadable publication: actual output key absent, authenticated
+media GET **422**, then resume produces one complete playable library track and
+completed retry remains idempotent. Existing after-publication and
+post-library/pre-completion recovery tests remain.
+
+This exposed a UI defect: a verification receipt previously offered “Download
+verified output” before completion. The workbench now withholds that completed-
+download affordance until completion and explains temporary verification versus
+publication. An actual browser/real-DB controlled status projection checks that
+guard; it is explicitly **not another process-death acceptance**. API downloads
+continue checking actual owned bytes, never serving a temporary file/substitute.
+
+Final focused commands use the same loader/Chromium/library environment listed
+above, with these latest external outputs:
+
+- Full `music-conversion.test.mjs`: **10 PASS / 0 FAIL / 0 SKIP, 72916.481 ms,
+  exit 0**, `/home/user/mandate10-native-escalation.txt`. This supersedes the
+  earlier spawn-only interruption scope. Its one interruption test exercises
+  actual encoding, actual verification and cross-process cancellation; these
+  are not inflated into three additional test counts.
+- Its measured 12/48-source batches completed in **9786.211 / 39205.862 ms**,
+  with sampled Node RSS **277,356,544 / 294,776,832 bytes**. Output bytes remained
+  8,655,905 / 34,623,677, all complete/distinct; 48-source intake 3558.013 ms.
+  `/home/user/mandate10-performance-escalation/batch-measurements.json` retains
+  results. Sampling/GC/other activity varies; child/browser memory, 1000-item
+  stress and a universal memory/speed guarantee remain outside this measurement.
+- Focused codec/shared-runner/playlist/TunePat units: **11 PASS / 0 FAIL /
+  0 SKIP, 7401.643 ms, exit 0**, `/home/user/mandate10-units-last.txt`.
+- `npm run typecheck` / `npm run lint`: exit **0**, logs
+  `/home/user/mandate10-{types,lint}-escalation.txt`; still **48 existing warnings,
+  zero lint errors**. `npm run build`: exit **0**,
+  `/home/user/mandate10-build-escalation.txt`.
+- Fresh compiled Next/PostgreSQL/Chromium end-to-end proof: exit **0**,
+  **11478.180 ms**, `/home/user/mandate10-production-escalation.txt`, current
+  `mandate10-production-result.json` and `mandate10-production-studio.png`.
+  Invalid intake, MP3/FLAC downloads, session → existing Studio edit/save/export/
+  reopen again passed: 55,125 decoded frames, 11,025 initial silent frames,
+  maximum preview/export error **0.00005482137203216553**, zero page errors.
+  The previous boundary build's JSON/image were preserved with
+  `mandate10-production-boundary-` prefixes. Authentication remains controlled,
+  not an actual passkey ceremony or Electron acceptance.
+- The full source rerun started at `76ce92a` completed **1373 PASS / 0 FAIL /
+  0 SKIP, 39 suites, 649462.269 ms**,
+  `/home/user/mandate10-full-source-exact-head.txt`. The filename describes the
+  starting snapshot, not immutable final-source acceptance: the timeout/stronger
+  interruption/UI follow-up was added while it ran. The focused final checks
+  above and new final-head CI must not be replaced by this earlier total.
+
+Both exact `76ce92a5af94f72e007262273db4705386ecddf6` CI runs
+[39242889992](https://github.com/imlochie/arena-os-canonical/actions/runs/39242889992)
+and [39242883252](https://github.com/imlochie/arena-os-canonical/actions/runs/39242883252)
+completed SUCCESS, all four jobs SUCCESS. Those are a prior checkpoint, **not**
+implicit acceptance of this later cancellation/UI/test correction. The final
+full durable rerun and exact resulting-head CI are tracked in the stable progress
+record [PR 15 comment 6266121822](https://github.com/imlochie/arena-os-canonical/pull/15#issuecomment-6266121822),
+which will carry the full resulting commit and per-run/per-job outcome after
+push, without forcing this document to contain its own commit hash. No merge,
+branch switch, model download or requirement to return to Windows was introduced.
+All external-runtime/Apple/TunePat/Electron/inference/worker-workspace/cover/CD
+limitations above remain in force.
+
+Before the final follow-up commit, the complete ten-file durable command listed
+above finished on the final local runtime source: **98 PASS / 0 FAIL / 0 SKIP,
+190686.589 ms, exit 0**, `/home/user/mandate10-durable-last.txt`, with decoded FX
+artifacts in `/home/user/mandate10-durable-last-evidence`. This includes the ten
+music tests; they are a subset, not an additional 10 on top of 98. Final
+`git ls-remote` still reports main `f0e4180841cd047080b06d6cb43cd2effa9ab98f`;
+PRs 14/15 are OPEN. Final exact-head CI remains a post-push check recorded at the
+stable PR progress link above, not inferred from local success or older green
+checks.

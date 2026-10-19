@@ -138,15 +138,26 @@ export async function execTool(tool: FfmpegTool, args: string[], options: { time
     const child = spawn(binary.path, args, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      timeout: options.timeoutMs ?? 120_000,
       signal: options.signal,
     });
     let stdout = "";
     let stderr = "";
     let outputBytes = 0;
+    let executionError: Error | undefined;
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const escalate = () => {
+      // Allow normal trailer/cleanup handlers, but stopped/TERM-ignoring tools
+      // must not hold cancellation or timeout indefinitely.
+      forceKill ??= setTimeout(() => child.kill("SIGKILL"), 1000);
+      forceKill.unref();
+    };
+    const terminate = () => { child.kill("SIGTERM"); escalate(); };
+    const timeoutMs = options.timeoutMs ?? 120_000;
+    const deadline = timeoutMs > 0 ? setTimeout(() => { executionError ??= new Error(`${tool} timed out after ${timeoutMs}ms; partial output was not certified.`); terminate(); }, timeoutMs) : undefined;
+    deadline?.unref();
     const bounded = (chunk: Buffer) => {
       outputBytes += chunk.byteLength;
-      if (options.maxOutputBytes && outputBytes > options.maxOutputBytes) { executionError = new Error("Media tool diagnostic output exceeded its bounded limit."); child.kill(); return false; }
+      if (options.maxOutputBytes && outputBytes > options.maxOutputBytes) { executionError ??= new Error("Media tool diagnostic output exceeded its bounded limit."); terminate(); return false; }
       return !options.maxOutputBytes || outputBytes <= options.maxOutputBytes;
     };
     child.stdout.on("data", (chunk: Buffer) => {
@@ -157,12 +168,12 @@ export async function execTool(tool: FfmpegTool, args: string[], options: { time
     });
     // Abort emits error before the process actually exits. Consumers may remove
     // temporary inputs only once close confirms child/stdio termination.
-    let executionError: Error | undefined;
-    child.once("error", (error) => { executionError = error; });
-    child.once("close", (code) => {
+    child.once("error", (error) => { executionError ??= error; if (error.name === "AbortError") escalate(); });
+    child.once("close", (code, signal) => {
+      clearTimeout(deadline); if (forceKill) clearTimeout(forceKill);
       if (executionError) reject(executionError);
       else if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${tool} exited ${code}: ${stderr.slice(-1200)}`));
+      else reject(new Error(`${tool} exited ${code ?? signal}: ${stderr.slice(-1200)}`));
     });
   });
 }

@@ -26,3 +26,8 @@ test("aborting execTool waits for child close before callers can clean its worki
 test("bounded native media diagnostics stop excessive output and await child closure", async () => {
   await assert.rejects(execTool("ffmpeg", ["-hide_banner", "-encoders"], { maxOutputBytes: 64 }), /bounded limit/);
 });
+
+test("native process timeout escalates a real TERM-ignoring child and rejects only after it is gone",{skip:process.platform==="win32"},async()=>{
+ const root=await mkdtemp(join(tmpdir(),"arena-tool-timeout-")),binary=join(root,"ffmpeg"),ready=join(root,"ready"),previous=process.env.ARENA_FFMPEG_PATH;
+ try{await writeFile(binary,`#!/usr/bin/env node\nconst fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{},1000);\n`,{mode:0o755});process.env.ARENA_FFMPEG_PATH=binary;clearResolvedToolCache();const started=Date.now();await assert.rejects(execTool("ffmpeg",[],{timeoutMs:2000}),/timed out after 2000ms/);const pid=Number(await readFile(ready,"utf8"));assert.throws(()=>process.kill(pid,0),{code:"ESRCH"});assert.ok(Date.now()-started<10000);}finally{if(previous===undefined)delete process.env.ARENA_FFMPEG_PATH;else process.env.ARENA_FFMPEG_PATH=previous;clearResolvedToolCache();await rm(root,{recursive:true,force:true});}
+});
