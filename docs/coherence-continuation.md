@@ -1,3 +1,28 @@
+# Mandate6 — usable binary Mission handoff and CI fixture repair, 2026-10-19
+
+Follows `09bc88925beb1d7d6b5cb09d45a629aae9dfd9d7`. That head passed static1360-source/build, Compose and browser checks, but its **new FX native step failed** in CI39201244592/39201240493. Do not call those runs all-green. The new fixture had inherited a local-only FFmpeg PATH adjustment. Reproduced without that adjustment:1FAIL23.32s (`/home/user/mandate6-fx-no-path-before.txt`). Fixed the fixture, not the results: resolve the actual installed FFmpeg/FFprobe with Arena's existing `requireTool`, expose them only to the worker child via a temporary private symlink bin, and immediately surface handler failure instead of waiting for a nonexistent checkpoint. All seven real queue windows then pass **without any shell FFmpeg PATH adjustment**,1PASS53.89s (`/home/user/mandate6-fx-no-path-after.txt`). CI now publishes FX test failure identities as well as A7 identities. Signed Azure Actions log/artifact downloads are inaccessible here; check annotations and locally reproduced environments are retained instead of inventing unseen log details. Exact newest-head CI must be checked independently.
+
+## Another actual cross-workflow failure, implemented and proven
+
+An actual Mission wrote and published270000-byte Unicode and240000-byte binary files, then honestly became incomplete after a rejected syntax-invalid action. Both useful partials remained downloadable after source-file overwrite and PostgreSQL restart. A later actual task could copy the text but the shared `reuse_mission_output` tool explicitly refused the binary, so its real Node verification command failed. Before proof: `/home/user/mandate6-large-mission-native.txt`; after: `/home/user/mandate6-large-mission-after.txt`.
+
+- Extended the **existing guarded file writer**, not a new tool/registry, to accept exact byte buffers as well as text. Reuse resolves the owned pinned revision through the existing Mission manifest, verifies its complete private content, then writes those bytes without UTF8 conversion. The existing32MiB output bound is also enforced before writing; no inline/DB body limit was raised. Containment/symlink checks and syntax validation remain; binary bytes cannot masquerade as JavaScript source. Text write receipts now report actual UTF8 bytes instead of UTF16 character counts.
+- Updated the Mission tool instructions to truthfully advertise supported text **and binary** file reuse.
+- Added an actual **Prepare reuse** control beside verified Mission outputs. It puts stable source-space/mission/output IDs, the original Artifact/revision reference, expected SHA256 and an explicit destination into the **next task draft**. Existing draft text is preserved, repeated preparation is idempotent, and it does not execute tools or claim successful reuse. The normal task/provider path remains responsible for actual work.
+- The real Chromium regression inspects the complete large text, downloads both partials, overwrites their workspace files, restarts PostgreSQL, and verifies both in a **fresh Node process**. It clicks Prepare reuse, preserves an existing goal, parses the actual drafted binary arguments into the later controlled protocol plan, invokes the real file-copy tools and runs a real Node checksum verification command. The later Mission is done and its verification.json and copied binary are downloadable through the actual panel. Invalid binary-to-code reuse is rejected without creating a file. This is runtime/tool/identity acceptance, not autonomous model reasoning.
+
+## Latest verified boundary
+
+- Integrated actual PostgreSQL/private files/HTTP/Chromium/Redis/BullMQ: **55PASS/0FAIL**, `/home/user/mandate6-final55-integrated.txt`. Includes the original54 plus the large/binary partial→later-task workflow. Subsequent strengthened fresh-Node/UI-draft focused test:1PASS, `/home/user/mandate6-large-mission-browser.txt`, not an additive56.
+- Production Next buildPASS (`/home/user/mandate6-final55-build.txt`); root typecheckPASS; production worker typecheckPASS. Changed Mission/UI/test lint:0errors/1existing effect warning. Full lint last run0errors/48warnings. No inference/Electron/Windows acceptance claim.
+- Unicode Mission file SHA256 `9618d3a6549f0f07fec2eef89d8e02677222cdc38879ff4ba138b095c2ee836a`; binary SHA256 `93c1f032ee90c7ae77edd4accd37e90ed58dd8cf70474f25478cc4b1d14d10e5`. Actual later command asserts these exact hashes after immutable retrieval, not merely row existence. Full provenance IDs and fresh-process/UI evidence are in the focused log.
+
+## Continue independently
+
+The broader programme remains open: independent Studio scale/main-thread, stale edits/cancellation/save-reopen and remaining-room useful-outcome checks; interrupted/orphan export/temp-file reconciliation without premature deletion; remote-provider/S3 and broader runtime acceptance where available. Inspect output-capture reads under concurrent workspace mutation before making unbounded-I/O claims. Preserve all published cross-room, Orchestrator, full Artifact and real FX recovery work. No Windows/model/checkpoint prerequisite, no auto-merge, no whole-app completion claim.
+
+---
+
 # Mandate6 — real FX lease loss, interruption and verified publication, 2026-10-19
 
 Follows verified/published `7580caa83ad53830a4894867e1eac57446b24afe`; PR15 remains open/unmerged. Exact new-head results belong in the PR evidence comment rather than a self-referential commit hash here.

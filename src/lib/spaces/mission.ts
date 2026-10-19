@@ -147,7 +147,7 @@ const AGENT_KNOWLEDGE = `WORK DISCIPLINE (how strong coding agents operate):
 
 const TOOL_DOC = `Available tools (emit actions as JSON):
 - publish_output {path} register a stable workspace file as a private downloadable output
-- reuse_mission_output {sourceSpaceId, missionId, outputId, path} copy an authorised immutable text output into this workspace
+- reuse_mission_output {sourceSpaceId, missionId, outputId, path} copy an authorised immutable text or binary file (up to 32 MiB) into this workspace without decoding or truncation
 - read_artifact {artifactId, revisionId}  retrieve an owned immutable Artifact revision (both IDs required; never implicit latest)
 - write_file {path, content}        create/overwrite a file (new files, or full rewrites of small files)
 - edit_file {path, old_text, new_text}  SURGICAL edit of an existing file (Aider-style): old_text must match EXACTLY ONE location — copy it from read_file output; verified + syntax-checked

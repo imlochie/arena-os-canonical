@@ -43,16 +43,20 @@ export async function ensureWorkspace(spaceId: string): Promise<string> {
 
 // ---------------- file tools ----------------
 
-export async function toolWriteFile(dir: string, p: string, content: string): Promise<string> {
-  const { containedOutputPath } = await import("./mission-outputs");
+export async function toolWriteFile(dir: string, p: string, content: string | Buffer): Promise<string> {
+  const { containedOutputPath, MAX_MISSION_OUTPUT_BYTES } = await import("./mission-outputs");
+  const byteLength = Buffer.byteLength(content);
+  if (byteLength > MAX_MISSION_OUTPUT_BYTES) return "error: file exceeds the existing 32 MiB output bound — NOT written.";
   const full = await containedOutputPath(dir, p, true);
-  const check = await syntaxCheck(p, content);
+  const text = typeof content === "string" ? content : content.toString("utf8");
+  const check = await syntaxCheck(p, text);
+  if (check.checked && Buffer.isBuffer(content) && !Buffer.from(text, "utf8").equals(content)) return "error: binary bytes cannot be interpreted as source code — NOT written.";
   if (check.checked && !check.ok) {
     return `error: ${p} has syntax errors — NOT written.\n${check.error}\nFix and retry.`;
   }
   await mkdir(path.dirname(full), { recursive: true });
   await writeFile(full, content, "utf8");
-  return `wrote ${p} (${content.length} bytes)${check.checked ? " · syntax ✓" : ""}`;
+  return `wrote ${p} (${byteLength} bytes)${check.checked ? " · syntax ✓" : ""}`;
 }
 
 /**
@@ -510,9 +514,8 @@ export async function executeTool(
         const { retrieveMissionOutput } = await import("./mission-outputs");
         const { isUuid } = await import("../api/ids");
         for (const key of ["sourceSpaceId", "missionId", "outputId"]) if (!isUuid(String(action.args[key] ?? ""))) return `error: ${key} must be a stable authorised ID`;
-        const { output, bytes } = await retrieveMissionOutput(action.args.sourceSpaceId, action.args.missionId, action.args.outputId);
-        if (!output.mediaType?.startsWith("text/")) return "error: only text outputs can be reused by this file tool; download binary output instead";
-        return toolWriteFile(dir, String(action.args.path ?? ""), bytes.toString("utf8"));
+        const { bytes } = await retrieveMissionOutput(action.args.sourceSpaceId, action.args.missionId, action.args.outputId);
+        return toolWriteFile(dir, String(action.args.path ?? ""), bytes);
       }
       case "write_file":
         return toolWriteFile(dir, String(action.args.path ?? ""), String(action.args.content ?? ""));

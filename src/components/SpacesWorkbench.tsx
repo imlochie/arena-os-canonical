@@ -805,15 +805,19 @@ interface MissionLite {
   handoff: string;
 }
 
-function MissionOutputItem({ output, spaceId, missionId }: { output: import("@/lib/spaces/mission-outputs").MissionOutput; spaceId: string; missionId: string }) {
+function MissionOutputItem({ output, spaceId, missionId, onPrepareReuse }: { output: import("@/lib/spaces/mission-outputs").MissionOutput; spaceId: string; missionId: string; onPrepareReuse: (draft: string) => void }) {
   const [text, setText] = useState<string | null>(null), [error, setError] = useState<string | null>(null);
   const url = `/api/spaces/${spaceId}/mission/outputs/${output.id}?missionId=${missionId}`;
   async function inspect() {
     try { setError(null); const response = await fetch(url + "&view=1"); if (!response.ok) { const data = await response.json(); throw new Error(data.error); } setText(await response.text()); }
     catch (failure) { setError(failure instanceof Error ? failure.message : "Output unavailable."); }
   }
+  function prepareReuse() {
+    const args = { sourceSpaceId: spaceId, missionId, outputId: output.id, path: `reused/${output.path.split(/[\\/]/).pop()}` };
+    onPrepareReuse(`Reuse the original immutable output with reuse_mission_output ${JSON.stringify(args)}. Its pinned Artifact is ${output.artifactId}@${output.revisionId}; verify SHA-256 ${output.checksumSha256} before using the copied bytes. Do not substitute the current workspace file.`);
+  }
   return <li className="mt-2"><span>{output.path} · {output.bytes} bytes · {output.tool ?? "legacy workspace reference"} · {output.state ?? "unverified legacy reference"}</span>
-    {output.state === "complete" && output.id ? <div><a href={url}>Download {output.path}</a>{" "}{output.mediaType?.startsWith("text/") && <button type="button" onClick={() => void inspect()}>View {output.path}</button>}<small className="block break-all">SHA-256 {output.checksumSha256} · Artifact revision {output.revisionId}</small></div> : <p role="status">{output.error ?? "Only a legacy workspace path was retained; no immutable download was recorded."}</p>}
+    {output.state === "complete" && output.id ? <div><a href={url}>Download {output.path}</a>{" "}{output.artifactId && output.revisionId && <button type="button" title="Prepare pinned output reuse in the next goal; does not execute tools" onClick={prepareReuse}>Prepare reuse {output.path}</button>}{" "}{output.mediaType?.startsWith("text/") && <button type="button" onClick={() => void inspect()}>View {output.path}</button>}<small className="block break-all">SHA-256 {output.checksumSha256} · Artifact revision {output.revisionId}</small></div> : <p role="status">{output.error ?? "Only a legacy workspace path was retained; no immutable download was recorded."}</p>}
     {error && <p role="alert">{error}</p>}{text !== null && <pre className="max-h-64 overflow-auto whitespace-pre-wrap">{text}</pre>}
   </li>;
 }
@@ -1003,6 +1007,7 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
 
       <div className="mt-2 grid gap-1.5 sm:grid-cols-[1fr_90px_auto]">
         <input
+          aria-label="Mission goal"
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
           placeholder={checkpointed ? `resume: ${mission?.goal.slice(0, 60)}…` : "Mission goal — e.g. 'build tetris in index.html, publish to my repo'"}
@@ -1077,7 +1082,7 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
             </div>
           ))}
           {mission.artifacts.length > 0 && (
-            <section aria-label="Mission outputs"><b>Mission outputs</b><ul>{mission.artifacts.map((output, index) => <MissionOutputItem key={output.id ?? `${output.path}:${index}`} output={output} spaceId={spaceId} missionId={mission.id} />)}</ul></section>
+            <section aria-label="Mission outputs"><b>Mission outputs</b><ul>{mission.artifacts.map((output, index) => <MissionOutputItem key={output.id ?? `${output.path}:${index}`} output={output} spaceId={spaceId} missionId={mission.id} onPrepareReuse={(draft) => setGoal((current) => current.includes(draft) ? current : [current, draft].filter(Boolean).join(" "))} />)}</ul></section>
           )}
           {mission.handoff && (
             <p className="rounded-lg bg-white/[0.03] p-2 text-[11px] text-slate-400 ring-1 ring-white/5">

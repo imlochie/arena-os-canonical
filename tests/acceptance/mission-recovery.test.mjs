@@ -154,3 +154,48 @@ test("SIGKILL after immutable output capture before mission advancement recovers
   const { retrieveMissionOutput } = await import("../../src/lib/spaces/mission-outputs.ts"); assert.equal((await retrieveMissionOutput(id, resumed.id, resumed.artifacts[0].id)).bytes.toString("utf8"), content);
   assert.equal(await readFile(path.join(root, "interrupted.txt"), "utf8"), content);
 });
+
+test("large Unicode and binary partial Mission outputs are inspectable/downloadable and reused byte-exact by a later real task after overwrite and PostgreSQL restart", async (t) => {
+  const id = randomUUID(); await f.database.insert(schema.spaces).values({ id, prompt: "Retain large useful partials" });
+  const workspace = await tools.ensureWorkspace(id); roots.push(workspace);
+  const text = Buffer.from("ORIGINAL 🎵 中文 café\n".repeat(10000));
+  const binary = Buffer.from(Array.from({ length: 240000 }, (_, i) => i % 256));
+  const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const plan = (actions) => ({ generate: async () => ({ text: JSON.stringify({ actions, done: true }), backend: "controlled-protocol", runtimeLevel: "arena-local", via: "controlled-test", modelId: "not-reasoning", fallback: false, ms: 0 }) });
+  const opts = { goal: "Create large useful partials", isolation: "host", maxTurnsPerAgent: 1, maxActionsPerTurn: 6, agentPlan: [{ name: "Contract writer", role: "worker", modelId: "controlled-protocol" }] };
+  const maker = `const fs=require('node:fs');fs.writeFileSync('large.txt',${JSON.stringify("ORIGINAL 🎵 中文 café\n")}.repeat(10000));const b=Buffer.alloc(240000);for(let i=0;i<b.length;i++)b[i]=i%256;fs.writeFileSync('large.bin',b);console.log('actual large files created');`;
+  const first = await runtime.runMission(id, opts, plan([{ tool: "write_file", args: { path: "maker.cjs", content: maker } }, { tool: "run_command", args: { command: "node maker.cjs" } }, { tool: "publish_output", args: { path: "large.txt" } }, { tool: "publish_output", args: { path: "large.bin" } }, { tool: "write_file", args: { path: "broken.js", content: "function {" } }]));
+  assert.equal(first.status, "incomplete");
+  const outputs = first.artifacts.filter((output) => ["large.txt", "large.bin"].includes(output.path)); assert.equal(outputs.length, 2); assert.ok(outputs.every((output) => output.state === "complete" && output.artifactId && output.revisionId));
+  const page = await browser.newPage(); page.setDefaultTimeout(7000); t.after(() => page.close()); await page.goto(`${origin}/?space=${id}`);
+  await page.getByRole("button", { name: "View large.txt", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Mission outputs" }).locator("pre")).toBeVisible();
+  assert.equal(await page.getByRole("region", { name: "Mission outputs" }).locator("pre").textContent(), text.toString("utf8"));
+  await expect(page.getByRole("button", { name: "View large.bin", exact: true })).toHaveCount(0);
+  for (const output of outputs) {
+    const download = page.waitForEvent("download"); await page.getByRole("link", { name: `Download ${output.path}`, exact: true }).click();
+    assert.deepEqual(await readFile(await (await download).path()), output.path === "large.bin" ? binary : text);
+    await writeFile(path.join(workspace, output.path), "OVERWRITTEN AFTER SNAPSHOT");
+  }
+  await f.stop(); await f.start();
+  const freshCode = `import assert from 'node:assert/strict';import{createHash}from'node:crypto';const{retrieveMissionOutput}=await import('./src/lib/spaces/mission-outputs.ts');const{pool}=await import('./src/db/index.ts');try{for(const output of ${JSON.stringify(outputs)}){const result=await retrieveMissionOutput(${JSON.stringify(id)},${JSON.stringify(first.id)},output.id);assert.equal(createHash('sha256').update(result.bytes).digest('hex'),output.checksumSha256);}}finally{await pool.end();}`;
+  const fresh = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "--eval", freshCode], { env: { ...process.env, DATABASE_URL: f.url }, encoding: "utf8", timeout: 15000 }); assert.equal(fresh.status, 0, fresh.stderr);
+  await page.reload();
+  await page.getByRole("textbox", { name: "Mission goal", exact: true }).fill("Keep my existing next-task request.");
+  await page.getByRole("button", { name: "Prepare reuse large.bin", exact: true }).click();
+  const draftedGoal = await page.getByRole("textbox", { name: "Mission goal", exact: true }).inputValue();
+  const bin = outputs.find((output) => output.path === "large.bin");
+  assert.ok(draftedGoal.startsWith("Keep my existing next-task request."));
+  for (const pinned of [id, first.id, bin.id, bin.artifactId, bin.revisionId, sha(binary)]) assert.ok(draftedGoal.includes(pinned));
+  assert.match(draftedGoal, /reused\/large.bin/);
+  const preparedArgs = JSON.parse(draftedGoal.match(/reuse_mission_output (\{[^}]+\})/)[1]);
+  assert.deepEqual(preparedArgs, { sourceSpaceId: id, missionId: first.id, outputId: bin.id, path: "reused/large.bin" });
+  const verifier = `const fs=require('node:fs'),c=require('node:crypto'),a=require('node:assert/strict');const h=p=>c.createHash('sha256').update(fs.readFileSync(p)).digest('hex');a.equal(h('reused/large.txt'),'${sha(text)}');a.equal(h('reused/large.bin'),'${sha(binary)}');fs.writeFileSync('verification.json',JSON.stringify({text:h('reused/large.txt'),binary:h('reused/large.bin'),actualCommands:true}));console.log('actual reused bytes verified');`;
+  const later = await runtime.runMission(id, { ...opts, goal: draftedGoal }, plan([{ tool: "write_file", args: { path: "verify.cjs", content: verifier } }, ...outputs.map((output) => ({ tool: "reuse_mission_output", args: output.path === "large.bin" ? preparedArgs : { sourceSpaceId: id, missionId: first.id, outputId: output.id, path: `reused/${output.path}` } })), { tool: "run_command", args: { command: "node verify.cjs" } }, { tool: "publish_output", args: { path: "verification.json" } }]));
+  assert.equal(later.status, "done"); assert.deepEqual(await readFile(path.join(workspace, "reused/large.bin")), binary); assert.deepEqual(await readFile(path.join(workspace, "reused/large.txt")), text);
+  const unicodeWrite = later.journal.flatMap((step) => step.actions).find((action) => action.tool === "reuse_mission_output" && action.input.path.endsWith(".txt")); assert.match(unicodeWrite.output, /270000 bytes/);
+  await page.reload(); const reusedDownload = page.waitForEvent("download"); await page.getByRole("link", { name: "Download reused/large.bin", exact: true }).click(); assert.deepEqual(await readFile(await (await reusedDownload).path()), binary);
+  const refused = await tools.executeTool(id, { tool: "reuse_mission_output", args: { sourceSpaceId: id, missionId: first.id, outputId: bin.id, path: "must-not-be-code.js" } }); assert.equal(refused.ok, false);
+  await assert.rejects(readFile(path.join(workspace, "must-not-be-code.js")), /ENOENT/);
+  console.log(JSON.stringify({ kind: "Mission-large-partial-later-real-task", before: first.status, after: later.status, restarted: true, freshNode: true, draftedFromUI: true, outputs: outputs.map((output) => ({ bytes: output.bytes, sha256: output.checksumSha256, artifactId: output.artifactId, revisionId: output.revisionId })) }));
+});

@@ -2,7 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  writeFile,
+  rm,
+  readFile,
+  mkdir,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -15,6 +22,13 @@ test(
   async () => {
     const cwd = process.cwd();
     const root = await mkdtemp(path.join(tmpdir(), "arena-fx-lease-"));
+    const toolBin = path.join(root, "resolved-tools");
+    await mkdir(toolBin);
+    const { requireTool } = await import("../../src/lib/waveyard/ffmpeg.ts");
+    for (const name of ["ffmpeg", "ffprobe"]) {
+      const tool = await requireTool(name);
+      await symlink(tool.path, path.join(toolBin, name));
+    }
     let f, redis, queue, events, database;
     const children = [];
     async function freePort() {
@@ -39,6 +53,7 @@ test(
           cwd,
           env: {
             ...process.env,
+            PATH: `${toolBin}${path.delimiter}${process.env.PATH}`,
             TSX_TSCONFIG_PATH: path.join(cwd, "waveyard-worker/tsconfig.json"),
             HOLD_STAGE: hold ?? "",
           },
@@ -68,16 +83,27 @@ test(
         wait(predicate) {
           const match = seen.find(predicate);
           if (match) return Promise.resolve(match);
+          const failure = seen.find((event) => event.kind === "handler-error");
+          if (failure)
+            return Promise.reject(
+              new Error("Production export handler failed: " + failure.error),
+            );
           return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
               bus.off("event", on);
               reject(new Error("Worker deadline: " + stderr));
             }, 20000);
             function on(event) {
-              if (predicate(event)) {
+              if (predicate(event) || event.kind === "handler-error") {
                 clearTimeout(timer);
                 bus.off("event", on);
-                resolve(event);
+                if (predicate(event)) resolve(event);
+                else
+                  reject(
+                    new Error(
+                      "Production export handler failed: " + event.error,
+                    ),
+                  );
               }
             }
             bus.on("event", on);
