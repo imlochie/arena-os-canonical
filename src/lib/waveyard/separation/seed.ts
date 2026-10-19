@@ -133,7 +133,7 @@ export async function getModelFileStatus(spec: MdxModelSpec, dir = resolveModels
 export type SeedProgress = { bytes: number; totalBytes: number | null };
 export type SeedResult = { outcome: "already-present"; status: ModelFileStatus } | { outcome: "installed"; bytes: number };
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
-type SeedOptions = { acquisition?: ModelAcquisition["kind"]; dir?: string; fetchImpl?: FetchLike; onProgress?: (p: SeedProgress) => void; signal?: AbortSignal };
+type SeedOptions = { permissionReviewed?: boolean; acquisition?: ModelAcquisition["kind"]; dir?: string; fetchImpl?: FetchLike; onProgress?: (p: SeedProgress) => void; signal?: AbortSignal };
 /** Same file/revision/directory shares work. A cancelled caller does not cancel
  * other callers' transfer; cancellation belongs to the initiating operation. */
 const inFlight = new Map<string, Promise<SeedResult>>();
@@ -241,7 +241,7 @@ async function seedModelFileUncached(spec: MdxModelSpec, opts: SeedOptions): Pro
     const bytes = await size(p.partial);
     opts.signal?.throwIfAborted();
     await rename(p.partial, p.final);
-    await save(`${p.final}.provenance.json`, { kind: opts.acquisition ?? "registry-download", sourceUrl: spec.sourceUrl, sha256: sha, licence: spec.license, permission: opts.acquisition === "owner-supplied-file" ? "owner-asserted-not-verified" : "not-established", installedAt: new Date().toISOString() });
+    await save(`${p.final}.provenance.json`, { kind: opts.acquisition ?? "registry-download", sourceUrl: spec.sourceUrl, sha256: sha, licence: spec.license, permission: opts.acquisition === "owner-supplied-file" || opts.permissionReviewed ? "owner-asserted-not-verified" : "not-established", installedAt: new Date().toISOString() });
     await rm(p.metadata, { force: true });
     return { outcome: "installed", bytes };
   } catch (error) {

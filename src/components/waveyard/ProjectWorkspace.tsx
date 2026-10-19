@@ -77,6 +77,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [selectedSourceName, setSelectedSourceName] = useState("");
   const [sourceMessage, setSourceMessage] = useState<string | null>(null);
   const [passthroughBusy, setPassthroughBusy] = useState(false);
+  const [modelRightsReviewed, setModelRightsReviewed] = useState(false);
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [processorNotice, setProcessorNotice] = useState<string | null>(null);
   const processorChecked = useRef(false);
@@ -187,7 +188,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setPreparingEngine(true);
     setError(null);
     try {
-      const result = await prepareStemEngine(model, engineAbort.current.signal);
+      const result = await prepareStemEngine(model, engineAbort.current.signal, modelRightsReviewed);
       if (!result.ok) {
         setError(result.error);
         return;
@@ -396,7 +397,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           );
         })}
       </section>}
-      <ModelAssetImport />
+      <ModelAssetImport onReviewChange={setModelRightsReviewed} />
       {preparingEngine && <button type="button" onClick={() => engineAbort.current?.abort()}>Cancel model preparation (retain resumable bytes)</button>}
       {latest?.status === "failed" && (
         <div>
@@ -408,10 +409,10 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           {editable && latest.errorCode === "separation_unavailable" && (
             <button
               className="button"
-              disabled={preparingEngine}
+              disabled={preparingEngine || !modelRightsReviewed}
               onClick={() => void prepareEngine(latest.model, latest.id)}
             >
-              {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine (one-time download)"}
+              {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine (review sources/licensing above first)"}
             </button>
           )}
           {editable && latest.errorCode !== "separation_unavailable" && (

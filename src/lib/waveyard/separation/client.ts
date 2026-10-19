@@ -78,10 +78,12 @@ export async function fetchDeepEngineStatus(): Promise<StemEngineDeepStatus | nu
 export async function prepareStemEngine(
   modelId: string,
   signal?: AbortSignal,
+  rightsReviewed = false,
 ): Promise<{ ok: true; requeued: number } | { ok: false; error: string }> {
+  if (!rightsReviewed) return { ok: false, error: "Inspect the model manifests and review source/licensing before preparing this engine." };
   try {
     const response = await fetch(`/api/waveyard/separation/models/${encodeURIComponent(modelId)}/seed`, {
-      method: "POST", signal,
+      method: "POST", signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ rightsReviewed }),
     });
     const json = (await response.json().catch(() => ({}))) as { error?: unknown; requeued?: unknown };
     if (!response.ok) {

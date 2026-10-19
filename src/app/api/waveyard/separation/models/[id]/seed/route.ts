@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireApiAccess } from "@/lib/security/api-access";
 
 import { db } from "@/db";
 import { findMdxModel, findSeparationRecipe } from "@/lib/waveyard/separation/mdx";
@@ -16,6 +17,7 @@ export const runtime = "nodejs";
  *  own; the id is validated against the registry (nothing user-supplied
  *  is ever fetched). */
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(_request); if (denied) return denied;
   try {
     await requireUser();
     const { id } = await params;
@@ -24,11 +26,13 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const specs = [...new Set(modelIds)].map(findMdxModel);
     if (specs.some(spec => !spec)) return NextResponse.json({ error: "Unknown stem engine model." }, { status: 404 });
 
+    const body = await _request.json().catch(() => ({}));
+    if (body?.rightsReviewed !== true) return NextResponse.json({ error: "Review pinned model sources/licensing and attest authorised use before download/preparation." }, { status: 400 });
     const models = [];
     let installed = false;
     for (const spec of specs) {
       if (!spec) throw new Error("Invalid recipe model.");
-      const result = await seedModelFile(spec, { signal: _request.signal });
+      const result = await seedModelFile(spec, { signal: _request.signal, permissionReviewed: true });
       const status = await getModelFileStatus(spec);
       if (!status.verified) throw new Error("The model did not verify after installation.");
       installed ||= result.outcome === "installed";

@@ -27,7 +27,9 @@ test('four-stem target seed route installs all recipe prerequisites and exposes 
     const { GET } = await import('../../../app/api/waveyard/separation/models/route');
     const before = await (await GET()).json();
     assert.ok(before.models.every((model: { ready: boolean }) => !model.ready));
-    const result = await POST(new Request('http://arena.test/seed', { method: 'POST' }), { params: Promise.resolve({ id: 'stems_4' }) });
+    const refused = await POST(new Request('http://localhost/seed', {method:'POST',headers:{host:'localhost'}}), { params: Promise.resolve({id:'stems_4'}) });
+    assert.equal(refused.status,400);assert.equal(requests,0,'no download before source/licence review');
+    const result = await POST(new Request('http://localhost/seed', { method: 'POST', headers:{host:'localhost'}, body: JSON.stringify({rightsReviewed:true}) }), { params: Promise.resolve({ id: 'stems_4' }) });
     assert.equal(result.status, 200);
     const json = await result.json();
     assert.equal(json.models.length, 4); assert.equal(json.requeued, 0); assert.equal(json.outcome, 'installed');
@@ -35,9 +37,9 @@ test('four-stem target seed route installs all recipe prerequisites and exposes 
     const status = await (await GET()).json();
     assert.ok(status.models.every((model: { provisioning: { state: string } }) => model.provisioning.state === 'ready'));
     assert.equal(typeof status.mdxRuntime.available, 'boolean');
-    const retry = await POST(new Request('http://arena.test/seed', { method: 'POST' }), { params: Promise.resolve({ id: 'stems_4' }) });
+    const retry = await POST(new Request('http://localhost/seed', { method: 'POST', headers:{host:'localhost'}, body: JSON.stringify({rightsReviewed:true}) }), { params: Promise.resolve({ id: 'stems_4' }) });
     assert.equal((await retry.json()).outcome, 'already-present'); assert.equal(requests, 4, 'verified recipe does not download again');
-    const unknown = await POST(new Request('http://arena.test/seed', { method: 'POST' }), { params: Promise.resolve({ id: 'unregistered' }) });
+    const unknown = await POST(new Request('http://localhost/seed', { method: 'POST', headers:{host:'localhost'}, body: JSON.stringify({rightsReviewed:true}) }), { params: Promise.resolve({ id: 'unregistered' }) });
     assert.equal(unknown.status, 404);
     const { pool } = await import('../../../db');
     await pool.end();

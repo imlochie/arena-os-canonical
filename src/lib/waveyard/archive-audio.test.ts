@@ -17,7 +17,10 @@ let api: typeof import("./archive-audio"),
   fetcher: typeof fetch;
 let licence: unknown = "https://creativecommons.org/publicdomain/zero/1.0/",
   restricted = false,
-  downloadCount = 0, badHash = false, badAudio = false, fileLicence: string | undefined;
+  downloadCount = 0,
+  badHash = false,
+  badAudio = false,
+  fileLicence: string | undefined;
 let pcm: Buffer;
 const previous = {
   db: process.env.DATABASE_URL,
@@ -71,7 +74,16 @@ before(async () => {
             access_restricted: restricted,
           },
           files: [
-            { name: "owned.wav", size: String(pcm.length), licenseurl: fileLicence, sha1: badHash ? "0".repeat(40) : createHash("sha1").update(badAudio ? Buffer.alloc(pcm.length, 97) : pcm).digest("hex") },
+            {
+              name: "owned.wav",
+              size: String(pcm.length),
+              licenseurl: fileLicence,
+              sha1: badHash
+                ? "0".repeat(40)
+                : createHash("sha1")
+                    .update(badAudio ? Buffer.alloc(pcm.length, 97) : pcm)
+                    .digest("hex"),
+            },
             { name: "../secret.wav", size: "100" },
             { name: "private.wav", size: "100", private: true },
             { name: "list.m3u", size: "100" },
@@ -82,7 +94,7 @@ before(async () => {
       downloadCount++;
       res.setHeader("content-type", "audio/wav");
       res.setHeader("content-length", pcm.length);
-      return res.end(badAudio ? Buffer.alloc(pcm.length,97) : pcm);
+      return res.end(badAudio ? Buffer.alloc(pcm.length, 97) : pcm);
     }
     res.writeHead(404);
     res.end();
@@ -182,12 +194,22 @@ test("HTTP discovery remains references, inspection excludes private/traversal f
   );
   restricted = false;
   assert.equal(downloadCount, 0);
-  const args = { ownerId: "00000000-0000-4000-8000-000000000001", id: item.id, file: "owned.wav", rightsReviewed: true };
+  const args = {
+    ownerId: "00000000-0000-4000-8000-000000000001",
+    id: item.id,
+    file: "owned.wav",
+    rightsReviewed: true,
+  };
   fileLicence = "https://creativecommons.org/licenses/by-nd/4.0/";
-  await assert.rejects(api.importArchiveAudio(args, fetcher), /unavailable/);fileLicence=undefined;
-  const cancelled = new AbortController();cancelled.abort();
-  await assert.rejects(api.importArchiveAudio({...args,signal:cancelled.signal},fetcher), /abort/i);
-  assert.equal(downloadCount,0);
+  await assert.rejects(api.importArchiveAudio(args, fetcher), /unavailable/);
+  fileLicence = undefined;
+  const cancelled = new AbortController();
+  cancelled.abort();
+  await assert.rejects(
+    api.importArchiveAudio({ ...args, signal: cancelled.signal }, fetcher),
+    /abort/i,
+  );
+  assert.equal(downloadCount, 0);
 });
 test("reviewed HTTP audio goes through native probe/storage/library, durable attribution, real asset response and pinned source session", async () => {
   const owner = "00000000-0000-4000-8000-000000000001";
@@ -259,12 +281,154 @@ test("reviewed HTTP audio goes through native probe/storage/library, durable att
 });
 
 test("provider integrity mismatch and native decode failure never add library audio; duplicate rights are not overwritten", async () => {
-  const ownerId="00000000-0000-4000-8000-000000000001", args={ownerId,id:"owned-fixture",file:"owned.wav",rightsReviewed:true};
-  const library=await import("./library/service"),before=await library.listTracks({ownerId});
-  badHash=true;await assert.rejects(api.importArchiveAudio(args,fetcher),/provider SHA-1/);badHash=false;
-  badAudio=true;await assert.rejects(api.importArchiveAudio(args,fetcher));badAudio=false;
-  assert.deepEqual(await library.listTracks({ownerId}),before);
-  const {writeFile}=await import("node:fs/promises");const filePath=join(root,"duplicate-owned.wav");await writeFile(filePath,pcm);
-  await assert.rejects(library.addTrackFromAudioFile({ownerId,filePath,filename:"duplicate-owned.wav",mimeType:"audio/wav",prepareSeparation:false,provenance:{method:"authorized-url",sourceUrl:"https://different.example/claim"}}),/different acquisition/);
-  assert.deepEqual(await library.listTracks({ownerId}),before);
+  const ownerId = "00000000-0000-4000-8000-000000000001",
+    args = {
+      ownerId,
+      id: "owned-fixture",
+      file: "owned.wav",
+      rightsReviewed: true,
+    };
+  const library = await import("./library/service"),
+    before = await library.listTracks({ ownerId });
+  badHash = true;
+  await assert.rejects(api.importArchiveAudio(args, fetcher), /provider SHA-1/);
+  badHash = false;
+  badAudio = true;
+  await assert.rejects(api.importArchiveAudio(args, fetcher));
+  badAudio = false;
+  assert.deepEqual(await library.listTracks({ ownerId }), before);
+  const { writeFile } = await import("node:fs/promises");
+  const filePath = join(root, "duplicate-owned.wav");
+  await writeFile(filePath, pcm);
+  await assert.rejects(
+    library.addTrackFromAudioFile({
+      ownerId,
+      filePath,
+      filename: "duplicate-owned.wav",
+      mimeType: "audio/wav",
+      prepareSeparation: false,
+      provenance: {
+        method: "authorized-url",
+        sourceUrl: "https://different.example/claim",
+      },
+    }),
+    /different acquisition/,
+  );
+  assert.deepEqual(await library.listTracks({ ownerId }), before);
+});
+
+test("bank selection and explicit legacy repair retain exact lane order after PostgreSQL physically reverses rows", async () => {
+  // Persistence-only fixture banks, NOT inference. Existing PCM/storage is real.
+  const { db, pool } = await import("../../db");
+  const schema = await import("../../db/waveyardSchema");
+  const library = await import("./library/service");
+  const sessions = await import("./library/session-service");
+  const ownerId = "00000000-0000-4000-8000-000000000001";
+  const [track] = await library.listTracks({ ownerId });
+  const detail = (await library.getTrack(ownerId, track.id))!;
+  const [source] = await db
+    .select()
+    .from(schema.sourceAssets)
+    .where(eq(schema.sourceAssets.id, detail.source.id));
+  const jobIds: string[] = [];
+  for (let bank = 0; bank < 2; bank++) {
+    const [job] = await db
+      .insert(schema.processingJobs)
+      .values({
+        projectId: source.projectId,
+        sourceAssetId: source.id,
+        type: "separation",
+        status: "complete",
+        stage: "complete",
+        model: "stems_4",
+        requestedDevice: "cpu",
+        idempotencyKey: crypto.randomUUID(),
+      })
+      .returning();
+    jobIds.push(job.id);
+    for (const stemType of ["drums", "vocals", "bass", "other"]) {
+      const storage = (await import("./storage")).getStorage(),
+        storageKey = `${source.storageKey}-${bank}-${stemType}.wav`;
+      await storage.putFile(
+        storageKey,
+        storage.getLocalPath(source.storageKey)!,
+      );
+      await db
+        .insert(schema.stemAssets)
+        .values({
+          projectId: source.projectId,
+          sourceAssetId: source.id,
+          separationJobId: job.id,
+          stemType,
+          engine: "mdx-net",
+          model: "controlled-persistence-fixture",
+          modelVersion: "not-inference",
+          storageKey,
+          checksumSha256: source.checksumSha256,
+          durationSeconds: source.durationSeconds,
+          sampleRate: source.sampleRate,
+          channels: source.channels,
+          codec: source.codec,
+          format: source.mimeType,
+          fileSizeBytes: source.fileSizeBytes,
+        });
+    }
+  }
+  const before = (await library.getTrack(ownerId, track.id, {
+    bankId: jobIds[0],
+  }))!;
+  const room = await sessions.createSession(
+    ownerId,
+    "Lane order persistence regression",
+  );
+  const pinned = await sessions.addTrackToSession({
+    ownerId,
+    sessionId: room.id,
+    trackId: track.id,
+    bankId: jobIds[0],
+  });
+  // Simulate a pre-upgrade explicit snapshot whose order was not canonical.
+  const originalPinnedOrder = [...before.playback.assetIds].reverse();
+  await db.update(schema.listenSessionTracks).set({ assetSelection: JSON.stringify({ kind: "stems", assetIds: originalPinnedOrder }) }).where(eq(schema.listenSessionTracks.id,pinned.tracks[0].id));
+  const [legacy] = await db
+    .insert(schema.listenSessionTracks)
+    .values({
+      sessionId: room.id,
+      trackId: track.id,
+      position: 1,
+      stemMix: '{"drums":0.37}',
+    })
+    .returning();
+  await pool.query(
+    "CREATE INDEX acceptance_reverse_stems ON stem_assets (stem_type DESC, id DESC); CLUSTER stem_assets USING acceptance_reverse_stems; ANALYZE stem_assets;",
+  );
+  const after = (await library.getTrack(ownerId, track.id, {
+    bankId: jobIds[0],
+  }))!;
+  assert.deepEqual(
+    after.playback.assetIds,
+    before.playback.assetIds,
+    "same bank must not take its lane order from heap/index traversal",
+  );
+  const repaired = await sessions.updateSessionTrack(
+    ownerId,
+    room.id,
+    legacy.id,
+    { bankId: jobIds[0] },
+  );
+  assert.deepEqual(
+    repaired.tracks[0].playback!.assetIds,
+    originalPinnedOrder,
+    "existing pinned order is not silently rewritten",
+  );
+  assert.deepEqual(
+    repaired.tracks[1].playback!.assetIds,
+    before.playback.assetIds,
+    "explicit legacy repair selects the same ordered bank",
+  );
+  assert.equal(repaired.tracks[1].stemMix.drums, 0.37);
+  assert.deepEqual(
+    after.stems.map((stem) => stem.stemType),
+    ["bass", "drums", "other", "vocals"],
+  );
 });

@@ -9,7 +9,7 @@ type Model = {
   license: string;
   ready: boolean;
 };
-export function ModelAssetImport() {
+export function ModelAssetImport({ onReviewChange }: { onReviewChange?: (reviewed: boolean) => void }) {
   const controller = useRef<AbortController | null>(null);
   const [models, setModels] = useState<Model[]>([]),
     [status, setStatus] = useState(""),
@@ -70,10 +70,11 @@ export function ModelAssetImport() {
         <input
           type="checkbox"
           checked={reviewed}
-          onChange={(event) => setReviewed(event.target.checked)}
+          disabled={busy || models.length === 0}
+          onChange={(event) => { setReviewed(event.target.checked); onReviewChange?.(event.target.checked); }}
         />
         I reviewed the source/licensing conditions and am authorised to obtain
-        and use the supplied model file.
+        and use the selected model assets (download or owner-file import).
       </label>
       {busy && (
         <button type="button" onClick={() => controller.current?.abort()}>

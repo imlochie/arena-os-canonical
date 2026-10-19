@@ -30,6 +30,7 @@ export function BuildProject() {
   const [deepEngine, setDeepEngine] = useState<StemEngineDeepStatus | null>(null);
   const [engineRefresh, setEngineRefresh] = useState(0);
   const engineAbort = useRef<AbortController | null>(null);
+  const [modelRightsReviewed, setModelRightsReviewed] = useState(false);
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [engineError, setEngineError] = useState<string | null>(null);
   useEffect(() => {
@@ -60,7 +61,7 @@ export function BuildProject() {
     setPreparingEngine(true);
     setEngineError(null);
     try {
-      const result = await prepareStemEngine(separationTarget || missing.id, engineAbort.current.signal);
+      const result = await prepareStemEngine(separationTarget || missing.id, engineAbort.current.signal, modelRightsReviewed);
       if (!result.ok) setEngineError(result.error);
       setEngineRefresh((value) => value + 1);
     } finally {
@@ -120,15 +121,16 @@ export function BuildProject() {
     setBusy(false); router.push(`/waveyard/projects/${projectId}`);
   }
   return <form className="build-project" onSubmit={build}>
-    <ModelAssetImport />
+    <ModelAssetImport onReviewChange={setModelRightsReviewed} />
     {runtimeIssue && <p className="error" role="alert">{runtimeIssue}</p>}
     {engineMissing && (
       <p className="notice" role="status">
         First run: the stem engine needs a one-time download
         ({Math.round((relevantModels!.find((model) => !model.ready)!.sizeBytes ?? 0) / 1_000_000)} MB).
+        <span style={{display:"block"}}>Inspect model sources/licensing above and confirm authorised use to enable preparation.</span>
         Preparation verifies model files only; inference also needs a working ONNX runtime.
         {relevantModels?.filter(model => !model.ready).map(model => <span key={model.id} style={{ display: "block" }}>{modelPreparationLabel(model)}</span>)}
-        <button type="button" className="button secondary" disabled={preparingEngine} onClick={() => void prepareEngine()} style={{ display: "block", marginTop: "0.5rem" }}>
+        <button type="button" className="button secondary" disabled={preparingEngine || !modelRightsReviewed} onClick={() => void prepareEngine()} style={{ display: "block", marginTop: "0.5rem" }}>
           {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine now"}
         </button>
         {preparingEngine && <button type="button" onClick={() => engineAbort.current?.abort()}>Cancel model preparation (retain resumable bytes)</button>}

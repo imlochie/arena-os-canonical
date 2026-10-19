@@ -374,7 +374,11 @@ export async function getTrack(ownerId: string, trackId: string, selection?: Ass
     .select({ id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine, model: stemAssets.model, separationJobId: stemAssets.separationJobId, createdAt: stemAssets.createdAt, jobStatus: processingJobs.status, jobModel: processingJobs.model })
     .from(stemAssets)
     .innerJoin(processingJobs, eq(processingJobs.id, stemAssets.separationJobId))
-    .where(eq(stemAssets.sourceAssetId, row.sourceAssetId));
+    .where(eq(stemAssets.sourceAssetId, row.sourceAssetId))
+    // Heap/index order changes after restart/CLUSTER. A bank chosen again must
+    // produce the same ordered snapshot; saved explicit assetIds below retain
+    // their original order, rather than being silently canonicalised.
+    .orderBy(asc(stemAssets.stemType), asc(stemAssets.id));
   const banks: SeparationBank[] = [];
   for (const stem of publishedRows) {
     if (stem.jobStatus !== "complete" || stem.engine === "passthrough-unseparated") continue;
