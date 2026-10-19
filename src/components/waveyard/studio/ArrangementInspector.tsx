@@ -90,7 +90,7 @@ export function ArrangementInspector({
   const startBeatIndex = prefillMatches && dismissedPrefill !== prefillKey ? slicePrefill!.startBeatIndex : enteredStartBeatIndex;
   const endBeatIndex = prefillMatches && dismissedPrefill !== prefillKey ? slicePrefill!.endBeatIndex : enteredEndBeatIndex;
   if (!track || !clip || !selection)
-    return <aside className="clip-inspector"><h3>Arrangement inspector</h3><p>Select a clip to edit timing, source offset, gain, fades, or export-only tempo sync.</p></aside>;
+    return <aside className="clip-inspector"><h3>Arrangement inspector</h3><p>Select a clip to edit timing, source offset, gain, fades, or tempo/key sync for audition and export.</p></aside>;
   const update = (change: (current: RemixClipInput) => RemixClipInput) => onChange((current) => updateSelected(current, selection, change));
   const maxFade = Math.max(0, clip.durationMs - clip.fadeOutMs);
   const sourceBpm = sourceBpmByStemId?.get(clip.stemAssetId) ?? null;

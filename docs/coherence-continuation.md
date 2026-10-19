@@ -1,3 +1,11 @@
+## Actual Next production Studio check after d4fb571
+
+Beyond the separately bundled acceptance harness, the current **production Next server + production Studio page + real transient API + its compiled Worker** ran in Chromium. Actual scheduled66150frames/1.5s, placement silence retained, frequency493.846Hz, one real audition POST200, compiled `turbopack-worker-2ru9m5gbh1na6.js`, no page errors, Stop returned to Preview. One ordinary synthetic project reached controls in660.95ms; this is a single observation, **not** a full scale/open/memory benchmark. Evidence: `/home/user/mandate7-production-studio.txt`, screenshot `mandate7-production-studio.png`, script `mandate7-production-studio.mjs`. The private test PG service holds an explicitly labelled synthetic project with seeded analysis, not inference; it is not user data or a claimed separated song.
+
+Unauthenticated production browser requests correctly returned401 first. The successful test used a **controlled owner-session fixture** through the real identity/session verifier; token stayed in memory and session/device were revoked afterward. It did not bypass/weaken the guard, send an internal service secret to a browser, or exercise a real WebAuthn ceremony. Thus this is production transport/rendering proof, **not Electron, desktop or real-passkey acceptance**. A stale empty-inspector “export-only” label discovered on this actual page was corrected to audition/export.
+
+At last observation, d4fb571 CI39210374047 had browser/A7/Compose PASS with static job still running. PR15 HEADd4fb571 and PR14HEAD536c940 remained OPEN/unmerged; any later documentation/label commit needs its own CI status. Full61 integrated proof belongs to the d4fb571 implementation; full1362 local source proof belongs to47287b5. Retention/reclamation and remaining product work listed below stay unfinished.
+
 # Mandate7 follow-through — reference safety and mixed-source real-worker parity
 
 Continued after `47287b5e6a6c2c04da1f1c16ff708c882b49ae20` passed all four CI checks (PR run39208620508; push run39208615357). The corrected full-source run on that **exact clean revision** passed1362/0/0skip in616.79s (`/home/user/mandate7-source-pg.txt`); the earlier absent-PG failure remains preserved, not relabelled.
