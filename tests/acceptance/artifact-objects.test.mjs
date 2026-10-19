@@ -58,3 +58,37 @@ test("missing/corrupt/private/swapped content refuses download and restore witho
   const [revision] = await db.select().from(schema.artifactRevisions).where(eq(schema.artifactRevisions.id, artifact.currentRevisionId)); await db.update(schema.artifactRevisions).set({ snapshot: { ...revision.snapshot, contentObject: foreign.contentObject } }).where(eq(schema.artifactRevisions.id, revision.id)); assert.equal((await download(artifact)).status, 422); await db.update(schema.artifactRevisions).set({ snapshot: revision.snapshot }).where(eq(schema.artifactRevisions.id, revision.id));
   assert.equal((await db.select().from(schema.artifactRevisions).where(eq(schema.artifactRevisions.artifactId, artifact.id))).length, 1); assert.equal((await recovery.GET(req("GET", null, "", "untrusted.example"))).status, 401);
 });
+
+test("retention inventory preserves current legacy roots, owner disagreements, history and tombstones instead of misclassifying them as unbound", async () => {
+  const bytes = Buffer.from("CURRENT ROOT WITHOUT HISTORICAL BASELINE 🎵");
+  const contentObject = await objects.writeArtifactObject(owner, bytes);
+  const [legacy] = await db.insert(schema.artifacts).values({ ownerId: owner, title: "Legacy current root", body: objects.artifactObjectSummary(contentObject), contentObject, kind: "archive" }).returning();
+  let entry = (await inventory()).find(row => row.sha256 === contentObject.sha256);
+  assert.equal(entry.state, "uncertain"); assert.equal(entry.references, 1); assert.deepEqual(entry.referenceKinds, ["current"]);
+  assert.deepEqual(await readFile(storage.getLocalPath(objects.artifactObjectKey(owner, contentObject))), bytes);
+  // The existing real History operation establishes the missing baseline; no
+  // second registry, invented revision, or separate recovery writer is needed.
+  assert.equal((await history.GET(req(), context(legacy.id))).status, 200);
+  entry = (await inventory()).find(row => row.sha256 === contentObject.sha256);
+  assert.equal(entry.state, "referenced"); assert.equal(entry.references, 1);
+  const current = (await (await item.GET(req(), context(legacy.id))).json()).artifact;
+  await item.PUT(req("PUT", { body: "Replace only the current inline text", expectedRevision: current.revision }), context(legacy.id));
+  entry = (await inventory()).find(row => row.sha256 === contentObject.sha256);
+  assert.equal(entry.state, "referenced"); assert.deepEqual(entry.referenceKinds, ["history"]);
+  assert.equal((await item.DELETE(req("DELETE"), context(legacy.id))).status, 200);
+  entry = (await inventory()).find(row => row.sha256 === contentObject.sha256);
+  assert.equal(entry.state, "referenced"); assert.deepEqual(entry.referenceKinds, ["tombstone"]);
+  const disagreementBytes = Buffer.from("CURRENT OWNER AND SNAPSHOT OWNER DISAGREE: PRESERVE ME");
+  const other = await save(disagreementBytes, "text/plain; charset=utf-8");
+  const [revision] = await db.select().from(schema.artifactRevisions).where(eq(schema.artifactRevisions.id, other.currentRevisionId));
+  await db.update(schema.artifactRevisions).set({ snapshot: { ...revision.snapshot, ownerId: "foreign-owner" } }).where(eq(schema.artifactRevisions.id, revision.id));
+  entry = (await inventory()).find(row => row.sha256 === other.contentObject.sha256);
+  assert.equal(entry.state, "uncertain"); assert.equal(entry.references, 1);
+  assert.equal((await download(other)).status, 422, "classification never authorizes corrupt history retrieval");
+  await f.stop(); await f.start();
+  entry = (await inventory()).find(row => row.sha256 === other.contentObject.sha256); assert.equal(entry.state, "uncertain");
+  assert.deepEqual(await readFile(storage.getLocalPath(objects.artifactObjectKey(owner, other.contentObject))), disagreementBytes);
+  await db.update(schema.artifactRevisions).set({ snapshot: revision.snapshot }).where(eq(schema.artifactRevisions.id, revision.id));
+  assert.deepEqual(Buffer.from(await (await download(other)).arrayBuffer()), disagreementBytes);
+  assert.equal((await inventory()).find(row => row.sha256 === other.contentObject.sha256).state, "referenced");
+});

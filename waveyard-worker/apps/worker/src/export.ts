@@ -12,6 +12,7 @@ import {
   getDb,
   harmonyAnalyses,
   harmonyEvents,
+  projects,
   remixSessions,
   remixVersions,
   sourceAnalyses,
@@ -463,11 +464,23 @@ export async function processExport(
       .select()
       .from(stemAssets)
       .where(inArray(stemAssets.id, stemIds));
-    if (stems.length !== stemIds.length || stems.some((stem) => stem.projectId !== job.projectId))
+    if (stems.length !== stemIds.length)
       throw new ExportFailure(
         "asset_missing",
         "The persisted remix references an unavailable project stem.",
       );
+    // Session→Studio handoff deliberately references existing library audio;
+    // project-id equality is not its ownership boundary. The immutable version
+    // grants these exact IDs, but both stem AND source projects must still be
+    // owned by the destination owner before any bytes are read.
+    const [destination] = await db.select({ ownerId: projects.ownerId }).from(projects).where(eq(projects.id, job.projectId)).limit(1);
+    const sourceIds = [...new Set(stems.map(stem => stem.sourceAssetId))];
+    const referencedSources = await db.select().from(sourceAssets).where(inArray(sourceAssets.id, sourceIds));
+    const requiredProjects = [...new Set([...stems.map(stem => stem.projectId), ...referencedSources.map(source => source.projectId)])];
+    const permittedProjects = destination ? await db.select({ id: projects.id }).from(projects)
+      .where(and(inArray(projects.id, requiredProjects), eq(projects.ownerId, destination.ownerId))) : [];
+    if (!destination || referencedSources.length !== sourceIds.length || permittedProjects.length !== requiredProjects.length)
+      throw new ExportFailure("asset_missing", "The persisted remix references unavailable audio or audio not owned by this project's owner.");
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
     const transformedSourceIds = [...new Set(clips
       .filter((clip) => clip.tempoSyncEnabled || clip.keySyncEnabled)
@@ -476,8 +489,7 @@ export async function processExport(
       ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, transformedSourceIds))
       : [];
     const analysisBySourceId = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
-    const syncSources = transformedSourceIds.length ? await db.select().from(sourceAssets).where(inArray(sourceAssets.id, transformedSourceIds)) : [];
-    const syncSourceById = new Map(syncSources.map(source => [source.id, source]));
+    const syncSourceById = new Map(referencedSources.map(source => [source.id, source]));
     const tempoByClip = new Map<number, { ratio: number; sourceDurationMs: number }>();
     const keyShiftByClip = new Map<number, number>();
     for (const [index, clip] of clips.entries()) {

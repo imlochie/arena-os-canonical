@@ -26,7 +26,9 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex("sessions_token_hash_unique").on(table.tokenHash), index("sessions_user_id_idx").on(table.userId)]);
 
-export const projects = pgTable("projects", {
+// Canonical Arena owns an unrelated public.projects workspace table. Worker
+// audio permissions must use the same wy_projects identities as the web app.
+export const projects = pgTable("wy_projects", {
   id: uuid("id").defaultRandom().primaryKey(),
   ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "restrict" }),
   title: text("title").notNull(),

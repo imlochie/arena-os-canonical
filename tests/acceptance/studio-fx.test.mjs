@@ -96,7 +96,7 @@ async function source(impulse = false, seconds = 3) {
   const { getLocalJobBroker } = await import("../../src/lib/waveyard/worker-local/broker.ts");
   const { handleExportJob } = await import("../../src/lib/waveyard/worker-local/export.ts");
   broker = getLocalJobBroker(); broker.register("waveyard-export", handleExportJob); process.env.WAVEYARD_LOCAL_WORKER = "1";
-  return { projectId: row.projectId, remixId: remix.id };
+  return { projectId: row.projectId, remixId: remix.id, trackId: track.id };
 }
 async function range(locator, value) {
   await locator.evaluate((element, next) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(element, String(next)); element.dispatchEvent(new Event("input", { bubbles: true })); element.dispatchEvent(new Event("change", { bubbles: true })); }, value);
@@ -423,6 +423,15 @@ test("actual Library reconciles retained private bytes into a verified Artifact,
   await history.getByRole("button", { name: "Edit artifact", exact: true }).click(); await history.getByRole("textbox", { name: "Artifact content", exact: true }).fill("An explicit newer inline note; the original file must survive."); await history.getByRole("button", { name: "Save revision", exact: true }).click(); await expect(history).toContainText("Current revision 2");
   await history.getByRole("button", { name: "Load revision history", exact: true }).click(); await history.locator("summary").filter({ hasText: "Revision 1 ·" }).click(); await history.getByRole("button", { name: "Restore revision 1", exact: true }).click(); await expect(history).toContainText("Current revision 3");
   transfer = page.waitForEvent("download"); await history.getByRole("link", { name: "Download complete immutable content", exact: true }).click(); assert.equal(await readFile(await (await transfer).path(), "utf8"), content);
+  const artifactSchema = await import("../../src/db/schema.ts");
+  const [currentRevision] = await database.db.select().from(artifactSchema.artifactRevisions).where(eq(artifactSchema.artifactRevisions.artifactId, artifact.id)).orderBy((await import("drizzle-orm")).desc(artifactSchema.artifactRevisions.revision)).limit(1);
+  await database.db.update(artifactSchema.artifactRevisions).set({ snapshot: { ...currentRevision.snapshot, ownerId: "foreign-owner" } }).where(eq(artifactSchema.artifactRevisions.id, currentRevision.id));
+  try {
+    await page.getByRole("button", { name: "Inspect retained private content", exact: true }).click();
+    await expect(row).toContainText("uncertain"); await expect(row).toContainText("Metadata disagreement");
+    await expect(row.getByRole("button", { name: "Recover as Artifact (unknown origin)", exact: true })).toHaveCount(0);
+  } finally { await database.db.update(artifactSchema.artifactRevisions).set({ snapshot: currentRevision.snapshot }).where(eq(artifactSchema.artifactRevisions.id, currentRevision.id)); }
+
 });
 
 // Mandate7: real Studio controls -> local canonical clip filters -> browser
@@ -521,4 +530,49 @@ test("Arcade real catalogue outage never erases acknowledged games or preview; r
   const denied = await dispatch(new URL(`/api/arcade/${foreign.id}`, "http://fixture"), "DELETE"); assert.equal(denied.status, 403);
   assert.equal((await api(`/api/arcade/${foreign.id}`)).game.code, game.code);
   assert.equal((await api(`/api/arcade/${game.id}`)).game.code, game.code);
+});
+
+test("mixed-tempo library handoff auditions and exports the same owned immutable references locally and in the real isolated worker", async t => {
+  const first = await source(false, 3), second = await source(false, 4);
+  const sessions = await import("../../src/lib/waveyard/library/session-service.ts");
+  const session = await sessions.createSession(owner, "Mixed BPM/key reference export");
+  await sessions.addTrackToSession({ ownerId: owner, sessionId: session.id, trackId: first.trackId });
+  await sessions.addTrackToSession({ ownerId: owner, sessionId: session.id, trackId: second.trackId });
+  const { projectId, remixSessionId: remixId } = await sessions.sendSessionToStudio(owner, session.id);
+  const initial = await api(`/api/remixes/${remixId}`); assert.equal(initial.tracks.length, 2);
+  const stems = [];
+  for (const [index, lane] of initial.tracks.entries()) {
+    const [stem] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, lane.stemAssetId)); stems.push(stem);
+    const [original] = await database.db.select().from(schema.sourceAssets).where(eq(schema.sourceAssets.id, stem.sourceAssetId));
+    const analysed = { projectId: original.projectId, sourceAssetId: original.id, status: "complete", stage: "complete", idempotencyKey: `mixed-sync:${original.id}`, analysisEngine: "deterministic-fixture", analysisEngineVersion: "1", sourceChecksumSha256: original.checksumSha256, bpm: index ? 120 : 60, musicalKey: index ? "C major" : "A major" };
+    await database.db.insert(schema.sourceAnalyses).values(analysed).onConflictDoUpdate({ target: schema.sourceAnalyses.sourceAssetId, set: analysed });
+  }
+  await api(`/api/remixes/${remixId}`, "PUT", { ...initial.remix, tempoBpm: 120, targetKey: "B major", tracks: initial.tracks.map((track, index) => ({ ...track, phaseInverted: Boolean(index), clips: [{ ...track.clips[0], timelineStartMs: index ? 1700 : 500, sourceOffsetMs: 200, durationMs: 800, tempoSyncEnabled: true, keySyncEnabled: true }] })) });
+  const { version } = await api(`/api/remixes/${remixId}/versions`, "POST", { name: "Owned mixed source tempos/keys" });
+  const local = await render(version.id);
+  const page = await browser.newPage(); t.after(() => page.close());
+  await page.addInitScript(() => { window.__mix = null; const start = AudioBufferSourceNode.prototype.start; AudioBufferSourceNode.prototype.start = function(...args) { window.__mix = Array.from(this.buffer.getChannelData(0)); return start.apply(this, args); }; });
+  await page.goto(`${origin}/?project=${projectId}&remix=${remixId}`); await page.getByTestId("waveyard-mode-studio").click(); await page.getByRole("button", { name: "Preview arrangement", exact: true }).click(); await page.waitForFunction(() => window.__mix !== null);
+  const audition = await page.evaluate(() => window.__mix); assert.equal(audition.length, 110250);
+  function frequency(from, to) { let crossings = 0; for (let i = Math.round(from * 44100) + 1; i < Math.round(to * 44100); i++) if (audition[i - 1] <= 0 && audition[i] > 0) crossings++; return crossings / (to - from); }
+  assert.ok(Math.abs(frequency(0.6, 1.1) - 440 * 2 ** (2 / 12)) < 2);
+  assert.ok(Math.abs(frequency(1.8, 2.3) - 440 * 2 ** (-1 / 12)) < 2);
+  assert.ok(audition.slice(1.31 * 44100, 1.69 * 44100).every(value => value === 0));
+  let browserError = 0; for (let frame = 0; frame < audition.length; frame++) browserError = Math.max(browserError, Math.abs(audition[frame] - local.decoded.samples[frame * 2])); assert.ok(browserError < 0.0003, `mixed-source browser/local parity ${browserError}`);
+  const { spawnSync } = await import("node:child_process"), { randomUUID } = await import("node:crypto"), { symlink } = await import("node:fs/promises"), { requireTool } = await import("../../src/lib/waveyard/ffmpeg.ts");
+  const bin = await mkdtemp(path.join(root, "mixed-export-tools-")); for (const name of ["ffmpeg", "ffprobe"]) await symlink((await requireTool(name)).path, path.join(bin, name));
+  async function remote() {
+    const [job] = await database.db.insert(schema.exportJobs).values({ projectId, remixSessionId: remixId, remixVersionId: version.id, requestedById: owner, idempotencyKey: `mixed-remote:${randomUUID()}`, status: "queued", stage: "queued", format: "wav", sampleRate: 44100, channels: 2 }).returning();
+    const payload = { exportJobId: job.id, projectId, remixSessionId: remixId, remixVersionId: version.id, format: "wav" };
+    const child = spawnSync(path.resolve("waveyard-worker/node_modules/.bin/tsx"), ["--tsconfig", path.resolve("waveyard-worker/tsconfig.json"), "waveyard-worker/apps/worker/test-fixtures/export.ts"], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, LOCAL_STORAGE_PATH: process.env.WAVEYARD_STORAGE_DIR, REMOTE_EXPORT_PAYLOAD: JSON.stringify(payload) }, encoding: "utf8", timeout: 25000 });
+    const [finished] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id)); return { job: finished, child };
+  }
+  const actual = await remote(); assert.equal(actual.child.status, 0, actual.child.stderr); assert.equal(actual.job.status, "complete");
+  const media = await dispatch(new URL(`/api/exports/${actual.job.id}/media?download=1`, "http://fixture")); assert.equal(media.status, 200); const decoded = synth.decodeWav16(new Uint8Array(await media.arrayBuffer())); assert.equal(decoded.samples.length, local.decoded.samples.length);
+  let workerError = 0; for (let i = 0; i < decoded.samples.length; i++) workerError = Math.max(workerError, Math.abs(decoded.samples[i] - local.decoded.samples[i])); assert.ok(workerError < 0.00015, `mixed-source actual worker/local parity ${workerError}`);
+  await database.db.update(schema.sourceAnalyses).set({ sourceChecksumSha256: "0".repeat(64) }).where(eq(schema.sourceAnalyses.sourceAssetId, stems[1].sourceAssetId));
+  const stale = await remote(); assert.equal(stale.child.status, 1); assert.equal(stale.job.status, "failed"); assert.equal(stale.job.errorCode, "tempo_sync_analysis_missing");
+  const originalProject = stems[1].projectId; await database.db.update(schema.projects).set({ ownerId: "00000000-0000-4000-8000-000000000002" }).where(eq(schema.projects.id, originalProject));
+  try { const foreign = await remote(); assert.equal(foreign.child.status, 1); assert.equal(foreign.job.errorCode, "asset_missing"); } finally { await database.db.update(schema.projects).set({ ownerId: owner }).where(eq(schema.projects.id, originalProject)); }
+  console.log(JSON.stringify({ kind: "mixed-source-real-browser-local-worker", sourceBpms: [60, 120], frames: audition.length, browserError, workerError, immutableVersionId: version.id }));
 });

@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { opendir, lstat } from "node:fs/promises";
 import path from "node:path";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { artifacts, artifactRevisions } from "@/db/schema";
 import { insertArtifact } from "@/lib/arcadeStore";
@@ -25,7 +25,7 @@ export async function inspectOwnedObject(ownerId: string, sha: string) {
 }
 export async function inventoryArtifactObjects(ownerId: string) {
   const directory = path.dirname(location(ownerId, "0".repeat(64)));
-  const objects: Array<{ id: string; sha256?: string; bytes: number; modifiedAt: string; state: "unbound" | "referenced" | "incomplete"; references: number }> = [];
+  const objects: Array<{ id: string; sha256?: string; bytes: number; modifiedAt: string; state: "unbound" | "referenced" | "incomplete" | "uncertain"; references: number; referenceKinds: string[] }> = [];
   let truncated = false;
   try {
     for await (const entry of await opendir(directory)) {
@@ -33,16 +33,38 @@ export async function inventoryArtifactObjects(ownerId: string) {
       if (objects.length === 500) { truncated = true; break; }
       const info = await lstat(path.join(directory, entry.name)); if (!info.isFile() || info.isSymbolicLink()) continue;
       const complete = entry.name.endsWith(".bin");
-      objects.push({ id: createHash("sha256").update(entry.name).digest("hex"), ...(complete ? { sha256: entry.name.slice(0, 64) } : {}), bytes: info.size, modifiedAt: info.mtime.toISOString(), state: complete ? "unbound" : "incomplete", references: 0 });
+      objects.push({ id: createHash("sha256").update(entry.name).digest("hex"), ...(complete ? { sha256: entry.name.slice(0, 64) } : {}), bytes: info.size, modifiedAt: info.mtime.toISOString(), state: complete ? "unbound" : "incomplete", references: 0, referenceKinds: [] });
     }
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new ArtifactObjectError("Private storage inventory unavailable; nothing was removed.", 503); }
   const hashes = objects.flatMap(object => object.sha256 ? [object.sha256] : []);
   if (hashes.length) {
-    const hash = sql<string>`${artifactRevisions.snapshot}->'contentObject'->>'sha256'`;
-    const rows = await db.select({ sha: hash, count: sql<string>`count(*)` }).from(artifactRevisions).innerJoin(artifacts, eq(artifacts.id, artifactRevisions.artifactId)).where(and(eq(artifacts.ownerId, ownerId), sql`${artifactRevisions.snapshot}->>'ownerId' = ${ownerId}`, inArray(hash, hashes))).groupBy(hash);
-    for (const object of objects) { const count = Number(rows.find(row => row.sha === object.sha256)?.count ?? 0); if (count) { object.references = count; object.state = "referenced"; } }
+    // One SQL snapshot of the EXISTING graph. Current legacy rows are roots
+    // too. A mismatched owner/baseline is evidence to preserve, never absence.
+    // Do not double-count a current row already represented by its revision.
+    const rows = await db.execute<{ sha: string; count: number; uncertain: boolean; kinds: string[] }>(sql`
+      WITH roots AS (
+        SELECT r.snapshot->'contentObject'->>'sha256' AS sha,
+          (a.owner_id IS DISTINCT FROM ${ownerId} OR r.snapshot->>'ownerId' IS DISTINCT FROM ${ownerId} OR r.body_sha256 IS NULL) AS uncertain,
+          CASE WHEN a.deleted_at IS NOT NULL THEN 'tombstone'
+            WHEN a.current_revision_id = r.id THEN 'current' ELSE 'history' END AS kind
+        FROM ${artifactRevisions} r LEFT JOIN ${artifacts} a ON a.id = r.artifact_id
+        WHERE a.owner_id = ${ownerId} OR r.snapshot->>'ownerId' = ${ownerId}
+        UNION ALL
+        SELECT a.content_object->>'sha256', TRUE, 'current'
+        FROM ${artifacts} a WHERE a.owner_id = ${ownerId} AND a.content_object IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM ${artifactRevisions} r WHERE r.id = a.current_revision_id
+            AND r.artifact_id = a.id AND r.snapshot->'contentObject'->>'sha256' = a.content_object->>'sha256')
+      )
+      SELECT sha, count(*)::integer AS count, bool_or(uncertain) AS uncertain, array_agg(DISTINCT kind) AS kinds
+      FROM roots WHERE sha IN (${sql.join(hashes.map(hash => sql`${hash}`), sql`, `)}) GROUP BY sha
+    `);
+    const byHash = new Map(rows.rows.map(row => [row.sha, row]));
+    for (const object of objects) {
+      const root = object.sha256 ? byHash.get(object.sha256) : undefined;
+      if (root) { object.references = root.count; object.referenceKinds = root.kinds.sort(); object.state = root.uncertain ? "uncertain" : "referenced"; }
+    }
   }
-  return { objects: objects.sort((a, b) => a.id.localeCompare(b.id)), truncated, policy: "Referenced history, unbound uploads and incomplete writes are retained. No automatic deletion. Retry the original operation to adopt the same checksum, or explicitly recover verified unbound content as a new Artifact with unknown origin." };
+  return { objects: objects.sort((a, b) => a.id.localeCompare(b.id)), truncated, policy: "Current state, immutable history/tombstones and uncertain metadata are retained. Unbound uploads/incomplete writes may be pending or recoverable, not deletion candidates. This bounded inventory is not a reclamation certificate. No automatic deletion. Retry the original operation to adopt the same checksum, or explicitly recover verified unbound content as a new Artifact with unknown origin." };
 }
 export async function recoverArtifactObject(ownerId: string, sha: string) {
   let object = await inspectOwnedObject(ownerId, sha);
