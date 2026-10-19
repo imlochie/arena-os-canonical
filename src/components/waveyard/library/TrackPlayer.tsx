@@ -541,7 +541,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
       </header>
 
       {availabilityNote !== null && <p className="player-note" role="note">{availabilityNote}</p>}
-      {transport.error !== null && <p className="error" role="alert">{transport.error}</p>}
+      {transport.error !== null && <><p className="error" role="alert">{transport.error}</p>{!separated && <p>This browser may not support the source codec, or the original bytes may be unavailable. <Link href={`/waveyard?convertTrack=${track.id}`}>Review browser-compatible conversion</Link> to explicitly create WAV/FLAC/MP3 from this same owned source. The original is retained; this does not repair missing/corrupt bytes or silently replace your audio.</p>}</>}
 
       {/* THE FOUR DOMINANT STEMS — real gain, real meters, honest states. */}
       <div className={`stem-deck ${separated ? "" : "source-only"}`} aria-label="Stem channels">

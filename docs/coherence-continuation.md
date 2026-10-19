@@ -1691,3 +1691,128 @@ music tests; they are a subset, not an additional 10 on top of 98. Final
 PRs 14/15 are OPEN. Final exact-head CI remains a post-push check recorded at the
 stable PR progress link above, not inferred from local success or older green
 checks.
+
+### Browser codec counter-evidence → explicit same-source recovery, not a silent fallback
+
+The extra compiled-browser probe
+`LD_LIBRARY_PATH="/tmp/al2023/lib:$PWD/node_modules/@embedded-postgres/linux-x64/native/lib"
+node --import ./scripts/register-src-loader.mjs /home/user/mandate10-browser-codecs.mjs`
+produced and privately downloaded all six native formats, then tried the actual
+Chromium Web Audio decoder. **It exited 1**, retained at
+`/home/user/mandate10-browser-codecs.{txt,json}`: MP3/AAC/WAV/FLAC decoded to
+55,125 audible stereo frames at 44.1 kHz; AIFF/ALAC downloaded HTTP 200 as valid
+native files but raised `EncodingError: Unable to decode audio data` in this
+browser. Native validity is **not** six-format browser playback acceptance.
+
+This resulted in connected functionality, not simply a limitation report:
+
+- Source-only library playback errors now offer **Review browser-compatible
+  conversion** for that same owned track. Session decks expose their real
+  transport error and the same explicit recovery action rather than leaving a
+  source-only playback failure silent.
+- The link opens the existing workbench with that owned source inspected and
+  its tags preloaded. It does **not** queue conversion on navigation. The user
+  reviews/chooses WAV/FLAC/MP3 and explicitly queues a separate durable derivative.
+  Original files, prior outputs, saved session membership/cues and stems/mixes
+  are not silently replaced. Missing/corrupt bytes are not “repaired” by a codec
+  fallback; checksum/ownership verification still applies.
+- The workbench warns about browser-specific codecs, and playlist history says
+  verified local subset, not a universal browser-playability promise. Direct
+  AIFF/ALAC browser decode remains unavailable here; it is not relabeled success.
+
+The actual production recovery command is
+`LD_LIBRARY_PATH="/tmp/al2023/lib:$PWD/node_modules/@embedded-postgres/linux-x64/native/lib"
+node --import ./scripts/register-src-loader.mjs /home/user/mandate10-codec-recovery.mjs`.
+It starts from those real AIFF/ALAC conversion records in the private verification
+PostgreSQL (the codec probe/earlier production fixture must run first), uses the
+compiled app and real owner-session fixture, and performs:
+
+1. actual AIFF session playback failure / ALAC library playback failure;
+2. actual recovery link → preloaded owned-source review, no new conversion job
+   until the explicit button is pressed;
+3. reviewed native FLAC derivatives with `sourceChecksum` equal to each exact
+   original output hash; actual library players advance and their real Web Audio
+   analyser signals are nonzero; downloaded derivatives decode to 55,125 frames,
+   RMS **0.062485255749251095**;
+4. original download SHA-256 unchanged; original failed-codec session membership
+   unchanged (no automatic substitution);
+5. explicit two-derivative selection → ordered session that actually plays →
+   existing sequential Studio handoff → saved preview/export → reopen.
+
+The final signal-instrumented compiled run **exited 0, 12073.939 ms**,
+`/home/user/mandate10-codec-recovery-meter-final.txt`,
+`/home/user/mandate10-codec-recovery-result.json`,
+`/home/user/mandate10-codec-recovery-studio.png`. Observed real library analyser
+RMS **0.06256899994138827 / 0.06249367367850913**, session analyser RMS
+**0.06255898126641243**. Studio preview and downloaded WAV both had **110,250
+frames**; maximum sample error **0.00005482137203216553**, zero page errors,
+saved arrangement reopened. This is actual headless audio/compiled UI processing,
+not a physical speaker, real passkey ceremony, Electron, Windows or inference
+claim. The previous uninstrumented passes (11.619 s and isolated 12.372 s) remain
+in their separate logs; they are not additional test counts.
+
+Two fixture errors are retained, not converted into app-success claims:
+`mandate10-preloaded-review.txt` had an undefined test `origin` variable, corrected
+in the fixture; its isolated rerun passed. A production proof was incorrectly
+run alongside another writer to the same private verification database;
+`mandate10-codec-recovery-last.txt` failed its global job-count assertion
+(16→17). The isolated sequential rerun and final analyser-instrumented run above
+passed; that competing-writer attempt is not evidence of automatic conversion
+or an additional green acceptance.
+
+### Bounded metadata review is disclosed, not called exact preservation
+
+Inspection also exposed that values beyond 64,000 characters were being bounded
+for review without a specific warning. Inspection now reports `truncatedTags`;
+intake/preloaded review shows that limit, and final verification/history warns
+about source/output fields beyond the inspection limit. The immutable original
+source remains retained. A real 70,000-character FLAC title regression confirms
+bounded review plus explicit warning rather than claiming exact untruncated
+metadata preservation. This is not a new metadata service or a replacement file.
+
+Latest final-local commands/results (same environments above):
+
+- Codec/process/playlist/TunePat units: **12 PASS / 0 FAIL / 0 SKIP,
+  4921.112 ms, exit 0**, `/home/user/mandate10-units-metadata-last.txt`.
+- Full native/music-browser acceptance: **10 PASS / 0 FAIL / 0 SKIP,
+  75870.945 ms, exit 0**, `/home/user/mandate10-native-last.txt`, including the
+  source-preload/no-auto-convert assertion. Its measured 12/48 batches took
+  **9708.561 / 39576.499 ms**, sampled Node RSS **252,256,256 / 271,597,568 bytes**;
+  48-source intake **3832.867 ms**. Same output-byte totals and sampling/scope
+  caveats apply; machine data is in `mandate10-performance-last`.
+- `node --test tests/acceptance/session-runtime.test.mjs
+  tests/acceptance/stem-transport.test.mjs` with Chromium/library environment:
+  **24 PASS / 0 FAIL / 0 SKIP, 33602.261 ms, exit 0**,
+  `/home/user/mandate10-session-browser-last.txt`. These exercise the actual
+  existing browser/session/audio graph with deterministic contract fixtures,
+  not the compiled production proof above or genuine inference.
+- `npm run typecheck` / `npm run lint`: exit **0**,
+  `/home/user/mandate10-{types,lint}-metadata-last.txt`; **48 existing lint warnings,
+  zero errors**. `npm run build`: exit **0**,
+  `/home/user/mandate10-build-last.txt`.
+- The original compiled import→MP3/FLAC→session→Studio exact-edit/save/export/
+  reopen command also passed on that final build: **10498.719 ms**, exit **0**,
+  `/home/user/mandate10-production-last.txt`; 55,125 frames and the same maximum
+  sample error, zero page errors. The later codec-recovery run separately proves
+  actual library/session analyser signal and 110,250-frame Studio export.
+
+Environment provenance omitted from the earlier checkpoint: initial local
+`npm ci` exited **1** in `onnxruntime-node`'s installer with `ECONNRESET` to
+`api.nuget.org` (`/home/user/mandate10-install.txt`). Reinstalling with lifecycle
+scripts disabled (`--ignore-scripts`) succeeded with 745 packages
+(`mandate10-install-safe.txt`). That is not complete ONNX/Electron/native-model
+provisioning. Chromium was acquired/prepared locally, and the explicit library
+path above is needed on this host. No repeated unavailable model download was
+used as an acceptance substitute. Optical-device preflight additionally found
+no `/dev/sr*`, `/dev/cdrom` or readable kernel optical-device report, and no burner
+command; `/home/user/mandate10-optical-preflight.txt` retains those results.
+
+Both exact `458f1fdcab32ba7b0f50164cc5e5de51652de353` CI runs
+[39244964841](https://github.com/imlochie/arena-os-canonical/actions/runs/39244964841)
+and [39244956453](https://github.com/imlochie/arena-os-canonical/actions/runs/39244956453)
+finished SUCCESS, all four jobs SUCCESS. This is another **prior** checkpoint;
+the browser-codec recovery and long-tag warning changes above require their own
+post-push exact-head check. The resulting full head and both run outcomes will
+be recorded at the stable PR progress comment linked above. Earlier totals
+(1373 source, 98 durable, 24 session, 10 music, 12 focused units) are overlapping
+or differently scoped executions, not a single sum. No PR was merged.

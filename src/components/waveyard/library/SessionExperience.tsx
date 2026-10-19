@@ -229,6 +229,7 @@ function SessionDeck({
               {item.analysis === null ? " · analysis pending" : ""}
             </p>
           </div>
+          {transport.error !== null && <div role="alert"><p>{transport.error}</p>{!separated && <p>Browser codec support varies. <Link href={`/waveyard?convertTrack=${item.track.id}`}>Review browser-compatible conversion</Link> to explicitly create a compatible derivative. The original and saved session stay unchanged; choose any replacement yourself.</p>}</div>}
           <div className="sess-deck-progress" aria-hidden="true">
             <div className="sess-deck-progress-fill" style={{ width: `${duration > 0 ? Math.min(100, (transport.position / duration) * 100) : 0}%` }} />
           </div>

@@ -5,15 +5,15 @@ import TunePatBridge from "./TunePatBridge";
 import PlaylistImport from "./PlaylistImport";
 
 type Tags = Record<string, string>;
-type Review = { trackId: string; name: string; tags: Tags };
+type Review = { trackId: string; name: string; tags: Tags; truncatedTags?: string[] };
 type Item = { tags: Tags; history: Array<{at:string;event:string;reason?:string}>; createdAt: string; id: string; batchId: string; index: number; name: string; status: string; stage: string; error?: string; attempts: number; outputTrackId?: string; outputSourceId?: string; verification?: { checksumSha256: string; fullyDecoded: boolean; warnings: string[]; actual: { codec: string; sampleRate: number; channels: number } } };
 function downloadLyrics(text: string, extension: "lrc" | "txt") {
   const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = `user-provided-lyrics.${extension}`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 const fields = ["title", "artist", "album", "album_artist", "track", "disc", "date", "genre", "lyrics"];
-async function request(url: string, body?: unknown) {
-  const response = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : { cache: "no-store" });
+async function request(url: string, body?: unknown, signal?: AbortSignal) {
+  const response = await fetch(url, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal } : { cache: "no-store", signal });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error ?? `Request failed (${response.status}); previous work retained.`);
   return data;
@@ -50,10 +50,21 @@ export default function ConversionWorkbench() {
   useEffect(() => { if (!open) return; void reload(); const timer = setInterval(() => void reload(), 2000); return () => clearInterval(timer); }, [open, reload]);
   useEffect(() => { folder.current?.setAttribute("webkitdirectory", ""); }, [open]);
   const act = async (action: string, id: string) => { try { setError(""); await request("/api/library/conversions", { action, id }); await reload(); } catch (e) { setError(String(e)); } };
-  const inspectTrack = async (trackId: string, name: string) => {
+  const inspectTrack = useCallback(async (trackId: string, name: string) => {
     const { inspection } = await request("/api/library/conversions", { action: "inspect", id: trackId });
-    setReview(rows => [...rows, { trackId, name, tags: inspection.tags }]);
-  };
+    setReview(rows => [...rows, { trackId, name, tags: inspection.tags, truncatedTags: inspection.truncatedTags }]);
+  }, []);
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("convertTrack");
+    if (!id || !/^[a-f0-9-]{36}$/i.test(id)) return;
+    const controller = new AbortController();
+    void request("/api/library/conversions", { action: "inspect", id }, controller.signal).then(({ inspection }) => {
+      if (controller.signal.aborted) return;
+      setReview(rows => [...rows, { trackId: id, name: inspection.tags.title || "Selected library source", tags: inspection.tags, truncatedTags: inspection.truncatedTags }]);
+      setOpen(true);
+    }).catch(error => { if (!controller.signal.aborted) { setError(String(error)); setOpen(true); } });
+    return () => controller.abort();
+  }, []);
   const intake = async (files: File[]) => {
     if (busy) return; setBusy(true); setError("");
     try { if (files.length > 1000) throw new Error("Select at most1000 files per intake.");
@@ -92,6 +103,7 @@ export default function ConversionWorkbench() {
     <button className="button secondary" type="button" onClick={() => setOpen(!open)}>Import, review & convert music</button>
     {open && <div className="panel" style={{ padding: 20 }}>
       <h2>Local music conversion</h2><p>Import → review tags → configure → convert → decode/verify → library → session / Studio. Only local files you are authorized to process. No Apple Music streaming export or DRM removal. TunePat is not required.</p>
+      <p>Browser playback depends on its codecs. AIFF/ALAC may need an explicitly reviewed WAV/FLAC/MP3 conversion; originals remain retained. Native format verification does not promise browser codec support.</p>
       <p>Destination: Arena private storage, organized by the naming template. Download each verified file. A stable item suffix prevents collisions; no existing user file is overwritten. No arbitrary host-folder writes.</p>
       {error && <p role="alert">{error}</p>}
       <TunePatBridge onImport={intake} busy={busy} />
@@ -104,7 +116,7 @@ export default function ConversionWorkbench() {
       <button disabled={busy || !libraryId} onClick={() => { setBusy(true); void inspectTrack(libraryId, library.find(t => t.id === libraryId)?.title ?? "Local track").catch(e => setError(String(e))).finally(() => setBusy(false)); }}>Inspect selected track</button>
       {failures.map((failure, i) => <p role="status" key={i}>Intake failed (not queued): {failure}</p>)}
       {review.length>0 && <p>Review edits are drafts until you queue the batch. Leaving this page discards review edits, not the already imported source files.</p>}
-      {review.map((row, index) => <fieldset key={`${row.trackId}:${index}`}><legend>Review {index + 1}: {row.name}</legend>{fields.map(field => <label key={field}>{field}{field === "lyrics" ? <textarea aria-label={`Item ${index + 1} lyrics`} value={row.tags.lyrics ?? ""} onChange={e=>setReview(rows=>rows.map((r,i)=>i===index?{...r,tags:{...r.tags,lyrics:e.target.value}}:r))} /> : <input aria-label={`Item ${index + 1} ${field}`} value={row.tags[field] ?? ""} onChange={e => setReview(rows => rows.map((r, i) => i === index ? { ...r, tags: { ...r.tags, [field]: e.target.value } } : r))} />}</label>)}<label>Import user-provided UTF-8 lyrics<input aria-label={`Item ${index+1} lyric file`} type="file" accept=".lrc,.txt" onChange={e=>{const file=e.target.files?.[0];if(!file)return;void file.arrayBuffer().then(bytes=>{if(bytes.byteLength>64000)throw new Error("Lyrics exceed64KB.");const text=new TextDecoder("utf-8",{fatal:true}).decode(bytes);setReview(rows=>rows.map((r,i)=>i===index?{...r,tags:{...r.tags,lyrics:text}}:r));}).catch(e=>setError(String(e)));}} /></label><button disabled={!row.tags.lyrics} onClick={()=>downloadLyrics(row.tags.lyrics,"lrc")}>Export reviewed LRC</button><button onClick={() => setReview(rows => rows.filter((_, i) => i !== index))}>Remove from batch</button></fieldset>)}
+      {review.map((row, index) => <fieldset key={`${row.trackId}:${index}`}><legend>Review {index + 1}: {row.name}</legend>{row.truncatedTags?.map(field=><p role="note" key={field}>Source {field} exceeds 64,000 characters; review/conversion uses a truncated value. Original source remains retained.</p>)}{fields.map(field => <label key={field}>{field}{field === "lyrics" ? <textarea aria-label={`Item ${index + 1} lyrics`} value={row.tags.lyrics ?? ""} onChange={e=>setReview(rows=>rows.map((r,i)=>i===index?{...r,tags:{...r.tags,lyrics:e.target.value}}:r))} /> : <input aria-label={`Item ${index + 1} ${field}`} value={row.tags[field] ?? ""} onChange={e => setReview(rows => rows.map((r, i) => i === index ? { ...r, tags: { ...r.tags, [field]: e.target.value } } : r))} />}</label>)}<label>Import user-provided UTF-8 lyrics<input aria-label={`Item ${index+1} lyric file`} type="file" accept=".lrc,.txt" onChange={e=>{const file=e.target.files?.[0];if(!file)return;void file.arrayBuffer().then(bytes=>{if(bytes.byteLength>64000)throw new Error("Lyrics exceed64KB.");const text=new TextDecoder("utf-8",{fatal:true}).decode(bytes);setReview(rows=>rows.map((r,i)=>i===index?{...r,tags:{...r.tags,lyrics:text}}:r));}).catch(e=>setError(String(e)));}} /></label><button disabled={!row.tags.lyrics} onClick={()=>downloadLyrics(row.tags.lyrics,"lrc")}>Export reviewed LRC</button><button onClick={() => setReview(rows => rows.filter((_, i) => i !== index))}>Remove from batch</button></fieldset>)}
       {!executor.available && <p role="status">{executor.reason}</p>}
       <fieldset><legend>Encoding</legend>
         <label>Format<select aria-label="Conversion format" value={format} onChange={e => setFormat(e.target.value)}>{codecs.map(c => <option key={c.id} value={c.id} disabled={!c.available}>{c.id.toUpperCase()}{!c.available ? " (encoder unavailable)" : ""}</option>)}</select></label>

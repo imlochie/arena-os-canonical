@@ -36,16 +36,16 @@ export async function inspect(filename: string) {
   const audio = raw.streams?.find((s: { codec_type: string }) => s.codec_type === "audio");
   if (!audio) throw new Error("No readable audio stream. Protected, unsupported or corrupt files cannot be converted.");
   const merged = Object.fromEntries(Object.entries({ ...raw.format?.tags, ...audio.tags }).map(([k, v]) => [k.toLowerCase().replace(/ /g, "_"), String(v)]));
-  const tags: Tags = {};
+  const tags: Tags = {}, truncatedTags: string[] = [];
   for (const name of tagNames) {
     const value = merged[name] ?? (name === "date" ? merged.year : name === "album_artist" ? merged.albumartist : name === "lyrics" ? merged["lyrics-eng"] : undefined);
-    if (value !== undefined) tags[name] = value.slice(0, 64_000);
+    if (value !== undefined) { tags[name] = value.slice(0, 64_000); if (value.length > 64_000) truncatedTags.push(name); }
   }
   const known = new Set<string>([...tagNames, "year", "albumartist", "lyrics-eng", "encoder", "major_brand", "compatible_brands", "minor_version", "vendor_id", "handler_name", "language", "duration"]);
   const unreviewedTags = Object.fromEntries(Object.entries(merged).filter(([key]) => !known.has(key)));
   const channelLayout = String(audio.channel_layout || ({ 1: "mono", 2: "stereo" } as Record<number,string>)[Number(audio.channels)] || "unknown");
   const artwork = raw.streams?.find((s: { disposition?: { attached_pic?: number } }) => s.disposition?.attached_pic === 1);
-  return { ...await probeAudio(filename), channelLayout, unreviewedTags, bitsPerSample: Number(audio.bits_per_raw_sample || audio.bits_per_sample || 0), tags, artwork: artwork ? { index: Number(artwork.index), codec: String(artwork.codec_name) } : null };
+  return { ...await probeAudio(filename), channelLayout, unreviewedTags, truncatedTags, bitsPerSample: Number(audio.bits_per_raw_sample || audio.bits_per_sample || 0), tags, artwork: artwork ? { index: Number(artwork.index), codec: String(artwork.codec_name) } : null };
 }
 export function outputName(settings: Settings, tags: Tags, suffix: string) {
   if (!/^[a-f0-9-]{8,36}$/.test(suffix)) throw new Error("Invalid output identity.");
@@ -86,6 +86,8 @@ export async function verify(output: string, source: Awaited<ReturnType<typeof i
   if (!settings.channels && source.channelLayout !== "unknown" && actual.channelLayout !== source.channelLayout) throw new Error("Output channel layout changed without an explicit channel override. No completion certified.");
   await runTool("ffmpeg", ["-v", "error", "-xerror", "-nostdin", ...localAudioInputOptions, "-i", output, "-map", "0:a:0", "-f", "null", "-"], signal);
   const warnings = Object.entries(tags).filter(([key, value]) => (actual.tags[key as keyof Tags] ?? "") !== value).map(([key]) => `Tag not preserved exactly by ${settings.format}: ${key}`);
+  for (const key of source.truncatedTags) warnings.push(`Source tag exceeds the 64,000-character review limit: ${key}. Review/conversion uses the bounded value; the original source is retained, not certified as fully preserved metadata.`);
+  for (const key of actual.truncatedTags) warnings.push(`Output tag exceeds the 64,000-character inspection limit: ${key}. Exact full-field preservation is not certified.`);
   for (const [key,value] of Object.entries(source.unreviewedTags)) if (actual.unreviewedTags[key] !== value) warnings.push(`Additional embedded tag not preserved exactly by ${settings.format}: ${key}`);
   if (source.channelLayout === "unknown") warnings.push("Source channel layout is unknown; channel count was checked, exact speaker positions cannot be certified.");
   if (!format.lossy && ["mp3","mp2","aac","opus","vorbis","ac3","eac3","wmav1","wmav2","amr_nb","amr_wb","atrac3","atrac3p","cook"].includes(source.codec)) warnings.push(`Lossy source codec ${source.codec}: lossless output cannot restore previously discarded audio.`);
