@@ -1,3 +1,4 @@
+import { insertArtifact, getArtifactRevision } from "@/lib/arcadeStore";
 // Archive Assistant — the tool registry (the "plugin" layer).
 //
 // The assistant understands the platform by calling these tools. Each tool is
@@ -13,7 +14,7 @@
 // - destructive operations are limited to soft, reversible state changes.
 
 import { db } from "@/db";
-import { artifacts, projects } from "@/db/schema";
+import { LOCAL_OWNER_ID, projects } from "@/db/schema";
 import { desc, sql } from "drizzle-orm";
 import { createCongress, listCongresses } from "@/lib/congress";
 import { createSpace, listSpaces, runSpace, updateSpace } from "@/lib/spaces";
@@ -100,11 +101,12 @@ async function listProjectsSafe(): Promise<unknown> {
 
 async function listArtifactsSafe(opts: { q?: string; limit?: number }): Promise<unknown> {
   try {
-    const rows = await db.select().from(artifacts).orderBy(desc(artifacts.createdAt)).limit(200);
+    const { listArtifacts } = await import("./arcadeStore");
+    const rows = await listArtifacts(db, LOCAL_OWNER_ID, 200);
     const q = (opts.q ?? "").toLowerCase().trim();
     const filtered = q ? rows.filter((r) => `${r.title} ${r.body}`.toLowerCase().includes(q)) : rows;
     return filtered.slice(0, Math.min(opts.limit ?? 10, 25)).map((a) => ({
-      id: a.id, kind: a.kind, title: a.title, createdAt: a.createdAt,
+      id: a.id, kind: a.kind, title: a.title, createdAt: a.createdAt, revisionId: a.currentRevisionId, revision: a.revision,
     }));
   } catch {
     return { note: "artifacts unavailable (no database)" };
@@ -113,19 +115,14 @@ async function listArtifactsSafe(opts: { q?: string; limit?: number }): Promise<
 
 async function saveArtifactSafe(args: Record<string, unknown>): Promise<unknown> {
   try {
-    const [row] = await db
-      .insert(artifacts)
-      .values({
-        title: str(args.title, 160) || "Archive Assistant note",
-        body: str(args.body, 30000),
-        kind: str(args.kind, 40) || "research",
-        sourceType: "assistant",
-        projectId: typeof args.projectId === "string" && args.projectId ? args.projectId : null,
-      })
-      .returning();
-    return { ok: true, id: row?.id };
-  } catch {
-    return { ok: false, note: "artifact library unavailable (no database)" };
+    const row = await insertArtifact(db, {
+      title: str(args.title, 160) || "Archive Assistant note", body: String(args.body ?? ""),
+      kind: str(args.kind, 40) || "research", sourceType: "assistant", ownerId: LOCAL_OWNER_ID,
+      projectId: typeof args.projectId === "string" && args.projectId ? args.projectId : null,
+    });
+    return { ok: true, id: row.id, revisionId: row.currentRevisionId, revision: row.revision };
+  } catch (error) {
+    return { ok: false, note: error instanceof Error ? error.message : "Artifact storage unavailable; save was not acknowledged." };
   }
 }
 
@@ -164,6 +161,17 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     description: "Browse the artifact library (optionally filtered by a search query). Returns recent artifacts with kind + title.",
     parameters: { q: { type: "string", description: "optional search text" }, limit: { type: "number", description: "max results (default 10)" } },
     run: async (args) => listArtifactsSafe({ q: typeof args.q === "string" ? args.q : undefined, limit: args.limit != null ? num(args.limit, 10) : undefined }),
+  },
+  {
+    name: "read_artifact",
+    description: "Retrieve an owned immutable Artifact revision. Both IDs are required; current content is never substituted for a historical reference.",
+    parameters: { artifactId: { type: "string", description: "Artifact UUID", required: true }, revisionId: { type: "string", description: "Immutable revision UUID from list_artifacts/save_artifact/history", required: true } },
+    run: async (args) => {
+      const { isUuid } = await import("./api/ids");
+      if (!isUuid(String(args.artifactId ?? "")) || !isUuid(String(args.revisionId ?? ""))) return { ok: false, error: "Artifact ID and immutable revision ID are required; unbound references are refused." };
+      const revision = await getArtifactRevision(db, String(args.artifactId), String(args.revisionId), LOCAL_OWNER_ID);
+      return revision ? { ok: true, revision } : { ok: false, error: "Artifact revision unavailable or not owned by this caller." };
+    },
   },
   {
     name: "list_spaces",

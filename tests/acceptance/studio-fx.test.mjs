@@ -38,10 +38,18 @@ before(async () => {
   await register(/^\/api\/exports\/([^/]+)\/retry$/, ["id"], "exports/[id]/retry");
   await register(/^\/api\/assets\/([^/]+)$/, ["id"], "assets/[id]");
   await register(/^\/api\/assets\/([^/]+)\/waveform$/, ["id"], "assets/[id]/waveform");
+  await register(/^\/api\/models$/, [], "models");
+  await register(/^\/api\/preferences$/, [], "preferences");
+  await register(/^\/api\/orchestrator$/, [], "orchestrator");
+  await register(/^\/api\/orchestrator\/([^/]+)$/, ["id"], "orchestrator/[id]");
+  await register(/^\/api\/orchestrator\/([^/]+)\/relays$/, ["id"], "orchestrator/[id]/relays");
+  await register(/^\/api\/orchestrator\/([^/]+)\/advance$/, ["id"], "orchestrator/[id]/advance");
   await register(/^\/api\/artifacts$/, [], "artifacts");
   await register(/^\/api\/artifacts\/([^/]+)\/history$/, ["id"], "artifacts/[id]/history");
   await register(/^\/api\/artifacts\/([^/]+)$/, ["id"], "artifacts/[id]");
   await register(/^\/api\/projects$/, [], "projects");
+  await register(/^\/api\/projects\/([^/]+)$/, ["id"], "projects/[id]");
+  await register(/^\/api\/projects\/([^/]+)\/artifacts$/, ["id"], "projects/[id]/artifacts");
   const bundle = await build({ entryPoints: ["tests/acceptance/studio-fx.fixture.tsx"], bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", define: { "process.env": JSON.stringify({ NODE_ENV: "development" }) } });
   server = createServer(async (req, res) => {
     try {
@@ -291,4 +299,47 @@ test("live nonlinear arrangement edits replace one graph, immediately version/ex
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   assert.equal(await page.evaluate(() => window.__activeSources.size), 0); assert.equal(await page.evaluate(() => window.__maxActive), 1);
   console.log(JSON.stringify({ kind: "live-edits-nonlinear-export", maxError, outputError, maximumConcurrentSources: 1 }));
+});
+
+
+test("Project workspace preserves a rejected Artifact draft and retries into a real immutable revision", async (t) => {
+  const { projects } = await import("../../src/db/schema.ts");
+  const [project] = await database.db.insert(projects).values({ name: "Real project Artifact workflow" }).returning();
+  const page = await browser.newPage(); page.setDefaultTimeout(6000); t.after(() => page.close());
+  await page.goto(`${origin}/?room=project&project=${project.id}`); await page.getByRole("button", { name: "＋ New artifact", exact: true }).click();
+  const draft = "x".repeat(20000) + "KEEP THIS SUFFIX";
+  await page.getByPlaceholder("Title…", { exact: true }).fill("Draft retained after refusal"); await page.getByPlaceholder("Markdown body…", { exact: true }).fill(draft);
+  await page.getByRole("button", { name: "Save artifact", exact: true }).click(); await expect(page.getByRole("alert")).toContainText("20,000");
+  await expect(page.getByPlaceholder("Markdown body…", { exact: true })).toHaveValue(draft); await expect(page.getByPlaceholder("Title…", { exact: true })).toHaveValue("Draft retained after refusal");
+  await page.getByPlaceholder("Markdown body…", { exact: true }).fill("Owner explicitly shortened this draft 🎵"); await page.getByRole("button", { name: "Save artifact", exact: true }).click();
+  await expect(page.locator("summary").filter({ hasText: "Draft retained after refusal" })).toBeVisible();
+  const saved = (await api(`/api/projects/${project.id}/artifacts`)).artifacts; assert.equal(saved.length, 1); assert.equal(saved[0].body, "Owner explicitly shortened this draft 🎵"); assert.equal(saved[0].revision, 1); assert.ok(saved[0].currentRevisionId);
+  await page.locator("summary").filter({ hasText: "Draft retained after refusal" }).click();
+  const battle = page.locator("details").first().getByRole("link", { name: "⚔️ Battle", exact: true });
+  assert.equal(new URL(await battle.getAttribute("href"), origin).searchParams.get("source"), `artifact:${saved[0].id}@${saved[0].currentRevisionId}`);
+  await page.getByRole("button", { name: "Edit artifact", exact: true }).click(); await page.getByLabel("Artifact content", { exact: true }).fill("Edited from the actual project workspace"); await page.getByRole("button", { name: "Save revision", exact: true }).click();
+  await expect(page.getByText("Current revision 2", { exact: true })).toBeVisible();
+  await page.getByText("Revision 1 · Draft retained after refusal", { exact: true }).click();
+  const download = page.waitForEvent("download"); await page.getByRole("link", { name: "Download revision 1", exact: true }).click(); assert.equal(await readFile(await (await download).path(), "utf8"), "Owner explicitly shortened this draft 🎵");
+  await page.getByRole("button", { name: "Restore revision 1", exact: true }).click(); await expect(page.getByText("Current revision 3", { exact: true })).toBeVisible();
+  await page.reload(); await page.locator("summary").filter({ hasText: "Draft retained after refusal" }).click(); await expect(page.getByText("Current revision 3", { exact: true })).toBeVisible();
+});
+
+
+test("Orchestrator real UI retains rejected references then queues, dispatches and reopens an immutable Artifact handoff", async (t) => {
+  let requests = [];
+  const adapter = createServer(async (req, res) => { const chunks = []; for await (const chunk of req) chunks.push(chunk); requests.push(JSON.parse(Buffer.concat(chunks).toString())); res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ choices: [{ message: { content: "Controlled protocol receipt: original immutable evidence received. Not an inference result." } }] })); });
+  await new Promise(resolve => adapter.listen(0, "127.0.0.1", resolve)); t.after(() => new Promise(resolve => adapter.close(resolve)));
+  const { artifact } = await api("/api/artifacts", "POST", { title: "Browser handoff source", body: "PINNED ORIGINAL BROWSER EVIDENCE 🎵" }); const reference = `artifact:${artifact.id}@${artifact.currentRevisionId}`;
+  await api(`/api/artifacts/${artifact.id}`, "PUT", { body: "NEW MUTABLE CONTENT MUST NOT BE SENT", expectedRevision: 1 });
+  const { collaboration } = await api("/api/orchestrator", "POST", { title: "Browser immutable handoff", goal: "Inspect original evidence", participants: [{ name: "Controlled local adapter", key: "adapter", kind: "external", trust: "internal", adapterUrl: `http://127.0.0.1:${adapter.address().port}` }] });
+  const page = await browser.newPage(); page.setDefaultTimeout(10000); t.after(() => page.close()); await page.goto(`${origin}/?room=orchestrator`);
+  await page.getByRole("button", { name: /Browser immutable handoff/ }).click(); await page.getByLabel("Relay target", { exact: true }).selectOption("adapter"); await page.getByPlaceholder("request — what should this participant do?", { exact: true }).fill("Inspect the pinned evidence, not latest.");
+  await page.getByLabel("Relay immutable Artifact references", { exact: true }).fill(artifact.id); await page.getByRole("button", { name: "+ Queue relay", exact: true }).click(); await expect(page.getByText(/Bare current references are refused/)).toBeVisible();
+  await expect(page.getByLabel("Relay immutable Artifact references", { exact: true })).toHaveValue(artifact.id); await expect(page.getByPlaceholder("request — what should this participant do?", { exact: true })).toHaveValue("Inspect the pinned evidence, not latest.");
+  await page.getByLabel("Relay immutable Artifact references", { exact: true }).fill(reference); await page.getByRole("button", { name: "+ Queue relay", exact: true }).click(); await expect(page.getByText("Relay #1 queued.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "▶ Advance", exact: true }).click(); await expect(page.getByText("Controlled protocol receipt: original immutable evidence received. Not an inference result.", { exact: true })).toBeVisible();
+  assert.equal(requests.length, 1); assert.match(requests[0].messages[1].content, /PINNED ORIGINAL BROWSER EVIDENCE/); assert.doesNotMatch(requests[0].messages[1].content, /NEW MUTABLE CONTENT MUST NOT BE SENT/);
+  await page.reload(); await page.getByRole("button", { name: /Browser immutable handoff/ }).click(); await expect(page.getByLabel("Pinned inputs for relay 1")).toContainText(reference);
+  const reopened = (await api(`/api/orchestrator/${collaboration.id}`)).collaboration; assert.deepEqual(reopened.relays[0].contextRefs, [reference]); assert.equal(reopened.relays[0].status, "responded");
 });

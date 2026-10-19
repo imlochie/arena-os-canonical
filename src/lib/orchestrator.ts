@@ -1,3 +1,6 @@
+import { assertUrlDestination } from "@/lib/security/outbound-url";
+import { parseArtifactReference } from "@/lib/handoffs";
+import { getArtifactRevision } from "@/lib/arcadeStore";
 // Collaboration Orchestrator — structured multi-participant AI collaboration.
 //
 // This automates the "human message bus" problem: instead of you ferrying
@@ -23,7 +26,7 @@
 // classification permits — never the whole workspace.
 
 import { db } from "@/db";
-import { artifacts, collaborationParticipants, collaborationRelays, collaborations } from "@/db/schema";
+import { LOCAL_OWNER_ID, artifacts, collaborationParticipants, collaborationRelays, collaborations } from "@/db/schema";
 import { asc, desc, eq, sql } from "drizzle-orm";
 import { generate } from "@/lib/ai";
 import { getModel } from "@/lib/models";
@@ -376,9 +379,17 @@ export async function listCollaborations(limit = 30): Promise<Collaboration[]> {
 
 // ---------------- create ----------------
 
+function normalizeContextReferences(refs: string[] = []): string[] {
+  const contextRefs = refs.map((reference) => String(reference).trim()).filter(Boolean);
+  if (contextRefs.length > 8) throw new Error("A relay supports at most 8 pinned Artifact references; split the request explicitly.");
+  if (contextRefs.some((reference) => !parseArtifactReference(reference))) throw new Error("Artifact context requires a pinned immutable revision: artifact:<id>@<revisionId>. Bare current references are refused.");
+  return contextRefs;
+}
+
 export async function createCollaboration(input: CreateCollaborationInput): Promise<Collaboration> {
   const goal = String(input.goal ?? "").trim().slice(0, 6000);
   if (!goal) throw new Error("a collaboration needs a goal");
+  if (input.relay) normalizeContextReferences(input.relay.contextRefs);
 
   const rawParticipants = (input.participants ?? []).slice(0, 8);
   const cleaned: Participant[] = [];
@@ -486,6 +497,8 @@ export async function addRelay(collaborationId: string, input: RelayInput): Prom
     }
   }
 
+  const contextRefs = normalizeContextReferences(input.contextRefs);
+
   const seq = collab.relays.reduce((max, r) => Math.max(max, r.seq), 0) + 1;
   const relay: Relay = {
     id: newId(),
@@ -495,7 +508,7 @@ export async function addRelay(collaborationId: string, input: RelayInput): Prom
     targetKey: target.key,
     purpose: String(input.purpose ?? "contribute").trim().slice(0, 80) || "contribute",
     request,
-    contextRefs: (input.contextRefs ?? []).map((r) => String(r).trim()).filter(Boolean).slice(0, 8),
+    contextRefs,
     classification,
     responseContract: String(input.responseContract ?? "markdown text").trim().slice(0, 200) || "markdown text",
     status: "pending",
@@ -598,20 +611,17 @@ async function updateRelay(relayId: string, patch: Partial<Relay>): Promise<void
 // ---------------- the context envelope ----------------
 
 async function fetchArtifactBodies(refs: string[]): Promise<string> {
-  if (!refs.length) return "";
-  try {
-    const rows = await db.select().from(artifacts).limit(500);
-    const parts: string[] = [];
-    for (const ref of refs) {
-      const row = rows.find((r) => r.id === ref);
-      if (row) {
-        parts.push(`--- ARTIFACT: ${row.title} (${row.kind}) ---\n${String(row.body ?? "").slice(0, 2500)}`);
-      }
-    }
-    return parts.join("\n\n").slice(0, 6000);
-  } catch {
-    return "";
+  const parts: string[] = [];
+  for (const reference of refs) {
+    const parsed = parseArtifactReference(reference);
+    if (!parsed) throw new Error("Artifact context requires a pinned immutable revision; unbound references cannot be dispatched.");
+    const revision = await getArtifactRevision(db, parsed.artifactId, parsed.revisionId, LOCAL_OWNER_ID);
+    if (!revision) throw new Error("Referenced Artifact revision unavailable or not owned by this caller; nothing was dispatched.");
+    const snapshot = revision.snapshot;
+    parts.push(`--- ARTIFACT ${reference}: ${snapshot.title} (${snapshot.kind}), excerpt ${Math.min(2500, snapshot.body.length)}/${snapshot.body.length} characters ---\n${snapshot.body.slice(0, 2500)}`);
   }
+  const content = parts.join("\n\n");
+  return content.length > 6000 ? `${content.slice(0, 6000)}\n[Artifact excerpts truncated at 6000 characters; use read_artifact with the pinned IDs for the complete content.]` : content;
 }
 
 async function buildEnvelope(collab: Collaboration, relay: Relay, target: Participant): Promise<string> {
@@ -708,6 +718,7 @@ const ORCHESTRATOR_TOOLS = [
   "list_modules",
   "list_projects",
   "list_artifacts",
+  "read_artifact",
   "list_spaces",
   "list_congress_sessions",
   "archive_search",
@@ -925,13 +936,16 @@ export async function advanceCollaboration(
   }
 
   const system = dispatchSystemPrompt(target);
-  const envelope = await buildEnvelope(collab, pending, target);
-
   try {
+    const envelope = await buildEnvelope(collab, pending, target);
     let result: { text: string; via: string; runtime?: unknown };
     let steps: RelayToolStep[] = [];
     if (target.kind === "external") {
       if (!target.adapterUrl) throw new Error("external participant has no adapter URL configured");
+      if (opts.localOnly) {
+        try { assertUrlDestination(new URL(target.adapterUrl), "loopback"); }
+        catch { throw new Error("Local-only dispatch permits only loopback external adapters; nothing was sent."); }
+      }
       result = await callExternalAdapter(
         target.adapterUrl,
         target.adapterModel,

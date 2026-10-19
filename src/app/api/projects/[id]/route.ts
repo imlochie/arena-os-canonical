@@ -1,7 +1,7 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import {
   arcadeGames,
-  artifacts,
   battles,
   chats,
   collabs,
@@ -10,13 +10,16 @@ import {
   projectMemory,
   projects,
 } from "@/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
+import { ArtifactProjectConflictError, detachProjectArtifacts, listArtifacts } from "@/lib/arcadeStore";
+import { LOCAL_OWNER_ID } from "@/db/schema";
 import { logPrivacyEvent } from "@/lib/privacy";
 
 export const dynamic = "force-dynamic";
 
 // GET → full project workspace overview
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
@@ -29,7 +32,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       db.select().from(chats).where(eq(chats.projectId, id)).orderBy(desc(chats.createdAt)).limit(10),
       db.select().from(arcadeGames).where(eq(arcadeGames.projectId, id)).orderBy(desc(arcadeGames.createdAt)).limit(6),
       db.select().from(projectMemory).where(eq(projectMemory.projectId, id)).orderBy(desc(projectMemory.createdAt)).limit(100),
-      db.select().from(artifacts).where(eq(artifacts.projectId, id)).orderBy(desc(artifacts.createdAt)).limit(30),
+      listArtifacts(db, LOCAL_OWNER_ID, 30, false, id),
       db.select().from(councilArtifacts).orderBy(desc(councilArtifacts.createdAt)).limit(50),
     ]);
 
@@ -55,6 +58,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 }
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     const body = await req.json();
@@ -72,22 +76,26 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
-    await db.delete(projectMemory).where(eq(projectMemory.projectId, id));
-    await db.delete(artifacts).where(eq(artifacts.projectId, id));
-    // Unlink (don't destroy) work items
-    await db.update(battles).set({ projectId: null }).where(eq(battles.projectId, id));
-    await db.update(collabs).set({ projectId: null }).where(eq(collabs.projectId, id));
-    await db.update(councilRuns).set({ projectId: null }).where(eq(councilRuns.projectId, id));
-    await db.update(chats).set({ projectId: null }).where(eq(chats.projectId, id));
-    await db.update(arcadeGames).set({ projectId: null }).where(eq(arcadeGames.projectId, id));
-    await db.delete(projects).where(eq(projects.id, id));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from projects where id = ${id} for update`);
+      await tx.delete(projectMemory).where(eq(projectMemory.projectId, id));
+      await detachProjectArtifacts(tx, id, LOCAL_OWNER_ID);
+      // Unlink (don't destroy) work items
+      await tx.update(battles).set({ projectId: null }).where(eq(battles.projectId, id));
+      await tx.update(collabs).set({ projectId: null }).where(eq(collabs.projectId, id));
+      await tx.update(councilRuns).set({ projectId: null }).where(eq(councilRuns.projectId, id));
+      await tx.update(chats).set({ projectId: null }).where(eq(chats.projectId, id));
+      await tx.update(arcadeGames).set({ projectId: null }).where(eq(arcadeGames.projectId, id));
+      await tx.delete(projects).where(eq(projects.id, id));
+    });
     await logPrivacyEvent("delete_project", id);
     return Response.json({ ok: true });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "delete failed" }, { status: 500 });
+    return Response.json({ error: e instanceof ArtifactProjectConflictError ? e.message : "Project deletion was not confirmed. Reload before retrying; the database operation is atomic." }, { status: e instanceof ArtifactProjectConflictError ? 409 : 503 });
   }
 }

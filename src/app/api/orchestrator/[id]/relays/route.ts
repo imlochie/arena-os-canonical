@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { addRelay } from "@/lib/orchestrator";
 
 export const dynamic = "force-dynamic";
@@ -6,6 +7,7 @@ export const dynamic = "force-dynamic";
 // {target (participant key), source?, purpose?, request (required),
 //  contextRefs?, classification?, responseContract?}
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const { id } = await params;
   try {
     const body = await req.json();

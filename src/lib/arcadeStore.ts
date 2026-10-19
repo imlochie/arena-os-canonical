@@ -10,10 +10,10 @@
  * is exercised against a real database in tests.
  */
 
-import { and, desc, eq, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, ne } from "drizzle-orm";
 
 import type { db as appDb } from "@/db";
-import { arcadeGames, artifacts, artifactRevisions, type ArtifactRevisionSnapshot } from "@/db/schema";
+import { arcadeGames, artifacts, artifactRevisions, projects, type ArtifactRevisionSnapshot, LOCAL_OWNER_ID } from "@/db/schema";
 
 export type StoreDb = Pick<typeof appDb, "insert" | "update" | "delete" | "select" | "transaction">;
 
@@ -70,6 +70,14 @@ export interface ArtifactInput {
   ownerId: string;
 }
 
+export class ArtifactContentError extends Error { readonly status = 413; }
+export function assertArtifactBodySize(content: string) {
+  if (content.length > 20000) throw new ArtifactContentError("Artifact body exceeds the 20,000-character limit; no content or metadata was changed.");
+}
+/** One visibility predicate for Library, project views, context and tool reads. */
+export function artifactScope(ownerId = LOCAL_OWNER_ID, projectId?: string, trash = false) {
+  return and(eq(artifacts.ownerId, ownerId), ...(projectId ? [eq(artifacts.projectId, projectId)] : []), ...(trash ? [] : [isNull(artifacts.deletedAt)]));
+}
 type ArtifactRow = typeof artifacts.$inferSelect;
 function revisionSnapshot(row: ArtifactRow): ArtifactRevisionSnapshot {
   return { title: row.title, body: row.body, kind: row.kind, projectId: row.projectId, sourceType: row.sourceType, sourceId: row.sourceId, ownerId: row.ownerId, deletedAt: row.deletedAt?.toISOString() ?? null, createdAt: row.createdAt?.toISOString() ?? null };
@@ -83,7 +91,7 @@ async function baseline(tx: Transaction, row: ArtifactRow) {
   return updated;
 }
 export async function insertArtifact(database: StoreDb, input: ArtifactInput) {
-  if (input.body.length > 20000) throw new Error("Artifact body exceeds the 20,000-character limit; nothing was saved.");
+  assertArtifactBodySize(input.body);
   return database.transaction(async (tx) => {
     const [inserted] = await tx.insert(artifacts).values({ ...input, projectId: input.projectId ?? null, sourceId: input.sourceId ?? null }).onConflictDoNothing({ target: artifacts.id }).returning();
     const row = inserted ?? (input.id ? (await tx.select().from(artifacts).where(and(eq(artifacts.id, input.id), eq(artifacts.ownerId, input.ownerId))).limit(1))[0] : undefined);
@@ -91,8 +99,8 @@ export async function insertArtifact(database: StoreDb, input: ArtifactInput) {
     return baseline(tx, row);
   });
 }
-export async function listArtifacts(database: StoreDb, ownerId: string, limit = 200, trash = false) {
-  return database.select().from(artifacts).where(and(eq(artifacts.ownerId, ownerId), ...(trash ? [] : [isNull(artifacts.deletedAt)]))).orderBy(desc(artifacts.createdAt)).limit(limit);
+export async function listArtifacts(database: StoreDb, ownerId: string, limit = 200, trash = false, projectId?: string) {
+  return database.select().from(artifacts).where(artifactScope(ownerId, projectId, trash)).orderBy(desc(artifacts.createdAt)).limit(limit);
 }
 export async function getArtifact(database: StoreDb, id: string, ownerId: string, includeDeleted = false) {
   const [row] = await database.select().from(artifacts).where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId), ...(includeDeleted ? [] : [isNull(artifacts.deletedAt)]))).limit(1);
@@ -111,11 +119,11 @@ export async function getArtifactRevision(database: StoreDb, id: string, revisio
   const [revision] = await database.select().from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, id), eq(artifactRevisions.id, revisionId))).limit(1);
   return revision ?? null;
 }
-async function revise(database: StoreDb, id: string, ownerId: string, patch: Partial<Pick<ArtifactRow, "title" | "body" | "kind" | "projectId" | "deletedAt">>, expectedRevision?: number, restoreId?: string): Promise<{ outcome: MutationOutcome | "conflict"; row?: ArtifactRow }> {
-  if (patch.body && patch.body.length > 20000) throw new Error("Artifact body exceeds the 20,000-character limit; nothing was saved.");
+async function revise(database: StoreDb, id: string, ownerId: string, patch: Partial<Pick<ArtifactRow, "title" | "body" | "kind" | "projectId" | "deletedAt">>, expectedRevision?: number, restoreId?: string, includeDeleted = false): Promise<{ outcome: MutationOutcome | "conflict"; row?: ArtifactRow }> {
+  if (patch.body !== undefined) assertArtifactBodySize(patch.body);
   return database.transaction(async (tx) => {
     const [found] = await tx.select().from(artifacts).where(eq(artifacts.id, id)).for("update");
-    if (!found || (found.deletedAt && !restoreId)) return { outcome: "not_found" };
+    if (!found || (found.deletedAt && !restoreId && !includeDeleted)) return { outcome: "not_found" };
     if (found.ownerId !== ownerId) return { outcome: "forbidden" };
     if (expectedRevision !== undefined && found.revision !== expectedRevision) return { outcome: "conflict", row: found };
     const current = await baseline(tx, found);
@@ -124,7 +132,10 @@ async function revise(database: StoreDb, id: string, ownerId: string, patch: Par
       const [old] = await tx.select().from(artifactRevisions).where(and(eq(artifactRevisions.id, restoreId), eq(artifactRevisions.artifactId, id))).limit(1);
       if (!old) return { outcome: "not_found" };
       // Provenance and owner remain bound; restoring never creates foreign ownership.
-      proposed = { ...current, title: old.snapshot.title, body: old.snapshot.body, kind: old.snapshot.kind, projectId: old.snapshot.projectId, deletedAt: null };
+      const projectExists = !old.snapshot.projectId || (await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, old.snapshot.projectId)).limit(1)).length > 0;
+      // Retain the original project in the immutable snapshot, but never
+      // recreate a deleted project or make content recovery fail on its FK.
+      proposed = { ...current, title: old.snapshot.title, body: old.snapshot.body, kind: old.snapshot.kind, projectId: projectExists ? old.snapshot.projectId : null, deletedAt: null };
     }
     if (!restoreId && JSON.stringify(revisionSnapshot(current)) === JSON.stringify(revisionSnapshot(proposed))) return { outcome: "ok", row: current };
     const next = current.revision + 1;
@@ -138,4 +149,17 @@ export async function restoreArtifact(database: StoreDb, id: string, ownerId: st
 export async function deleteArtifact(database: StoreDb, id: string, ownerId: string): Promise<MutationOutcome> {
   const result = await revise(database, id, ownerId, { deletedAt: new Date() });
   return result.outcome === "conflict" ? "not_found" : result.outcome;
+}
+
+/** Used inside the project-delete transaction: preserve every Artifact and
+ * record the metadata unlink, including for recoverable deleted artifacts. */
+export class ArtifactProjectConflictError extends Error { readonly status = 409; }
+export async function detachProjectArtifacts(database: StoreDb, projectId: string, ownerId: string) {
+  const foreign = await database.select({ id: artifacts.id }).from(artifacts).where(and(eq(artifacts.projectId, projectId), ne(artifacts.ownerId, ownerId))).limit(1);
+  if (foreign.length) throw new ArtifactProjectConflictError("Project contains another owner’s Artifacts. Their owner must detach them before this project can be removed; nothing was deleted.");
+  const rows = await database.select().from(artifacts).where(artifactScope(ownerId, projectId, true));
+  for (const row of rows) {
+    const result = await revise(database, row.id, ownerId, { projectId: null }, row.revision, undefined, true);
+    if (result.outcome !== "ok") throw new ArtifactProjectConflictError("Artifact changed during project removal. Reload and retry; no project data was deleted.");
+  }
 }

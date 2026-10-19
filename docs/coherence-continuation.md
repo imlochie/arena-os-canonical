@@ -880,3 +880,62 @@ proven, not that lifecycle), large/binary reuse, retention/garbage collection
 policy for immutable objects, and acceptance beyond these rooms. No provider,
 real inference, Electron or Windows claim. Provider/model availability has not
 blocked this work and no unavailable downloads were retried.
+
+## Mandate 5 continuation — preserve project work and consume pinned references
+
+Published mission-output milestone `4c0ad8d71ef077520b5f6631444399f9bbcaf3d1`
+was verified: all four checks in run `39185444333` PASS (static 8m03s,
+browser 1m50s, A7 1m24s, Compose 2m22s); native root **1359 PASS**, 394.02s;
+actual workflows **18 PASS**, 51.62s. PR15 remains open, unmerged.
+
+Independent actual-handler/browser reproductions found further failures:
+* Project Artifact POST returned 201 but discarded the suffix after 20,000
+  characters (`mandate5-project-artifact-before.txt`). Once the server refused
+  it, the actual Project UI still cleared the rejected draft (browser RED
+  `mandate5-project-ui-before.txt`).
+* Project DELETE returned 500 on the immutable-history FK **after deleting
+  project memory** (`mandate5-project-delete-before.txt`).
+* Orchestrator dispatched a supposedly pinned reference with its evidence
+  entirely missing (`mandate5-orchestrator-before.txt`).
+
+The shared store now supplies body-size validation and owner/tombstone scope
+for project/context/Command/assistant reads. Project creation is atomic with
+its project timestamp; rejected drafts stay editable in the actual workspace.
+Project removal atomically unlinks work instead of deleting Artifacts, records
+new metadata revisions for active and tombstoned Artifacts, and rolls everything
+back on a write failure or foreign-owner conflict. Restoring an old revision
+whose project was removed retains the original reference in history but restores
+the content unscoped; it does not recreate deleted containers. The project UI
+uses the existing real history/edit/download/restore controls and emits bound
+references; legacy handoffs require loading history first.
+
+Archive Assistant saves through the same immutable store and can retrieve an
+owned pinned revision. Orchestrator takes canonical `artifact:id@revisionId`
+references, validates them before creation and dispatch, resolves the original
+snapshot rather than mutable latest, fails visibly on unavailable/foreign or
+legacy unbound inputs, and labels bounded excerpts. Its actual UI accepts and
+shows those references. Local-only external dispatch permits loopback adapters
+only. Existing orchestrator handlers, project handlers and Command use the
+shared API-access guard, not just browser middleware.
+
+Verified frozen runtime/test tree (file hashes recorded outside Git):
+* `mandate5-project-workflows.txt`: **24 PASS, 0 FAIL, 0 SKIP**, 84.66s,
+  actual native PostgreSQL, browser controls, immutable downloads and isolated
+  rendering. Includes rejected-draft retry, project history edit/download/
+  restore/reopen, actual Orchestrator queue/HTTP dispatch/reopen, SQL restart,
+  failed-write rollback, foreign/unbound refusal and original-input provenance.
+* `mandate5-project-source.txt`: **1360 PASS, 0 FAIL, 0 SKIP**, 417.93s.
+  Header identifies the prior Git HEAD because verification preceded this
+  commit; the tested source hashes were checked unchanged before committing.
+* `mandate5-project-types.txt`, `mandate5-project-build.txt`: typecheck and
+  production build PASS. Targeted lint: zero errors, one existing Project
+  effect warning. Focused native/browser repetitions overlap these totals.
+
+Next independently reproduced failure: Orchestrator Close reports 200/closed
+when Artifact insertion fails, with **zero archived Artifacts**
+(`mandate5-orchestrator-close-before.txt`). Its record builder also clips text.
+This is not repaired by the pinned-input work above. Follow through archival
+failure, complete retained record download and retry without losing sessions.
+Broader Battle/Collab/Council URL provenance is still not server-resolved;
+pinning a link alone is not full cross-room consumption acceptance. Existing
+model/Electron/Windows/real Redis FX lifecycle limitations remain unchanged.

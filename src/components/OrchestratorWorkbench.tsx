@@ -94,6 +94,7 @@ export default function OrchestratorWorkbench() {
   ]);
   const [relayTarget, setRelayTarget] = useState("architect");
   const [relayPurpose, setRelayPurpose] = useState("draft");
+  const [relayReferences, setRelayReferences] = useState("");
   const [relayRequest, setRelayRequest] = useState("");
   const [relayClassification, setRelayClassification] = useState("internal");
   const [relayContract, setRelayContract] = useState("markdown text");
@@ -101,6 +102,7 @@ export default function OrchestratorWorkbench() {
   // ---- add-relay form (in detail) ----
   const [nextTarget, setNextTarget] = useState("");
   const [nextPurpose, setNextPurpose] = useState("contribute");
+  const [nextReferences, setNextReferences] = useState("");
   const [nextRequest, setNextRequest] = useState("");
   const [nextClassification, setNextClassification] = useState("internal");
 
@@ -263,6 +265,7 @@ export default function OrchestratorWorkbench() {
                 target: relayTarget,
                 purpose: relayPurpose.trim() || "contribute",
                 request: relayRequest.trim(),
+                contextRefs: relayReferences.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean),
                 classification: relayClassification,
                 responseContract: relayContract.trim() || "markdown text",
               }
@@ -277,7 +280,7 @@ export default function OrchestratorWorkbench() {
       setGoal("");
       setTitle("");
       setContext("");
-      setRelayRequest("");
+      setRelayRequest(""); setRelayReferences("");
       setNotice("Collaboration opened.");
       await refreshList();
       setSelectedId(data.collaboration.id);
@@ -343,16 +346,19 @@ export default function OrchestratorWorkbench() {
           target: nextTarget,
           purpose: nextPurpose.trim() || "contribute",
           request: nextRequest.trim(),
+          contextRefs: nextReferences.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean),
           classification: nextClassification,
           toolUse: nextToolUse,
         }),
       });
       const data = await res.json();
       if (res.ok) {
-        setNextRequest("");
+        setNextRequest(""); setNextReferences("");
         setNotice(`Relay #${data.relay.seq} queued.`);
         await loadDetail(detail.id);
       } else setNotice(data.error ?? "failed to add relay");
+    } catch {
+      setNotice("Relay was not acknowledged. Request and references are retained; reload before retrying.");
     } finally {
       setBusy(false);
     }
@@ -557,6 +563,7 @@ export default function OrchestratorWorkbench() {
                 placeholder="the request — what should this participant do first?"
                 className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-[11px] text-white outline-none"
               />
+              <label className="block text-xs">Initial immutable Artifact references<input aria-label="Initial immutable Artifact references" value={relayReferences} onChange={(event) => setRelayReferences(event.target.value)} placeholder="artifact:id@revisionId (comma-separated, maximum 8)" className="block w-full bg-black/30" /></label>
               <div className="mt-1.5 flex items-center gap-1.5">
                 <select
                   value={relayClassification}
@@ -809,6 +816,7 @@ export default function OrchestratorWorkbench() {
                         {(r as any).runtime ? <PoweredBy runtime={(r as any).runtime as any} /> : null}
                       </div>
                       <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{r.request}</div>
+                      {r.contextRefs.length > 0 && <div aria-label={`Pinned inputs for relay ${r.seq}`} className="text-[10px]">Pinned inputs: {r.contextRefs.map((reference) => <code key={reference} className="block break-all">{reference}</code>)}</div>}
                       {r.response && (
                         <div className="mt-2 rounded-xl bg-black/30 p-3 text-xs leading-5 text-slate-200">
                           <Markdown text={r.response.slice(0, 4000)} />
@@ -848,6 +856,7 @@ export default function OrchestratorWorkbench() {
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Add relay (manual routing)</div>
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     <select
+                      aria-label="Relay target"
                       value={nextTarget}
                       onChange={(e) => setNextTarget(e.target.value)}
                       className="rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-[11px] text-white outline-none"
@@ -891,6 +900,7 @@ export default function OrchestratorWorkbench() {
                     placeholder="request — what should this participant do?"
                     className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/40 px-2.5 py-2 text-[11px] text-white outline-none"
                   />
+                  <label className="block text-xs">Immutable Artifact references<input aria-label="Relay immutable Artifact references" value={nextReferences} onChange={(event) => setNextReferences(event.target.value)} placeholder="Copy artifact:id@revisionId from Artifact history; comma-separated, maximum 8" className="block w-full bg-black/30" /></label>
                   <button
                     onClick={() => void addRelay()}
                     disabled={busy || !nextTarget || !nextRequest.trim()}

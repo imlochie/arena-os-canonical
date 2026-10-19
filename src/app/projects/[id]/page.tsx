@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { ArtifactHistory } from "@/components/artifacts/ArtifactHistory";
 import Markdown from "@/components/Markdown";
 
 const MEM_KINDS = [
@@ -23,6 +24,8 @@ export default function ProjectPage() {
   const [artKind, setArtKind] = useState("brief");
   const [artTitle, setArtTitle] = useState("");
   const [artBody, setArtBody] = useState("");
+  const [artifactError, setArtifactError] = useState<string | null>(null);
+  const [savingArtifact, setSavingArtifact] = useState(false);
   const [showArtForm, setShowArtForm] = useState(false);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
@@ -54,16 +57,20 @@ export default function ProjectPage() {
   }
 
   async function addArtifact() {
-    if (!artBody.trim()) return;
-    await fetch(`/api/projects/${id}/artifacts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: artKind, title: artTitle.trim() || "Untitled", body: artBody }),
-    });
-    setArtTitle("");
-    setArtBody("");
-    setShowArtForm(false);
-    refresh();
+    if (!artBody.trim() || savingArtifact) return;
+    setArtifactError(null); setSavingArtifact(true);
+    try {
+      const response = await fetch(`/api/projects/${id}/artifacts`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: artKind, title: artTitle.trim() || "Untitled", body: artBody }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Artifact save failed; the draft is retained.");
+      if (result.artifact?.body !== artBody) throw new Error("Server did not acknowledge the complete content. Your draft is retained; inspect the library before retrying.");
+      setData((previous: any) => ({ ...previous, artifacts: [result.artifact, ...(previous.artifacts ?? [])] }));
+      setArtTitle(""); setArtBody(""); setShowArtForm(false); await refresh();
+    } catch (error) { setArtifactError(error instanceof Error ? error.message : "Artifact save unavailable; draft retained."); }
+    finally { setSavingArtifact(false); }
   }
 
   async function saveEdit() {
@@ -161,6 +168,7 @@ export default function ProjectPage() {
                 {showArtForm ? "✕ Close" : "＋ New artifact"}
               </button>
             </div>
+            {artifactError && <p role="alert">{artifactError}</p>}
             {showArtForm && (
               <div className="mt-2 space-y-1.5 rounded-xl border border-white/5 bg-black/20 p-3">
                 <div className="flex gap-1.5">
@@ -172,7 +180,7 @@ export default function ProjectPage() {
                   <input value={artTitle} onChange={(e) => setArtTitle(e.target.value)} placeholder="Title…" className="flex-1 rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs text-white placeholder:text-slate-600" />
                 </div>
                 <textarea value={artBody} onChange={(e) => setArtBody(e.target.value)} rows={4} placeholder="Markdown body…" className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 font-mono text-xs text-white placeholder:text-slate-600" />
-                <button onClick={addArtifact} disabled={!artBody.trim()} className="rounded-lg bg-amber-500/80 px-3 py-1.5 text-xs font-extrabold text-black disabled:opacity-50">Save artifact</button>
+                <button onClick={addArtifact} disabled={!artBody.trim() || savingArtifact} className="rounded-lg bg-amber-500/80 px-3 py-1.5 text-xs font-extrabold text-black disabled:opacity-50">Save artifact</button>
               </div>
             )}
             <div className="mt-2 grid gap-2 md:grid-cols-2">
@@ -185,10 +193,12 @@ export default function ProjectPage() {
                   <div className="scroll-thin mt-2 max-h-48 overflow-y-auto">
                     <Markdown text={a.body} />
                   </div>
+                  <ArtifactHistory artifact={a} onChange={refresh} />
+                  {!a.currentRevisionId && <p>Load revision history before reusing this legacy artifact.</p>}
                   <div className="mt-2 flex gap-1.5">
-                    <a href={`/?prompt=${encodeURIComponent(a.body.slice(0, 1500))}&projectId=${id}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded bg-white/5 px-2 py-1 text-[10px] font-bold hover:bg-white/15">⚔️ Battle</a>
-                    <a href={`/collab?challenge=${encodeURIComponent(a.body.slice(0, 2000))}&projectId=${id}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded bg-white/5 px-2 py-1 text-[10px] font-bold hover:bg-white/15">🤝 Collab</a>
-                    <a href={`/council?material=${encodeURIComponent(a.body.slice(0, 2500))}&projectId=${id}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded bg-white/5 px-2 py-1 text-[10px] font-bold hover:bg-white/15">🧠 Council</a>
+                    {a.currentRevisionId && <a href={`/?prompt=${encodeURIComponent(a.body.slice(0, 1500))}&projectId=${id}&source=${encodeURIComponent(`artifact:${a.id}@${a.currentRevisionId}`)}`} className="rounded bg-white/5 px-2 py-1 text-[10px] font-bold hover:bg-white/15">⚔️ Battle</a>}
+                    {a.currentRevisionId && <a href={`/collab?challenge=${encodeURIComponent(a.body.slice(0, 2000))}&projectId=${id}&source=${encodeURIComponent(`artifact:${a.id}@${a.currentRevisionId}`)}`} className="rounded bg-white/5 px-2 py-1 text-[10px] font-bold hover:bg-white/15">🤝 Collab</a>}
+                    {a.currentRevisionId && <a href={`/council?material=${encodeURIComponent(a.body.slice(0, 2500))}&projectId=${id}&source=${encodeURIComponent(`artifact:${a.id}@${a.currentRevisionId}`)}`} className="rounded bg-white/5 px-2 py-1 text-[10px] font-bold hover:bg-white/15">🧠 Council</a>}
                   </div>
                 </details>
               ))}

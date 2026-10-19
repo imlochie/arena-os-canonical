@@ -1,9 +1,11 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { closeCollaboration, deleteCollaboration, getCollaboration } from "@/lib/orchestrator";
 
 export const dynamic = "force-dynamic";
 
 // GET → one collaboration with participants + relays
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const { id } = await params;
   const collaboration = await getCollaboration(id);
   if (!collaboration) return Response.json({ error: "not found" }, { status: 404 });
@@ -12,6 +14,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 // PATCH → {status: "closed", summary?} closes the collaboration and files its record
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const { id } = await params;
   try {
     const body = await req.json();
@@ -26,7 +29,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 }
 
 // DELETE → remove a collaboration (relays + participants go with it)
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const { id } = await params;
   const ok = await deleteCollaboration(id);
   if (!ok) return Response.json({ error: "not found" }, { status: 404 });

@@ -1,9 +1,11 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { createCollaboration, listCollaborations } from "@/lib/orchestrator";
 
 export const dynamic = "force-dynamic";
 
 // GET → list collaborations (with participants + relays)
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const collaborations = await listCollaborations(30);
     return Response.json({ collaborations });
@@ -18,6 +20,7 @@ export async function GET() {
 //  participants: [{name, key?, kind? model|human|external, modelId?, adapterUrl?, adapterModel?, capabilities?, trust?}],
 //  relay?: {target, purpose?, request, classification?, responseContract?}}
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const body = await req.json();
     const goal = String(body.goal ?? "").trim();

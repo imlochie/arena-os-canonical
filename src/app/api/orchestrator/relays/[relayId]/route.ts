@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { respondToRelay } from "@/lib/orchestrator";
 
 export const dynamic = "force-dynamic";
@@ -5,6 +6,7 @@ export const dynamic = "force-dynamic";
 // POST → answer a human checkpoint relay
 // {response?, rejected?} — rejected marks the relay cancelled instead.
 export async function POST(req: Request, { params }: { params: Promise<{ relayId: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const { relayId } = await params;
   try {
     const body = await req.json().catch(() => ({}));
