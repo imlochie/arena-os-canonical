@@ -190,7 +190,7 @@ jobs:
       - name: Exercise durable mission review and Studio FX through real browser, PostgreSQL and rendering
         env:
           ARENA_STUDIO_FX_EVIDENCE_DIR: .data/acceptance/studio-fx
-        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/mission-recovery.test.mjs tests/acceptance/studio-fx.test.mjs | tee durable-workflows-acceptance.tap
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/mission-recovery.test.mjs tests/acceptance/studio-fx.test.mjs tests/acceptance/artifact-retention.test.mjs | tee durable-workflows-acceptance.tap
       - name: Retain durable workflow and decoded FX evidence (including failures)
         if: always()
         uses: actions/upload-artifact@v4

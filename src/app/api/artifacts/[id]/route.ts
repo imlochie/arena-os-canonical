@@ -35,7 +35,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const body = await req.json();
     const patch: Partial<typeof artifacts.$inferInsert> = {};
     if (body.title !== undefined) patch.title = String(body.title).slice(0, 160);
-    if (body.body !== undefined) patch.body = String(body.body).slice(0, 20000);
+    if (body.body !== undefined) {
+      const content = String(body.body);
+      if (content.length > 20000) return Response.json({ error: "Artifact body exceeds the 20,000-character limit. The existing artifact was not changed; split the content before retrying." }, { status: 413 });
+      patch.body = content;
+    }
     if (body.kind !== undefined) patch.kind = String(body.kind).slice(0, 20);
     if (body.projectId !== undefined) patch.projectId = body.projectId ? String(body.projectId) : null;
     const result = await updateArtifact(db, id, user.id, patch);

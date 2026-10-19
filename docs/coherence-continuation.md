@@ -648,3 +648,37 @@ TAP/decoded audio evidence are now wired into the existing browser CI job.
 PR15 remains open/unmerged. Next capability targets remain generated-code
 iteration/retrieval and shared Artifact ownership/version/interruption contracts;
 no whole-product completion or genuine provider-reasoning acceptance is claimed.
+
+### Published validation and next Artifact defect
+
+Published **55c20e0**: all four checks in run
+`39178842081` PASS (A7, Compose, typecheck/lint/test/build, browser acceptance).
+An unchanged, clean-source native regression at **55c20e0** completed with
+**1,354 PASS / 0 FAIL / 0 SKIP**, 399.06 s
+(`/home/user/mandate4-published-full-source.txt`). This supersedes the earlier
+mid-edit 1,348-test run, not an additive test count. At that same published
+revision the combined actual-browser/SQL suite passed 7/7 in 27.35 s, and the
+real PG/Redis A7 suite passed 9/9 in 29.18 s. The four mission tests include one
+SQL/API outage case; not all seven are rendered-UI tests.
+
+Continued Artifact inspection found a separate actual data-loss defect:
+POST and PUT silently sliced content to 20,000 UTF-16 code units while reporting
+success. Native PostgreSQL + actual POST reproduced **201 with retained length
+20,000** after a longer body was submitted (`mandate4-artifact-before.txt`).
+Both handlers now return explicit **413**, before writing any part of an
+oversized body/metadata update. The existing limit is unchanged; loss is no
+longer hidden behind success. Owners can explicitly split and retry rather
+than unknowingly retrieving an incomplete generated output.
+
+`tests/acceptance/artifact-retention.test.mjs` exercises actual handlers +
+native SQL: oversized create leaves no row; exact-limit Unicode round-trips;
+oversized edit preserves both content and title; explicit shorter retry saves
+and is retrievable. **2 PASS / 0 FAIL / 0 SKIP**, 2.67 s
+(`/home/user/mandate4-artifact-after.txt`), root typecheck and targeted lint PASS.
+This suite is wired into the existing durable browser/service CI job. The
+1,354-test result belongs to parent 55c20e0, **not** a claim that this subsequent
+Artifact delta was in that run. Immutable Artifact revision history and trusted
+mission-reference validation still require follow-through; refusing truncation
+is not versioning or whole-room acceptance. Existing displayed-library recovery
+acceptance uses controlled HTTP, not real persistence; the new retention checks
+supply real SQL evidence for this narrower write/retrieval boundary.

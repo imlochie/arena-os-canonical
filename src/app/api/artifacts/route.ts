@@ -38,7 +38,8 @@ export async function POST(req: Request) {
     const user = await requireUser();
     const body = await req.json();
     const title = (body.title ?? "Untitled artifact").toString().slice(0, 160);
-    const artifactBody = (body.body ?? "").toString().slice(0, 20000);
+    const artifactBody = (body.body ?? "").toString();
+    if (artifactBody.length > 20000) return Response.json({ error: "Artifact body exceeds the 20,000-character limit. Nothing was saved; split the content before retrying." }, { status: 413 });
     if (!artifactBody.trim()) return Response.json({ error: "body required" }, { status: 400 });
     const kind = (body.kind ?? "brief").toString().slice(0, 20);
     const projectId = body.projectId ? String(body.projectId) : null;
