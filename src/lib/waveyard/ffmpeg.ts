@@ -132,13 +132,14 @@ export async function requireTool(tool: FfmpegTool): Promise<ResolvedBinary> {
 export type ExecResult = { stdout: string; stderr: string };
 
 /** Run a tool with an argument array. No shell, ever. */
-export async function execTool(tool: FfmpegTool, args: string[], options: { timeoutMs?: number } = {}): Promise<ExecResult> {
+export async function execTool(tool: FfmpegTool, args: string[], options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ExecResult> {
   const binary = await requireTool(tool);
   return new Promise<ExecResult>((resolve, reject) => {
     const child = spawn(binary.path, args, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       timeout: options.timeoutMs ?? 120_000,
+      signal: options.signal,
     });
     let stdout = "";
     let stderr = "";
@@ -148,9 +149,13 @@ export async function execTool(tool: FfmpegTool, args: string[], options: { time
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += String(chunk);
     });
-    child.once("error", (error) => reject(error));
+    // Abort emits error before the process actually exits. Consumers may remove
+    // temporary inputs only once close confirms child/stdio termination.
+    let executionError: Error | undefined;
+    child.once("error", (error) => { executionError = error; });
     child.once("close", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
+      if (executionError) reject(executionError);
+      else if (code === 0) resolve({ stdout, stderr });
       else reject(new Error(`${tool} exited ${code}: ${stderr.slice(-1200)}`));
     });
   });

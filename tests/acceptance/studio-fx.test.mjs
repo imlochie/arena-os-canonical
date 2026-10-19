@@ -36,8 +36,11 @@ before(async () => {
   await register(/^\/api\/remix-versions\/([^/]+)\/exports$/, ["id"], "remix-versions/[id]/exports");
   await register(/^\/api\/exports\/([^/]+)\/media$/, ["id"], "exports/[id]/media");
   await register(/^\/api\/exports\/([^/]+)\/retry$/, ["id"], "exports/[id]/retry");
+  await register(/^\/api\/assets\/([^/]+)\/audition$/, ["id"], "assets/[id]/audition");
   await register(/^\/api\/assets\/([^/]+)$/, ["id"], "assets/[id]");
   await register(/^\/api\/assets\/([^/]+)\/waveform$/, ["id"], "assets/[id]/waveform");
+  await register(/^\/api\/arcade$/, [], "arcade");
+  await register(/^\/api\/arcade\/([^/]+)$/, ["id"], "arcade/[id]");
   await register(/^\/api\/models$/, [], "models");
   await register(/^\/api\/preferences$/, [], "preferences");
   await register(/^\/api\/orchestrator$/, [], "orchestrator");
@@ -54,17 +57,19 @@ before(async () => {
   await register(/^\/api\/projects\/([^/]+)$/, ["id"], "projects/[id]");
   await register(/^\/api\/projects\/([^/]+)\/artifacts$/, ["id"], "projects/[id]/artifacts");
   for (const route of ["battles", "battles/stream", "collabs", "council", "council/artifacts", "assistants", "templates"]) await register(new RegExp("^/api/" + route + "$"), [], route);
-  const bundle = await build({ entryPoints: ["tests/acceptance/studio-fx.fixture.tsx"], bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", define: { "process.env": JSON.stringify({ NODE_ENV: "development" }) } });
+  const bundle = await build({ entryPoints: ["tests/acceptance/studio-fx.fixture.tsx"], bundle: true, write: false, platform: "browser", format: "esm", jsx: "automatic", define: { "process.env": JSON.stringify({ NODE_ENV: "development" }) } });
+  const workerBundle = await build({ entryPoints: ["src/lib/waveyard/arrangement-pcm.worker.ts"], bundle: true, write: false, platform: "browser", format: "iife" });
   server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://fixture");
+      if (url.pathname === "/arrangement-pcm.worker.ts") { res.setHeader("content-type", "text/javascript"); return res.end(workerBundle.outputFiles[0].contents); }
       if (url.pathname === "/fixture.js") { res.setHeader("content-type", "text/javascript"); return res.end(bundle.outputFiles[0].contents); }
       if (url.pathname.startsWith("/api/")) {
         let body = ""; for await (const chunk of req) body += chunk;
         const response = await dispatch(url, req.method, req.method === "GET" ? undefined : body);
         res.writeHead(response.status, Object.fromEntries(response.headers)); return res.end(Buffer.from(await response.arrayBuffer()));
       }
-      res.setHeader("content-type", "text/html"); res.end('<!doctype html><div id="root"></div><script src="/fixture.js"></script>');
+      res.setHeader("content-type", "text/html"); res.end('<!doctype html><div id="root"></div><script type="module" src="/fixture.js"></script>');
     } catch (error) { res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ error: error.message })); }
   });
   await new Promise((resolve) => server.listen(0, "0.0.0.0", resolve)); origin = `http://127.0.0.1:${server.address().port}`;
@@ -75,8 +80,8 @@ async function api(url, method = "GET", body) {
   const response = await dispatch(new URL(url, "http://fixture"), method, body === undefined ? undefined : JSON.stringify(body));
   assert.ok(response.ok, `${method} ${url}: ${response.status} ${await response.clone().text()}`); return response.json();
 }
-async function source(impulse = false) {
-  const input = new Float32Array(44100 * 3 * 2);
+async function source(impulse = false, seconds = 3) {
+  const input = new Float32Array(44100 * seconds * 2);
   for (let frame = 0; frame < input.length / 2; frame++) input[frame * 2] = input[frame * 2 + 1] = 0.2 * Math.sin(2 * Math.PI * 440 * frame / 44100);
   if (impulse) { input.fill(0); input[Math.round(2.9 * 44100) * 2] = input[Math.round(2.9 * 44100) * 2 + 1] = 0.4; }
   const filename = path.join(root, "fx-input.wav"); await writeFile(filename, synth.encodeWav16(input, 44100));
@@ -282,7 +287,7 @@ test("live nonlinear arrangement edits replace one graph, immediately version/ex
   await page.addInitScript(() => {
     window.__starts = []; window.__activeSources = new Set(); window.__maxActive = 0;
     const start = AudioBufferSourceNode.prototype.start, stop = AudioBufferSourceNode.prototype.stop;
-    AudioBufferSourceNode.prototype.start = function(...args) { window.__starts.push({ samples: Array.from(this.buffer.getChannelData(0)), offset: args[1] ?? 0 }); window.__activeSources.add(this); window.__maxActive = Math.max(window.__maxActive, window.__activeSources.size); this.addEventListener("ended", () => window.__activeSources.delete(this)); return start.apply(this, args); };
+    AudioBufferSourceNode.prototype.start = function(...args) { window.__starts.push({ samples: Array.from(this.buffer.getChannelData(0)), offset: args[1] ?? 0, loop: this.loop }); window.__activeSources.add(this); window.__maxActive = Math.max(window.__maxActive, window.__activeSources.size); this.addEventListener("ended", () => window.__activeSources.delete(this)); return start.apply(this, args); };
     AudioBufferSourceNode.prototype.stop = function(...args) { window.__activeSources.delete(this); return stop.apply(this, args); };
   });
   await page.goto(`${origin}/?project=${projectId}&remix=${remixId}`); await page.getByTestId("waveyard-mode-studio").click();
@@ -297,6 +302,12 @@ test("live nonlinear arrangement edits replace one graph, immediately version/ex
   page.once("dialog", (dialog) => dialog.accept("Current live nonlinear settings")); const saved = page.waitForResponse((response) => response.url().endsWith(`/remixes/${remixId}/versions`) && response.request().method() === "POST");
   await page.getByRole("button", { name: "Save version", exact: true }).click(); const { version } = await (await saved).json();
   const output = await render(version.id); let outputError = 0; for (let frame = 0; frame < 22050; frame++) outputError = Math.max(outputError, Math.abs(audition[frame] - output.decoded.samples[frame * 2])); assert.ok(outputError < 0.0002, `live nonlinear/export parity ${outputError}`);
+  const beforeLoop = await page.evaluate(() => window.__starts.length);
+  await page.getByRole("button", { name: "Toggle loop", exact: true }).click();
+  await page.waitForFunction(count => window.__starts.length > count && window.__starts.at(-1).loop, beforeLoop);
+  const beforeUnloop = await page.evaluate(() => window.__starts.length);
+  await page.getByRole("button", { name: "Toggle loop", exact: true }).click();
+  await page.waitForFunction(count => window.__starts.length > count && !window.__starts.at(-1).loop, beforeUnloop);
   if (await page.getByRole("button", { name: "Pause arrangement", exact: true }).isVisible()) await page.getByRole("button", { name: "Pause arrangement", exact: true }).click();
   await range(page.getByRole("slider", { name: "Seek project", exact: true }), 0.5); await page.getByRole("button", { name: "Preview arrangement", exact: true }).click();
   await page.waitForFunction(() => Math.abs(window.__starts.at(-1).offset - 0.5) < 0.01);
@@ -412,4 +423,102 @@ test("actual Library reconciles retained private bytes into a verified Artifact,
   await history.getByRole("button", { name: "Edit artifact", exact: true }).click(); await history.getByRole("textbox", { name: "Artifact content", exact: true }).fill("An explicit newer inline note; the original file must survive."); await history.getByRole("button", { name: "Save revision", exact: true }).click(); await expect(history).toContainText("Current revision 2");
   await history.getByRole("button", { name: "Load revision history", exact: true }).click(); await history.locator("summary").filter({ hasText: "Revision 1 ·" }).click(); await history.getByRole("button", { name: "Restore revision 1", exact: true }).click(); await expect(history).toContainText("Current revision 3");
   transfer = page.waitForEvent("download"); await history.getByRole("link", { name: "Download complete immutable content", exact: true }).click(); assert.equal(await readFile(await (await transfer).path(), "utf8"), content);
+});
+
+// Mandate7: real Studio controls -> local canonical clip filters -> browser
+// worker DSP -> actual scheduled signal -> immutable save/reopen/export.
+test("tempo and key audition changes audible pitch/timing, rejects missing analysis and survives edits, seek and reopen", async (t) => {
+  const { projectId, remixId } = await source();
+  const initial = await api(`/api/remixes/${remixId}`); const track = initial.tracks[0], stemId = track.stemAssetId;
+  const [stem] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, stemId));
+  const [original] = await database.db.select().from(schema.sourceAssets).where(eq(schema.sourceAssets.id, stem.sourceAssetId));
+  const settings = { sourceOffsetMs: 200, durationMs: 1000, sampleRate: 44100, tempoBpm: 120, targetKey: "B major", tempoSyncEnabled: true, keySyncEnabled: true };
+  const auditionUrl = new URL(`/api/assets/${stemId}/audition`, "http://fixture");
+  const missing = await dispatch(auditionUrl, "POST", JSON.stringify(settings)); assert.equal(missing.status, 422); assert.match((await missing.json()).error, /complete analysis/);
+  await database.db.insert(schema.sourceAnalyses).values({ projectId, sourceAssetId: stem.sourceAssetId, status: "complete", stage: "complete", idempotencyKey: `sync:${stemId}`, analysisEngine: "deterministic-fixture", analysisEngineVersion: "1", sourceChecksumSha256: original.checksumSha256, bpm: 60, musicalKey: "A major" }).onConflictDoUpdate({ target: schema.sourceAnalyses.sourceAssetId, set: { status: "complete", bpm: 60, musicalKey: "A major", sourceChecksumSha256: original.checksumSha256 } });
+  const invalid = await dispatch(auditionUrl, "POST", JSON.stringify({ ...settings, sampleRate: 123 })); assert.equal(invalid.status, 400);
+  await api(`/api/remixes/${remixId}`, "PUT", { ...initial.remix, tempoBpm: 120, targetKey: "B major", tracks: [{ ...track, phaseInverted: true, clips: [{ ...track.clips[0], timelineStartMs: 500, durationMs: 1000, sourceOffsetMs: 200, tempoSyncEnabled: true, keySyncEnabled: false }] }] });
+  const page = await browser.newPage(); t.after(() => page.close()); page.setDefaultTimeout(15000);
+  await page.addInitScript(() => { window.__scheduled = []; const start = AudioBufferSourceNode.prototype.start; AudioBufferSourceNode.prototype.start = function(...args) { window.__scheduled.push({ samples: Array.from(this.buffer.getChannelData(0)), sampleRate: this.buffer.sampleRate, offset: args[1] ?? 0 }); return start.apply(this, args); }; });
+  await page.goto(`${origin}/?project=${projectId}&remix=${remixId}`); await page.getByTestId("waveyard-mode-studio").click();
+  await page.getByRole("button", { name: "Preview arrangement", exact: true }).click(); await page.waitForFunction(() => window.__scheduled.length > 0);
+  function frequency(samples, sr, start = 0.65, end = 1.3) { let crossings = 0; const from = Math.round(start * sr), to = Math.round(end * sr); for (let i = from + 1; i < to; i++) if (samples[i - 1] <= 0 && samples[i] > 0) crossings++; return crossings / ((to - from) / sr); }
+  let scheduled = await page.evaluate(() => window.__scheduled.at(-1)); assert.equal(scheduled.samples.length, 66150); assert.ok(Math.abs(frequency(scheduled.samples, scheduled.sampleRate) - 440) < 2);
+  assert.ok(scheduled.samples.slice(0, 22050).every(sample => sample === 0), "timeline start retained while source is stretched");
+  await page.getByRole("button", { name: "Pause arrangement", exact: true }).click();
+  // Select the actual timeline clip, not an unrelated inspector instance.
+  await page.getByRole("button", { name: "Select track", exact: true }).first().click();
+  await page.getByRole("checkbox", { name: "Key sync", exact: true }).check();
+  await page.getByRole("button", { name: "Preview arrangement", exact: true }).click(); await page.waitForFunction(() => window.__scheduled.length >= 2);
+  scheduled = await page.evaluate(() => window.__scheduled.at(-1)); assert.ok(Math.abs(frequency(scheduled.samples, scheduled.sampleRate) - 440 * 2 ** (2 / 12)) < 2, "key shift changes pitch without changing duration"); assert.equal(scheduled.samples.length, 66150);
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  page.once("dialog", dialog => dialog.accept("Audible tempo and key"));
+  const savedResponse = page.waitForResponse(response => response.url().endsWith(`/api/remixes/${remixId}/versions`) && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save version", exact: true }).click(); const saved = await savedResponse; assert.equal(saved.status(), 201); const { version } = await saved.json();
+  const state = await api(`/api/remixes/${remixId}`); assert.equal(state.tracks[0].clips[0].keySyncEnabled, true);
+  const exported = await render(version.id);
+  let error = 0; for (let frame = 0; frame < scheduled.samples.length; frame++) error = Math.max(error, Math.abs(scheduled.samples[frame] - exported.decoded.samples[frame * 2])); assert.ok(error < 0.0003, `browser vs canonical export PCM error ${error}`);
+  await page.reload(); await page.getByTestId("waveyard-mode-studio").click(); await page.getByRole("button", { name: "Preview arrangement", exact: true }).click(); await page.waitForFunction(() => window.__scheduled.length > 0); const reopened = await page.evaluate(() => window.__scheduled.at(-1)); assert.deepEqual(reopened.samples, scheduled.samples);
+  console.log(JSON.stringify({ kind: "tempo-key-real-audition-export", frames: scheduled.samples.length, frequencyHz: frequency(scheduled.samples, scheduled.sampleRate), expectedHz: 440 * 2 ** (2 / 12), maxPcmError: error, versionId: version.id }));
+  await database.db.update(schema.sourceAnalyses).set({ sourceChecksumSha256: "0".repeat(64) }).where(eq(schema.sourceAnalyses.sourceAssetId, stem.sourceAssetId));
+  const stale = await dispatch(new URL(`/api/assets/${stemId}/audition`, "http://fixture"), "POST", JSON.stringify({ sourceOffsetMs: 200, durationMs: 1000, tempoSyncEnabled: true, keySyncEnabled: true, tempoBpm: 120, targetKey: "B major", sampleRate: 44100 }));
+  assert.equal(stale.status, 422); assert.match((await stale.json()).error, /current source/);
+  const staleVersion = await api(`/api/remixes/${remixId}/versions`, "POST", { name: "Reject stale analysis" });
+  const { job: rejectedJob } = await api(`/api/remix-versions/${staleVersion.version.id}/exports`, "POST", { format: "wav" });
+  assert.equal(await broker.drain(30000), true);
+  const [rejected] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, rejectedJob.id));
+  assert.equal(rejected.status, "failed"); assert.equal(rejected.errorCode, "tempo_sync_analysis_missing");
+  const retained = await dispatch(new URL(`/api/exports/${exported.job.id}/media?download=1`, "http://fixture"));
+  assert.equal(retained.status, 200); assert.deepEqual(new Uint8Array(await retained.arrayBuffer()), exported.bytes, "published export stays immutable when source analysis changes");
+
+});
+
+test("large canonical preparation remains interactive, caches replay and uses the latest edited mix without redecoding", async (t) => {
+  const { remixId } = await source(false, 90); const initial = await api(`/api/remixes/${remixId}`); const { makeInsert } = await import("../../src/lib/waveyard/mixer/inserts.ts");
+  const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
+  for (const [count, seconds] of [[4, 15], [16, 90], [32, 90]]) {
+    const state = { ...initial.remix, tracks: Array.from({ length: count }, (_, i) => ({ ...initial.tracks[0], id: String(i), volume: 1 / count, inserts: [makeInsert("saturator", { drive: 3 })], clips: [{ ...initial.tracks[0].clips[0], durationMs: seconds * 1000 }] })) };
+    const result = await page.evaluate(state => window.measurePreparation(state), state);
+    console.log(JSON.stringify({ kind: "studio-worker-preparation", tracks: count, seconds, ...result }));
+    assert.equal(result.frames, seconds * 44100); assert.ok(result.ticks > 5, "UI timer remains schedulable while DSP runs"); assert.ok(result.maximumGapMs < 250, `main-thread stall ${result.maximumGapMs}ms`); assert.ok(result.replayMs < 20); assert.equal(result.latestEditError, 0);
+  }
+});
+
+test("real preparation cancellation fences older work, reuses decoded sources, and releases workspace caches/workers", async (t) => {
+  const { remixId } = await source(false, 15); const initial = await api(`/api/remixes/${remixId}`); const { makeInsert } = await import("../../src/lib/waveyard/mixer/inserts.ts");
+  const state = { ...initial.remix, tracks: Array.from({ length: 4 }, (_, i) => ({ ...initial.tracks[0], id: String(i), volume: 0.25, inserts: [makeInsert("saturator", { drive: 3 })], clips: [{ ...initial.tracks[0].clips[0], durationMs: 15000 }] })) };
+  const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
+  const result = await page.evaluate(state => window.verifyPreparationLifecycle(state), state);
+  console.log(JSON.stringify({ kind: "real-worker-cancel-cache-dispose", ...result }));
+  assert.equal(result.cancelled, "AbortError"); assert.equal(result.latestError, 0); assert.equal(result.replaySame, true);
+  assert.equal(result.coldFetches, 1); assert.equal(result.afterEditFetches, 1); assert.equal(result.reopenedFetches, 2);
+  assert.equal(result.disposedWorkers.created, result.disposedWorkers.terminated); assert.equal(result.disposedWorkers.created, 2);
+});
+
+test("Arcade real catalogue outage never erases acknowledged games or preview; retry/reopen retains exact playable bytes and enforces deletion ownership", async t => {
+  const prompt = "snake — outage recovery acceptance";
+  const { game } = await api("/api/arcade", "POST", { prompt, gameType: "snake" });
+  assert.match(game.engine, /verified|remix/);
+  const page = await browser.newPage(); t.after(() => page.close());
+  await page.goto(`${origin}/?room=arcade`);
+  const entry = page.getByRole("button").filter({ has: page.getByText(prompt, { exact: true }) });
+  await expect(entry).toBeVisible(); await entry.click();
+  const preview = page.locator("iframe"); await expect(preview).toHaveAttribute("srcdoc", game.code);
+  await expect(page.frameLocator("iframe").locator("canvas")).toBeVisible();
+  await database.pool.query("ALTER TABLE arcade_games RENAME TO unavailable_arcade_games");
+  try {
+    const failed = await dispatch(new URL("/api/arcade?limit=30", "http://fixture")); assert.equal(failed.status, 503); assert.equal((await failed.json()).games, undefined);
+    await page.getByRole("button", { name: "Refresh game library", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Game library unavailable"); await expect(entry).toBeVisible();
+    await expect(preview).toHaveAttribute("srcdoc", game.code); await expect(page.getByText("No games yet — forge the first.", { exact: true })).toHaveCount(0);
+    await page.reload(); await expect(page.getByRole("alert")).toContainText("Game library unavailable");
+    await expect(page.getByText("No games yet — forge the first.", { exact: true })).toHaveCount(0);
+  } finally { await database.pool.query("ALTER TABLE unavailable_arcade_games RENAME TO arcade_games"); }
+  await page.getByRole("button", { name: "Retry game library", exact: true }).click(); await expect(entry).toBeVisible(); await expect(page.getByRole("alert")).toHaveCount(0); await entry.click();
+  await expect(preview).toHaveAttribute("srcdoc", game.code);
+  await f.stop(); await f.start(); await page.reload(); await expect(entry).toBeVisible(); await entry.click(); await expect(preview).toHaveAttribute("srcdoc", game.code);
+  const store = await import("../../src/lib/arcadeStore.ts"); const foreign = await store.insertArcadeGame(database.db, { prompt: "Foreign playable game", gameType: "snake", engine: game.engine, code: game.code, ownerId: "foreign-owner" });
+  const denied = await dispatch(new URL(`/api/arcade/${foreign.id}`, "http://fixture"), "DELETE"); assert.equal(denied.status, 403);
+  assert.equal((await api(`/api/arcade/${foreign.id}`)).game.code, game.code);
+  assert.equal((await api(`/api/arcade/${game.id}`)).game.code, game.code);
 });

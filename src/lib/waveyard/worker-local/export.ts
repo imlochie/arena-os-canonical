@@ -30,7 +30,7 @@ import {
   type ExportJobPayload,
   type RemixAutomationLane,
 } from "@/lib/waveyard/types";
-import { automatedTrackBusFilters, atempoFilterChain, ffmpegFadeFilters, mixSumFilters, padToTimeline, pitchFilterChain, requiredSourceDurationMs, resolveKeySync, sourceDurationFits, tempoRatio, timelineSampleCount } from "./render-helpers";
+import { isCurrentSourceAnalysis, automatedTrackBusFilters, atempoFilterChain, ffmpegFadeFilters, mixSumFilters, padToTimeline, pitchFilterChain, requiredSourceDurationMs, resolveKeySync, sourceDurationFits, tempoRatio, timelineSampleCount } from "./render-helpers";
 import { bounceInsertBuses, insertBounceRequired } from "./export-inserts";
 import { INSERTS_FORMAT, parseInserts, type InsertChain } from "../mixer/inserts";
 import { isClipFadeShape, type ClipFadeShape } from "../fades";
@@ -305,15 +305,15 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       let sourceDurationMs = clip.durationMs;
       if (clip.tempoSyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        if (!analysis || !audio.sources.some((source) => source.id === analysis.sourceAssetId) || analysis.status !== "complete") throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
-        if (!Number.isFinite(analysis.bpm) || analysis.bpm! < 40 || analysis.bpm! > 300) throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
-        const ratio = tempoRatio(snapshot.tempoBpm, analysis.bpm!);
+        if (!isCurrentSourceAnalysis(analysis, audio.sources.find(source => source.id === stem.sourceAssetId))) throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
+        if (!Number.isFinite(analysis!.bpm) || analysis!.bpm! < 40 || analysis!.bpm! > 300) throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
+        const ratio = tempoRatio(snapshot.tempoBpm, analysis!.bpm!);
         sourceDurationMs = requiredSourceDurationMs(clip.durationMs, ratio);
         tempoByClip.set(index, { ratio, sourceDurationMs });
       }
       if (clip.keySyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        const resolution = resolveKeySync(analysis && audio.sources.some((source) => source.id === analysis.sourceAssetId) ? analysis.status : undefined, normaliseMusicalKey(analysis?.musicalKey), snapshot.targetKey);
+        const resolution = resolveKeySync(isCurrentSourceAnalysis(analysis, audio.sources.find(source => source.id === stem.sourceAssetId)) ? "complete" : undefined, normaliseMusicalKey(analysis?.musicalKey), snapshot.targetKey);
         if ("errorCode" in resolution)
           throw new ExportFailure(
             resolution.errorCode,

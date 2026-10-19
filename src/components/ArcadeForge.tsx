@@ -53,6 +53,8 @@ export default function ArcadeForge() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [history, setHistory] = useState<any[]>([]);
+  const [historyState, setHistoryState] = useState<"loading" | "ready" | "failed">("loading");
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [instruction, setInstruction] = useState("");
   const [iterating, setIterating] = useState(false);
@@ -72,11 +74,16 @@ export default function ArcadeForge() {
   const privacy = usePrivacySettings();
 
   const fetchHistory = useCallback(async () => {
+    setHistoryState("loading");
     try {
       const r = await fetch("/api/arcade?limit=30");
       const j = await r.json();
-      setHistory(j.games ?? []);
-    } catch {}
+      if (!r.ok || !Array.isArray(j.games)) throw new Error(j.error ?? "Game library could not be loaded. Retry; saved games have not been removed.");
+      setHistory(j.games); setHistoryState("ready"); setHistoryError(null);
+    } catch (error) {
+      // Keep acknowledged games and the current playable preview during outage.
+      setHistoryState("failed"); setHistoryError(error instanceof Error ? error.message : "Game library unavailable. Retry.");
+    }
   }, []);
 
   useEffect(() => {
@@ -578,6 +585,8 @@ export default function ArcadeForge() {
         </div>
         <div className="glass rounded-2xl p-4">
           <h3 className="text-sm font-extrabold text-white">🕹️ Game library</h3>
+          <button type="button" onClick={() => void fetchHistory()} disabled={historyState === "loading"} className="mt-2 text-xs text-emerald-300">{historyState === "loading" ? "Loading game library…" : historyState === "failed" ? "Retry game library" : "Refresh game library"}</button>
+          {historyError && <p role="alert" className="mt-2 text-xs text-amber-200">{historyError} Last loaded games and the current preview are retained.</p>}
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -602,7 +611,7 @@ export default function ArcadeForge() {
                 </button>
               </div>
             ))}
-            {filtered.length === 0 && <p className="text-xs text-slate-500">No games yet — forge the first.</p>}
+            {historyState === "ready" && filtered.length === 0 && <p className="text-xs text-slate-500">{search.trim() ? "No games match this search." : "No games yet — forge the first."}</p>}
           </div>
         </div>
       </aside>

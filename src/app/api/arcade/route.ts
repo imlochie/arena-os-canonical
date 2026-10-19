@@ -21,7 +21,8 @@ export const maxDuration = 60;
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const limit = Math.min(Number(url.searchParams.get("limit") ?? 20), 50);
+  const requestedLimit = Number(url.searchParams.get("limit") ?? 20);
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(Math.floor(requestedLimit), 50)) : 20;
   const full = url.searchParams.get("full") === "1";
   try {
     const rows = await db.select().from(arcadeGames).orderBy(desc(arcadeGames.createdAt)).limit(limit);
@@ -39,7 +40,7 @@ export async function GET(req: Request) {
     });
   } catch (e) {
     console.error(e);
-    return Response.json({ games: [] });
+    return Response.json({ error: "Game library unavailable. Saved games were not removed; retry when the database is available." }, { status: 503 });
   }
 }
 

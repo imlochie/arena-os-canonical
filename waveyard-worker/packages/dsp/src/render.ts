@@ -15,6 +15,18 @@ import {
 
 import { clipFadeShapeOrLinear, type ClipFadeShape } from "./fades";
 
+/** Sync is meaningful only for the exact analysed source bytes. A complete
+ * status alone must never turn stale/foreign analysis into an audible success. */
+export function isCurrentSourceAnalysis(
+  analysis: { sourceAssetId: string; projectId: string; status: string; sourceChecksumSha256: string | null } | null | undefined,
+  source: { id: string; projectId: string; checksumSha256: string } | null | undefined,
+): boolean {
+  return Boolean(analysis && source && analysis.status === "complete"
+    && analysis.sourceAssetId === source.id && analysis.projectId === source.projectId
+    && /^[a-f0-9]{64}$/.test(source.checksumSha256)
+    && analysis.sourceChecksumSha256 === source.checksumSha256);
+}
+
 /**
  * afade curve names in the bundled ffmpeg 4.1 whose formulas are EXACTLY
  * our fadeGainAt: tri = linear, qsin = sin(t·π/2) = equal-power,

@@ -23,7 +23,7 @@ import {
 import { consumeTestFault } from "@waveyard/queue";
 import { getStorage, privateObjectKey } from "@waveyard/storage";
 import { AUTOMATION_PARAMETERS, drumAnalysisProvenanceReason, drumEventsToMidiNotes, harmonyAnalysisProvenanceReason, harmonyEventsToMidiNotes, MIDI_PPQ, normaliseDrumEvents, normaliseHarmonyEvents, normaliseAutomationPoints, normaliseMusicalKey, vocalAnalysisProvenanceReason, vocalFramesToMidiNotes, type ExportJobPayload, type RemixAutomationLane } from "@waveyard/types";
-import { pitchFilterChain, resolveKeySync, ffmpegFadeFilters, mixSumFilters, padToTimeline, timelineSampleCount } from "../../../packages/dsp/src/render";
+import { isCurrentSourceAnalysis, pitchFilterChain, resolveKeySync, ffmpegFadeFilters, mixSumFilters, padToTimeline, timelineSampleCount } from "../../../packages/dsp/src/render";
 import { bounceInsertBuses, insertBounceRequired } from "../../../packages/dsp/src/bounce";
 import { INSERTS_FORMAT, parseInserts, type InsertChain } from "@waveyard/dsp";
 import { isClipFadeShape, type ClipFadeShape } from "../../../packages/dsp/src/fades";
@@ -476,6 +476,8 @@ export async function processExport(
       ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, transformedSourceIds))
       : [];
     const analysisBySourceId = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
+    const syncSources = transformedSourceIds.length ? await db.select().from(sourceAssets).where(inArray(sourceAssets.id, transformedSourceIds)) : [];
+    const syncSourceById = new Map(syncSources.map(source => [source.id, source]));
     const tempoByClip = new Map<number, { ratio: number; sourceDurationMs: number }>();
     const keyShiftByClip = new Map<number, number>();
     for (const [index, clip] of clips.entries()) {
@@ -483,18 +485,18 @@ export async function processExport(
       let sourceDurationMs = clip.durationMs;
       if (clip.tempoSyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        if (!analysis || analysis.projectId !== job.projectId || analysis.status !== "complete")
+        if (!isCurrentSourceAnalysis(analysis, syncSourceById.get(stem.sourceAssetId)))
           throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
-        if (!Number.isFinite(analysis.bpm) || analysis.bpm! < 40 || analysis.bpm! > 300)
+        if (!Number.isFinite(analysis?.bpm) || analysis!.bpm! < 40 || analysis!.bpm! > 300)
           throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
-        const ratio = tempoRatio(snapshot.tempoBpm, analysis.bpm!);
+        const ratio = tempoRatio(snapshot.tempoBpm, analysis!.bpm!);
         sourceDurationMs = requiredSourceDurationMs(clip.durationMs, ratio);
         tempoByClip.set(index, { ratio, sourceDurationMs });
       }
       if (clip.keySyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
         const resolution = resolveKeySync(
-          analysis?.projectId === job.projectId ? analysis.status : undefined,
+          isCurrentSourceAnalysis(analysis, syncSourceById.get(stem.sourceAssetId)) ? "complete" : undefined,
           normaliseMusicalKey(analysis?.musicalKey),
           snapshot.targetKey,
         );

@@ -161,3 +161,13 @@ test("bundled FFmpeg renders two delayed stereo clips without losing channel-lay
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("sync analysis is bound to the current source checksum, identity, project and completion", async () => {
+  const { isCurrentSourceAnalysis } = await import("./render-helpers");
+  const source = { id: "source", projectId: "project", checksumSha256: "a".repeat(64) };
+  const analysis = { sourceAssetId: source.id, projectId: source.projectId, sourceChecksumSha256: source.checksumSha256, status: "complete" };
+  assert.equal(isCurrentSourceAnalysis(analysis, source), true);
+  for (const patch of [{ sourceChecksumSha256: null }, { sourceChecksumSha256: "b".repeat(64) }, { sourceAssetId: "other" }, { projectId: "other" }, { status: "processing" }, { status: "failed" }]) assert.equal(isCurrentSourceAnalysis({ ...analysis, ...patch }, source), false);
+  assert.equal(isCurrentSourceAnalysis(analysis, undefined), false);
+  assert.equal(isCurrentSourceAnalysis(undefined, source), false);
+});

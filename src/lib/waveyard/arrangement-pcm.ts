@@ -7,7 +7,7 @@ import { effectiveMuted, type RemixStateInput } from "./remix";
 import { evaluateAutomation } from "./types/arrangement-automation";
 import { INSERTS_FORMAT, parseInserts, processWithChain, type InsertChain } from "./mixer/inserts";
 
-export type ArrangementPreviewState = Pick<RemixStateInput, "masterVolume" | "masterInserts" | "tracks" | "loopStartMs" | "loopEndMs" | "automation">;
+export type ArrangementPreviewState = Pick<RemixStateInput, "masterVolume" | "masterInserts" | "tracks" | "loopStartMs" | "loopEndMs" | "automation"> & Partial<Pick<RemixStateInput, "tempoBpm" | "targetKey">>;
 export type DecodedPreviewAudio = { sampleRate: number; length: number; numberOfChannels: number; getChannelData(channel: number): Float32Array };
 export const MAX_ARRANGEMENT_SECONDS = 300;
 export const MAX_ARRANGEMENT_TAIL_SECONDS = 60;
@@ -39,7 +39,7 @@ export function prepareArrangementPcm(state: ArrangementPreviewState, buffers: R
       if (!audio || audio.sampleRate !== sampleRate) throw new Error("Arrangement source audio is unavailable or has the wrong sample rate.");
       const offset = Math.round(clip.sourceOffsetMs * sampleRate / 1000);
       const count = Math.round(clip.durationMs * sampleRate / 1000);
-      const start = Math.round(clip.timelineStartMs) * sampleRate / 1000;
+      const start = Math.round(Math.round(clip.timelineStartMs) * sampleRate / 1000);
       if (offset + count > audio.length + 1) throw new Error("Arrangement clip extends beyond its source audio.");
       const left = audio.getChannelData(0), right = audio.getChannelData(Math.min(1, audio.numberOfChannels - 1));
       const shape = clipFadeShapeOrLinear(clip.fadeShape);
@@ -47,7 +47,7 @@ export function prepareArrangementPcm(state: ArrangementPreviewState, buffers: R
         const ms = frame * 1000 / sampleRate;
         const fadeIn = clip.fadeInMs > 0 ? fadeGainAt(shape, Math.min(1, ms / clip.fadeInMs)) : 1;
         const fadeOut = clip.fadeOutMs > 0 ? fadeGainAt(shape, Math.min(1, (clip.durationMs - ms) / clip.fadeOutMs)) : 1;
-        const index = Math.round(start) + frame;
+        const index = start + frame;
         bus[index * 2] += (left[offset + frame] ?? 0) * clip.gain * fadeIn * fadeOut;
         bus[index * 2 + 1] += (right[offset + frame] ?? 0) * clip.gain * fadeIn * fadeOut;
       }
@@ -55,12 +55,19 @@ export function prepareArrangementPcm(state: ArrangementPreviewState, buffers: R
     const lanes = (state.automation ?? []).filter((lane) => lane.remixTrackId === track.id);
     const volumes = lanes.find((lane) => lane.parameter === "volume")?.points ?? [];
     const pans = lanes.find((lane) => lane.parameter === "pan")?.points ?? [];
+    const constantVolume = track.volume * (track.phaseInverted ? -1 : 1);
+    const constantLeft = constantVolume * Math.cos((track.pan + 1) * Math.PI / 4);
+    const constantRight = constantVolume * Math.sin((track.pan + 1) * Math.PI / 4);
+    if (!volumes.length && !pans.length) {
+      for (let frame = 0; frame < bus.length / 2; frame++) { bus[frame * 2] *= constantLeft; bus[frame * 2 + 1] *= constantRight; }
+    } else {
     for (let frame = 0; frame < bus.length / 2; frame++) {
       const ms = frame * 1000 / sampleRate;
       const volume = evaluateAutomation(volumes, ms, track.volume) * (track.phaseInverted ? -1 : 1);
       const pan = evaluateAutomation(pans, ms, track.pan);
       bus[frame * 2] *= volume * Math.cos((pan + 1) * Math.PI / 4);
       bus[frame * 2 + 1] *= volume * Math.sin((pan + 1) * Math.PI / 4);
+    }
     }
     const processed = processWithChain(bus, inserts, sampleRate); assertBoundedPcm(processed, sampleRate);
     if (processed.length > drySamples + MAX_ARRANGEMENT_TAIL_SECONDS * sampleRate * 2) throw new Error("Combined track FX tails exceed the 60-second allowance.");
