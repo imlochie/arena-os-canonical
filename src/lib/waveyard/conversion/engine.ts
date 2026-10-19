@@ -1,7 +1,7 @@
 /** Native local-file conversion. No URLs, shells, protected playback or downloads. */
 import { z } from "zod";
 import { execTool, type FfmpegTool } from "../ffmpeg";
-import { checksumFile, probeAudio } from "../audio";
+import { checksumFile, probeAudio, localAudioInputOptions } from "../audio";
 
 export const formats = {
   mp3: { encoder: "libmp3lame", codec: "mp3", ext: "mp3", mime: "audio/mpeg", lossy: true },
@@ -32,7 +32,7 @@ export async function capabilities() {
   return Object.entries(formats).map(([id, format]) => ({ id, ...format, available: new RegExp(`\\b${format.encoder}\\b`).test(text) }));
 }
 export async function inspect(filename: string) {
-  const raw = JSON.parse(await runTool("ffprobe", ["-v", "error", "-show_format", "-show_streams", "-of", "json", filename]));
+  const raw = JSON.parse(await runTool("ffprobe", [...localAudioInputOptions, "-v", "error", "-show_format", "-show_streams", "-of", "json", filename]));
   const audio = raw.streams?.find((s: { codec_type: string }) => s.codec_type === "audio");
   if (!audio) throw new Error("No readable audio stream. Protected, unsupported or corrupt files cannot be converted.");
   const merged = Object.fromEntries(Object.entries({ ...raw.format?.tags, ...audio.tags }).map(([k, v]) => [k.toLowerCase().replace(/ /g, "_"), String(v)]));
@@ -66,7 +66,7 @@ function encoder(settings: Settings) {
 export async function convert(input: string, output: string, settings: Settings, tags: Tags, signal?: AbortSignal) {
   const source = await inspect(input), format = formats[settings.format];
   if (!(await capabilities()).find(c => c.id === settings.format)?.available) throw new Error(`Encoder unavailable: ${format.encoder}. No extension-only conversion performed.`);
-  const args = ["-v", "error", "-nostdin", "-n", "-i", input, "-map", "0:a:0", "-map_metadata", "0", "-map_chapters", "-1", "-c:a", encoder(settings)];
+  const args = ["-v", "error", "-nostdin", "-n", ...localAudioInputOptions, "-i", input, "-map", "0:a:0", "-map_metadata", "0", "-map_chapters", "-1", "-c:a", encoder(settings)];
   if (format.lossy) args.push("-b:a", `${settings.bitrate}k`);
   if (["flac", "alac"].includes(settings.format)) args.push("-sample_fmt", (settings.pcmBits === 24 ? "s32" : "s16") + (settings.format === "alac" ? "p" : ""), "-bits_per_raw_sample", String(settings.pcmBits));
   if (settings.format === "flac") args.push("-compression_level", String(settings.compression));
@@ -84,7 +84,7 @@ export async function verify(output: string, source: Awaited<ReturnType<typeof i
   const actual = await inspect(output), format = formats[settings.format];
   if (actual.codec !== (["wav", "aiff"].includes(settings.format) ? encoder(settings) : format.codec) || actual.sampleRate !== (settings.sampleRate ?? source.sampleRate) || actual.channels !== (settings.channels ?? source.channels) || Math.abs(actual.durationSeconds - source.durationSeconds) > 0.15) throw new Error("Output codec, duration, sample rate or channel verification failed. No completion certified.");
   if (!settings.channels && source.channelLayout !== "unknown" && actual.channelLayout !== source.channelLayout) throw new Error("Output channel layout changed without an explicit channel override. No completion certified.");
-  await runTool("ffmpeg", ["-v", "error", "-xerror", "-nostdin", "-i", output, "-map", "0:a:0", "-f", "null", "-"], signal);
+  await runTool("ffmpeg", ["-v", "error", "-xerror", "-nostdin", ...localAudioInputOptions, "-i", output, "-map", "0:a:0", "-f", "null", "-"], signal);
   const warnings = Object.entries(tags).filter(([key, value]) => (actual.tags[key as keyof Tags] ?? "") !== value).map(([key]) => `Tag not preserved exactly by ${settings.format}: ${key}`);
   for (const [key,value] of Object.entries(source.unreviewedTags)) if (actual.unreviewedTags[key] !== value) warnings.push(`Additional embedded tag not preserved exactly by ${settings.format}: ${key}`);
   if (source.channelLayout === "unknown") warnings.push("Source channel layout is unknown; channel count was checked, exact speaker positions cannot be certified.");

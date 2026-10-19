@@ -1295,3 +1295,288 @@ semantics; and large-record immutable archival through existing private storage.
 The queue/close fixes do not establish durable provider execution receipts or
 exactly-once external calls. The genuine-model/Electron/Windows and real Redis
 FX restart gaps remain; no unavailable asset downloads were retried.
+
+## 2026-10-19 — Mandate 10: connected native music conversion, retained playlists and optional external launch
+
+### Reconciliation and scope
+
+The starting runtime/source head was `2f97e7403d6f35ef70e62a022c82c449ea692cba`,
+not an assumed merge. PR 15 remained OPEN on
+`arena/331aa502-arena-os-canonical`; PR 14 remained OPEN at
+`536c940c2df502f12f0945789e0053fa68466eff`. A fresh `git ls-remote origin
+refs/heads/main` still returned `f0e4180841cd047080b06d6cb43cd2effa9ab98f`.
+Both exact-starting-head CI runs 39222205003 / 39222198681 had succeeded.
+Neither PR was merged. Mandates 8/9 and their evidence/chronology are retained.
+The implementation commit is `9e48029b3d8e99cde97e3c065d1a24612ccf9823`;
+a subsequent local-input security correction and this continuation are recorded
+below. No downloaded fixtures, database files, recordings, model files or
+private evidence were added to Git.
+
+The audit followed existing library intake → source/assets/private storage →
+processing_jobs/LocalJobBroker → library → session → existing Studio handoff.
+It reused those paths, not another library, framework or music-job store.
+Conversion is native/in-process and independent of TunePat. The external Redis
+worker has no conversion executor: the API/UI explicitly report that limitation
+rather than enqueue an unhandled conversion or claim it completed.
+
+### Implemented connected workflow
+
+- Existing Waveyard home now exposes a conversion workbench: individual/multiple
+  files, explicit folder selection, drag/drop including directory traversal,
+  per-item intake failures, retained original library sources, metadata review,
+  meaningful encoding settings, durable operation history, verified download,
+  library links and ordered selection into an existing/new session.
+- Real FFmpeg MP3, AAC-in-M4A, WAV, FLAC, AIFF and ALAC-in-M4A encoding is available
+  only when the active encoder is detected. Defaults preserve source rate/channel
+  layout. Overrides include mono/stereo and 22.05/44.1/48/96 kHz; lossless output
+  supports 16/24-bit precision, FLAC compression effort, and lossy bitrate choices.
+  Verification checks codec, duration (explicit 150 ms tolerance), rate, channels,
+  known speaker layout, readable complete decode, file size and SHA-256.
+  Lossy-to-lossless is explicitly not restoration. Unknown layout and lost or
+  changed reviewed/additional tags/cover art produce warnings.
+- Review edits title, artist, album, album artist, track/disc, date, genre and
+  existing/user-provided lyrics. Actual ID3/MP4/Vorbis container behavior is
+  exercised. Compatible attached PNG/JPEG cover art is preserved; unsupported
+  container loss is reported. **Cover replacement/editing is not implemented.**
+  Review edits are explicitly drafts until queued; leaving the page discards
+  those edits, not the already retained source. Queued tags/settings survive.
+- Conversion reuses processing_jobs, the serial broker, advisory locking and
+  run fencing. Queued/Processing/Verifying/Completed plus publication/library
+  stages and explicit Failed/Cancelled are durable. Cancel/retry/resume preserve
+  the output identity. Event history retains previous failure/retry reasons.
+  Recovery verifies/reuses existing publication; completed retries validate
+  retained bytes instead of producing another output.
+- Source/output private-media boundaries reject symlinks, hardlinks and
+  nonregular/traversal aliases. Safe relative naming rejects absolute paths,
+  traversal and arbitrary host destinations. A full stable job directory and
+  filename suffix prevent silent collisions/overwrites. Source and output
+  checksums are retained. The shared process runner has bounded diagnostics
+  (2 MiB) and waits for child closure before cleanup after abort/output overflow.
+- Publication is immutable and recoverable before library acknowledgement.
+  Output library intake references that same object rather than copying audio.
+  Per-owner checksum deduplication is serialized; session insertion uses a
+  transactional stable operation identity, preserves order and rejects changed
+  intent. Fractional audio duration is retained in canonical/worker schemas,
+  ingestion and separation writers: a 1.25-second source is not silently cut to
+  one second when sent through the existing session → Studio path.
+- User-provided Apple-style TSV (UTF-8 or BOM-aware UTF-16 in the browser) and
+  M3U/M3U8 metadata can be reviewed against owned local tracks by
+  title/artist/album/duration. Duplicates/artist-less candidates require explicit
+  resolution; URL/file locations are metadata only and are never opened.
+  The complete original export, order, identifiers and resolved/unresolved
+  entries are retained in a checksummed immutable existing Artifact object.
+  Existing playlists receive only the playable verified-local subset, preserving
+  relative order and repeated songs. Atomic playlist/manifest identity survives
+  retry and SQL restart; unresolved catalog references never become fake audio.
+- Legitimately supplied UTF-8 LRC/TXT can be imported into review and retained
+  conversion tags, then exported as LRC or TXT. No lyric-service retrieval or
+  invented lyrics are used.
+- Optional TunePat installation path/status/open uses a strict local Windows
+  `.exe` path and no shell/arguments/private interfaces. Launch additionally
+  requires explicit confirmation, local desktop mode and fresh authenticated
+  owner presence. Configuration is browser-local and loaded explicitly. Its
+  selected completed-output folder enters the same file intake/deduplication
+  path; no watcher reads unselected host folders. The supplied Program Files
+  candidate is a suggestion, not a universal installation path.
+
+### Actual evidence and commands (external to Git)
+
+Do not add overlapping runs/subsets into an inflated acceptance total. These
+are separate executions and scopes; they use deterministic audible synthetic
+PCM, not model inference or commercial/protected music.
+
+1. `node --import ./scripts/register-src-loader.mjs --test
+   src/lib/waveyard/conversion/*.test.ts src/lib/waveyard/ffmpeg.test.ts`:
+   final local-input-boundary run **10 PASS / 0 FAIL / 0 SKIP, 2304.740 ms,
+   exit 0**, `/home/user/mandate10-unit-boundaries-final.txt`. Real six-codec
+   encode/decode, Unicode metadata, cover preservation/loss warnings, source
+   precision, 5.1 layout preservation, explicit 44.1-kHz/stereo/16-bit CD-ready
+   PCM WAV, lossy-source warnings, naming rejection, playlist matching, TunePat
+   unavailable/invalid paths and bounded process diagnostics are covered.
+   The CD-ready WAV is **not a burned disc**.
+2. `LD_LIBRARY_PATH="/tmp/al2023/lib:$PWD/node_modules/@embedded-postgres/linux-x64/native/lib"
+   CHROMIUM_EXECUTABLE_PATH=/tmp/chromium
+   ARENA_MUSIC_EVIDENCE_DIR=/home/user/mandate10-performance-boundaries
+   node --import ./scripts/register-src-loader.mjs --test
+   tests/acceptance/music-conversion.test.mjs`:
+   latest **9 PASS / 0 FAIL / 0 SKIP, 73329.656 ms, exit 0**,
+   `/home/user/mandate10-native-boundaries.txt`. Real PostgreSQL, FFmpeg, private
+   files and the actual React workbench in Chromium are used. Assertions include:
+   - mixed MP3/FLAC success/corrupt failure; tags, duration, checksums and exact
+     object reuse; foreign-owner refusal, HTTP 401, cancellation/idempotency;
+   - PostgreSQL restart and SIGKILL after actual AAC publication preserve key,
+     bytes and mtime; failure after ALAC library insertion but before SQL
+     completion resumes without another playable track;
+   - source/output symlink and hardlink refusal, no outside writes, completed
+     corrupted publication invalidation and exact-byte restoration;
+   - actual browser folder intake through the optional bridge using synthetic
+     audio (**not TunePat-produced output**), Linux unsupported-platform status,
+     LRC import/tagging/retained-file download, two completed outputs → ordered
+     session, retained history on real SQL outage, duplicate-safe insertion and
+     exact sequential Studio placement at 0/1250 ms;
+   - BOM UTF-16 browser playlist review/import/reopen, matched plus unmatched
+     references; real route tests also retain ambiguity, duplicate-song order,
+     original manifest indices, source checksums, owner isolation and SQL-restart
+     identity/changed-intent conflict;
+   - interruption **during an actually spawned FFmpeg encode**: encoder stopped,
+     worker and encoder killed, processing row has no verified partial receipt,
+     resumed encode completes from unchanged source with two attempts. Separate
+     publication and post-library-completion failure cases remain covered.
+3. Batch measurements from that same nine-test execution (not additional tests):
+   48 distinct 30-second stereo FLAC inputs were actually ingested in 3924.413 ms.
+   At concurrency one, 12 MP3 publications with decode/SQL/library reuse completed
+   in **10524.460 ms**, 8,655,905 output bytes; 48 completed in **41529.241 ms**,
+   34,623,677 bytes. Every output key/library track was distinct and complete.
+   Sampled Node RSS peaks at 25-ms intervals were **266,952,704 / 257,470,464
+   bytes**, respectively. These exclude native children/browser/whole-host memory
+   and are not an absolute memory bound. Metadata/probe subprocess and codec work
+   remain material costs; this is not a 1000-track or long-album stress guarantee.
+   `/home/user/mandate10-performance-boundaries/batch-measurements.json` retains
+   machine-readable results. Earlier like-for-like 12/48 runs before removing a
+   redundant second temporary-file decode were 10742.284/44405.104 ms, then
+   10271.271/41919.309 ms after; one comparison is **not** a general speedup
+   guarantee. Physical published identity is now rechecked instead of decoding
+   that same temporary file twice; recovered bytes still undergo full decode.
+4. The full ten-file durable regression command in CI (mission-recovery,
+   studio-fx, artifact-retention, cross-room-references, orchestrator-durability,
+   artifact-objects, object-reclamation, arcade-attempts, foundry-workflow,
+   music-conversion) ran with the same loader/Chromium/library environment:
+   **97 PASS / 0 FAIL / 0 SKIP, 231907.433 ms, exit 0**,
+   `/home/user/mandate10-durable-full.txt`, with retained FX evidence in
+   `/home/user/mandate10-durable-evidence`. This run began on the implementation
+   source before the final local-input allowlist correction; the focused nine
+   music tests and ten native units above were rerun after it. Exact-final-head
+   CI is tracked separately, not inferred from this earlier run.
+5. The initial full `npm test` attempt was **1362 PASS / 5 FAIL / 0 SKIP,
+   655838.551 ms**, `/home/user/mandate10-full-source.txt`. All five failures were
+   migration 0022's multiple commands in one prepared query (four deep-agent
+   verification cases, one mission execution). Statement breakpoints were added.
+   The migration-corrected real-PostgreSQL wrapper
+   `LD_LIBRARY_PATH="/tmp/al2023/lib:$PWD/node_modules/@embedded-postgres/linux-x64/native/lib"
+   node --import ./scripts/register-src-loader.mjs /home/user/mandate10-source.mjs`
+   then completed **1372 PASS / 0 FAIL / 0 SKIP, 39 suites, 740209.006 ms,
+   exit 0**, `/home/user/mandate10-full-source-final.txt`. The wrapper starts a
+   private real PostgreSQL and runs `npm test`; it does not rewrite test results.
+   The final demuxer regression was added after this run began: this is not a
+   claim that all 1373 final source tests ran locally on an immutable final head.
+6. `npm run typecheck` and `npm run lint` after the boundary correction both
+   exited 0; `/home/user/mandate10-types-boundaries.txt` and
+   `/home/user/mandate10-lint-boundaries.txt`. Lint has **48 existing warnings,
+   zero errors**; the newly introduced effect warning was corrected rather than
+   waived. Root typecheck also passed after worker dependencies were installed.
+   Earlier production `npm run build` exited 0 at
+   `/home/user/mandate10-build-final.txt`; final boundary rebuild/proof follows.
+7. Actual compiled Next + real PostgreSQL + Chromium command
+   `LD_LIBRARY_PATH="/tmp/al2023/lib:$PWD/node_modules/@embedded-postgres/linux-x64/native/lib"
+   node --import ./scripts/register-src-loader.mjs /home/user/mandate10-production-check.mjs`
+   passed before the final allowlist change: **12611.029 ms**, exit 0,
+   `/home/user/mandate10-production-final.txt` and
+   `/home/user/mandate10-production-result.json`, screenshot
+   `/home/user/mandate10-production-studio.png`. Invalid input was reported,
+   reviewed MP3/FLAC were actually encoded/downloaded, added to a session and sent
+   through existing Studio. A saved/reopened edit at timeline 250 ms, source
+   offset 100 ms, duration 1000 ms exported **55,125 decoded WAV frames at
+   44.1 kHz**, initial 11,025 frames silent; maximum preview/export sample error
+   **0.00005482137203216553**, zero page errors. Authentication uses a controlled
+   verified session fixture, **not a WebAuthn ceremony**. Final rebuild/retest is
+   appended below rather than silently replacing this evidence.
+8. `npm run desktop:compile` exited 0,
+   `/home/user/mandate10-desktop-compile.txt`. `npm run desktop:doctor` exited
+   **1**, `/home/user/mandate10-desktop-doctor.txt`: Electron package 44.7.0 is
+   present but its binary and Linux display/Xvfb are absent. No Electron window,
+   installed desktop, Windows TunePat launch, genuine separation/checkpoint
+   processing or real inference is accepted by these browser/native tests.
+9. `npm ci --prefix waveyard-worker --ignore-scripts --no-audit --no-fund` exited
+   0, 74 packages. An additional
+   `npm run build --prefix waveyard-worker --workspace=@waveyard/worker` attempt
+   exited **2 with 33 TypeScript errors**, `/home/user/mandate10-worker-types.txt`:
+   legacy `waveyard-worker/tests/unit` imports missing `vitest` and removed
+   `apps/web` paths, plus consequent implicit-any errors. Its package/tsconfig
+   are unchanged from the starting head. This separate preserved-monorepo
+   workspace is **not** claimed green; no unrelated compatibility rewrite or
+   exclusion was introduced to conceal that result.
+
+### Late local-file boundary correction
+
+Inspection found that trusting an uploaded filename is insufficient: FFmpeg can
+interpret playlist/program containers. Shared `probeAudio` and native
+inspect/convert/full-decode now allowlist local file protocol and the supported
+ordinary audio demuxers before reading input headers. HLS/concat are not native
+music intake. A real HTTP listener received **zero requests** while both probe
+paths rejected HLS with normal and disguised extensions, and concat pointing at
+an existing different local FLAC was refused. The first new test expected the
+word `whitelist` for disguised HLS, but this FFmpeg build rejects that extension
+before demuxer selection; that assertion failure is retained in
+`/home/user/mandate10-unit-boundaries.txt`. The corrected test separately requires
+allowlist refusal for standard HLS and concat, and accepts the earlier invalid-
+data rejection for disguised HLS. This is a shared process/path fix, not a fake
+network provider or extension-only validation.
+
+### External-source investigation and explicit remaining limits
+
+Fetched primary pages during this execution:
+
+- https://developer.apple.com/documentation/applemusicapi describes catalog and
+  personal-library metadata, playlists and authorization, developer tokens and
+  Music User Tokens. No API token/user authorization was available or fabricated.
+  Live catalog/MusicKit integration is **not implemented/accepted** here.
+- https://support.apple.com/guide/music/save-a-copy-of-your-playlists-mus27cd5060f/mac
+  explicitly supports exporting song information as text; it also states that
+  exports contain information, **not the actual songs/videos**. TSV support is
+  this legitimate user-export slice; XML import remains unimplemented.
+- https://support.apple.com/guide/iphone/add-music-and-listen-offline-iph0cff2d191/ios
+  documents offline subscription playback inside Music, not a raw-file export
+  authorization or permission to circumvent protected content.
+- https://www.tunepat.fr/apple-music-converter.html and its linked
+  https://www.tunepat.fr/online-help/music-converter.html document product claims
+  and manual UI use. The inspected material did not establish a supported
+  automation API/CLI. Its marketing quality/speed/legal claims are **not** Arena
+  acceptance or a license to capture protected audio. No private interface,
+  credential extraction, DRM bypass, browser automation of protected playback,
+  application audio capture or invented downloader was implemented.
+
+Linux status/missing/invalid-path behavior and explicit folder intake are real;
+a successful TunePat executable launch/window/generated output is unavailable on
+this host and is **not accepted**. macOS TunePat launch is not implemented.
+CD burner commands/hardware were unavailable (`wodim`/`cdrecord`/`cdrdao` not
+found); CD-ready PCM conversion is not burning. Existing Studio editing/export
+and separation infrastructure are reused, but this work adds no genuine model,
+lyric provider, tuner, disc device or autonomous provider acceptance.
+
+Further limits: explicit durable resume rather than automatic startup scavenging;
+serial concurrency, not a parallel native converter; interrupted encodes may
+leave unverified temp files (recovery ignores/reencodes them; no general orphan-
+temp scavenger is claimed); private managed destination and per-file download,
+not arbitrary host output directories or bulk ZIP export; no playlist naming
+placeholder/output-folder organization beyond existing artist/album/track/disc/
+title tokens; no artwork replacement UI; review drafts not durable before queue;
+no claim that unknown metadata or every speaker layout/container survives;
+maximum permitted upload/1000-item theoretical limits were not stress accepted.
+These narrow claims, not a requirement to return to Windows, govern continuation.
+
+### Final compiled proof and CI checkpoint
+
+After the local-input correction, `npm run build` again exited **0**
+(`/home/user/mandate10-build-boundaries.txt`). The production server was stopped
+before rebuilding and restarted from that build bound to `0.0.0.0:3050`.
+The same compiled browser/session/Studio/export/reopen command then passed in
+**10557.552 ms**, exit **0**, `/home/user/mandate10-production-boundaries.txt`:
+MP3/FLAC, invalid-intake handling, actual verified downloads, saved/reopened
+100-ms-offset edit, 55,125 decoded frames, maximum error
+`0.00005482137203216553`, **zero page errors**. The current JSON/screenshot are
+`/home/user/mandate10-production-result.json` and
+`/home/user/mandate10-production-studio.png`; the preceding build's artifacts
+were preserved as `mandate10-production-pre-boundary-{result.json,studio.png}`.
+This remains controlled-auth **compiled browser/native** acceptance, not Electron,
+actual TunePat execution or inference.
+
+A fresh GitHub query confirmed exact implementation-head
+`9e48029b3d8e99cde97e3c065d1a24612ccf9823` CI run
+https://github.com/imlochie/arena-os-canonical/actions/runs/39241609507
+**completed SUCCESS**, all four jobs SUCCESS: static typecheck/lint/test/build,
+Compose images, A7 real PostgreSQL/Redis/BullMQ runtime, and Waveyard browser
+audio/durable acceptance. This does **not** certify the later local-input
+security correction by implication. Its forthcoming exact-head run must be
+queried after push; the PR progress comment will carry that resulting full head
+and run URL/status, rather than making this document self-reference its own
+commit hash or rewriting earlier evidence. PRs 15 and 14 remain open/unmerged.
