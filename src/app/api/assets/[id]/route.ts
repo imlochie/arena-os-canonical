@@ -30,7 +30,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (signed) return NextResponse.redirect(signed);
     const localPath = storage.getLocalPath(asset.storageKey);
     if (!localPath) return NextResponse.json({ error: "Storage cannot serve this asset." }, { status: 500 });
-    const file = await stat(localPath); const range = request.headers.get("range"); const contentType = stem ? "audio/wav" : (source?.mimeType ?? "application/octet-stream");
+    const file = await stat(localPath); const range = request.headers.get("range"); const contentType = stem ? (stem.engine === "passthrough-unseparated" ? stem.format : "audio/wav") : (source?.mimeType ?? "application/octet-stream");
     if (range) {
       const [startRaw, endRaw] = range.replace(/bytes=/, "").split("-"); const start = Number(startRaw); const end = endRaw ? Number(endRaw) : file.size - 1;
       if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end >= file.size || start > end) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.size}` } });

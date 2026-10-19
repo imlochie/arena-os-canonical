@@ -310,34 +310,32 @@ export async function addTrackToSession(input: {
   sessionId: string;
   trackId: string;
   position?: number;
+  /** Optional operation identity: retry one insertion, while intentional repeats
+   * without this identity retain the established live-set semantics. */
+  operationId?: string;
 }): Promise<SessionDetailPayload> {
-  await ownedSession(input.ownerId, input.sessionId);
-  const [track] = await db
-    .select({ id: tracks.id })
-    .from(tracks)
-    .where(and(eq(tracks.id, input.trackId), eq(tracks.ownerId, input.ownerId)))
-    .limit(1);
-  if (track === undefined) throw new TrackNotInLibraryError();
-
-  const existing = await loadSessionTracks(input.sessionId);
-  const [item] = await db
-    .insert(listenSessionTracks)
-    .values({
-      sessionId: input.sessionId,
-      trackId: input.trackId,
-      position: existing.length,
-      stemMix: "{}",
-      transition: JSON.stringify(defaultTransitionConfig()),
-    })
-    .returning({ id: listenSessionTracks.id });
-  let ordered = [...existing.map((row) => row.id), item.id];
-  if (input.position !== undefined) {
-    const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
-    const from = ordered.length - 1;
-    ordered.splice(to, 0, ordered.splice(from, 1)[0]);
-  }
-  await resequence(input.sessionId, ordered);
-  await touchSession(input.sessionId);
+  await db.transaction(async tx => {
+    const [session] = await tx.select().from(listenSessions).where(and(eq(listenSessions.id, input.sessionId), eq(listenSessions.ownerId, input.ownerId))).for("update");
+    if (!session) throw new SessionNotFoundError();
+    const [track] = await tx.select({ id: tracks.id }).from(tracks).where(and(eq(tracks.id, input.trackId), eq(tracks.ownerId, input.ownerId)));
+    if (!track) throw new TrackNotInLibraryError();
+    if (input.operationId) {
+      const [previous] = await tx.select().from(listenSessionTracks).where(eq(listenSessionTracks.id, input.operationId));
+      if (previous) {
+        if (previous.sessionId !== input.sessionId || previous.trackId !== input.trackId) throw new StemSwapRefusedError("Session insertion identity belongs to a different item; no substitution allowed.");
+        return;
+      }
+    }
+    const existing = await tx.select({ id: listenSessionTracks.id }).from(listenSessionTracks).where(eq(listenSessionTracks.sessionId, input.sessionId)).orderBy(asc(listenSessionTracks.position));
+    const [item] = await tx.insert(listenSessionTracks).values({ id: input.operationId, sessionId: input.sessionId, trackId: input.trackId, position: existing.length, stemMix: "{}", transition: JSON.stringify(defaultTransitionConfig()) }).returning({ id: listenSessionTracks.id });
+    const ordered = [...existing.map(row => row.id), item.id];
+    if (input.position !== undefined) {
+      const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
+      ordered.splice(to, 0, ordered.splice(ordered.length - 1, 1)[0]);
+    }
+    for (const [position, id] of ordered.entries()) await tx.update(listenSessionTracks).set({ position }).where(eq(listenSessionTracks.id, id));
+    await tx.update(listenSessions).set({ updatedAt: new Date() }).where(eq(listenSessions.id, input.sessionId));
+  });
   return sessionPayload(input.sessionId);
 }
 

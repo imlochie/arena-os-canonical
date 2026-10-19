@@ -20,6 +20,8 @@ const ACCEPTED_EXTENSIONS = new Set([
   ".m4a",
   ".aac",
   ".ogg",
+  ".aif",
+  ".aiff",
 ]);
 export const MAX_UPLOAD_BYTES = Number(
   process.env.MAX_UPLOAD_BYTES ?? 524_288_000,

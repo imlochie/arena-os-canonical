@@ -21,7 +21,8 @@
 
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 
-import { db } from "@/db";
+import { db, pool } from "@/db";
+import { inspect } from "../conversion/engine";
 import {
   playbackState,
   playlistItems,
@@ -227,8 +228,14 @@ export async function addTrackFromAudioFile(input: {
   device?: "auto" | "cpu" | "cuda";
   title?: string;
   artist?: string;
+  album?: string;
+  existingObject?: { storageKey: string; checksumSha256: string };
+  prepareSeparation?: boolean;
 }): Promise<AddTrackResult> {
   const checksum = await checksumFile(input.filePath);
+  const lock = await pool.connect();
+  try {
+  await lock.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [`library-import:${input.ownerId}:${checksum}`]);
 
   const [existing] = await db
     .select(trackSelection)
@@ -243,8 +250,9 @@ export async function addTrackFromAudioFile(input: {
   }
 
   const derived = deriveTrackMetadata(input.filename);
-  const title = (input.title ?? "").trim() || derived.title;
-  const artist = (input.artist ?? "").trim() || derived.artist;
+  const embedded = await inspect(input.filePath);
+  const title = (input.title ?? embedded.tags.title ?? "").trim() || derived.title;
+  const artist = (input.artist ?? embedded.tags.artist ?? "").trim() || derived.artist;
 
   const [container] = await db
     .insert(projects)
@@ -264,7 +272,9 @@ export async function addTrackFromAudioFile(input: {
     mimeType: input.mimeType,
     model: input.model ?? defaultSeparationModel(),
     device: input.device ?? "auto",
-    provenance: { method: "local-upload", title, artist, metadata: { intake: "waveyard-library" } },
+    provenance: { method: "local-upload", title, artist, metadata: { intake: "waveyard-library", ...(input.existingObject ? { conversionObject: input.existingObject } : {}) } },
+    existingObject: input.existingObject,
+    prepareSeparation: input.prepareSeparation,
   });
 
   const [row] = await db
@@ -273,7 +283,7 @@ export async function addTrackFromAudioFile(input: {
       ownerId: input.ownerId,
       title,
       artist,
-      album: "",
+      album: input.album ?? embedded.tags.album ?? "",
       sourceAssetId: ingest.source.id,
       projectId: container.id,
       durationSeconds: ingest.source.durationSeconds,
@@ -281,6 +291,10 @@ export async function addTrackFromAudioFile(input: {
     .returning(trackSelection);
   const [summary] = await summariesFor([row]);
   return { track: summary, created: true, separationQueued: ingest.separationQueued };
+  } finally {
+    try { await lock.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [`library-import:${input.ownerId}:${checksum}`]); }
+    finally { lock.release(); }
+  }
 }
 
 // ------------------------------------------------------------- track reading

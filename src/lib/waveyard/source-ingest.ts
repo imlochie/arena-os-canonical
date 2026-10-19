@@ -1,3 +1,4 @@
+import { verifyStoredFile } from "../../../waveyard-worker/packages/dsp/src/verified-file";
 import { extname } from "node:path";
 import { eq } from "drizzle-orm";
 import { checksumFile, probeAudio, sanitizedFilename } from "./audio";
@@ -33,20 +34,27 @@ export async function ingestSourceFile(input: {
   model: string;
   device: "auto" | "cpu" | "cuda";
   provenance: SourceAcquisitionProvenance;
+  existingObject?: { storageKey: string; checksumSha256: string };
+  prepareSeparation?: boolean;
 }) {
   const cleanName = sanitizedFilename(input.filename);
   const metadata = await probeAudio(input.filePath);
   const checksum = await checksumFile(input.filePath);
-  const storageKey = privateObjectKey(input.projectId, "source", extname(cleanName));
+  const storageKey = input.existingObject?.storageKey ?? privateObjectKey(input.projectId, "source", extname(cleanName));
   let stored = false;
   try {
-    await getStorage().putFile(storageKey, input.filePath, input.mimeType || "application/octet-stream");
-    stored = true;
+    if (input.existingObject) {
+      if (input.existingObject.checksumSha256 !== checksum) throw new Error("Published conversion checksum changed; import refused.");
+      await verifyStoredFile(getStorage(), { storageKey, checksumSha256: checksum, fileSizeBytes: metadata.sizeBytes });
+    } else {
+      await getStorage().putFile(storageKey, input.filePath, input.mimeType || "application/octet-stream");
+      stored = true;
+    }
     
     const { source, job, waveformJob } = await db.transaction(async (tx) => {
       const [createdSource] = await tx.insert(sourceAssets).values({
         projectId: input.projectId, originalFilename: cleanName, mimeType: input.mimeType || "application/octet-stream", storageKey, checksumSha256: checksum,
-        durationSeconds: Math.round(metadata.durationSeconds), sampleRate: metadata.sampleRate, channels: metadata.channels,
+        durationSeconds: metadata.durationSeconds, sampleRate: metadata.sampleRate, channels: metadata.channels,
         codec: metadata.codec, bitrate: metadata.bitrate, fileSizeBytes: metadata.sizeBytes,
       }).returning();
       await tx.insert(sourceAcquisitions).values({
@@ -62,7 +70,7 @@ export async function ingestSourceFile(input: {
       return { source: createdSource, job: createdJob, waveformJob: createdWaveformJob };
     });
     let separationQueued = true;
-    try { await enqueueSeparation({ processingJobId: job.id, projectId: input.projectId, sourceAssetId: source.id, model: input.model, requestedDevice: input.device }); }
+    try { if (input.prepareSeparation === false) throw new Error("Separation not requested. Original full audio remains playable and available for explicit Studio passthrough."); await enqueueSeparation({ processingJobId: job.id, projectId: input.projectId, sourceAssetId: source.id, model: input.model, requestedDevice: input.device }); }
     catch (error) {
       separationQueued = false;
       await db.update(processingJobs).set({ status: "failed", stage: "queue-unavailable", errorCode: "queue_unavailable", errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.", completedAt: new Date(), updatedAt: new Date() }).where(eq(processingJobs.id, job.id));

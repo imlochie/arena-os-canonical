@@ -206,7 +206,7 @@ jobs:
       - name: Exercise durable mission review and Studio FX through real browser, PostgreSQL and rendering
         env:
           ARENA_STUDIO_FX_EVIDENCE_DIR: .data/acceptance/studio-fx
-        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/mission-recovery.test.mjs tests/acceptance/studio-fx.test.mjs tests/acceptance/artifact-retention.test.mjs tests/acceptance/cross-room-references.test.mjs tests/acceptance/orchestrator-durability.test.mjs tests/acceptance/artifact-objects.test.mjs tests/acceptance/object-reclamation.test.mjs tests/acceptance/arcade-attempts.test.mjs tests/acceptance/foundry-workflow.test.mjs | tee durable-workflows-acceptance.tap
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/mission-recovery.test.mjs tests/acceptance/studio-fx.test.mjs tests/acceptance/artifact-retention.test.mjs tests/acceptance/cross-room-references.test.mjs tests/acceptance/orchestrator-durability.test.mjs tests/acceptance/artifact-objects.test.mjs tests/acceptance/object-reclamation.test.mjs tests/acceptance/arcade-attempts.test.mjs tests/acceptance/foundry-workflow.test.mjs tests/acceptance/music-conversion.test.mjs | tee durable-workflows-acceptance.tap
       - name: Publish failing durable workflow test identities
         if: failure()
         run: node scripts/ci-test-summary.mjs durable-workflows-acceptance.tap

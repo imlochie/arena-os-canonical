@@ -22,3 +22,7 @@ test("aborting execTool waits for child close before callers can clean its worki
     assert.equal(await readFile(closed, "utf8"), "closed", "AbortError must not precede child termination/stdio close");
   } finally { if (previous === undefined) delete process.env.ARENA_FFMPEG_PATH; else process.env.ARENA_FFMPEG_PATH = previous; clearResolvedToolCache(); await rm(root, { recursive: true, force: true }); }
 });
+
+test("bounded native media diagnostics stop excessive output and await child closure", async () => {
+  await assert.rejects(execTool("ffmpeg", ["-hide_banner", "-encoders"], { maxOutputBytes: 64 }), /bounded limit/);
+});

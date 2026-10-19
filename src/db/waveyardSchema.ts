@@ -10,7 +10,7 @@
  * from "@/db/waveyardSchema" directly. drizzle.config.ts points at both files.
  */
 import { sql, type SQL } from "drizzle-orm";
-import { boolean, index, integer, pgTable, real, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { doublePrecision, boolean, index, integer, pgTable, real, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -54,7 +54,7 @@ export const sourceAssets = pgTable("source_assets", {
   mimeType: text("mime_type").notNull(),
   storageKey: text("storage_key").notNull(),
   checksumSha256: text("checksum_sha256").notNull(),
-  durationSeconds: integer("duration_seconds").notNull(),
+  durationSeconds: doublePrecision("duration_seconds").notNull(),
   sampleRate: integer("sample_rate").notNull(),
   channels: integer("channels").notNull(),
   codec: text("codec").notNull(),
@@ -123,7 +123,7 @@ export const stemAssets = pgTable("stem_assets", {
   // state live in waveform_assets, where source and stem assets share one model.
   waveformKey: text("waveform_key"),
   checksumSha256: text("checksum_sha256").notNull(),
-  durationSeconds: integer("duration_seconds").notNull(),
+  durationSeconds: doublePrecision("duration_seconds").notNull(),
   sampleRate: integer("sample_rate").notNull(),
   channels: integer("channels").notNull(),
   codec: text("codec").notNull(),
@@ -761,7 +761,7 @@ export const tracks = pgTable("wy_tracks", {
   artworkKey: text("artwork_key"),
   sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  durationSeconds: integer("duration_seconds").notNull(),
+  durationSeconds: doublePrecision("duration_seconds").notNull(),
   playCount: integer("play_count").notNull().default(0),
   /** Star rating 0 (unrated) .. 5. */
   rating: integer("rating").notNull().default(0),

@@ -132,7 +132,7 @@ export async function requireTool(tool: FfmpegTool): Promise<ResolvedBinary> {
 export type ExecResult = { stdout: string; stderr: string };
 
 /** Run a tool with an argument array. No shell, ever. */
-export async function execTool(tool: FfmpegTool, args: string[], options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ExecResult> {
+export async function execTool(tool: FfmpegTool, args: string[], options: { timeoutMs?: number; signal?: AbortSignal; maxOutputBytes?: number } = {}): Promise<ExecResult> {
   const binary = await requireTool(tool);
   return new Promise<ExecResult>((resolve, reject) => {
     const child = spawn(binary.path, args, {
@@ -143,11 +143,17 @@ export async function execTool(tool: FfmpegTool, args: string[], options: { time
     });
     let stdout = "";
     let stderr = "";
+    let outputBytes = 0;
+    const bounded = (chunk: Buffer) => {
+      outputBytes += chunk.byteLength;
+      if (options.maxOutputBytes && outputBytes > options.maxOutputBytes) { executionError = new Error("Media tool diagnostic output exceeded its bounded limit."); child.kill(); return false; }
+      return !options.maxOutputBytes || outputBytes <= options.maxOutputBytes;
+    };
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += String(chunk);
+      if (bounded(chunk)) stdout += String(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += String(chunk);
+      if (bounded(chunk)) stderr += String(chunk);
     });
     // Abort emits error before the process actually exits. Consumers may remove
     // temporary inputs only once close confirms child/stdio termination.

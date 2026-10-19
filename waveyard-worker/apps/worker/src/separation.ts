@@ -213,7 +213,7 @@ export async function processSeparation(
         modelVersion: result.modelVersion ?? payload.model,
         storageKey,
         checksumSha256: stem.checksumSha256,
-        durationSeconds: Math.round(stem.metadata.durationSeconds),
+        durationSeconds: stem.metadata.durationSeconds,
         sampleRate: stem.metadata.sampleRate,
         channels: stem.metadata.channels,
         codec: stem.metadata.codec,

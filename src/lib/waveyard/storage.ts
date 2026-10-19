@@ -85,7 +85,7 @@ export class LocalStorageProvider implements StorageProvider {
     await fs.copyFile(localPath, destination);
   }
   async putImmutableStream(key: string, source: AsyncIterable<Uint8Array>, expected: { bytes: number; sha256: string }) {
-    if (!Number.isSafeInteger(expected.bytes) || expected.bytes < 0 || expected.bytes > 32 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(expected.sha256)) throw new Error("A bounded immutable stream checksum/size is required.");
+    if (!Number.isSafeInteger(expected.bytes) || expected.bytes < 0 || expected.bytes > 524_288_000 || !/^[a-f0-9]{64}$/.test(expected.sha256)) throw new Error("A bounded immutable stream checksum/size is required.");
     const destination = safeLocalPath(this.root, key); await fs.mkdir(dirname(destination), { recursive: true });
     const temporary = `${destination}.${randomUUID()}.partial`; let handle;
     try {
