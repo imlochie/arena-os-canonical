@@ -35,6 +35,10 @@ Acquisition review is now required for **registry download as well as owner-file
 
 Canonical full source at `e1d11cf` before the bank fix:1403PASS/39suites/0FAIL/0CANCEL/0SKIP,727205ms command; equal start/end SHA and sourceDigest `cd7910fc22d3b2bdce33b3e28106306cb8dd652a57b99e4775455a62db418eaa`; receipt `.data/acceptance/source-suite/2026-10-19T17-41-24.854Z-3976.{json,tap}`. This is not the final bank-fix commit's full-suite receipt; new exact-commit verification follows. Serial browser32-distinct-source profile:552283136 sampled whole-browser PSS bytes,1520.2ms prepare/0.3ms replay/25.7ms edit/91.7ms maximum UI timer gap; latest-edit error0. Synthetic ten-second sources,50ms sampling, not compiled Next/Electron or a memory improvement. SoundCraft adaptation unchanged; no whole-app speed claim.
 
+### Canonical-order compatibility correction (full-suite finding retained)
+
+Full source at intermediate bank-fix commit `a71383b661aeb503cc4f56dda9dfe236f9232716` failed **1406/1407**,39suites,0cancel/skip,712721ms: unchanged `service.test.ts:389` requires vocals/drums/bass/other order. Receipt `.data/acceptance/source-suite/2026-10-19T18-13-56.692Z-12039.{json,tap}`, equal start/end digest `d31e922557fcc2498109f80dabf39b742fc436e87aa107af21c993cfe5e060a4`. Initial alphabetical ordering was deterministic but did not preserve that existing contract. Production now derives ORDERBY rank from **existing** `DEFAULT_STEM_CHANNEL_TYPES`, then stem type and UUID; saved explicit snapshots keep their original order. No acceptance weakened. Focused real library/source/provisioning/security69/69PASS (15845ms); new final full-source receipt pending. Earlier successes and this intermediate failure remain separate.
+
 ## Replacement scorecard and implementation map
 
 | Essential category | Status | Existing execution path / persistence | Evidence and remaining gate |

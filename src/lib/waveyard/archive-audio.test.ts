@@ -429,6 +429,6 @@ test("bank selection and explicit legacy repair retain exact lane order after Po
   assert.equal(repaired.tracks[1].stemMix.drums, 0.37);
   assert.deepEqual(
     after.stems.map((stem) => stem.stemType),
-    ["bass", "drums", "other", "vocals"],
+    ["vocals", "drums", "bass", "other"],
   );
 });

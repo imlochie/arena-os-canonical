@@ -48,6 +48,7 @@ import {
 import { type SourceAcquisitionProvenance, ingestSourceFile } from "@/lib/waveyard/source-ingest"
 import { defaultSeparationModel } from "@/lib/waveyard/separation/selection";
 import {
+  DEFAULT_STEM_CHANNEL_TYPES,
   deriveTrackMetadata,
   libraryContainerProjectName,
   normalizeStemMix,
@@ -378,7 +379,10 @@ export async function getTrack(ownerId: string, trackId: string, selection?: Ass
     // Heap/index order changes after restart/CLUSTER. A bank chosen again must
     // produce the same ordered snapshot; saved explicit assetIds below retain
     // their original order, rather than being silently canonicalised.
-    .orderBy(asc(stemAssets.stemType), asc(stemAssets.id));
+    .orderBy(
+      sql`case ${sql.join(DEFAULT_STEM_CHANNEL_TYPES.map((type, rank) => sql`when ${stemAssets.stemType} = ${type} then ${rank}::integer`), sql` `)} else ${DEFAULT_STEM_CHANNEL_TYPES.length}::integer end`,
+      asc(stemAssets.stemType), asc(stemAssets.id),
+    );
   const banks: SeparationBank[] = [];
   for (const stem of publishedRows) {
     if (stem.jobStatus !== "complete" || stem.engine === "passthrough-unseparated") continue;
