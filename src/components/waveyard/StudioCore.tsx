@@ -91,6 +91,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   // committed its render. Keep the most recently edited arrangement available
   // to that explicit persistence boundary.
   const remixRef = useRef<Remix | null>(null);
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
   const [versions, setVersions] = useState<RemixVersionSummary[]>([]);
   const [buildingAutomaticRemix, setBuildingAutomaticRemix] = useState<AutomaticRemixVariant | null>(null);
@@ -249,16 +250,24 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     return () => window.removeEventListener("keydown", escape);
   }, []);
 
-  const persist = useCallback(async (next = remixRef.current) => {
-    if (!next) return;
-    setSaveState("saving");
-    const response = await fetch(`/api/remixes/${next.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(remixState(next)) });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) { setSaveState("failed"); return; }
-    const persisted = remixFromResponse(body);
-    remixRef.current = persisted;
-    setRemix(persisted);
-    setSaveState("saved");
+  const persist = useCallback((next = remixRef.current): Promise<boolean> => {
+    if (!next) return Promise.resolve(false);
+    // Whole-arrangement saves must reach SQL in request order. A slow older
+    // response may not overwrite edits made while that request was in flight.
+    const task = saveQueue.current.catch(() => {}).then(async () => {
+      setSaveState("saving");
+      try {
+        const response = await fetch(`/api/remixes/${next.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(remixState(next)) });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) { setSaveState("failed"); return false; }
+        if (remixRef.current !== next) { setSaveState("unsaved"); return false; }
+        const persisted = remixFromResponse(body);
+        remixRef.current = persisted; setRemix(persisted); setSaveState("saved");
+        return true;
+      } catch { setSaveState("failed"); return false; }
+    });
+    saveQueue.current = task;
+    return task;
   }, []);
   const queuePersist = useCallback((next: Remix) => {
     setSaveState("unsaved");
@@ -505,6 +514,9 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     if (!remix) return;
     const name = window.prompt("Name this remix version", `Version ${versions.length + 1}`)?.trim();
     if (!name) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    if (!await persist(remixRef.current)) return;
     const response = await fetch(`/api/remixes/${remix.id}/versions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
     const body = await response.json().catch(() => ({}));
     if (response.ok) setVersions((current) => [...current, body.version]); else setSaveState("failed");
@@ -801,8 +813,9 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     {studioTab === "edit" && <>
       {remix && <><ProjectMusicalWorld remix={remix} stems={stems} /><ExtendedArrangementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} onApplied={async () => { await loadRemix(remix.id); }} /><MultiSourcePlacementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} stemAssetId={selected?.id ?? ""} sourceSectionId={selectedSourceSectionId} onApplied={async () => { await loadRemix(remix.id); }} /></>}
       <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
+      {remix && (remix.masterInserts?.some((insert) => insert.enabled) || remix.tracks.some((track) => track.phaseInverted || track.inserts?.some((insert) => insert.enabled))) && <p role="note" className="notice">Arrangement audition currently plays dry, without FX/polarity. WAV export applies saved track/master FX and polarity (up to 5 minutes; reverb tails retained, delay tails currently truncated). Stem preview supports native live processors; render-only processors are labelled in the racks.</p>}
       <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
-      <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} inserts={chainsByStem} onInserts={updateInserts} masterInserts={remix?.masterInserts ?? []} onMasterInserts={updateMasterInserts} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} remix={remix} activeClipId={selectedClipIds.length === 1 ? selectedClipIds[0] : null} onClipPatch={patchClip} onSplitClip={splitClip} onDuplicateClip={duplicateClip} onDeleteClip={deleteClip} />}</section>
+      <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} inserts={chainsByStem} onInserts={updateInserts} masterInserts={remix?.masterInserts ?? []} onMasterInserts={updateMasterInserts} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} remix={remix} activeClipId={selectedClipIds.length === 1 ? selectedClipIds[0] : null} onClipPatch={patchClip} onSplitClip={splitClip} onDuplicateClip={duplicateClip} onDeleteClip={deleteClip} />}</section>
       <SoundDesignStudio projectId={projectId} />
       <MasterStudio projectId={projectId} sourceAudioUrl={sources.length > 0 ? `/api/assets/${sources[0].id}` : null} />
       <CleanupStudio projectId={projectId} />

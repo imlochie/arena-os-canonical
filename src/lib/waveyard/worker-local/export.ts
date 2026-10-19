@@ -30,6 +30,8 @@ import {
   type RemixAutomationLane,
 } from "@/lib/waveyard/types";
 import { automatedTrackBusFilters, atempoFilterChain, ffmpegFadeFilters, mixSumFilters, padToTimeline, pitchFilterChain, requiredSourceDurationMs, resolveKeySync, sourceDurationFits, tempoRatio, timelineSampleCount } from "./render-helpers";
+import { bounceInsertBuses, insertBounceRequired } from "./export-inserts";
+import { INSERTS_FORMAT, parseInserts, type InsertChain } from "../mixer/inserts";
 import { isClipFadeShape, type ClipFadeShape } from "../fades";
 
 type SnapshotClip = {
@@ -54,9 +56,12 @@ type SnapshotTrack = {
   muted: boolean;
   solo: boolean;
   clips: SnapshotClip[];
+  inserts: InsertChain;
+  phaseInverted: boolean;
 };
 type ExportSnapshot = {
   masterVolume: number;
+  masterInserts: InsertChain;
   tempoBpm: number;
   targetKey: string | null;
   tracks: SnapshotTrack[];
@@ -77,6 +82,17 @@ function finite(value: unknown, lower: number, upper: number) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < lower || number > upper) throw new ExportFailure("invalid_snapshot", "Persisted remix version is invalid.");
   return number;
+}
+
+function snapshotInserts(raw: unknown): InsertChain {
+  if (raw === undefined || raw === null) return [];
+  if (typeof raw === "string") {
+    try { return snapshotInserts(JSON.parse(raw)); }
+    catch { throw new ExportFailure("invalid_snapshot", "Persisted insert chain is invalid JSON or contains an unsupported processor."); }
+  }
+  const chain = parseInserts(Array.isArray(raw) ? { format: INSERTS_FORMAT, inserts: raw } : raw);
+  if (!chain) throw new ExportFailure("invalid_snapshot", "Persisted insert chain is malformed or contains an unsupported processor.");
+  return chain;
 }
 
 export function parseExportSnapshot(raw: string): ExportSnapshot {
@@ -101,6 +117,8 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
       pan: finite(candidate.pan, -1, 1),
       muted: candidate.muted === true,
       solo: candidate.solo === true,
+      inserts: snapshotInserts(candidate.inserts),
+      phaseInverted: candidate.phaseInverted === true,
       clips: candidate.clips.map((clip): SnapshotClip => {
         if (!clip || typeof clip !== "object") throw new ExportFailure("invalid_snapshot", "Persisted remix clip is invalid.");
         const item = clip as Record<string, unknown>;
@@ -150,6 +168,7 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
   }
   return {
     masterVolume: finite(value.masterVolume, 0, 2),
+    masterInserts: snapshotInserts(value.masterInserts),
     tempoBpm: finite(value.tempoBpm ?? 120, 20, 300),
     targetKey: normaliseMusicalKey(value.targetKey),
     tracks,
@@ -359,6 +378,19 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       );
       trackBusLabels.set(trackId, `[${trackLabel}]`);
     }
+    const outputPath = join(temporaryDirectory, "export.wav");
+    const ffmpeg = await requireTool("ffmpeg");
+    if (insertBounceRequired(activeTracks, snapshot.masterInserts)) {
+      const buses = activeTracks.flatMap((track, index) => {
+        const labels = clips.flatMap((clip, clipIndex) => clip.track === track ? [`[clip${clipIndex}]`] : []);
+        if (!labels.length) return [];
+        let label = track.id ? trackBusLabels.get(track.id) : undefined;
+        if (!label) { label = `[fxbus${index}]`; filters.push(...mixSumFilters(labels, `fxbus${index}`)); }
+        return [{ label, inserts: track.inserts, phaseInverted: track.phaseInverted }];
+      });
+      await updateJob(job.id, { stage: "rendering-insert-buses" });
+      await bounceInsertBuses({ ffmpeg: ffmpeg.path, directory: temporaryDirectory, inputs: stems.flatMap((stem) => ["-i", inputPaths.get(stem.id)!]), filters, buses, masterVolume: snapshot.masterVolume, masterInserts: snapshot.masterInserts, sampleRate: job.sampleRate, timelineSamples, outputPath });
+    } else {
     const labels = clips
       .flatMap((clip, index) => {
         if (clip.track.id && trackBusLabels.has(clip.track.id)) {
@@ -376,7 +408,6 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     // (aresample) instead of truncating.
     filters.push(`[premaster]volume=${snapshot.masterVolume.toFixed(6)},aresample=out_sample_fmt=s16:dither_method=triangular_hp[mix]`);
 
-    const outputPath = join(temporaryDirectory, "export.wav");
     const args = [
       "-y",
       ...stems.flatMap((stem) => ["-i", inputPaths.get(stem.id)!]),
@@ -393,8 +424,9 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       String(job.channels),
       outputPath,
     ];
-    const ffmpeg = await requireTool("ffmpeg");
     await exec(ffmpeg.path, args, { cwd: temporaryDirectory });
+
+    }
 
     await updateJob(job.id, { status: "finalizing", stage: "validating" });
     const metadata = await validateAudio(outputPath);

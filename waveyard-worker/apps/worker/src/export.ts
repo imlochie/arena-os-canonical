@@ -68,6 +68,14 @@ class ExportFailure extends Error {
   }
 }
 
+function requireSupportedInserts(raw: unknown) {
+  if (raw === undefined || raw === null) return;
+  if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { throw new ExportFailure("invalid_snapshot", "Persisted insert chain is invalid JSON."); } }
+  const chain = Array.isArray(raw) ? raw : raw && typeof raw === "object" && "inserts" in raw ? (raw as { inserts: unknown }).inserts : null;
+  if (!Array.isArray(chain)) throw new ExportFailure("invalid_snapshot", "Persisted insert chain is invalid.");
+  if (chain.some((insert) => !insert || typeof insert !== "object" || insert.enabled !== false)) throw new ExportFailure("insert_renderer_unavailable", "This external worker cannot render insert chains. Use Arena's local renderer for FX; no dry substitute was exported.");
+}
+
 function finite(value: unknown, lower: number, upper: number) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < lower || number > upper)
@@ -87,10 +95,13 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
   const value = parsed as Record<string, unknown>;
   if (!Array.isArray(value.tracks))
     throw new ExportFailure("invalid_snapshot", "Persisted remix tracks are missing.");
+  requireSupportedInserts(value.masterInserts);
   const tracks = value.tracks.map((track): SnapshotTrack => {
     if (!track || typeof track !== "object")
       throw new ExportFailure("invalid_snapshot", "Persisted remix track is invalid.");
     const candidate = track as Record<string, unknown>;
+    requireSupportedInserts(candidate.inserts);
+    if (candidate.phaseInverted === true) throw new ExportFailure("insert_renderer_unavailable", "This external worker cannot render polarity inversion. Use Arena's local renderer; no unchanged substitute was exported.");
     if (typeof candidate.stemAssetId !== "string" || !Array.isArray(candidate.clips))
       throw new ExportFailure("invalid_snapshot", "Persisted remix track is invalid.");
     return {

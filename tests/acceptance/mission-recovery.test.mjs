@@ -76,3 +76,18 @@ test("real database outage is visible, not empty/success; the panel recovers per
   await f.stop(); await page.reload(); await expect(page.getByRole("alert")).toContainText("Mission storage unavailable");
   await f.start(); await expect(page.getByText("running", { exact: true })).toBeVisible(); await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+test("approval decisions reconnect to PostgreSQL after an outage instead of staying on an empty memory ledger", async () => {
+  const id = randomUUID(); await f.database.insert(schema.spaces).values({ id, prompt: "Recover actual approval" });
+  const root = await tools.ensureWorkspace(id); roots.push(root);
+  const waiting = await runtime.runMission(id, { goal: "Review one local validation-only publication", isolation: "host", maxTurnsPerAgent: 1, agentPlan: [{ name: "Publisher", role: "worker", modelId: "controlled-protocol" }] }, { generate: async () => ({ text: JSON.stringify({ actions: [{ tool: "github_publish", args: { repo: "owner/never-contacted", files: [] } }], done: true }), backend: "arena-local-engine", runtimeLevel: "arena-local", via: "controlled-test", modelId: "controlled-protocol", fallback: false, ms: 0 }) });
+  assert.equal(waiting.status, "awaiting_approval");
+  const governance = await import("../../src/lib/spaces/governance.ts"); const [pending] = await governance.listApprovals(id); assert.equal(pending.status, "pending");
+  await f.stop(); await assert.rejects(governance.listApprovals(id), /Approval storage unavailable/); await f.start();
+  const [restored] = await governance.listApprovals(id); assert.equal(restored.id, pending.id);
+  const approvals = await import("../../src/app/api/spaces/approvals/route.ts");
+  const decision = await approvals.POST(new Request("http://fixture/api/spaces/approvals", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: restored.id, decision: "approve", decidedBy: "actual local owner" }) }));
+  assert.equal(decision.status, 200); assert.equal((await governance.getApproval(restored.id)).status, "approved");
+  const resumed = await runtime.runMission(id, { goal: waiting.goal });
+  assert.equal(resumed.id, waiting.id); assert.equal(resumed.status, "incomplete", "actual publish validation failure is not completion or a remote publication claim");
+});

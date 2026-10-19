@@ -586,3 +586,65 @@ endpoint overrides were absent. No download or fake real-provider run was
 attempted. Existing GitHub sandbox authentication is unrelated to model
 readiness. Publication fixtures reject empty file lists locally and never
 send sandbox GitHub credentials to a remote test repository.
+
+## Mandate 4 — Studio output and approval recovery (2026-10-19)
+
+The next Studio defect above is now reproduced and repaired in the local
+export path: actual Studio UI → PostgreSQL state → immutable version → broker
+→ canonical track/master DSP → FFmpeg → browser WAV download. Before repair,
+saved/reopened −6 dB track plus −6 dB master exported with decoded gain ratio
+**1**; repaired output measures **0.25118863902498606**. Track clips are summed
+before nonlinear inserts, master inserts execute once, polarity is retained,
+and reverb tails survive export. Legacy dry exports retain their previous path.
+Malformed/unsupported chains fail rather than silently producing dry success;
+the isolated remote worker refuses FX/polarity it cannot execute.
+
+Studio now persists the master fader, serializes saves, ignores stale save
+responses and flushes current edits before immutable version creation. Version
+history queues the real WAV export, follows its durable status, exposes retry
+and errors, and downloads the actual completed file. Arrangement audition is
+still dry; the UI says so. Reverb-tail support is **not** delay-tail support:
+delay currently truncates its tail. FX exports are bounded to five minutes plus
+a bounded tail allowance. These are synthetic-audio contract checks, not Demucs,
+real-music inference, Electron or Windows acceptance.
+
+Local evidence, kept outside Git:
+* `mandate4-studio-fx-before.txt`: browser/SQL/render RED, decoded ratio 1.
+* `mandate4-studio-fx-final.txt`: 3 actual-browser tests PASS (11.72 s), including
+  master undo/redo, immediate version save, reopen, native download, nonlinear
+  overlapping-clip processing and nonzero reverb-tail energy.
+* `mandate4-studio-fx-evidence/{dry.wav,processed.wav,result.json}`: downloaded
+  synthetic PCM and decoded gain measurements.
+* `mandate4-studio-persistence.txt`: 50 focused persistence/render/FX tests PASS
+  (8.21 s); includes the 22-test render/version/insert subset, not additive.
+* `mandate4-browser-final.txt`: combined mission and Studio acceptance 7 PASS
+  (20.39 s). After stricter outage reporting, `mandate4-ledger-browser.txt`:
+  4 mission/approval tests PASS (9.32 s), including real SQL stop/restart,
+  retained approval identity, actual approvals POST and resumed validation.
+* `mandate4-ledger-regression.txt`: 20 governance/browser/external tests PASS.
+* `mandate4-final-types.txt`: root typecheck PASS. Production build PASS in
+  `mandate4-production-build.txt`. Targeted lint had no errors; Studio retains
+  two existing warnings. Isolated worker production modules typecheck PASS
+  (`mandate4-worker-runtime-types.txt`); full worker typecheck FAILS on legacy
+  tests importing missing vitest/web modules (`mandate4-worker-types.txt`).
+
+Default approval reads/decisions reconnect to SQL after outages instead of
+remaining trapped behind a process-local health flag. Unknown SQL-ledger reads
+fail explicitly when storage is unavailable, not as an empty approval list.
+Known ephemeral fixtures keep their memory IDs. This is not a new persistence
+framework and does not assert exactly-once remote effects.
+
+A7 check annotations at published mission revision 6b3c81d named test C; full
+signed CI logs were inaccessible. Independently reproduced a real Redis/PG
+synchronization race by delaying processor entry 75 ms after claim (RED 0 !== 1).
+The test now waits for actual processor entry without weakening execution/count
+assertions. `mandate4-a7-final.txt`: all 9 real PostgreSQL/Redis tests PASS,
+27.21 s, zero skips. This is **not proof** of the historical CI assertion cause.
+
+The earlier 1,348-test source run changed source mid-run: useful regression
+information, **not exact-revision acceptance**. Fresh published-revision CI and
+clean-source native regression remain to verify. Both browser suites and retained
+TAP/decoded audio evidence are now wired into the existing browser CI job.
+PR15 remains open/unmerged. Next capability targets remain generated-code
+iteration/retrieval and shared Artifact ownership/version/interruption contracts;
+no whole-product completion or genuine provider-reasoning acceptance is claimed.

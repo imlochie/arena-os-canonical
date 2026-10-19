@@ -212,13 +212,14 @@ export async function requestApproval(input: {
 }
 
 export async function getApproval(id: string): Promise<ActionApproval | null> {
-  if (ledgerDbHealthy) {
+  if (!memoryApprovals.has(id)) {
     try {
       const rows = await db.select().from(spaceActionApprovals).where(eq(spaceActionApprovals.id, id)).limit(1);
       if (rows.length) return rowToApproval(rows[0]);
       return null;
     } catch {
       ledgerDbHealthy = false;
+      throw new Error("Approval storage unavailable. Reconnect PostgreSQL and retry; no decision was recorded in memory.");
     }
   }
   return memoryApprovals.get(id) ?? null;
@@ -272,7 +273,7 @@ export async function findLatestBySignature(signature: string, database: typeof 
 }
 
 export async function listApprovals(spaceId?: string, status?: ApprovalStatus): Promise<ActionApproval[]> {
-  if (ledgerDbHealthy) {
+  {
     try {
       const conditions = [];
       if (spaceId) conditions.push(eq(spaceActionApprovals.spaceId, spaceId));
@@ -283,9 +284,11 @@ export async function listApprovals(spaceId?: string, status?: ApprovalStatus): 
         .where(conditions.length ? and(...conditions) : undefined)
         .orderBy(desc(spaceActionApprovals.requestedAt))
         .limit(200);
+      ledgerDbHealthy = true;
       return rows.map(rowToApproval);
     } catch {
       ledgerDbHealthy = false;
+      if (![...memoryApprovals.values()].some((approval) => !spaceId || approval.spaceId === spaceId)) throw new Error("Approval storage unavailable. Reconnect PostgreSQL and retry; an empty ledger cannot be assumed.");
     }
   }
   return [...memoryApprovals.values()]
@@ -299,7 +302,7 @@ export async function decideApproval(
   decision: "approve" | "deny",
   decidedBy: string,
 ): Promise<ActionApproval | null> {
-  if (ledgerDbHealthy) {
+  if (!memoryApprovals.has(id)) {
     try {
       const [row] = await db
         .update(spaceActionApprovals)
@@ -313,6 +316,7 @@ export async function decideApproval(
       return row ? rowToApproval(row) : null;
     } catch {
       ledgerDbHealthy = false;
+      throw new Error("Approval storage unavailable. Reconnect PostgreSQL and retry; no decision was recorded in memory.");
     }
   }
   const a = memoryApprovals.get(id);
