@@ -197,5 +197,12 @@ test("large Unicode and binary partial Mission outputs are inspectable/downloada
   await page.reload(); const reusedDownload = page.waitForEvent("download"); await page.getByRole("link", { name: "Download reused/large.bin", exact: true }).click(); assert.deepEqual(await readFile(await (await reusedDownload).path()), binary);
   const refused = await tools.executeTool(id, { tool: "reuse_mission_output", args: { sourceSpaceId: id, missionId: first.id, outputId: bin.id, path: "must-not-be-code.js" } }); assert.equal(refused.ok, false);
   await assert.rejects(readFile(path.join(workspace, "must-not-be-code.js")), /ENOENT/);
+  // Cleanup uses the actual manifest/history, not just a standalone fake root.
+  const cleanup=await import("../../src/lib/artifact-reclamation.ts");
+  for(const output of outputs) {
+    const report=await cleanup.reportReclamation("00000000-0000-4000-8000-000000000001",output.checksumSha256);
+    assert.equal(report.mayMark,false);assert.ok(report.reasons.some(reason=>reason.includes("space_missions")));assert.ok(report.reasons.some(reason=>reason.includes("artifact_revisions")));
+    const restored=await(await import("../../src/lib/spaces/mission-outputs.ts")).retrieveMissionOutput(id,first.id,output.id);assert.deepEqual(restored.bytes,output.path==="large.bin"?binary:text);
+  }
   console.log(JSON.stringify({ kind: "Mission-large-partial-later-real-task", before: first.status, after: later.status, restarted: true, freshNode: true, draftedFromUI: true, outputs: outputs.map((output) => ({ bytes: output.bytes, sha256: output.checksumSha256, artifactId: output.artifactId, revisionId: output.revisionId })) }));
 });

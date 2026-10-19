@@ -19,7 +19,10 @@ after(async () => { delete process.env.ARENA_ENABLE_OBJECT_RECLAMATION; await po
 async function oldObject(text = randomUUID()) {
   const bytes = Buffer.from(`USEFUL PRIVATE WORK 🎵 ${text}`), object = await objects.writeArtifactObject(owner, bytes);
   const filename = storage.getLocalPath(objects.artifactObjectKey(owner, object));
-  const past = new Date(Date.now() - 100 * 86400000); await utimes(filename, past, past); return { bytes, object, filename };
+  const past = new Date(Date.now() - 100 * 86400000); await utimes(filename, past, past);
+  // Test-only clock simulation: publication receipt + inode clock must agree.
+  const {lstat}=await import("node:fs/promises"), info=await lstat(filename,{bigint:true});
+  await pool.query("UPDATE object_reclamations SET marked_at=$3,identity=$4 WHERE owner_id=$1 AND sha256=$2 AND state='published'",[owner,object.sha256,past,JSON.stringify({dev:String(info.dev),ino:String(info.ino),size:Number(info.size),modified:info.mtimeNs.toString(),changed:info.ctimeNs.toString()})]); return { bytes, object, filename };
 }
 async function mark(item) { return service.markReclamation(owner, item.object.sha256, randomUUID(), true); }
 async function elapse(id, purge = false) { await pool.query(`UPDATE object_reclamations SET ${purge ? "quarantined_at=now()-interval '8 days', purge_after" : "marked_at=now()-interval '8 days', not_before"}=now()-interval '1 second' WHERE id=$1`, [id]); }
@@ -182,4 +185,9 @@ test("an owner disagreement in historical metadata prevents absence certificatio
   await pool.query("UPDATE artifact_revisions SET snapshot=jsonb_set(snapshot,'{ownerId}','\"unknown-owner\"') WHERE id=$1",[revision]);
   try { const report=await service.reportReclamation(owner,candidate.object.sha256); assert.equal(report.mayMark,false); assert.match(report.reasons.join(";"),/Unresolved/); assert.equal((await mark(candidate)).state,"refused"); assert.deepEqual(await readFile(candidate.filename),candidate.bytes); }
   finally { await pool.query("UPDATE artifact_revisions SET snapshot=jsonb_set(snapshot,'{ownerId}',to_jsonb($2::text)) WHERE id=$1",[revision,owner]); }
+});
+
+test("checksum-valid owner-namespaced old bytes without committed publication provenance stay uncertain; metadata absence is never an orphan certificate",async()=>{
+ const {createHash}=await import("node:crypto"), {Readable}=await import("node:stream");const bytes=Buffer.from("Unknown original publisher; retain these exact bytes 🎵");const object={version:1,sha256:createHash("sha256").update(bytes).digest("hex"),bytes:bytes.length,mediaType:"text/plain; charset=utf-8"};const filename=storage.getLocalPath(objects.artifactObjectKey(owner,object));await storage.putImmutableStream(objects.artifactObjectKey(owner,object),Readable.from([bytes]),{bytes:bytes.length,sha256:object.sha256});const past=new Date(Date.now()-100*86400000);await utimes(filename,past,past);
+ const report=await service.reportReclamation(owner,object.sha256);assert.equal(report.mayMark,false);assert.equal(report.classification,"uncertain");assert.match(report.reasons.join(";"),/Unknown publication provenance/);assert.equal((await service.markReclamation(owner,object.sha256,randomUUID(),true)).state,"refused");assert.deepEqual(await readFile(filename),bytes);
 });

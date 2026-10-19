@@ -48,7 +48,7 @@ export default function FoundryPage() {
       try {
         if (data.op === "get") {
           const response = await fetch(`/api/foundry/${appId}/data?key=${encodeURIComponent(String(data.key ?? ""))}`);
-          result = (await response.json()).value ?? null;
+          const body=await response.json(); if(!response.ok)throw new Error(body.error??"App storage read failed; no empty value was substituted."); result=body.value??null;
         } else if (data.op === "set") {
           const response = await fetch(`/api/foundry/${appId}/data`, {
             method: "PUT",
@@ -61,11 +61,12 @@ export default function FoundryPage() {
           result = { ok: response.ok };
         } else if (data.op === "keys") {
           const response = await fetch(`/api/foundry/${appId}/data`);
-          result = (await response.json()).keys ?? [];
+          const body=await response.json(); if(!response.ok||!Array.isArray(body.keys))throw new Error(body.error??"App storage listing failed; no empty library was substituted."); result=body.keys;
         }
       } catch (error) {
         result = { ok: false, error: error instanceof Error ? error.message : "bridge error" };
       }
+      if(event.source!==iframeRef.current?.contentWindow)return; // stale app/version response
       (event.source as Window | null)?.postMessage({ __arena: "response", requestId: data.requestId, result }, "*");
     };
     window.addEventListener("message", onMessage);
@@ -76,10 +77,8 @@ export default function FoundryPage() {
     try {
       const response = await fetch("/api/foundry");
       const data = await response.json();
-      setApps(data.apps ?? []);
-    } catch {
-      /* list is best-effort */
-    }
+      if(!response.ok||!Array.isArray(data.apps))throw new Error(data.error??"App library unavailable. Existing apps were not removed; retry."); setApps(data.apps);
+    } catch(error) { setError(error instanceof Error?error.message:"App library unavailable. Retry."); }
   }, []);
 
   useEffect(() => {
@@ -88,6 +87,7 @@ export default function FoundryPage() {
 
   const openApp = useCallback(async (id: string) => {
     setError(null);
+    try {
     const response = await fetch("/api/foundry", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -101,6 +101,7 @@ export default function FoundryPage() {
     setCurrent({ id: data.app.id, name: data.app.name });
     setVersion(data.app.latest ?? null);
     setShowCode(false);
+    }catch(error){setError(error instanceof Error?error.message:"App retrieval unavailable. Current version retained; retry.");}
   }, []);
 
   const create = useCallback(async () => {
@@ -123,7 +124,7 @@ export default function FoundryPage() {
       setDescription("");
       setShowCode(false);
       refresh();
-    } finally {
+    } catch(error) { setError(error instanceof Error?error.message:"App operation not acknowledged. Retained version unchanged; retry."); } finally {
       setBusy(false);
     }
   }, [description, busy, refresh]);
@@ -146,32 +147,32 @@ export default function FoundryPage() {
       setVersion(data.version ?? null);
       setChange("");
       refresh();
-    } finally {
+    } catch(error) { setError(error instanceof Error?error.message:"App operation not acknowledged. Retained version unchanged; retry."); } finally {
       setBusy(false);
     }
   }, [current, change, busy, refresh]);
 
   const remove = useCallback(async () => {
-    if (!current) return;
-    await fetch("/api/foundry", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "delete", appId: current.id }),
-    });
-    setCurrent(null);
-    setVersion(null);
-    refresh();
-  }, [current, refresh]);
+    if (!current || busy) return;
+    setBusy(true);setError(null);
+    try {
+      const response=await fetch("/api/foundry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"delete",appId:current.id})});
+      const body=await response.json();if(!response.ok||body.removed!==true)throw new Error(body.error??"Deletion was not acknowledged. Current app retained; refresh before retrying.");
+      setCurrent(null);setVersion(null);await refresh();
+    }catch(error){setError(error instanceof Error?error.message:"Deletion not acknowledged. Current app unchanged; retry.");}finally{setBusy(false);}
+  }, [current, busy, refresh]);
 
   return (
     <main className="mx-auto flex max-w-7xl gap-6 px-6 py-10">
       <aside className="w-64 shrink-0">
         <h1 className="text-xl font-black text-white">App Foundry</h1>
         <p className="mt-1 text-[11px] leading-4 text-slate-500">
-          Describe it → get it. Runs sandboxed, no network, version by version. The engine label on every build is the truth.
+          Describe it → get it. Runs sandboxed with resource-fetch restrictions, version by version. The engine label on every build is the truth.
         </p>
+        <p className="text-xs text-amber-200">Generated apps are untrusted. Do not provide credentials or secrets. Sandbox/CSP resource restrictions are not a general navigation/network firewall.</p>
         <button
           className="mt-4 w-full rounded-lg border border-violet-500/40 px-3 py-2 text-sm font-semibold text-violet-300 hover:bg-violet-500/10"
+          disabled={busy}
           onClick={() => {
             setCurrent(null);
             setVersion(null);
@@ -179,12 +180,14 @@ export default function FoundryPage() {
         >
           + New app
         </button>
+        <button disabled={busy} onClick={()=>void refresh()} className="mt-3 text-xs text-violet-300">Refresh apps</button>
         <ul className="mt-4 space-y-1">
           {apps.map((app) => (
             <li key={app.id}>
               <button
                 className={`w-full truncate rounded-lg px-3 py-2 text-left text-sm ${current?.id === app.id ? "bg-violet-600/20 text-white" : "text-slate-400 hover:bg-white/5"}`}
-                onClick={() => openApp(app.id)}
+                disabled={busy}
+                onClick={() => void openApp(app.id)}
                 title={app.name}
               >
                 {app.name} <span className="text-[10px] text-slate-500">v{app.versionCount}</span>
@@ -195,6 +198,7 @@ export default function FoundryPage() {
       </aside>
 
       <section className="min-w-0 flex-1">
+        {error && <p role="alert" className="mb-3 text-sm text-rose-400">{error}</p>}
         {!current && !version && (
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
             <h2 className="text-lg font-bold text-white">What should it be?</h2>
@@ -211,7 +215,6 @@ export default function FoundryPage() {
             <button className={`${button} mt-3`} onClick={create} disabled={busy || !description.trim()}>
               {busy ? "Building…" : "Build v1"}
             </button>
-            {error && <p className="mt-3 text-xs text-rose-400">{error}</p>}
           </div>
         )}
 
@@ -252,6 +255,7 @@ export default function FoundryPage() {
                 <pre className="max-h-[60vh] overflow-auto p-4 text-[11px] leading-4 text-slate-300">{version.code}</pre>
               ) : (
                 <iframe
+                  key={`${current.id}:${version.version}`}
                   ref={iframeRef}
                   title={`${current.name} preview`}
                   sandbox="allow-scripts allow-forms allow-modals"

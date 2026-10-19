@@ -60,6 +60,14 @@ async function lock(tx: Tx) {
 }
 async function blockers(tx: Tx, owner: string, sha: string) {
   const reasons: string[] = [];
+  const receipts=await tx.select().from(objectReclamations).where(and(eq(objectReclamations.ownerId,owner),eq(objectReclamations.sha256,sha),eq(objectReclamations.state,"published")));
+  // A correct filename/checksum and absent metadata alone are NOT provenance.
+  // At least one committed runtime publication must identify this same inode.
+  const {canonical:publishedPath}=filenames(owner,sha);
+  const present=await exists(publishedPath)?await identity(publishedPath):undefined;
+  const receipt=receipts.find(row=>!present || (row.identity.dev===present.dev && row.identity.ino===present.ino && row.identity.modified===present.modified && row.bytes===present.size));
+  if(!receipt)reasons.push("Unknown publication provenance/identity; uncertain bytes are retained, never certified as an orphan");
+  else if(Date.now()-receipt.markedAt.getTime()<reclamationPolicy().unboundDays*DAY)reasons.push("Verified publication retention period has not elapsed");
   const started = Date.now();
   const tables = lockedTables.get(tx); if (!tables) throw new ArtifactObjectError("Graph locks not held; cleanup refused.", 503);
   for (const table of tables) {
@@ -70,7 +78,7 @@ async function blockers(tx: Tx, owner: string, sha: string) {
   // Missing descriptors/unknown historical ownership cannot establish absence.
   const uncertain = await tx.execute(sql`SELECT 1 FROM artifacts a WHERE a.owner_id=${owner} AND a.content_object IS NOT NULL AND (a.current_revision_id IS NULL OR NOT EXISTS (SELECT 1 FROM artifact_revisions r WHERE r.id=a.current_revision_id AND r.artifact_id=a.id AND r.snapshot->'contentObject'=a.content_object AND r.snapshot->>'body'=a.body)) UNION ALL SELECT 1 FROM artifact_revisions r LEFT JOIN artifacts a ON a.id=r.artifact_id WHERE (a.owner_id=${owner} OR r.snapshot->>'ownerId'=${owner}) AND (a.owner_id IS DISTINCT FROM ${owner} OR r.snapshot->>'ownerId' IS DISTINCT FROM ${owner} OR r.body_sha256 IS NULL) UNION ALL SELECT 1 FROM artifacts a WHERE a.owner_id=${owner} AND a.revision > (SELECT count(*) FROM artifact_revisions r WHERE r.artifact_id=a.id) UNION ALL SELECT 1 FROM artifact_revisions r LEFT JOIN artifacts a ON a.id=r.artifact_id WHERE a.owner_id IS DISTINCT FROM r.snapshot->>'ownerId' OR r.snapshot->>'ownerId' IS NULL LIMIT 1`);
   if (uncertain.rows.length) reasons.push("Unresolved current/history metadata; reconcile before cleanup");
-  const pending = await tx.execute(sql`SELECT 1 FROM space_missions WHERE status NOT IN ('done','completed','cancelled') UNION ALL SELECT 1 FROM collaborations WHERE status <> 'closed' UNION ALL SELECT 1 FROM collaboration_relays WHERE status IN ('pending','dispatching','uncertain') LIMIT 1`);
+  const pending = await tx.execute(sql`SELECT 1 FROM artifacts WHERE CASE WHEN source_type='arcade-generation' THEN coalesce(body::jsonb->>'state','unknown') ELSE 'completed' END NOT IN ('completed','cancelled') UNION ALL SELECT 1 FROM space_missions WHERE status NOT IN ('done','completed','cancelled') UNION ALL SELECT 1 FROM collaborations WHERE status <> 'closed' UNION ALL SELECT 1 FROM collaboration_relays WHERE status IN ('pending','dispatching','uncertain') LIMIT 1`);
   if (pending.rows.length) reasons.push("Pending/failed/uncertain work may need unbound bytes; resolve it before cleanup");
   const { canonical } = filenames(owner, sha);
   const siblings = await readdir(path.dirname(canonical));
@@ -83,7 +91,7 @@ async function record(tx: Tx, mark: Mark, state: string, reason: string, extra: 
 async function owned(tx: Tx, owner: string, id: string) {
   if (!isUuid(id)) throw new ArtifactObjectError("Valid cleanup operation ID required.", 400);
   const [mark] = await tx.select().from(objectReclamations).where(and(eq(objectReclamations.id, id), eq(objectReclamations.ownerId, owner))).for("update");
-  if (!mark) throw new ArtifactObjectError("Cleanup operation unavailable.", 404); return mark;
+  if (!mark || mark.state === "published") throw new ArtifactObjectError("Cleanup operation unavailable.", 404); return mark;
 }
 export async function reportReclamation(owner: string, sha: string) {
   reclamationPolicy(); const { canonical } = filenames(owner, sha);
@@ -91,7 +99,7 @@ export async function reportReclamation(owner: string, sha: string) {
     await lock(tx); const info = await identity(canonical), reasons = await blockers(tx, owner, sha);
     await verify(canonical, { sha256: sha, bytes: info.size, identity: info });
     if (Date.now() - Number(info.modified) / 1e6 < reclamationPolicy().unboundDays * DAY) reasons.push("Unbound retention period has not elapsed");
-    return { sha256: sha, bytes: info.size, identity: info, reasons, mayMark: reasons.length === 0, policy: reclamationPolicy(), dryRun: true, notice: "No storage or metadata changed. Mark additionally requires explicit abandonment of pending recovery." };
+    return { sha256: sha, bytes: info.size, identity: info, reasons, mayMark: reasons.length === 0, classification: reasons.some(reason=>/Unknown|Unresolved|Pending|Incomplete/.test(reason)) ? "uncertain" : reasons.length ? "retained" : "explicit-owner-abandonment-required", policy: reclamationPolicy(), dryRun: true, notice: "No storage or metadata changed. Mark additionally requires explicit abandonment of pending recovery." };
   });
 }
 export async function markReclamation(owner: string, sha: string, id: string, abandonRecovery: boolean) {
@@ -99,7 +107,7 @@ export async function markReclamation(owner: string, sha: string, id: string, ab
   return db.transaction(async tx => {
     await lock(tx);
     const [existing] = await tx.select().from(objectReclamations).where(eq(objectReclamations.id, id));
-    if (existing) { if (existing.ownerId !== owner || existing.sha256 !== sha) throw new ArtifactObjectError("Cleanup identity conflict.", 409); return existing; }
+    if (existing) { if (existing.state === "published") throw new ArtifactObjectError("Publication receipt IDs cannot be reused for cleanup.",409); if (existing.ownerId !== owner || existing.sha256 !== sha) throw new ArtifactObjectError("Cleanup identity conflict.", 409); return existing; }
     const { canonical } = filenames(owner, sha), info = await identity(canonical), reasons = await blockers(tx, owner, sha);
     await verify(canonical, { sha256: sha, bytes: info.size, identity: info });
     if (Date.now() - Number(info.modified) / 1e6 < policy.unboundDays * DAY) reasons.push("Unbound retention period has not elapsed");
@@ -107,7 +115,7 @@ export async function markReclamation(owner: string, sha: string, id: string, ab
     const [mark] = await tx.insert(objectReclamations).values({ id, ownerId: owner, sha256: sha, bytes: info.size, identity: info, state: eligible ? "marked" : "refused", notBefore: new Date(now.getTime() + policy.graceDays * DAY), reason: eligible ? "Owner explicitly abandoned otherwise unreferenced recovery bytes" : reasons.join("; "), audit: [{ at: now.toISOString(), event: eligible ? "marked; owner abandoned recovery" : `refused: ${reasons.join("; ")}` }] }).returning(); return mark;
   });
 }
-export async function listReclamations(owner: string) { return db.select().from(objectReclamations).where(eq(objectReclamations.ownerId, owner)).limit(100); }
+export async function listReclamations(owner: string) { return db.select().from(objectReclamations).where(and(eq(objectReclamations.ownerId, owner),sql`${objectReclamations.state} <> 'published'`)).limit(100); }
 async function restore(tx: Tx, mark: Mark, reason: string) {
   const files = filenames(mark.ownerId, mark.sha256, mark.id);
   if (await exists(files.quarantine)) {

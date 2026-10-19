@@ -93,3 +93,16 @@ test("failed validation retains an inspectable draft without presenting it as a 
     return true;
   });
 });
+
+test("retry explicitly supplies the useful failed draft and checkpoints it before any repair request", async () => {
+  const partial = "<!doctype html><html><canvas></canvas><script>// unfinished exposure mechanic 🎵";
+  const valid = generateGameOffline("snake").code;
+  let checkpointed = false, calls = 0;
+  const gen = (async (input) => {
+    calls++;
+    if(calls===1) { assert.ok(input.messages[0].content.includes(partial)); return { text: partial, modelId:"controlled-fixture",backend:"groq",runtimeLevel:"remote",via:"controlled-not-inference",ms:1,fallback:false }; }
+    assert.equal(checkpointed,true); return {text:valid,modelId:"controlled-fixture",backend:"groq",runtimeLevel:"remote",via:"controlled-not-inference",ms:1,fallback:false};
+  }) as typeof generate;
+  const result=await forgeGameWithAI("requested exposure game",{failedDraftCode:partial,onDraft:async draft=>{if(!checkpointed)assert.equal(draft.code,partial);checkpointed=true;}},{generate:gen});
+  assert.equal(result.code,valid);assert.equal(calls,2);
+});

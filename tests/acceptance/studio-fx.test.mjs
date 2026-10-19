@@ -40,6 +40,7 @@ before(async () => {
   await register(/^\/api\/assets\/([^/]+)$/, ["id"], "assets/[id]");
   await register(/^\/api\/assets\/([^/]+)\/waveform$/, ["id"], "assets/[id]/waveform");
   await register(/^\/api\/arcade$/, [], "arcade");
+  await register(/^\/api\/arcade\/attempts$/, [], "arcade/attempts");
   await register(/^\/api\/arcade\/([^/]+)$/, ["id"], "arcade/[id]");
   await register(/^\/api\/models$/, [], "models");
   await register(/^\/api\/preferences$/, [], "preferences");
@@ -590,4 +591,17 @@ test("precise range UI applies atomic move/trim with undo-redo, rejects out-of-s
   await page.reload(); await page.getByTestId("waveyard-mode-studio").click(); await expect(form.getByLabel("Clip timeline position (ms)",{exact:true})).toHaveValue("500"); await expect(form.getByLabel("Clip source offset (ms)",{exact:true})).toHaveValue("1000"); await expect(form.getByLabel("Clip duration (ms)",{exact:true})).toHaveValue("1200");
   await page.getByRole("button",{name:"Preview arrangement",exact:true}).click(); await page.waitForFunction(()=>window.__rangeAudio.length>0); const audio=await page.evaluate(()=>window.__rangeAudio.at(-1)); const exported=await render(version.id);
   assert.equal(audio.frames,74970); assert.equal(exported.decoded.samples.length/exported.decoded.channels,audio.frames); let error=0; for(let frame=0;frame<audio.frames;frame++){if(frame<22050)assert.equal(audio.left[frame],0); error=Math.max(error,Math.abs(audio.left[frame]-exported.decoded.samples[frame*exported.decoded.channels]));} assert.ok(error<0.00012,`audition/export error ${error}`);
+});
+
+test("Arcade browser reopens private failed attempts after restart without replacing previous playable game; save recovery commits exact validated bytes and exposes reopen",async t=>{
+ const service=await import("../../src/lib/games/attempts.ts"),{generateGameOffline,validateGameCode}=await import("../../src/lib/games/index.ts");const {randomUUID}=await import("node:crypto");
+ const {game:previous}=await api("/api/arcade","POST",{prompt:"snake — private attempt recovery previous",gameType:"snake"});
+ let failed=(await service.beginAttempt(owner,randomUUID(),"CONTROLLED partial exposure puzzle — not model inference")).cursor; const partial='<!DOCTYPE html><html><canvas></canvas><script>// retained useful Unicode draft 🎵\nconst exposure=0.25;';
+ failed=await service.checkpointAttempt(failed,{state:"failed",error:"Controlled repair outage"},{code:partial,validation:validateGameCode(partial),runtime:{modelId:"CONTROLLED-FIXTURE",backend:"fixture",ms:1}});
+ let validated=(await service.beginAttempt(owner,randomUUID(),"CONTROLLED validated save retry — not model inference")).cursor;const code=generateGameOffline("snake with wrap").code; validated=await service.checkpointAttempt(validated,{state:"validated"},{code,validation:validateGameCode(code),runtime:{modelId:"CONTROLLED-FIXTURE",backend:"fixture",ms:1}});
+ const page=await browser.newPage();t.after(()=>page.close());await page.goto(`${origin}/?room=arcade`);const previousEntry=page.getByRole("button").filter({has:page.getByText(previous.prompt,{exact:true})});await previousEntry.click();await expect(page.locator("iframe")).toHaveAttribute("srcdoc",previous.code);
+ const failedRow=page.getByRole("article",{name:`Attempt ${failed.id}`,exact:true});await failedRow.getByRole("button",{name:"Inspect retained draft",exact:true}).click();const retained=page.getByTestId("arcade-failed-draft");await retained.locator("summary").click();await expect(retained.locator("pre")).toHaveText(partial);await expect(page.locator("iframe")).toHaveAttribute("srcdoc",previous.code);
+ const download=page.waitForEvent("download");await failedRow.getByRole("link",{name:"Download exact attempt",exact:true}).click();assert.equal(await readFile(await(await download).path(),"utf8"),partial);
+ await f.stop();await f.start();await page.reload();await expect(failedRow).toContainText("failed");await failedRow.getByRole("button",{name:"Inspect retained draft",exact:true}).click();await retained.locator("summary").click();await expect(retained.locator("pre")).toHaveText(partial);
+ const validRow=page.getByRole("article",{name:`Attempt ${validated.id}`,exact:true});await validRow.getByRole("button",{name:"Retry saving exact attempt",exact:true}).click();await expect(validRow).toContainText("completed");await expect(page.locator("iframe")).toHaveAttribute("srcdoc",code);await page.reload();await validRow.getByRole("button",{name:"Open saved result",exact:true}).click();await expect(page.locator("iframe")).toHaveAttribute("srcdoc",code);await expect(page.frameLocator("iframe").locator("canvas")).toBeVisible();
 });

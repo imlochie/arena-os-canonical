@@ -8,8 +8,8 @@
  *  - Generated code is NEVER executed server-side. It runs only in the
  *    browser, inside an iframe with `sandbox="allow-scripts"` (no
  *    allow-same-origin → it cannot touch the app's origin/storage).
- *  - We inject a strict CSP meta tag that blocks all network requests from
- *    the generated app (no exfiltration, no CDN deps — truly self-contained).
+ *  - We inject a strict CSP meta tag that blocks resource fetches/forms, not all frame navigation.
+ *    Generated apps remain untrusted; never grant them credentials.
  *  - Every version records its real engine (`via`) and whether it was the
  *    deterministic offline scaffold (fallback: true) or model output.
  */
@@ -43,22 +43,16 @@ export type FoundryApp = {
 
 const CSP_META =
   `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; ` +
-  `style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:">`;
+  `style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'">`;
 
-/** Inject the no-network CSP right after <head> (or prepend to the document). */
+const CSP_HEAD_PREFIX = `<!doctype html><html><head>${CSP_META}`;
+
+/** Put our policy BEFORE all untrusted content. A model-supplied CSP cannot
+ * relax it, nor can an early script run before it. Resource fetches/forms are
+ * blocked; this is not a general network firewall against frame navigation. */
 export function injectCsp(code: string): string {
-  if (code.includes("http-equiv=\"Content-Security-Policy\"")) return code; // already constrained
-  const headOpen = code.search(/<head[^>]*>/i);
-  if (headOpen !== -1) {
-    const insertAt = code.indexOf(">", headOpen) + 1;
-    return code.slice(0, insertAt) + "\n  " + CSP_META + code.slice(insertAt);
-  }
-  const htmlOpen = code.search(/<html[^>]*>/i);
-  if (htmlOpen !== -1) {
-    const insertAt = code.indexOf(">", htmlOpen) + 1;
-    return code.slice(0, insertAt) + "\n<head>" + CSP_META + "</head>" + code.slice(insertAt);
-  }
-  return `<!doctype html><html><head>${CSP_META}</head><body>${code}</body></html>`;
+  if (code.startsWith(CSP_HEAD_PREFIX)) return code;
+  return CSP_HEAD_PREFIX + "</head><body>" + code + "</body></html>";
 }
 
 export const KV_MAX_KEYS = 200;
@@ -86,24 +80,26 @@ export const ARENA_BRIDGE_SCRIPT = `<script>
     }
   };
   function call(op, key, value) {
-    return new Promise(function (resolve) {
+    return new Promise(function (resolve, reject) {
       var requestId = "q" + (++seq);
-      pending.set(requestId, resolve);
+      var timer = setTimeout(function () { pending.delete(requestId); reject(new Error("App storage did not acknowledge the operation. Retry; no empty value was substituted.")); }, 15000);
+      pending.set(requestId, { resolve: resolve, reject: reject, timer: timer });
       parent.postMessage({ __arena: "request", requestId: requestId, op: op, key: key, value: value }, "*");
     });
   }
   addEventListener("message", function (event) {
     var data = event.data;
-    if (!data || data.__arena !== "response") return;
-    var resolve = pending.get(data.requestId);
-    if (resolve) { pending.delete(data.requestId); resolve(data.result); }
+    if (event.source !== parent || !data || data.__arena !== "response") return;
+    var call = pending.get(data.requestId);
+    if (call) { pending.delete(data.requestId); clearTimeout(call.timer); if (data.result && data.result.ok === false) call.reject(new Error(data.result.error || "App storage operation failed")); else call.resolve(data.result); }
   });
 })();
 </script>`;
 
 /** Inject the postMessage KV bridge into a preview document (idempotent). */
 export function injectArenaBridge(code: string): string {
-  if (code.includes("window.arena") && code.includes("__arena")) return code;
+  if (code.includes(ARENA_BRIDGE_SCRIPT)) return code;
+  if(code.startsWith(CSP_HEAD_PREFIX))return CSP_HEAD_PREFIX + ARENA_BRIDGE_SCRIPT + code.slice(CSP_HEAD_PREFIX.length);
   const headOpen = code.search(/<head[^>]*>/i);
   if (headOpen !== -1) {
     const insertAt = code.indexOf(">", headOpen) + 1;
@@ -201,7 +197,7 @@ async function generateVersion(
   });
   const html = extractHtml(result.text);
   if (html && html.length > 400) {
-    return { code: injectArenaBridge(injectCsp(html)), engine: result.backend, via: result.via ?? result.backend, fallback: false };
+    return { code: injectArenaBridge(injectCsp(html)), engine: result.backend, via: result.via ?? result.backend, fallback: result.fallback === true };
   }
   // Honest fallback: the model's reply wasn't a usable document.
   return {
@@ -219,8 +215,9 @@ export async function createApp(
   const rawName = opts.name?.trim() || description.split(/[.,\n]/)[0] || "New app";
   const name = rawName.length > 48 ? `${rawName.slice(0, 44).replace(/\s+\S*$/, "")}…` : rawName;
   const built = await generateVersion([{ role: "user", content: appPrompt(description) }], () => fallbackScaffold(description, name), opts);
-  const [app] = await db.insert(foundryApps).values({ name }).returning();
-  const [version] = await db
+  return db.transaction(async tx => {
+  const [app] = await tx.insert(foundryApps).values({ name }).returning();
+  const [version] = await tx
     .insert(foundryVersions)
     .values({
       appId: app.id,
@@ -239,6 +236,7 @@ export async function createApp(
     updatedAt: app.updatedAt.toISOString(),
     latest: versionView(version),
   };
+  });
 }
 
 export async function iterateApp(

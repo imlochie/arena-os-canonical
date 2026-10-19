@@ -3,8 +3,8 @@
  * a public storage key. SQL failure retains an object for deterministic retry;
  * no automatic collector deletes potentially recoverable work.
  */
-import { createHash } from "node:crypto";
-import { utimes } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, utimes } from "node:fs/promises";
 import { db } from "@/db";
 import { and, eq, sql } from "drizzle-orm";
 import { objectReclamations } from "@/db/schema";
@@ -48,8 +48,13 @@ export async function writeArtifactObjectStream(ownerId: string, source: AsyncIt
     // in reclamation and its freshness/intent reconciliation.
     if (!local) return;
     const now = new Date(); await utimes(local, now, now);
+    const file = await lstat(local, { bigint: true });
+    if(!file.isFile() || file.isSymbolicLink() || file.nlink!==BigInt(1))throw new StorageIntegrityError("Verified publication identity is not a private regular file.");
+    // Provenance receipt for this completed verified publication, not a root
+    // registry/refcount. Missing/rolled-back receipts never certify an orphan.
+    await tx.insert(objectReclamations).values({ id: randomUUID(), ownerId, sha256: object.sha256, bytes: object.bytes, identity: {dev:String(file.dev),ino:String(file.ino),size:Number(file.size),modified:file.mtimeNs.toString(),changed:file.ctimeNs.toString()}, state:"published", markedAt:now, notBefore:now, reason:"Verified local immutable publication", audit:[{at:now.toISOString(),event:"published: checksum/size and private owner namespace verified"}] });
     await tx.update(objectReclamations).set({ state: "superseded", reason: "Verified bytes republished; cleanup cancelled", audit: sql`${objectReclamations.audit} || ${JSON.stringify([{ at: now.toISOString(), event: "verified republication" }])}::jsonb` })
-      .where(and(eq(objectReclamations.ownerId, ownerId), eq(objectReclamations.sha256, object.sha256)));
+      .where(and(eq(objectReclamations.ownerId, ownerId), eq(objectReclamations.sha256, object.sha256), sql`${objectReclamations.state} <> 'published'`));
   }); }
   catch (error) { throw new ArtifactObjectError(error instanceof StorageIntegrityError ? error.message : "Private content upload was interrupted/unavailable. No metadata or completion was acknowledged; retained objects are safe to reconcile/retry.", error instanceof StorageIntegrityError ? 422 : 503); }
   return object;
