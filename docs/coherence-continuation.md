@@ -1,3 +1,15 @@
+## Exact9e97e4f verification and CI performance-fixture correction
+
+Implementation head `9e97e4fcbb8b77b9cef856d1fdaf0fa144653f6b` is published on PR15, unmerged. Exact clean-head full source with native PostgreSQL: **1364PASS/0FAIL/0SKIP586.84s** (`mandate9-source-pg.txt`). Exact clean-head9-suite native integration: **85PASS/0FAIL/0SKIP98.67s** (`mandate9-integrated-final.txt`). Root production build, lint0errors/48existing warnings, desktop TypeScript compilation PASS (`mandate9-build.txt`, `mandate9-lint.txt`, `mandate9-desktop-compile.txt`). Desktop compilation is NOT Electron execution acceptance.
+
+**CI is not green on9e97e4f:** PR39218054743 and push39218050127 completed FAILURE: static/build, Compose andA7 PASS; browser job failed. Raw signed log host remains inaccessible, but changed strategy retrieved GitHub check annotations through the supported API: check117946487964 names **large canonical preparation remains interactive…**. Same failure identity is present on earlieraee8c3b check117932944847. The exact private assertion body is not exposed; do not invent it.
+
+Investigation independently found a measurement defect: the UI-stall timer remained active during the test's own4-million-frame PCM verification, repeatedly invoking8million WebAudio accessors. That test-only work was being counted as product UI latency. Kept the250ms requirement, full PCM verification, all tracks/quality and real Worker; let the sampler observe preparation completion, then stop it **before verification**, and acquire channel arrays once. New `verificationMs` is reported separately. Numeric synthetic timing annotations now expose ready/edit/replay/UI-gap/verification/error/frame measurements in GitHub checks without publishing arbitrary private tool/assertion output. This does not alter product rendering or loosen acceptance.
+
+Focused corrected fixture PASS (`mandate9-studio-isolated-measurement.txt`):4×15s ready464/edit20.8/UIgap53.6/verify5.4ms;16×90s3141.5/124.4/40.1/29.5ms;32×90s5844.6/125.7/43.2/31.0ms; exact PCMerror0. Earlier ready/edit comparisons remain meaningful, but their207–239ms UI maxima included test verification and must NOT be called isolated production stalls. New-head CI still must establish its own result after this test/evidence-only correction.
+
+---
+
 # Mandates8/9 continued — verified publication provenance, Arcade attempts, actual Foundry outcomes
 
 ## Live reconciliation and implementation scope

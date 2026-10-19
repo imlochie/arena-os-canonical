@@ -490,6 +490,9 @@ test("large canonical preparation remains interactive, caches replay and uses th
     const state = { ...initial.remix, tracks: Array.from({ length: count }, (_, i) => ({ ...initial.tracks[0], id: String(i), volume: 1 / count, inserts: [makeInsert("saturator", { drive: 3 })], clips: [{ ...initial.tracks[0].clips[0], durationMs: seconds * 1000 }] })) };
     const result = await page.evaluate(state => window.measurePreparation(state), state);
     console.log(JSON.stringify({ kind: "studio-worker-preparation", tracks: count, seconds, ...result }));
+    // Numeric, explicitly synthetic metrics only: accessible from GitHub check
+    // annotations without exposing arbitrary tool output or private assertions.
+    console.log(`::notice title=Studio synthetic preparation::${JSON.stringify({tracks:count,seconds,readyMs:result.readyMs,editMs:result.editMs,replayMs:result.replayMs,maximumGapMs:result.maximumGapMs,verificationMs:result.verificationMs,latestEditError:result.latestEditError,frames:result.frames})}`);
     assert.equal(result.frames, seconds * 44100); assert.ok(result.ticks > 5, "UI timer remains schedulable while DSP runs"); assert.ok(result.maximumGapMs < 250, `main-thread stall ${result.maximumGapMs}ms`); assert.ok(result.replayMs < 20); assert.equal(result.latestEditError, 0);
   }
 });
