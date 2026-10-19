@@ -144,3 +144,26 @@ Receipt-only10632e0: CI39255689431 succeeded; CI39255697465 failed an existing c
 - CI004a3eb:39277641295 push browser/A7/Compose verified green;39277650097 PR A7/Compose green. Remaining static/PR-browser statuses still in_progress in latest run/check JSON; job-detail API502 prevents further inspection. Watch exit0 did not equal completed JSON; **full CI success not claimed**. Documentation follow-up is not covered by these code-head receipts.
 - Model provisioning is a real new recoverable capability, not real separation acceptance: absent pinned weights/authorized model-host access still block genuine four-stem output; deep packages/checkpoint and equivalent licensed catalogue access remain missing. **Cancellation gate CLOSED.**
 - CI follow-up: BOTH004a3eb runs39277641295/39277650097 now authoritatively SUCCESS. Docs-only1d091b8 push browser passed, but PR39280998002 browser FAILED at the P0 bank gate (annotation verified). Exact assertion inaccessible through current log-host restrictions; cause unresolved, not assumed timeout. Static/final run metadata still incomplete. Latest-head blanket green remains unaccepted; preserve failed attempt alongside local24/24 and earlier exact-source CI successes. See PR15 comment6271327559/follow-up for current receipt without attributing checks across heads.
+
+### 2026-10-20 — ownership proposal tested; recovery correctness retained
+
+Reviewed PR16 `349cd678` against published571a05a; no PR14/15/16 merge. Exact
+PR16 full typecheck +10focusedPASS. Existing real-browser4/16/32-source harness
+actually exists on BOTH heads. Three controlled baseline/candidate-overlay runs
+per implementation now include complete stereo cold/edit SHA256, exact frames,
+UI gaps/replay/edit times and real Chromium descendant PSS. At32, median sampled
+peak529.43→519.64MiB (still FAIL provisional512MiB), natural retained526.14→416.79MiB;
+all six complete hashes match at every workload. These are not native/Next/
+inference measurements. Details, exact identities/commands/failures and evidence
+locations: `docs/waveyard-performance-ownership.md` appended review.
+
+**Ownership release NOT accepted:** existing warm cancellation test regresses;
+controlled source-endpoint outage makes cancel/retry fail after a successful
+render because its only source owner was terminated. Keep owner-branch decoded
+recovery copies. Independently fixed real Chromium clone-failure orphan rejection
+and raw/finished/playback source-version invalidation, with per-asset isolation
+(no neighbor refetch). Both regressions reproduced before fixes;5focused actual
+browser/controller/Worker tests nowPASS; PCM7PASS/types/lintPASS. Broad final-head
+source/browser/build/staged-native receipts pending at this checkpoint, not
+inherited. Historical failed instrumentation preserved/excluded from table.
+No changed replacement/inference/acquisition/Electron claim. Gate CLOSED.

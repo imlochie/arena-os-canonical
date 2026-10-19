@@ -525,6 +525,38 @@ test("real preparation cancellation fences older work, reuses decoded sources, a
   assert.equal(result.disposedWorkers.created, result.disposedWorkers.terminated); assert.equal(result.disposedWorkers.created, 2);
 });
 
+test("per-asset source revision replaces stale stereo PCM without reloading an unrelated source", async (t) => {
+  const arrangements = [];
+  for (const frequency of [220, 440]) {
+    const { remixId } = await source(false, 1, frequency);
+    const initial = await api(`/api/remixes/${remixId}`); arrangements.push(initial);
+  }
+  const state = { ...arrangements[0].remix, tracks: arrangements.flatMap(item => item.tracks) };
+  const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
+  const result = await page.evaluate(state => window.verifyPreparationSourceRevision(state), state);
+  assert.notEqual(result.before, result.after);
+  assert.equal(result.firstFetches, 2); assert.equal(result.neighborFetches, 1); assert.equal(result.replaySame, true);
+});
+
+test("real Chromium structured-clone failure recovers without orphaned rejections or redundant source fetches", async (t) => {
+  const { remixId } = await source(false, 1);
+  const initial = await api(`/api/remixes/${remixId}`);
+  const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
+  const result = await page.evaluate(state => window.verifyPreparationCloneFailure(state), { ...initial.remix, tracks: initial.tracks });
+  assert.equal(result.failure, "DataCloneError"); assert.equal(result.frames, 44100);
+  assert.equal(result.fetches, 1); assert.deepEqual(result.unhandled, []);
+});
+
+test("warm preparation cancellation recovers from retained audio while its source endpoint is unavailable", async (t) => {
+  const { remixId } = await source(false, 1);
+  const initial = await api(`/api/remixes/${remixId}`);
+  const state = { ...initial.remix, tracks: initial.tracks };
+  const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
+  const result = await page.evaluate(state => window.verifyPreparationLifecycle(state, true), state);
+  assert.equal(result.cancelled, "AbortError"); assert.equal(result.latestError, 0);
+  assert.equal(result.afterEditFetches, 1); assert.equal(result.replaySame, true);
+});
+
 test("Arcade real catalogue outage never erases acknowledged games or preview; retry/reopen retains exact playable bytes and enforces deletion ownership", async t => {
   const prompt = "snake — outage recovery acceptance";
   const { game } = await api("/api/arcade", "POST", { prompt, gameType: "snake" });
@@ -664,15 +696,28 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
     try {
       await page.goto(`${origin}/?room=preparation`);
       const state = { ...arrangements[0], tracks: trackRows.slice(0, count).map(track => ({ ...track, volume: 1 / count })) };
-      const result = await page.evaluate(state => window.measurePreparation(state), state);
-      console.log(JSON.stringify({ kind: "distinct-source-canonical-worker", sources: count, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result, scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak" }));
+      const result = await page.evaluate(state => window.measurePreparation(state, true), state);
+      // Keep the real open preparation/controller alive. Report natural retained
+      // memory separately from the sampled high-water mark. GC-assisted retained
+      // memory is a diagnostic, never a claim about ordinary cold peak.
+      const retainedPssBytes = await samplePss();
+      const pageCdp = await page.context().newCDPSession(page);
+      await pageCdp.send("HeapProfiler.collectGarbage");
+      const gcRetainedPssBytes = await samplePss();
+      await pageCdp.detach();
+      console.log(JSON.stringify({ kind: "distinct-source-canonical-worker", retainedPssBytes, gcRetainedPssBytes,
+        implementation: process.env.ARENA_MEMORY_CANDIDATE ?? "baseline", sources: count, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result, scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak" }));
       assert.equal(result.frames, 441000);
       assert.equal(result.latestEditError, 0);
-      assert.equal(result.diagnostics.decodedBytes, count * 441000 * 2 * 4);
+      const expectedBytes = count * 441000 * 2 * 4;
+      assert.equal(result.diagnostics.sourceBytes, expectedBytes);
+      assert.equal(result.diagnostics.decodedBytes, process.env.ARENA_MEMORY_CANDIDATE === "pr16" ? 0 : expectedBytes);
+      assert.match(result.pcmSha256, /^[a-f0-9]{64}$/);
+      assert.match(result.editedPcmSha256, /^[a-f0-9]{64}$/);
       assert.ok(result.maximumGapMs < 250, `preparation-stage main-thread gap ${result.maximumGapMs}ms`);
       assert.ok(result.replayMs < 20);
       assert.deepEqual(errors, []);
-    } finally { clearInterval(timer); await page.close(); }
+    } finally { clearInterval(timer); await page.evaluate(() => window.releasePreparationMeasurement()).catch(() => {}); await page.close(); }
   }
   await cdp.detach();
 });

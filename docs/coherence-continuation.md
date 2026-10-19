@@ -2001,3 +2001,33 @@ Roottypecheck,productionworkerconfigtypecheck,lint0errors48existingwarnings,Next
 Unchanged SoundCraft automation benchmark oncommittedbbae353:28.496115/25.579607/21.119048ms, median25.579607ms, SAME SHA5183fa2841894687679dda7c8a1041646041cc1818ab75fdafc6c928e1cdc4c7 (`music-automation-bbae353.json`). BoundedNode1track/1second/two1024pointlanes, not whole-app performance. Fullbrowser32-distinct-stereo10s assets profile:549474304sampledwholebrowserPSSbytes/1407.4msprepare/.2msreplay/19.7msedit/89.7msmaxUIgap/latestediterror0; no materialmemory-win claim, not Next/Electron/inference.
 
 Publication adds documentation only after this code-head verification. Its own exact-head CI outcome must come from authoritative completed run JSON; code-head/baseline checks are not inherited. Append the exact final SHA/run receipts to existing PR15 so evidence need not invent a self-referential documentation commit hash. Neither PR14 norPR15 is authorised to merge/close. Genuinelearned4/6stemquality/realmusicinference, livecatalogue/currentterms/regionalaccess, completeconnectedperformance/recordingandElectronremainunaccepted; cancellationCLOSED. Immediate executable prerequisites: obtain the four EXACT pinned MDX assets legitimately with model-use permission, import through reviewed existing UI and prepare all recipe members; use retained real CCBY excerpt for production inference and preserve its grant/credits; validate live Archive discovery/play/acquisition on an authorised network-capable environment without treating public metadata as clearance. No blocked host retry loops or arbitrary mirror/checksum changes.
+
+### 2026-10-20 ownership/recovery execution checkpoint (Asia/Jakarta)
+
+Clean571a05a baseline reconciled with live open PRs14/15/16 (plus10/5/3/1).
+PR16 head349cd678 has no checks/reviews; no merges or branch switches. Exact
+head typecheck/10focusedPASS; isolated overlay onto571a05a compared through the
+EXISTING4/16/32-source real-Worker/PG/HTTP Chromium descendant-PSS harness,
+three runs each, identical browser/dependencies, complete stereo cold/edit
+SHA256 and frames. See performance-ownership appended review for table, hashes,
+commands and explicit exact-head-versus-overlay scope.32-source sampled
+medianpeak529.43→519.64MiB, natural retained526.14→416.79MiB;512MiB peak target
+still fails. First instrumentation disposed before retained sampling; invalid
+runs preserved as superseded, corrected and six fresh runs executed.
+
+Proposal fails existing warm cancellation/no-refetch browser contract; new
+controlled source outage also fails candidate recovery while baseline succeeds.
+Do not integrate Worker-only release. Owner branch independently adopts small
+postMessage/reset correctness fix (native Chromium DataCloneError previously
+left orphan AbortError) and per-asset checksum cache isolation, ALSO fixing
+finished/playback identity missing individual revision (new regression fails
+both baseline and proposal before owner-branch fix). Main decoded recovery
+copies stay.5focused actual-browser testsPASS/PCM7PASS/typecheckPASS/lint0errors
+48existingwarnings. Broad source/browser/build/staged-native verification pending
+at this documentation checkpoint; do not claim historical571CI for this patch.
+Receipts `.data/acceptance/ownership-review/`; no weights/provider acquisition
+attempt repeated. Antra exact07aeef19966d8e2b72ed53f53442596e8a53255c LICENSE
+rechecked: ELv2 explicitly prohibits substantial hosted/managed-service exposure;
+NO code/dependency absorbed (GH licence API NOASSERTION is not permission).
+Real learned4/6stem/quality, live licensed catalogue/acquisition, full connected
+recording/recovery and actual Electron remain unaccepted. Gate CLOSED.

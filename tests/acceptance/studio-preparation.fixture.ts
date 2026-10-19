@@ -2,7 +2,18 @@
 // same controller used by StudioCore. Never a replacement transport/processor.
 import { ArrangementPreparation } from "../../src/lib/waveyard/arrangement-preparation";
 import type { ArrangementPreviewState } from "../../src/lib/waveyard/arrangement-pcm";
-Object.assign(window, { async measurePreparation(state: ArrangementPreviewState) {
+let heldMeasurement: { engine: ArrangementPreparation; context: AudioContext; buffer: AudioBuffer; changed: AudioBuffer } | null = null;
+Object.assign(window, { async releasePreparationMeasurement() {
+  heldMeasurement?.engine.dispose(); await heldMeasurement?.context.close(); heldMeasurement = null;
+} });
+async function stereoPcmHash(buffer: AudioBuffer) {
+  // Complete planar stereo float32 PCM, L then R, not sparse sample probes.
+  const pcm = new Float32Array(buffer.length * buffer.numberOfChannels);
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) pcm.set(buffer.getChannelData(channel), channel * buffer.length);
+  const digest = await crypto.subtle.digest("SHA-256", pcm.buffer);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+Object.assign(window, { async measurePreparation(state: ArrangementPreviewState, retainForMeasurement = false) {
   const context = new AudioContext({ sampleRate: 44100 }), engine = new ArrangementPreparation();
   let last = performance.now(), maximumGapMs = 0, ticks = 0;
   const timer = setInterval(() => { const now = performance.now(); maximumGapMs = Math.max(maximumGapMs, now - last); last = now; ticks++; }, 5);
@@ -22,16 +33,18 @@ Object.assign(window, { async measurePreparation(state: ArrangementPreviewState)
     const verificationStarted = performance.now(), changedSamples = changed.getChannelData(0), originalSamples = buffer.getChannelData(0);
     let error = 0; for (let frame = 0; frame < buffer.length; frame++) error = Math.max(error, Math.abs(changedSamples[frame] - originalSamples[frame] * 0.5));
     const verificationMs = performance.now() - verificationStarted;
-    return { readyMs, replayMs, editMs, maximumGapMs: preparationMaximumGapMs, verificationMs, ticks, frames: buffer.length, latestEditError: error, outputPlanarBytes: buffer.length * 2 * 4, diagnostics: engine.diagnostics };
-  } finally { clearInterval(timer); engine.dispose(); await context.close(); }
+    const pcmSha256 = await stereoPcmHash(buffer), editedPcmSha256 = await stereoPcmHash(changed);
+    if (retainForMeasurement) heldMeasurement = { engine, context, buffer, changed };
+    return { pcmSha256, editedPcmSha256, readyMs, replayMs, editMs, maximumGapMs: preparationMaximumGapMs, verificationMs, ticks, frames: buffer.length, latestEditError: error, outputPlanarBytes: buffer.length * 2 * 4, diagnostics: engine.diagnostics };
+  } finally { clearInterval(timer); if (!retainForMeasurement || !heldMeasurement) { engine.dispose(); await context.close(); } }
 } });
 
-Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPreviewState) {
+Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPreviewState, outageAfterCancel = false) {
   const context = new AudioContext({ sampleRate: 44100 }), engine = new ArrangementPreparation();
   const originalFetch = window.fetch, NativeWorker = window.Worker;
-  let fetches = 0, created = 0, terminated = 0;
+  let fetches = 0, created = 0, terminated = 0, outage = false;
   let onWork: (() => void) | undefined;
-  window.fetch = (...args) => { fetches++; return originalFetch(...args); };
+  window.fetch = (...args) => { fetches++; return outage ? Promise.reject(new TypeError("Controlled source endpoint outage")) : originalFetch(...args); };
   window.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) { super(url, options); created++; }
     postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) { if (Array.isArray(options)) super.postMessage(message, options); else super.postMessage(message, options); onWork?.(); }
@@ -46,6 +59,7 @@ Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPrevi
     await workPosted; onWork = undefined;
     engine.cancel();
     const cancelled = await pending;
+    outage = outageAfterCancel;
     const latest = structuredClone(state); latest.masterVolume *= 0.5;
     const result = await engine.prepare(latest, context);
     let error = 0;
@@ -54,7 +68,58 @@ Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPrevi
     const cached = await engine.prepare(latest, context);
     engine.dispose();
     const disposedWorkers = { created, terminated };
+    outage = false;
     await engine.prepare(state, context, "reopened-source-revision");
     return { coldFetches, afterEditFetches, reopenedFetches: fetches, cancelled, latestError: error, replaySame: cached === result, disposedWorkers };
   } finally { engine.dispose(); window.fetch = originalFetch; window.Worker = NativeWorker; await context.close(); }
+} });
+
+Object.assign(window, { async verifyPreparationCloneFailure(state: ArrangementPreviewState) {
+  const context = new AudioContext({ sampleRate: 44100 }), engine = new ArrangementPreparation();
+  const NativeWorker = window.Worker, originalFetch = window.fetch;
+  let failOnce = true, fetches = 0;
+  const unhandled: string[] = [];
+  const onUnhandled = (event: PromiseRejectionEvent) => { unhandled.push(String(event.reason)); event.preventDefault(); };
+  window.addEventListener("unhandledrejection", onUnhandled);
+  window.fetch = (...args) => { fetches++; return originalFetch(...args); };
+  window.Worker = class extends NativeWorker {
+    postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
+      // Exercise Chromium's real structured-clone rejection, not a fake Worker reply.
+      if (failOnce) { failOnce = false; super.postMessage(() => {}); return; }
+      if (Array.isArray(options)) super.postMessage(message, options); else super.postMessage(message, options);
+    }
+  } as typeof Worker;
+  try {
+    const failure = await engine.prepare(state, context).then(() => "unexpected success", error => error.name);
+    const recovered = await engine.prepare(state, context);
+    // Let browser unhandledrejection delivery run before observing the result.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return { failure, frames: recovered.length, fetches, unhandled, diagnostics: engine.diagnostics };
+  } finally {
+    engine.dispose(); window.Worker = NativeWorker; window.fetch = originalFetch;
+    window.removeEventListener("unhandledrejection", onUnhandled); await context.close();
+  }
+} });
+
+Object.assign(window, { async verifyPreparationSourceRevision(state: ArrangementPreviewState) {
+  const context = new AudioContext({ sampleRate: 44100 }), engine = new ArrangementPreparation();
+  const originalFetch = window.fetch;
+  const [first, second] = state.tracks.map(track => track.clips[0].stemAssetId);
+  const counts: Record<string, number> = {};
+  let replaceFirst = false;
+  window.fetch = (input, init) => {
+    const url = String(input); counts[url] = (counts[url] ?? 0) + 1;
+    return originalFetch(replaceFirst && url === `/api/assets/${first}` ? `/api/assets/${second}` : input, init);
+  };
+  try {
+    const revisions = new Map([[first, "version-one"], [second, "stable-neighbor"]]);
+    const before = await engine.prepare(state, context, "session-revision", revisions);
+    replaceFirst = true; revisions.set(first, "version-two");
+    // Per-asset revision alone must invalidate the finished render as well as
+    // the source cache, without fetching/decoding the unaffected neighbor.
+    const after = await engine.prepare(state, context, "session-revision", revisions);
+    const replay = await engine.prepare(state, context, "session-revision", revisions);
+    return { before: await stereoPcmHash(before), after: await stereoPcmHash(after),
+      firstFetches: counts[`/api/assets/${first}`], neighborFetches: counts[`/api/assets/${second}`], replaySame: after === replay };
+  } finally { engine.dispose(); window.fetch = originalFetch; await context.close(); }
 } });

@@ -3,8 +3,8 @@ import { MAX_ARRANGEMENT_SECONDS, type ArrangementPreviewState } from "./arrange
 import type { PreviewSource, PreviewWork } from "./arrangement-pcm.worker";
 /** Only editable audible state enters the cache identity. Save acknowledgements,
  * names, cursors and loop toggles must not redo an unchanged musical bounce. */
-export function previewStateKey(state: ArrangementPreviewState, revision = "") {
-  return JSON.stringify([state.tracks, state.masterVolume, state.masterInserts, state.automation, state.tempoBpm, state.targetKey, revision]);
+export function previewStateKey(state: ArrangementPreviewState, revision = "", sourceRevisions?: ReadonlyMap<string, string>) {
+  return JSON.stringify([state.tracks, state.masterVolume, state.masterInserts, state.automation, state.tempoBpm, state.targetKey, revision, sourceRevisions ? [...sourceRevisions].sort(([a], [b]) => a.localeCompare(b)) : []]);
 }
 export function transformedClipKey(clip: ArrangementPreviewState["tracks"][number]["clips"][number], state: ArrangementPreviewState, revision: string) {
   return JSON.stringify([clip.stemAssetId, clip.sourceOffsetMs, clip.durationMs, clip.tempoSyncEnabled, clip.keySyncEnabled, state.tempoBpm, state.targetKey, revision]);
@@ -39,14 +39,14 @@ export class ArrangementPreparation {
       const pending = this.pending; this.pending = null;
       if (data.error) pending.reject(new Error(data.error)); else pending.resolve(data);
     };
-    worker.onerror = () => { this.pending?.reject(new Error("Arrangement DSP worker failed; no dry substitute was played.")); this.pending = null; worker.terminate(); this.worker = null; this.sent.clear(); };
+    worker.onerror = () => { this.pending?.reject(new Error("Arrangement DSP worker failed; no dry substitute was played.")); this.pending = null; worker.terminate(); this.worker = null; this.sent.clear(); this.workerStats = undefined; };
     return this.worker = worker;
   }
-  async prepare(snapshot: ArrangementPreviewState, context: AudioContext, revision = "") {
+  async prepare(snapshot: ArrangementPreviewState, context: AudioContext, revision = "", sourceRevisions: ReadonlyMap<string, string> = new Map()) {
     this.cancel();
     if (this.rate && this.rate !== context.sampleRate) this.dispose();
     this.rate = context.sampleRate;
-    const key = previewStateKey(snapshot, revision);
+    const key = previewStateKey(snapshot, revision, sourceRevisions);
     if (this.finished?.key === key) return this.finished.buffer;
     const abort = this.abort = new AbortController(), signal = abort.signal;
     const end = Math.max(0, ...snapshot.tracks.flatMap(track => track.clips.map(clip => clip.timelineStartMs + clip.durationMs)));
@@ -60,11 +60,16 @@ export class ArrangementPreparation {
       for (const clip of track.clips) {
         if (clip.tempoSyncEnabled || clip.keySyncEnabled) {
           const id = clip.stemAssetId;
-          const sourceKey = transformedClipKey(clip, state, revision);
+          const sourceKey = transformedClipKey(clip, state, sourceRevisions.get(id) ?? revision);
           requests.set(sourceKey, { url: `/api/assets/${id}/audition`, body: JSON.stringify({ sourceOffsetMs: clip.sourceOffsetMs, durationMs: clip.durationMs, tempoSyncEnabled: clip.tempoSyncEnabled, keySyncEnabled: clip.keySyncEnabled, tempoBpm: state.tempoBpm, targetKey: state.targetKey, sampleRate: context.sampleRate }) });
           clip.stemAssetId = sourceKey; clip.sourceOffsetMs = 0; clip.tempoSyncEnabled = false; clip.keySyncEnabled = false;
           needed.add(sourceKey);
-        } else { needed.add(clip.stemAssetId); requests.set(clip.stemAssetId, { url: `/api/assets/${clip.stemAssetId}` }); }
+        } else {
+          const id = clip.stemAssetId, sourceRevision = sourceRevisions.get(id) ?? revision;
+          const sourceKey = sourceRevision ? JSON.stringify([id, sourceRevision]) : id;
+          needed.add(sourceKey); requests.set(sourceKey, { url: `/api/assets/${id}` });
+          clip.stemAssetId = sourceKey;
+        }
       }
     }
     // Drop removed clips, old transform variants and closed-project data, rather
@@ -94,7 +99,16 @@ export class ArrangementPreparation {
     const id = ++this.sequence;
     const work: PreviewWork = { id, state, sampleRate: context.sampleRate, sources, retain: [...needed], revision };
     const rendered = new Promise<Prepared>((resolve, reject) => { this.pending = { id, resolve, reject }; });
-    worker.postMessage(work, transfer);
+    try {
+      worker.postMessage(work, transfer);
+    } catch (error) {
+      // No reply can settle this request. Do not leave an orphan promise for
+      // the next edit to reject, or trust partially posted source ownership.
+      // Decoded source data remains intact for a network-independent retry.
+      this.pending = null; worker.terminate(); this.worker = null;
+      this.sent.clear(); this.workerStats = undefined;
+      throw error;
+    }
     const { left, right, stats } = await rendered; signal.throwIfAborted(); this.workerStats = stats;
     const buffer = context.createBuffer(2, left.length, context.sampleRate);
     buffer.copyToChannel(left as Float32Array<ArrayBuffer>, 0); buffer.copyToChannel(right as Float32Array<ArrayBuffer>, 1);

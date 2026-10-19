@@ -6,11 +6,12 @@ import { ArrangementPreparation, previewStateKey } from "./arrangement-preparati
 
 // Loop settings change playback, not rendered PCM: apply them immediately while
 // reusing the finished mix rather than quietly retaining the previous loop.
-const playbackStateKey = (state: ArrangementPreviewState, revision: string) => JSON.stringify([previewStateKey(state, revision), state.loopStartMs, state.loopEndMs]);
+const playbackStateKey = (state: ArrangementPreviewState, revision: string, sourceRevisions: ReadonlyMap<string, string>) => JSON.stringify([previewStateKey(state, revision, sourceRevisions), state.loopStartMs, state.loopEndMs]);
+const EMPTY_SOURCE_REVISIONS: ReadonlyMap<string, string> = new Map();
 
 /** Prepared canonical-DSP audition. One connected source per run; generation
  * fencing prevents cancelled loads/older edits from starting a stale graph. */
-export function useArrangementPreview(onPosition: (milliseconds: number) => void, state?: ArrangementPreviewState | null, sourceRevision = "", scopeKey = "") {
+export function useArrangementPreview(onPosition: (milliseconds: number) => void, state?: ArrangementPreviewState | null, sourceRevision = "", scopeKey = "", sourceRevisions: ReadonlyMap<string, string> = EMPTY_SOURCE_REVISIONS) {
   const context = useRef<AudioContext | null>(null);
   const preparation = useRef<ArrangementPreparation | null>(null);
   const preparedKey = useRef("");
@@ -40,15 +41,15 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
     onPosition(next); setPlaying(false); setPreparing(false);
   }, [clear, onPosition, position]);
   const play = useCallback(async (snapshot: ArrangementPreviewState, fromMs: number) => {
-    preparedKey.current = playbackStateKey(snapshot, sourceRevision);
+    preparedKey.current = playbackStateKey(snapshot, sourceRevision, sourceRevisions);
     clear(); const token = generation.current; active.current = true; origin.current.positionMs = fromMs; setError(null); setPlaying(false); setPreparing(true);
     try {
       const audio = context.current ??= new AudioContext({ sampleRate: 44100 });
       if (audio.state === "suspended") await audio.resume();
       const engine = preparation.current ??= new ArrangementPreparation();
-      const buffer = await engine.prepare(snapshot, audio, sourceRevision);
+      const buffer = await engine.prepare(snapshot, audio, sourceRevision, sourceRevisions);
       if (token !== generation.current) return;
-      preparedKey.current = playbackStateKey(snapshot, sourceRevision);
+      preparedKey.current = playbackStateKey(snapshot, sourceRevision, sourceRevisions);
       const node = audio.createBufferSource(); node.buffer = buffer; node.connect(audio.destination);
       const offset = Math.max(0, Math.min(fromMs / 1000, buffer.duration));
       if (snapshot.loopEndMs !== null && snapshot.loopEndMs > snapshot.loopStartMs) { node.loop = true; node.loopStart = snapshot.loopStartMs / 1000; node.loopEnd = Math.min(buffer.duration, snapshot.loopEndMs / 1000); }
@@ -66,11 +67,11 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
       if (token !== generation.current) return;
       active.current = false; clear(); setPlaying(false); setPreparing(false); setError(cause instanceof Error ? cause.message : "Arrangement audition failed.");
     }
-  }, [clear, onPosition, pause, position, sourceRevision]);
+  }, [clear, onPosition, pause, position, sourceRevision, sourceRevisions]);
   const stop = useCallback(() => { active.current = false; clear(); origin.current = { contextTime: 0, positionMs: 0 }; onPosition(0); setPlaying(false); setPreparing(false); }, [clear, onPosition]);
   // Edits invalidate the old graph immediately and prepare the new snapshot at
   // the observed cursor. No effect nodes or old requests survive replacement.
-  const stateKey = state ? playbackStateKey(state, sourceRevision) : "";
+  const stateKey = state ? playbackStateKey(state, sourceRevision, sourceRevisions) : "";
   useEffect(() => { if (active.current && stateKey !== preparedKey.current) { if (state) void play(state, position()); else stop(); } }, [stateKey, state, play, position, stop]);
   const previousScope = useRef(scopeKey);
   useEffect(() => { if (previousScope.current !== scopeKey) { previousScope.current = scopeKey; stop(); preparation.current?.dispose(); } }, [scopeKey, stop]);
