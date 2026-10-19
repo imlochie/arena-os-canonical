@@ -179,6 +179,7 @@ export const assistants = pgTable("assistants", {
 
 // ---- Arena battles ----
 export const battles = pgTable("battles", {
+  inputReference: jsonb("input_reference"),
   id: uuid("id").primaryKey().defaultRandom(),
   prompt: text("prompt").notNull(),
   category: text("category").notNull().default("general"),
@@ -224,6 +225,7 @@ export const promptTemplates = pgTable("prompt_templates", {
 
 // ---- Multi-collaboration challenges (cognitive-OS mode) ----
 export const collabs = pgTable("collabs", {
+  inputReference: jsonb("input_reference"),
   id: uuid("id").primaryKey().defaultRandom(),
   challenge: text("challenge").notNull(),
   category: text("category").notNull().default("general"),
@@ -254,6 +256,7 @@ export const collabContributions = pgTable("collab_contributions", {
 
 // ---- Cognitive Council runs (Cognitive OS: job → perspectives → cross-critique → synthesis → artifact) ----
 export const councilRuns = pgTable("council_runs", {
+  inputReference: jsonb("input_reference"),
   id: uuid("id").primaryKey().defaultRandom(),
   jobId: text("job_id").notNull().default("second_brain"),
   material: text("material").notNull(),
@@ -346,6 +349,7 @@ export const artifactRevisions = pgTable("artifact_revisions", {
   artifactId: uuid("artifact_id").notNull().references(() => artifacts.id),
   revision: integer("revision").notNull(),
   snapshot: jsonb("snapshot").notNull().$type<ArtifactRevisionSnapshot>(),
+  bodySha256: text("body_sha256"),
   restoredFromRevisionId: uuid("restored_from_revision_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [uniqueIndex("artifact_revisions_number_unique").on(table.artifactId, table.revision)]);

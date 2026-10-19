@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { assistants, models } from "@/db/schema";
 import { inArray } from "drizzle-orm";
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 // Body: { revealToken, winner } → { modelAId, modelBId, names }.
 // Blindness is preserved by AES-256-GCM sealed tokens, not by storage.
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const body = await req.json();
     const token: string = (body.revealToken ?? "").toString();

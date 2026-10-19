@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { handoffUrl, type HandoffTarget } from "@/lib/handoffs";
+import { handoffUrl, parseArtifactReference, type HandoffTarget } from "@/lib/handoffs";
 
 // Send work around the loop: Think → Challenge → Synthesize → Create → Test → Learn.
 export default function HandoffButtons({
@@ -17,6 +17,8 @@ export default function HandoffButtons({
   exclude?: HandoffTarget[];
   compact?: boolean;
 }) {
+  const [failure, setFailure] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
 
   async function saveArtifact(kind: string) {
@@ -29,7 +31,7 @@ export default function HandoffButtons({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: title.trim().slice(0, 160),
-          body: text.slice(0, 20000),
+          body: text,
           kind,
           sourceType: source?.split(":")[0] ?? "manual",
           sourceId: source?.split(":").slice(1).join(":") ?? null,
@@ -39,8 +41,24 @@ export default function HandoffButtons({
       if (r.ok) {
         setSaved(kind);
         setTimeout(() => setSaved(null), 2000);
+      } else { const data = await r.json(); setFailure(data.error ?? "Save was not acknowledged; inspect the Library before retrying."); }
+    } catch { setFailure("Save was not acknowledged; inspect the Library before retrying."); }
+  }
+
+  async function send(target: HandoffTarget) {
+    if (sending) return;
+    setSending(true); setFailure(null);
+    try {
+      let reference = source;
+      if (!reference || !parseArtifactReference(reference)) {
+        const response = await fetch("/api/artifacts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ body: text, title: text.slice(0, 60) || "Room output", kind: "brief", projectId: projectId ?? null, sourceType: source?.split(":")[0] ?? "manual", sourceId: source?.split(":").slice(1).join(":") ?? null }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error ?? "Snapshot was not acknowledged. Inspect the Library before retrying.");
+        if (!data.artifact?.currentRevisionId) throw new Error("Snapshot has no immutable revision. Load history in the Library before sending.");
+        reference = `artifact:${data.artifact.id}@${data.artifact.currentRevisionId}`;
       }
-    } catch {}
+      window.location.assign(handoffUrl(target, { text, projectId: projectId ?? undefined, source: reference }));
+    } catch (error) { setFailure(error instanceof Error ? error.message : "Handoff failed; work was not discarded."); setSending(false); }
   }
 
   async function saveMemory(kind: string) {
@@ -81,15 +99,11 @@ export default function HandoffButtons({
         Send to →
       </span>
       {targets.map((t) => (
-        <a
-          key={t.id}
-          href={handoffUrl(t.id, { text, projectId: projectId ?? undefined, source })}
-          title={t.title}
-          className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-white/10"
-        >
-          {t.label}
-        </a>
+        <button key={t.id} type="button" disabled={sending} onClick={() => void send(t.id)} title={t.title} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-white/10">
+          {source && parseArtifactReference(source) ? t.label : `Save & send → ${t.label}`}
+        </button>
       ))}
+      {failure && <p role="alert">{failure}</p>}
       <span className="mx-0.5 h-4 w-px bg-white/10" />
       <button
         onClick={() => saveArtifact("brief")}

@@ -1,3 +1,31 @@
+# Mandate 6 — trusted cross-room execution, 2026-10-19
+
+First implementation boundary, based on published `2ad8e33791fce9d6c3aec5440face7ce8c899afe`. PR15 and PR14 were inspected and remain unmerged. No resets or merges were performed; the restored checkout was reconciled against byte-identical published files before editing.
+
+## Reproduced and fixed
+
+- Real Collab POST + native PostgreSQL previously accepted an unpinned Artifact source and executed arbitrary replacement client text. The preserved before/after reproduction changes from HTTP200 to actionable400.
+- Battle classic/stream, Collab and Council now share one authoritative resolver. A supplied source must be `artifact:<id>@<revisionId>`; owner, revision membership, required snapshot fields and independent stored body SHA256 are checked before generation or writes. Client preview text is never substituted for pinned content. Omitted/cleared sources explicitly use plain text.
+- Results and SQL records retain the actual consumed revision, hash, byte length and owner. Owned tombstones preserve readable pinned history. Current edits, concurrent edits and database restarts do not reinterpret an old pin. Mutable project context is not silently appended to pinned inputs.
+- Actual interfaces submit references, explain that preview edits are ignored while pinned, and provide an explicit clear-to-text control. Noncanonical outgoing room outputs now require the actual “Save & send” snapshot acknowledgement before navigation. A browser chain executes Collab → Council → Battle against those acknowledged revisions.
+- Room read/mutation routes now enforce API access. Streamed Battle responses explicitly declare UTF-8 and show the authoritative consumed prompt, rather than claiming that an edited preview was executed. The streaming endpoint refuses ephemeral requests instead of silently persisting them; the classic endpoint supports ephemeral execution.
+
+## Executed evidence for this boundary
+
+- Native PostgreSQL and actual HTTP-handler/browser workflow suite: **38 passed, 0 failed**, `/home/user/mandate6-first-workflows-final.txt`. Includes the existing Mission/Artifact/Studio workflows, new four-path revision tests, no-write assertions, actual revision-storage outage, concurrent edits, restart/tombstones, invalid/foreign/unbound/checksum-corrupt references, and the real outgoing cross-room controls.
+- Actual room interface focused run: **3 passed**, `/home/user/mandate6-cross-room-browser.txt`. Browser Chromium153 was provisioned through an npm package; this is not Electron/desktop acceptance.
+- Typecheck and production build passed. Scoped lint: zero errors, three pre-existing effect warnings. Existing Arcade/Artifact-store migration regression: six passed.
+- Full source regression is running against an isolated native PostgreSQL fixture. The first attempt without a live shared database exposed the existing PG-required Archive tests; that attempt was stopped, not counted as passing. The corrected run has its own database (`/home/user/mandate6-first-source-pg.txt`). The first workflow attempt lacked executable npm-packaged FFmpeg/FFprobe and the separate worker dependencies; those environment prerequisites were prepared and the complete38-test run above then passed, without skipping failures.
+- Exact commit CI will be tracked in PR15. No auto-merge.
+
+## Limits and next implementation boundary
+
+Inline execution remains bounded at20,000UTF-16 code units/80,000UTF-8 bytes. Oversized pinned content fails explicitly; this is **not** large archive storage. Migration0018 backfills hashes of legacy bodies as they exist at migration time, not proof against historical corruption or a privileged editor changing both body and checksum. Deterministic Local Engine/controlled execution tests are not model-quality acceptance.
+
+A further actual native-PG reproduction has exposed legacy Orchestrator write failures being misreported as request errors, with memory fallback still present in create/read/respond/delete paths. Continue removing those false durable outcomes and proving write-boundary rollback/recovery; then large private-storage archives, actual Redis/BullMQ FX interruption, reusable Mission outputs and remaining room workflows. None of those broader mandates is declared complete. Windows, Electron renderer and genuine music-model acceptance remain unproven; they do not block Linux implementation.
+
+---
+
 # Product coherence continuation — 2026-10-18
 
 Bounded delivery: Arcade request routing, generation/iteration truthfulness, and result retention. This is not whole-product or desktop acceptance.

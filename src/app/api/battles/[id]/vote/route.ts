@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { battles, models, modelCategoryRatings } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
@@ -6,6 +7,7 @@ import { newElos, type BattleOutcome } from "@/lib/elo";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     const body = await req.json();

@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { councilArtifacts } from "@/db/schema";
 import { desc } from "drizzle-orm";
@@ -6,6 +7,7 @@ export const dynamic = "force-dynamic";
 
 // GET → artifact library across all council runs
 export async function GET(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 30), 60);
   try {

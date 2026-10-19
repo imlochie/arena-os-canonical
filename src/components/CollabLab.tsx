@@ -152,7 +152,7 @@ export default function CollabLab() {
       const r = await fetch("/api/collabs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ challenge: ch, category, strategy: strat, synthesisModel: synthModel, collaborators, keys: loadKeys(), ...privacyFlags(), ...(projectId ? { projectId } : {}) }),
+        body: JSON.stringify({ challenge: ch, source: handoffSource, category, strategy: strat, synthesisModel: synthModel, collaborators, keys: loadKeys(), ...privacyFlags(), ...(projectId ? { projectId } : {}) }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? "collaboration failed");
@@ -305,6 +305,7 @@ export default function CollabLab() {
             }}
             className="mt-2 min-h-[100px] w-full resize-y rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-[15px] text-white placeholder:text-slate-500 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
           />
+{handoffSource && <div role="note" className="my-2 text-xs"><code>{handoffSource}</code><p>The server resolves the complete owned Artifact revision. Preview edits are ignored while pinned; no mutable project context is injected.</p><button type="button" onClick={() => setHandoffSource(null)}>Clear reference and use edited text</button></div>}
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {CATEGORIES.map((c) => (
@@ -420,7 +421,7 @@ export default function CollabLab() {
           </div>
           {handoffSource && (
             <p className="mt-2 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-[11px] font-bold text-emerald-200">
-              🔁 Handoff from {handoffSource.replace(":", " ")} — project memory will be included when attached.
+              🔁 Handoff from {handoffSource.replace(":", " ")} — the server validates the selected immutable revision.
             </p>
           )}
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">

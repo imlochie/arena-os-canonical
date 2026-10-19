@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { councilArtifacts, councilRuns } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -5,7 +6,8 @@ import { logPrivacyEvent } from "@/lib/privacy";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     const [run] = await db.select().from(councilRuns).where(eq(councilRuns.id, id)).limit(1);
@@ -18,7 +20,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     await db.delete(councilArtifacts).where(eq(councilArtifacts.runId, id));

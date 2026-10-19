@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { collabs, collabContributions } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
@@ -5,7 +6,8 @@ import { logPrivacyEvent } from "@/lib/privacy";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     const [collab] = await db.select().from(collabs).where(eq(collabs.id, id)).limit(1);
@@ -23,7 +25,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 }
 
 // DELETE → right to erasure for a single collab + contributions
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     await db.delete(collabContributions).where(eq(collabContributions.collabId, id));

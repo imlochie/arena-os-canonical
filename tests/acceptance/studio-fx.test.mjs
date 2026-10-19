@@ -50,6 +50,7 @@ before(async () => {
   await register(/^\/api\/projects$/, [], "projects");
   await register(/^\/api\/projects\/([^/]+)$/, ["id"], "projects/[id]");
   await register(/^\/api\/projects\/([^/]+)\/artifacts$/, ["id"], "projects/[id]/artifacts");
+  for (const route of ["battles", "battles/stream", "collabs", "council", "council/artifacts", "assistants", "templates"]) await register(new RegExp("^/api/" + route + "$"), [], route);
   const bundle = await build({ entryPoints: ["tests/acceptance/studio-fx.fixture.tsx"], bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", define: { "process.env": JSON.stringify({ NODE_ENV: "development" }) } });
   server = createServer(async (req, res) => {
     try {
@@ -364,3 +365,32 @@ test("Studio Save version survives an in-flight autosave echo but never overwrit
     t.diagnostic(`Held real autosave acknowledgement; intervening edit=${interveningEdit}; immutable version master=${state.masterVolume}`);
   }
 });
+
+
+for (const [room, endpoint, field, operation, button] of [["battle", "battles/stream", "prompt", "battle", /Start battle/], ["collab", "collabs", "challenge", "collab", /Run .*Council|Run .*council/], ["council", "council", "material", "run", /Convene the/]]) {
+  test(`actual ${room} interface sends the selected immutable reference and server execution ignores edited preview`, async (t) => {
+    const { artifact } = await api("/api/artifacts", "POST", { title: `Pinned ${room} input`, body: "ORIGINAL TRUSTED BROWSER INPUT 🎵" }); const source = `artifact:${artifact.id}@${artifact.currentRevisionId}`;
+    await api(`/api/artifacts/${artifact.id}`, "PUT", { body: "LATER MUTABLE CONTENT", expectedRevision: 1 });
+    const page = await browser.newPage(); page.setDefaultTimeout(10000); t.after(() => page.close()); await page.addInitScript(() => localStorage.setItem("af_local_mode", "1"));
+    await page.goto(`${origin}/?room=${room}&${field}=CLIENT%20PREVIEW&source=${encodeURIComponent(source)}`);
+    await expect(page.getByRole("button", { name: "Clear reference and use edited text", exact: true })).toBeVisible();
+    await page.locator("textarea").first().fill("EDITED CLIENT PREVIEW MUST NOT OVERRIDE");
+    const responsePromise = page.waitForResponse(response => new URL(response.url()).pathname === `/api/${endpoint}` && response.request().method() === "POST"); await page.getByRole("button", { name: button }).first().click(); const response = await responsePromise;
+    assert.equal(response.request().postDataJSON().source, source); assert.ok(response.ok(), await response.text());
+    const data = endpoint.endsWith("stream") ? (await response.text()).split("\n\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6))).find(event => event.type === "battle") : await response.json();
+    assert.equal(data[operation][field], artifact.body); assert.equal(data[operation].inputReference.revisionId, artifact.currentRevisionId);
+    const table = room === "battle" ? (await import("../../src/db/schema.ts")).battles : room === "collab" ? (await import("../../src/db/schema.ts")).collabs : (await import("../../src/db/schema.ts")).councilRuns;
+    const [stored] = await database.db.select().from(table).where(eq(table.id, data[operation].id)); assert.equal(stored[field], artifact.body); assert.equal(stored.inputReference.reference, source);
+    if (room === "collab") {
+      // Real outgoing controls explicitly snapshot mutable room output, then
+      // navigate into the next real room with the acknowledged revision.
+      await page.getByRole("button", { name: "Save & send → 🧠 Council", exact: true }).first().click();
+      await page.waitForURL(url => url.pathname === "/council"); const selected = new URL(page.url()).searchParams.get("source"); const savedArtifact = (await api(`/api/artifacts/${selected.slice(9).split("@")[0]}`)).artifact;
+      assert.equal(new URL(page.url()).searchParams.get("source"), `artifact:${savedArtifact.id}@${savedArtifact.currentRevisionId}`);
+      const councilExecution = page.waitForResponse(response => new URL(response.url()).pathname === "/api/council" && response.request().method() === "POST"); await page.getByRole("button", { name: /Convene the/ }).first().click(); const council = await (await councilExecution).json(); assert.equal(council.run.material, savedArtifact.body); assert.equal(council.run.inputReference.revisionId, savedArtifact.currentRevisionId);
+      await page.getByRole("button", { name: "Save & send → ⚔️ Arena", exact: true }).first().click(); await page.waitForURL(url => url.pathname === "/"); const selectedBattle = new URL(page.url()).searchParams.get("source"); const snapshotArtifact = (await api(`/api/artifacts/${selectedBattle.slice(9).split("@")[0]}`)).artifact;
+      const battleExecution = page.waitForResponse(response => new URL(response.url()).pathname === "/api/battles/stream" && response.request().method() === "POST"); await page.getByRole("button", { name: /Start battle/ }).first().click(); const battleEvents = (await (await battleExecution).text()).split("\n\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6))); const battle = battleEvents.find(event => event.type === "battle").battle; assert.equal(battle.prompt, snapshotArtifact.body); assert.equal(battle.inputReference.revisionId, snapshotArtifact.currentRevisionId);
+    }
+
+  });
+}

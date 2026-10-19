@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 /**
  * Arcade + artifact store — ownership-scoped persistence.
  *
@@ -85,7 +86,7 @@ function revisionSnapshot(row: ArtifactRow): ArtifactRevisionSnapshot {
 type Transaction = Parameters<Parameters<StoreDb["transaction"]>[0]>[0];
 async function baseline(tx: Transaction, row: ArtifactRow) {
   if (row.currentRevisionId) return row;
-  const [revision] = await tx.insert(artifactRevisions).values({ artifactId: row.id, revision: row.revision, snapshot: revisionSnapshot(row) }).onConflictDoNothing().returning();
+  const [revision] = await tx.insert(artifactRevisions).values({ artifactId: row.id, revision: row.revision, snapshot: revisionSnapshot(row), bodySha256: createHash("sha256").update(row.body, "utf8").digest("hex") }).onConflictDoNothing().returning();
   const existing = revision ?? (await tx.select().from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, row.id), eq(artifactRevisions.revision, row.revision))).limit(1))[0];
   const [updated] = await tx.update(artifacts).set({ currentRevisionId: existing.id }).where(eq(artifacts.id, row.id)).returning();
   return updated;
@@ -139,7 +140,7 @@ async function revise(database: StoreDb, id: string, ownerId: string, patch: Par
     }
     if (!restoreId && JSON.stringify(revisionSnapshot(current)) === JSON.stringify(revisionSnapshot(proposed))) return { outcome: "ok", row: current };
     const next = current.revision + 1;
-    const [revision] = await tx.insert(artifactRevisions).values({ artifactId: id, revision: next, snapshot: revisionSnapshot(proposed), restoredFromRevisionId: restoreId ?? null }).returning();
+    const [revision] = await tx.insert(artifactRevisions).values({ artifactId: id, revision: next, snapshot: revisionSnapshot(proposed), bodySha256: createHash("sha256").update(proposed.body, "utf8").digest("hex"), restoredFromRevisionId: restoreId ?? null }).returning();
     const [row] = await tx.update(artifacts).set({ title: proposed.title, body: proposed.body, kind: proposed.kind, projectId: proposed.projectId, deletedAt: proposed.deletedAt, revision: next, currentRevisionId: revision.id }).where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId))).returning();
     return { outcome: "ok", row };
   });
