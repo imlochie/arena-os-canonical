@@ -23,6 +23,7 @@ export async function GET() {
         return {
           id: spec.id,
           label: modelLabel(spec),
+          file: spec.file, sourceUrl: spec.sourceUrl, sha256: spec.sha256, license: spec.license,
           primaryStem: spec.primaryStem,
           requiredFor: [spec.id, ...(spec.id === MDX_MODELS[0].id ? ["default"] : []), ...SEPARATION_RECIPES.filter(recipe => recipe.runs.some(run => run.model === spec.id)).map(recipe => recipe.id)],
           secondaryStem: spec.secondaryStem,
@@ -31,6 +32,7 @@ export async function GET() {
           verified: status.verified,
           ready: status.verified,
           provisioning: status.provisioning,
+          acquisition: status.acquisition ?? null,
         };
       }),
     );

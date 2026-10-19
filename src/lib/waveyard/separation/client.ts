@@ -77,10 +77,11 @@ export async function fetchDeepEngineStatus(): Promise<StemEngineDeepStatus | nu
  *  the server re-enqueued after installing (the seed sweep). */
 export async function prepareStemEngine(
   modelId: string,
+  signal?: AbortSignal,
 ): Promise<{ ok: true; requeued: number } | { ok: false; error: string }> {
   try {
     const response = await fetch(`/api/waveyard/separation/models/${encodeURIComponent(modelId)}/seed`, {
-      method: "POST",
+      method: "POST", signal,
     });
     const json = (await response.json().catch(() => ({}))) as { error?: unknown; requeued?: unknown };
     if (!response.ok) {
@@ -88,6 +89,7 @@ export async function prepareStemEngine(
     }
     return { ok: true, requeued: typeof json.requeued === "number" ? json.requeued : 0 };
   } catch (error) {
+    if (signal?.aborted) return { ok: false, error: "Preparation cancelled. Installed verified files and resumable partial bytes are retained. Retry preparation to continue; no inference completion is claimed." };
     return { ok: false, error: error instanceof Error ? error.message : "The stem engine model could not be prepared." };
   }
 }

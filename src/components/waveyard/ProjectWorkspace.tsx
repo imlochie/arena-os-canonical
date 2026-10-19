@@ -1,4 +1,5 @@
 "use client";
+import { ModelAssetImport } from "./ModelAssetImport";
 
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { StudioCore } from "./StudioCore";
@@ -180,11 +181,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
   }
 
-async function prepareEngine(model: string, jobId: string) {
+  const engineAbort = useRef<AbortController | null>(null);
+  async function prepareEngine(model: string, jobId: string) {
+    engineAbort.current = new AbortController();
     setPreparingEngine(true);
     setError(null);
     try {
-      const result = await prepareStemEngine(model);
+      const result = await prepareStemEngine(model, engineAbort.current.signal);
       if (!result.ok) {
         setError(result.error);
         return;
@@ -194,6 +197,7 @@ async function prepareEngine(model: string, jobId: string) {
       if (result.requeued > 0) setRefresh((value) => value + 1);
       else await retry(jobId);
     } finally {
+      engineAbort.current = null;
       setPreparingEngine(false);
     }
   }
@@ -392,6 +396,8 @@ async function prepareEngine(model: string, jobId: string) {
           );
         })}
       </section>}
+      <ModelAssetImport />
+      {preparingEngine && <button type="button" onClick={() => engineAbort.current?.abort()}>Cancel model preparation (retain resumable bytes)</button>}
       {latest?.status === "failed" && (
         <div>
           <p className="error" role="alert">

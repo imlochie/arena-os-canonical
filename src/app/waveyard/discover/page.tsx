@@ -1,3 +1,4 @@
+import { ArchiveAudioDiscovery } from "@/components/waveyard/ArchiveAudioDiscovery";
 import WaveyardNav from "@/components/waveyard/WaveyardNav";
 import { DiscoverCatalog } from "@/components/waveyard/DiscoverCatalog";
 
@@ -13,6 +14,7 @@ export default function DiscoverPage() {
         <h1>Released from the workshop.</h1>
         <p className="notice">A small catalogue of projects explicitly published by their creators. No rankings, feeds, or recommendations.</p>
       </section>
+      <ArchiveAudioDiscovery />
       <DiscoverCatalog />
     </main>
   );

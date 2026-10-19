@@ -179,3 +179,15 @@ test("safeFetch revalidates every redirect hop", async () => {
     /too many redirects/,
   );
 });
+
+test('safeFetch preserves caller cancellation instead of silently replacing its signal', async () => {
+  const controller = new AbortController();
+  const result = safeFetch('https://public.example/audio', { signal: controller.signal }, { policy: 'public', lookup: async () => ['93.184.216.34'], fetchImpl: async (_url, init) => {
+    assert.ok(init?.signal);
+    controller.abort();
+    assert.equal(init.signal.aborted, true);
+    init.signal.throwIfAborted();
+    return new Response('unreachable');
+  } });
+  await assert.rejects(result, /abort/i);
+});

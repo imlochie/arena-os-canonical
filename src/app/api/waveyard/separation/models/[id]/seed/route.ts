@@ -28,7 +28,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     let installed = false;
     for (const spec of specs) {
       if (!spec) throw new Error("Invalid recipe model.");
-      const result = await seedModelFile(spec);
+      const result = await seedModelFile(spec, { signal: _request.signal });
       const status = await getModelFileStatus(spec);
       if (!status.verified) throw new Error("The model did not verify after installation.");
       installed ||= result.outcome === "installed";
@@ -36,6 +36,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     }
     // A recipe is retried only AFTER every required model verifies. Download
     // completion is not inference completion; the existing job owns that state.
+    _request.signal.throwIfAborted();
     const requeued = await requeueFailedSeparationsForModel(db, target);
     return NextResponse.json({
       model: models[0], models,

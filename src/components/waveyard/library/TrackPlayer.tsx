@@ -39,6 +39,7 @@ import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import { WaveformCanvas } from "@/components/waveyard/WaveformCanvas";
 
 interface TrackDetail {
+  rights?: { sourceUrl: string | null; attribution: string; notice: string } | null;
   banks?: Array<{id:string;model:string;createdAt:string;stems:Array<{id:string;stemType:string}>}>;
   selectionRequired?: string | null;
   id: string;
@@ -529,6 +530,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
         <div className="wplayer-identity">
           <span className="eyebrow">Now playing</span>
           <h1>{track.title}</h1>
+          {track.rights && <details><summary>Source rights / attribution for this recording</summary><p>{track.rights.attribution}</p><p>{track.rights.notice}</p><a href={`data:text/plain;charset=utf-8,${encodeURIComponent(track.rights.attribution + "\n\n" + track.rights.notice)}`} download={`${track.id}-rights.txt`}>Save rights/attribution notice</a><p>Keep these notices and describe modifications with exported audio. Library import is not legal clearance.</p></details>}
           <p className="player-sub">{track.artist || "Unknown artist"}{track.album ? ` · ${track.album}` : ""}</p>
           <p className="player-facts">
             {formatPlayClock(track.durationSeconds)}

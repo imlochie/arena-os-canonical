@@ -18,6 +18,7 @@
  *  - Concurrent seeds of the same model share one download (in-process lock).
  */
 
+import { createReadStream } from "node:fs";
 import { mkdir, rename, rm, stat, readFile, writeFile, open } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -41,6 +42,7 @@ export class ModelSeedError extends Error {
 
 export type SeedState = "missing" | "downloading" | "interrupted" | "verifying" | "failed" | "ready";
 export type ModelFileStatus = {
+  acquisition?: ModelAcquisition | null;
   present: boolean;
   /** Only checksum-verified FINAL files may be used for inference. */
   verified: boolean;
@@ -48,7 +50,9 @@ export type ModelFileStatus = {
   provisioning: { state: SeedState; partialBytes: number; totalBytes: number | null; error: string | null };
 };
 
+export type ModelAcquisition = { kind: "registry-download" | "owner-supplied-file"; sourceUrl: string; sha256: string; licence: string; permission: "owner-asserted-not-verified" | "not-established"; installedAt: string };
 type PartialRecord = {
+  acquisition?: ModelAcquisition["kind"];
   revision: string; url: string; sha256: string; total: number | null;
   validator: string | null; state: SeedState; error: string | null;
 };
@@ -63,7 +67,7 @@ function paths(spec: MdxModelSpec, dir: string) {
 async function record(path: string): Promise<PartialRecord | null> {
   try { return JSON.parse(await readFile(path, "utf8")); } catch { return null; }
 }
-async function save(path: string, data: PartialRecord) {
+async function save(path: string, data: PartialRecord | ModelAcquisition) {
   const temp = `${path}.${randomUUID()}`;
   await writeFile(temp, JSON.stringify(data));
   await rename(temp, path);
@@ -121,13 +125,15 @@ export async function getModelFileStatus(spec: MdxModelSpec, dir = resolveModels
   const owner = await ownerAt(p.lock);
   const active = owner !== null && alive(owner);
   const state: SeedState = verified ? "ready" : matching && active ? (meta.state === "verifying" ? "verifying" : "downloading") : matching && meta.state === "failed" ? "failed" : partialBytes > 0 ? "interrupted" : "missing";
-  return { present, verified, sizeBytes, provisioning: { state, partialBytes, totalBytes: matching ? meta.total : null, error: matching ? meta.error : null } };
+  let acquisition: ModelAcquisition | null = null;
+  if (verified) try { const stored = JSON.parse(await readFile(`${p.final}.provenance.json`, "utf8")); if (stored.sha256 === spec.sha256 && stored.sourceUrl === spec.sourceUrl && ["owner-supplied-file", "registry-download"].includes(stored.kind)) acquisition = stored; } catch { /* Legacy provenance remains unknown. */ }
+  return { present, verified, sizeBytes, acquisition, provisioning: { state, partialBytes, totalBytes: matching ? meta.total : null, error: matching ? meta.error : null } };
 }
 
 export type SeedProgress = { bytes: number; totalBytes: number | null };
 export type SeedResult = { outcome: "already-present"; status: ModelFileStatus } | { outcome: "installed"; bytes: number };
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
-type SeedOptions = { dir?: string; fetchImpl?: FetchLike; onProgress?: (p: SeedProgress) => void; signal?: AbortSignal };
+type SeedOptions = { acquisition?: ModelAcquisition["kind"]; dir?: string; fetchImpl?: FetchLike; onProgress?: (p: SeedProgress) => void; signal?: AbortSignal };
 /** Same file/revision/directory shares work. A cancelled caller does not cancel
  * other callers' transfer; cancellation belongs to the initiating operation. */
 const inFlight = new Map<string, Promise<SeedResult>>();
@@ -155,14 +161,14 @@ async function seedModelFileUncached(spec: MdxModelSpec, opts: SeedOptions): Pro
   const p = paths(spec, dir);
   await mkdir(dir, { recursive: true });
   const release = await acquire(p.lock, opts.signal);
-  let meta: PartialRecord = { revision: identity(spec), url: spec.sourceUrl, sha256: spec.sha256, total: null, validator: null, state: "downloading", error: null };
+  let meta: PartialRecord = { acquisition: opts.acquisition ?? "registry-download", revision: identity(spec), url: spec.sourceUrl, sha256: spec.sha256, total: null, validator: null, state: "downloading", error: null };
   const discard = async () => { await rm(p.partial, { force: true }); };
   try {
     const current = await getModelFileStatus(spec, dir);
     if (current.verified) return { outcome: "already-present", status: current };
     const saved = await record(p.metadata);
     let offset = await size(p.partial);
-    if (saved?.revision === meta.revision && saved.url === spec.sourceUrl && saved.sha256 === spec.sha256 && (saved.validator || offset === saved.total) && saved.total !== null && offset > 0 && offset <= saved.total) meta = saved;
+    if ((saved?.acquisition ?? "registry-download") === meta.acquisition && saved?.revision === meta.revision && saved.url === spec.sourceUrl && saved.sha256 === spec.sha256 && (saved.validator || offset === saved.total) && saved.total !== null && offset > 0 && offset <= saved.total) meta = saved;
     else { await discard(); offset = 0; }
     meta.state = "downloading"; meta.error = null;
     await save(p.metadata, meta);
@@ -235,6 +241,7 @@ async function seedModelFileUncached(spec: MdxModelSpec, opts: SeedOptions): Pro
     const bytes = await size(p.partial);
     opts.signal?.throwIfAborted();
     await rename(p.partial, p.final);
+    await save(`${p.final}.provenance.json`, { kind: opts.acquisition ?? "registry-download", sourceUrl: spec.sourceUrl, sha256: sha, licence: spec.license, permission: opts.acquisition === "owner-supplied-file" ? "owner-asserted-not-verified" : "not-established", installedAt: new Date().toISOString() });
     await rm(p.metadata, { force: true });
     return { outcome: "installed", bytes };
   } catch (error) {
@@ -252,4 +259,19 @@ export function modelLabel(spec: MdxModelSpec): string {
 
 export function modelsDirParent(dir: string): string {
   return dirname(dir);
+}
+
+/** Explicit owner-supplied exact model asset. Verification happens even when an
+ * installed model already exists. Publication still uses the existing seeder's
+ * file lock, size bounds, final SHA check and atomic rename; no network request.
+ * This does not establish architecture execution, provenance rights or quality.
+ */
+export async function importModelFile(spec: MdxModelSpec, filePath: string, opts: { dir?: string; signal?: AbortSignal; rightsReviewed: boolean }) {
+  if (opts.rightsReviewed !== true) throw new ModelSeedError("Owner must review source/licensing and attest authorised use before importing.");
+  opts.signal?.throwIfAborted();
+  const sha = await checksumFile(filePath);
+  if (sha !== spec.sha256) throw new ModelSeedError(`Owner-supplied asset does not match pinned ${spec.id} SHA-256. Nothing installed.`);
+  const bytes = await size(filePath);
+  const result = await seedModelFile(spec, { ...opts, acquisition: "owner-supplied-file", fetchImpl: async () => new Response(Readable.toWeb(createReadStream(filePath)) as ReadableStream, { status: 200, headers: { "content-length": String(bytes) } }) });
+  return { ...result, inputVerifiedFrom: "owner-supplied-file" as const, sha256: sha };
 }

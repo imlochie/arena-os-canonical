@@ -33,6 +33,7 @@ import {
   smartCollections,
   sourceAnalyses,
   sourceAssets,
+  sourceAcquisitions,
   stemAssets,
   tracks,
 } from "@/db/waveyardSchema";
@@ -44,7 +45,7 @@ import {
   parseSmartRules,
   type SmartCollection,
 } from "./collections";
-import { ingestSourceFile } from "@/lib/waveyard/source-ingest"
+import { type SourceAcquisitionProvenance, ingestSourceFile } from "@/lib/waveyard/source-ingest"
 import { defaultSeparationModel } from "@/lib/waveyard/separation/selection";
 import {
   deriveTrackMetadata,
@@ -96,6 +97,7 @@ export interface TrackAnalysis {
 }
 
 export interface TrackDetail extends TrackSummary {
+  rights?: { sourceUrl: string | null; attribution: string; notice: string } | null;
   banks: SeparationBank[];
   selectionRequired: string | null;
   source: {
@@ -242,6 +244,7 @@ export async function addTrackFromAudioFile(input: {
   album?: string;
   existingObject?: { storageKey: string; checksumSha256: string };
   prepareSeparation?: boolean;
+  provenance?: SourceAcquisitionProvenance;
 }): Promise<AddTrackResult> {
   const checksum = await checksumFile(input.filePath);
   const lock = await pool.connect();
@@ -256,6 +259,10 @@ export async function addTrackFromAudioFile(input: {
     .orderBy(desc(tracks.createdAt))
     .limit(1);
   if (existing !== undefined) {
+    if (input.provenance) {
+      const [acquisition] = await db.select().from(sourceAcquisitions).where(eq(sourceAcquisitions.sourceAssetId, existing.sourceAssetId)).limit(1);
+      if (acquisition?.sourceUrl !== input.provenance.sourceUrl) throw new Error("These audio bytes already exist under a different acquisition. Original rights/provenance were preserved; no catalogue rights were attached to that track.");
+    }
     const [summary] = await summariesFor([existing]);
     return { track: summary, created: false, separationQueued: false };
   }
@@ -283,7 +290,7 @@ export async function addTrackFromAudioFile(input: {
     mimeType: input.mimeType,
     model: input.model ?? defaultSeparationModel(),
     device: input.device ?? "auto",
-    provenance: { method: "local-upload", title, artist, metadata: { intake: "waveyard-library", ...(input.existingObject ? { conversionObject: input.existingObject } : {}) } },
+    provenance: input.provenance ?? { method: "local-upload", title, artist, metadata: { intake: "waveyard-library", ...(input.existingObject ? { conversionObject: input.existingObject } : {}) } },
     existingObject: input.existingObject,
     prepareSeparation: input.prepareSeparation,
   });
@@ -410,8 +417,15 @@ export async function getTrack(ownerId: string, trackId: string, selection?: Ass
       ? { assetIds: realStems.map((stem) => stem.id), kind: "stems" as const }
       : { assetIds: [passthrough?.id ?? source.id], kind: "source" as const };
 
+  const [acquisition] = await db.select({ method: sourceAcquisitions.method, sourceUrl: sourceAcquisitions.sourceUrl, metadata: sourceAcquisitions.metadata }).from(sourceAcquisitions).where(eq(sourceAcquisitions.sourceAssetId, source.id)).limit(1);
+  let rights: TrackDetail["rights"] = null;
+  try {
+    const metadata = JSON.parse(acquisition?.metadata ?? "{}");
+    if (acquisition?.method === "authorized-url" && typeof metadata.attribution === "string" && typeof metadata.rightsNotice === "string") rights = { sourceUrl: acquisition.sourceUrl, attribution: metadata.attribution, notice: metadata.rightsNotice };
+  } catch { /* Invalid provenance is not invented permission. */ }
   return {
     ...toSummary(row, availability),
+    rights,
     source: {
       id: source.id,
       originalFilename: source.originalFilename,

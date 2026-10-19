@@ -1,6 +1,7 @@
 "use client";
+import { ModelAssetImport } from "./ModelAssetImport";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { summariseSourceIntake } from "@/lib/waveyard/types";
 import { computeBrowserAudioMetadata, computeBrowserWaveform } from "@/lib/waveyard/browser-waveform";
@@ -28,6 +29,7 @@ export function BuildProject() {
   const [engine, setEngine] = useState<StemEngineModelStatus[] | null>(null);
   const [deepEngine, setDeepEngine] = useState<StemEngineDeepStatus | null>(null);
   const [engineRefresh, setEngineRefresh] = useState(0);
+  const engineAbort = useRef<AbortController | null>(null);
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [engineError, setEngineError] = useState<string | null>(null);
   useEffect(() => {
@@ -54,13 +56,15 @@ export function BuildProject() {
   async function prepareEngine() {
     const missing = relevantModels?.find((model) => !model.ready);
     if (!missing) return;
+    engineAbort.current = new AbortController();
     setPreparingEngine(true);
     setEngineError(null);
     try {
-      const result = await prepareStemEngine(separationTarget || missing.id);
+      const result = await prepareStemEngine(separationTarget || missing.id, engineAbort.current.signal);
       if (!result.ok) setEngineError(result.error);
       setEngineRefresh((value) => value + 1);
     } finally {
+      engineAbort.current = null;
       setPreparingEngine(false);
     }
   }
@@ -116,6 +120,7 @@ export function BuildProject() {
     setBusy(false); router.push(`/waveyard/projects/${projectId}`);
   }
   return <form className="build-project" onSubmit={build}>
+    <ModelAssetImport />
     {runtimeIssue && <p className="error" role="alert">{runtimeIssue}</p>}
     {engineMissing && (
       <p className="notice" role="status">
@@ -126,6 +131,7 @@ export function BuildProject() {
         <button type="button" className="button secondary" disabled={preparingEngine} onClick={() => void prepareEngine()} style={{ display: "block", marginTop: "0.5rem" }}>
           {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine now"}
         </button>
+        {preparingEngine && <button type="button" onClick={() => engineAbort.current?.abort()}>Cancel model preparation (retain resumable bytes)</button>}
         {engineError && <span className="error" role="alert" style={{ display: "block", marginTop: "0.5rem" }}>{engineError}</span>}
       </p>
     )}

@@ -12,14 +12,15 @@ import { expect } from "@playwright/test";
 import { eq } from "drizzle-orm";
 import { missionPostgres } from "../helpers/mission-postgres.ts";
 let f, database, schema, server, browser, origin, root, broker, synth;
+let catalogueProviderHandler;
 const routes = [];
 const owner = "00000000-0000-4000-8000-000000000001";
 async function register(pattern, names, module) { routes.push({ pattern, names, handlers: await import(`../../src/app/api/${module}/route.ts`) }); }
-async function dispatch(url, method = "GET", body) {
+async function dispatch(url, method = "GET", body, headers = {}) {
   for (const route of routes) {
     const match = url.pathname.match(route.pattern); if (!match) continue;
     const handler = route.handlers[method]; if (!handler) return Response.json({ error: "Method unsupported" }, { status: 405 });
-    return handler(new Request(url, { method, headers: { host: "localhost", "content-type": "application/json" }, ...(body !== undefined ? { body } : {}) }), { params: Promise.resolve(Object.fromEntries(route.names.map((name, index) => [name, match[index + 1]]))) });
+    return handler(new Request(url, { method, headers: { host: "localhost", "content-type": "application/json", ...headers }, ...(body !== undefined ? { body } : {}) }), { params: Promise.resolve(Object.fromEntries(route.names.map((name, index) => [name, match[index + 1]]))) });
   }
   return Response.json({ error: `No real route in this acceptance harness: ${url.pathname}` }, { status: 404 });
 }
@@ -27,7 +28,14 @@ before(async () => {
   f = await missionPostgres(); root = await mkdtemp(path.join(tmpdir(), "arena-studio-fx-"));
   process.env.DATABASE_URL = f.url; process.env.WAVEYARD_STORAGE_DIR = path.join(root, "storage"); process.env.WAVEYARD_LOCAL_WORKER = "0"; delete process.env.REDIS_URL;
   database = await import("../../src/db/index.ts"); schema = await import("../../src/db/waveyardSchema.ts"); synth = await import("../../src/lib/waveyard/mixer/synth.ts");
-  await register(/^\/api\/library\/tracks$/, [], "library/tracks");
+  await register(/^\/api\/library\/catalogue$/, [], "library/catalogue");
+  await register(/^\/api\/library\/catalogue\/([^/]+)$/, ["id"], "library/catalogue/[id]");
+  await register(/^\/api\/waveyard\/separation\/models$/, [], "waveyard/separation/models");
+  await register(/^\/api\/waveyard\/separation\/models\/([^/]+)\/import$/, ["id"], "waveyard/separation/models/[id]/import");
+  await register(/^\/api\/library\/queue$/, [], "library/queue");
+  await register(/^\/api\/library\/playlists$/, [], "library/playlists");
+  await register(/^\/api\/library\/playback-state$/, [], "library/playback-state");
+  await register(/^\/api\/library\/tracks$/,  [], "library/tracks");
   await register(/^\/api\/library\/tracks\/([^/]+)$/, ["id"], "library/tracks/[id]");
   await register(/^\/api\/library\/sessions$/, [], "library/sessions");
   await register(/^\/api\/library\/sessions\/([^/]+)$/, ["id"], "library/sessions/[id]");
@@ -69,11 +77,14 @@ before(async () => {
   server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://fixture");
+      if (url.pathname.startsWith("/archive-controlled/") && catalogueProviderHandler) {
+        const response = catalogueProviderHandler(url); res.writeHead(response.status, Object.fromEntries(response.headers));return res.end(Buffer.from(await response.arrayBuffer()));
+      }
       if (url.pathname === "/arrangement-pcm.worker.ts") { res.setHeader("content-type", "text/javascript"); return res.end(workerBundle.outputFiles[0].contents); }
       if (url.pathname === "/fixture.js") { res.setHeader("content-type", "text/javascript"); return res.end(bundle.outputFiles[0].contents); }
       if (url.pathname.startsWith("/api/")) {
-        let body = ""; for await (const chunk of req) body += chunk;
-        const response = await dispatch(url, req.method, req.method === "GET" ? undefined : body);
+        const chunks = []; for await (const chunk of req) chunks.push(chunk);
+        const response = await dispatch(url, req.method, req.method === "GET" ? undefined : Buffer.concat(chunks), { "content-type": req.headers["content-type"] ?? "application/json" });
         res.writeHead(response.status, Object.fromEntries(response.headers)); return res.end(Buffer.from(await response.arrayBuffer()));
       }
       res.setHeader("content-type", "text/html"); res.end('<!doctype html><div id="root"></div><script type="module" src="/fixture.js"></script>');
@@ -742,4 +753,49 @@ test("P0 bank gate: actual separation publication, pinned session/donor playback
   const repaired = await sessions.getSession(owner, legacy.id); assert.deepEqual(repaired.tracks[0].playback.assetIds, ids[0]); assert.equal(repaired.tracks[0].stemMix.drums,.37);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({kind:"bank-identity-connected-gate", banks:3, lanesPerItem:4, pinnedDonor:donorStem.id, maximumExportError:maximumError, frames:output.decoded.samples.length/output.decoded.channels, scope:"actual processing/publication/PG/browser playback/restart/Studio/FFmpeg; controlled spectral inference seam, NOT genuine inference"}));
+});
+
+// Generated owned PCM + controlled public-provider transport. These assertions
+// cover the actual UI/routes/storage/player; NOT live Archive/music/inference.
+test("catalogue controlled HTTP → review/preview → actual import → reopened player; exact-file model import rejects corrupt bytes", async (t) => {
+  const originalFetch=globalThis.fetch, oldModels=process.env.WAVEYARD_MODELS_DIR;
+  const { MDX_MODELS }=await import("../../src/lib/waveyard/separation/mdx.ts");
+  const spec=MDX_MODELS[0], originalSpec={...spec};
+  const { createHash }=await import("node:crypto");
+  const weightBytes=Buffer.alloc(2_000_000,13);
+  Object.assign(spec,{sha256:createHash("sha256").update(weightBytes).digest("hex"),sizeBytes:weightBytes.length});
+  process.env.WAVEYARD_MODELS_DIR=path.join(root,"controlled-owner-models");
+  const pcm=synth.encodeWav16(Float32Array.from({length:44100*4},(_,i)=>0.2*Math.sin(Math.floor(i/2)*0.14)),44100);
+  let downloads=0;
+  catalogueProviderHandler=(url)=>{
+    const pathname=url.pathname.replace("/archive-controlled","");
+    if(pathname==="/advancedsearch.php")return Response.json({response:{docs:[{identifier:"owned-browser-fixture",title:"Owned browser contract",creator:"Arena acceptance",licenseurl:"https://creativecommons.org/publicdomain/zero/1.0/"}]}});
+    if(pathname==="/metadata/owned-browser-fixture")return Response.json({metadata:{identifier:"owned-browser-fixture",title:"Owned browser contract",creator:"Arena acceptance",mediatype:"audio",licenseurl:"https://creativecommons.org/publicdomain/zero/1.0/"},files:[{name:"owned.wav",size:String(pcm.length)}]});
+    if(pathname==="/download/owned-browser-fixture/owned.wav"){downloads++;return new Response(pcm,{headers:{"content-type":"audio/wav","content-length":String(pcm.length)}});}
+    return new Response("not found",{status:404});
+  };
+  globalThis.fetch=(url,init)=>String(url).startsWith("https://archive.org/") ? originalFetch(`${origin}/archive-controlled${new URL(String(url)).pathname}${new URL(String(url)).search}`,init) : originalFetch(url,init);
+  t.after(()=>{globalThis.fetch=originalFetch;catalogueProviderHandler=undefined;Object.assign(spec,originalSpec);if(oldModels===undefined)delete process.env.WAVEYARD_MODELS_DIR;else process.env.WAVEYARD_MODELS_DIR=oldModels;});
+  const page=await browser.newPage();t.after(()=>page.close());page.setDefaultTimeout(15000);
+  await page.route("https://archive.org/download/owned-browser-fixture/owned.wav",route=>route.fulfill({body:Buffer.from(pcm),contentType:"audio/wav"}));
+  await page.goto(`${origin}/?room=catalogue`);
+  await page.getByLabel("Find public audio",{exact:true}).fill("Owned");await page.getByRole("button",{name:"Search public audio",exact:true}).click();
+  await page.getByRole("button",{name:"Review source / available audio",exact:true}).click();
+  const acquire=page.getByRole("button",{name:"Import reviewed original audio",exact:true});await expect(acquire).toBeDisabled();assert.equal(downloads,0);
+  await page.getByRole("checkbox",{name:/I reviewed the recording/}).check();
+  const preview=page.getByLabel("Preview owned.wav",{exact:true});await preview.evaluate(audio=>audio.play());await expect.poll(()=>preview.evaluate(audio=>audio.currentTime)).toBeGreaterThan(0.05);
+  await acquire.click();const link=page.getByRole("link",{name:"Open imported audio in Waveyard",exact:true});await expect(link).toBeVisible();
+  const trackId=(await link.getAttribute("href")).split("/").pop();assert.equal(downloads,1);
+  await page.goto(`${origin}/?room=player&track=${trackId}`);await expect(page.getByTestId("track-player")).toBeVisible();
+  await page.locator(".wplayer-play").click();await expect(page.locator(".wplayer-play")).toHaveAttribute("aria-pressed","true");await expect.poll(async()=>Number(await page.getByRole("meter",{name:"Master level",exact:true}).getAttribute("aria-valuenow"))).toBeGreaterThan(0);await expect.poll(async()=>Number(await page.getByLabel("Seek",{exact:true}).inputValue())).toBeGreaterThan(0.05);await page.locator(".wplayer-play").click();
+  await page.getByText("Source rights / attribution for this recording",{exact:true}).click();await expect(page.getByText(/Owned browser contract — Arena acceptance/)).toBeVisible();
+  await page.reload();await page.getByText("Source rights / attribution for this recording",{exact:true}).click();await expect(page.getByText(/Owned browser contract — Arena acceptance/)).toBeVisible();
+  const downloadEvent=page.waitForEvent("download");await page.getByRole("link",{name:"Save rights/attribution notice",exact:true}).click();const rightsDownload=await downloadEvent;assert.match(await readFile(await rightsDownload.path(),"utf8"),/creativecommons.org\/publicdomain\/zero/);
+  const detail=await api(`/api/library/tracks/${trackId}`);assert.equal(detail.track.playback.kind,"source");assert.equal(detail.track.banks.length,0);
+  const asset=await dispatch(new URL(`/api/assets/${detail.track.source.id}`,origin));assert.deepEqual(new Uint8Array(await asset.arrayBuffer()),pcm);
+  await page.goto(`${origin}/?room=catalogue`);await page.getByText("Model sources, licences and exact-file import",{exact:true}).click();await page.getByRole("button",{name:"Inspect this machine’s model manifests",exact:true}).click();
+  const fileInput=page.locator('input[type="file"]').first();await expect(fileInput).toBeDisabled();await page.getByRole("checkbox",{name:/I reviewed the source\/licensing/}).check();
+  await fileInput.setInputFiles({name:"wrong.onnx",mimeType:"application/octet-stream",buffer:Buffer.alloc(weightBytes.length,7)});await expect(page.getByText(/does not match pinned/)).toBeVisible();
+  await fileInput.setInputFiles({name:"controlled-contract-not-a-model.onnx",mimeType:"application/octet-stream",buffer:weightBytes});await expect(page.getByText(/Exact pinned bytes verified. No inference has run/)).toBeVisible();
+  const { getModelFileStatus }=await import("../../src/lib/waveyard/separation/seed.ts");assert.equal((await getModelFileStatus(spec)).acquisition.kind,"owner-supplied-file");
 });
