@@ -59,9 +59,10 @@ async function api(url, method = "GET", body) {
   const response = await dispatch(new URL(url, "http://fixture"), method, body === undefined ? undefined : JSON.stringify(body));
   assert.ok(response.ok, `${method} ${url}: ${response.status} ${await response.clone().text()}`); return response.json();
 }
-async function source() {
+async function source(impulse = false) {
   const input = new Float32Array(44100 * 3 * 2);
   for (let frame = 0; frame < input.length / 2; frame++) input[frame * 2] = input[frame * 2 + 1] = 0.2 * Math.sin(2 * Math.PI * 440 * frame / 44100);
+  if (impulse) { input.fill(0); input[Math.round(2.9 * 44100) * 2] = input[Math.round(2.9 * 44100) * 2 + 1] = 0.4; }
   const filename = path.join(root, "fx-input.wav"); await writeFile(filename, synth.encodeWav16(input, 44100));
   process.env.WAVEYARD_LOCAL_WORKER = "0";
   const service = await import("../../src/lib/waveyard/library/service.ts");
@@ -152,4 +153,87 @@ test("canonical export sums overlapping clips before nonlinear track FX and reta
   const reverbVersion = await api(`/api/remixes/${remixId}/versions`, "POST", { name: "Actual reverb tail" }); const reverb = await render(reverbVersion.version.id);
   assert.ok(reverb.decoded.samples.length > dry.decoded.samples.length);
   const tail = reverb.decoded.samples.subarray(dry.decoded.samples.length); assert.ok(tail.some((sample) => Math.abs(sample) > 0.0001), "the downloadable WAV contains actual energy after the source ends");
+});
+
+test("arrangement audition executes persisted track/master FX and polarity, not dry clips", async (t) => {
+  const { projectId, remixId } = await source();
+  const { makeInsert } = await import("../../src/lib/waveyard/mixer/inserts.ts");
+  const state = await api(`/api/remixes/${remixId}`);
+  await api(`/api/remixes/${remixId}`, "PUT", { ...state.remix, tracks: [{ ...state.tracks[0], phaseInverted: true, inserts: [makeInsert("gain", { gainDb: -6 })] }], masterInserts: [makeInsert("gain", { gainDb: -6 })] });
+  const page = await browser.newPage(); t.after(() => page.close()); page.setDefaultTimeout(10000);
+  await page.addInitScript(() => {
+    window.__audition = []; window.__scheduled = [];
+    const start = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function(...args) { window.__scheduled.push({ samples: Array.from(this.buffer.getChannelData(0)), offset: args[1] ?? 0 }); return start.apply(this, args); };
+    const connect = AudioNode.prototype.connect;
+    AudioNode.prototype.connect = function(destination, ...args) {
+      if (destination === this.context.destination && this.context instanceof AudioContext) {
+        const tap = this.context.createScriptProcessor(1024, 2, 2);
+        tap.onaudioprocess = (event) => { const input = event.inputBuffer.getChannelData(0); window.__audition.push(...input); for (let ch = 0; ch < 2; ch++) event.outputBuffer.copyToChannel(event.inputBuffer.getChannelData(ch), ch); };
+        connect.call(this, tap); return connect.call(tap, destination);
+      }
+      return connect.call(this, destination, ...args);
+    };
+  });
+  await page.goto(`${origin}/?project=${projectId}&remix=${remixId}`); await page.getByTestId("waveyard-mode-studio").click();
+  await page.getByRole("button", { name: "Preview arrangement", exact: true }).click();
+  await page.waitForFunction(() => window.__audition.length > 44100);
+  const measurement = await page.evaluate(() => { const samples = window.__audition.slice(-22050); return { peak: Math.max(...samples), rms: Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length) }; });
+  const expectedPeak = 0.2 * Math.SQRT1_2 * 10 ** (-12 / 20);
+  console.log(JSON.stringify({ kind: "actual-audition-destination", ...measurement, expectedPeak }));
+  assert.ok(Math.abs(measurement.peak - expectedPeak) < 0.001, `actual audible destination must include track and master inserts, measured ${measurement.peak} vs ${expectedPeak}`);
+  const saved = await api(`/api/remixes/${remixId}/versions`, "POST", { name: "Audition polarity comparison" });
+  const exported = await render(saved.version.id);
+  const auditionPcm = await page.evaluate(() => window.__scheduled.at(-1).samples);
+  let maxError = 0; for (let frame = 0; frame < 22050; frame++) maxError = Math.max(maxError, Math.abs(auditionPcm[frame] - exported.decoded.samples[frame * 2]));
+  assert.ok(maxError < 0.0002, `audition/export polarity and levels agree, max error ${maxError}`);
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Preview arrangement", exact: true })).toBeVisible();
+});
+
+
+test("downloaded delay WAV retains late impulse echoes with bounded feedback decay", async () => {
+  const { remixId } = await source(true);
+  const { makeInsert } = await import("../../src/lib/waveyard/mixer/inserts.ts");
+  const state = await api(`/api/remixes/${remixId}`);
+  await api(`/api/remixes/${remixId}`, "PUT", { ...state.remix, tracks: state.tracks, masterInserts: [makeInsert("delay", { delayMs: 250, feedback: 0.5, mix: 1 })] });
+  const { version } = await api(`/api/remixes/${remixId}/versions`, "POST", { name: "Late delay impulse" });
+  const { decoded } = await render(version.id);
+  for (const [seconds, expected] of [[3.15, 0.4 * Math.SQRT1_2], [3.4, 0.2 * Math.SQRT1_2], [3.65, 0.1 * Math.SQRT1_2]]) {
+    const sample = decoded.samples[Math.round(seconds * 44100) * 2];
+    assert.ok(Math.abs(sample - expected) < 0.0002, `late echo at ${seconds}s: ${sample}, expected ${expected}`);
+  }
+  assert.ok(decoded.samples.length / 2 / 44100 < 7, "feedback tail is calculated, not an arbitrary 60-second pad");
+});
+
+test("isolated remote worker genuinely renders the same nonlinear, polarity and delay/reverb chains; missing asset retry preserves lifecycle", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { rename } = await import("node:fs/promises");
+  const { randomUUID } = await import("node:crypto");
+  const { makeInsert } = await import("../../src/lib/waveyard/mixer/inserts.ts");
+  const { projectId, remixId } = await source(true);
+  const state = await api(`/api/remixes/${remixId}`); const track = state.tracks[0]; const duplicate = { ...track.clips[0] }; delete duplicate.id;
+  await api(`/api/remixes/${remixId}`, "PUT", { ...state.remix, tracks: [{ ...track, phaseInverted: true, inserts: [makeInsert("saturator", { drive: 3 }), makeInsert("delay", { delayMs: 250, feedback: 0.5, mix: 0.5 })], clips: [...track.clips, duplicate] }], masterInserts: [makeInsert("gain", { gainDb: -6 }), makeInsert("reverb", { decaySeconds: 0.3 })] });
+  const { version } = await api(`/api/remixes/${remixId}/versions`, "POST", { name: "Actual isolated remote parity" }); const local = await render(version.id);
+  const [job] = await database.db.insert(schema.exportJobs).values({ projectId, remixSessionId: remixId, remixVersionId: version.id, requestedById: owner, idempotencyKey: `remote-parity:${randomUUID()}`, status: "queued", stage: "queued", format: "wav", sampleRate: 44100, channels: 2 }).returning();
+  const { mkdir, symlink } = await import("node:fs/promises");
+  const { requireTool } = await import("../../src/lib/waveyard/ffmpeg.ts");
+  const bin = path.join(root, "remote-tools"); await mkdir(bin, { recursive: true });
+  for (const name of ["ffmpeg", "ffprobe"]) { const tool = await requireTool(name); await symlink(tool.path, path.join(bin, name)); }
+  const payload = { exportJobId: job.id, projectId, remixSessionId: remixId, remixVersionId: version.id, format: "wav" };
+  function runRemote() { return spawnSync(path.resolve("waveyard-worker/node_modules/.bin/tsx"), ["--tsconfig", path.resolve("waveyard-worker/tsconfig.json"), "tests/fixtures/remote-export.ts"], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, LOCAL_STORAGE_PATH: process.env.WAVEYARD_STORAGE_DIR, REMOTE_EXPORT_PAYLOAD: JSON.stringify(payload) }, encoding: "utf8", timeout: 25000 }); }
+  const [asset] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, track.stemAssetId));
+  const filename = path.join(process.env.WAVEYARD_STORAGE_DIR, asset.storageKey);
+  await rename(filename, filename + ".interrupted");
+  let failed; try { failed = runRemote(); } finally { await rename(filename + ".interrupted", filename); }
+  assert.equal(failed.status, 1, failed.stderr);
+  const [failure] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id)); assert.equal(failure.status, "failed", failed.stderr);
+  assert.deepEqual(await database.db.select().from(schema.exportAssets).where(eq(schema.exportAssets.exportJobId, job.id)), []);
+  const succeeded = runRemote(); assert.equal(succeeded.status, 0, succeeded.stderr);
+  const [complete] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id)); assert.equal(complete.status, "complete"); assert.equal(complete.attempts, 2);
+  const response = await dispatch(new URL(`/api/exports/${job.id}/media?download=1`, "http://fixture")); assert.equal(response.status, 200);
+  const remote = synth.decodeWav16(new Uint8Array(await response.arrayBuffer())); assert.equal(remote.samples.length, local.decoded.samples.length);
+  let maxError = 0; for (let sample = 0; sample < remote.samples.length; sample++) maxError = Math.max(maxError, Math.abs(remote.samples[sample] - local.decoded.samples[sample]));
+  console.log(JSON.stringify({ kind: "actual-local-remote-parity", maxError, frames: remote.samples.length / 2, attempts: complete.attempts }));
+  assert.ok(maxError < 0.00015, `same persisted version, actual remote/local jobs max PCM error ${maxError}`);
 });

@@ -187,6 +187,8 @@ jobs:
         run: npm run --silent test:acceptance:session | tee session-acceptance.tap
       - name: Exercise Arcade draft and Artifact Library recovery (controlled HTTP)
         run: node --test tests/acceptance/recovery-runtime.test.mjs | tee recovery-acceptance.tap
+      - name: Install isolated remote worker dependencies for real export parity
+        run: npm ci --prefix waveyard-worker --ignore-scripts --no-audit --no-fund
       - name: Exercise durable mission review and Studio FX through real browser, PostgreSQL and rendering
         env:
           ARENA_STUDIO_FX_EVIDENCE_DIR: .data/acceptance/studio-fx

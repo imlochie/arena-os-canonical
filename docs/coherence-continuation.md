@@ -682,3 +682,68 @@ mission-reference validation still require follow-through; refusing truncation
 is not versioning or whole-room acceptance. Existing displayed-library recovery
 acceptance uses controlled HTTP, not real persistence; the new retention checks
 supply real SQL evidence for this narrower write/retrieval boundary.
+
+## Mandate 5 — shared audition/export DSP and bounded delay tails
+
+Reconciled starting revision `508c3182d56e0a918ad9125446f1918787ff76fb`:
+PR15 open, clean tree, all four latest PR checks green. No previous fix reset.
+
+Actual browser destination tap reproduced dry audition: measured peak
+0.1999877989 versus expected 0.0355234386 after saved track/master -6 dB and
+polarity. Evidence `/home/user/mandate5-audition-before.txt`. Audition now
+prepares clip PCM, sums each track before nonlinear inserts, applies polarity,
+track level/pan/automation, then sums tracks and applies master level/inserts.
+It uses the same canonical DSP kernels as local/remote bounces. Playback is a
+single processed buffer; seeks prepare from zero to retain processor history.
+Edits fence old asynchronous loads and replace the graph at the cursor; pause,
+stop/unmount disconnect the source and invalidate pending starts. Transport
+stop and seek now address arrangement playback as well as stem playback.
+
+Scope: prepared playback, not zero-latency live FX modulation. Browser decoding
+and resampling differ from FFmpeg, automation uses sample vs FFmpeg-frame
+updates, and export requantizes/dithers. PCM comparisons use tolerances rather
+than an algorithm-wide sample-identical claim. Five-minute arrangement limit.
+Tempo/key-synced browser audition still requires follow-through: it now refuses
+explicitly rather than silently playing untransformed audio. Ordinary clip FX
+are audible; this remaining transform gap means the complete Priority-1 gate
+is not claimed for all arrangements.
+
+Late-delay RED used an impulse at 2.9s in a 3s source: the downloadable WAV
+lacked the expected 3.15s echo (`mandate5-delay-before.txt`). Delay now allocates
+its actual feedback tail, retaining echoes down to a feedback multiplier of
+-80 dB. Zero feedback retains one delayed copy. Wet-zero/bypass leaves the dry
+length unchanged. Individual delay tails and the combined track/master tail
+allowance are bounded to 60s; excess settings fail before publication. Dry
+exports keep their old path. UI describes these bounds, not arbitrary padding.
+
+To ship identical kernels inside the isolated worker Docker context, canonical
+DSP/fade/render helpers now live in `waveyard-worker/packages/dsp`, with original
+app imports preserved as re-exports. This is one implementation, not copied FX
+algorithms. The remote WAV renderer uses the same float-bus bounce, clip fades,
+padding, polarity and master chain. MIDI processing is unchanged. Docker and
+worker lockfile include the shared package/dependencies.
+
+Evidence on this implementation tree before publication:
+* `mandate5-studio-final.txt`: 6 PASS/0 FAIL, 17.86s; actual Studio/HTTP/native
+  PostgreSQL/local broker/FFmpeg/native download, actual browser destination tap,
+  audition/export polarity comparison, known late impulse echoes, real isolated
+  worker child process. Remote and local processed WAVs have equal length and
+  max PCM error 0 for the tested nonlinear/polarity/delay/reverb version.
+* Remote missing-source failure creates no export asset; restoring the source
+  and rerunning the real worker completes the same job with attempts=2.
+  This proves worker-handler retry, not Redis queue/process-kill recovery.
+* `mandate5-preview-unit.txt`: 4 PASS, summed nonlinear bus, independent tails,
+  bypass duration, excessive feedback refusal, unknown/unsupported refusal.
+* `mandate5-dsp.txt`: 126 PASS, canonical mixer + insert-bounce regressions.
+  Counts overlap earlier suites; do not add them to historical totals.
+* Root typecheck and production build PASS (`mandate5-types.txt`,
+  `mandate5-studio-build.txt`). Worker production-module typecheck PASS
+  (`mandate5-worker-types.txt`); legacy worker test-tree limitations remain.
+* Target lint zero errors, one graph-update effect warning. Browser tests are
+  synthetic signal contracts, not real inference, human listening, Electron,
+  Windows or genuine model reasoning.
+
+Next: immutable Artifact history and mission-output retrieval, while preserving
+known remaining synced-audition/large-arrangement and staged worker lifecycle
+gaps. No claim that Artifact history or durable mission deliverable manifests
+have been implemented by this DSP change.
