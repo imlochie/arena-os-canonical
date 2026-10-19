@@ -28,3 +28,35 @@ test("a supplied permissive CSP and script before head cannot bypass the host re
 test("Foundry deletion outage retains the actual open preview and app; acknowledged retry removes only after SQL recovery",async()=>{
  const app=await lib.createApp("Deletion retry explicit scaffold",{name:"Delete retry workspace",modelId:"local-engine"});const page=await browser.newPage();try{await page.goto(origin);await page.getByRole("button",{name:/Delete retry workspace/}).click();const code=await page.locator("iframe").getAttribute("srcdoc");await pool.query("ALTER TABLE foundry_apps RENAME TO unavailable_foundry_apps");try{await page.getByRole("button",{name:"Delete",exact:true}).click();await expect(page.getByText(/App operation not acknowledged/)).toBeVisible();await expect(page.locator("iframe")).toHaveAttribute("srcdoc",code);}finally{await pool.query("ALTER TABLE unavailable_foundry_apps RENAME TO foundry_apps");}assert.ok(await lib.getApp(app.id));await page.getByRole("button",{name:"Delete",exact:true}).click();await expect(page.locator("iframe")).toHaveCount(0);assert.equal(await lib.getApp(app.id),null);}finally{await page.close();}
 });
+
+test("concurrent Foundry iterations publish one acknowledged successor; stale displayed versions cannot silently become a different build",async()=>{
+ const app=await lib.createApp("Concurrent iteration explicit offline scaffold",{name:"Concurrent version workspace",modelId:"local-engine"});
+ const request=(change,expectedVersionId)=>route.POST(new Request("http://localhost/api/foundry",{method:"POST",headers:{host:"localhost","content-type":"application/json"},body:JSON.stringify({action:"iterate",appId:app.id,change,expectedVersionId,modelId:"local-engine"})}));
+ const results=await Promise.all([request("Retain counter and add a timer",app.latest.id),request("Retain counter and add notes",app.latest.id)]);
+ assert.deepEqual(results.map(r=>r.status).sort(),[201,409]);
+ const conflict=await results.find(r=>r.status===409).json();assert.match(conflict.error,/changed|version/i);
+ const current=await lib.getApp(app.id);assert.equal(current.latest.version,2);
+ const versions=await db.select().from(schema.foundryVersions).where(eq(schema.foundryVersions.appId,app.id));assert.equal(versions.length,2);assert.equal(versions.find(v=>v.version===1).code,app.latest.code);
+ assert.equal((await request("Do not silently apply this stale change",app.latest.id)).status,409);assert.equal((await lib.getApp(app.id)).latest.id,current.latest.id);
+ assert.equal((await request("Invalid base version","not-a-uuid")).status,400);
+ await f.stop();await f.start();assert.equal((await lib.getApp(app.id)).latest.id,current.latest.id);
+ const page=await browser.newPage();try{await page.goto(origin);await page.getByRole("button",{name:/Concurrent version workspace/}).click();await expect(page.locator("iframe")).toHaveAttribute("srcdoc",current.latest.code);}finally{await page.close();}
+});
+
+test("Foundry conflict UI retains the exact requested change and previous preview, explicitly loads latest, then builds against that displayed version",async()=>{
+ const app=await lib.createApp("Stale client scaffold",{name:"Stale client workspace",modelId:"local-engine"});const page=await browser.newPage();try{await page.goto(origin);await page.getByRole("button",{name:/Stale client workspace/}).click();await expect(page.locator("iframe")).toHaveAttribute("srcdoc",app.latest.code);
+ const newer=await lib.iterateApp(app.id,"Other client change",{expectedVersionId:app.latest.id,modelId:"local-engine"});
+ const field=page.getByPlaceholder("e.g. add a dark/light toggle and persist the count");
+ await field.fill("Preserve my exact notes 🎵");await page.getByRole("button",{name:"Build v2",exact:true}).click();await expect(page.getByRole("alert")).toContainText("app changed");await expect(field).toHaveValue("Preserve my exact notes 🎵");await expect(page.locator("iframe")).toHaveAttribute("srcdoc",app.latest.code);
+ await page.getByRole("button",{name:"Load latest, keep change",exact:true}).click();await expect(page.getByRole("button",{name:"Build v3",exact:true})).toBeVisible();await expect(field).toHaveValue("Preserve my exact notes 🎵");await expect(page.locator("iframe")).toHaveAttribute("srcdoc",newer.code);
+ await page.getByRole("button",{name:"Build v3",exact:true}).click();await expect(page.getByRole("button",{name:"Build v4",exact:true})).toBeVisible();const latest=await lib.getApp(app.id);assert.equal(latest.latest.version,3);assert.equal(latest.latest.prompt,"Preserve my exact notes 🎵");assert.equal(latest.latest.fallback,true);
+ }finally{await page.close();}
+});
+
+test("Foundry iteration publication rolls back both version and app timestamp on SQL failure; acknowledged retry uses the unchanged base",async()=>{
+ const app=await lib.createApp("Atomic iteration scaffold",{name:"Atomic iteration workspace",modelId:"local-engine"});
+ await pool.query("CREATE FUNCTION reject_foundry_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'controlled app update outage'; END $$;CREATE TRIGGER reject_foundry_update BEFORE UPDATE ON foundry_apps FOR EACH ROW EXECUTE FUNCTION reject_foundry_update()");
+ try{const response=await route.POST(new Request("http://localhost/api/foundry",{method:"POST",headers:{host:"localhost","content-type":"application/json"},body:JSON.stringify({action:"iterate",appId:app.id,change:"Retain this change for retry",expectedVersionId:app.latest.id,modelId:"local-engine"})}));assert.equal(response.status,503);assert.equal((await lib.getApp(app.id)).latest.id,app.latest.id);assert.equal((await lib.getApp(app.id)).updatedAt,app.updatedAt);assert.equal((await db.select().from(schema.foundryVersions).where(eq(schema.foundryVersions.appId,app.id))).length,1);
+ }finally{await pool.query("DROP TRIGGER reject_foundry_update ON foundry_apps;DROP FUNCTION reject_foundry_update()");}
+ const retried=await lib.iterateApp(app.id,"Retain this change for retry",{expectedVersionId:app.latest.id,modelId:"local-engine"});assert.equal(retried.version,2);assert.equal(retried.prompt,"Retain this change for retry");
+});

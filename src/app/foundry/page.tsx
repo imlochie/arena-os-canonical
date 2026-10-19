@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
  */
 
 type App = { id: string; name: string; versionCount?: number; updatedAt: string };
-type Version = { version: number; prompt: string; code: string; engine: string; via: string; fallback: boolean };
+type Version = { id: string; version: number; prompt: string; code: string; engine: string; via: string; fallback: boolean };
 
 const keys = () => ({
   elevenlabs: localStorage.getItem("af_key_elevenlabs") || undefined,
@@ -31,6 +31,7 @@ export default function FoundryPage() {
   const [version, setVersion] = useState<Version | null>(null);
   const [description, setDescription] = useState("");
   const [change, setChange] = useState("");
+  const [needsReload, setNeedsReload] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,7 +86,8 @@ export default function FoundryPage() {
     refresh();
   }, [refresh]);
 
-  const openApp = useCallback(async (id: string) => {
+  const openApp = useCallback(async (id: string, keepChange = false) => {
+    setBusy(true);
     setError(null);
     try {
     const response = await fetch("/api/foundry", {
@@ -94,14 +96,17 @@ export default function FoundryPage() {
       body: JSON.stringify({ action: "get", appId: id }),
     });
     if (!response.ok) {
-      setError("app not found");
+      const body = await response.json();
+      setError(body.error ?? "App retrieval was not acknowledged; current preview retained.");
       return;
     }
     const data = await response.json();
     setCurrent({ id: data.app.id, name: data.app.name });
     setVersion(data.app.latest ?? null);
     setShowCode(false);
-    }catch(error){setError(error instanceof Error?error.message:"App retrieval unavailable. Current version retained; retry.");}
+    if (!keepChange) setChange("");
+    setNeedsReload(false);
+    }catch(error){setError(error instanceof Error?error.message:"App retrieval unavailable. Current version retained; retry.");}finally{setBusy(false);}
   }, []);
 
   const create = useCallback(async () => {
@@ -130,27 +135,29 @@ export default function FoundryPage() {
   }, [description, busy, refresh]);
 
   const iterate = useCallback(async () => {
-    if (!current || !change.trim() || busy) return;
+    if (!current || !version || !change.trim() || busy) return;
     setBusy(true);
     setError(null);
     try {
       const response = await fetch("/api/foundry", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "iterate", appId: current.id, change, keys: keys() }),
+        body: JSON.stringify({ action: "iterate", appId: current.id, change, expectedVersionId: version.id, keys: keys() }),
       });
       const data = await response.json();
       if (!response.ok) {
+        if (response.status === 409) setNeedsReload(true);
         setError(data.error ?? `HTTP ${response.status}`);
         return;
       }
+      setNeedsReload(false);
       setVersion(data.version ?? null);
       setChange("");
       refresh();
     } catch(error) { setError(error instanceof Error?error.message:"App operation not acknowledged. Retained version unchanged; retry."); } finally {
       setBusy(false);
     }
-  }, [current, change, busy, refresh]);
+  }, [current, version, change, busy, refresh]);
 
   const remove = useCallback(async () => {
     if (!current || busy) return;
@@ -176,6 +183,8 @@ export default function FoundryPage() {
           onClick={() => {
             setCurrent(null);
             setVersion(null);
+            setNeedsReload(false);
+            setChange("");
           }}
         >
           + New app
@@ -199,6 +208,7 @@ export default function FoundryPage() {
 
       <section className="min-w-0 flex-1">
         {error && <p role="alert" className="mb-3 text-sm text-rose-400">{error}</p>}
+        {needsReload && current && <button className={button} disabled={busy} onClick={() => void openApp(current.id, true)}>Load latest, keep change</button>}
         {!current && !version && (
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
             <h2 className="text-lg font-bold text-white">What should it be?</h2>

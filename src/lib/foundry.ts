@@ -239,10 +239,16 @@ export async function createApp(
   });
 }
 
+export class FoundryVersionConflict extends Error {
+  constructor() {
+    super("This app changed while your iteration was being prepared. Reopen the latest app and review your retained change before rebuilding.");
+  }
+}
+
 export async function iterateApp(
   appId: string,
   change: string,
-  opts: { keys?: Record<string, string>; modelId?: string } = {},
+  opts: { keys?: Record<string, string>; modelId?: string; expectedVersionId?: string } = {},
 ): Promise<FoundryVersion | null> {
   const [current] = await db
     .select()
@@ -251,6 +257,7 @@ export async function iterateApp(
     .orderBy(desc(foundryVersions.version))
     .limit(1);
   if (!current) return null;
+  if (opts.expectedVersionId && opts.expectedVersionId !== current.id) throw new FoundryVersionConflict();
   const built = await generateVersion(
     [
       { role: "user", content: appPrompt(current.prompt) },
@@ -260,20 +267,31 @@ export async function iterateApp(
     () => current.code, // a failed iteration keeps the previous working app
     opts,
   );
-  const [version] = await db
-    .insert(foundryVersions)
-    .values({
-      appId,
-      version: current.version + 1,
-      prompt: change,
-      code: built.code,
-      engine: built.engine,
-      via: built.via,
-      fallback: built.fallback,
-    })
-    .returning();
-  await db.update(foundryApps).set({ updatedAt: new Date() }).where(eq(foundryApps.id, appId));
-  return versionView(version);
+  // Inference stays outside the transaction. Lock the existing app only for
+  // publication, then compare its current head with the exact code we built on.
+  // Numbering a stale build as a newer version would silently lose an edit.
+  return db.transaction(async tx => {
+    const [app] = await tx.select({ id: foundryApps.id }).from(foundryApps)
+      .where(eq(foundryApps.id, appId)).for("update");
+    if (!app) return null;
+    const [latest] = await tx.select({ id: foundryVersions.id }).from(foundryVersions)
+      .where(eq(foundryVersions.appId, appId)).orderBy(desc(foundryVersions.version)).limit(1);
+    if (latest?.id !== current.id) throw new FoundryVersionConflict();
+    const [version] = await tx
+      .insert(foundryVersions)
+      .values({
+        appId,
+        version: current.version + 1,
+        prompt: change,
+        code: built.code,
+        engine: built.engine,
+        via: built.via,
+        fallback: built.fallback,
+      })
+      .returning();
+    await tx.update(foundryApps).set({ updatedAt: new Date() }).where(eq(foundryApps.id, appId));
+    return versionView(version);
+  });
 }
 
 export async function listApps(): Promise<FoundryApp[]> {

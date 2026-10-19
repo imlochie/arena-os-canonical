@@ -1,3 +1,49 @@
+# Production proof, distinct-source measurements, and Foundry iteration fencing
+
+## Reconciliation and exact evidence (2026-10-19)
+
+Live default remains `f0e4180841cd047080b06d6cb43cd2effa9ab98f`; PR15 and PR14 remain OPEN, neither merged. Published test-correction head `448835993493a389e00376429573639838b590d1` now has **both CI runs SUCCESS**, [39220161946](https://github.com/imlochie/arena-os-canonical/actions/runs/39220161946) / [39220156490](https://github.com/imlochie/arena-os-canonical/actions/runs/39220156490). All four jobs, including browser, passed. This supersedes the earlier pending status below, NOT the recorded failure on9e97e4f. Exact4488359 local nine-suite rerun: **85PASS/0FAIL/0SKIP98.585s**, `/home/user/mandate9-448-integrated.txt`. Worker production TypeScript project compilation also passed (`mandate9-worker-types.txt`). Counts overlap prior runs; never add them.
+
+## Actual compiled production app, not a fixture bundle
+
+Against the production Next build with native PostgreSQL, private local storage and actual queued local FFmpeg export handler, `/home/user/mandate9-production-check.mjs` passed in10.113s. Runtime source was9e97e4f (4488359 only corrected test profiling). Evidence: `mandate9-production-check.txt`, `mandate9-production-result.json`, Studio/Arcade PNGs outside Git.
+
+- Studio real precise-range form: position500/source1000/duration1200ms → immediate immutable version → actual compiled Turbopack Worker audition → live master0.5 gives exact half PCM and `mixCacheHit=true` → queued export/download decodes74970frames, max sample error0.00005272030830383301 → reload retains source offset1000. First22050frames are genuinely silent. Synthetic PCM, explicit passthrough; NOT separation/inference.
+- Arcade useful controlled failed Unicode draft inspected; exact validated attempt saved, playable iframe reopened after reload; correct retained-code label, NOT provider inference.
+- Foundry actual local-engine create API → interactive iframe counter; fallback=true and untrusted-content warning visible. NOT requested-app model generation.
+- Production reclamation API reports `policy.enabled=false`; zero page errors. Controlled verified-session/device rows were revoked in finally; this does NOT attest a real WebAuthn ceremony.
+
+## New distinct-source/whole-browser baseline — remaining responsiveness limit
+
+`mandate9-distinct-sources.mjs` exercised the actual compiled production UI/Worker with4/16/32 independently generated stereo10-second source files, unique frequencies/checksums. Native SQL fixture clones matching completed passthrough metadata into owned project roots and StorageProvider copies private bytes; NOT a user-upload acceptance or inference run. Every source decoded once, all441000output frames retained, master edit exact half PCM, cache hit, no page errors. Browser PSS sampled the **whole Chromium descendant tree every50ms**, NOT an absolute instantaneous peak and NOT just the owned-buffer counter.
+
+| distinct sources | controls ready ms | cold audition ms | master edit ms | max whole-flow UI gap ms | decoded PCM MiB | sampled Chromium peak MiB |
+|---|---:|---:|---:|---:|---:|---:|
+|4|812.7|1202.2|200.0|157.1|13.46|237.1|
+|16|861.6|2060.9|382.8|254.9|53.83|387.1|
+|32|911.9|3219.4|321.2|205.4|107.67|614.7|
+
+After page close sampled PSS was17.4/16.0/16.1MiB. Decode summed91.4/195.6/373.3ms, mixed-cache3,528,000bytes each. Evidence `mandate9-distinct-sources4.txt`, `mandate9-distinct-sources-result.json`. The16-source whole-flow254.9ms gap is **not a pass of the250ms requirement** (this sampler includes initial production navigation/hydration as well as preparation/edit; no claim about its exact source). Master timings include real UI/network/Playwright scheduling, unlike the isolated renderer benchmark. These are independent baselines, not comparable before/after claims. Highest remaining targets: cold source fetch/copy/preparation and actual memory amplification, with stage-specific profiling before optimisation. Do not present the128MiB decoded admission budget or64MiB renderer cache as a bound on browser memory.
+
+Fixture development errors retained separately: unique storage-key constraint rejected shared-key SQL clones (`mandate9-distinct-sources.txt`); wrong separation table identifier (`...sources2.txt`); invalid insert-chain fixture rejected400 (`...sources3.txt`). Corrected fixture copies private keys, uses canonical processing_jobs, and benchmarks clean summing rather than claiming FX/transform throughput. No production validation was weakened.
+
+## Foundry concrete repair after those checkpoints
+
+Before repair two concurrent actual route calls both returned201 on the same displayed base (`mandate9-foundry-iteration-before.txt`), allowing duplicate version numbers/stale overwritten work. Fixed:
+
+- Client supplies exact displayed immutable `expectedVersionId`; stale base fails409 before generation. Legacy callers still capture current code and receive publication-time CAS protection.
+- Inference stays outside SQL locks; publication locks the existing app, freshly compares exact base version, and inserts successor + updates app timestamp in one transaction. Concurrent stale builds are rejected, not renumbered as if they included the winning edit. Deleted app is not recreated.
+- UI keeps prior preview and exact change on conflict; explicit **Load latest, keep change** lets the user review the new base before rebuilding. Retrieval disables other app actions while pending and honestly preserves the prior preview on failure. No automatic merge/retry against different code.
+- Added native PG/browser regressions for concurrent201/409, stale UUID/malformed UUID, immutable original and PG restart/reopen, real stale-client UI → retained Unicode request → explicit latest → acknowledged successor, plus actual SQL timestamp-update failure rolling back the new version before retry. First browser regression failed because its placeholder did not match the real control; corrected to the actual control, not weakened product behaviour.
+
+Final changed-runtime integrated nine suites: **88PASS/0FAIL/0SKIP106.482s**, `mandate9-iteration-integrated.txt`; production build PASS `mandate9-iteration-build.txt`; root TypeScript PASS and changed-file lint0errors/1existing effect warning (`mandate9-foundry-final-{types,lint}.txt`). Earlier full-source1364 and desktop compile belong9e97e4f; do not transfer them to this changed runtime. New-head CI must establish its own result.
+
+Independently reran the **new compiled production Foundry** against another native PG: concurrent API201/409 → second real API client advances displayed version → UI409 retains exact Unicode change → explicit load-latest → acknowledged v4 → reload/interactive iframe. PASS `mandate9-production-foundry-iteration2.txt`, result JSON and reproducible script of the same prefix. Initial production probe found an ambiguous test locator (Next adds its own route-announcer alert); narrowed the locator to the actual conflict, not a product fix. Still explicit offline scaffold, NOT model inference; controlled verified session, NOT WebAuthn ceremony. Session/device revoked. Temporary Next/database services stopped in that order after verification.
+
+**Unfinished:** distinct-source larger/longer projects, stage-specific cold-path/memory optimisation and comparable after run; durable Foundry failed/generated-conflict output and historical-version selection; Arcade on-device/template attempts; genuine configured-provider autonomous/gameplay/inference, S3 and Electron acceptance. No unavailable checkpoint/provider/Windows prerequisite; continue unblocked engineering. No merges, no irreversible reclamation enabled.
+
+---
+
 ## Exact9e97e4f verification and CI performance-fixture correction
 
 Implementation head `9e97e4fcbb8b77b9cef856d1fdaf0fa144653f6b` is published on PR15, unmerged. Exact clean-head full source with native PostgreSQL: **1364PASS/0FAIL/0SKIP586.84s** (`mandate9-source-pg.txt`). Exact clean-head9-suite native integration: **85PASS/0FAIL/0SKIP98.67s** (`mandate9-integrated-final.txt`). Root production build, lint0errors/48existing warnings, desktop TypeScript compilation PASS (`mandate9-build.txt`, `mandate9-lint.txt`, `mandate9-desktop-compile.txt`). Desktop compilation is NOT Electron execution acceptance.
