@@ -4,7 +4,7 @@
  */
 import { clipFadeShapeOrLinear, fadeGainAt } from "./fades";
 import { effectiveMuted, type RemixStateInput } from "./remix";
-import { evaluateAutomation } from "./types/arrangement-automation";
+import { createAutomationEvaluator } from "./types/arrangement-automation";
 import { INSERTS_FORMAT, parseInserts, processWithChain, type InsertChain } from "./mixer/inserts";
 
 export type ArrangementPreviewState = Pick<RemixStateInput, "masterVolume" | "masterInserts" | "tracks" | "loopStartMs" | "loopEndMs" | "automation"> & Partial<Pick<RemixStateInput, "tempoBpm" | "targetKey">>;
@@ -83,10 +83,12 @@ export function prepareArrangementPcm(state: ArrangementPreviewState, buffers: R
     if (!volumes.length && !pans.length) {
       for (let frame = 0; frame < bus.length / 2; frame++) { bus[frame * 2] *= constantLeft; bus[frame * 2 + 1] *= constantRight; }
     } else {
+    const volumeAt = createAutomationEvaluator(volumes, track.volume);
+    const panAt = createAutomationEvaluator(pans, track.pan);
     for (let frame = 0; frame < bus.length / 2; frame++) {
       const ms = frame * 1000 / sampleRate;
-      const volume = evaluateAutomation(volumes, ms, track.volume) * (track.phaseInverted ? -1 : 1);
-      const pan = evaluateAutomation(pans, ms, track.pan);
+      const volume = volumeAt(ms) * (track.phaseInverted ? -1 : 1);
+      const pan = panAt(ms);
       bus[frame * 2] *= volume * Math.cos((pan + 1) * Math.PI / 4);
       bus[frame * 2 + 1] *= volume * Math.sin((pan + 1) * Math.PI / 4);
     }

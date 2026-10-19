@@ -124,6 +124,8 @@ if (existsSync(path.join(root, "public"))) {
   mkdirSync(path.join(out, "server", "public"), { recursive: true });
 }
 
+cpSync(path.join(root, "docs", "licenses"), path.join(out, "server", "licenses"), { recursive: true });
+
 // Canonical SQL migrations live at the app-root level (see electron-builder
 // extraResources and desktop/runtime/config.ts migrationsDir).
 cpSync(path.join(root, "desktop-migrations"), path.join(out, "desktop-migrations"), { recursive: true });

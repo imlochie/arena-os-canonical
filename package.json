@@ -11,7 +11,7 @@
     "lint": "eslint . --cache",
     "db:setup": "node scripts/db-setup.mjs",
     "typecheck": "node scripts/typecheck.mjs",
-    "test": "node --import ./scripts/register-src-loader.mjs --test \"src/**/*.test.ts\" \"desktop/**/*.test.ts\" \"scripts/lib/*.test.mjs\"",
+    "test": "node --import ./scripts/register-src-loader.mjs scripts/test-source.mjs",
     "test:acceptance:a7": "node --import ./scripts/register-src-loader.mjs --test \"tests/acceptance/a7-real-runtime.test.ts\"",
     "test:desktop": "node --import ./scripts/register-src-loader.mjs --test \"desktop/**/*.test.ts\" \"src/lib/waveyard/worker-local/*.test.ts\"",
     "smoke:archive": "node --import ./scripts/register-src-loader.mjs scripts/archive-context-smoke.ts",
@@ -81,7 +81,7 @@
     "typescript": "5.9.3"
   },
   "version": "0.1.0",
-  "description": "Arena \u2014 local-first music production workspace",
+  "description": "Arena — local-first music production workspace",
   "author": "Arena",
   "main": "desktop/dist/main.js",
   "engines": {

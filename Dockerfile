@@ -26,6 +26,7 @@ RUN groupadd -r college && useradd -r -g college college
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
+COPY --from=builder /app/docs/licenses ./licenses
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/scripts/migrate.mjs ./scripts/migrate.mjs
 COPY --from=deps /app/node_modules/pg ./node_modules/pg

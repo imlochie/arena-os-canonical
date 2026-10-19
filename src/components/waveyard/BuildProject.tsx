@@ -4,7 +4,7 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { summariseSourceIntake } from "@/lib/waveyard/types";
 import { computeBrowserAudioMetadata, computeBrowserWaveform } from "@/lib/waveyard/browser-waveform";
-import { fetchDeepEngineStatus, fetchStemEngineStatus, prepareStemEngine, type StemEngineDeepStatus, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
+import { fetchDeepEngineStatus, fetchStemEngineStatus, prepareStemEngine, modelPreparationLabel, type StemEngineDeepStatus, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
 import { DEEP_MODEL_ID, separationTargetOptions } from "@/lib/waveyard/separation/modes";
 
 /** The upload's separation target. Empty = the machine default (vocals +
@@ -43,14 +43,21 @@ export function BuildProject() {
       cancelled = true;
     };
   }, [engineRefresh]);
-  const engineMissing = engine !== null && engine.some((model) => !model.ready);
+  useEffect(() => {
+    if (!preparingEngine) return;
+    const timer = setInterval(() => setEngineRefresh(value => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [preparingEngine]);
+  const relevantModels = engine?.filter(model => model.requiredFor?.includes(separationTarget || "default") ?? true) ?? null;
+  const runtimeIssue = relevantModels?.find(model => model.runtimeAvailable === false)?.runtimeReason;
+  const engineMissing = separationTarget !== DEEP_MODEL_ID && relevantModels !== null && relevantModels.some((model) => !model.ready);
   async function prepareEngine() {
-    const missing = engine?.find((model) => !model.ready);
+    const missing = relevantModels?.find((model) => !model.ready);
     if (!missing) return;
     setPreparingEngine(true);
     setEngineError(null);
     try {
-      const result = await prepareStemEngine(missing.id);
+      const result = await prepareStemEngine(separationTarget || missing.id);
       if (!result.ok) setEngineError(result.error);
       setEngineRefresh((value) => value + 1);
     } finally {
@@ -109,12 +116,13 @@ export function BuildProject() {
     setBusy(false); router.push(`/waveyard/projects/${projectId}`);
   }
   return <form className="build-project" onSubmit={build}>
+    {runtimeIssue && <p className="error" role="alert">{runtimeIssue}</p>}
     {engineMissing && (
       <p className="notice" role="status">
         First run: the stem engine needs a one-time download
-        ({Math.round((engine!.find((model) => !model.ready)!.sizeBytes ?? 0) / 1_000_000)} MB).
-        You can prepare it now or after your first upload fails — separation
-        then runs fully offline on this machine.
+        ({Math.round((relevantModels!.find((model) => !model.ready)!.sizeBytes ?? 0) / 1_000_000)} MB).
+        Preparation verifies model files only; inference also needs a working ONNX runtime.
+        {relevantModels?.filter(model => !model.ready).map(model => <span key={model.id} style={{ display: "block" }}>{modelPreparationLabel(model)}</span>)}
         <button type="button" className="button secondary" disabled={preparingEngine} onClick={() => void prepareEngine()} style={{ display: "block", marginTop: "0.5rem" }}>
           {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine now"}
         </button>

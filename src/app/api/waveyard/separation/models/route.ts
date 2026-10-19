@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { MDX_MODELS } from "@/lib/waveyard/separation/mdx";
+import { MDX_MODELS, SEPARATION_RECIPES } from "@/lib/waveyard/separation/mdx";
 import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
 import { deepStemsEnabled } from "@/lib/waveyard/separation/modes";
 import { getModelFileStatus, modelLabel } from "@/lib/waveyard/separation/seed";
+import { loadOrtModule } from "@/lib/waveyard/separation/session";
 import { requireUser } from "@/lib/waveyard/local-context";
 
 export const runtime = "nodejs";
@@ -23,17 +24,21 @@ export async function GET() {
           id: spec.id,
           label: modelLabel(spec),
           primaryStem: spec.primaryStem,
+          requiredFor: [spec.id, ...(spec.id === MDX_MODELS[0].id ? ["default"] : []), ...SEPARATION_RECIPES.filter(recipe => recipe.runs.some(run => run.model === spec.id)).map(recipe => recipe.id)],
           secondaryStem: spec.secondaryStem,
           sizeBytes: spec.sizeBytes,
           present: status.present,
           verified: status.verified,
           ready: status.verified,
+          provisioning: status.provisioning,
         };
       }),
     );
     const deepStatus = deepEngineStatusForThisRuntime();
+    const runtimeAvailable = (await loadOrtModule()) !== null;
     return NextResponse.json({
-      models,
+      models: models.map(model => ({ ...model, runtimeAvailable, runtimeReason: runtimeAvailable ? null : "ONNX inference runtime is unavailable; verified model files alone cannot run separation." })),
+      mdxRuntime: { available: runtimeAvailable, reason: runtimeAvailable ? null : "ONNX inference runtime is unavailable or its native binding could not load. Verified downloads alone cannot run separation." },
       deep: {
         enabled: deepStemsEnabled(),
         modelId: deepStatus.modelId,

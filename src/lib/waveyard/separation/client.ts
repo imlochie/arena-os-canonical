@@ -11,6 +11,11 @@ export type StemEngineModelStatus = {
   secondaryStem: string;
   sizeBytes: number | null;
   ready: boolean;
+  requiredFor?: string[];
+  runtimeAvailable?: boolean;
+  runtimeReason?: string | null;
+  provisioning?: { state: "missing" | "downloading" | "interrupted" | "verifying" | "failed" | "ready"; partialBytes: number; totalBytes: number | null; error: string | null };
+
 };
 
 /** Real state of this machine's models, or null when the status cannot be
@@ -85,4 +90,16 @@ export async function prepareStemEngine(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "The stem engine model could not be prepared." };
   }
+}
+
+/** Honest preparation vocabulary: installed model is not completed inference. */
+export function modelPreparationLabel(model: StemEngineModelStatus): string {
+  const state = model.provisioning;
+  if (model.ready) return `${model.label}: model verified; inference has not run yet.`;
+  if (!state || state.state === "missing") return `${model.label}: model not present.`;
+  const bytes = `${state.partialBytes.toLocaleString()}${state.totalBytes === null ? "" : ` / ${state.totalBytes.toLocaleString()}`} bytes`;
+  if (state.state === "interrupted") return `${model.label}: interrupted (${bytes}); retry resumes when the source supports it.`;
+  if (state.state === "downloading") return `${model.label}: downloading (${bytes}).`;
+  if (state.state === "verifying") return `${model.label}: verifying SHA-256 before installation.`;
+  return `${model.label}: preparation failed. ${state.error ?? "Retry preparation."}`;
 }
