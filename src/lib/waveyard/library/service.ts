@@ -77,7 +77,11 @@ export interface TrackSummary {
   studioProjectId: string;
 }
 
+export type AssetSelection = { assetIds: string[]; kind: "stems" | "source" };
+export interface SeparationBank { id: string; model: string; createdAt: string; stems: TrackStem[] }
+
 export interface TrackStem {
+  separationJobId?: string;
   /** Registry model identity is required to distinguish MDX melody from deep residual. */
   model?: string | null;
   id: string;
@@ -92,6 +96,8 @@ export interface TrackAnalysis {
 }
 
 export interface TrackDetail extends TrackSummary {
+  banks: SeparationBank[];
+  selectionRequired: string | null;
   source: {
     id: string;
     originalFilename: string;
@@ -130,8 +136,9 @@ async function availabilityBySource(
   if (sourceAssetIds.length === 0) return map;
   const [stemRows, jobRows] = await Promise.all([
     db
-      .select({ sourceAssetId: stemAssets.sourceAssetId, stemType: stemAssets.stemType, engine: stemAssets.engine })
+      .select({ sourceAssetId: stemAssets.sourceAssetId, stemType: stemAssets.stemType, engine: stemAssets.engine, separationJobId: stemAssets.separationJobId, jobStatus: processingJobs.status })
       .from(stemAssets)
+      .innerJoin(processingJobs, eq(processingJobs.id, stemAssets.separationJobId))
       .where(inArray(stemAssets.sourceAssetId, sourceAssetIds)),
     db
       .select({ sourceAssetId: processingJobs.sourceAssetId, status: processingJobs.status })
@@ -146,7 +153,9 @@ async function availabilityBySource(
   ]);
   const pendingBySource = new Set(jobRows.map((row) => row.sourceAssetId));
   for (const id of sourceAssetIds) {
-    const stems = stemRows.filter((row) => row.sourceAssetId === id);
+    const stems = stemRows.filter(row => row.sourceAssetId === id && (row.jobStatus === "complete" || row.engine === "passthrough-unseparated"));
+    const bankCount = new Set(stems.filter(stem => stem.engine !== "passthrough-unseparated").map(stem => stem.separationJobId)).size;
+    if (bankCount > 1) { map.set(id, {status:"unavailable", reason:"Multiple published banks: choose one explicitly in the player or session."}); continue; }
     map.set(
       id,
       resolveStemAvailability({ stems, separationPending: pendingBySource.has(id) }),
@@ -343,7 +352,7 @@ export async function listRecentlyPlayed(ownerId: string, limit = 12): Promise<T
   return summariesFor(rows);
 }
 
-export async function getTrack(ownerId: string, trackId: string): Promise<TrackDetail | null> {
+export async function getTrack(ownerId: string, trackId: string, selection?: AssetSelection | { bankId: string }): Promise<TrackDetail | null> {
   const [row] = await db
     .select(trackSelection)
     .from(tracks)
@@ -354,10 +363,34 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
   const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, row.sourceAssetId)).limit(1);
   if (source === undefined) return null;
 
-  const stemRows = await db
-    .select({ id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine, model: stemAssets.model })
+  const publishedRows = await db
+    .select({ id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine, model: stemAssets.model, separationJobId: stemAssets.separationJobId, createdAt: stemAssets.createdAt, jobStatus: processingJobs.status, jobModel: processingJobs.model })
     .from(stemAssets)
+    .innerJoin(processingJobs, eq(processingJobs.id, stemAssets.separationJobId))
     .where(eq(stemAssets.sourceAssetId, row.sourceAssetId));
+  const banks: SeparationBank[] = [];
+  for (const stem of publishedRows) {
+    if (stem.jobStatus !== "complete" || stem.engine === "passthrough-unseparated") continue;
+    let bank = banks.find(bank => bank.id === stem.separationJobId);
+    if (!bank) { bank = { id: stem.separationJobId, model: stem.jobModel, createdAt: stem.createdAt.toISOString(), stems: [] }; banks.push(bank); }
+    bank.stems.push(stem);
+  }
+  banks.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  let selectionRequired: string | null = null;
+  let stemRows: TrackStem[] = [];
+  if (selection && "assetIds" in selection) {
+    stemRows = selection.assetIds.flatMap(id => publishedRows.filter(stem => stem.id === id && (stem.jobStatus === "complete" || stem.engine === "passthrough-unseparated")));
+    const valid = selection.kind === "source"
+      ? selection.assetIds.length === 1 && (selection.assetIds[0] === source.id || (stemRows.length === 1 && stemRows[0].engine === "passthrough-unseparated"))
+      : new Set(selection.assetIds).size === selection.assetIds.length && stemRows.length === selection.assetIds.length && stemRows.length > 0 && new Set(stemRows.map(stem => stem.separationJobId)).size === 1 && !stemRows.some(stem => stem.engine === "passthrough-unseparated");
+    if (!valid) selectionRequired = "Saved audio assets are unavailable or inconsistent. Choose a bank explicitly; no substitute was loaded.";
+  } else {
+    const bank = selection && "bankId" in selection ? banks.find(bank => bank.id === selection.bankId) : banks.length === 1 ? banks[0] : undefined;
+    if (bank) stemRows = bank.stems;
+    else if (banks.length || selection) selectionRequired = "Choose one separation bank. Multiple generations cannot be mixed implicitly.";
+    else stemRows = publishedRows.filter(stem => stem.engine === "passthrough-unseparated").slice(0, 1);
+  }
+  if (selectionRequired) stemRows = [];
 
   const [analysis] = await db
     .select({
@@ -372,7 +405,7 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
   const availability = resolveStemAvailability({ stems: stemRows });
   const realStems = stemRows.filter((stem) => stem.engine !== "passthrough-unseparated");
   const passthrough = stemRows.find((stem) => stem.engine === "passthrough-unseparated");
-  const playback =
+  const playback = selectionRequired ? { assetIds: [], kind: "stems" as const } : selection && "assetIds" in selection ? selection :
     realStems.length > 0
       ? { assetIds: realStems.map((stem) => stem.id), kind: "stems" as const }
       : { assetIds: [passthrough?.id ?? source.id], kind: "source" as const };
@@ -387,6 +420,8 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
       channels: source.channels,
       bitrate: source.bitrate,
     },
+    banks,
+    selectionRequired,
     stems: stemRows,
     analysis: analysis ?? null,
     playback,

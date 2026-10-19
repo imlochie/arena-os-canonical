@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,6 +18,11 @@ import { DEEP_STEM_TYPES } from "@/lib/waveyard/separation/modes";
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
 import { handleSeparationJob } from "./separation";
 import { fixture, identityEngine, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
+
+async function parentPublicationJob(f: SeparationFixture) {
+  const [job] = await f.database.insert(processingJobs).values({ ...f.job, id: randomUUID(), status: "complete", idempotencyKey: randomUUID() }).returning();
+  return job.id;
+}
 
 const KIM = findMdxModel("kim_vocal_2")!;
 type Fixture = SeparationFixture;
@@ -215,7 +221,7 @@ test("stem layers: a second pass on a STEM pulls named layers out of it", async 
       .values({
         projectId: f.project.id,
         sourceAssetId: f.source.id,
-        separationJobId: f.job.id,
+        separationJobId: await parentPublicationJob(f),
         stemType: "other",
         engine: "mdx",
         model: "kuielab_b_other",
@@ -409,7 +415,7 @@ test("deep layers: a deep pass on a STEM names every lane <parent>/<child>", asy
       .values({
         projectId: f.project.id,
         sourceAssetId: f.source.id,
-        separationJobId: f.job.id,
+        separationJobId: await parentPublicationJob(f),
         stemType: "other",
         engine: "mdx",
         model: "kuielab_b_other",
@@ -566,6 +572,45 @@ test("deep seam: the decoded 44.1 kHz PCM is the engine input, no MDX engine ope
       assert.ok(snr > 60, `${stemType} persists exactly what the engine produced (SNR ${snr.toFixed(1)} dB)`);
     }
   } finally {
+    await f.close();
+  }
+});
+
+
+test("partial upload failure cleans unpublished objects; actual retry preserves the previous bank and publishes a distinct bank", async () => {
+  const f = await fixture();
+  const storage = getStorage();
+  const putFile = storage.putFile;
+  try {
+    await handleSeparationJob(payloadOf(f), { db: f.database, openEngine: identityEngine() });
+    const previous = await f.database.select().from(stemAssets);
+    const [attempt] = await f.database.insert(processingJobs).values({ ...f.job, id: randomUUID(), idempotencyKey: randomUUID(), status: "queued" }).returning();
+    const payload = { ...payloadOf(f), processingJobId: attempt.id };
+    const uploaded: string[] = [];
+    let calls = 0;
+    storage.putFile = async (key, path, contentType) => {
+      if (++calls === 2) throw new Error("simulated interrupted second upload");
+      await putFile.call(storage, key, path, contentType);
+      uploaded.push(key);
+    };
+    await assert.rejects(handleSeparationJob(payload, { db: f.database, openEngine: identityEngine() }), /interrupted second upload/);
+    storage.putFile = putFile;
+    assert.equal(uploaded.length, 1);
+    assert.equal(await storage.exists(uploaded[0]), false);
+    assert.deepEqual(await f.database.select().from(stemAssets), previous);
+    for (const stem of previous) assert.equal(await storage.exists(stem.storageKey), true);
+    const { retrySeparationJob } = await import("../separation/retry");
+    const outcome = await retrySeparationJob(f.database, attempt.id, { handOff: async () => {
+      await handleSeparationJob(payload, { db: f.database, openEngine: identityEngine() });
+    } });
+    assert.equal(outcome.queued, true);
+    const banks = await f.database.select().from(stemAssets);
+    assert.equal(banks.length, previous.length * 2);
+    assert.deepEqual(banks.filter(row => row.separationJobId === f.job.id), previous);
+    const [recovered] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, attempt.id));
+    assert.equal(recovered.status, "complete");
+  } finally {
+    storage.putFile = putFile;
     await f.close();
   }
 });

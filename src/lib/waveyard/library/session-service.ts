@@ -46,7 +46,7 @@ import {
   validateStemSwap,
   type TransitionConfig,
 } from "./session-logic";
-import { getTrack, type TrackDetail, type TrackStem, type TrackSummary } from "./service";
+import { getTrack, type TrackDetail, type TrackStem, type TrackSummary, type AssetSelection } from "./service";
 
 export class SessionNotFoundError extends Error {
   constructor() {
@@ -75,6 +75,8 @@ export class StemSwapRefusedError extends Error {
 // ------------------------------------------------------------------ shapes
 
 export interface SessionTrackPayload {
+  banks: TrackDetail["banks"];
+  selectionRequired: string | null;
   id: string;
   position: number;
   track: TrackSummary;
@@ -109,6 +111,8 @@ export interface SessionSummaryPayload {
 }
 
 export interface SessionSwapPayload {
+  fromStemAssetId: string | null;
+  toStemAssetId: string | null;
   id: string;
   sessionTrackId: string;
   stemType: string;
@@ -119,6 +123,7 @@ export interface SessionSwapPayload {
 }
 
 interface SessionTrackRow {
+  assetSelection: string | null;
   id: string;
   trackId: string;
   position: number;
@@ -129,6 +134,7 @@ interface SessionTrackRow {
 async function loadSessionTracks(sessionId: string): Promise<SessionTrackRow[]> {
   const rows = await db
     .select({
+      assetSelection: listenSessionTracks.assetSelection,
       id: listenSessionTracks.id,
       trackId: listenSessionTracks.trackId,
       position: listenSessionTracks.position,
@@ -163,8 +169,10 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
   // visible in the payload instead of silently dropping them.
   const details = new Map<string, TrackDetail>();
   for (const row of trackRows) {
-    const detail = await getTrack(session.ownerId, row.trackId);
-    if (detail !== null) details.set(row.trackId, detail);
+    const parsed = row.assetSelection ? safeParse(row.assetSelection) as Partial<AssetSelection> | null : null;
+    const selection: AssetSelection | undefined = row.assetSelection === null ? undefined : parsed && Array.isArray(parsed.assetIds) && parsed.assetIds.every(id => typeof id === "string") && (parsed.kind === "source" || parsed.kind === "stems") ? parsed as AssetSelection : {assetIds:[],kind:"stems"};
+    const detail = await getTrack(session.ownerId, row.trackId, selection);
+    if (detail !== null) details.set(row.id, detail);
   }
   const summaries = await trackSummariesById(trackRows.map((row) => row.trackId));
   const analyses = new Map<string, SessionTrackAnalysis | null>();
@@ -182,19 +190,26 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
     currentSessionTrackId: session.currentTrackId,
     positionSeconds: session.positionSeconds,
     tracks: trackRows.map((row) => {
-      const detail = details.get(row.trackId) ?? null;
+      const detail = details.get(row.id) ?? null;
+      const selectionRequired = row.assetSelection === null ? "This legacy or unresolved item needs an explicit bank/source choice. Saved levels and cues are preserved." : detail?.selectionRequired ?? null;
+      const legacySwap = swapRows.some(swap => swap.sessionTrackId === row.id && (!swap.toStemAssetId || !swap.fromStemAssetId));
+      const reason = legacySwap ? "A legacy swap has no exact asset identity. Remove and reselect that swap explicitly; its ledger is preserved." : selectionRequired;
       return {
+        banks: detail?.banks ?? [],
+        selectionRequired: reason,
         id: row.id,
         position: row.position,
         track: (detail as TrackSummary | null) ?? summaries.get(row.trackId) ?? failSummary(row.trackId),
-        stems: detail?.stems ?? [],
-        playback: detail?.playback ?? null,
+        stems: selectionRequired ? [] : detail?.stems ?? [],
+        playback: reason ? null : detail?.playback ?? null,
         stemMix: parseStemMix(row.stemMix),
         transition: normalizeTransitionConfig(safeParse(row.transition)) ?? defaultTransitionConfig(),
         analysis: analyses.get(row.id) ?? null,
       };
     }),
     swaps: swapRows.map((row) => ({
+      fromStemAssetId: row.fromStemAssetId,
+      toStemAssetId: row.toStemAssetId,
       id: row.id,
       sessionTrackId: row.sessionTrackId,
       stemType: row.stemType,
@@ -309,6 +324,7 @@ export async function addTrackToSession(input: {
   ownerId: string;
   sessionId: string;
   trackId: string;
+  bankId?: string;
   position?: number;
   /** Optional operation identity: retry one insertion, while intentional repeats
    * without this identity retain the established live-set semantics. */
@@ -326,8 +342,11 @@ export async function addTrackToSession(input: {
         return;
       }
     }
+    const selected = await getTrack(input.ownerId, input.trackId, input.bankId ? { bankId: input.bankId } : undefined);
+    if (input.bankId && selected?.selectionRequired) throw new StemSwapRefusedError(selected.selectionRequired);
+    const assetSelection = selected && !selected.selectionRequired ? JSON.stringify(selected.playback) : null;
     const existing = await tx.select({ id: listenSessionTracks.id }).from(listenSessionTracks).where(eq(listenSessionTracks.sessionId, input.sessionId)).orderBy(asc(listenSessionTracks.position));
-    const [item] = await tx.insert(listenSessionTracks).values({ id: input.operationId, sessionId: input.sessionId, trackId: input.trackId, position: existing.length, stemMix: "{}", transition: JSON.stringify(defaultTransitionConfig()) }).returning({ id: listenSessionTracks.id });
+    const [item] = await tx.insert(listenSessionTracks).values({ id: input.operationId, sessionId: input.sessionId, trackId: input.trackId, assetSelection, position: existing.length, stemMix: "{}", transition: JSON.stringify(defaultTransitionConfig()) }).returning({ id: listenSessionTracks.id });
     const ordered = [...existing.map(row => row.id), item.id];
     if (input.position !== undefined) {
       const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
@@ -392,17 +411,29 @@ export async function updateSessionTrack(
   ownerId: string,
   sessionId: string,
   sessionTrackId: string,
-  patch: { stemMix?: unknown; transition?: unknown },
+  patch: { stemMix?: unknown; transition?: unknown; bankId?: string | null },
 ): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
   const [row] = await db
-    .select({ id: listenSessionTracks.id })
+    .select({ id: listenSessionTracks.id, trackId: listenSessionTracks.trackId })
     .from(listenSessionTracks)
     .where(and(eq(listenSessionTracks.id, sessionTrackId), eq(listenSessionTracks.sessionId, sessionId)))
     .limit(1);
   if (row === undefined) throw new SessionTrackNotFoundError();
 
-  const values: Partial<{ stemMix: string; transition: string }> = {};
+  const values: Partial<{ stemMix: string; transition: string; assetSelection: string }> = {};
+  if (patch.bankId !== undefined) {
+    const selected = await getTrack(ownerId, row.trackId, patch.bankId === null ? undefined : { bankId: patch.bankId });
+    if (!selected) throw new TrackNotInLibraryError();
+    if (patch.bankId === null) {
+      values.assetSelection = JSON.stringify({ kind: "source", assetIds: [selected.source.id] });
+    } else {
+      if (selected.selectionRequired) throw new StemSwapRefusedError(selected.selectionRequired);
+      values.assetSelection = JSON.stringify(selected.playback);
+    }
+    const swaps = await db.select().from(listenSessionSwaps).where(eq(listenSessionSwaps.sessionTrackId, sessionTrackId));
+    if (swaps.length) throw new StemSwapRefusedError("Remove the saved swaps explicitly before changing this item's bank; no swaps or cues were discarded.");
+  }
   if (patch.stemMix !== undefined) {
     const mix = normalizeStemMix(patch.stemMix);
     if (Object.keys(mix).length === 0 && Object.keys(patch.stemMix ?? {}).length > 0) {
@@ -461,6 +492,7 @@ export async function recordStemSwap(input: {
   stemType: string;
   toTrackId: string;
   atSeconds: number;
+  toStemAssetId?: string;
 }): Promise<SessionDetailPayload> {
   await ownedSession(input.ownerId, input.sessionId);
 
@@ -478,17 +510,24 @@ export async function recordStemSwap(input: {
     .limit(1);
   if (donor === undefined) throw new TrackNotInLibraryError();
 
-  const currentDetail = await getTrack(input.ownerId, sessionTrack.trackId);
+  const payload = await sessionPayload(input.sessionId);
+  const currentDetail = payload.tracks.find(item => item.id === input.sessionTrackId);
+  if (currentDetail?.selectionRequired) throw new StemSwapRefusedError(currentDetail.selectionRequired);
   const donorDetail = await getTrack(input.ownerId, input.toTrackId);
-  if (currentDetail === null || donorDetail === null) throw new TrackNotInLibraryError();
+  const candidates = donorDetail?.banks.flatMap(bank => bank.stems).filter(stem => stem.stemType === input.stemType && (!input.toStemAssetId || stem.id === input.toStemAssetId)) ?? [];
+  const donorStem = candidates.length === 1 ? candidates[0] : undefined;
+  if (!donorStem) throw new StemSwapRefusedError("Choose the exact donor stem asset from one published bank; no substitute was selected.");
+  if (!currentDetail || !donorDetail) throw new TrackNotInLibraryError();
 
-  const validation = validateStemSwap(currentDetail.stems, donorDetail.stems, input.stemType);
+  const validation = validateStemSwap(currentDetail.stems, [donorStem], input.stemType);
   if (!validation.ok) throw new StemSwapRefusedError(validation.reason);
 
   await db.insert(listenSessionSwaps).values({
     sessionId: input.sessionId,
     sessionTrackId: input.sessionTrackId,
     stemType: input.stemType,
+    fromStemAssetId: currentDetail.stems.find(stem => stem.stemType === input.stemType)!.id,
+    toStemAssetId: donorStem.id,
     fromTrackId: sessionTrack.trackId,
     toTrackId: input.toTrackId,
     atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
@@ -528,6 +567,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
   await requireUser();
   await ownedSession(ownerId, sessionId);
   const detail = await sessionPayload(sessionId);
+  if (detail.tracks.some(item => item.selectionRequired)) throw new StemSwapRefusedError("Resolve each bank or legacy swap selection before exporting. Existing work is unchanged.");
   // Capture the visible controls with the handoff, not a possibly stale
   // 600ms-debounced database state. Validate the whole snapshot before writes.
   const seen = new Set<string>();
@@ -578,7 +618,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
       const changes = [{ at: 0, stemAssetId: stem.id }];
       for (const swap of swaps) {
         const donor = await getTrack(ownerId, swap.toTrackId);
-        const donorStem = donor?.stems.find((candidate) => candidate.stemType === stem.stemType && candidate.engine !== "passthrough-unseparated");
+        const donorStem = donor?.banks.flatMap(bank => bank.stems).find(candidate => candidate.id === swap.toStemAssetId && candidate.stemType === stem.stemType);
         if (!donorStem) { invalid = `a saved ${stem.stemType} swap donor is unavailable`; break; }
         const at = Math.round(swap.atSeconds * 1000);
         if (at < durationMs) changes.push({ at, stemAssetId: donorStem.id });

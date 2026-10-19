@@ -59,7 +59,7 @@ before(async () => {
         const body = JSON.parse(raw || "{}");
         if (parts[5] === "swaps") {
           if (req.method === "DELETE") state.swaps = state.swaps.filter(swap => swap.id !== url.searchParams.get("swapId"));
-          else state.swaps.push({ id: "swap-drums", sessionTrackId: body.sessionTrackId, stemType: body.stemType, toTrackId: body.toTrackId, atSeconds: body.atSeconds });
+          else state.swaps.push({ id: "swap-drums", fromStemAssetId: "a", toStemAssetId: body.toStemAssetId ?? "b", sessionTrackId: body.sessionTrackId, stemType: body.stemType, toTrackId: body.toTrackId, atSeconds: body.atSeconds });
         }
         if (parts[5] === "state") { if (process.env.DEBUG_SESSION) console.log(parts[4], body); Object.assign(state, body); }
         if (req.method === "DELETE" && parts[5] === "tracks") state.tracks = state.tracks.filter((track) => track.id !== url.searchParams.get("sessionTrackId"));

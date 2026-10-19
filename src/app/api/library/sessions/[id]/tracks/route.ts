@@ -14,7 +14,7 @@ import {
 
 export const runtime = "nodejs";
 
-const addSchema = z.object({ trackId: z.string().uuid(), operationId: z.string().uuid().optional(), position: z.number().int().min(0).optional() });
+const addSchema = z.object({ bankId: z.string().uuid().optional(), trackId: z.string().uuid(), operationId: z.string().uuid().optional(), position: z.number().int().min(0).optional() });
 
 /** POST /api/library/sessions/[id]/tracks — add a library track (ordered,
  * duplicates allowed — a live set can play a song twice). */

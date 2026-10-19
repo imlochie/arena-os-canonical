@@ -1,4 +1,5 @@
 import "./studio-preparation.fixture";
+import SessionExperience from "../../src/components/waveyard/library/SessionExperience";
 import ArcadeForge from "../../src/components/ArcadeForge";
 import BattleArena from "../../src/components/BattleArena";
 import CollabLab from "../../src/components/CollabLab";
@@ -20,5 +21,5 @@ function App() {
 }
 const params = new URLSearchParams(location.search);
 const room = params.get("room") ?? (location.pathname === "/collab" ? "collab" : location.pathname === "/council" ? "council" : params.has("source") ? "battle" : null);
-const view = room === "arcade" ? <ArcadeForge /> : room === "preparation" ? <p>Production preparation profile</p> : room === "battle" ? <BattleArena /> : room === "collab" ? <CollabLab /> : room === "council" ? <CouncilLab /> : room === "artifacts" ? <ArtifactsPage /> : room === "orchestrator" ? <OrchestratorWorkbench /> : room === "project" ? <PathParamsContext.Provider value={{ id: params.get("project")! }}><ProjectPage /></PathParamsContext.Provider> : <App />;
+const view = room === "listening" ? <SessionExperience sessionId={params.get("session")!} /> : room === "arcade" ? <ArcadeForge /> : room === "preparation" ? <p>Production preparation profile</p> : room === "battle" ? <BattleArena /> : room === "collab" ? <CollabLab /> : room === "council" ? <CouncilLab /> : room === "artifacts" ? <ArtifactsPage /> : room === "orchestrator" ? <OrchestratorWorkbench /> : room === "project" ? <PathParamsContext.Provider value={{ id: params.get("project")! }}><ProjectPage /></PathParamsContext.Provider> : <App />;
 createRoot(document.getElementById("root")!).render(view);

@@ -29,6 +29,8 @@ import {
 // ---------------------------------------------------------------------------
 
 interface SessionTrackItem {
+  banks?: Array<{ id: string; model: string; createdAt: string; stems: Array<{id:string;stemType:string}> }>;
+  selectionRequired?: string | null;
   id: string;
   position: number;
   track: { id: string; title: string; artist: string; durationSeconds: number };
@@ -46,6 +48,8 @@ interface SessionDetail {
   positionSeconds: number;
   tracks: SessionTrackItem[];
   swaps: Array<{
+    toStemAssetId?: string | null;
+    fromStemAssetId?: string | null;
     id: string;
     sessionTrackId: string;
     stemType: string;
@@ -257,7 +261,7 @@ function SessionDeck({
           </div>
           <p className="sess-deck-time">
             {formatClock(transport.position)} / {formatClock(duration)}
-            {!separated ? " · full source (not separated)" : ""}
+            {item.selectionRequired ? " · audio selection required" : !separated ? " · full source (not separated)" : ""}
           </p>
           <div className="sess-deck-stems">
             {(item.stems.length === 0 ? [{ id: "", stemType: "source", engine: "missing" }] : item.stems).map(
@@ -417,9 +421,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     if (session === null || currentItem === null) return map;
     for (const swap of session.swaps) {
       if (swap.sessionTrackId !== currentItem.id) continue;
-      const donor = session.tracks.find((t) => t.track.id === swap.toTrackId);
-      const donorStem = donor?.stems.find((s) => s.stemType === swap.stemType);
-      if (donorStem) map[swap.stemType] = donorStem.id;
+      if (swap.toStemAssetId) map[swap.stemType] = swap.toStemAssetId;
     }
     return map;
   }, [session, currentItem]);
@@ -857,6 +859,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
             sessionTrackId: currentItem.id,
             stemType,
             toTrackId: nextItem.track.id,
+            toStemAssetId: nextItem.stems.find(stem => stem.stemType === stemType)?.id,
             atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
           }),
         },
@@ -1104,6 +1107,17 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         </p>
       )}
 
+      <section aria-label="Saved audio identity">
+        <h3>Audio banks — exact saved assets</h3>
+        {session.tracks.map(item => <div key={item.id}>
+          <label>{item.track.title} bank<select aria-label={`Bank for ${item.id}`} value="" onChange={event => {
+            if (!event.target.value) return;
+            void mutate(`/api/library/sessions/${session.id}/tracks/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ bankId: event.target.value === "source" ? null : event.target.value }) }, () => setStatus("Audio choice saved. Levels and transition cues retained; press Play to resume."));
+          }}><option value="">{item.selectionRequired ? "Selection required" : "Keep saved assets"}</option><option value="source">Original unseparated source</option>{item.banks?.map(bank => <option key={bank.id} value={bank.id}>{bank.model} · {bank.stems.map(stem => stem.stemType).join(", ")} · {bank.createdAt} · {bank.id}</option>)}</select></label>
+          {item.selectionRequired && <p role="alert">{item.selectionRequired}</p>}
+        </div>)}
+        {session.swaps.filter(swap => !swap.toStemAssetId || !swap.fromStemAssetId).map(swap => <p key={swap.id}>Legacy {swap.stemType} swap: exact donor unknown. <button type="button" onClick={() => revertSwap(swap.id)}>Remove unresolved swap explicitly</button></p>)}
+      </section>
       <div className="sess-decks">
         {([0, 1] as const).map((index) => (
           <div key={index} className={`sess-deck-slot${index === activeDeck ? " sess-deck-slot-active" : ""}`} style={{ order: index === activeDeck ? 0 : 2 }}>

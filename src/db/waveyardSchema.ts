@@ -863,6 +863,8 @@ export const listenSessions = pgTable("wy_listen_sessions", {
  * recorded listening-time decision, replayed/inspected from this ledger.
  */
 export const listenSessionSwaps = pgTable("wy_listen_session_swaps", {
+  fromStemAssetId: uuid("from_stem_asset_id").references(() => stemAssets.id, { onDelete: "restrict" }),
+  toStemAssetId: uuid("to_stem_asset_id").references(() => stemAssets.id, { onDelete: "restrict" }),
   id: uuid("id").defaultRandom().primaryKey(),
   sessionId: uuid("session_id").notNull().references(() => listenSessions.id, { onDelete: "cascade" }),
   sessionTrackId: uuid("session_track_id").notNull().references(() => listenSessionTracks.id, { onDelete: "cascade" }),
@@ -878,6 +880,7 @@ export const listenSessionSwaps = pgTable("wy_listen_session_swaps", {
 /** Ordered session membership with per-track stem mix + transition config
  * (both JSON text; see src/lib/waveyard/library/model.ts for shapes). */
 export const listenSessionTracks = pgTable("wy_listen_session_tracks", {
+  assetSelection: text("asset_selection"),
   id: uuid("id").defaultRandom().primaryKey(),
   sessionId: uuid("session_id").notNull().references(() => listenSessions.id, { onDelete: "cascade" }),
   trackId: uuid("track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),

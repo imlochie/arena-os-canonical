@@ -8,7 +8,7 @@
  *
  * Lifecycle parity with the cloud worker (waveyard-worker separation.ts):
  * preparing → separating → validating → complete; payload/target identity
- * checks; stem rows replaced atomically on retry; one waveform job per
+ * checks; immutable bank publication on successful retry; one waveform job per
  * stem enqueued after commit (each records its own failure boundary);
  * uploaded stem objects cleaned up if the job fails.
  *
@@ -426,8 +426,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     }
 
     const durableWork = await database.transaction(async (tx) => {
-      // Retry idempotency: a re-run replaces its stems atomically.
-      await tx.delete(stemAssets).where(eq(stemAssets.separationJobId, job.id));
+      // Published physical assets must never be replaced by a retry. Normal
+      // completion is terminal; a historical inconsistent job requires a fresh
+      // run, not deletion of references retained by sessions/Studio.
+      const previous = await tx.select({ id: stemAssets.id }).from(stemAssets).where(eq(stemAssets.separationJobId, job.id));
+      if (previous.length) throw new Error("This run already has published assets. They were preserved; start a new separation run rather than replacing this bank.");
       const storedStems = await tx
         .insert(stemAssets)
         .values(values)

@@ -7,11 +7,13 @@ import {
   SessionNotFoundError,
   SessionTrackNotFoundError,
   updateSessionTrack,
+  StemSwapRefusedError,
 } from "@/lib/waveyard/library/session-service";
 
 export const runtime = "nodejs";
 
 const patchSchema = z.object({
+  bankId: z.string().uuid().nullable().optional(),
   stemMix: z.record(z.string(), z.number()).optional(),
   transition: z.custom<TransitionConfig>((value) => normalizeTransitionConfig(value) !== null).transform((value) => normalizeTransitionConfig(value)!).optional(),
 });
@@ -31,6 +33,7 @@ export async function PATCH(
     const session = await updateSessionTrack(user.id, id, itemId, parsed.data);
     return NextResponse.json({ session });
   } catch (error) {
+    if (error instanceof StemSwapRefusedError) return NextResponse.json({ error: error.message }, { status: 409 });
     if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
     if (error instanceof SessionTrackNotFoundError) return NextResponse.json({ error: "Session track not found." }, { status: 404 });
     if (error instanceof Error && error.message.startsWith("The ")) {

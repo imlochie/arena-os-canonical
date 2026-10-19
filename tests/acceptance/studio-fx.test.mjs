@@ -27,6 +27,12 @@ before(async () => {
   f = await missionPostgres(); root = await mkdtemp(path.join(tmpdir(), "arena-studio-fx-"));
   process.env.DATABASE_URL = f.url; process.env.WAVEYARD_STORAGE_DIR = path.join(root, "storage"); process.env.WAVEYARD_LOCAL_WORKER = "0"; delete process.env.REDIS_URL;
   database = await import("../../src/db/index.ts"); schema = await import("../../src/db/waveyardSchema.ts"); synth = await import("../../src/lib/waveyard/mixer/synth.ts");
+  await register(/^\/api\/library\/tracks$/, [], "library/tracks");
+  await register(/^\/api\/library\/tracks\/([^/]+)$/, ["id"], "library/tracks/[id]");
+  await register(/^\/api\/library\/sessions$/, [], "library/sessions");
+  await register(/^\/api\/library\/sessions\/([^/]+)$/, ["id"], "library/sessions/[id]");
+  for (const part of ["tracks", "swaps", "state", "studio-handoff"]) await register(new RegExp("^/api/library/sessions/([^/]+)/" + part + "$"), ["id"], `library/sessions/[id]/${part}`);
+  await register(/^\/api\/library\/sessions\/([^/]+)\/tracks\/([^/]+)$/, ["id", "itemId"], "library/sessions/[id]/tracks/[itemId]");
   await register(/^\/api\/waveyard\/projects\/([^/]+)$/, ["id"], "waveyard/projects/[id]");
   await register(/^\/api\/waveyard\/projects\/([^/]+)\/master$/, ["id"], "waveyard/projects/[id]/master");
   await register(/^\/api\/waveyard\/projects\/([^/]+)\/remixes$/, ["id"], "waveyard/projects/[id]/remixes");
@@ -658,4 +664,82 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
     } finally { clearInterval(timer); await page.close(); }
   }
   await cdp.detach();
+});
+
+
+test("P0 bank gate: actual separation publication, pinned session/donor playback, restart and decoded Studio export never combine generations", { timeout: 480000 }, async t => {
+  const library = await import("../../src/lib/waveyard/library/service.ts");
+  const sessions = await import("../../src/lib/waveyard/library/session-service.ts");
+  const { handleSeparationJob } = await import("../../src/lib/waveyard/worker-local/separation.ts");
+  const { getStorage } = await import("../../src/lib/waveyard/storage.ts");
+  const { prepareArrangementPcm } = await import("../../src/lib/waveyard/arrangement-pcm.ts");
+  const a = await source(false, 2, 1009), b = await source(false, 2, 1601);
+  async function runBank(input, gain, mode = "complete") {
+    const detail = await library.getTrack(owner, input.trackId);
+    const [job] = await database.db.insert(schema.processingJobs).values({ projectId: input.projectId, sourceAssetId: detail.source.id, type: "separation", status: mode === "cancelled" ? "cancelled" : "queued", stage: "queued", model: "stems_4", requestedDevice: "cpu", idempotencyKey: crypto.randomUUID() }).returning();
+    const payload = { processingJobId: job.id, projectId: job.projectId, sourceAssetId: job.sourceAssetId, model: "stems_4", requestedDevice: "cpu" };
+    const deps = { db: database.db, openEngine: async () => ({ infer: async values => { if (mode === "failed") throw new Error("controlled inference seam failure"); return Float32Array.from(values, value => value * gain); }, release: async () => {}, resolvedDevice: "cpu" }) };
+    if (mode === "failed") await assert.rejects(() => handleSeparationJob(payload, deps), /controlled inference seam failure/);
+    else await handleSeparationJob(payload, deps);
+    return { job, payload, deps };
+  }
+  const first = await runBank(a, .1), second = await runBank(a, .2), donor = await runBank(b, .15);
+  const detail = await library.getTrack(owner, a.trackId);
+  assert.equal(detail.banks.length, 2);
+  assert.equal(detail.playback.assetIds.length, 0, "original eight-lane contamination must be refused, not hidden in UI");
+  assert.ok(detail.selectionRequired);
+  const { session } = await api("/api/library/sessions", "POST", { name: "Pinned bank processing gate (controlled inference seam, not genuine model)" });
+  await api(`/api/library/sessions/${session.id}/tracks`, "POST", { trackId: a.trackId, bankId: first.job.id });
+  const added = await api(`/api/library/sessions/${session.id}/tracks`, "POST", { trackId: a.trackId, bankId: second.job.id });
+  assert.equal(added.session.tracks[0].stems.length, 4); assert.equal(added.session.tracks[1].stems.length, 4);
+  const ids = added.session.tracks.map(item => item.playback.assetIds);
+  assert.equal(new Set(ids.flat()).size, 8);
+  const donorDetail = await library.getTrack(owner, b.trackId, { bankId: donor.job.id });
+  const donorStem = donorDetail.stems.find(stem => stem.stemType === "drums");
+  await api(`/api/library/sessions/${session.id}/swaps`, "POST", { sessionTrackId: added.session.tracks[0].id, stemType: "drums", toTrackId: b.trackId, toStemAssetId: donorStem.id, atSeconds: .5 });
+  await runBank(a, .3); await runBank(b, .35);
+  await runBank(a, .4, "failed"); await runBank(a, .5, "cancelled");
+  const reread = await sessions.getSession(owner, session.id);
+  assert.deepEqual(reread.tracks.map(item => item.playback.assetIds), ids);
+  assert.equal(reread.swaps[0].toStemAssetId, donorStem.id);
+  await handleSeparationJob(first.payload, first.deps); // terminal retry cannot replace assets
+  assert.deepEqual((await sessions.getSession(owner, session.id)).tracks[0].playback.assetIds, ids[0]);
+  const page = await browser.newPage(); t.after(() => page.close()); const errors = []; page.on("pageerror", e => errors.push(e.message));
+  await page.goto(`${origin}/?room=listening&session=${session.id}`);
+  const deck = page.getByTestId("session-deck-current");
+  await expect(deck.locator("audio")).toHaveCount(4);
+  await page.getByTestId("session-play").click();
+  await expect.poll(() => deck.locator("audio").evaluateAll(els => els.every(el => !el.paused && el.currentTime > .1))).toBe(true);
+  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("src", `/api/assets/${donorStem.id}`);
+  await page.getByTestId("session-play").click();
+  await page.goto(`${origin}/?room=preparation`); await f.stop(); await f.start();
+  await page.goto(`${origin}/?room=listening&session=${session.id}`);
+  await expect(deck.locator("audio")).toHaveCount(4);
+  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("src", `/api/assets/${donorStem.id}`);
+  const handoff = await sessions.sendSessionToStudio(owner, session.id);
+  assert.equal(handoff.remixTrackCount, 8, "two explicit four-lane session items, not eight lanes per item");
+  const arrangement = await api(`/api/remixes/${handoff.remixSessionId}`);
+  const used = new Set(arrangement.tracks.flatMap(track => track.clips.map(clip => clip.stemAssetId)));
+  assert.deepEqual(used, new Set([...ids.flat(), donorStem.id]));
+  const decodedSources = new Map();
+  for (const id of used) {
+    const [stem] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, id));
+    const pcm = synth.decodeWav16(new Uint8Array(await readFile(getStorage().getLocalPath(stem.storageKey))));
+    const channels = Array.from({ length: pcm.channels }, (_, channel) => Float32Array.from({length:pcm.samples.length/pcm.channels}, (_, frame) => pcm.samples[frame * pcm.channels + channel]));
+    decodedSources.set(id, { sampleRate: pcm.sampleRate, length: channels[0].length, numberOfChannels: channels.length, getChannelData: channel => channels[channel] });
+  }
+  const expected = prepareArrangementPcm({ ...arrangement.remix, tracks: arrangement.tracks }, decodedSources, 44100);
+  const version = await api(`/api/remixes/${handoff.remixSessionId}/versions`, "POST", { name: "Immutable bank export gate" });
+  const output = await render(version.version.id);
+  assert.ok(Math.abs(output.decoded.samples.length - expected.length) <= 2, "four-second render within one stereo PCM frame");
+  let maximumError = 0; for (let i = 0; i < Math.min(expected.length, output.decoded.samples.length); i++) maximumError = Math.max(maximumError, Math.abs(expected[i] - output.decoded.samples[i]));
+  assert.ok(maximumError < .0003, `decoded export must use exactly the pinned bank and donor: ${maximumError}`);
+  const legacy = await sessions.createSession(owner, "Ambiguous legacy retained");
+  const [item] = await database.db.insert(schema.listenSessionTracks).values({sessionId:legacy.id,trackId:a.trackId,position:0,stemMix:'{"drums":0.37}'}).returning();
+  const unresolved = await sessions.getSession(owner, legacy.id); assert.ok(unresolved.tracks[0].selectionRequired); assert.equal(unresolved.tracks[0].playback, null);
+  await assert.rejects(() => sessions.sendSessionToStudio(owner, legacy.id), /Resolve each bank/);
+  await sessions.updateSessionTrack(owner, legacy.id, item.id, {bankId:first.job.id});
+  const repaired = await sessions.getSession(owner, legacy.id); assert.deepEqual(repaired.tracks[0].playback.assetIds, ids[0]); assert.equal(repaired.tracks[0].stemMix.drums,.37);
+  assert.deepEqual(errors, []);
+  console.log(JSON.stringify({kind:"bank-identity-connected-gate", banks:3, lanesPerItem:4, pinnedDonor:donorStem.id, maximumExportError:maximumError, frames:output.decoded.samples.length/output.decoded.channels, scope:"actual processing/publication/PG/browser playback/restart/Studio/FFmpeg; controlled spectral inference seam, NOT genuine inference"}));
 });

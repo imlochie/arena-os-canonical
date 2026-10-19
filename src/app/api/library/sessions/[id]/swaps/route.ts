@@ -30,6 +30,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 }
 
 const swapSchema = z.object({
+  toStemAssetId: z.string().uuid().optional(),
   sessionTrackId: z.string().uuid(),
   stemType: z.string().min(1).max(64),
   toTrackId: z.string().uuid(),

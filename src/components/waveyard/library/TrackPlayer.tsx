@@ -39,6 +39,8 @@ import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import { WaveformCanvas } from "@/components/waveyard/WaveformCanvas";
 
 interface TrackDetail {
+  banks?: Array<{id:string;model:string;createdAt:string;stems:Array<{id:string;stemType:string}>}>;
+  selectionRequired?: string | null;
   id: string;
   title: string;
   artist: string;
@@ -483,7 +485,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
     );
   }
 
-  const separated = track.playback.kind === "stems";
+  const separated = track.playback.kind === "stems" && !track.selectionRequired;
   const playableStems = track.stems.filter((stem) => assetIds.includes(stem.id));
   const stemChannels = separated
     ? playableStems.map((stem) => ({
@@ -541,6 +543,12 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
         </div>
       </header>
 
+      {track.selectionRequired && <p role="alert">{track.selectionRequired}</p>}
+      {!!track.banks?.length && <label>Audition separation bank<select aria-label="Audition separation bank" value="" onChange={event => {
+        const bankId = event.target.value; if (!bankId) return;
+        transport.pause();
+        void fetch(`/api/library/tracks/${track.id}?bankId=${encodeURIComponent(bankId)}`, {cache:"no-store"}).then(response => { if (!response.ok) throw new Error("Bank unavailable"); return response.json(); }).then(body => setTrack(body.track)).catch(() => setStatus("Bank could not load; saved audio unchanged."));
+      }}><option value="">Choose an explicit bank</option>{track.banks.map(bank => <option key={bank.id} value={bank.id}>{bank.model} · {bank.createdAt} · {bank.id}</option>)}</select></label>}
       {availabilityNote !== null && <p className="player-note" role="note">{availabilityNote}</p>}
       {transport.error !== null && <><p className="error" role="alert">{transport.error}</p>{!separated && <p>This browser may not support the source codec, or the original bytes may be unavailable. <Link href={`/waveyard?convertTrack=${track.id}`}>Review browser-compatible conversion</Link> to explicitly create WAV/FLAC/MP3 from this same owned source. The original is retained; this does not repair missing/corrupt bytes or silently replace your audio.</p>}</>}
 

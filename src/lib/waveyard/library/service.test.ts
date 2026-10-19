@@ -381,6 +381,7 @@ test("persisted stem fixtures select stem playback (not inference)", async () =>
     }).returning();
     stemIds.push(stem.id);
   }
+  await db.db.update(schema.processingJobs).set({status:"complete"}).where(eq(schema.processingJobs.sourceAssetId, sourceId));
   const detail = await service.getTrack(OWNER, trackA.id);
   assert.equal(detail!.stemAvailability.status, "separated");
   assert.equal((detail!.stemAvailability as { stemCount: number }).stemCount, 4);
@@ -393,6 +394,7 @@ test("persisted stem fixtures select stem playback (not inference)", async () =>
 test("passthrough bridge = honest source-only playback", async () => {
   const sourceId = sourceIdByTrackId.get(trackB.id)!;
   const [job] = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, sourceId)).limit(1);
+  await db.db.update(schema.processingJobs).set({status:"complete"}).where(eq(schema.processingJobs.id, job.id));
   const [stem] = await db.db.insert(schema.stemAssets).values({
     projectId: trackB.studioProjectId,
     sourceAssetId: sourceId,
@@ -602,7 +604,7 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
   assert.equal(swapped.swaps.length, 1);
   assert.deepEqual(
     { ...swapped.swaps[0], createdAt: undefined },
-    { id: swapped.swaps[0].id, sessionTrackId: sessionTrackB, stemType: "drums", fromTrackId: trackB.id, toTrackId: trackA.id, atSeconds: 12.5, createdAt: undefined },
+    { fromStemAssetId: (await service.getTrack(OWNER, trackB.id))!.stems.find(stem => stem.stemType === "drums")!.id, toStemAssetId: (await service.getTrack(OWNER, trackA.id))!.stems.find(stem => stem.stemType === "drums")!.id, id: swapped.swaps[0].id, sessionTrackId: sessionTrackB, stemType: "drums", fromTrackId: trackB.id, toTrackId: trackA.id, atSeconds: 12.5, createdAt: undefined },
     "provenance: source track, donor track, stem type, session context",
   );
 
