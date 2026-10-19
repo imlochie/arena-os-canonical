@@ -1,3 +1,21 @@
+## Continued into Studio after the storage checkpoint
+
+Storage published as `aee8c3be388f62be34a720c56fc5481b275bc1a3`; no merge. Continued implementation rather than waiting for CI.
+
+Comparable actual production preparation-controller/Worker runs (`mandate9-studio-master-before.txt` vs `mandate9-studio-master-after.txt`):
+
+| Tracks/duration | Cold before→after ms | Master-only edit before→after ms |
+|---|---:|---:|
+|4×15s|411.3→437.7|160.5→20.4|
+|16×90s|3014.0→3012.4|3239.5→126.7|
+|32×90s|5694.1→5530.5|6195.7→138.0|
+
+Highest measured edit bottleneck was recomputing every track's nonlinear DSP on a master edit. Added **one bounded64MiB pre-master mix cache** to the existing canonical Worker/kernel, not another DSP engine. Master DSP still reruns from zero with new volume/inserts/tails; track/source revision/range/tempo/key/polarity/automation/sample-rate changes invalidate. Large mixes above the cache cap render normally without caching or dropping clips. Context-rate changes dispose incompatible source/output caches. Exact edited PCM error0, replay≤0.1ms. At32×90s diagnostics account for31,752,000bytes each of decoded source, Worker sources, retained mix and finished buffer; these are **owned retained-buffer measurements, NOT whole-browser/peak-memory proof**. This benchmark shares one immutable source across tracks; it does not establish32 independent-source cold-project scalability. Cold latency remains an open target.
+
+Also added actual precise clip position/source-offset/duration fields: atomic apply through normal undo/autosave/version paths, whole-millisecond validation, no silent snapping, source-overrun rejection for unsynced clips, explicit fade-shortening prerequisite. Actual browser moved to500ms, trimmed source1000–2200ms, undid/redid one operation, immediately saved, reopened exact geometry and auditioned/exported74,970frames with decoded PCM tolerance<0.00012. `mandate9-studio-range.txt` initially caught a missing rendered form despite its handler/typecheck; corrected and proved in `mandate9-studio-range2.txt`. This is why types alone are not UI acceptance.
+
+`mandate9-studio-integrated.txt`: **4PASS/0FAIL/0SKIP19.68s** (live nonlinear edits, scale/replay, cancel/cache/dispose, precise range persistence/export);6 kernel unit tests PASS separately (`mandate9-studio-unit.txt`, before the added automation invalidation assertion; repeat in final verification). Types PASS; changed lint had0errors,2 pre-existing inspector warnings plus2 initially added form-effect warnings; keyed local form removed the added effect warnings. Still need final lint/build/full tests; continue Arcade failed-attempt persistence next. No real inference/Electron/S3 claim.
+
 # Mandates8/9 — explicit storage lifecycle, then continue product workflows
 
 Reconciled live default branch `f0e4180841cd047080b06d6cb43cd2effa9ab98f`; PR15 remains OPEN at0bcecfc and PR14 OPEN536c940, unmerged. Both exact0bcecfc runs39210873787 and39210868782 completed SUCCESS (the latter was previously pending). Work stays on `arena/331aa502-arena-os-canonical`, no data/branch rewrites.

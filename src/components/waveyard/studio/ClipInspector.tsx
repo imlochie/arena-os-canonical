@@ -16,6 +16,27 @@ import { SourceAnalysisSummary } from "./SourceAnalysisSummary";
 type Transport = ReturnType<typeof useStemTransport>;
 type Clip = Remix["tracks"][number]["clips"][number];
 
+function PreciseClipRange({ clip, sourceDurationMs, onApply }: { clip: Clip; sourceDurationMs: number; onApply: (id: string, patch: Partial<Pick<Clip, "timelineStartMs" | "sourceOffsetMs" | "durationMs">>) => void }) {
+  const [geometry, setGeometry] = useState({ timelineStartMs: String(clip.timelineStartMs), sourceOffsetMs: String(clip.sourceOffsetMs), durationMs: String(clip.durationMs) });
+  const [rangeError, setRangeError] = useState("");
+  function applyGeometry(event: React.FormEvent) {
+    event.preventDefault();
+    const patch = { timelineStartMs: Number(geometry.timelineStartMs), sourceOffsetMs: Number(geometry.sourceOffsetMs), durationMs: Number(geometry.durationMs) };
+    if (Object.values(geometry).some(value => !value.trim()) || Object.values(patch).some(value => !Number.isSafeInteger(value) || value < 0 || value > 86400000) || patch.durationMs < 1) { setRangeError("Enter whole milliseconds: position/offset 0–86400000 and duration 1–86400000. Nothing was applied."); return; }
+    if (!clip.tempoSyncEnabled && patch.sourceOffsetMs + patch.durationMs > Math.round(sourceDurationMs)) { setRangeError("Source range exceeds this stem. Nothing was applied."); return; }
+    if ((clip.fadeInMs ?? 0) + (clip.fadeOutMs ?? 0) > patch.durationMs) { setRangeError("Shorten the existing fades before shortening this range. Nothing was applied."); return; }
+    setRangeError(""); onApply(String(clip.id ?? ""), patch);
+  }
+  return (<form onSubmit={applyGeometry} aria-label="Precise clip range">
+                <label>Timeline position (ms)<input aria-label="Clip timeline position (ms)" type="number" min="0" max="86400000" step="1" required value={geometry.timelineStartMs} onChange={event => setGeometry(current => ({ ...current, timelineStartMs: event.target.value }))} /></label>
+                <label>Source offset (ms)<input aria-label="Clip source offset (ms)" type="number" min="0" max="86400000" step="1" required value={geometry.sourceOffsetMs} onChange={event => setGeometry(current => ({ ...current, sourceOffsetMs: event.target.value }))} /></label>
+                <label>Duration (ms)<input aria-label="Clip duration (ms)" type="number" min="1" max="86400000" step="1" required value={geometry.durationMs} onChange={event => setGeometry(current => ({ ...current, durationMs: event.target.value }))} /></label>
+                <button type="submit" className="button secondary">Apply precise range</button>
+                <p className="muted">Exact milliseconds (no grid snap). One undo step; sync-aware ranges are verified on save. Shorten fades explicitly rather than losing them.</p>
+                {rangeError && <p role="alert">{rangeError}</p>}
+              </form>);
+}
+
 export function ClipInspector({
   stem,
   source,
@@ -36,7 +57,7 @@ export function ClipInspector({
   /** Clip currently selected in the arrangement timeline (kept in sync). */
   activeClipId?: string | null;
   /** Persisted clip property update (gain / fades) via the remix PUT path. */
-  onClipPatch: (clipId: string, patch: Partial<Pick<Clip, "gain" | "fadeInMs" | "fadeOutMs">>) => void;
+  onClipPatch: (clipId: string, patch: Partial<Pick<Clip, "gain" | "fadeInMs" | "fadeOutMs" | "timelineStartMs" | "sourceOffsetMs" | "durationMs">>) => void;
   onSplitClip: (clipId: string, positionMs: number) => void;
   onDuplicateClip: (clipId: string) => void;
   onDeleteClip: (clipId: string) => void;
@@ -105,6 +126,7 @@ export function ClipInspector({
           </select>
           {selectedClip !== null && (
             <div className="clip-controls">
+              <PreciseClipRange key={`${selectedClip.id}:${selectedClip.timelineStartMs}:${selectedClip.sourceOffsetMs}:${selectedClip.durationMs}`} clip={selectedClip} sourceDurationMs={stem.durationSeconds * 1000} onApply={onClipPatch} />
               <label>
                 clip gain ×
                 <input

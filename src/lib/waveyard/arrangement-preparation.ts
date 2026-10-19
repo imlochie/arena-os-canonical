@@ -9,6 +9,7 @@ export function previewStateKey(state: ArrangementPreviewState, revision = "") {
 export function transformedClipKey(clip: ArrangementPreviewState["tracks"][number]["clips"][number], state: ArrangementPreviewState, revision: string) {
   return JSON.stringify([clip.stemAssetId, clip.sourceOffsetMs, clip.durationMs, clip.tempoSyncEnabled, clip.keySyncEnabled, state.tempoBpm, state.targetKey, revision]);
 }
+type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number } };
 const MAX_DECODED_BYTES = 128 * 1024 * 1024;
 /** Owns decoded/worker buffers for one open workspace. Hard cancellation kills
  * CPU work as well as fetches. Immutable sources are sent only once per worker.
@@ -18,14 +19,17 @@ export class ArrangementPreparation {
   private sent = new Set<string>();
   private decoded = new Map<string, AudioBuffer>();
   private abort: AbortController | null = null;
-  private pending: { id: number; resolve(value: { left: Float32Array; right: Float32Array }): void; reject(error: Error): void } | null = null;
+  private pending: { id: number; resolve(value: Prepared): void; reject(error: Error): void } | null = null;
   private sequence = 0;
+  private rate = 0;
+  private workerStats: Prepared["stats"];
+  get diagnostics() { return { decodedBytes: [...this.decoded.values()].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0), finishedBytes: this.finished ? this.finished.buffer.length * this.finished.buffer.numberOfChannels * 4 : 0, ...this.workerStats }; }
   private finished: { key: string; buffer: AudioBuffer } | null = null;
   cancel() {
     this.abort?.abort(); this.abort = null;
-    if (this.pending) { this.pending.reject(new DOMException("Preparation cancelled", "AbortError")); this.pending = null; this.worker?.terminate(); this.worker = null; this.sent.clear(); }
+    if (this.pending) { this.pending.reject(new DOMException("Preparation cancelled", "AbortError")); this.pending = null; this.worker?.terminate(); this.worker = null; this.sent.clear(); this.workerStats = undefined; }
   }
-  dispose() { this.cancel(); this.worker?.terminate(); this.worker = null; this.sent.clear(); this.decoded.clear(); this.finished = null; }
+  dispose() { this.cancel(); this.worker?.terminate(); this.worker = null; this.sent.clear(); this.decoded.clear(); this.finished = null; this.workerStats = undefined; }
   private getWorker() {
     if (this.worker) return this.worker;
     if (typeof Worker === "undefined") throw new Error("This browser cannot run the arrangement DSP worker; no dry substitute was played.");
@@ -40,6 +44,8 @@ export class ArrangementPreparation {
   }
   async prepare(snapshot: ArrangementPreviewState, context: AudioContext, revision = "") {
     this.cancel();
+    if (this.rate && this.rate !== context.sampleRate) this.dispose();
+    this.rate = context.sampleRate;
     const key = previewStateKey(snapshot, revision);
     if (this.finished?.key === key) return this.finished.buffer;
     const abort = this.abort = new AbortController(), signal = abort.signal;
@@ -86,10 +92,10 @@ export class ArrangementPreparation {
       transfer.push(...channels.map(channel => channel.buffer)); this.sent.add(id);
     }
     const id = ++this.sequence;
-    const work: PreviewWork = { id, state, sampleRate: context.sampleRate, sources, retain: [...needed] };
-    const rendered = new Promise<{ left: Float32Array; right: Float32Array }>((resolve, reject) => { this.pending = { id, resolve, reject }; });
+    const work: PreviewWork = { id, state, sampleRate: context.sampleRate, sources, retain: [...needed], revision };
+    const rendered = new Promise<Prepared>((resolve, reject) => { this.pending = { id, resolve, reject }; });
     worker.postMessage(work, transfer);
-    const { left, right } = await rendered; signal.throwIfAborted();
+    const { left, right, stats } = await rendered; signal.throwIfAborted(); this.workerStats = stats;
     const buffer = context.createBuffer(2, left.length, context.sampleRate);
     buffer.copyToChannel(left as Float32Array<ArrayBuffer>, 0); buffer.copyToChannel(right as Float32Array<ArrayBuffer>, 1);
     this.finished = { key, buffer }; return buffer;

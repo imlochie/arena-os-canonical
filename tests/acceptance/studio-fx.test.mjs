@@ -576,3 +576,18 @@ test("mixed-tempo library handoff auditions and exports the same owned immutable
   try { const foreign = await remote(); assert.equal(foreign.child.status, 1); assert.equal(foreign.job.errorCode, "asset_missing"); } finally { await database.db.update(schema.projects).set({ ownerId: owner }).where(eq(schema.projects.id, originalProject)); }
   console.log(JSON.stringify({ kind: "mixed-source-real-browser-local-worker", sourceBpms: [60, 120], frames: audition.length, browserError, workerError, immutableVersionId: version.id }));
 });
+
+test("precise range UI applies atomic move/trim with undo-redo, rejects out-of-source ranges, and immediately versions/reopens/auditions/exports exact geometry", async t => {
+  const {projectId,remixId}=await source(); const page=await browser.newPage(); t.after(()=>page.close());
+  await page.addInitScript(()=>{window.__rangeAudio=[]; const start=AudioBufferSourceNode.prototype.start; AudioBufferSourceNode.prototype.start=function(...args){if(this.buffer)window.__rangeAudio.push({frames:this.buffer.length,left:Array.from(this.buffer.getChannelData(0))});return start.apply(this,args);};});
+  await page.goto(`${origin}/?project=${projectId}&remix=${remixId}`); await page.getByTestId("waveyard-mode-studio").click();
+  const form=page.getByRole("form",{name:"Precise clip range",exact:true}); await expect(form).toBeVisible();
+  await form.getByLabel("Clip source offset (ms)",{exact:true}).fill("2500"); await form.getByLabel("Clip duration (ms)",{exact:true}).fill("1200"); await form.getByRole("button",{name:"Apply precise range",exact:true}).click(); await expect(form.getByRole("alert")).toContainText("exceeds this stem");
+  await form.getByLabel("Clip source offset (ms)",{exact:true}).fill("1000"); await form.getByLabel("Clip timeline position (ms)",{exact:true}).fill("500"); await form.getByRole("button",{name:"Apply precise range",exact:true}).click();
+  await page.getByRole("button",{name:"Undo",exact:true}).click(); await expect(form.getByLabel("Clip duration (ms)",{exact:true})).toHaveValue("3000"); await page.getByRole("button",{name:"Redo",exact:true}).click(); await expect(form.getByLabel("Clip duration (ms)",{exact:true})).toHaveValue("1200");
+  const saving=page.waitForResponse(response=>response.url().endsWith(`/api/remixes/${remixId}/versions`)&&response.request().method()==="POST"); page.once("dialog",dialog=>dialog.accept("Precise range acknowledged")); await page.getByRole("button",{name:"Save version",exact:true}).click(); const {version}=await(await saving).json();
+  const actual=await api(`/api/remixes/${remixId}`); const clip=actual.tracks[0].clips[0]; assert.equal(clip.timelineStartMs,500); assert.equal(clip.sourceOffsetMs,1000); assert.equal(clip.durationMs,1200);
+  await page.reload(); await page.getByTestId("waveyard-mode-studio").click(); await expect(form.getByLabel("Clip timeline position (ms)",{exact:true})).toHaveValue("500"); await expect(form.getByLabel("Clip source offset (ms)",{exact:true})).toHaveValue("1000"); await expect(form.getByLabel("Clip duration (ms)",{exact:true})).toHaveValue("1200");
+  await page.getByRole("button",{name:"Preview arrangement",exact:true}).click(); await page.waitForFunction(()=>window.__rangeAudio.length>0); const audio=await page.evaluate(()=>window.__rangeAudio.at(-1)); const exported=await render(version.id);
+  assert.equal(audio.frames,74970); assert.equal(exported.decoded.samples.length/exported.decoded.channels,audio.frames); let error=0; for(let frame=0;frame<audio.frames;frame++){if(frame<22050)assert.equal(audio.left[frame],0); error=Math.max(error,Math.abs(audio.left[frame]-exported.decoded.samples[frame*exported.decoded.channels]));} assert.ok(error<0.00012,`audition/export error ${error}`);
+});

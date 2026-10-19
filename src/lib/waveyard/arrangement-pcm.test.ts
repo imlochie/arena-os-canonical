@@ -42,3 +42,25 @@ test("persisted unsafe FX parameters and unbounded chains are rejected rather th
   assert.equal(parseInserts({ format: "waveyard-inserts-v1", inserts: Array.from({ length: 33 }, (_, index) => ({ ...delay, id: `delay-${index}` })) }), null);
   assert.throws(() => processWithChain(new Float32Array(10), [{ ...delay, processor: "unknown" as never }], 1000), /Unsupported/);
 });
+
+test("bounded pre-master cache reuses only master edits; source/settings/ranges/FX/automation invalidate and cached PCM is never mutated", () => {
+  const { state, audio } = setup(); const cache = { revision: "immutable-source-v1", hit: false, pcm: undefined as Float32Array | undefined };
+  const first = prepareArrangementPcm(state, audio, 1000, cache); assert.equal(cache.hit, false); const retained = cache.pcm!.slice();
+  const master = structuredClone(state); master.masterVolume = 0.21; master.masterInserts = [makeInsert("delay", { delayMs: 25, feedback: 0, mix: 0.5 })!];
+  assert.deepEqual(prepareArrangementPcm(master, audio, 1000, cache), prepareArrangementPcm(master, audio, 1000)); assert.equal(cache.hit, true); assert.deepEqual(cache.pcm, retained);
+  assert.notDeepEqual(first, prepareArrangementPcm(master, audio, 1000, cache));
+  const edits = [
+    (s: ArrangementPreviewState) => { s.tracks[0].volume = 0.3; },
+    (s: ArrangementPreviewState) => { s.tracks[0].pan = 0.7; },
+    (s: ArrangementPreviewState) => { s.tracks[0].phaseInverted = false; },
+    (s: ArrangementPreviewState) => { s.tracks[0].clips[0].gain = 0.4; },
+    (s: ArrangementPreviewState) => { s.tracks[0].clips[0].durationMs = 900; },
+    (s: ArrangementPreviewState) => { s.tracks[0].clips[0].timelineStartMs = 100; },
+    (s: ArrangementPreviewState) => { s.tracks[0].clips[0].durationMs = 800; s.tracks[0].clips[0].sourceOffsetMs = 100; },
+    (s: ArrangementPreviewState) => { s.tracks[0].inserts = []; },
+    (s: ArrangementPreviewState) => { s.automation = [{ remixTrackId: "track", parameter: "volume", points: [{ timelineMs: 0, value: 0.2 }, { timelineMs: 1000, value: 0.8 }] }]; },
+    (s: ArrangementPreviewState) => { s.tempoBpm = 125; s.targetKey = "B minor"; },
+  ];
+  for (const edit of edits) { const next = structuredClone(state); edit(next); assert.deepEqual(prepareArrangementPcm(next, audio, 1000, cache), prepareArrangementPcm(next, audio, 1000)); assert.equal(cache.hit, false); }
+  cache.revision = "replaced-source-v2"; prepareArrangementPcm(state, audio, 1000, cache); assert.equal(cache.hit, false);
+});

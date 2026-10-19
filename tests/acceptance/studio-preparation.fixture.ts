@@ -16,7 +16,7 @@ Object.assign(window, { async measurePreparation(state: ArrangementPreviewState)
     const editStart = performance.now(); const changed = await engine.prepare(edited, context); const editMs = performance.now() - editStart;
     let error = 0; for (let frame = 0; frame < buffer.length; frame++) error = Math.max(error, Math.abs(changed.getChannelData(0)[frame] - buffer.getChannelData(0)[frame] * 0.5));
     await new Promise(resolve => setTimeout(resolve, 15));
-    return { readyMs, replayMs, editMs, maximumGapMs, ticks, frames: buffer.length, latestEditError: error, outputPlanarBytes: buffer.length * 2 * 4 };
+    return { readyMs, replayMs, editMs, maximumGapMs, ticks, frames: buffer.length, latestEditError: error, outputPlanarBytes: buffer.length * 2 * 4, diagnostics: engine.diagnostics };
   } finally { clearInterval(timer); engine.dispose(); await context.close(); }
 } });
 

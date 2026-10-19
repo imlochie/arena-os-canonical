@@ -22,10 +22,27 @@ export function assertBoundedPcm(pcm: Float32Array, sampleRate: number) {
   if (pcm.length > (MAX_ARRANGEMENT_SECONDS + MAX_ARRANGEMENT_TAIL_SECONDS) * sampleRate * 2) throw new Error("Arrangement effect tails exceed the 60-second allowance.");
   for (const value of pcm) if (!Number.isFinite(value)) throw new Error("Arrangement processing produced a non-finite sample.");
 }
-export function prepareArrangementPcm(state: ArrangementPreviewState, buffers: ReadonlyMap<string, DecodedPreviewAudio>, sampleRate: number) {
+/** One pre-master bus, bounded independently from decoded/source ownership.
+ * Master-only edits must rerun master DSP from zero, not every track's DSP.
+ * The caller's immutable source revision participates in the full identity. */
+export type ArrangementMixCache = { revision: string; key?: string; pcm?: Float32Array; hit?: boolean };
+export const MAX_MIX_CACHE_BYTES = 64 * 1024 * 1024;
+function finishMix(mix: Float32Array, state: ArrangementPreviewState, sampleRate: number, drySamples: number) {
+  for (let sample = 0; sample < mix.length; sample++) mix[sample] *= state.masterVolume;
+  const result = processWithChain(mix, previewChain(state.masterInserts), sampleRate); assertBoundedPcm(result, sampleRate);
+  if (result.length > drySamples + MAX_ARRANGEMENT_TAIL_SECONDS * sampleRate * 2) throw new Error("Combined arrangement FX tails exceed the 60-second allowance.");
+  return result;
+}
+export function prepareArrangementPcm(state: ArrangementPreviewState, buffers: ReadonlyMap<string, DecodedPreviewAudio>, sampleRate: number, cache?: ArrangementMixCache) {
   const endMs = Math.max(0, ...state.tracks.flatMap((track) => track.clips.map((clip) => clip.timelineStartMs + clip.durationMs)));
   if (!Number.isFinite(endMs) || endMs > MAX_ARRANGEMENT_SECONDS * 1000) throw new Error("Processed arrangement audition is limited to 5 minutes.");
   const drySamples = Math.ceil(endMs * sampleRate / 1000) * 2;
+  const key = cache ? JSON.stringify([state.tracks, state.automation, state.tempoBpm, state.targetKey, sampleRate, cache.revision]) : "";
+  if (cache) {
+    cache.hit = cache.key === key && !!cache.pcm;
+    if (cache.hit) return finishMix(cache.pcm!.slice(), state, sampleRate, drySamples);
+    cache.pcm = undefined; cache.key = undefined;
+  }
   let mix = new Float32Array(drySamples);
   const anySolo = state.tracks.some((track) => track.solo && !track.muted);
   for (const track of state.tracks) {
@@ -74,8 +91,6 @@ export function prepareArrangementPcm(state: ArrangementPreviewState, buffers: R
     if (processed.length > mix.length) { const longer = new Float32Array(processed.length); longer.set(mix); mix = longer; }
     for (let sample = 0; sample < processed.length; sample++) mix[sample] += processed[sample];
   }
-  for (let sample = 0; sample < mix.length; sample++) mix[sample] *= state.masterVolume;
-  const result = processWithChain(mix, previewChain(state.masterInserts), sampleRate); assertBoundedPcm(result, sampleRate);
-  if (result.length > drySamples + MAX_ARRANGEMENT_TAIL_SECONDS * sampleRate * 2) throw new Error("Combined arrangement FX tails exceed the 60-second allowance.");
-  return result;
+  if (cache && mix.byteLength <= MAX_MIX_CACHE_BYTES) { cache.pcm = mix.slice(); cache.key = key; }
+  return finishMix(mix, state, sampleRate, drySamples);
 }

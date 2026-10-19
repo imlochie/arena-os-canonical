@@ -346,7 +346,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     queuePersist(after);
   }, [queuePersist, record]);
 
-  const patchClip = (clipId: string, patch: Partial<{ gain: number; fadeInMs: number; fadeOutMs: number }>) => {
+  const patchClip = (clipId: string, patch: Partial<{ gain: number; fadeInMs: number; fadeOutMs: number; timelineStartMs: number; sourceOffsetMs: number; durationMs: number }>) => {
     changeRemix((current) => ({
       ...current,
       tracks: current.tracks.map((track) => ({
