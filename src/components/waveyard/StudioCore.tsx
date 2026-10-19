@@ -250,6 +250,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     return () => window.removeEventListener("keydown", escape);
   }, []);
 
+  const persistedOrigins = useRef(new WeakMap<Remix, Remix>());
   const persist = useCallback((next = remixRef.current): Promise<boolean> => {
     if (!next) return Promise.resolve(false);
     // Whole-arrangement saves must reach SQL in request order. A slow older
@@ -260,8 +261,14 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
         const response = await fetch(`/api/remixes/${next.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(remixState(next)) });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) { setSaveState("failed"); return false; }
-        if (remixRef.current !== next) { setSaveState("unsaved"); return false; }
+        const current = remixRef.current;
+        // A preceding queued save may replace an unchanged edit with its
+        // server echo. Preserve that edit identity across acknowledgements,
+        // while still refusing to overwrite a genuinely newer local edit.
+        const origin = persistedOrigins.current.get(next) ?? next;
+        if (!current || (persistedOrigins.current.get(current) ?? current) !== origin) { setSaveState("unsaved"); return false; }
         const persisted = remixFromResponse(body);
+        persistedOrigins.current.set(persisted, origin);
         remixRef.current = persisted; setRemix(persisted); setSaveState("saved");
         return true;
       } catch { setSaveState("failed"); return false; }

@@ -1,5 +1,6 @@
 import { requireApiAccess } from "@/lib/security/api-access";
-import { closeCollaboration, deleteCollaboration, getCollaboration } from "@/lib/orchestrator";
+import { ArtifactContentError } from "@/lib/arcadeStore";
+import { CollaborationArchiveError, closeCollaboration, deleteCollaboration, getCollaboration } from "@/lib/orchestrator";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +10,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
   const collaboration = await getCollaboration(id);
   if (!collaboration) return Response.json({ error: "not found" }, { status: 404 });
+  if (new URL(req.url).searchParams.get("download") === "1") return new Response(JSON.stringify(collaboration, null, 2), { headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="collaboration-${collaboration.id}.json"`, "cache-control": "no-store" } });
   return Response.json({ collaboration });
 }
 
@@ -24,7 +26,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const collaboration = await closeCollaboration(id, typeof body.summary === "string" ? body.summary : undefined);
     return Response.json({ collaboration });
   } catch (e) {
-    return Response.json({ error: e instanceof Error ? e.message : "failed to close" }, { status: 400 });
+    return Response.json({ error: e instanceof Error ? e.message : "Record filing unavailable; reload before retrying." }, { status: e instanceof ArtifactContentError ? 413 : e instanceof CollaborationArchiveError ? e.status : 503 });
   }
 }
 

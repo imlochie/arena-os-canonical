@@ -327,9 +327,11 @@ export default function OrchestratorWorkbench() {
       const data = await res.json();
       if (res.ok) {
         setDetail(data.collaboration);
-        setNotice("Closed — the collaboration record was filed as an artifact.");
+        setNotice(`Closed — immutable Artifact revision ${data.collaboration.archive?.revisionId ?? ""} filed. Find the complete retained record in the Artifact Library.`);
       } else setNotice(data.error ?? "close failed");
       void refreshList();
+    } catch {
+      setNotice("Record filing was not acknowledged. Reload before retrying; the retained session remains available to download.");
     } finally {
       setBusy(false);
     }
@@ -748,12 +750,13 @@ export default function OrchestratorWorkbench() {
                   >
                     🎯 Round
                   </button>
+                  <a href={`/api/orchestrator/${detail.id}?download=1`} className="text-xs">Download retained session</a>
                   <button
                     onClick={() => void close()}
-                    disabled={busy || detail.status === "closed"}
+                    disabled={busy}
                     className="rounded-xl bg-white/5 px-3 py-2 text-xs font-bold text-slate-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-40"
                   >
-                    ■ Close
+                    {detail.status === "closed" ? "Retry filing record" : "■ Close"}
                   </button>
                 </div>
               </div>

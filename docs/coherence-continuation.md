@@ -939,3 +939,66 @@ failure, complete retained record download and retry without losing sessions.
 Broader Battle/Collab/Council URL provenance is still not server-resolved;
 pinning a link alone is not full cross-room consumption acceptance. Existing
 model/Electron/Windows/real Redis FX lifecycle limitations remain unchanged.
+
+## Mandate 5 follow-through — truthful archival and autosave/version race
+
+`4997249951a861e45f27eb76307a9a68f3aaa628` is published with all four checks
+PASS in run `39187902340`: static 5m07s, browser 2m09s, A7 1m28s, Compose
+2m19s. No merge or unrelated branch changes.
+
+The next reproduced Close failure is now repaired. Session closure and its
+owned Artifact/history insert commit together, rather than closing first and
+swallowing an archive error. The archive contains the complete **retained API
+record**, including context, full retained requests/responses and pinned inputs,
+not display excerpts. A stable Artifact identity and original immutable revision
+make concurrent filing/retry idempotent; retry does not overwrite later Library
+edits. The archive survives deletion of the original session. SQL failure at
+Artifact insertion **or** session update rolls both back. Pending relays must be
+resolved before final archival. Queue writes now acknowledge SQL completion,
+share the parent-row lock with closure, and allocate sequence numbers under that
+lock; failed writes cannot pretend to be memory-only successful relays.
+
+The actual workbench provides Download retained session and Retry filing record.
+The JSON download is the current retained session, not an immutable snapshot.
+Records exceeding the shared 20,000-character Artifact limit are refused with
+413 without closing or discarding the session; the entire retained record still
+has a real download. This is an explicit limit, not full large-record immutable
+archival support. Existing provider response/tool-report bounds are not undone
+by the archive: “complete retained record” does not mean original unbounded
+provider output or process stdout.
+
+The first integrated archive run exposed another genuine Studio save race:
+`mandate5-archive-workflows.txt` had **24 PASS / 1 FAIL**, timing out while
+waiting for the version POST. This was not waived or fixed by increasing its
+wait. A deterministic real-browser interception held an already-executed
+PostgreSQL autosave response, then clicked Save version. The previous code
+mistook the queued autosave's new response object for a new user edit and
+aborted version creation: expected one immutable version, got zero
+(`mandate5-save-race-before.txt`). Studio now retains edit identity through
+acknowledgements with weakly held origin references. An actual newer edit still
+wins and cannot be overwritten. The deterministic browser case proves both
+no-intervening-edit (saved master 0.42) and newer-edit (saved master 0.31).
+
+Frozen final source verification before this commit:
+* `mandate5-archive-final-workflows.txt`: **26 PASS, 0 FAIL, 0 SKIP**, 50.67s.
+  Includes the original audio/render/mission workflows, Project operations,
+  pinned Orchestrator inputs, real session download/close/retry, SQL fault
+  injection, concurrent queue/close, retained original archive after Library
+  edit and source-session deletion, and both deterministic save-race cases.
+* `mandate5-archive-native.txt`: 9 PASS, 4.01s (overlaps the 26 above).
+* `mandate5-archive-types.txt`, `mandate5-archive-final-build.txt`: typecheck and
+  production build PASS; `mandate5-archive-lint.txt`: zero errors/warnings for
+  the changed archive/Studio files; `git diff --check` PASS.
+* `mandate5-archive-source.txt`: 1360 PASS, 434.32s for the archive backend tree.
+  The final client-only race fix occurred during that run; do not mislabel it
+  an exact-final-tree source run. A fresh exact-published-HEAD run and final CI
+  result will be attached to PR15 after publication. Frozen source hashes are
+  retained in `mandate5-archive-final-source.sha256` outside the repository.
+
+Next evidence-based targets: server-side revision resolution in Battle/Collab/
+Council handoffs (their URLs still pass mutable prompt excerpts); remaining
+legacy Orchestrator create/respond/dispatch/delete memory-fallback and failure
+semantics; and large-record immutable archival through existing private storage.
+The queue/close fixes do not establish durable provider execution receipts or
+exactly-once external calls. The genuine-model/Electron/Windows and real Redis
+FX restart gaps remain; no unavailable asset downloads were retried.

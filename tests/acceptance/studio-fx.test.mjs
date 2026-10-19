@@ -342,4 +342,25 @@ test("Orchestrator real UI retains rejected references then queues, dispatches a
   assert.equal(requests.length, 1); assert.match(requests[0].messages[1].content, /PINNED ORIGINAL BROWSER EVIDENCE/); assert.doesNotMatch(requests[0].messages[1].content, /NEW MUTABLE CONTENT MUST NOT BE SENT/);
   await page.reload(); await page.getByRole("button", { name: /Browser immutable handoff/ }).click(); await expect(page.getByLabel("Pinned inputs for relay 1")).toContainText(reference);
   const reopened = (await api(`/api/orchestrator/${collaboration.id}`)).collaboration; assert.deepEqual(reopened.relays[0].contextRefs, [reference]); assert.equal(reopened.relays[0].status, "responded");
+  const download = page.waitForEvent("download"); await page.getByRole("link", { name: "Download retained session", exact: true }).click(); const downloaded = JSON.parse(await readFile(await (await download).path(), "utf8")); assert.deepEqual(downloaded.relays[0].contextRefs, [reference]); assert.match(downloaded.relays[0].response, /Controlled protocol receipt/);
+  await page.getByRole("button", { name: "■ Close", exact: true }).click(); await expect(page.getByText(/Closed — immutable Artifact revision/)).toBeVisible();
+  const archived = (await api(`/api/artifacts/${collaboration.id}`)).artifact; assert.equal(archived.revision, 1); assert.ok(archived.body.includes(reference)); assert.match(archived.body, /Controlled protocol receipt/);
+  await page.reload(); await page.getByRole("button", { name: /Browser immutable handoff/ }).click(); await page.getByRole("button", { name: "Retry filing record", exact: true }).click(); await expect(page.getByText(/Closed — immutable Artifact revision/)).toBeVisible(); assert.equal((await api(`/api/artifacts/${collaboration.id}`)).artifact.revision, 1);
+
+});
+
+test("Studio Save version survives an in-flight autosave echo but never overwrites a genuinely newer edit", { timeout: 45000 }, async (t) => {
+  for (const interveningEdit of [false, true]) {
+    const { projectId, remixId } = await source(); const page = await browser.newPage(); page.setDefaultTimeout(10000);
+    let release; const held = new Promise(resolve => { release = resolve; }); let started; const firstPut = new Promise(resolve => { started = resolve; }); let puts = 0;
+    t.after(async () => { release(); await page.close(); });
+    await page.route(`**/api/remixes/${remixId}`, async (route) => { if (route.request().method() === "PUT" && puts++ === 0) { const response = await route.fetch(); started(); await held; await route.fulfill({ response }); } else await route.continue(); });
+    await page.goto(`${origin}/?project=${projectId}&remix=${remixId}`); await page.getByTestId("waveyard-mode-studio").click();
+    const master = page.getByRole("slider", { name: "Master volume", exact: true }).last(); await range(master, 0.42); await firstPut;
+    const intended = interveningEdit ? 0.31 : 0.42; if (interveningEdit) await range(master, intended);
+    page.once("dialog", dialog => dialog.accept("Save during autosave acknowledgement")); await page.getByRole("button", { name: "Save version", exact: true }).click(); release();
+    await expect.poll(async () => (await api(`/api/remixes/${remixId}/versions`)).versions.length, { timeout: 5000 }).toBe(1);
+    const { versions } = await api(`/api/remixes/${remixId}/versions`); const snapshot = await database.db.select().from(schema.remixVersions).where(eq(schema.remixVersions.id, versions[0].id)); const state = typeof snapshot[0].snapshot === "string" ? JSON.parse(snapshot[0].snapshot) : snapshot[0].snapshot; assert.equal(state.masterVolume, intended); await expect(master).toHaveValue(String(intended));
+    t.diagnostic(`Held real autosave acknowledgement; intervening edit=${interveningEdit}; immutable version master=${state.masterVolume}`);
+  }
 });

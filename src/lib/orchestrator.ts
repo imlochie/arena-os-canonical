@@ -1,6 +1,6 @@
 import { assertUrlDestination } from "@/lib/security/outbound-url";
 import { parseArtifactReference } from "@/lib/handoffs";
-import { getArtifactRevision } from "@/lib/arcadeStore";
+import { assertArtifactBodySize, getArtifactRevision, insertArtifact } from "@/lib/arcadeStore";
 // Collaboration Orchestrator — structured multi-participant AI collaboration.
 //
 // This automates the "human message bus" problem: instead of you ferrying
@@ -26,8 +26,8 @@ import { getArtifactRevision } from "@/lib/arcadeStore";
 // classification permits — never the whole workspace.
 
 import { db } from "@/db";
-import { LOCAL_OWNER_ID, artifacts, collaborationParticipants, collaborationRelays, collaborations } from "@/db/schema";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { LOCAL_OWNER_ID, artifactRevisions, collaborationParticipants, collaborationRelays, collaborations } from "@/db/schema";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { generate } from "@/lib/ai";
 import { getModel } from "@/lib/models";
 import { preferencesBriefFor } from "@/lib/preferences";
@@ -318,6 +318,22 @@ function parseSteps(raw: string | null | undefined): RelayToolStep[] {
   }
 }
 
+function collaborationFromRows(row: typeof collaborations.$inferSelect, pRows: (typeof collaborationParticipants.$inferSelect)[], rRows: (typeof collaborationRelays.$inferSelect)[]): Collaboration {
+  return {
+    id: row.id,
+    title: row.title,
+    goal: row.goal,
+    context: row.context,
+    status: (["running", "blocked", "closed"].includes(row.status) ? row.status : "running") as CollaborationStatus,
+    autoRoute: Boolean(row.autoRoute),
+    projectId: row.projectId ?? null,
+    createdAt: new Date(row.createdAt ?? new Date()).toISOString(),
+    updatedAt: new Date(row.updatedAt ?? new Date()).toISOString(),
+    participants: pRows.map(participantFromRow),
+    relays: rRows.map(relayFromRow),
+  };
+}
+
 // ---------------- read ----------------
 
 export async function getCollaboration(id: string): Promise<Collaboration | null> {
@@ -337,19 +353,7 @@ export async function getCollaboration(id: string): Promise<Collaboration | null
         .from(collaborationRelays)
         .where(eq(collaborationRelays.collaborationId, id))
         .orderBy(asc(collaborationRelays.seq));
-      return {
-        id: row.id,
-        title: row.title,
-        goal: row.goal,
-        context: row.context,
-        status: (["running", "blocked", "closed"].includes(row.status) ? row.status : "running") as CollaborationStatus,
-        autoRoute: Boolean(row.autoRoute),
-        projectId: row.projectId ?? null,
-        createdAt: new Date(row.createdAt ?? new Date()).toISOString(),
-        updatedAt: new Date(row.updatedAt ?? new Date()).toISOString(),
-        participants: pRows.map(participantFromRow),
-        relays: rRows.map(relayFromRow),
-      };
+      return collaborationFromRows(row, pRows, rRows);
     }
   } catch {
     dbHealthy = false;
@@ -520,32 +524,24 @@ export async function addRelay(collaborationId: string, input: RelayInput): Prom
     createdAt: new Date().toISOString(),
   };
 
-  try {
-    await ensureTables();
-    if (dbHealthy) {
-      const [row] = await db
-        .insert(collaborationRelays)
-        .values({
-          collaborationId, seq, sourceKey: relay.sourceKey, targetKey: relay.targetKey, purpose: relay.purpose,
-          request: relay.request, contextRefs: relay.contextRefs.join(","), classification: relay.classification,
-          responseContract: relay.responseContract, status: "pending",
-          toolUse: relay.toolUse ? 1 : 0, steps: "[]",
-        })
-        .returning();
-      if (row) relay.id = row.id;
-    }
-  } catch {
-    dbHealthy = false;
-  }
-  if (!dbHealthy) {
-    const memory = memoryCollabs.get(collaborationId);
-    if (memory) {
-      memory.relays.push(relay);
-      memory.status = "running";
-      memory.updatedAt = new Date().toISOString();
-    }
-  }
-  await touch(collaborationId, "running");
+  await ensureTables();
+  if (!dbHealthy) throw new Error("Persistent collaboration storage unavailable; relay was not queued. Your request is retained in the form.");
+  await db.transaction(async (tx) => {
+    const [parent] = await tx.select().from(collaborations).where(eq(collaborations.id, collaborationId)).for("update");
+    if (!parent || parent.status === "closed") throw new Error("Collaboration is absent or closed; relay was not queued.");
+    const [last] = await tx.select({ seq: collaborationRelays.seq }).from(collaborationRelays).where(eq(collaborationRelays.collaborationId, collaborationId)).orderBy(desc(collaborationRelays.seq)).limit(1);
+    relay.seq = (last?.seq ?? 0) + 1;
+    if (relay.seq > MAX_RELAYS) throw new Error(`relay limit reached (${MAX_RELAYS})`);
+    const [row] = await tx.insert(collaborationRelays).values({
+      collaborationId, seq: relay.seq, sourceKey: relay.sourceKey, targetKey: relay.targetKey, purpose: relay.purpose,
+      request: relay.request, contextRefs: relay.contextRefs.join(","), classification: relay.classification,
+      responseContract: relay.responseContract, status: "pending", toolUse: relay.toolUse ? 1 : 0, steps: "[]",
+    }).returning();
+    relay.id = row.id;
+    await tx.update(collaborations).set({ status: "running", updatedAt: new Date() }).where(eq(collaborations.id, collaborationId));
+  });
+  const memory = memoryCollabs.get(collaborationId);
+  if (memory) { memory.relays.push(relay); memory.status = "running"; memory.updatedAt = new Date().toISOString(); }
   return relay;
 }
 
@@ -1131,34 +1127,35 @@ async function conductorRoute(
 
 // ---------------- close ----------------
 
-export async function closeCollaboration(id: string, summary?: string): Promise<Collaboration> {
-  const collab = await getCollaboration(id);
-  if (!collab) throw new Error("collaboration not found");
-  await touch(id, "closed");
-  const record = (await getCollaboration(id))!;
-
-  const transcript = record.relays
-    .map(
-      (r) =>
-        `### #${r.seq} ${r.sourceKey} → ${r.targetKey} · ${r.purpose} · ${r.status}\n` +
-        `**Request:** ${r.request.slice(0, 800)}\n\n${r.response ? `**Response (via ${r.via}):**\n${r.response.slice(0, 2000)}` : `**Note:** ${r.note || "(no response)"}`}`
-    )
-    .join("\n\n");
-  try {
-    await db.insert(artifacts).values({
-      projectId: record.projectId,
-      kind: "decision",
-      title: `🎼 Collaboration record — ${record.title.slice(0, 120)}`,
-      body:
-        `**Goal:** ${record.goal.slice(0, 2000)}\n\n${summary ? `**Summary:** ${String(summary).slice(0, 2000)}\n\n` : ""}` +
-        `**Participants:** ${record.participants.map((p) => `${p.emoji} ${p.name} (${p.kind})`).join(", ")}\n\n---\n\n${transcript}`.slice(0, 30000),
-      sourceType: "orchestrator",
-      sourceId: record.id,
-    });
-  } catch {
-    /* artifact filing is best-effort */
-  }
-  return record;
+export class CollaborationArchiveError extends Error {
+  readonly status: number;
+  constructor(message: string, status = 503) { super(message); this.status = status; }
+}
+export async function closeCollaboration(id: string, summary?: string): Promise<Collaboration & { archive: { artifactId: string; revisionId: string } }> {
+  await ensureTables();
+  if (!dbHealthy) throw new CollaborationArchiveError("Persistent collaboration storage unavailable; closing and filing were not performed.");
+  const result = await db.transaction(async (tx) => {
+    const [row] = await tx.select().from(collaborations).where(eq(collaborations.id, id)).for("update");
+    if (!row) throw new CollaborationArchiveError("collaboration not found", 404);
+    const pRows = await tx.select().from(collaborationParticipants).where(eq(collaborationParticipants.collaborationId, id)).orderBy(asc(collaborationParticipants.createdAt));
+    const rRows = await tx.select().from(collaborationRelays).where(eq(collaborationRelays.collaborationId, id)).orderBy(asc(collaborationRelays.seq));
+    if (rRows.some((relay) => relay.status === "pending")) throw new CollaborationArchiveError("Resolve pending relays before filing the final record. The session and all its work are retained.", 409);
+    const now = new Date();
+    const record = collaborationFromRows({ ...row, status: "closed", updatedAt: now }, pRows, rRows);
+    // Complete retained API record, not clipped request/response previews.
+    // Large records remain downloadable; never silently archive an excerpt.
+    const body = `${summary ? `Summary: ${String(summary)}\n\n` : ""}Retained collaboration record (JSON):\n\n${JSON.stringify(record, null, 2)}`;
+    assertArtifactBodySize(body);
+    const artifact = await insertArtifact(tx, { id, projectId: record.projectId, kind: "decision", title: `Collaboration record — ${record.title}`, body, sourceType: "orchestrator", sourceId: id, ownerId: LOCAL_OWNER_ID });
+    if (artifact.sourceType !== "orchestrator" || artifact.sourceId !== id) throw new CollaborationArchiveError("Archive identity collision; no session changes were committed.", 409);
+    if (artifact.deletedAt) throw new CollaborationArchiveError("The archived Artifact is in trash. Recover it in the Artifact Library before retrying.", 409);
+    const [original] = await tx.select({ id: artifactRevisions.id }).from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, id), eq(artifactRevisions.revision, 1))).limit(1);
+    if (!original) throw new CollaborationArchiveError("Immutable archive revision unavailable; filing was not confirmed.");
+    await tx.update(collaborations).set({ status: "closed", updatedAt: now }).where(eq(collaborations.id, id));
+    return { record, revisionId: original.id };
+  });
+  memoryCollabs.set(id, result.record);
+  return { ...result.record, archive: { artifactId: id, revisionId: result.revisionId } };
 }
 
 // ---------------- delete ----------------

@@ -166,3 +166,42 @@ test("Orchestrator dispatch consumes the owned immutable revision through actual
     }
   }
 });
+
+test("Orchestrator archival is atomic, complete rather than clipped, retry-idempotent and downloadable; oversized retained records are refused without closing", async () => {
+  const root = await import("../../src/app/api/orchestrator/route.ts"); const route = await import("../../src/app/api/orchestrator/[id]/route.ts"); const answer = await import("../../src/app/api/orchestrator/relays/[relayId]/route.ts"); const orchestration = await import("../../src/lib/orchestrator.ts");
+  const { db } = await import("../../src/db/index.ts"); const { artifacts, artifactRevisions } = await import("../../src/db/schema.ts"); const { eq } = await import("drizzle-orm");
+  const context = "c".repeat(1800) + "KEEP ENTIRE CONTEXT 🎵", relayRequest = "q".repeat(1400) + "KEEP ENTIRE REQUEST", response = "a".repeat(3000) + "KEEP ENTIRE RESPONSE 🎵";
+  const created = await root.POST(request("POST", { title: "Atomic archive", goal: "Preserve complete retained work", context, participants: [{ key: "owner", name: "Owner", kind: "human" }], relay: { target: "owner", request: relayRequest } })); assert.equal(created.status, 201); const { collaboration } = await created.json(); const ctx = { params: Promise.resolve({ id: collaboration.id }) };
+  assert.equal((await route.PATCH(request("PATCH", { status: "closed" }), ctx)).status, 409);
+  assert.equal((await answer.POST(request("POST", { response }), { params: Promise.resolve({ relayId: collaboration.relays[0].id }) })).status, 200);
+  for (const [table, operation] of [["artifacts", "INSERT"], ["collaborations", "UPDATE"]]) {
+    await fixture.pool.query(`CREATE FUNCTION fail_atomic_archive() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected archive boundary failure'; END; $$; CREATE TRIGGER fail_atomic_archive BEFORE ${operation} ON ${table} FOR EACH ROW EXECUTE FUNCTION fail_atomic_archive();`);
+    try { assert.equal((await route.PATCH(request("PATCH", { status: "closed" }), ctx)).status, 503); }
+    finally { await fixture.pool.query(`DROP TRIGGER fail_atomic_archive ON ${table}; DROP FUNCTION fail_atomic_archive();`); }
+    assert.equal((await db.select().from(artifacts).where(eq(artifacts.id, collaboration.id))).length, 0); assert.equal((await db.select().from(artifactRevisions).where(eq(artifactRevisions.artifactId, collaboration.id))).length, 0); assert.equal((await (await route.GET(request("GET"), ctx)).json()).collaboration.status, "running");
+  }
+  const closed = await route.PATCH(request("PATCH", { status: "closed" }), ctx); assert.equal(closed.status, 200); const record = (await closed.json()).collaboration; assert.equal(record.status, "closed"); assert.equal(record.archive.artifactId, collaboration.id); assert.ok(record.archive.revisionId);
+  const archived = (await (await item.GET(request("GET"), ctx)).json()).artifact; assert.equal(archived.revision, 1); const full = JSON.parse(archived.body.split("Retained collaboration record (JSON):\n\n")[1]); assert.equal(full.context, context); assert.equal(full.relays[0].request, relayRequest); assert.equal(full.relays[0].response, response);
+  const download = await route.GET(new Request(`http://localhost/api/orchestrator/${collaboration.id}?download=1`, { headers: { host: "localhost" } }), ctx); assert.equal(download.status, 200); assert.match(download.headers.get("content-disposition"), /attachment/); assert.equal((await download.json()).relays[0].response, response);
+  const duplicates = await Promise.all([route.PATCH(request("PATCH", { status: "closed" }), ctx), route.PATCH(request("PATCH", { status: "closed" }), ctx)]); for (const duplicate of duplicates) { assert.equal(duplicate.status, 200); assert.equal((await duplicate.json()).collaboration.archive.revisionId, record.archive.revisionId); }
+  assert.equal((await db.select().from(artifactRevisions).where(eq(artifactRevisions.artifactId, collaboration.id))).length, 1);
+  assert.equal((await item.PUT(request("PUT", { body: "Owner's newer Library edit", expectedRevision: 1 }), ctx)).status, 200); assert.equal((await route.PATCH(request("PATCH", { status: "closed" }), ctx)).status, 200); assert.equal((await (await item.GET(request("GET"), ctx)).json()).artifact.body, "Owner's newer Library edit");
+  const original = await item.GET(new Request(`http://localhost/api/artifacts/${collaboration.id}?revision=${record.archive.revisionId}`, { headers: { host: "localhost" } }), ctx); assert.equal((await original.json()).revision.snapshot.body, archived.body);
+  assert.equal((await route.DELETE(request("DELETE"), ctx)).status, 200); assert.equal((await route.GET(request("GET"), ctx)).status, 404);
+  const afterDeletion = await item.GET(new Request(`http://localhost/api/artifacts/${collaboration.id}?revision=${record.archive.revisionId}`, { headers: { host: "localhost" } }), ctx); assert.equal((await afterDeletion.json()).revision.snapshot.body, archived.body);
+  const long = await orchestration.createCollaboration({ goal: "Keep a large session intact", participants: [{ key: "owner", name: "Owner", kind: "human" }] });
+  for (let i = 0; i < 3; i++) { const relay = await orchestration.addRelay(long.id, { target: "owner", request: "Retain every response" }); await orchestration.respondToRelay(relay.id, { response: "x".repeat(9000) + `SUFFIX ${i}` }); }
+  const longCtx = { params: Promise.resolve({ id: long.id }) }; assert.equal((await route.PATCH(request("PATCH", { status: "closed" }), longCtx)).status, 413); assert.equal((await (await route.GET(request("GET"), longCtx)).json()).collaboration.status, "running"); assert.equal((await db.select().from(artifacts).where(eq(artifacts.id, long.id))).length, 0);
+  const retained = await route.GET(new Request(`http://localhost/api/orchestrator/${long.id}?download=1`, { headers: { host: "localhost" } }), longCtx); assert.equal((await retained.json()).relays[2].response, "x".repeat(9000) + "SUFFIX 2");
+  // Queue errors also cannot become successful memory-only relays.
+  await fixture.pool.query(`CREATE FUNCTION fail_relay_queue() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected relay queue failure'; END; $$; CREATE TRIGGER fail_relay_queue BEFORE INSERT ON collaboration_relays FOR EACH ROW EXECUTE FUNCTION fail_relay_queue();`);
+  try { await assert.rejects(() => orchestration.addRelay(long.id, { target: "owner", request: "Never claim this was queued" })); } finally { await fixture.pool.query("DROP TRIGGER fail_relay_queue ON collaboration_relays; DROP FUNCTION fail_relay_queue();"); }
+  assert.equal((await orchestration.getCollaboration(long.id)).relays.length, 3);
+  const queued = await Promise.all([orchestration.addRelay(long.id, { target: "owner", request: "racing A" }), orchestration.addRelay(long.id, { target: "owner", request: "racing B" })]); assert.deepEqual(queued.map(relay => relay.seq).sort(), [4, 5]);
+  const race = await orchestration.createCollaboration({ goal: "Serialise close against queue", participants: [{ key: "owner", name: "Owner", kind: "human" }] }); const raceCtx = { params: Promise.resolve({ id: race.id }) }; const queueRoute = await import("../../src/app/api/orchestrator/[id]/relays/route.ts");
+  const [closing, queuing] = await Promise.all([route.PATCH(request("PATCH", { status: "closed" }), raceCtx), queueRoute.POST(request("POST", { target: "owner", request: "Do not queue into a closed snapshot" }), raceCtx)]);
+  const outcome = await orchestration.getCollaboration(race.id);
+  if (closing.status === 200) { assert.equal(queuing.status, 400); assert.equal(outcome.status, "closed"); assert.equal(outcome.relays.length, 0); }
+  else { assert.equal(closing.status, 409); assert.equal(queuing.status, 201); assert.equal(outcome.status, "running"); assert.equal(outcome.relays.length, 1); }
+
+});
