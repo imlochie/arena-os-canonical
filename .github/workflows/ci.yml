@@ -152,6 +152,16 @@ jobs:
       - name: Initialize test database schema
         run: npx drizzle-kit push --force
 
+      - name: Install isolated Waveyard worker dependencies
+        run: npm ci --prefix waveyard-worker
+      - name: Typecheck production Waveyard worker
+        run: npx tsc --noEmit --project waveyard-worker/tsconfig.production.json
+      - name: Real FX export expired-lease and retained-publication acceptance
+        env:
+          ARENA_FX_REDIS_URL: redis://127.0.0.1:6379/15
+        run: |
+          export LD_LIBRARY_PATH="$PWD/node_modules/@embedded-postgres/linux-x64/native/lib:${LD_LIBRARY_PATH:-}"
+          node --import ./scripts/register-src-loader.mjs --test tests/acceptance/export-lease.test.mjs | tee fx-lease-acceptance.tap
       - name: A7 real-runtime acceptance
         run: npm run test:acceptance:a7 | tee a7-acceptance.tap
       - name: Publish failing A7 test identities to check annotations
@@ -162,7 +172,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: a7-acceptance-${{ github.sha }}
-          path: a7-acceptance.tap
+          path: |
+            a7-acceptance.tap
+            fx-lease-acceptance.tap
 
   playback-acceptance:
     # Real browser audio primitives, not a mocked transport or separation job.

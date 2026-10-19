@@ -1,7 +1,8 @@
+import { verifyStoredFile } from "../../../packages/dsp/src/verified-file";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { checksumFile, exec, validateAudio } from "@waveyard/audio";
 import {
   drumAnalyses,
@@ -221,11 +222,13 @@ function panGains(pan: number) {
 async function updateJob(
   id: string,
   patch: Partial<typeof exportJobs.$inferInsert>,
+  integrityFailure = false,
 ) {
-  await getDb()
+  const updated = await getDb()
     .update(exportJobs)
     .set({ ...patch, updatedAt: new Date() })
-    .where(eq(exportJobs.id, id));
+    .where(and(eq(exportJobs.id, id), ...(integrityFailure ? [] : [ne(exportJobs.status, "complete")]))).returning({ id: exportJobs.id });
+  return updated.length > 0;
 }
 
 async function processMidiExport(
@@ -249,7 +252,7 @@ async function processMidiExport(
   const [sourceAnalysis] = await db.select().from(sourceAnalyses).where(eq(sourceAnalyses.sourceAssetId, source.id)).limit(1);
   if (!sourceAnalysis || sourceAnalysis.projectId !== job.projectId || sourceAnalysis.status !== "complete" || !Number.isFinite(sourceAnalysis.bpm) || sourceAnalysis.bpm! < 40 || sourceAnalysis.bpm! > 300)
     throw new ExportFailure("midi_tempo_missing", "Source-relative MIDI export requires complete source BPM analysis.");
-  await updateJob(job.id, { status: "preparing", stage: "resolving-analysis", attempts: job.attempts + 1, startedAt: new Date(), completedAt: null, errorCode: null, errorMessage: null });
+  if (!await updateJob(job.id, { status: "preparing", stage: "resolving-analysis", attempts: job.attempts + 1, startedAt: new Date(), completedAt: null, errorCode: null, errorMessage: null })) return;
   await reportStage("resolving-analysis");
   let notes;
   if (job.midiKind === "vocal" || job.midiKind === "drums") {
@@ -344,21 +347,7 @@ export async function processExport(
     .from(exportJobs)
     .where(eq(exportJobs.id, payload.exportJobId))
     .limit(1);
-  if (!job || job.status === "complete" || job.status === "cancelled") return;
-
-  const [existingAsset] = await db
-    .select()
-    .from(exportAssets)
-    .where(eq(exportAssets.exportJobId, job.id))
-    .limit(1);
-  if (existingAsset) {
-    await updateJob(job.id, {
-      status: "complete",
-      stage: "complete",
-      completedAt: job.completedAt ?? new Date(),
-    });
-    return;
-  }
+  if (!job || job.status === "cancelled") return;
 
   const invalidPayload =
     job.projectId !== payload.projectId ||
@@ -375,6 +364,30 @@ export async function processExport(
     });
     throw new Error("Export payload does not match its durable job target.");
   }
+
+  const [existingAsset] = await db
+    .select()
+    .from(exportAssets)
+    .where(eq(exportAssets.exportJobId, job.id))
+    .limit(1);
+  if (existingAsset) {
+    try {
+      if (existingAsset.projectId !== job.projectId || existingAsset.remixVersionId !== job.remixVersionId || existingAsset.format !== job.format) throw new Error("Published export provenance does not match its immutable job.");
+      await verifyStoredFile(getStorage(), existingAsset);
+    } catch (error) {
+      await updateJob(job.id, { status: "failed", stage: "failed", errorCode: "published_output_invalid", errorMessage: error instanceof Error ? error.message : "Published output unavailable; restore storage before retrying.", completedAt: new Date() }, true);
+      throw error;
+    }
+    await updateJob(job.id, {
+      status: "complete",
+      stage: "complete",
+      completedAt: job.completedAt ?? new Date(),
+    });
+    await reportStage("complete");
+    return;
+  }
+
+  if (job.status === "complete") { await updateJob(job.id, { status: "failed", stage: "failed", errorCode: "published_output_missing", errorMessage: "Completed export has no retained asset; completion was invalidated.", completedAt: new Date() }, true); throw new Error("Completed export has no retained asset."); }
 
   const [version] = await db
     .select()
@@ -419,7 +432,7 @@ export async function processExport(
   let storedKey: string | undefined;
   let complete = false;
   try {
-    await updateJob(job.id, {
+    if (!await updateJob(job.id, {
       status: "preparing",
       stage: "resolving-remix",
       attempts: (job.attempts ?? 0) + 1,
@@ -427,7 +440,7 @@ export async function processExport(
       completedAt: null,
       errorCode: null,
       errorMessage: null,
-    });
+    })) return;
     await reportStage("resolving-remix");
 
     const snapshot = parseExportSnapshot(version.snapshot);
@@ -515,7 +528,7 @@ export async function processExport(
       inputPaths.set(stem.id, inputPath);
     }
 
-    await updateJob(job.id, { status: "processing", stage: "rendering" });
+    if (!await updateJob(job.id, { status: "processing", stage: "rendering" })) return;
     await reportStage("rendering");
     if (await consumeTestFault("export-render"))
       throw new ExportFailure("render_failed", "Injected export render failure.");
@@ -622,12 +635,16 @@ export async function processExport(
 
     }
 
-    await updateJob(job.id, { status: "finalizing", stage: "validating" });
+    if (!await updateJob(job.id, { status: "finalizing", stage: "validating" })) return;
     await reportStage("validating");
     const metadata = await validateAudio(outputPath);
     const checksumSha256 = await checksumFile(outputPath);
+    if (!await updateJob(job.id, { stage: "publishing" })) return;
+    await reportStage("publishing");
     storedKey = privateObjectKey(job.projectId, "export", "wav");
     await storage.putFile(storedKey, outputPath, "audio/wav");
+    if (!await updateJob(job.id, { stage: "committing" })) return;
+    await reportStage("committing");
 
     await db.transaction(async (tx) => {
       await tx.insert(exportAssets).values({

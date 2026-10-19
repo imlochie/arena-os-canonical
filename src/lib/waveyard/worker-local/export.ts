@@ -1,3 +1,4 @@
+import { verifyStoredFile } from "../../../../waveyard-worker/packages/dsp/src/verified-file";
 import { projectAudio } from "@/lib/waveyard/project-audio";
 /**
  * Local export job handler — a faithful port of the worker's processExport
@@ -15,7 +16,7 @@ import { projectAudio } from "@/lib/waveyard/project-audio";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 
 import { db } from "@/db";
 import { exportAssets, exportJobs, remixSessions, remixVersions, sourceAnalyses } from "@/db/waveyardSchema";
@@ -201,21 +202,16 @@ function panGains(pan: number) {
   };
 }
 
-async function updateJob(id: string, patch: Partial<typeof exportJobs.$inferInsert>) {
-  await db.update(exportJobs).set({ ...patch, updatedAt: new Date() }).where(eq(exportJobs.id, id));
+async function updateJob(id: string, patch: Partial<typeof exportJobs.$inferInsert>, integrityFailure = false) {
+  const updated = await db.update(exportJobs).set({ ...patch, updatedAt: new Date() }).where(and(eq(exportJobs.id, id), ...(integrityFailure ? [] : [ne(exportJobs.status, "complete")]))).returning({ id: exportJobs.id });
+  return updated.length > 0;
 }
 
 /** Local export from immutable persisted RemixVersion authority. */
 export async function handleExportJob(payloadInput: Record<string, unknown>): Promise<void> {
   const payload = payloadInput as unknown as ExportJobPayload;
   const [job] = await db.select().from(exportJobs).where(eq(exportJobs.id, payload.exportJobId)).limit(1);
-  if (!job || job.status === "complete" || job.status === "cancelled") return;
-
-  const [existingAsset] = await db.select().from(exportAssets).where(eq(exportAssets.exportJobId, job.id)).limit(1);
-  if (existingAsset) {
-    await updateJob(job.id, { status: "complete", stage: "complete", completedAt: job.completedAt ?? new Date() });
-    return;
-  }
+  if (!job || job.status === "cancelled") return;
 
   const invalidPayload = job.projectId !== payload.projectId || job.remixSessionId !== payload.remixSessionId || job.remixVersionId !== payload.remixVersionId || job.format !== payload.format;
   if (invalidPayload) {
@@ -228,6 +224,21 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     });
     throw new Error("Export payload does not match its durable job target.");
   }
+
+  const [existingAsset] = await db.select().from(exportAssets).where(eq(exportAssets.exportJobId, job.id)).limit(1);
+  if (existingAsset) {
+    try {
+      if (existingAsset.projectId !== job.projectId || existingAsset.remixVersionId !== job.remixVersionId || existingAsset.format !== job.format) throw new Error("Published export provenance does not match its immutable job.");
+      await verifyStoredFile(getStorage(), existingAsset);
+    } catch (error) {
+      await updateJob(job.id, { status: "failed", stage: "failed", errorCode: "published_output_invalid", errorMessage: error instanceof Error ? error.message : "Published output unavailable; restore storage before retrying.", completedAt: new Date() }, true);
+      throw error;
+    }
+    await updateJob(job.id, { status: "complete", stage: "complete", completedAt: job.completedAt ?? new Date() });
+    return;
+  }
+
+  if (job.status === "complete") { await updateJob(job.id, { status: "failed", stage: "failed", errorCode: "published_output_missing", errorMessage: "Completed export has no retained asset; completion was invalidated.", completedAt: new Date() }, true); throw new Error("Completed export has no retained asset."); }
 
   const [version] = await db.select().from(remixVersions).where(eq(remixVersions.id, job.remixVersionId)).limit(1);
   const [session] = await db.select().from(remixSessions).where(eq(remixSessions.id, job.remixSessionId)).limit(1);
@@ -261,7 +272,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
   let storedKey: string | undefined;
   let complete = false;
   try {
-    await updateJob(job.id, {
+    if (!await updateJob(job.id, {
       status: "preparing",
       stage: "resolving-remix",
       attempts: (job.attempts ?? 0) + 1,
@@ -269,7 +280,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       completedAt: null,
       errorCode: null,
       errorMessage: null,
-    });
+    })) return;
 
     const snapshot = parseExportSnapshot(version.snapshot);
     assertValidCrossfades(snapshot.tracks);
@@ -324,7 +335,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       inputPaths.set(stem.id, inputPath);
     }
 
-    await updateJob(job.id, { status: "processing", stage: "rendering" });
+    if (!await updateJob(job.id, { status: "processing", stage: "rendering" })) return;
 
     const inputIndex = new Map(stems.map((stem, index) => [stem.id, index]));
     const automationByTrackId = new Map(snapshot.automation.map((lane) => [`${lane.remixTrackId}:${lane.parameter}`, lane.points]));
@@ -428,7 +439,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
 
     }
 
-    await updateJob(job.id, { status: "finalizing", stage: "validating" });
+    if (!await updateJob(job.id, { status: "finalizing", stage: "validating" })) return;
     const metadata = await validateAudio(outputPath);
     const checksum = await checksumFile(outputPath);
     storedKey = privateObjectKey(job.projectId, "export", "wav");

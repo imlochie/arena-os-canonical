@@ -1,3 +1,47 @@
+# Mandate6 — real FX lease loss, interruption and verified publication, 2026-10-19
+
+Follows verified/published `7580caa83ad53830a4894867e1eac57446b24afe`; PR15 remains open/unmerged. Exact new-head results belong in the PR evidence comment rather than a self-referential commit hash here.
+
+## Actual RED → shared fix → real runtime
+
+The production isolated export handler was run in **actual BullMQ Worker child processes**, against native PostgreSQL and Redis7.2.6. Worker A was stopped at postrender/prevalidation until its lease expired. Worker B recovered the real stalled job and published a valid file. Resuming A reproduced: Redis job **completed**, SQL job **failed**, **one valid asset**. Before proof: `/home/user/mandate6-fx-lease-before.txt`. This was not a fake queue or two artificial duplicate queue IDs.
+
+- Local and isolated export status writes now preserve an already-complete publication; stale attempts cannot mark it preparing/processing/finalizing/failed. Rendering/publication stages stop when another attempt has published. The existing database unique asset-per-job constraint remains authoritative. Losing attempts clean only their own unpublished file, never the winning file.
+- Existing asset metadata no longer silently means complete. Both handlers verify exact stored size/SHA256 and job/project/version/format binding before acknowledging it. A completed marker with no asset is explicitly invalidated. Queue progress acknowledges complete on verified publication recovery.
+- The authorized media handler verifies the complete stored file **before** serving bytes/ranges or signing a download. Missing/corrupt bytes return410/422 instead of a200 with altered sound, and invalidate a corrupt completed marker. Storage errors return503 rather than private paths/keys. No deletion of the damaged file is attempted.
+- An explicitly restored private file can be recovered using the real existing Retry route, even when its BullMQ record is already completed: retry that terminal record in place, re-verify the retained file, restore truthful completion and download the original bytes without another asset. Retry now closes its real Redis connection on every HTTP exit. The real test initially passed its assertions but stayed alive reconnecting after Redis shutdown, exposing that actual resource leak; it now exits normally.
+- Added truthful publishing and committing checkpoints. No model-side effects or exactly-once arbitrary execution are claimed. Private copies can be written by more than one attempt; the guarantee exercised is consistent, recoverable publication with one valid asset.
+
+## Executed acceptance, non-additive
+
+Integrated native PostgreSQL/HTTP/private-files/Chromium/BullMQ suite: **54 passed,0 failed**,112.88s, `/home/user/mandate6-final-integrated.txt`. The strengthened focused queue rerun adds live-workspace editing after claim and proves the spawned FFmpeg process is actually stopped via Linux `/proc` before killing its process group; `/home/user/mandate6-fx-lease-native.txt`. It is an overlapping test, **not**55 tests.
+
+The same persisted V1 includes overlapping clips, phase inversion, saturation, delay, master gain and reverb. After claim, the live remix is changed to different polarity/gain/no inserts. V1's stored snapshot hash remains unchanged. Every recovered output is compared against the local deterministic V1 reference's **decoded PCM**, not just its successful file creation:
+
+| Actual interruption window | Recovery observed |
+| --- | --- |
+| Claimed / resolving-remix, before render | Two attempts, complete SQL + completed queue, one valid asset |
+| Rendering checkpoint before processing | Same |
+| Actual FFmpeg launched, output graph parsed, verified stopped process | Same |
+| Postrender / prevalidation | Same |
+| Postvalidation / preupload | Same |
+| Private object published / premetadata transaction | Same |
+| Metadata+completion committed / before queue acknowledgement | **One** render attempt; verify/adopt existing file, one asset |
+
+All seven outputs match the V1 reference at maximum decoded sample error **0** on this Linux runtime (test tolerance0.00015). Source: real encoded synthetic stereo3s440Hz PCM at44.1kHz, not a model output. Output includes308700 stereo frames (7s with FX tails),Exact file size is verified against actual asset metadata, without assuming fixed WAV headers across FFmpeg versions. Exact output SHA256 on this runtime: `bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602`. Input SHA256: `8f7c5c108f01deec126acce948671f42454c8345112046fcd6ccf0c3090d3cf0`. The focused evidence prints the actual V1 ID/snapshot SHA and every recovered output checksum/status/attempt count. Local-vs-isolated real decoded FX/audio-control tests remain in the integrated54.
+
+Root typecheck, **production worker** typecheck (`npx tsc --noEmit -p waveyard-worker/tsconfig.production.json`) and production Next build pass. Full lint:0errors/48warnings; changed root FX/API/test files lint clean. The production worker config deliberately excludes legacy unit tests importing absent old web paths/Vitest; it does **not** claim those unrelated legacy tests pass. Exact-head CI now installs isolated-worker dependencies, typechecks production sources, and runs this native/real-Redis lifecycle alongside A7 (isolated Redis DB15, no mock broker).
+
+Additional exact Artifact test vectors in the integrated run:350021-byte Unicode SHA256 `a09f5949ec045ad45f64bdcff0cedf03f50c124e477a208d14403aeea53bc62d`;240000-byte binary SHA256 `93c1f032ee90c7ae77edd4accd37e90ed58dd8cf70474f25478cc4b1d14d10e5`. Actual download/restore/restart bytes are asserted against these vectors, not only against metadata.
+
+## Scope / continue
+
+This establishes **Linux local-private-storage WAV FX** recovery for these windows, including an actual fresh worker process after each kill. It is not S3, host power-loss, genuine neural inference, MIDI-analysis, Electron or Windows acceptance. SIGKILL can leave unpublished private/temp attempt files; they are not certified as assets and no speculative garbage collection removes them. Controlled text adapters/synthetic audio are only protocol/DSP fixtures.
+
+The full Mandate is **not complete**. Continue Mission reusable-output acceptance for larger/binary/failed useful partials through later real tasks and owner/restart faults; independent Studio scale/main-thread/stale-edit/save-reopen and remaining-room workflows; broader private-object reconciliation and remote-provider/runtime checks where available. Do not return to Windows or repeat unavailable model/checkpoint downloads as a prerequisite. Preserve the published cross-room, Orchestrator and Artifact fixes. Do not merge automatically.
+
+---
+
 # Mandate6 — durable work and full private content, 2026-10-19
 
 Second implementation boundary follows `367452fd585a26e8594c01ef212b8f5c19800679`, whose full source regression passed1360/0 and whose exact-head CI run39195600339 passed all four checks. PR15 remains open/unmerged.
@@ -17,12 +61,12 @@ Second implementation boundary follows `367452fd585a26e8594c01ef212b8f5c19800679
 
 - Integrated actual native-PostgreSQL/HTTP/browser workflow run: **53 passed,0 failed**, `/home/user/mandate6-durable-workflows-verified.txt`. This supersedes overlapping focused runs rather than summing them. Includes ten new Orchestrator cases, four full-content cases, real Library recovery/download/edit/restore controls, existing Mission recovery/output reuse, all four cross-room paths, and existing actual decoded Studio FX/local-vs-isolated-worker workflows.
 - Full-content tests exercise large Unicode and binary bytes, exact SHA256/length, interrupted and corrupt streaming writes, SQL failure after upload, concurrent recovery, private ownership, swapped manifests, missing/corrupt objects, restart, history, tombstones and restore with no replacement revision on failure.
-- Production build and typecheck pass. Full lint: zero errors,48 warnings. PGlite migration regression: five passed. A full-source attempt exposed missing statement separators in migration0019; that attempt was stopped, the delimiter fixed, and its failing suite rerun successfully. Corrected full source regression is running against a fresh native PostgreSQL fixture at `/home/user/mandate6-durable-source-pg-verified.txt`; exact new-head CI is required and will be recorded in PR15.
+- Production build and typecheck pass. Full lint: zero errors,48 warnings. PGlite migration regression: five passed. A full-source attempt exposed missing statement separators in migration0019; that attempt was stopped, the delimiter fixed, and its failing suite rerun successfully. Corrected full source regression: **1360 passed,0 failed**,624.50s, `/home/user/mandate6-durable-source-pg-verified.txt`. Published boundary `7580caa83ad53830a4894867e1eac57446b24afe` has all four checks PASS in exact-head CI39199177329; PR15 comment6259731450 records the evidence.
 - Browser evidence is Chromium153, not Electron. HTTP adapter output, synthetic PCM and controlled protocol workers establish contracts, not genuine inference, music-model quality or autonomous reasoning.
 
 ## Continue, do not conflate with whole-Mandate completion
 
-Redis7.2.6 was downloaded from the allowed GitHub source and compiled outside Git (BSD license inspected) at `/home/user/arena-test-tools/redis-source/redis-7.2.6/src/redis-server`. Continue actual PostgreSQL/Redis/BullMQ FX worker interruption and stale-worker publication; existing direct isolated-handler FX tests do not prove that lifecycle. Review export publication catch paths and completed-media checksum verification. Then complete the broader Mission/Studio/other-room programme. Private storage here is the actual local provider, not S3/power-loss/exactly-once acceptance. Legacy already-truncated data cannot be reconstructed. No Windows, Electron renderer or genuine model/checkpoint acceptance is claimed, and none is required to continue Linux work.
+Redis7.2.6 was downloaded from the allowed GitHub source and compiled outside Git (BSD license inspected) at `/home/user/arena-test-tools/redis-source/redis-7.2.6/src/redis-server`. The following boundary now executes actual PostgreSQL/Redis/BullMQ FX interruptions, stale-worker publication and completed-media integrity; this older direct-handler boundary did not prove that lifecycle. Then complete the broader Mission/Studio/other-room programme. Private storage here is the actual local provider, not S3/power-loss/exactly-once acceptance. Legacy already-truncated data cannot be reconstructed. No Windows, Electron renderer or genuine model/checkpoint acceptance is claimed, and none is required to continue Linux work.
 
 ---
 

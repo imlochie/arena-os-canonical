@@ -1,3 +1,4 @@
+import { verifyStoredFile, PublishedFileError } from "../../../../../../waveyard-worker/packages/dsp/src/verified-file";
 import { isUuid } from "@/lib/api/ids";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -45,6 +46,11 @@ export async function GET(
 
     const download = new URL(request.url).searchParams.get("download") === "1";
     const storage = getStorage();
+    try { await verifyStoredFile(storage, asset); }
+    catch (error) {
+      if (error instanceof PublishedFileError && error.status !== 503) await db.update(exportJobs).set({ status: "failed", stage: "failed", errorCode: "published_output_invalid", errorMessage: error.message, updatedAt: new Date() }).where(eq(exportJobs.id, job.id));
+      throw error;
+    }
     const signed = await storage.createDownloadUrl(
       asset.storageKey,
       60,
@@ -106,6 +112,7 @@ export async function GET(
       },
     });
   } catch (error) {
+    if (error instanceof PublishedFileError) return NextResponse.json({ error: error.message }, { status: error.status });
     if (error instanceof Response) return error;
     console.error("export stream failed", error);
     return NextResponse.json(
