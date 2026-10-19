@@ -97,11 +97,14 @@ async function baseline(tx: Transaction, row: ArtifactRow) {
 }
 export async function insertArtifact(database: StoreDb, input: ArtifactInput) {
   assertArtifactBodySize(input.body);
-  if (input.contentObject) { assertArtifactObjectBinding(input.body, input.contentObject); await verifyArtifactObject(input.ownerId, input.contentObject); }
+  if (input.contentObject) assertArtifactObjectBinding(input.body, input.contentObject);
   return database.transaction(async (tx) => {
     const [inserted] = await tx.insert(artifacts).values({ ...input, projectId: input.projectId ?? null, sourceId: input.sourceId ?? null }).onConflictDoNothing({ target: artifacts.id }).returning();
     const row = inserted ?? (input.id ? (await tx.select().from(artifacts).where(and(eq(artifacts.id, input.id), eq(artifacts.ownerId, input.ownerId))).limit(1))[0] : undefined);
     if (!row || row.sourceId !== (input.sourceId ?? null)) throw new Error("Artifact identity conflict; no existing content was overwritten.");
+    // INSERT holds the graph write lock; a collector cannot remove bytes
+    // between verification and metadata commit. Failed verification rolls back.
+    if (input.contentObject) await verifyArtifactObject(input.ownerId, input.contentObject);
     return baseline(tx, row);
   });
 }

@@ -865,3 +865,13 @@ export const roomHandoffs = pgTable("arena_room_handoffs", {
   index("arena_room_handoffs_room_project_idx").on(table.room, table.roomProjectId),
 ]);
 export type RoomHandoffRow = typeof roomHandoffs.$inferSelect;
+
+/** Cleanup operation receipts only. Never authoritative for reachability. */
+export const objectReclamations = pgTable("object_reclamations", {
+  id: uuid("id").primaryKey(), ownerId: text("owner_id").notNull(), sha256: text("sha256").notNull(), bytes: integer("bytes").notNull(),
+  identity: jsonb("identity").notNull().$type<{ dev: string; ino: string; size: number; modified: string; changed: string }>(),
+  state: text("state").notNull().default("marked"), markedAt: timestamp("marked_at", { withTimezone: true }).notNull().defaultNow(),
+  notBefore: timestamp("not_before", { withTimezone: true }).notNull(), purgeAfter: timestamp("purge_after", { withTimezone: true }),
+  quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
+  reason: text("reason").notNull(), audit: jsonb("audit").notNull().$type<Array<{ at: string; event: string }>>().default([]),
+});

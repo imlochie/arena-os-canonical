@@ -4,6 +4,11 @@
  * no automatic collector deletes potentially recoverable work.
  */
 import { createHash } from "node:crypto";
+import { utimes } from "node:fs/promises";
+import { db } from "@/db";
+import { and, eq, sql } from "drizzle-orm";
+import { objectReclamations } from "@/db/schema";
+import { storageReadLock } from "./artifact-storage-lock";
 import { Readable } from "node:stream";
 import { getStorage, StorageIntegrityError } from "@/lib/waveyard/storage";
 import type { ArtifactContentObject } from "@/db/schema";
@@ -32,7 +37,20 @@ export function assertArtifactObjectBinding(body: string, object: ArtifactConten
 }
 export async function writeArtifactObjectStream(ownerId: string, source: AsyncIterable<Uint8Array>, object: ArtifactContentObject) {
   checked(object);
-  try { await getStorage().putImmutableStream(artifactObjectKey(ownerId, object), source, { bytes: object.bytes, sha256: object.sha256 }); }
+  try { await db.transaction(async tx => {
+    await tx.execute(storageReadLock);
+    const storage = getStorage(), key = artifactObjectKey(ownerId, object);
+    await storage.putImmutableStream(key, source, { bytes: object.bytes, sha256: object.sha256 });
+    // Reuse counts as renewed publication, even when dedup retained old bytes.
+    // Filesystem freshness survives SQL rollback after the physical write.
+    const local = storage.getLocalPath(key);
+    // Non-local publication remains supported; only local storage participates
+    // in reclamation and its freshness/intent reconciliation.
+    if (!local) return;
+    const now = new Date(); await utimes(local, now, now);
+    await tx.update(objectReclamations).set({ state: "superseded", reason: "Verified bytes republished; cleanup cancelled", audit: sql`${objectReclamations.audit} || ${JSON.stringify([{ at: now.toISOString(), event: "verified republication" }])}::jsonb` })
+      .where(and(eq(objectReclamations.ownerId, ownerId), eq(objectReclamations.sha256, object.sha256)));
+  }); }
   catch (error) { throw new ArtifactObjectError(error instanceof StorageIntegrityError ? error.message : "Private content upload was interrupted/unavailable. No metadata or completion was acknowledged; retained objects are safe to reconcile/retry.", error instanceof StorageIntegrityError ? 422 : 503); }
   return object;
 }
