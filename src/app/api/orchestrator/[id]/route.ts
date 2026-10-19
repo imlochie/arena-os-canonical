@@ -1,6 +1,7 @@
+import { orchestratorErrorResponse } from "@/lib/orchestrator";
 import { requireApiAccess } from "@/lib/security/api-access";
 import { ArtifactContentError } from "@/lib/arcadeStore";
-import { CollaborationArchiveError, closeCollaboration, deleteCollaboration, getCollaboration } from "@/lib/orchestrator";
+import { fullCollaborationRecord, CollaborationArchiveError, closeCollaboration, deleteCollaboration, getCollaboration } from "@/lib/orchestrator";
 
 export const dynamic = "force-dynamic";
 
@@ -8,10 +9,12 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireApiAccess(req); if (denied) return denied;
   const { id } = await params;
+  try {
   const collaboration = await getCollaboration(id);
   if (!collaboration) return Response.json({ error: "not found" }, { status: 404 });
-  if (new URL(req.url).searchParams.get("download") === "1") return new Response(JSON.stringify(collaboration, null, 2), { headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="collaboration-${collaboration.id}.json"`, "cache-control": "no-store" } });
+  if (new URL(req.url).searchParams.get("download") === "1") return new Response(JSON.stringify(await fullCollaborationRecord(collaboration), null, 2), { headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="collaboration-${collaboration.id}.json"`, "cache-control": "no-store" } });
   return Response.json({ collaboration });
+  } catch (error) { return orchestratorErrorResponse(error); }
 }
 
 // PATCH → {status: "closed", summary?} closes the collaboration and files its record
@@ -26,7 +29,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const collaboration = await closeCollaboration(id, typeof body.summary === "string" ? body.summary : undefined);
     return Response.json({ collaboration });
   } catch (e) {
-    return Response.json({ error: e instanceof Error ? e.message : "Record filing unavailable; reload before retrying." }, { status: e instanceof ArtifactContentError ? 413 : e instanceof CollaborationArchiveError ? e.status : 503 });
+    if (e instanceof ArtifactContentError) return Response.json({ error: e.message }, { status: 413 });
+    return orchestratorErrorResponse(e);
   }
 }
 
@@ -34,7 +38,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const denied = await requireApiAccess(req); if (denied) return denied;
   const { id } = await params;
+  try {
   const ok = await deleteCollaboration(id);
   if (!ok) return Response.json({ error: "not found" }, { status: 404 });
   return Response.json({ ok: true });
+  } catch (error) { return orchestratorErrorResponse(error); }
 }

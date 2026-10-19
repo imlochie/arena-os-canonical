@@ -1,3 +1,4 @@
+import { orchestratorErrorResponse } from "@/lib/orchestrator";
 import { requireApiAccess } from "@/lib/security/api-access";
 import { createCollaboration, listCollaborations } from "@/lib/orchestrator";
 
@@ -11,7 +12,7 @@ export async function GET(req: Request) {
     return Response.json({ collaborations });
   } catch (e) {
     console.error(e);
-    return Response.json({ collaborations: [] });
+    return orchestratorErrorResponse(e);
   }
 }
 
@@ -29,6 +30,7 @@ export async function POST(req: Request) {
       return Response.json({ error: "a collaboration needs at least one participant" }, { status: 400 });
     }
     const collaboration = await createCollaboration({
+      requestId: body.requestId,
       title: body.title,
       goal,
       context: body.context,
@@ -40,6 +42,6 @@ export async function POST(req: Request) {
     return Response.json({ collaboration }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: e instanceof Error ? e.message : "failed to create collaboration" }, { status: 400 });
+    return orchestratorErrorResponse(e);
   }
 }

@@ -524,7 +524,10 @@ export async function executeTool(
         const { getArtifactRevision } = await import("../arcadeStore");
         const { LOCAL_OWNER_ID } = await import("../waveyard/local-context");
         const revision = await getArtifactRevision(db, artifactId, revisionId, LOCAL_OWNER_ID);
-        return revision ? JSON.stringify({ artifactId, revisionId: revision.id, revision: revision.revision, ...revision.snapshot }) : "error: artifact revision unavailable or not owned by this caller";
+        if (!revision) return "error: artifact revision unavailable or not owned by this caller";
+        const { artifactRevisionText } = await import("../artifact-objects");
+        const body = await artifactRevisionText(LOCAL_OWNER_ID, revision.snapshot);
+        return JSON.stringify({ artifactId, revisionId: revision.id, revision: revision.revision, ...revision.snapshot, body });
       }
       case "read_file":
         return toolReadFile(dir, String(action.args.path ?? ""), {

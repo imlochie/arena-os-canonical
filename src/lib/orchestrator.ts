@@ -1,6 +1,11 @@
+import { ArtifactObjectError, artifactObjectSummary, writeArtifactObject, verifyArtifactObject, MAX_ARTIFACT_OBJECT_BYTES } from "@/lib/artifact-objects";
+import { createHash } from "node:crypto";
+import { isUuid } from "@/lib/api/ids";
+import { resolveArtifactInput, ArtifactInputError } from "@/lib/artifact-input";
+import { readRetainedRelayResult, retainRelayResult, ReceiptIntegrityError, type ReceiptReference } from "@/lib/orchestrator-receipts";
 import { assertUrlDestination } from "@/lib/security/outbound-url";
 import { parseArtifactReference } from "@/lib/handoffs";
-import { assertArtifactBodySize, getArtifactRevision, insertArtifact } from "@/lib/arcadeStore";
+import { assertRevisionIntegrity, getArtifact, getArtifactRevision, insertArtifact } from "@/lib/arcadeStore";
 // Collaboration Orchestrator — structured multi-participant AI collaboration.
 //
 // This automates the "human message bus" problem: instead of you ferrying
@@ -27,7 +32,7 @@ import { assertArtifactBodySize, getArtifactRevision, insertArtifact } from "@/l
 
 import { db } from "@/db";
 import { LOCAL_OWNER_ID, artifactRevisions, collaborationParticipants, collaborationRelays, collaborations } from "@/db/schema";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import { generate } from "@/lib/ai";
 import { getModel } from "@/lib/models";
 import { preferencesBriefFor } from "@/lib/preferences";
@@ -38,7 +43,7 @@ import { getTool } from "@/lib/assistantTools";
 export type ParticipantKind = "model" | "human" | "external";
 export type TrustLevel = "internal" | "external";
 export type Classification = "public" | "internal" | "private";
-export type RelayStatus = "pending" | "responded" | "cancelled" | "failed";
+export type RelayStatus = "pending" | "dispatching" | "uncertain" | "responded" | "cancelled" | "failed";
 export type CollaborationStatus = "running" | "blocked" | "closed";
 
 export interface OrchestratorKeys {
@@ -90,6 +95,7 @@ export interface Relay {
   createdAt: string;
   /** What actually executed the response (GenerateResult metadata). */
   runtime?: unknown;
+  resultReceipt?: ReceiptReference;
 }
 
 export interface Collaboration {
@@ -119,6 +125,7 @@ export interface ParticipantInput {
 }
 
 export interface RelayInput {
+  requestId?: string;
   source?: string;
   target: string;
   purpose?: string;
@@ -130,6 +137,7 @@ export interface RelayInput {
 }
 
 export interface CreateCollaborationInput {
+  requestId?: string;
   title?: string;
   goal: string;
   context?: string;
@@ -146,13 +154,19 @@ export interface AdvanceResult {
 }
 
 const MAX_RELAYS = 24;
-const ENVELOPE_CHAR_LIMIT = 9000;
 
-// ---------------- storage (DB + memory fallback) ----------------
+// ---------------- durable storage ----------------
 
-const memoryCollabs = new Map<string, Collaboration>();
-let dbHealthy = true;
-let tableReady = false;
+// Migrations own the schema. A failed query must never change storage mode.
+export class OrchestratorInputError extends Error {
+  readonly status: number;
+  constructor(message: string, status = 400) { super(message); this.status = status; }
+}
+export function orchestratorErrorResponse(error: unknown) {
+  const status = error instanceof OrchestratorInputError || error instanceof CollaborationArchiveError || error instanceof ArtifactInputError || error instanceof ReceiptIntegrityError || error instanceof ArtifactObjectError ? error.status : error instanceof SyntaxError ? 400 : 503;
+  return Response.json({ error: status === 503 ? "Persistent collaboration storage unavailable or acknowledgement uncertain. Work was not acknowledged; reload before retrying. " : error instanceof Error ? error.message : "Request rejected." }, { status });
+}
+type OrchestratorTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `o${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -168,69 +182,6 @@ function slug(value: string): string {
   );
 }
 
-async function ensureTables(): Promise<void> {
-  if (tableReady) return;
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS "collaborations" (
-        "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-        "title" text DEFAULT 'Untitled collaboration' NOT NULL,
-        "goal" text NOT NULL,
-        "context" text DEFAULT '' NOT NULL,
-        "status" text DEFAULT 'running' NOT NULL,
-        "auto_route" integer DEFAULT 0 NOT NULL,
-        "project_id" uuid,
-        "created_at" timestamp DEFAULT now() NOT NULL,
-        "updated_at" timestamp DEFAULT now() NOT NULL
-      );
-    `);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS "collaboration_participants" (
-        "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-        "collaboration_id" uuid NOT NULL,
-        "key" text NOT NULL,
-        "name" text NOT NULL,
-        "emoji" text DEFAULT '🤖' NOT NULL,
-        "kind" text DEFAULT 'model' NOT NULL,
-        "model_id" text,
-        "adapter_url" text,
-        "adapter_model" text,
-        "capabilities" text DEFAULT '' NOT NULL,
-        "trust" text DEFAULT 'internal' NOT NULL,
-        "created_at" timestamp DEFAULT now() NOT NULL
-      );
-    `);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS "collaboration_relays" (
-        "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-        "collaboration_id" uuid NOT NULL,
-        "seq" integer DEFAULT 1 NOT NULL,
-        "source_key" text DEFAULT 'owner' NOT NULL,
-        "target_key" text NOT NULL,
-        "purpose" text DEFAULT 'contribute' NOT NULL,
-        "request" text NOT NULL,
-        "context_refs" text DEFAULT '' NOT NULL,
-        "classification" text DEFAULT 'internal' NOT NULL,
-        "response_contract" text DEFAULT 'markdown text' NOT NULL,
-        "status" text DEFAULT 'pending' NOT NULL,
-        "response" text,
-        "via" text DEFAULT '' NOT NULL,
-        "note" text DEFAULT '' NOT NULL,
-        "created_at" timestamp DEFAULT now() NOT NULL,
-        "updated_at" timestamp DEFAULT now() NOT NULL
-      );
-    `);
-    await db.execute(sql`
-      ALTER TABLE "collaboration_relays" ADD COLUMN IF NOT EXISTS "runtime" jsonb;
-    `);
-    tableReady = true;
-    dbHealthy = true;
-  } catch {
-    dbHealthy = false;
-  }
-}
-
-// ---------------- normalization helpers ----------------
 
 function validModel(id: string | null | undefined): string | null {
   if (!id) return null;
@@ -289,7 +240,8 @@ function relayFromRow(r: typeof collaborationRelays.$inferSelect): Relay {
     contextRefs: splitList(r.contextRefs),
     classification: normClassification(r.classification),
     responseContract: r.responseContract,
-    status: (["pending", "responded", "cancelled", "failed"].includes(r.status) ? r.status : "pending") as RelayStatus,
+    status: (["pending", "dispatching", "uncertain", "responded", "cancelled", "failed"].includes(r.status) ? r.status : "uncertain") as RelayStatus,
+    resultReceipt: r.resultReceipt ?? undefined,
     response: r.response ?? null,
     via: r.via ?? "",
     note: r.note ?? "",
@@ -336,66 +288,40 @@ function collaborationFromRows(row: typeof collaborations.$inferSelect, pRows: (
 
 // ---------------- read ----------------
 
-export async function getCollaboration(id: string): Promise<Collaboration | null> {
-  const memory = memoryCollabs.get(id);
-  try {
-    await ensureTables();
-    if (dbHealthy) {
-      const [row] = await db.select().from(collaborations).where(eq(collaborations.id, id)).limit(1);
-      if (!row) return null;
-      const pRows = await db
-        .select()
-        .from(collaborationParticipants)
-        .where(eq(collaborationParticipants.collaborationId, id))
-        .orderBy(asc(collaborationParticipants.createdAt));
-      const rRows = await db
-        .select()
-        .from(collaborationRelays)
-        .where(eq(collaborationRelays.collaborationId, id))
-        .orderBy(asc(collaborationRelays.seq));
-      return collaborationFromRows(row, pRows, rRows);
-    }
-  } catch {
-    dbHealthy = false;
-  }
-  return memory ?? null;
+async function readCollaboration(tx: OrchestratorTransaction, id: string): Promise<Collaboration | null> {
+  const [row] = await tx.select().from(collaborations).where(eq(collaborations.id, id)).for("share");
+  if (!row) return null;
+  const pRows = await tx.select().from(collaborationParticipants).where(eq(collaborationParticipants.collaborationId, id)).orderBy(asc(collaborationParticipants.createdAt));
+  const rRows = await tx.select().from(collaborationRelays).where(eq(collaborationRelays.collaborationId, id)).orderBy(asc(collaborationRelays.seq));
+  return collaborationFromRows(row, pRows, rRows);
 }
-
+export async function getCollaboration(id: string): Promise<Collaboration | null> {
+  return db.transaction(tx => readCollaboration(tx, id));
+}
 export async function listCollaborations(limit = 30): Promise<Collaboration[]> {
-  try {
-    await ensureTables();
-    if (dbHealthy) {
-      const rows = await db.select().from(collaborations).orderBy(desc(collaborations.updatedAt)).limit(Math.min(limit, 100));
-      const result: Collaboration[] = [];
-      for (const row of rows) {
-        const full = await getCollaboration(row.id);
-        if (full) result.push(full);
-      }
-      return result;
-    }
-  } catch {
-    dbHealthy = false;
-  }
-  return [...memoryCollabs.values()]
-    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
-    .slice(0, limit);
+  const rows = await db.select({ id: collaborations.id }).from(collaborations).orderBy(desc(collaborations.updatedAt)).limit(Math.max(1, Math.min(limit, 100)));
+  const result: Collaboration[] = [];
+  for (const row of rows) { const full = await getCollaboration(row.id); if (full) result.push(full); }
+  return result;
 }
 
 // ---------------- create ----------------
 
 function normalizeContextReferences(refs: string[] = []): string[] {
   const contextRefs = refs.map((reference) => String(reference).trim()).filter(Boolean);
-  if (contextRefs.length > 8) throw new Error("A relay supports at most 8 pinned Artifact references; split the request explicitly.");
-  if (contextRefs.some((reference) => !parseArtifactReference(reference))) throw new Error("Artifact context requires a pinned immutable revision: artifact:<id>@<revisionId>. Bare current references are refused.");
+  if (contextRefs.length > 8) throw new OrchestratorInputError("A relay supports at most 8 pinned Artifact references; split the request explicitly.");
+  if (contextRefs.some((reference) => !parseArtifactReference(reference))) throw new OrchestratorInputError("Artifact context requires a pinned immutable revision: artifact:<id>@<revisionId>. Bare current references are refused.");
   return contextRefs;
 }
 
 export async function createCollaboration(input: CreateCollaborationInput): Promise<Collaboration> {
-  const goal = String(input.goal ?? "").trim().slice(0, 6000);
-  if (!goal) throw new Error("a collaboration needs a goal");
+  const goal = String(input.goal ?? "").trim();
+  if (goal.length > 6000 || String(input.context ?? "").length > 8000) throw new OrchestratorInputError("Goal/context exceeds the supported limit. Nothing was saved; shorten it explicitly.", 413);
+  if (!goal) throw new OrchestratorInputError("a collaboration needs a goal");
   if (input.relay) normalizeContextReferences(input.relay.contextRefs);
 
-  const rawParticipants = (input.participants ?? []).slice(0, 8);
+  if ((input.participants ?? []).length > 8) throw new OrchestratorInputError("At most8 participants are supported; none were silently discarded.", 413);
+  const rawParticipants = input.participants ?? [];
   const cleaned: Participant[] = [];
   const usedKeys = new Set<string>();
   for (const raw of rawParticipants) {
@@ -420,10 +346,10 @@ export async function createCollaboration(input: CreateCollaborationInput): Prom
       trust,
     });
   }
-  if (!cleaned.length) throw new Error("a collaboration needs at least one participant");
+  if (!cleaned.length) throw new OrchestratorInputError("a collaboration needs at least one participant");
 
   const collab: Collaboration = {
-    id: newId(),
+    id: input.requestId ?? newId(),
     title: String(input.title ?? "").trim().slice(0, 140) || `Collaboration — ${goal.slice(0, 60)}`,
     goal,
     context: String(input.context ?? "").trim().slice(0, 8000),
@@ -436,53 +362,38 @@ export async function createCollaboration(input: CreateCollaborationInput): Prom
     relays: [],
   };
 
-  try {
-    await ensureTables();
-    if (dbHealthy) {
-      const [row] = await db
-        .insert(collaborations)
-        .values({
-          title: collab.title, goal: collab.goal, context: collab.context, status: collab.status,
-          autoRoute: collab.autoRoute ? 1 : 0, projectId: collab.projectId,
-        })
-        .returning();
-      if (row) collab.id = row.id;
-      for (const p of cleaned) {
-        const [pRow] = await db
-          .insert(collaborationParticipants)
-          .values({
-            collaborationId: collab.id, key: p.key, name: p.name, emoji: p.emoji, kind: p.kind,
-            modelId: p.modelId, adapterUrl: p.adapterUrl, adapterModel: p.adapterModel,
-            capabilities: p.capabilities.join(","), trust: p.trust,
-          })
-          .returning();
-        if (pRow) p.id = pRow.id;
-        p.collaborationId = collab.id;
-      }
+  if (input.requestId !== undefined && !isUuid(input.requestId)) throw new OrchestratorInputError("A valid UUID requestId is required.");
+  const requestHash = createHash("sha256").update(JSON.stringify({ title: collab.title, goal, context: collab.context, autoRoute: collab.autoRoute, projectId: collab.projectId, participants: cleaned.map(({ id: _id, collaborationId: _parent, ...participant }) => participant), relay: input.relay ?? null })).digest("hex");
+  const initial = input.relay && String(input.relay.request ?? "").trim() ? prepareRelay(collab, input.relay) : null;
+  return db.transaction(async tx => {
+    const [row] = await tx.insert(collaborations).values({ id: collab.id, requestHash, title: collab.title, goal: collab.goal, context: collab.context, status: "running", autoRoute: collab.autoRoute ? 1 : 0, projectId: collab.projectId }).onConflictDoNothing({ target: collaborations.id }).returning();
+    if (!row) {
+      const [existing] = await tx.select().from(collaborations).where(eq(collaborations.id, collab.id)).for("update");
+      if (!existing || existing.requestHash !== requestHash) throw new OrchestratorInputError("Creation key already belongs to different work. Reload the existing session; nothing was overwritten.", 409);
+      return (await readCollaboration(tx, collab.id))!;
     }
-  } catch {
-    dbHealthy = false;
-  }
-  memoryCollabs.set(collab.id, collab);
-
-  if (input.relay && String(input.relay.request ?? "").trim()) {
-    await addRelay(collab.id, input.relay);
-  }
-  return (await getCollaboration(collab.id)) ?? collab;
+    const pRows = [];
+    for (const p of cleaned) {
+      const [stored] = await tx.insert(collaborationParticipants).values({ id: p.id, collaborationId: row.id, key: p.key, name: p.name, emoji: p.emoji, kind: p.kind, modelId: p.modelId, adapterUrl: p.adapterUrl, adapterModel: p.adapterModel, capabilities: p.capabilities.join(","), trust: p.trust }).returning(); pRows.push(stored);
+    }
+    const relays = initial ? [await insertRelay(tx, initial)] : [];
+    return collaborationFromRows(row, pRows, relays);
+  });
 }
 
 // ---------------- relays ----------------
 
-export async function addRelay(collaborationId: string, input: RelayInput): Promise<Relay> {
-  const collab = await getCollaboration(collaborationId);
-  if (!collab) throw new Error("collaboration not found");
-  if (collab.status === "closed") throw new Error("this collaboration is closed");
-  if (collab.relays.length >= MAX_RELAYS) throw new Error(`relay limit reached (${MAX_RELAYS})`);
+function prepareRelay(collab: Collaboration, input: RelayInput): Relay {
+  if (input.requestId !== undefined && !isUuid(input.requestId)) throw new OrchestratorInputError("A valid UUID relay requestId is required.");
+  const collaborationId = collab.id;
+  if (collab.status === "closed") throw new OrchestratorInputError("this collaboration is closed");
+  if (collab.relays.length >= MAX_RELAYS) throw new OrchestratorInputError(`relay limit reached (${MAX_RELAYS})`);
 
-  const request = String(input.request ?? "").trim().slice(0, 8000);
-  if (!request) throw new Error("a relay needs a request");
+  const request = String(input.request ?? "").trim();
+  if (request.length > 8000) throw new OrchestratorInputError("Relay request exceeds8,000 characters. Nothing was queued; shorten it explicitly.", 413);
+  if (!request) throw new OrchestratorInputError("a relay needs a request");
   const target = collab.participants.find((p) => p.key === input.target);
-  if (!target) throw new Error(`unknown target participant "${input.target}"`);
+  if (!target) throw new OrchestratorInputError(`unknown target participant "${input.target}"`);
   const source = input.source && input.source !== "owner"
     ? collab.participants.find((p) => p.key === input.source)?.key ?? "owner"
     : "owner";
@@ -495,7 +406,7 @@ export async function addRelay(collaborationId: string, input: RelayInput): Prom
   // explicitly declared the tool_use capability, read/report tools only
   if (input.toolUse) {
     if (target.kind !== "model" || target.trust !== "internal" || !target.capabilities.includes("tool_use")) {
-      throw new Error(
+      throw new OrchestratorInputError(
         `tool-capable relays require an internal-trust model participant with the "tool_use" capability (target "${target.key}" is ${target.kind}/${target.trust})`
       );
     }
@@ -505,7 +416,7 @@ export async function addRelay(collaborationId: string, input: RelayInput): Prom
 
   const seq = collab.relays.reduce((max, r) => Math.max(max, r.seq), 0) + 1;
   const relay: Relay = {
-    id: newId(),
+    id: input.requestId ?? newId(),
     collaborationId,
     seq,
     sourceKey: source,
@@ -524,84 +435,62 @@ export async function addRelay(collaborationId: string, input: RelayInput): Prom
     createdAt: new Date().toISOString(),
   };
 
-  await ensureTables();
-  if (!dbHealthy) throw new Error("Persistent collaboration storage unavailable; relay was not queued. Your request is retained in the form.");
-  await db.transaction(async (tx) => {
-    const [parent] = await tx.select().from(collaborations).where(eq(collaborations.id, collaborationId)).for("update");
-    if (!parent || parent.status === "closed") throw new Error("Collaboration is absent or closed; relay was not queued.");
-    const [last] = await tx.select({ seq: collaborationRelays.seq }).from(collaborationRelays).where(eq(collaborationRelays.collaborationId, collaborationId)).orderBy(desc(collaborationRelays.seq)).limit(1);
-    relay.seq = (last?.seq ?? 0) + 1;
-    if (relay.seq > MAX_RELAYS) throw new Error(`relay limit reached (${MAX_RELAYS})`);
-    const [row] = await tx.insert(collaborationRelays).values({
-      collaborationId, seq: relay.seq, sourceKey: relay.sourceKey, targetKey: relay.targetKey, purpose: relay.purpose,
-      request: relay.request, contextRefs: relay.contextRefs.join(","), classification: relay.classification,
-      responseContract: relay.responseContract, status: "pending", toolUse: relay.toolUse ? 1 : 0, steps: "[]",
-    }).returning();
-    relay.id = row.id;
-    await tx.update(collaborations).set({ status: "running", updatedAt: new Date() }).where(eq(collaborations.id, collaborationId));
-  });
-  const memory = memoryCollabs.get(collaborationId);
-  if (memory) { memory.relays.push(relay); memory.status = "running"; memory.updatedAt = new Date().toISOString(); }
   return relay;
+}
+async function insertRelay(tx: OrchestratorTransaction, relay: Relay) {
+  const [row] = await tx.insert(collaborationRelays).values({ id: relay.id, collaborationId: relay.collaborationId, seq: relay.seq, sourceKey: relay.sourceKey, targetKey: relay.targetKey, purpose: relay.purpose, request: relay.request, contextRefs: relay.contextRefs.join(","), classification: relay.classification, responseContract: relay.responseContract, status: "pending", toolUse: relay.toolUse ? 1 : 0, steps: "[]" }).returning();
+  return row;
+}
+export async function addRelay(collaborationId: string, input: RelayInput): Promise<Relay> {
+  return db.transaction(async tx => {
+    const [parent] = await tx.select().from(collaborations).where(eq(collaborations.id, collaborationId)).for("update");
+    if (!parent) throw new OrchestratorInputError("Collaboration unavailable; relay was not queued.", 404);
+    const collab = (await readCollaboration(tx, collaborationId))!;
+    if (input.requestId) {
+      const candidate = prepareRelay({ ...collab, status: "running", relays: [] }, input);
+      const [existing] = await tx.select().from(collaborationRelays).where(eq(collaborationRelays.id, input.requestId));
+      if (existing) {
+        const relay = relayFromRow(existing);
+        const fields = ["sourceKey", "targetKey", "purpose", "request", "contextRefs", "classification", "responseContract", "toolUse"] as const;
+        if (relay.collaborationId !== collaborationId || JSON.stringify(fields.map(key => relay[key])) !== JSON.stringify(fields.map(key => candidate[key]))) throw new OrchestratorInputError("Relay creation key already belongs to different work. Reload before explicitly starting a separate request.", 409);
+        return relay;
+      }
+    }
+    if (parent.status === "closed") throw new OrchestratorInputError("Collaboration is closed; relay was not queued.", 409);
+    const relay = prepareRelay(collab, input); const row = await insertRelay(tx, relay);
+    await tx.update(collaborations).set({ status: "running", updatedAt: new Date() }).where(eq(collaborations.id, collaborationId));
+    return relayFromRow(row);
+  });
 }
 
 function assertEgress(classification: Classification, target: Participant): void {
   if (classification === "private" && target.kind !== "human") {
-    throw new Error(
+    throw new OrchestratorInputError(
       `egress policy: private context may only be relayed to human participants (target "${target.key}" is ${target.kind})`
     );
   }
   if (classification === "internal" && target.trust !== "internal") {
-    throw new Error(
+    throw new OrchestratorInputError(
       `egress policy: internal context may not be relayed to external-trust participants (target "${target.key}")`
     );
   }
 }
 
 async function touch(id: string, status?: CollaborationStatus): Promise<void> {
-  const now = new Date();
-  try {
-    await ensureTables();
-    if (dbHealthy) {
-      await db
-        .update(collaborations)
-        .set(status ? { status, updatedAt: now } : { updatedAt: now })
-        .where(eq(collaborations.id, id));
-    }
-  } catch {
-    dbHealthy = false;
-  }
-  const memory = memoryCollabs.get(id);
-  if (memory) {
-    if (status) memory.status = status;
-    memory.updatedAt = now.toISOString();
-  }
+  const [row] = await db.update(collaborations).set({ ...(status ? { status } : {}), updatedAt: new Date() }).where(and(eq(collaborations.id, id), ne(collaborations.status, "closed"))).returning({ id: collaborations.id });
+  if (!row) throw new OrchestratorInputError("Collaboration was removed; no update was acknowledged.", 409);
 }
-
-async function updateRelay(relayId: string, patch: Partial<Relay>): Promise<void> {
-  try {
-    await ensureTables();
-    if (dbHealthy) {
-      await db
-        .update(collaborationRelays)
-        .set({
-          ...(patch.status !== undefined ? { status: patch.status } : {}),
-          ...(patch.response !== undefined ? { response: patch.response } : {}),
-          ...(patch.via !== undefined ? { via: patch.via } : {}),
-          ...(patch.note !== undefined ? { note: patch.note } : {}),
-          ...(patch.steps !== undefined ? { steps: JSON.stringify(patch.steps) } : {}),
-          ...(patch.runtime !== undefined ? { runtime: patch.runtime as any } : {}),
-          updatedAt: new Date(),
-        })
-        .where(eq(collaborationRelays.id, relayId));
-    }
-  } catch {
-    dbHealthy = false;
-  }
-  for (const memory of memoryCollabs.values()) {
-    const relay = memory.relays.find((r) => r.id === relayId);
-    if (relay) Object.assign(relay, patch);
-  }
+async function updateRelay(relayId: string, patch: Partial<Relay>, expected: RelayStatus[] = ["pending"]): Promise<void> {
+  await db.transaction(async tx => {
+    const [stored] = await tx.select().from(collaborationRelays).where(eq(collaborationRelays.id, relayId));
+    if (!stored) throw new OrchestratorInputError("Relay was removed; no response was acknowledged.", 409);
+    const [parent] = await tx.select().from(collaborations).where(eq(collaborations.id, stored.collaborationId)).for("update");
+    if (!parent || parent.status === "closed") throw new OrchestratorInputError("Collaboration is absent or closed; no response was acknowledged.", 409);
+    const [current] = await tx.select().from(collaborationRelays).where(eq(collaborationRelays.id, relayId)).for("update");
+    if (!current || !expected.includes(current.status as RelayStatus)) return;
+    await tx.update(collaborationRelays).set({ ...(patch.status !== undefined ? { status: patch.status } : {}), ...(patch.response !== undefined ? { response: patch.response } : {}), ...(patch.via !== undefined ? { via: patch.via } : {}), ...(patch.note !== undefined ? { note: patch.note } : {}), ...(patch.steps !== undefined ? { steps: JSON.stringify(patch.steps) } : {}), ...(patch.runtime !== undefined ? { runtime: patch.runtime as any } : {}), updatedAt: new Date() }).where(eq(collaborationRelays.id, relayId));
+    await tx.update(collaborations).set({ updatedAt: new Date() }).where(eq(collaborations.id, stored.collaborationId));
+  });
 }
 
 // ---------------- the context envelope ----------------
@@ -609,12 +498,8 @@ async function updateRelay(relayId: string, patch: Partial<Relay>): Promise<void
 async function fetchArtifactBodies(refs: string[]): Promise<string> {
   const parts: string[] = [];
   for (const reference of refs) {
-    const parsed = parseArtifactReference(reference);
-    if (!parsed) throw new Error("Artifact context requires a pinned immutable revision; unbound references cannot be dispatched.");
-    const revision = await getArtifactRevision(db, parsed.artifactId, parsed.revisionId, LOCAL_OWNER_ID);
-    if (!revision) throw new Error("Referenced Artifact revision unavailable or not owned by this caller; nothing was dispatched.");
-    const snapshot = revision.snapshot;
-    parts.push(`--- ARTIFACT ${reference}: ${snapshot.title} (${snapshot.kind}), excerpt ${Math.min(2500, snapshot.body.length)}/${snapshot.body.length} characters ---\n${snapshot.body.slice(0, 2500)}`);
+    const resolved = await resolveArtifactInput(reference, "");
+    parts.push(`--- VERIFIED ARTIFACT ${reference}, excerpt ${Math.min(2500, resolved.text.length)}/${resolved.text.length} characters ---\n${resolved.text.slice(0, 2500)}`);
   }
   const content = parts.join("\n\n");
   return content.length > 6000 ? `${content.slice(0, 6000)}\n[Artifact excerpts truncated at 6000 characters; use read_artifact with the pinned IDs for the complete content.]` : content;
@@ -646,7 +531,9 @@ async function buildEnvelope(collab: Collaboration, relay: Relay, target: Partic
   );
   sections.push(`PURPOSE OF THIS RELAY: ${relay.purpose}\n\nREQUEST:\n${relay.request}`);
   sections.push(`RESPONSE CONTRACT: ${relay.responseContract}`);
-  return sections.join("\n\n").slice(0, ENVELOPE_CHAR_LIMIT);
+  const envelope = sections.join("\n\n");
+  if (Buffer.byteLength(envelope, "utf8") > 128000) throw new OrchestratorInputError("Relay envelope exceeds128,000 UTF-8 bytes. Explicitly reduce its context; no request excerpt was dispatched.", 413);
+  return envelope;
 }
 
 // ---------------- external adapter (OpenAI-compatible) ----------------
@@ -681,17 +568,24 @@ async function callExternalAdapter(
         max_tokens: 2048,
       }),
     });
+    const body = await boundedAdapterResponse(res);
     if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`adapter HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+      throw new OrchestratorInputError(`adapter HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
     }
-    const data = (await res.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
+    const data = JSON.parse(body) as { choices?: Array<{ message?: { content?: unknown } }> };
     const text = data.choices?.[0]?.message?.content;
-    if (typeof text !== "string" || !text.trim()) throw new Error("adapter returned an empty response");
+    if (typeof text !== "string" || !text.trim()) throw new OrchestratorInputError("adapter returned an empty response");
     return { text, via: `external:${new URL(endpoint).origin}` };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function boundedAdapterResponse(response: Response) {
+  if (!response.body) throw new OrchestratorInputError("Adapter returned no response body.");
+  const reader = response.body.getReader(); const decoder = new TextDecoder();
+  let size = 0; let text = "";
+  try { for (;;) { const { value, done } = await reader.read(); if (done) return text + decoder.decode(); size += value.byteLength; if (size > 16 * 1024 * 1024) { await reader.cancel(); throw new OrchestratorInputError("Adapter response exceeds16MiB; outcome requires explicit owner review, not automatic replay."); } text += decoder.decode(value, { stream: true }); } } finally { reader.releaseLock(); }
 }
 
 // ---------------- dispatch prompts + bounded tool loop ----------------
@@ -833,13 +727,16 @@ async function dispatchWithTools(
  * order) that weighs them all toward the owner's best interest.
  */
 export async function startDeliberationRound(id: string): Promise<Collaboration> {
-  const collab = await getCollaboration(id);
-  if (!collab) throw new Error("collaboration not found");
-  if (collab.status === "closed") throw new Error("this collaboration is closed");
+  return db.transaction(async tx => {
+  const [parent] = await tx.select().from(collaborations).where(eq(collaborations.id, id)).for("update");
+  if (!parent) throw new OrchestratorInputError("collaboration not found", 404);
+  const collab = await readCollaboration(tx, id);
+  if (!collab) throw new OrchestratorInputError("collaboration not found");
+  if (collab.status === "closed") throw new OrchestratorInputError("this collaboration is closed");
   const thinkers = collab.participants.filter((p) => p.kind !== "human");
-  if (!thinkers.length) throw new Error("a deliberation round needs at least one non-human participant");
+  if (!thinkers.length) throw new OrchestratorInputError("a deliberation round needs at least one non-human participant");
   for (const p of thinkers) {
-    await addRelay(id, {
+    const relay = prepareRelay(collab, {
       source: "conductor",
       target: p.key,
       purpose: "perspective",
@@ -848,12 +745,13 @@ export async function startDeliberationRound(id: string): Promise<Collaboration>
         "State your strongest recommendation for the owner and your single biggest concern.",
       classification: p.trust === "external" ? "public" : "internal",
     });
+    await insertRelay(tx, relay); collab.relays.push(relay);
   }
   const synthesist =
     collab.participants.find((p) => p.capabilities.includes("synthesis")) ??
     collab.participants.find((p) => p.kind === "model" && p.trust === "internal") ??
     thinkers[0];
-  await addRelay(id, {
+  const synthesis = prepareRelay(collab, {
     source: "conductor",
     target: synthesist.key,
     purpose: "synthesis",
@@ -862,7 +760,10 @@ export async function startDeliberationRound(id: string): Promise<Collaboration>
       "the decision, the trade-offs accepted, and the next step. Flag anything that would overstep the owner's boundaries.",
     classification: synthesist.trust === "external" ? "public" : "internal",
   });
-  return (await getCollaboration(id))!;
+  await insertRelay(tx, synthesis);
+  await tx.update(collaborations).set({ status: "running", updatedAt: new Date() }).where(eq(collaborations.id, id));
+  return (await readCollaboration(tx, id))!;
+  });
 }
 
 // ---------------- advance (one step per request) ----------------
@@ -886,6 +787,16 @@ export async function advanceCollaboration(
 
   if (collab.status === "closed") {
     return { ran: "closed", note: "This collaboration is closed.", collaboration: collab };
+  }
+
+  const outstanding = collab.relays.find(relay => relay.status === "dispatching" || relay.status === "uncertain");
+  if (outstanding) {
+    const retained = await readRetainedRelayResult(outstanding);
+    if (retained) {
+      await publishRetainedResult(id, outstanding.id);
+      return { ran: "relay", note: `Relay #${outstanding.seq} result recovered from private storage without replaying its executor.`, collaboration: (await getCollaboration(id))! };
+    }
+    return { ran: "blocked-relay", note: `Relay #${outstanding.seq} was claimed but has no retained result. Execution or external effects may have occurred. It will NOT be automatically replayed. Reload/inspect the executor, or explicitly cancel this uncertain relay before queuing replacement work.`, collaboration: collab };
   }
 
   const pending = collab.relays.filter((r) => r.status === "pending").sort((a, b) => a.seq - b.seq)[0];
@@ -931,16 +842,39 @@ export async function advanceCollaboration(
     };
   }
 
+  if (target.kind === "external") {
+    if (!target.adapterUrl) return { ran: "blocked-relay", note: "External participant has no adapter URL; nothing was dispatched.", collaboration: collab };
+    if (opts.localOnly) { try { assertUrlDestination(new URL(target.adapterUrl), "loopback"); } catch { return { ran: "blocked-relay", note: "Local-only dispatch permits only loopback adapters; nothing was sent.", collaboration: collab }; } }
+  }
   const system = dispatchSystemPrompt(target);
+  let envelope;
+  try { envelope = await buildEnvelope(collab, pending, target); }
+  catch (error) {
+    if (!(error instanceof ArtifactInputError) || error.status === 503) throw error;
+    const note = `unbound/unavailable or corrupt Artifact context: ${error.message}`;
+    await updateRelay(pending.id, { status: "failed", note });
+    return { ran: "blocked-relay", note, collaboration: (await getCollaboration(id))! };
+  }
+  // Persist the claim before any executor can observe the request. All writes
+  // take the parent lock, so concurrent Advance calls cannot dispatch twice.
+  const claimed = await db.transaction(async tx => {
+    const [parent] = await tx.select().from(collaborations).where(eq(collaborations.id, id)).for("update");
+    if (!parent || parent.status === "closed") throw new OrchestratorInputError("Collaboration is absent or closed; nothing was dispatched.", 409);
+    const [current] = await tx.select().from(collaborationRelays).where(eq(collaborationRelays.id, pending.id)).for("update");
+    const blockers = await tx.select({ id: collaborationRelays.id }).from(collaborationRelays).where(and(eq(collaborationRelays.collaborationId, id), sql`${collaborationRelays.status} IN ('dispatching', 'uncertain')`));
+    if (!current || current.status !== "pending" || blockers.length) return false;
+    await tx.update(collaborationRelays).set({ status: "dispatching", note: "Execution claimed. An unacknowledged outcome is never automatically replayed.", updatedAt: new Date() }).where(eq(collaborationRelays.id, pending.id));
+    return true;
+  });
+  if (!claimed) return { ran: "blocked-relay", note: "Another request already claimed or resolved this relay. Reload to inspect its durable outcome; no duplicate was dispatched.", collaboration: (await getCollaboration(id))! };
   try {
-    const envelope = await buildEnvelope(collab, pending, target);
     let result: { text: string; via: string; runtime?: unknown };
     let steps: RelayToolStep[] = [];
     if (target.kind === "external") {
-      if (!target.adapterUrl) throw new Error("external participant has no adapter URL configured");
+      if (!target.adapterUrl) throw new OrchestratorInputError("external participant has no adapter URL configured");
       if (opts.localOnly) {
         try { assertUrlDestination(new URL(target.adapterUrl), "loopback"); }
-        catch { throw new Error("Local-only dispatch permits only loopback external adapters; nothing was sent."); }
+        catch { throw new OrchestratorInputError("Local-only dispatch permits only loopback external adapters; nothing was sent."); }
       }
       result = await callExternalAdapter(
         target.adapterUrl,
@@ -964,56 +898,63 @@ export async function advanceCollaboration(
       });
       result = { text: gen.text, via: gen.via, runtime: gen };
     }
-    await updateRelay(pending.id, {
-      status: "responded",
-      response: result.text.slice(0, 12000),
-      via: result.via,
-      ...(steps.length ? { steps } : {}),
-      ...(result.runtime ? { runtime: result.runtime } : {}),
-    });
-    await touch(id, "running");
-    const refreshed = (await getCollaboration(id))!;
-    return {
-      ran: "relay",
-      note: `Relay #${pending.seq} → ${target.name} responded (via ${result.via}${steps.length ? `, ${steps.length} tool call${steps.length === 1 ? "" : "s"}` : ""}).`,
-      collaboration: refreshed,
-    };
+    await retainRelayResult(pending, result, steps);
   } catch (error) {
-    const note = error instanceof Error ? error.message : "dispatch failed";
-    await updateRelay(pending.id, { status: "failed", note });
-    const refreshed = (await getCollaboration(id))!;
-    return { ran: "blocked-relay", note: `Relay #${pending.seq} failed: ${note}`, collaboration: refreshed };
+    const note = `Execution outcome uncertain: ${error instanceof Error ? error.message : "executor/result storage failed"}. No automatic replay; inspect before explicitly cancelling.`;
+    await updateRelay(pending.id, { status: "uncertain", note }, ["dispatching"]);
+    return { ran: "blocked-relay", note, collaboration: (await getCollaboration(id))! };
   }
+  await publishRetainedResult(id, pending.id);
+  return { ran: "relay", note: `Relay #${pending.seq} → ${target.name} completed; its full response is retained for download.`, collaboration: (await getCollaboration(id))! };
+}
+
+async function publishRetainedResult(collaborationId: string, relayId: string) {
+  await db.transaction(async tx => {
+    const [parent] = await tx.select().from(collaborations).where(eq(collaborations.id, collaborationId)).for("update");
+    if (!parent || parent.status === "closed") throw new OrchestratorInputError("Collaboration was closed/removed. Retained result was not overwritten or replayed.", 409);
+    const [current] = await tx.select().from(collaborationRelays).where(and(eq(collaborationRelays.id, relayId), eq(collaborationRelays.collaborationId, collaborationId))).for("update");
+    if (!current) throw new OrchestratorInputError("Relay was removed; its retained receipt was not deleted.", 409);
+    const relay = relayFromRow(current);
+    const retained = await readRetainedRelayResult(relay);
+    if (!retained) throw new OrchestratorInputError("Claimed relay has no retained result. Inspect the executor; it will not be automatically replayed.", 409);
+    if (current.status === "responded" && current.resultReceipt) return;
+    if (current.status !== "dispatching" && current.status !== "uncertain") throw new OrchestratorInputError("Relay was explicitly cancelled/resolved. Retained result was not allowed to overwrite that decision.", 409);
+    const { receipt, reference } = retained;
+    await tx.update(collaborationRelays).set({ status: "responded", response: receipt.text.slice(0, 12000), via: receipt.via, steps: JSON.stringify(receipt.steps), runtime: receipt.runtime ?? null, resultReceipt: reference, note: receipt.text.length > 12000 ? "Preview only. Download the complete retained response; it was not truncated in private storage." : "", updatedAt: new Date() }).where(eq(collaborationRelays.id, relayId));
+    await tx.update(collaborations).set({ status: "running", updatedAt: new Date() }).where(eq(collaborations.id, collaborationId));
+  });
+}
+export async function getRelayResult(relayId: string) {
+  const [row] = await db.select().from(collaborationRelays).where(eq(collaborationRelays.id, relayId));
+  if (!row || !await getCollaboration(row.collaborationId)) return null;
+  return readRetainedRelayResult(relayFromRow(row));
 }
 
 // ---------------- human checkpoint response ----------------
 
-export async function respondToRelay(
-  relayId: string,
-  input: { response?: string; rejected?: boolean }
-): Promise<Relay | null> {
-  for (const collab of await listCollaborations(100)) {
-    const relay = collab.relays.find((r) => r.id === relayId);
-    if (!relay) continue;
-    if (relay.status !== "pending") return relay;
-    if (input.rejected) {
-      await updateRelay(relayId, {
-        status: "cancelled",
-        response: String(input.response ?? "").slice(0, 4000) || null,
-        via: "human",
-        note: "Rejected by the owner.",
-      });
-    } else {
-      await updateRelay(relayId, {
-        status: "responded",
-        response: String(input.response ?? "").slice(0, 12000) || "(approved by the owner)",
-        via: "human",
-      });
+export async function respondToRelay(relayId: string, input: { response?: string; rejected?: boolean }): Promise<Relay | null> {
+  const response = String(input.response ?? "");
+  if (response.length > (input.rejected ? 4000 : 12000)) throw new OrchestratorInputError("Checkpoint response exceeds the supported limit; shorten it explicitly. Nothing was changed.", 413);
+  return db.transaction(async tx => {
+    const [located] = await tx.select().from(collaborationRelays).where(eq(collaborationRelays.id, relayId));
+    if (!located) return null;
+    const [parent] = await tx.select().from(collaborations).where(eq(collaborations.id, located.collaborationId)).for("update");
+    if (!parent || parent.status === "closed") throw new OrchestratorInputError("Collaboration is absent or closed; the checkpoint was not changed.", 409);
+    const [current] = await tx.select().from(collaborationRelays).where(eq(collaborationRelays.id, relayId)).for("update");
+    if (!current) return null;
+    const status = input.rejected ? "cancelled" : "responded";
+    const answer = input.rejected ? response || null : response || "(approved by the owner)";
+    const uncertain = current.status === "dispatching" || current.status === "uncertain";
+    if (current.status !== "pending" && !(uncertain && input.rejected)) {
+      if (current.status === status && current.response === answer) return relayFromRow(current);
+      throw new OrchestratorInputError("Checkpoint already resolved. Reload the acknowledged answer; it was not overwritten.", 409);
     }
-    await touch(collab.id, "running");
-    return (await getCollaboration(collab.id))?.relays.find((r) => r.id === relayId) ?? relay;
-  }
-  return null;
+    const [participant] = await tx.select().from(collaborationParticipants).where(and(eq(collaborationParticipants.collaborationId, parent.id), eq(collaborationParticipants.key, current.targetKey)));
+    if ((!participant || participant.kind !== "human") && !(uncertain && input.rejected)) throw new OrchestratorInputError("Only a human checkpoint can be answered by the owner.", 409);
+    const [updated] = await tx.update(collaborationRelays).set({ status, response: answer, via: "human", note: input.rejected ? uncertain ? "Explicitly cancelled by owner; external effects were not undone. A later retained result remains inspectable." : "Rejected by the owner." : "", updatedAt: new Date() }).where(eq(collaborationRelays.id, relayId)).returning();
+    await tx.update(collaborations).set({ status: "running", updatedAt: new Date() }).where(eq(collaborations.id, parent.id));
+    return relayFromRow(updated);
+  });
 }
 
 // ---------------- auto-routing conductor ----------------
@@ -1131,48 +1072,62 @@ export class CollaborationArchiveError extends Error {
   readonly status: number;
   constructor(message: string, status = 503) { super(message); this.status = status; }
 }
+export async function fullCollaborationRecord(collab: Collaboration) {
+  const record = { ...collab, relays: collab.relays.map(relay => ({ ...relay })) };
+  let budget = Buffer.byteLength(JSON.stringify(record), "utf8");
+  for (const relay of record.relays) {
+    if (!relay.resultReceipt) continue;
+    if (budget + relay.resultReceipt.bytes > MAX_ARTIFACT_OBJECT_BYTES) throw new CollaborationArchiveError("Complete record exceeds32MiB. Individual full relay responses remain downloadable; no clipped archive was filed.", 413);
+    const retained = await readRetainedRelayResult(relay);
+    if (!retained) throw new CollaborationArchiveError("A completed relay's retained response is missing. Restore its private storage before filing; its preview was not substituted.", 410);
+    budget += Buffer.byteLength(retained.receipt.text, "utf8") - Buffer.byteLength(relay.response ?? "", "utf8");
+    relay.response = retained.receipt.text;
+  }
+  return record;
+}
 export async function closeCollaboration(id: string, summary?: string): Promise<Collaboration & { archive: { artifactId: string; revisionId: string } }> {
-  await ensureTables();
-  if (!dbHealthy) throw new CollaborationArchiveError("Persistent collaboration storage unavailable; closing and filing were not performed.");
   const result = await db.transaction(async (tx) => {
     const [row] = await tx.select().from(collaborations).where(eq(collaborations.id, id)).for("update");
     if (!row) throw new CollaborationArchiveError("collaboration not found", 404);
     const pRows = await tx.select().from(collaborationParticipants).where(eq(collaborationParticipants.collaborationId, id)).orderBy(asc(collaborationParticipants.createdAt));
     const rRows = await tx.select().from(collaborationRelays).where(eq(collaborationRelays.collaborationId, id)).orderBy(asc(collaborationRelays.seq));
-    if (rRows.some((relay) => relay.status === "pending")) throw new CollaborationArchiveError("Resolve pending relays before filing the final record. The session and all its work are retained.", 409);
+    if (rRows.some(relay => ["pending", "dispatching", "uncertain"].includes(relay.status))) throw new CollaborationArchiveError("Resolve pending/uncertain relays before filing. Their work is retained and no executor will be automatically replayed.", 409);
     const now = new Date();
     const record = collaborationFromRows({ ...row, status: "closed", updatedAt: now }, pRows, rRows);
-    // Complete retained API record, not clipped request/response previews.
-    // Large records remain downloadable; never silently archive an excerpt.
-    const body = `${summary ? `Summary: ${String(summary)}\n\n` : ""}Retained collaboration record (JSON):\n\n${JSON.stringify(record, null, 2)}`;
-    assertArtifactBodySize(body);
-    const artifact = await insertArtifact(tx, { id, projectId: record.projectId, kind: "decision", title: `Collaboration record — ${record.title}`, body, sourceType: "orchestrator", sourceId: id, ownerId: LOCAL_OWNER_ID });
+    let artifact = await getArtifact(tx, id, LOCAL_OWNER_ID, true);
+    if (!artifact) {
+      // The immutable record uses the last work-update timestamp; filing time
+      // is Artifact revision.createdAt. A DB rollback/retry therefore hashes
+      // identical work to the SAME object, rather than leaking timed copies.
+      const complete = await fullCollaborationRecord(collaborationFromRows({ ...row, status: "closed" }, pRows, rRows));
+      const body = `${summary ? `Summary: ${String(summary)}\n\n` : ""}Retained collaboration record (JSON):\n\n${JSON.stringify(complete, null, 2)}`;
+      if (Buffer.byteLength(body, "utf8") > MAX_ARTIFACT_OBJECT_BYTES) throw new CollaborationArchiveError("Complete record exceeds32MiB. Download individual retained responses; no clipped archive was filed.", 413);
+      const contentObject = body.length > 20000 ? await writeArtifactObject(LOCAL_OWNER_ID, body) : undefined;
+      artifact = await insertArtifact(tx, { id, projectId: record.projectId, kind: "decision", title: `Collaboration record — ${record.title}`, body: contentObject ? artifactObjectSummary(contentObject) : body, contentObject, sourceType: "orchestrator", sourceId: id, ownerId: LOCAL_OWNER_ID });
+    }
     if (artifact.sourceType !== "orchestrator" || artifact.sourceId !== id) throw new CollaborationArchiveError("Archive identity collision; no session changes were committed.", 409);
-    if (artifact.deletedAt) throw new CollaborationArchiveError("The archived Artifact is in trash. Recover it in the Artifact Library before retrying.", 409);
-    const [original] = await tx.select({ id: artifactRevisions.id }).from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, id), eq(artifactRevisions.revision, 1))).limit(1);
-    if (!original) throw new CollaborationArchiveError("Immutable archive revision unavailable; filing was not confirmed.");
+    if (artifact.deletedAt) throw new CollaborationArchiveError("Archived Artifact is in trash. Recover it in the Library before retrying.", 409);
+    const [original] = await tx.select().from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, id), eq(artifactRevisions.revision, 1))).limit(1);
+    if (!original) throw new CollaborationArchiveError("Original immutable archive unavailable; filing was not confirmed.");
+    assertRevisionIntegrity(original, LOCAL_OWNER_ID);
+    if (original.snapshot.contentObject) await verifyArtifactObject(LOCAL_OWNER_ID, original.snapshot.contentObject);
     await tx.update(collaborations).set({ status: "closed", updatedAt: now }).where(eq(collaborations.id, id));
     return { record, revisionId: original.id };
   });
-  memoryCollabs.set(id, result.record);
   return { ...result.record, archive: { artifactId: id, revisionId: result.revisionId } };
 }
 
 // ---------------- delete ----------------
 
 export async function deleteCollaboration(id: string): Promise<boolean> {
-  const collab = await getCollaboration(id);
-  if (!collab) return false;
-  try {
-    await ensureTables();
-    if (dbHealthy) {
-      await db.delete(collaborationRelays).where(eq(collaborationRelays.collaborationId, id));
-      await db.delete(collaborationParticipants).where(eq(collaborationParticipants.collaborationId, id));
-      await db.delete(collaborations).where(eq(collaborations.id, id));
-    }
-  } catch {
-    dbHealthy = false;
-  }
-  memoryCollabs.delete(id);
-  return true;
+  return db.transaction(async tx => {
+    const [parent] = await tx.select().from(collaborations).where(eq(collaborations.id, id)).for("update");
+    if (!parent) return false;
+    const outstanding = await tx.select({ status: collaborationRelays.status }).from(collaborationRelays).where(eq(collaborationRelays.collaborationId, id));
+    if (outstanding.some(relay => relay.status === "dispatching" || relay.status === "uncertain")) throw new OrchestratorInputError("Inspect or explicitly cancel uncertain dispatches before deleting; external effects may have occurred.", 409);
+    await tx.delete(collaborationRelays).where(eq(collaborationRelays.collaborationId, id));
+    await tx.delete(collaborationParticipants).where(eq(collaborationParticipants.collaborationId, id));
+    await tx.delete(collaborations).where(eq(collaborations.id, id));
+    return true;
+  });
 }

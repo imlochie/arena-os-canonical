@@ -1,3 +1,4 @@
+import { orchestratorErrorResponse } from "@/lib/orchestrator";
 import { requireApiAccess } from "@/lib/security/api-access";
 import { startDeliberationRound } from "@/lib/orchestrator";
 
@@ -12,6 +13,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const collaboration = await startDeliberationRound(id);
     return Response.json({ collaboration });
   } catch (e) {
-    return Response.json({ error: e instanceof Error ? e.message : "failed to queue deliberation" }, { status: 400 });
+    return orchestratorErrorResponse(e);
   }
 }

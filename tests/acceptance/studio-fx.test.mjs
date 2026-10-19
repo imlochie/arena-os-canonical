@@ -45,6 +45,9 @@ before(async () => {
   await register(/^\/api\/orchestrator\/([^/]+)\/relays$/, ["id"], "orchestrator/[id]/relays");
   await register(/^\/api\/orchestrator\/([^/]+)\/advance$/, ["id"], "orchestrator/[id]/advance");
   await register(/^\/api\/artifacts$/, [], "artifacts");
+  await register(/^\/api\/artifacts\/storage$/, [], "artifacts/storage");
+  await register(/^\/api\/orchestrator\/relays\/([^/]+)$/, ["relayId"], "orchestrator/relays/[relayId]");
+  await register(/^\/api\/orchestrator\/relays\/([^/]+)\/result$/, ["relayId"], "orchestrator/relays/[relayId]/result");
   await register(/^\/api\/artifacts\/([^/]+)\/history$/, ["id"], "artifacts/[id]/history");
   await register(/^\/api\/artifacts\/([^/]+)$/, ["id"], "artifacts/[id]");
   await register(/^\/api\/projects$/, [], "projects");
@@ -338,7 +341,7 @@ test("Orchestrator real UI retains rejected references then queues, dispatches a
   await page.getByRole("button", { name: /Browser immutable handoff/ }).click(); await page.getByLabel("Relay target", { exact: true }).selectOption("adapter"); await page.getByPlaceholder("request — what should this participant do?", { exact: true }).fill("Inspect the pinned evidence, not latest.");
   await page.getByLabel("Relay immutable Artifact references", { exact: true }).fill(artifact.id); await page.getByRole("button", { name: "+ Queue relay", exact: true }).click(); await expect(page.getByText(/Bare current references are refused/)).toBeVisible();
   await expect(page.getByLabel("Relay immutable Artifact references", { exact: true })).toHaveValue(artifact.id); await expect(page.getByPlaceholder("request — what should this participant do?", { exact: true })).toHaveValue("Inspect the pinned evidence, not latest.");
-  await page.getByLabel("Relay immutable Artifact references", { exact: true }).fill(reference); await page.getByRole("button", { name: "+ Queue relay", exact: true }).click(); await expect(page.getByText("Relay #1 queued.", { exact: true })).toBeVisible();
+  await page.getByLabel("Relay immutable Artifact references", { exact: true }).fill(reference); await page.getByRole("button", { name: "+ Queue relay", exact: true }).click(); await expect(page.getByText("Relay #1 acknowledged (pending); no duplicate was queued.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "▶ Advance", exact: true }).click(); await expect(page.getByText("Controlled protocol receipt: original immutable evidence received. Not an inference result.", { exact: true })).toBeVisible();
   assert.equal(requests.length, 1); assert.match(requests[0].messages[1].content, /PINNED ORIGINAL BROWSER EVIDENCE/); assert.doesNotMatch(requests[0].messages[1].content, /NEW MUTABLE CONTENT MUST NOT BE SENT/);
   await page.reload(); await page.getByRole("button", { name: /Browser immutable handoff/ }).click(); await expect(page.getByLabel("Pinned inputs for relay 1")).toContainText(reference);
@@ -394,3 +397,19 @@ for (const [room, endpoint, field, operation, button] of [["battle", "battles/st
 
   });
 }
+
+test("actual Library reconciles retained private bytes into a verified Artifact, downloads the complete Unicode file and restores it after an explicit inline edit", async t => {
+  const { writeArtifactObject } = await import("../../src/lib/artifact-objects.ts");
+  const content = "RETAINED USEFUL WORK 🎵 中文 café\n".repeat(1500) + "IMPORTANT FULL CONTENT SUFFIX";
+  const object = await writeArtifactObject(owner, content);
+  const page = await browser.newPage(); page.setDefaultTimeout(12000); t.after(() => page.close());
+  await page.goto(`${origin}/?room=artifacts`); await page.getByRole("button", { name: "Inspect retained private content", exact: true }).click();
+  const row = page.getByText(object.sha256, { exact: true }).locator(".."); await expect(row).toContainText("unbound");
+  const saved = page.waitForResponse(response => new URL(response.url()).pathname === "/api/artifacts/storage" && response.request().method() === "POST"); await row.getByRole("button", { name: "Recover as Artifact (unknown origin)", exact: true }).click(); const response = await saved; assert.equal(response.status(), 201); const { artifact } = await response.json(); assert.equal(artifact.sourceType, "recovered-object");
+  await page.locator("summary").filter({ hasText: artifact.title }).first().click();
+  const history = page.getByRole("region", { name: `History of ${artifact.title}`, exact: true }); await expect(history).toBeVisible();
+  let transfer = page.waitForEvent("download"); await history.getByRole("link", { name: "Download complete immutable content", exact: true }).click(); assert.equal(await readFile(await (await transfer).path(), "utf8"), content);
+  await history.getByRole("button", { name: "Edit artifact", exact: true }).click(); await history.getByRole("textbox", { name: "Artifact content", exact: true }).fill("An explicit newer inline note; the original file must survive."); await history.getByRole("button", { name: "Save revision", exact: true }).click(); await expect(history).toContainText("Current revision 2");
+  await history.getByRole("button", { name: "Load revision history", exact: true }).click(); await history.locator("summary").filter({ hasText: "Revision 1 ·" }).click(); await history.getByRole("button", { name: "Restore revision 1", exact: true }).click(); await expect(history).toContainText("Current revision 3");
+  transfer = page.waitForEvent("download"); await history.getByRole("link", { name: "Download complete immutable content", exact: true }).click(); assert.equal(await readFile(await (await transfer).path(), "utf8"), content);
+});

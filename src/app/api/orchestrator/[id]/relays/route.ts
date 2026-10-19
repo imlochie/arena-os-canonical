@@ -1,3 +1,4 @@
+import { orchestratorErrorResponse } from "@/lib/orchestrator";
 import { requireApiAccess } from "@/lib/security/api-access";
 import { addRelay } from "@/lib/orchestrator";
 
@@ -17,6 +18,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return Response.json({ error: "a relay needs a target participant key" }, { status: 400 });
     }
     const relay = await addRelay(id, {
+      requestId: body.requestId,
       source: body.source,
       target: String(body.target),
       purpose: body.purpose,
@@ -28,6 +30,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     return Response.json({ relay }, { status: 201 });
   } catch (e) {
-    return Response.json({ error: e instanceof Error ? e.message : "failed to add relay" }, { status: 400 });
+    return orchestratorErrorResponse(e);
   }
 }

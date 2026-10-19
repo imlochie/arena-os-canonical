@@ -170,7 +170,9 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
       const { isUuid } = await import("./api/ids");
       if (!isUuid(String(args.artifactId ?? "")) || !isUuid(String(args.revisionId ?? ""))) return { ok: false, error: "Artifact ID and immutable revision ID are required; unbound references are refused." };
       const revision = await getArtifactRevision(db, String(args.artifactId), String(args.revisionId), LOCAL_OWNER_ID);
-      return revision ? { ok: true, revision } : { ok: false, error: "Artifact revision unavailable or not owned by this caller." };
+      if (!revision) return { ok: false, error: "Artifact revision unavailable or not owned by this caller." };
+      try { const { artifactRevisionText } = await import("./artifact-objects"); const content = await artifactRevisionText(LOCAL_OWNER_ID, revision.snapshot); return { ok: true, revision, content }; }
+      catch (error) { return { ok: false, error: error instanceof Error ? error.message : "Complete content unavailable; no preview was substituted." }; }
     },
   },
   {

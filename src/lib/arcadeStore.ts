@@ -1,3 +1,5 @@
+import { assertArtifactObjectBinding, verifyArtifactObject } from "@/lib/artifact-objects";
+import type { ArtifactContentObject } from "@/db/schema";
 import { createHash } from "node:crypto";
 /**
  * Arcade + artifact store — ownership-scoped persistence.
@@ -60,6 +62,7 @@ export async function deleteArcadeGame(database: StoreDb, id: string, ownerId: s
 }
 
 export interface ArtifactInput {
+  contentObject?: ArtifactContentObject;
   /** Server-supplied stable identity for idempotent mission output capture. */
   id?: string;
   projectId?: string | null;
@@ -71,6 +74,7 @@ export interface ArtifactInput {
   ownerId: string;
 }
 
+export class ArtifactIntegrityError extends Error { readonly status = 422; }
 export class ArtifactContentError extends Error { readonly status = 413; }
 export function assertArtifactBodySize(content: string) {
   if (content.length > 20000) throw new ArtifactContentError("Artifact body exceeds the 20,000-character limit; no content or metadata was changed.");
@@ -81,7 +85,7 @@ export function artifactScope(ownerId = LOCAL_OWNER_ID, projectId?: string, tras
 }
 type ArtifactRow = typeof artifacts.$inferSelect;
 function revisionSnapshot(row: ArtifactRow): ArtifactRevisionSnapshot {
-  return { title: row.title, body: row.body, kind: row.kind, projectId: row.projectId, sourceType: row.sourceType, sourceId: row.sourceId, ownerId: row.ownerId, deletedAt: row.deletedAt?.toISOString() ?? null, createdAt: row.createdAt?.toISOString() ?? null };
+  return { ...(row.contentObject ? { contentObject: row.contentObject } : {}), title: row.title, body: row.body, kind: row.kind, projectId: row.projectId, sourceType: row.sourceType, sourceId: row.sourceId, ownerId: row.ownerId, deletedAt: row.deletedAt?.toISOString() ?? null, createdAt: row.createdAt?.toISOString() ?? null };
 }
 type Transaction = Parameters<Parameters<StoreDb["transaction"]>[0]>[0];
 async function baseline(tx: Transaction, row: ArtifactRow) {
@@ -93,6 +97,7 @@ async function baseline(tx: Transaction, row: ArtifactRow) {
 }
 export async function insertArtifact(database: StoreDb, input: ArtifactInput) {
   assertArtifactBodySize(input.body);
+  if (input.contentObject) { assertArtifactObjectBinding(input.body, input.contentObject); await verifyArtifactObject(input.ownerId, input.contentObject); }
   return database.transaction(async (tx) => {
     const [inserted] = await tx.insert(artifacts).values({ ...input, projectId: input.projectId ?? null, sourceId: input.sourceId ?? null }).onConflictDoNothing({ target: artifacts.id }).returning();
     const row = inserted ?? (input.id ? (await tx.select().from(artifacts).where(and(eq(artifacts.id, input.id), eq(artifacts.ownerId, input.ownerId))).limit(1))[0] : undefined);
@@ -118,7 +123,13 @@ export async function listArtifactRevisions(database: StoreDb, id: string, owner
 export async function getArtifactRevision(database: StoreDb, id: string, revisionId: string, ownerId: string) {
   const row = await getArtifact(database, id, ownerId, true); if (!row) return null;
   const [revision] = await database.select().from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, id), eq(artifactRevisions.id, revisionId))).limit(1);
+  if (revision) assertRevisionIntegrity(revision, ownerId);
   return revision ?? null;
+}
+export function assertRevisionIntegrity(revision: typeof artifactRevisions.$inferSelect, ownerId: string) {
+  const snapshot = revision.snapshot;
+  if (!snapshot || snapshot.ownerId !== ownerId || typeof snapshot.body !== "string" || createHash("sha256").update(snapshot.body, "utf8").digest("hex") !== revision.bodySha256) throw new ArtifactIntegrityError("Artifact revision ownership/body checksum is invalid; no content was executed, downloaded or restored.");
+  if (snapshot.contentObject) assertArtifactObjectBinding(snapshot.body, snapshot.contentObject);
 }
 async function revise(database: StoreDb, id: string, ownerId: string, patch: Partial<Pick<ArtifactRow, "title" | "body" | "kind" | "projectId" | "deletedAt">>, expectedRevision?: number, restoreId?: string, includeDeleted = false): Promise<{ outcome: MutationOutcome | "conflict"; row?: ArtifactRow }> {
   if (patch.body !== undefined) assertArtifactBodySize(patch.body);
@@ -128,20 +139,22 @@ async function revise(database: StoreDb, id: string, ownerId: string, patch: Par
     if (found.ownerId !== ownerId) return { outcome: "forbidden" };
     if (expectedRevision !== undefined && found.revision !== expectedRevision) return { outcome: "conflict", row: found };
     const current = await baseline(tx, found);
-    let proposed = { ...current, ...patch };
+    let proposed = { ...current, ...patch, ...(patch.body !== undefined && patch.body !== current.body ? { contentObject: null } : {}) };
     if (restoreId) {
       const [old] = await tx.select().from(artifactRevisions).where(and(eq(artifactRevisions.id, restoreId), eq(artifactRevisions.artifactId, id))).limit(1);
       if (!old) return { outcome: "not_found" };
+      assertRevisionIntegrity(old, ownerId);
+      if (old.snapshot.contentObject) await verifyArtifactObject(ownerId, old.snapshot.contentObject);
       // Provenance and owner remain bound; restoring never creates foreign ownership.
       const projectExists = !old.snapshot.projectId || (await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, old.snapshot.projectId)).limit(1)).length > 0;
       // Retain the original project in the immutable snapshot, but never
       // recreate a deleted project or make content recovery fail on its FK.
-      proposed = { ...current, title: old.snapshot.title, body: old.snapshot.body, kind: old.snapshot.kind, projectId: projectExists ? old.snapshot.projectId : null, deletedAt: null };
+      proposed = { ...current, contentObject: old.snapshot.contentObject ?? null, title: old.snapshot.title, body: old.snapshot.body, kind: old.snapshot.kind, projectId: projectExists ? old.snapshot.projectId : null, deletedAt: null };
     }
     if (!restoreId && JSON.stringify(revisionSnapshot(current)) === JSON.stringify(revisionSnapshot(proposed))) return { outcome: "ok", row: current };
     const next = current.revision + 1;
     const [revision] = await tx.insert(artifactRevisions).values({ artifactId: id, revision: next, snapshot: revisionSnapshot(proposed), bodySha256: createHash("sha256").update(proposed.body, "utf8").digest("hex"), restoredFromRevisionId: restoreId ?? null }).returning();
-    const [row] = await tx.update(artifacts).set({ title: proposed.title, body: proposed.body, kind: proposed.kind, projectId: proposed.projectId, deletedAt: proposed.deletedAt, revision: next, currentRevisionId: revision.id }).where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId))).returning();
+    const [row] = await tx.update(artifacts).set({ contentObject: proposed.contentObject, title: proposed.title, body: proposed.body, kind: proposed.kind, projectId: proposed.projectId, deletedAt: proposed.deletedAt, revision: next, currentRevisionId: revision.id }).where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId))).returning();
     return { outcome: "ok", row };
   });
 }

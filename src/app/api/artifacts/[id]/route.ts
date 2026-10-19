@@ -1,3 +1,5 @@
+import { ArtifactObjectError, downloadArtifactObject } from "@/lib/artifact-objects";
+import { ArtifactIntegrityError } from "@/lib/arcadeStore";
 import { db } from "@/db";
 import { artifacts } from "@/db/schema";
 import { isUuid } from "@/lib/api/ids";
@@ -21,6 +23,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       if (!isUuid(revisionId)) return Response.json({ error: "A valid immutable revision ID is required." }, { status: 400 });
       const revision = await getArtifactRevision(db, id, revisionId, user.id);
       if (!revision) return Response.json({ error: "not found" }, { status: 404 });
+      if (new URL(req.url).searchParams.get("download") === "1" && revision.snapshot.contentObject) return await downloadArtifactObject(user.id, revision.snapshot.contentObject, `artifact-${id}-revision-${revision.revision}.${revision.snapshot.contentObject.mediaType.startsWith("application/json") ? "json" : revision.snapshot.contentObject.mediaType.startsWith("text/") ? "txt" : "bin"}`);
       if (new URL(req.url).searchParams.get("download") === "1") return new Response(revision.snapshot.body, { headers: { "content-type": "text/plain; charset=utf-8", "content-disposition": `attachment; filename="artifact-${id}-revision-${revision.revision}.txt"`, "cache-control": "private, no-store", "x-content-type-options": "nosniff" } });
       return Response.json({ revision });
     }
@@ -28,6 +31,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     if (!row) return Response.json({ error: "not found" }, { status: 404 });
     return Response.json({ artifact: row });
   } catch (e) {
+    if (e instanceof ArtifactObjectError || e instanceof ArtifactIntegrityError) return Response.json({ error: e.message }, { status: e.status });
     console.error(e);
     return Response.json({ error: "failed" }, { status: 500 });
   }
@@ -57,6 +61,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (result.outcome === "forbidden") return Response.json({ error: "this artifact belongs to another owner" }, { status: 403 });
     return Response.json({ artifact: result.row });
   } catch (e) {
+    if (e instanceof ArtifactObjectError || e instanceof ArtifactIntegrityError) return Response.json({ error: e.message }, { status: e.status });
     console.error(e);
     return Response.json({ error: "Could not confirm the update. Reload current content before retrying; your last acknowledged revision remains in history." }, { status: 503 });
   }
@@ -74,6 +79,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     if (outcome === "forbidden") return Response.json({ error: "this artifact belongs to another owner" }, { status: 403 });
     return Response.json({ ok: true });
   } catch (e) {
+    if (e instanceof ArtifactObjectError || e instanceof ArtifactIntegrityError) return Response.json({ error: e.message }, { status: e.status });
     console.error(e);
     return Response.json({ error: "delete failed" }, { status: 500 });
   }

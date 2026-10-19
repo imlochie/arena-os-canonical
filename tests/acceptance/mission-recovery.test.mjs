@@ -129,7 +129,7 @@ test("mission panel retrieves immutable outputs after SQL restart and later edit
   const { artifacts } = await import("../../src/db/schema.ts"); const { eq } = await import("drizzle-orm");
   await f.database.update(artifacts).set({ ownerId: "foreign-owner" }).where(eq(artifacts.id, report.artifactId));
   assert.equal((await outputsHandler.GET(endpoint(), ctx())).status, 410); await f.database.update(artifacts).set({ ownerId: "00000000-0000-4000-8000-000000000001" }).where(eq(artifacts.id, report.artifactId));
-  const { getStorage } = await import("../../src/lib/waveyard/storage.ts"); const object = getStorage().getLocalPath(`owners/00000000-0000-4000-8000-000000000001/mission-outputs/${report.checksumSha256}.bin`);
+  const { getStorage } = await import("../../src/lib/waveyard/storage.ts"); const { artifactObjectKey } = await import("../../src/lib/artifact-objects.ts"); const revision = await (await import("../../src/lib/arcadeStore.ts")).getArtifactRevision((await import("../../src/db/index.ts")).db, report.artifactId, report.revisionId, "00000000-0000-4000-8000-000000000001"); const object = getStorage().getLocalPath(artifactObjectKey("00000000-0000-4000-8000-000000000001", revision.snapshot.contentObject));
   await writeFile(object, "corrupted");
   try { const corrupted = await outputsHandler.GET(endpoint(), ctx()); assert.equal(corrupted.status, 410); assert.match((await corrupted.json()).error, /checksum/); }
   finally { await writeFile(object, bytes); }

@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ArtifactHistory } from "@/components/artifacts/ArtifactHistory";
+import { ArtifactStorageRecovery } from "@/components/artifacts/ArtifactStorageRecovery";
 import Markdown from "@/components/Markdown";
 
-const KINDS = ["brief", "decision", "research", "concept", "plan", "critique", "prompt", "spec", "comparison", "answer"];
+const KINDS = ["brief", "decision", "research", "concept", "plan", "critique", "prompt", "spec", "comparison", "answer", "archive", "mission-file", "test-report"];
 
 export default function ArtifactsPage() {
   const [artifacts, setArtifacts] = useState<any[]>([]);
@@ -66,7 +67,7 @@ export default function ArtifactsPage() {
       <div className="text-center">
         <h1 className="text-2xl font-black tracking-tight text-white sm:text-3xl">📦 Artifact Library</h1>
         <p className="mx-auto mt-1 max-w-xl text-sm text-slate-300">
-          Reusable knowledge, not transcripts. Every artifact can re-enter the loop as Arena, Collab, or Council input.
+          Reusable knowledge and immutable files. Supported text revisions can re-enter Arena, Collab, or Council; complete files remain downloadable, with explicit input size/format limits.
         </p>
       </div>
       <div className="glass mt-4 flex flex-col gap-2 rounded-2xl p-3 sm:flex-row">
@@ -87,6 +88,7 @@ export default function ArtifactsPage() {
       <label><input type="checkbox" checked={trash} onChange={(event) => setTrash(event.target.checked)} />Include deleted artifacts (recoverable history)</label>
       {loading && <p role="status">Loading saved artifacts…</p>}
       {projectError && <p role="status">{projectError}</p>}
+      <ArtifactStorageRecovery onChange={load} />
       {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => void load()} disabled={loading}>Retry loading artifacts</button></div>}
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         {filtered.map((a) => (

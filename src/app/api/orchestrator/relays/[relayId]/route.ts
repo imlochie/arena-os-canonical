@@ -1,3 +1,4 @@
+import { orchestratorErrorResponse } from "@/lib/orchestrator";
 import { requireApiAccess } from "@/lib/security/api-access";
 import { respondToRelay } from "@/lib/orchestrator";
 
@@ -17,6 +18,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ relayId
     if (!relay) return Response.json({ error: "relay not found" }, { status: 404 });
     return Response.json({ relay });
   } catch (e) {
-    return Response.json({ error: e instanceof Error ? e.message : "failed to respond" }, { status: 400 });
+    return orchestratorErrorResponse(e);
   }
 }

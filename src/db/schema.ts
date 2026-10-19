@@ -328,6 +328,7 @@ export const artifacts = pgTable("artifacts", {
   kind: text("kind").notNull().default("brief"), // brief|decision|research|concept|plan|critique|prompt|spec|comparison|answer
   title: text("title").notNull().default("Untitled artifact"),
   body: text("body").notNull().default(""),
+  contentObject: jsonb("content_object").$type<ArtifactContentObject>(),
   sourceType: text("source_type").notNull().default("manual"), // council|battle|collab|chat|arcade|manual
   sourceId: text("source_id"),
   /** Record owner — mutations are scoped to it (see desktop-migrations/0016). */
@@ -339,7 +340,9 @@ export const artifacts = pgTable("artifacts", {
 });
 
 
+export type ArtifactContentObject = { version: 1; sha256: string; bytes: number; mediaType: string };
 export type ArtifactRevisionSnapshot = {
+  contentObject?: ArtifactContentObject | null;
   title: string; body: string; kind: string; projectId: string | null;
   sourceType: string; sourceId: string | null; ownerId: string;
   deletedAt: string | null; createdAt: string | null;
@@ -709,6 +712,7 @@ export const reconciliationRuns = pgTable("reconciliation_runs", {
 export const collaborations = pgTable("collaborations", {
   id: uuid("id").primaryKey().defaultRandom(),
   title: text("title").notNull().default("Untitled collaboration"),
+  requestHash: text("request_hash"),
   goal: text("goal").notNull(), // what the collaboration is for
   context: text("context").notNull().default(""), // shared context notes
   status: text("status").notNull().default("running"), // running | blocked | closed
@@ -745,6 +749,7 @@ export const collaborationRelays = pgTable("collaboration_relays", {
   classification: text("classification").notNull().default("internal"), // public | internal | private
   responseContract: text("response_contract").notNull().default("markdown text"),
   status: text("status").notNull().default("pending"), // pending | responded | cancelled | failed
+  resultReceipt: jsonb("result_receipt").$type<{ sha256: string; bytes: number }>(),
   response: text("response"),
   via: text("via").notNull().default(""),
   runtime: jsonb("runtime"), // what actually executed the relay response

@@ -12,7 +12,7 @@ import PoweredBy from "./PoweredBy";
 // The conductor (auto-route) can propose the next relay when a working model
 // is available; offline it declines honestly.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import Markdown from "@/components/Markdown";
 import { loadKeys } from "@/components/KeysBar";
 import { privacyFlags } from "@/lib/privacyClient";
@@ -61,6 +61,8 @@ const CLASSIFICATION_STYLE: Record<string, string> = {
   private: "bg-rose-400/10 text-rose-200 ring-rose-400/20",
 };
 const STATUS_STYLE: Record<string, string> = {
+  dispatching: "bg-cyan-400/10 text-cyan-200 ring-cyan-400/20",
+  uncertain: "bg-rose-400/10 text-rose-200 ring-rose-400/20",
   pending: "bg-amber-400/10 text-amber-200 ring-amber-400/20",
   responded: "bg-emerald-400/10 text-emerald-200 ring-emerald-400/20",
   cancelled: "bg-slate-400/10 text-slate-300 ring-slate-400/20",
@@ -127,9 +129,10 @@ export default function OrchestratorWorkbench() {
     try {
       const res = await fetch("/api/orchestrator");
       const data = await res.json();
+      if (!res.ok) { setNotice(data.error ?? "Collaboration list unavailable; last acknowledged sessions are retained."); return; }
       if (Array.isArray(data.collaborations)) setCollabs(data.collaborations);
     } catch {
-      /* offline */
+      setNotice("Collaboration list unavailable; last acknowledged sessions are retained. Retry after reconnecting.");
     }
   }, []);
 
@@ -137,13 +140,13 @@ export default function OrchestratorWorkbench() {
     try {
       const res = await fetch(`/api/orchestrator/${id}`);
       if (!res.ok) {
-        setDetail(null);
+        setNotice("Could not reload collaboration. Last acknowledged work is retained; retry after reconnecting.");
         return;
       }
       const data = await res.json();
       setDetail(data.collaboration);
     } catch {
-      /* offline */
+      setNotice("Could not reload collaboration. Last acknowledged work is retained; retry after reconnecting.");
     }
   }, []);
 
@@ -213,7 +216,8 @@ export default function OrchestratorWorkbench() {
 
   async function forgetPreference(id: string) {
     try {
-      await fetch(`/api/preferences/${id}`, { method: "DELETE" });
+      const response = await fetch(`/api/preferences/${id}`, { method: "DELETE" });
+      if (!response.ok) { setNotice("Preference removal was not acknowledged; it remains visible. Reload before retrying."); return; }
       setPrefs((current) => current.filter((p) => p.id !== id));
     } catch {
       /* offline */
@@ -238,6 +242,7 @@ export default function OrchestratorWorkbench() {
     }
   }
 
+  const createRequestId = useRef<string | null>(null);
   async function create() {
     if (!goal.trim() || busy) return;
     setBusy(true);
@@ -247,6 +252,7 @@ export default function OrchestratorWorkbench() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          requestId: createRequestId.current ?? (createRequestId.current = crypto.randomUUID()),
           title: title.trim() || undefined,
           goal: goal.trim(),
           context: context.trim() || undefined,
@@ -277,6 +283,7 @@ export default function OrchestratorWorkbench() {
         setNotice(data.error ?? "failed to create");
         return;
       }
+      createRequestId.current = null;
       setGoal("");
       setTitle("");
       setContext("");
@@ -337,6 +344,7 @@ export default function OrchestratorWorkbench() {
     }
   }
 
+  const relayRequestId = useRef<string | null>(null);
   async function addRelay() {
     if (!detail || !nextRequest.trim() || busy) return;
     setBusy(true);
@@ -344,7 +352,7 @@ export default function OrchestratorWorkbench() {
       const res = await fetch(`/api/orchestrator/${detail.id}/relays`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify({ requestId: relayRequestId.current ?? (relayRequestId.current = crypto.randomUUID()),
           target: nextTarget,
           purpose: nextPurpose.trim() || "contribute",
           request: nextRequest.trim(),
@@ -355,8 +363,9 @@ export default function OrchestratorWorkbench() {
       });
       const data = await res.json();
       if (res.ok) {
+        relayRequestId.current = null;
         setNextRequest(""); setNextReferences("");
-        setNotice(`Relay #${data.relay.seq} queued.`);
+        setNotice(`Relay #${data.relay.seq} acknowledged (${data.relay.status}); no duplicate was queued.`);
         await loadDetail(detail.id);
       } else setNotice(data.error ?? "failed to add relay");
     } catch {
@@ -381,6 +390,8 @@ export default function OrchestratorWorkbench() {
         setNotice(rejected ? "Relay rejected." : "Checkpoint answered.");
         if (detail) await loadDetail(detail.id);
       } else setNotice(data.error ?? "failed to respond");
+    } catch {
+      setNotice("Checkpoint was not acknowledged. Your answer is retained; reload before retrying.");
     } finally {
       setBusy(false);
     }
@@ -597,6 +608,7 @@ export default function OrchestratorWorkbench() {
             >
               Open collaboration
             </button>
+            <button disabled={busy} className="mt-2 text-xs text-slate-400 underline" onClick={() => { if (window.confirm("A previous creation may already exist. Inspect Sessions first. Start a separate creation request with this draft?")) { createRequestId.current = null; setNotice("Separate creation request selected. Draft retained; opening it may create a second session."); } }}>Start a separate creation request</button>
           </div>
 
           {/* session list */}
@@ -822,9 +834,11 @@ export default function OrchestratorWorkbench() {
                       {r.contextRefs.length > 0 && <div aria-label={`Pinned inputs for relay ${r.seq}`} className="text-[10px]">Pinned inputs: {r.contextRefs.map((reference) => <code key={reference} className="block break-all">{reference}</code>)}</div>}
                       {r.response && (
                         <div className="mt-2 rounded-xl bg-black/30 p-3 text-xs leading-5 text-slate-200">
-                          <Markdown text={r.response.slice(0, 4000)} />
+                          <Markdown text={r.response} />
                         </div>
                       )}
+                      {(r.resultReceipt || ((r.status === "dispatching" || r.status === "uncertain" || r.status === "cancelled") && target?.kind !== "human")) && <a className="mt-2 block text-xs text-cyan-300 underline" href={`/api/orchestrator/relays/${r.id}/result`} download>Download complete retained response</a>}
+                      {(r.status === "dispatching" || r.status === "uncertain") && <button disabled={busy} className="mt-2 text-xs text-amber-300 underline" onClick={() => { if (window.confirm("The executor may have run or still be running. This cancels the relay, not external effects. Inspect the executor first. Cancel this uncertain relay?")) void respond(r, true); }}>Explicitly cancel uncertain dispatch</button>}
                       {r.steps.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {r.steps.map((step, i) => (

@@ -1,3 +1,4 @@
+import { writeArtifactObject, artifactObjectSummary, readArtifactObject } from "@/lib/artifact-objects";
 /** Durable deliverables use the existing object provider and Artifact revisions.
  * Paths are display/origin metadata only; retrieval never reopens the workspace.
  */
@@ -49,11 +50,11 @@ export async function captureMissionOutput(database: typeof defaultDb, missionId
     if (action.tool === "write_file" && !bytes.equals(Buffer.from(String(action.input.content ?? ""), "utf8"))) throw new Error("Output no longer matches the executed write; original bytes cannot be claimed.");
     const checksum = sha(bytes);
     if (action.tool === "publish_output" && JSON.parse(action.output).checksumSha256 !== checksum) throw new Error("Output changed after it was inspected; publish a new stable observation.");
-    await getStorage().putImmutableBuffer(objectKey(checksum), bytes);
     const text = bytes.toString("utf8"); const isText = !bytes.includes(0) && Buffer.from(text, "utf8").equals(bytes);
     const mediaType = isText ? "text/plain; charset=utf-8" : "application/octet-stream";
-    const artifactBody = isText && text.length <= 20000 ? text : JSON.stringify({ name, bytes: bytes.length, checksumSha256: checksum, mediaType, note: "Full content is in the mission output snapshot, not truncated into this metadata." });
-    const artifact = await insertArtifact(database, { id: identity(`artifact:${id}:${checksum}`), ownerId: LOCAL_OWNER_ID, title: path.basename(name), kind: log ? "test-report" : "mission-file", sourceType: "mission-output", sourceId: missionId, body: artifactBody });
+    const contentObject = await writeArtifactObject(LOCAL_OWNER_ID, bytes, mediaType);
+    const artifactBody = isText && text.length <= 20000 ? text : artifactObjectSummary(contentObject);
+    const artifact = await insertArtifact(database, { id: identity(`artifact:${id}:${checksum}`), ownerId: LOCAL_OWNER_ID, title: path.basename(name), kind: log ? "test-report" : "mission-file", sourceType: "mission-output", sourceId: missionId, contentObject, body: artifactBody });
     const [originalRevision] = await database.select().from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, artifact.id), eq(artifactRevisions.revision, 1))).limit(1);
     if (!originalRevision || originalRevision.snapshot.body !== artifactBody) throw new Error("Output Artifact baseline does not match the captured bytes.");
     return { id, artifactId: artifact.id, revisionId: originalRevision.id, path: name, bytes: bytes.length, checksumSha256: checksum, mediaType, ownerId: LOCAL_OWNER_ID, requestId: action.requestId, tool: action.tool, state: "complete", createdAt: new Date().toISOString() };
@@ -65,7 +66,8 @@ export async function retrieveMissionOutput(spaceId: string, missionId: string, 
   if (!output || output.ownerId !== LOCAL_OWNER_ID || output.state !== "complete" || !output.artifactId || !output.revisionId || !output.checksumSha256) throw new Error("Output unavailable, incomplete, or not authorised for this mission.");
   const revision = await getArtifactRevision(database, output.artifactId, output.revisionId, LOCAL_OWNER_ID);
   if (!revision || revision.snapshot.sourceId !== missionId || revision.snapshot.sourceType !== "mission-output") throw new Error("Output is not bound to an owned immutable Artifact revision.");
-  const bytes = await getStorage().getBuffer(objectKey(output.checksumSha256), MAX_MISSION_OUTPUT_BYTES);
+  // Preserve historical manifests written before generic Artifact objects.
+  const bytes = revision.snapshot.contentObject ? await readArtifactObject(LOCAL_OWNER_ID, revision.snapshot.contentObject) : await getStorage().getBuffer(objectKey(output.checksumSha256), MAX_MISSION_OUTPUT_BYTES);
   if (bytes.length !== output.bytes || sha(bytes) !== output.checksumSha256) throw new Error("Output snapshot is corrupted or stale; checksum verification failed.");
   return { output, bytes };
 }

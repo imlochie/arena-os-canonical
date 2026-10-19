@@ -1,3 +1,4 @@
+import { orchestratorErrorResponse } from "@/lib/orchestrator";
 import { requireApiAccess } from "@/lib/security/api-access";
 import { advanceCollaboration } from "@/lib/orchestrator";
 
@@ -20,6 +21,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json(result);
   } catch (e) {
     console.error(e);
-    return Response.json({ error: e instanceof Error ? e.message : "advance failed" }, { status: 500 });
+    return orchestratorErrorResponse(e);
   }
 }
