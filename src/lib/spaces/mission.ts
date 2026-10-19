@@ -145,6 +145,7 @@ const AGENT_KNOWLEDGE = `WORK DISCIPLINE (how strong coding agents operate):
 - At the end, append 1-3 concise lessons to AGENT_NOTES.md ("## <goal in 6 words>\n- lesson") — future missions in this space read them.`;
 
 const TOOL_DOC = `Available tools (emit actions as JSON):
+- read_artifact {artifactId, revisionId}  retrieve an owned immutable Artifact revision (both IDs required; never implicit latest)
 - write_file {path, content}        create/overwrite a file (new files, or full rewrites of small files)
 - edit_file {path, old_text, new_text}  SURGICAL edit of an existing file (Aider-style): old_text must match EXACTLY ONE location — copy it from read_file output; verified + syntax-checked
 - read_file {path, startLine?, endLine?}  numbered, windowed view (default first 100 lines)

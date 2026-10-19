@@ -329,8 +329,26 @@ export const artifacts = pgTable("artifacts", {
   sourceId: text("source_id"),
   /** Record owner — mutations are scoped to it (see desktop-migrations/0016). */
   ownerId: text("owner_id").notNull().default(LOCAL_OWNER_ID),
+  revision: integer("revision").notNull().default(1),
+  currentRevisionId: uuid("current_revision_id"),
+  deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+
+export type ArtifactRevisionSnapshot = {
+  title: string; body: string; kind: string; projectId: string | null;
+  sourceType: string; sourceId: string | null; ownerId: string;
+  deletedAt: string | null; createdAt: string | null;
+};
+export const artifactRevisions = pgTable("artifact_revisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  artifactId: uuid("artifact_id").notNull().references(() => artifacts.id),
+  revision: integer("revision").notNull(),
+  snapshot: jsonb("snapshot").notNull().$type<ArtifactRevisionSnapshot>(),
+  restoredFromRevisionId: uuid("restored_from_revision_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [uniqueIndex("artifact_revisions_number_unique").on(table.artifactId, table.revision)]);
 
 export const projectMemory = pgTable("project_memory", {
   id: uuid("id").primaryKey().defaultRandom(),

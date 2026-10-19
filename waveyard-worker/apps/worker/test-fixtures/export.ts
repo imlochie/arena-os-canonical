@@ -1,6 +1,6 @@
 // Separate worker process: actual isolated package dependencies, SQL and files.
-import { processExport } from "../../waveyard-worker/apps/worker/src/export";
-import { getPool } from "../../waveyard-worker/packages/database/src/index";
+import { processExport } from "../src/export";
+import { getPool } from "../../../packages/database/src/index";
 async function main() {
 try {
   await processExport(JSON.parse(process.env.REMOTE_EXPORT_PAYLOAD!), async (stage) => { console.log("REMOTE_STAGE", stage); });

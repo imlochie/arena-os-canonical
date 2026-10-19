@@ -511,6 +511,16 @@ export async function executeTool(
     switch (action.tool) {
       case "write_file":
         return toolWriteFile(dir, String(action.args.path ?? ""), String(action.args.content ?? ""));
+      case "read_artifact": {
+        const { isUuid } = await import("../api/ids");
+        const { artifactId, revisionId } = action.args;
+        if (!isUuid(String(artifactId ?? "")) || !isUuid(String(revisionId ?? ""))) return "error: read_artifact requires artifactId and immutable revisionId; an unbound current reference is not accepted";
+        const { db } = await import("@/db");
+        const { getArtifactRevision } = await import("../arcadeStore");
+        const { LOCAL_OWNER_ID } = await import("../waveyard/local-context");
+        const revision = await getArtifactRevision(db, artifactId, revisionId, LOCAL_OWNER_ID);
+        return revision ? JSON.stringify({ artifactId, revisionId: revision.id, revision: revision.revision, ...revision.snapshot }) : "error: artifact revision unavailable or not owned by this caller";
+      }
       case "read_file":
         return toolReadFile(dir, String(action.args.path ?? ""), {
           startLine: action.args.startLine ? Number(action.args.startLine) : undefined,
@@ -606,6 +616,6 @@ export async function executeTool(
     ok = false;
     output = `error: ${e instanceof Error ? e.message : "tool failed"}`;
   }
-  const uncertain = !ok && /timed out|timeout|command cancelled|fetch failed|network error|aborted/i.test(output) && !["read_file", "list_files", "search_code"].includes(action.tool);
+  const uncertain = !ok && /timed out|timeout|command cancelled|fetch failed|network error|aborted/i.test(output) && !["read_file", "read_artifact", "list_files", "search_code"].includes(action.tool);
   return { tool: action.tool, input: action.args, output, ok, ms: Date.now() - t0, ...(uncertain ? { uncertain: true } : {}) };
 }

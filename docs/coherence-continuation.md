@@ -747,3 +747,57 @@ Next: immutable Artifact history and mission-output retrieval, while preserving
 known remaining synced-audition/large-arrangement and staged worker lifecycle
 gaps. No claim that Artifact history or durable mission deliverable manifests
 have been implemented by this DSP change.
+
+### Mandate 5 — Artifact history and pinned reuse milestone
+
+Reproduced an overwritten earlier body through actual handlers/PostgreSQL:
+`mandate5-artifact-before.txt` returned "changed work" when the original work
+was requested. New migration `0017_artifact_revisions.sql` backfills a baseline
+for existing rows. Creates and edits commit immutable snapshots and current
+head atomically. Public edits require `expectedRevision` (428 if omitted,
+409 if stale); row locks serialize races. Unchanged saves retain the revision.
+Restoration always appends a revision and records its source revision ID.
+Deletion is a versioned tombstone, not erasure; owned history and restoration
+remain available. History pages are bounded to 50 revisions with an older-page
+cursor; individual revision retrieval/download uses immutable UUIDs and owner
+checks. Source attribution stays attached to snapshots. No history mutation
+endpoint exists; database administrators are still trusted.
+
+The Library UI now supports edit, history inspection, immutable text download,
+restore and recovery of deleted artifacts. Conflict/error handling keeps the
+user's draft. Cross-room links carry revision IDs; legacy rows must first bind
+a baseline through history before reuse. New `read_artifact` tool dispatch
+requires both artifact and revision IDs, checks the actual owner and journals
+the immutable input. A later mission can reuse the recorded real result after
+the current Artifact has changed; unbound implicit-latest references fail.
+This is contract execution with controlled plans, not model reasoning.
+
+SQL outage acceptance exposed two additional shared database defects: pg could
+emit an unhandled checked-out-client error, and a failed Drizzle BEGIN could
+leak its checked-out client, hanging shutdown. Permanent client error handling
+and an outer owned checkout/release around transactions now preserve query
+failure while preventing the process crash/leak. Before/after evidence is in
+`mandate5-history.txt` and the test development record; the new real outage
+case finishes with pool closure rather than hanging.
+
+Local implementation evidence:
+* `mandate5-history.txt`: 4 PASS, 3.31s, actual PostgreSQL/API creation, edits,
+  unchanged save, racing updates, old downloads, restore, DB restart, oversize
+  rejection, injected SQL failure after history insertion (full rollback),
+  deletion/recovery, foreign history refusal, pinned revision tool reuse.
+* `mandate5-history-browser.txt`: actual Library UI + native SQL, edit,
+  download/restore/delete/recover/reload, 1 PASS, 4.98s (includes startup).
+* `mandate5-artifact-regression.txt`: 8 PASS before the later history/reuse
+  additions; overlaps the retention suite, not additive acceptance.
+* Root typecheck, targeted lint and production build PASS in
+  `mandate5-history-{types,lint,build}.txt`; lint retains one Library effect
+  warning. Broad source regression and exact published CI remain to verify.
+
+Published DSP revision `204d112` CI correctly caught two packaging problems:
+a root TS fixture imported isolated worker-only aliases before its dependencies
+were installed, and the web Docker context excluded the newly shared kernels.
+The fixture is now worker-scoped, and the web context includes only shared DSP
+and types, not the worker app/dependencies. A7 and browser jobs had passed at
+204d112, but static/Compose failed: **do not report that revision as green**.
+The fixes ship with this Artifact milestone and need fresh published checks.
+Mission deliverable snapshot/manifest retrieval remains the next major target.

@@ -19,7 +19,7 @@ async function dispatch(url, method = "GET", body) {
   for (const route of routes) {
     const match = url.pathname.match(route.pattern); if (!match) continue;
     const handler = route.handlers[method]; if (!handler) return Response.json({ error: "Method unsupported" }, { status: 405 });
-    return handler(new Request(url, { method, headers: { "content-type": "application/json" }, ...(body !== undefined ? { body } : {}) }), { params: Promise.resolve(Object.fromEntries(route.names.map((name, index) => [name, match[index + 1]]))) });
+    return handler(new Request(url, { method, headers: { host: "localhost", "content-type": "application/json" }, ...(body !== undefined ? { body } : {}) }), { params: Promise.resolve(Object.fromEntries(route.names.map((name, index) => [name, match[index + 1]]))) });
   }
   return Response.json({ error: `No real route in this acceptance harness: ${url.pathname}` }, { status: 404 });
 }
@@ -38,6 +38,10 @@ before(async () => {
   await register(/^\/api\/exports\/([^/]+)\/retry$/, ["id"], "exports/[id]/retry");
   await register(/^\/api\/assets\/([^/]+)$/, ["id"], "assets/[id]");
   await register(/^\/api\/assets\/([^/]+)\/waveform$/, ["id"], "assets/[id]/waveform");
+  await register(/^\/api\/artifacts$/, [], "artifacts");
+  await register(/^\/api\/artifacts\/([^/]+)\/history$/, ["id"], "artifacts/[id]/history");
+  await register(/^\/api\/artifacts\/([^/]+)$/, ["id"], "artifacts/[id]");
+  await register(/^\/api\/projects$/, [], "projects");
   const bundle = await build({ entryPoints: ["tests/acceptance/studio-fx.fixture.tsx"], bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", define: { "process.env": JSON.stringify({ NODE_ENV: "development" }) } });
   server = createServer(async (req, res) => {
     try {
@@ -221,7 +225,7 @@ test("isolated remote worker genuinely renders the same nonlinear, polarity and 
   const bin = path.join(root, "remote-tools"); await mkdir(bin, { recursive: true });
   for (const name of ["ffmpeg", "ffprobe"]) { const tool = await requireTool(name); await symlink(tool.path, path.join(bin, name)); }
   const payload = { exportJobId: job.id, projectId, remixSessionId: remixId, remixVersionId: version.id, format: "wav" };
-  function runRemote() { return spawnSync(path.resolve("waveyard-worker/node_modules/.bin/tsx"), ["--tsconfig", path.resolve("waveyard-worker/tsconfig.json"), "tests/fixtures/remote-export.ts"], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, LOCAL_STORAGE_PATH: process.env.WAVEYARD_STORAGE_DIR, REMOTE_EXPORT_PAYLOAD: JSON.stringify(payload) }, encoding: "utf8", timeout: 25000 }); }
+  function runRemote() { return spawnSync(path.resolve("waveyard-worker/node_modules/.bin/tsx"), ["--tsconfig", path.resolve("waveyard-worker/tsconfig.json"), "waveyard-worker/apps/worker/test-fixtures/export.ts"], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, LOCAL_STORAGE_PATH: process.env.WAVEYARD_STORAGE_DIR, REMOTE_EXPORT_PAYLOAD: JSON.stringify(payload) }, encoding: "utf8", timeout: 25000 }); }
   const [asset] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, track.stemAssetId));
   const filename = path.join(process.env.WAVEYARD_STORAGE_DIR, asset.storageKey);
   await rename(filename, filename + ".interrupted");
@@ -236,4 +240,24 @@ test("isolated remote worker genuinely renders the same nonlinear, polarity and 
   let maxError = 0; for (let sample = 0; sample < remote.samples.length; sample++) maxError = Math.max(maxError, Math.abs(remote.samples[sample] - local.decoded.samples[sample]));
   console.log(JSON.stringify({ kind: "actual-local-remote-parity", maxError, frames: remote.samples.length / 2, attempts: complete.attempts }));
   assert.ok(maxError < 0.00015, `same persisted version, actual remote/local jobs max PCM error ${maxError}`);
+});
+
+
+test("Artifact Library real UI edits, downloads immutable history, restores, deletes and recovers work", async (t) => {
+  const { artifact } = await api("/api/artifacts", "POST", { title: "Browser history original", body: "Original mission research preserved 🎵" });
+  const page = await browser.newPage(); page.setDefaultTimeout(10000); t.after(() => page.close());
+  await page.goto(`${origin}/?room=artifacts`); await page.getByText("Browser history original", { exact: true }).click();
+  await page.getByRole("button", { name: "Edit artifact", exact: true }).click();
+  await page.getByLabel("Artifact title", { exact: true }).fill("Browser history revised"); await page.getByLabel("Artifact content", { exact: true }).fill("New useful work");
+  await page.getByRole("button", { name: "Save revision", exact: true }).click(); await expect(page.getByText("Current revision 2", { exact: true })).toBeVisible();
+  await page.getByText("Revision 1 · Browser history original", { exact: true }).click();
+  const downloadPromise = page.waitForEvent("download"); await page.getByRole("link", { name: "Download revision 1", exact: true }).click();
+  assert.equal(await readFile(await (await downloadPromise).path(), "utf8"), "Original mission research preserved 🎵");
+  await page.getByRole("button", { name: "Restore revision 1", exact: true }).click(); await expect(page.getByText("Current revision 3", { exact: true })).toBeVisible();
+  assert.equal((await api(`/api/artifacts/${artifact.id}`)).artifact.body, "Original mission research preserved 🎵");
+  page.once("dialog", (dialog) => dialog.accept()); await page.getByRole("button", { name: "Delete Browser history original", exact: true }).click(); await expect(page.getByText("Browser history original", { exact: true })).toHaveCount(0);
+  await page.getByRole("checkbox", { name: /Include deleted artifacts/ }).check(); await page.getByText("Browser history original", { exact: true }).click();
+  await page.getByRole("button", { name: "Load revision history", exact: true }).click(); await page.getByText("Revision 1 · Browser history original", { exact: true }).click();
+  await page.getByRole("button", { name: "Restore revision 1", exact: true }).click(); await expect(page.getByText("Current revision 5", { exact: true })).toBeVisible();
+  await page.reload(); await page.getByText("Browser history original", { exact: true }).click(); await expect(page.getByText("Current revision 5", { exact: true })).toBeVisible();
 });

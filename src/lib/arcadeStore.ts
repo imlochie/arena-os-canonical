@@ -10,12 +10,12 @@
  * is exercised against a real database in tests.
  */
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, lt } from "drizzle-orm";
 
 import type { db as appDb } from "@/db";
-import { arcadeGames, artifacts } from "@/db/schema";
+import { arcadeGames, artifacts, artifactRevisions, type ArtifactRevisionSnapshot } from "@/db/schema";
 
-export type StoreDb = Pick<typeof appDb, "insert" | "update" | "delete" | "select">;
+export type StoreDb = Pick<typeof appDb, "insert" | "update" | "delete" | "select" | "transaction">;
 
 export type MutationOutcome = "ok" | "not_found" | "forbidden";
 
@@ -68,68 +68,70 @@ export interface ArtifactInput {
   ownerId: string;
 }
 
+type ArtifactRow = typeof artifacts.$inferSelect;
+function revisionSnapshot(row: ArtifactRow): ArtifactRevisionSnapshot {
+  return { title: row.title, body: row.body, kind: row.kind, projectId: row.projectId, sourceType: row.sourceType, sourceId: row.sourceId, ownerId: row.ownerId, deletedAt: row.deletedAt?.toISOString() ?? null, createdAt: row.createdAt?.toISOString() ?? null };
+}
+type Transaction = Parameters<Parameters<StoreDb["transaction"]>[0]>[0];
+async function baseline(tx: Transaction, row: ArtifactRow) {
+  if (row.currentRevisionId) return row;
+  const [revision] = await tx.insert(artifactRevisions).values({ artifactId: row.id, revision: row.revision, snapshot: revisionSnapshot(row) }).onConflictDoNothing().returning();
+  const existing = revision ?? (await tx.select().from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, row.id), eq(artifactRevisions.revision, row.revision))).limit(1))[0];
+  const [updated] = await tx.update(artifacts).set({ currentRevisionId: existing.id }).where(eq(artifacts.id, row.id)).returning();
+  return updated;
+}
 export async function insertArtifact(database: StoreDb, input: ArtifactInput) {
-  const [row] = await database
-    .insert(artifacts)
-    .values({
-      projectId: input.projectId ?? null,
-      kind: input.kind,
-      title: input.title,
-      body: input.body,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId ?? null,
-      ownerId: input.ownerId,
-    })
-    .returning();
-  return row;
+  if (input.body.length > 20000) throw new Error("Artifact body exceeds the 20,000-character limit; nothing was saved.");
+  return database.transaction(async (tx) => {
+    const [row] = await tx.insert(artifacts).values({ ...input, projectId: input.projectId ?? null, sourceId: input.sourceId ?? null }).returning();
+    return baseline(tx, row);
+  });
 }
-
-/**
- * Artifact reads are owner-scoped, exactly like the mutations below. The
- * owner is part of the WHERE clause (never a post-fetch filter), so a
- * foreign row cannot be listed even if the caller guessed its id.
- */
-export async function listArtifacts(database: StoreDb, ownerId: string, limit = 200) {
-  return database
-    .select()
-    .from(artifacts)
-    .where(eq(artifacts.ownerId, ownerId))
-    .orderBy(desc(artifacts.createdAt))
-    .limit(limit);
+export async function listArtifacts(database: StoreDb, ownerId: string, limit = 200, trash = false) {
+  return database.select().from(artifacts).where(and(eq(artifacts.ownerId, ownerId), ...(trash ? [] : [isNull(artifacts.deletedAt)]))).orderBy(desc(artifacts.createdAt)).limit(limit);
 }
-
-/** Returns the artifact only when it belongs to `ownerId`; null otherwise
- *  (so a route can answer 404 without leaking a foreign row's existence). */
-export async function getArtifact(database: StoreDb, id: string, ownerId: string) {
-  const [row] = await database
-    .select()
-    .from(artifacts)
-    .where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId)))
-    .limit(1);
+export async function getArtifact(database: StoreDb, id: string, ownerId: string, includeDeleted = false) {
+  const [row] = await database.select().from(artifacts).where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId), ...(includeDeleted ? [] : [isNull(artifacts.deletedAt)]))).limit(1);
   return row ?? null;
 }
-
-export async function updateArtifact(
-  database: StoreDb,
-  id: string,
-  ownerId: string,
-  patch: Partial<Pick<typeof artifacts.$inferInsert, "title" | "body" | "kind" | "projectId">>,
-): Promise<{ outcome: MutationOutcome; row?: typeof artifacts.$inferSelect }> {
-  const [existing] = await database.select({ id: artifacts.id, ownerId: artifacts.ownerId }).from(artifacts).where(eq(artifacts.id, id)).limit(1);
-  if (!existing) return { outcome: "not_found" };
-  if (existing.ownerId !== ownerId) return { outcome: "forbidden" };
-  const [row] = await database
-    .update(artifacts)
-    .set(patch)
-    .where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId)))
-    .returning();
-  return { outcome: "ok", row };
+export async function listArtifactRevisions(database: StoreDb, id: string, ownerId: string, before?: number) {
+  return database.transaction(async (tx) => {
+    const [row] = await tx.select().from(artifacts).where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId))).for("update");
+    if (!row) return null;
+    await baseline(tx, row);
+    return tx.select().from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, id), ...(before ? [lt(artifactRevisions.revision, before)] : []))).orderBy(desc(artifactRevisions.revision)).limit(50);
+  });
 }
-
+export async function getArtifactRevision(database: StoreDb, id: string, revisionId: string, ownerId: string) {
+  const row = await getArtifact(database, id, ownerId, true); if (!row) return null;
+  const [revision] = await database.select().from(artifactRevisions).where(and(eq(artifactRevisions.artifactId, id), eq(artifactRevisions.id, revisionId))).limit(1);
+  return revision ?? null;
+}
+async function revise(database: StoreDb, id: string, ownerId: string, patch: Partial<Pick<ArtifactRow, "title" | "body" | "kind" | "projectId" | "deletedAt">>, expectedRevision?: number, restoreId?: string): Promise<{ outcome: MutationOutcome | "conflict"; row?: ArtifactRow }> {
+  if (patch.body && patch.body.length > 20000) throw new Error("Artifact body exceeds the 20,000-character limit; nothing was saved.");
+  return database.transaction(async (tx) => {
+    const [found] = await tx.select().from(artifacts).where(eq(artifacts.id, id)).for("update");
+    if (!found || (found.deletedAt && !restoreId)) return { outcome: "not_found" };
+    if (found.ownerId !== ownerId) return { outcome: "forbidden" };
+    if (expectedRevision !== undefined && found.revision !== expectedRevision) return { outcome: "conflict", row: found };
+    const current = await baseline(tx, found);
+    let proposed = { ...current, ...patch };
+    if (restoreId) {
+      const [old] = await tx.select().from(artifactRevisions).where(and(eq(artifactRevisions.id, restoreId), eq(artifactRevisions.artifactId, id))).limit(1);
+      if (!old) return { outcome: "not_found" };
+      // Provenance and owner remain bound; restoring never creates foreign ownership.
+      proposed = { ...current, title: old.snapshot.title, body: old.snapshot.body, kind: old.snapshot.kind, projectId: old.snapshot.projectId, deletedAt: null };
+    }
+    if (!restoreId && JSON.stringify(revisionSnapshot(current)) === JSON.stringify(revisionSnapshot(proposed))) return { outcome: "ok", row: current };
+    const next = current.revision + 1;
+    const [revision] = await tx.insert(artifactRevisions).values({ artifactId: id, revision: next, snapshot: revisionSnapshot(proposed), restoredFromRevisionId: restoreId ?? null }).returning();
+    const [row] = await tx.update(artifacts).set({ title: proposed.title, body: proposed.body, kind: proposed.kind, projectId: proposed.projectId, deletedAt: proposed.deletedAt, revision: next, currentRevisionId: revision.id }).where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId))).returning();
+    return { outcome: "ok", row };
+  });
+}
+export async function updateArtifact(database: StoreDb, id: string, ownerId: string, patch: Partial<Pick<ArtifactRow, "title" | "body" | "kind" | "projectId">>, expectedRevision?: number) { return revise(database, id, ownerId, patch, expectedRevision); }
+export async function restoreArtifact(database: StoreDb, id: string, ownerId: string, revisionId: string, expectedRevision: number) { return revise(database, id, ownerId, {}, expectedRevision, revisionId); }
 export async function deleteArtifact(database: StoreDb, id: string, ownerId: string): Promise<MutationOutcome> {
-  const [existing] = await database.select({ id: artifacts.id, ownerId: artifacts.ownerId }).from(artifacts).where(eq(artifacts.id, id)).limit(1);
-  if (!existing) return "not_found";
-  if (existing.ownerId !== ownerId) return "forbidden";
-  await database.delete(artifacts).where(and(eq(artifacts.id, id), eq(artifacts.ownerId, ownerId)));
-  return "ok";
+  const result = await revise(database, id, ownerId, { deletedAt: new Date() });
+  return result.outcome === "conflict" ? "not_found" : result.outcome;
 }

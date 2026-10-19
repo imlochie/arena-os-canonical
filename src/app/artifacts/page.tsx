@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { ArtifactHistory } from "@/components/artifacts/ArtifactHistory";
 import Markdown from "@/components/Markdown";
 
 const KINDS = ["brief", "decision", "research", "concept", "plan", "critique", "prompt", "spec", "comparison", "answer"];
@@ -10,6 +11,7 @@ export default function ArtifactsPage() {
   const [projects, setProjects] = useState<any[]>([]);
   const [q, setQ] = useState("");
   const [kind, setKind] = useState("");
+  const [trash, setTrash] = useState(false);
   const [projectId, setProjectId] = useState("");
 
   const [error, setError] = useState<string | null>(null);
@@ -19,13 +21,13 @@ export default function ArtifactsPage() {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const response = await fetch("/api/artifacts?limit=100");
+      const response = await fetch(`/api/artifacts?limit=100${trash ? "&trash=1" : ""}`);
       const result = await response.json();
       if (!response.ok || !Array.isArray(result.artifacts)) throw new Error(result.error ?? "Artifact library could not be loaded. Retry.");
       setArtifacts(result.artifacts);
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Artifact library unavailable. Retry."); }
     finally { setLoading(false); }
-  }, []);
+  }, [trash]);
   useEffect(() => {
     void load();
     void fetch("/api/projects").then(async (response) => {
@@ -82,6 +84,7 @@ export default function ArtifactsPage() {
           ))}
         </select>
       </div>
+      <label><input type="checkbox" checked={trash} onChange={(event) => setTrash(event.target.checked)} />Include deleted artifacts (recoverable history)</label>
       {loading && <p role="status">Loading saved artifacts…</p>}
       {projectError && <p role="status">{projectError}</p>}
       {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => void load()} disabled={loading}>Retry loading artifacts</button></div>}
@@ -97,10 +100,12 @@ export default function ArtifactsPage() {
               <div className="scroll-thin max-h-64 overflow-y-auto">
                 <Markdown text={a.body} />
               </div>
+              <ArtifactHistory artifact={a} onChange={load} />
+              {!a.currentRevisionId && <p>Load revision history to bind this legacy artifact before cross-room reuse.</p>}
               <div className="mt-3 flex flex-wrap gap-1.5">
-                <a href={`/?prompt=${encodeURIComponent(a.body.slice(0, 1500))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">⚔️ Battle it</a>
-                <a href={`/collab?challenge=${encodeURIComponent(a.body.slice(0, 2000))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🤝 Collab it</a>
-                <a href={`/council?material=${encodeURIComponent(a.body.slice(0, 2500))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🧠 Council it</a>
+                {a.currentRevisionId && <a href={`/?prompt=${encodeURIComponent(a.body.slice(0, 1500))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}@${a.currentRevisionId ?? "unbound-legacy"}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">⚔️ Battle it</a>}
+                {a.currentRevisionId && <a href={`/collab?challenge=${encodeURIComponent(a.body.slice(0, 2000))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}@${a.currentRevisionId ?? "unbound-legacy"}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🤝 Collab it</a>}
+                {a.currentRevisionId && <a href={`/council?material=${encodeURIComponent(a.body.slice(0, 2500))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}@${a.currentRevisionId ?? "unbound-legacy"}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🧠 Council it</a>}
                 <button onClick={() => copy(a.body)} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">📋</button>
                 <button aria-label={`Delete ${a.title}`} disabled={deleting !== null} onClick={() => remove(a.id)} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-red-300 hover:bg-red-500/20">🗑️</button>
               </div>

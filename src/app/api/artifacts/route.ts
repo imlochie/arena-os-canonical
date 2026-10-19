@@ -19,7 +19,7 @@ export async function GET(req: Request) {
   const kind = url.searchParams.get("kind");
   const q = (url.searchParams.get("q") ?? "").toLowerCase().trim();
   try {
-    let rows = await listArtifacts(db, user.id, 200);
+    let rows = await listArtifacts(db, user.id, 200, url.searchParams.get("trash") === "1");
     if (projectId) rows = rows.filter((r) => r.projectId === projectId);
     if (kind) rows = rows.filter((r) => r.kind === kind);
     if (q) rows = rows.filter((r) => (r.title + " " + r.body).toLowerCase().includes(q));
