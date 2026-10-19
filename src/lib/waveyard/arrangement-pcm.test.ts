@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { prepareArrangementPcm, type ArrangementPreviewState } from "./arrangement-pcm";
-import { makeInsert, processWithChain } from "./mixer/inserts";
+import { makeInsert, parseInserts, processWithChain } from "./mixer/inserts";
 import { applyDelay } from "./mixer/dsp";
 function setup() {
   const input = new Float32Array(1000); input[900] = 0.4;
@@ -34,4 +34,11 @@ test("unknown processor and unavailable transforms fail explicitly, never succes
   const { state, audio } = setup(); state.tracks[0].clips[0].tempoSyncEnabled = true;
   assert.throws(() => prepareArrangementPcm(state, audio, 1000), /Tempo\/key/); state.tracks[0].clips[0].tempoSyncEnabled = false;
   state.masterInserts = [{ ...makeInsert("gain")!, processor: "unknown" as never }]; assert.throws(() => prepareArrangementPcm(state, audio, 1000), /Unsupported/);
+});
+
+test("persisted unsafe FX parameters and unbounded chains are rejected rather than silently clamped", () => {
+  const delay = makeInsert("delay")!;
+  assert.equal(parseInserts({ format: "waveyard-inserts-v1", inserts: [{ ...delay, params: { ...delay.params, feedback: 1.2 } }] }), null);
+  assert.equal(parseInserts({ format: "waveyard-inserts-v1", inserts: Array.from({ length: 33 }, (_, index) => ({ ...delay, id: `delay-${index}` })) }), null);
+  assert.throws(() => processWithChain(new Float32Array(10), [{ ...delay, processor: "unknown" as never }], 1000), /Unsupported/);
 });

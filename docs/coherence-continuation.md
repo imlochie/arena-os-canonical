@@ -801,3 +801,82 @@ and types, not the worker app/dependencies. A7 and browser jobs had passed at
 204d112, but static/Compose failed: **do not report that revision as green**.
 The fixes ship with this Artifact milestone and need fresh published checks.
 Mission deliverable snapshot/manifest retrieval remains the next major target.
+
+### Mandate 5 — durable mission deliverables and recovery milestone
+
+`mandate5-output-before.txt` reproduced actual panel retrieval failure: real
+executed reports existed, but no usable download link appeared (only paths).
+Mission saves now capture authoritative file-tool outputs and command/test logs
+before advancing their recorded results. The existing object provider stores
+atomic content-addressed private snapshots (32 MiB/item bound); equal content
+reuses one object. Existing Artifact history supplies immutable revision IDs,
+source mission attribution and ownership. Existing mission `artifacts` JSON now
+holds the output manifest: stable ID, display path, byte length, checksum, type,
+request/tool origin, owner, Artifact/revision IDs and completion/error state.
+No independent database artifact registry or arbitrary filesystem-download API
+was introduced. Large/binary files use metadata in the Artifact body, not a
+truncated copy; full bytes remain downloadable from the checked snapshot.
+
+The actual panel offers View/Download, checksummed saved snapshots and mission
+history selection. Older missions remain retrievable after newer work changes
+the workspace. Historical resume requests cannot accidentally resume a different
+active mission. Legacy path-only records are explicitly unverified and have no
+invented immutable download. Files not created by file tools require explicit
+`publish_output`; command/test return logs are retained separately. Failed
+writes and capture failures are marked unavailable and do not produce successful
+downloads or false mission completion. A complete log snapshot does not imply a
+successful command or an untruncated underlying process stream.
+
+`reuse_mission_output` copies an owned immutable text snapshot into an authorised
+workspace file through the existing write/syntax-check path. Source space,
+mission and output IDs remain in its journal; the source manifest pins its
+Artifact revision. Restoration/later edits never reinterpret the referenced
+revision. Guessed/out-of-space IDs, foreign ownership, checksum corruption,
+symlinks, hard-linked/nonregular files and oversized captures are refused.
+Retrieval derives storage keys from authorised checksums, never from untrusted
+manifest paths. File tools now reject symlink traversal too. This does not
+sandbox host-mode commands or claim protection against a malicious local OS
+actor racing parent-directory replacements. Binary reuse needs follow-through;
+text reuse and binary download are separate capabilities.
+
+Real persistence/execution evidence:
+* `mandate5-output-final.txt`: 6 PASS/0 FAIL, 14.08s, actual panel + actual
+  PostgreSQL + actual dispatcher/files, including SQL restart, native download
+  SHA-256 verification, original output after later overwrite, reuse into later
+  task, useful partial outputs with incomplete mission, foreign/scope refusal,
+  corrupted snapshot rejection and symlink refusal.
+* SIGKILL at `output_captured`, before result/manifest advancement: recovery
+  binds one existing original Artifact revision without rewriting the file or
+  duplicating the Artifact. An owner edit to the current Artifact between
+  interruption and recovery does not change the pinned original download.
+* `mandate5-all-final.txt`: combined 17 PASS/0 FAIL/0 SKIP, 33.14s, overlapping
+  mission/Studio/Artifact acceptance (not additive with the focused six).
+* Subsequent focused `mandate5-live-edit.txt`: actual nonlinear overlapping-clip
+  audition, immediate master edit/version/export, pause/seek/stop, maximum one
+  active source. Kernel-reference error 0.000003472, export error 0.000068441.
+  Adds a browser case; do not count its repeat as independent tests.
+* `mandate5-output-regression.txt`: 29 PASS for tools/execution/storage.
+* `mandate5-dsp-final.txt`: 142 PASS covering shared kernels, preview, bounce,
+  helpers, unsafe persisted FX refusal and 32-insert safety bound. Explicit UI
+  `makeInsert` clamping is retained; untrusted persisted chains no longer
+  silently clamp parameters. Unknown direct processors throw rather than dry
+  success. Wet-zero inserts do not generate padded silent tails.
+* Root typecheck and production build PASS (`mandate5-final-{types,build}.txt`),
+  targeted output lint zero errors / one existing workbench effect warning.
+
+Published `618858c` CI was not green: A7/Compose passed, static and durable
+browser checks failed. Static annotations exposed migration 0017 missing
+statement-breakpoint delimiters: native PostgreSQL accepted the multi-command
+string while PGlite's prepared-query adapter refused it. Local reproduction
+`mandate5-ci-reproduce.txt` showed 11 failures; inserting delimiters (no SQL
+semantic change for already migrated databases) yields **17/17 PASS** in
+`mandate5-ci-repaired.txt`. The prior signed aggregate logs remain inaccessible;
+durable browser failure-identity annotations are now wired in as well. Fresh
+published CI must verify the integrated revision; do not hide earlier failures.
+
+Open: synced tempo/key audition, long-arrangement scalability/main-thread
+preparation, real Redis worker kill/restart FX acceptance (handler retry is
+proven, not that lifecycle), large/binary reuse, retention/garbage collection
+policy for immutable objects, and acceptance beyond these rooms. No provider,
+real inference, Electron or Windows claim. Provider/model availability has not
+blocked this work and no unavailable downloads were retried.

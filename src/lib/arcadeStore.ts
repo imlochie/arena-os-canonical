@@ -59,6 +59,8 @@ export async function deleteArcadeGame(database: StoreDb, id: string, ownerId: s
 }
 
 export interface ArtifactInput {
+  /** Server-supplied stable identity for idempotent mission output capture. */
+  id?: string;
   projectId?: string | null;
   kind: string;
   title: string;
@@ -83,7 +85,9 @@ async function baseline(tx: Transaction, row: ArtifactRow) {
 export async function insertArtifact(database: StoreDb, input: ArtifactInput) {
   if (input.body.length > 20000) throw new Error("Artifact body exceeds the 20,000-character limit; nothing was saved.");
   return database.transaction(async (tx) => {
-    const [row] = await tx.insert(artifacts).values({ ...input, projectId: input.projectId ?? null, sourceId: input.sourceId ?? null }).returning();
+    const [inserted] = await tx.insert(artifacts).values({ ...input, projectId: input.projectId ?? null, sourceId: input.sourceId ?? null }).onConflictDoNothing({ target: artifacts.id }).returning();
+    const row = inserted ?? (input.id ? (await tx.select().from(artifacts).where(and(eq(artifacts.id, input.id), eq(artifacts.ownerId, input.ownerId))).limit(1))[0] : undefined);
+    if (!row || row.sourceId !== (input.sourceId ?? null)) throw new Error("Artifact identity conflict; no existing content was overwritten.");
     return baseline(tx, row);
   });
 }

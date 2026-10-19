@@ -41,18 +41,11 @@ export async function ensureWorkspace(spaceId: string): Promise<string> {
   return dir;
 }
 
-/** Confine a path inside the workspace (no ../ escapes, no absolute paths). */
-function safePath(dir: string, p: string): string {
-  if (path.isAbsolute(p)) throw new Error("path escapes workspace");
-  const full = path.resolve(dir, p);
-  if (full !== dir && !full.startsWith(dir + path.sep)) throw new Error("path escapes workspace");
-  return full;
-}
-
 // ---------------- file tools ----------------
 
 export async function toolWriteFile(dir: string, p: string, content: string): Promise<string> {
-  const full = safePath(dir, p);
+  const { containedOutputPath } = await import("./mission-outputs");
+  const full = await containedOutputPath(dir, p, true);
   const check = await syntaxCheck(p, content);
   if (check.checked && !check.ok) {
     return `error: ${p} has syntax errors — NOT written.\n${check.error}\nFix and retry.`;
@@ -72,7 +65,8 @@ export async function toolReadFile(
   p: string,
   opts: { startLine?: number; endLine?: number } = {},
 ): Promise<string> {
-  const full = safePath(dir, p);
+  const { containedOutputPath } = await import("./mission-outputs");
+  const full = await containedOutputPath(dir, p);
   const content = await readFile(full, "utf8");
   const lines = content.split("\n");
   const total = lines.length;
@@ -106,7 +100,8 @@ export async function toolListFiles(dir: string): Promise<string> {
 }
 
 export async function toolDeleteFile(dir: string, p: string): Promise<string> {
-  const full = safePath(dir, p);
+  const { containedOutputPath } = await import("./mission-outputs");
+  const full = await containedOutputPath(dir, p, true);
   await rm(full, { force: true });
   return `deleted ${p}`;
 }
@@ -247,7 +242,8 @@ export async function toolEditFile(
   const oldText = String(args.old_text ?? "");
   const newText = String(args.new_text ?? "");
   if (!oldText) return "error: old_text is required (use read_file to view exact text first)";
-  const full = safePath(dir, p);
+  const { containedOutputPath } = await import("./mission-outputs");
+  const full = await containedOutputPath(dir, p, true);
   let original: string;
   try {
     original = await readFile(full, "utf8");
@@ -509,6 +505,15 @@ export async function executeTool(
   const t0 = Date.now();
   const run = async (): Promise<string> => {
     switch (action.tool) {
+      case "publish_output": { const { inspectOutput } = await import("./mission-outputs"); return inspectOutput(spaceId, String(action.args.path ?? "")); }
+      case "reuse_mission_output": {
+        const { retrieveMissionOutput } = await import("./mission-outputs");
+        const { isUuid } = await import("../api/ids");
+        for (const key of ["sourceSpaceId", "missionId", "outputId"]) if (!isUuid(String(action.args[key] ?? ""))) return `error: ${key} must be a stable authorised ID`;
+        const { output, bytes } = await retrieveMissionOutput(action.args.sourceSpaceId, action.args.missionId, action.args.outputId);
+        if (!output.mediaType?.startsWith("text/")) return "error: only text outputs can be reused by this file tool; download binary output instead";
+        return toolWriteFile(dir, String(action.args.path ?? ""), bytes.toString("utf8"));
+      }
       case "write_file":
         return toolWriteFile(dir, String(action.args.path ?? ""), String(action.args.content ?? ""));
       case "read_artifact": {

@@ -368,13 +368,13 @@ export type MinimalInsertLike = {
 export function parseInserts(raw: unknown): InsertChain | null {
   if (raw === null || typeof raw !== "object") return null;
   const parsed = z
-    .object({ format: z.literal(INSERTS_FORMAT), inserts: z.array(InsertSchema) })
+    .object({ format: z.literal(INSERTS_FORMAT), inserts: z.array(InsertSchema).max(32) })
     .safeParse(raw);
   if (!parsed.success) return null;
   const chain: InsertChain = [];
   for (const insert of parsed.data.inserts) {
     const validation = validateInsertParams(insert.processor, insert.params);
-    if (validation === null) return null;
+    if (validation === null || validation.clamped.length > 0) return null;
     chain.push({
       id: insert.id,
       processor: insert.processor as InsertProcessorId,
@@ -611,5 +611,7 @@ function runProcessor(
         sampleRate,
       });
       return buffer;
+    default:
+      throw new Error(`Unsupported insert processor: ${insert.processor}`);
   }
 }

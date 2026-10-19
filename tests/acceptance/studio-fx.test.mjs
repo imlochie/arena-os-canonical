@@ -261,3 +261,34 @@ test("Artifact Library real UI edits, downloads immutable history, restores, del
   await page.getByRole("button", { name: "Restore revision 1", exact: true }).click(); await expect(page.getByText("Current revision 5", { exact: true })).toBeVisible();
   await page.reload(); await page.getByText("Browser history original", { exact: true }).click(); await expect(page.getByText("Current revision 5", { exact: true })).toBeVisible();
 });
+
+test("live nonlinear arrangement edits replace one graph, immediately version/export current FX, and preserve pause/seek/stop", async (t) => {
+  const { projectId, remixId } = await source(); const { makeInsert, processWithChain } = await import("../../src/lib/waveyard/mixer/inserts.ts");
+  const state = await api(`/api/remixes/${remixId}`); const track = state.tracks[0]; const duplicate = { ...track.clips[0] }; delete duplicate.id;
+  await api(`/api/remixes/${remixId}`, "PUT", { ...state.remix, tracks: [{ ...track, phaseInverted: true, clips: [...track.clips, duplicate], inserts: [makeInsert("saturator", { drive: 3 })] }], masterInserts: [makeInsert("gain", { gainDb: -6 })] });
+  const page = await browser.newPage(); page.setDefaultTimeout(10000); t.after(() => page.close());
+  await page.addInitScript(() => {
+    window.__starts = []; window.__activeSources = new Set(); window.__maxActive = 0;
+    const start = AudioBufferSourceNode.prototype.start, stop = AudioBufferSourceNode.prototype.stop;
+    AudioBufferSourceNode.prototype.start = function(...args) { window.__starts.push({ samples: Array.from(this.buffer.getChannelData(0)), offset: args[1] ?? 0 }); window.__activeSources.add(this); window.__maxActive = Math.max(window.__maxActive, window.__activeSources.size); this.addEventListener("ended", () => window.__activeSources.delete(this)); return start.apply(this, args); };
+    AudioBufferSourceNode.prototype.stop = function(...args) { window.__activeSources.delete(this); return stop.apply(this, args); };
+  });
+  await page.goto(`${origin}/?project=${projectId}&remix=${remixId}`); await page.getByTestId("waveyard-mode-studio").click();
+  await page.getByRole("button", { name: "Preview arrangement", exact: true }).click(); await page.waitForFunction(() => window.__starts.length >= 1);
+  const rack = page.getByTestId("insert-rack-master"); await rack.locator("summary").click(); await range(rack.getByLabel("gain gainDb", { exact: true }), -12);
+  await page.waitForFunction(() => window.__starts.length >= 2);
+  const audition = await page.evaluate(() => window.__starts.at(-1).samples);
+  const assetResponse = await dispatch(new URL(`/api/assets/${track.stemAssetId}`, "http://fixture")); const input = synth.decodeWav16(new Uint8Array(await assetResponse.arrayBuffer()));
+  const expected = processWithChain(Float32Array.from(input.samples, (sample) => sample * -2 * Math.SQRT1_2), [makeInsert("saturator", { drive: 3 }), makeInsert("gain", { gainDb: -12 })], 44100);
+  let maxError = 0; for (let frame = 0; frame < 22050; frame++) maxError = Math.max(maxError, Math.abs(audition[frame] - expected[frame * 2]));
+  assert.ok(maxError < 0.0002, `actual audible source processes summed clips and current master, max error ${maxError}`);
+  page.once("dialog", (dialog) => dialog.accept("Current live nonlinear settings")); const saved = page.waitForResponse((response) => response.url().endsWith(`/remixes/${remixId}/versions`) && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save version", exact: true }).click(); const { version } = await (await saved).json();
+  const output = await render(version.id); let outputError = 0; for (let frame = 0; frame < 22050; frame++) outputError = Math.max(outputError, Math.abs(audition[frame] - output.decoded.samples[frame * 2])); assert.ok(outputError < 0.0002, `live nonlinear/export parity ${outputError}`);
+  if (await page.getByRole("button", { name: "Pause arrangement", exact: true }).isVisible()) await page.getByRole("button", { name: "Pause arrangement", exact: true }).click();
+  await range(page.getByRole("slider", { name: "Seek project", exact: true }), 0.5); await page.getByRole("button", { name: "Preview arrangement", exact: true }).click();
+  await page.waitForFunction(() => Math.abs(window.__starts.at(-1).offset - 0.5) < 0.01);
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.__activeSources.size), 0); assert.equal(await page.evaluate(() => window.__maxActive), 1);
+  console.log(JSON.stringify({ kind: "live-edits-nonlinear-export", maxError, outputError, maximumConcurrentSources: 1 }));
+});

@@ -801,11 +801,26 @@ interface MissionLite {
   updatedAt?: string;
   agentPlan: { name: string; role: string }[];
   journal: MissionStepLite[];
-  artifacts: { path: string; bytes: number }[];
+  artifacts: import("@/lib/spaces/mission-outputs").MissionOutput[];
   handoff: string;
 }
 
+function MissionOutputItem({ output, spaceId, missionId }: { output: import("@/lib/spaces/mission-outputs").MissionOutput; spaceId: string; missionId: string }) {
+  const [text, setText] = useState<string | null>(null), [error, setError] = useState<string | null>(null);
+  const url = `/api/spaces/${spaceId}/mission/outputs/${output.id}?missionId=${missionId}`;
+  async function inspect() {
+    try { setError(null); const response = await fetch(url + "&view=1"); if (!response.ok) { const data = await response.json(); throw new Error(data.error); } setText(await response.text()); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : "Output unavailable."); }
+  }
+  return <li className="mt-2"><span>{output.path} · {output.bytes} bytes · {output.tool ?? "legacy workspace reference"} · {output.state ?? "unverified legacy reference"}</span>
+    {output.state === "complete" && output.id ? <div><a href={url}>Download {output.path}</a>{" "}{output.mediaType?.startsWith("text/") && <button type="button" onClick={() => void inspect()}>View {output.path}</button>}<small className="block break-all">SHA-256 {output.checksumSha256} · Artifact revision {output.revisionId}</small></div> : <p role="status">{output.error ?? "Only a legacy workspace path was retained; no immutable download was recorded."}</p>}
+    {error && <p role="alert">{error}</p>}{text !== null && <pre className="max-h-64 overflow-auto whitespace-pre-wrap">{text}</pre>}
+  </li>;
+}
+
 export function MissionPanel({ spaceId }: { spaceId: string }) {
+  const [selectedMission, setSelectedMission] = useState("");
+  const [missionHistory, setMissionHistory] = useState<{ id: string; goal: string; status: string }[]>([]);
   const [goal, setGoal] = useState("");
   const [budget, setBudget] = useState(5);
   const [turns, setTurns] = useState(3);
@@ -826,18 +841,19 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
       if (loading) return;
       loading = true;
       try {
-        const response = await fetch(`/api/spaces/${spaceId}/mission`, { cache: "no-store" });
+        const response = await fetch(`/api/spaces/${spaceId}/mission${selectedMission ? `?missionId=${selectedMission}` : ""}`, { cache: "no-store" });
         const body = await response.json();
         if (!response.ok) throw new Error(body.error ?? "Mission could not be retrieved");
         if (alive) setLoadError(null);
-        if (alive && body.mission) setMission((previous) => previous?.updatedAt && body.mission.updatedAt < previous.updatedAt ? previous : body.mission);
+        if (alive && body.mission) setMission((previous) => previous?.id === body.mission.id && previous?.updatedAt && body.mission.updatedAt < previous.updatedAt ? previous : body.mission);
       } catch (error) { if (alive) setLoadError(error instanceof Error ? error.message : "Mission could not be retrieved"); }
       finally { loading = false; }
     }
     void refresh();
+    void fetch(`/api/spaces/${spaceId}/mission?history=1`).then(async (response) => { if (!response.ok) throw new Error("Mission history unavailable"); const body = await response.json(); if (alive) setMissionHistory(body.missions ?? []); }).catch((error) => { if (alive) setLoadError(error.message); });
     const timer = setInterval(() => void refresh(), 2000);
     return () => { alive = false; clearInterval(timer); };
-  }, [spaceId]);
+  }, [spaceId, selectedMission]);
 
   async function resolveRequest(requestId: string, resolution: string, evidence: string) {
     const response = await fetch(`/api/spaces/${spaceId}/mission`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operation: "reconcile", missionId: mission?.id, requestId, resolution, evidence }) });
@@ -857,6 +873,7 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
   }
 
   async function start(continueMission: boolean) {
+    setSelectedMission("");
     setRunning(true);
     setError(null);
     try {
@@ -875,7 +892,7 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
             .map((c) => c.trim())
             .filter(Boolean)
             .slice(0, 12),
-          ...(continueMission ? {} : { goal, timeBudgetMinutes: budget }),
+          ...(continueMission ? { missionId: mission?.id } : { goal, timeBudgetMinutes: budget }),
         }),
       });
       const body = await res.json();
@@ -895,6 +912,7 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
 
   return (
     <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
+      <label>Mission history<select aria-label="Mission history" value={selectedMission} onChange={(event) => { setSelectedMission(event.target.value); setMission(null); }}><option value="">Latest mission</option>{missionHistory.map((item) => <option key={item.id} value={item.id}>{item.goal} · {item.status}</option>)}</select></label>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-200/70">Build mission</span>
         {mission && (
@@ -1059,9 +1077,7 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
             </div>
           ))}
           {mission.artifacts.length > 0 && (
-            <p className="text-[11px] text-slate-500">
-              workspace: {mission.artifacts.map((a) => a.path).join(", ")}
-            </p>
+            <section aria-label="Mission outputs"><b>Mission outputs</b><ul>{mission.artifacts.map((output, index) => <MissionOutputItem key={output.id ?? `${output.path}:${index}`} output={output} spaceId={spaceId} missionId={mission.id} />)}</ul></section>
           )}
           {mission.handoff && (
             <p className="rounded-lg bg-white/[0.03] p-2 text-[11px] text-slate-400 ring-1 ring-white/5">

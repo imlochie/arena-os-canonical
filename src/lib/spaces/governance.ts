@@ -55,6 +55,7 @@ export function approvalRequired(actionClass: ActionClass): boolean {
 /** Map a mission tool name to its action class. */
 export function classifyToolAction(tool: string): ActionClass {
   switch (tool) {
+    case "reuse_mission_output":
     case "write_file":
     case "edit_file":
     case "delete_file":

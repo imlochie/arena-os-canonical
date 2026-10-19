@@ -29,6 +29,7 @@ import { spaceMissions, spaces, spaceActionApprovals } from "@/db/schema";
 import { generate } from "@/lib/ai";
 import type { GenerateResult } from "@/lib/runtime";
 import { listAgents } from "@/lib/spaces";
+import { captureMissionOutput, type MissionOutput } from "./mission-outputs";
 import { executeTool, ensureWorkspace, toolListFiles, workspaceDir as wsDir, type ToolOutcome } from "./tools";
 import { actionSignature, classifyToolAction, approvalRequired, claimExecution, completeExecution, findLatestBySignature, requestApproval } from "./governance";
 import { ensureIsolatedWorkspace, teardownIsolatedWorkspace, type ExecTarget } from "./workspace-isolation";
@@ -92,7 +93,7 @@ export interface MissionSummary {
   journal: MissionStep[];
   checkpoint?: MissionControl;
   persistence: "postgres" | "memory-only";
-  artifacts: { path: string; bytes: number }[];
+  artifacts: MissionOutput[];
   handoff: string;
   startedAt: string;
   updatedAt: string;
@@ -145,6 +146,8 @@ const AGENT_KNOWLEDGE = `WORK DISCIPLINE (how strong coding agents operate):
 - At the end, append 1-3 concise lessons to AGENT_NOTES.md ("## <goal in 6 words>\n- lesson") — future missions in this space read them.`;
 
 const TOOL_DOC = `Available tools (emit actions as JSON):
+- publish_output {path} register a stable workspace file as a private downloadable output
+- reuse_mission_output {sourceSpaceId, missionId, outputId, path} copy an authorised immutable text output into this workspace
 - read_artifact {artifactId, revisionId}  retrieve an owned immutable Artifact revision (both IDs required; never implicit latest)
 - write_file {path, content}        create/overwrite a file (new files, or full rewrites of small files)
 - edit_file {path, old_text, new_text}  SURGICAL edit of an existing file (Aider-style): old_text must match EXACTLY ONE location — copy it from read_file output; verified + syntax-checked
@@ -243,6 +246,14 @@ export async function getLatestMission(spaceId: string, database: typeof db = db
     }
   }
   return memoryMissions.has(spaceId) ? rowToSummary(memoryMissions.get(spaceId)) : null;
+}
+
+export async function getMissionById(spaceId: string, missionId: string, database: typeof db = db): Promise<MissionSummary | null> {
+  const [row] = await database.select().from(spaceMissions).where(and(eq(spaceMissions.id, missionId), eq(spaceMissions.spaceId, spaceId))).limit(1);
+  return row ? rowToSummary(row) : null;
+}
+export async function listSpaceMissions(spaceId: string) {
+  return db.select({ id: spaceMissions.id, goal: spaceMissions.goal, status: spaceMissions.status, startedAt: spaceMissions.startedAt }).from(spaceMissions).where(eq(spaceMissions.spaceId, spaceId)).orderBy(desc(spaceMissions.startedAt)).limit(100);
 }
 
 const activeRuns = new Set<string>();
@@ -364,7 +375,18 @@ async function runMissionInner(spaceId: string, opts: MissionOpts, deps: Mission
   let status = "done";
   let statusDetail = "";
 
+  const outputManifest: MissionOutput[] = [...mission.artifacts];
   const save = async (patch: Partial<typeof spaceMissions.$inferInsert>) => {
+    if (durable) {
+      for (const step of steps) for (const action of step.actions) {
+        if (!action.requestId || outputManifest.some((item) => item.requestId === action.requestId) || !["write_file", "edit_file", "publish_output", "reuse_mission_output", "run_command", "run_tests"].includes(action.tool)) continue;
+        const output = await captureMissionOutput(database, mission.id, spaceId, action); outputManifest.push(output);
+        await deps.onCheckpoint?.("output_captured", mission);
+        if (output.state === "unavailable" && action.ok) { status = "incomplete"; statusDetail = `A tool effect completed but its deliverable could not be captured: ${output.error}`; }
+      }
+      patch.artifacts = outputManifest;
+      if (patch.status === "done" && outputManifest.some((item) => item.state === "unavailable")) { patch.status = "incomplete"; patch.statusDetail = statusDetail || "Some outputs could not be captured. Inspect their reported states."; }
+    }
     if (control.lease?.owner === owner) control.lease.expiresAt = Date.now() + leaseMs;
     const apply = (r: any) => rowToSummary({ ...r, ...patch, journal: { steps, control }, updatedAt: new Date() });
     if (useDatabase) {
@@ -405,7 +427,7 @@ async function runMissionInner(spaceId: string, opts: MissionOpts, deps: Mission
   try {
     await checkpoint(resuming ? "recovered" : "created");
     for (const step of steps) for (const request of step.requestedActions ?? []) {
-      if (request.state === "executing" && ["read_file", "list_files", "search_code"].includes(request.tool)) request.state = "pending";
+      if (request.state === "executing" && ["read_file", "read_artifact", "list_files", "search_code", "publish_output"].includes(request.tool)) request.state = "pending";
       else if (request.state === "executing" || request.state === "uncertain") {
         if (approvalRequired(classifyToolAction(request.tool))) {
           const receipt = await findLatestBySignature(actionSignature(mission.id, request.tool, request.args), database, durable);
@@ -426,11 +448,11 @@ async function runMissionInner(spaceId: string, opts: MissionOpts, deps: Mission
     }
     if (status === "needs_reconciliation") {
       control.lease = undefined;
-      return await save({ status, statusDetail, artifacts: await listArtifacts(spaceId), endedAt: null });
+      return await save({ status, statusDetail, artifacts: durable ? outputManifest : await listArtifacts(spaceId), endedAt: null });
     }
     if (resuming && !row.journal.control?.activeStepId && steps.some((step) => !step.done && !step.requestedActions)) {
       control.lease = undefined;
-      return await save({ status: "needs_reconciliation", statusDetail: "Legacy interrupted turn has no requested-action checkpoint. Inspect its effects; it was not automatically replayed.", artifacts: await listArtifacts(spaceId) });
+      return await save({ status: "needs_reconciliation", statusDetail: "Legacy interrupted turn has no requested-action checkpoint. Inspect its effects; it was not automatically replayed.", artifacts: durable ? outputManifest : await listArtifacts(spaceId) });
     }
     await save({ status: "running", statusDetail: resuming ? "Resumed from persisted requests/results; completed effects were not repeated." : "", handoff });
     const isolationMode = opts.isolation ?? "auto";
@@ -665,7 +687,7 @@ async function runMissionInner(spaceId: string, opts: MissionOpts, deps: Mission
     status,
     statusDetail: statusDetailWithEnv,
     handoff,
-    artifacts: await listArtifacts(spaceId),
+    artifacts: durable ? outputManifest : await listArtifacts(spaceId),
     endedAt: recoverable(status) ? null : new Date(),
   });
   return mission;

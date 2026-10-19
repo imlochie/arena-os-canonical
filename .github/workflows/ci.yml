@@ -193,6 +193,9 @@ jobs:
         env:
           ARENA_STUDIO_FX_EVIDENCE_DIR: .data/acceptance/studio-fx
         run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/mission-recovery.test.mjs tests/acceptance/studio-fx.test.mjs tests/acceptance/artifact-retention.test.mjs | tee durable-workflows-acceptance.tap
+      - name: Publish failing durable workflow test identities
+        if: failure()
+        run: node scripts/ci-test-summary.mjs durable-workflows-acceptance.tap
       - name: Retain durable workflow and decoded FX evidence (including failures)
         if: always()
         uses: actions/upload-artifact@v4

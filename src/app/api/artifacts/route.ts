@@ -44,6 +44,7 @@ export async function POST(req: Request) {
     const kind = (body.kind ?? "brief").toString().slice(0, 20);
     const projectId = body.projectId ? String(body.projectId) : null;
     const sourceType = (body.sourceType ?? "manual").toString().slice(0, 20);
+    if (sourceType === "mission-output") return Response.json({ error: "Mission output provenance must be recorded by an executed mission operation." }, { status: 400 });
     const sourceId = body.sourceId ? String(body.sourceId).slice(0, 80) : null;
     const row = await insertArtifact(db, {
       projectId,

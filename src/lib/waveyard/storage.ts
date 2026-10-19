@@ -28,6 +28,7 @@ export interface StorageProvider {
   readonly kind: "local";
   putFile(key: string, localPath: string, contentType?: string): Promise<void>;
   putBuffer(key: string, data: string): Promise<void>;
+  putImmutableBuffer(key: string, data: Buffer): Promise<void>;
   getToFile(key: string, localPath: string): Promise<void>;
   // Bounded derived metadata (waveforms), never large audio delivery.
   getBuffer(key: string, maxBytes: number): Promise<Buffer>;
@@ -80,6 +81,20 @@ export class LocalStorageProvider implements StorageProvider {
     const destination = safeLocalPath(this.root, key);
     await fs.mkdir(dirname(destination), { recursive: true });
     await fs.copyFile(localPath, destination);
+  }
+  async putImmutableBuffer(key: string, data: Buffer) {
+    const destination = safeLocalPath(this.root, key);
+    await fs.mkdir(dirname(destination), { recursive: true });
+    const temporary = `${destination}.${randomUUID()}.partial`;
+    try {
+      await fs.writeFile(temporary, data, { flag: "wx" });
+      try { await fs.link(temporary, destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const previous = await fs.readFile(destination);
+        if (!previous.equals(data)) throw new Error("Immutable output object is corrupted; it was not overwritten.");
+      }
+    } finally { await fs.unlink(temporary).catch(() => {}); }
   }
   async putBuffer(key: string, data: string) {
     const destination = safeLocalPath(this.root, key);

@@ -1,12 +1,22 @@
-import { getLatestMission, runMission, cancelMission, reconcileMission, MissionBusyError, MissionInputError } from "@/lib/spaces/mission";
+import { getLatestMission, getMissionById, listSpaceMissions, runMission, cancelMission, reconcileMission, MissionBusyError, MissionInputError } from "@/lib/spaces/mission";
 import { getSpace } from "@/lib/spaces";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
-  try { return Response.json({ mission: await getLatestMission(id) }); }
+  try {
+    const url = new URL(req.url);
+    if (url.searchParams.get("history") === "1") return Response.json({ missions: await listSpaceMissions(id) });
+    const missionId = url.searchParams.get("missionId");
+    if (missionId) {
+      const { isUuid } = await import("@/lib/api/ids");
+      if (!isUuid(missionId)) return Response.json({ error: "Valid mission ID required." }, { status: 400 });
+      const mission = await getMissionById(id, missionId); return mission ? Response.json({ mission }) : Response.json({ error: "Mission not found in this space." }, { status: 404 });
+    }
+    return Response.json({ mission: await getLatestMission(id) });
+  }
   catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Mission storage unavailable" }, { status: 503 }); }
 }
 
@@ -31,6 +41,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       return Response.json({ mission });
     }
     const existing = await getLatestMission(id);
+    if (body?.missionId && existing?.id !== body.missionId) return Response.json({ error: "The selected historical mission is not the active mission. Retrieve its outputs; it was not resumed as a different task." }, { status: 409 });
     const unfinished = existing && ["running", "checkpointed", "awaiting_approval", "needs_reconciliation"].includes(existing.status);
     if (unfinished && body?.goal && String(body.goal).trim() !== existing.goal) return Response.json({ error: "An unfinished mission exists. Resume, reconcile, or cancel it before starting another goal." }, { status: 409 });
     const continuing = unfinished && !body?.goal;
