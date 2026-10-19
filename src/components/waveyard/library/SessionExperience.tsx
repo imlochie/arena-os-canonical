@@ -5,7 +5,8 @@ import type { TrackSummary } from "@/lib/waveyard/library/service";
 import type { StudioHandoffResult } from "@/lib/waveyard/library/session-service";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { laneDisplayName } from "@/lib/waveyard/separation/stem-display";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStemTransport, type ChannelMeter, type MixerValues } from "@/lib/waveyard/useStemTransport";
 import { useHardwareMediaKeys } from "@/lib/waveyard/stem2";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
@@ -31,7 +32,7 @@ interface SessionTrackItem {
   id: string;
   position: number;
   track: { id: string; title: string; artist: string; durationSeconds: number };
-  stems: Array<{ id: string; stemType: string; engine: string }>;
+  stems: Array<{ id: string; stemType: string; engine: string; model?: string | null }>;
   playback: { assetIds: string[]; kind: "stems" | "source" } | null;
   stemMix: Record<string, number>;
   transition: TransitionConfig;
@@ -81,6 +82,26 @@ function formatClock(seconds: number): string {
 // useStemTransport — the session layer composes the P2 primitive, it does not
 // replace it.
 // ---------------------------------------------------------------------------
+
+/** Preserve the media element / Web Audio graph across donor changes. Only
+ * this lane rejoins the deck clock after the new URL's real metadata arrives. */
+function SessionStemAudio({ assetId, src, label, register, synchronizeSource, onEnded }: {
+  assetId: string;
+  src: string;
+  label: string;
+  register: ReturnType<typeof useStemTransport>["register"];
+  synchronizeSource: ReturnType<typeof useStemTransport>["synchronizeSource"];
+  onEnded: () => void;
+}) {
+  const previousSource = useRef(src);
+  const mediaRef = useCallback((element: HTMLAudioElement | null) => register(assetId, element), [assetId, register]);
+  useLayoutEffect(() => {
+    if (previousSource.current === src) return;
+    previousSource.current = src;
+    return synchronizeSource(assetId);
+  }, [assetId, src, synchronizeSource]);
+  return <audio aria-label={label} ref={mediaRef} src={src} preload="auto" onEnded={onEnded} />;
+}
 
 function SessionDeck({
   deckIndex,
@@ -209,12 +230,13 @@ function SessionDeck({
             const donorAssetId = swaps[stemType];
             const src = donorAssetId ?? assetId;
             return (
-              <audio
+              <SessionStemAudio
                 key={assetId}
-                aria-label={`${stemType} audio${donorAssetId ? " (swapped layer)" : ""}`}
-                ref={(element) => transport.register(assetId, element)}
+                assetId={assetId}
+                label={`${stemType} audio${donorAssetId ? " (swapped layer)" : ""}`}
+                register={transport.register}
+                synchronizeSource={transport.synchronizeSource}
                 src={`/api/assets/${src}`}
-                preload="auto"
                 onEnded={() => onEnded(deckIndex)}
               />
             );
@@ -840,7 +862,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         },
         () =>
           setStatus(
-            `Swapped: “${stemType}” now comes from “${nextItem.track.title}” (real stem audio, aligned to the current track's timeline).`,
+            `Swap saved: “${stemType}” from “${nextItem.track.title}” joins the deck clock when its audio is ready. A failed load is reported on the deck.`,
           ),
       );
     },
@@ -1000,7 +1022,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
                 return (
                   <div key={stem.id} className="sess-mix-row">
                     <label className="sess-mix-label" htmlFor={`sess-mix-${stem.id}`}>
-                      {stem.stemType}
+                      {laneDisplayName(stem, currentItem.stems)}
                       {swap !== undefined ? " (swapped)" : ""}
                     </label>
                     <input

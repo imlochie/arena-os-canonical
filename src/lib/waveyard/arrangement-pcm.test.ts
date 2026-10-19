@@ -64,3 +64,24 @@ test("bounded pre-master cache reuses only master edits; source/settings/ranges/
   for (const edit of edits) { const next = structuredClone(state); edit(next); assert.deepEqual(prepareArrangementPcm(next, audio, 1000, cache), prepareArrangementPcm(next, audio, 1000)); assert.equal(cache.hit, false); }
   cache.revision = "replaced-source-v2"; prepareArrangementPcm(state, audio, 1000, cache); assert.equal(cache.hit, false);
 });
+
+
+test("serial tracks reuse one dry bus without bleeding prior lanes or mutating immutable sources", () => {
+  const { state, audio } = setup();
+  state.masterVolume = 1; state.masterInserts = [];
+  const track = { ...state.tracks[0], phaseInverted: false, inserts: [], clips: [state.tracks[0].clips[0]] };
+  const reference = prepareArrangementPcm({ ...state, tracks: [track] }, audio, 1000);
+  state.tracks = Array.from({ length: 32 }, (_, index) => ({ ...track, id: `lane-${index}` }));
+  const Native = globalThis.Float32Array;
+  let fullBusAllocations = 0;
+  globalThis.Float32Array = new Proxy(Native, { construct(target, args, newTarget) {
+    if (args[0] === reference.length) fullBusAllocations++;
+    return Reflect.construct(target, args, newTarget);
+  } });
+  try {
+    const output = prepareArrangementPcm(state, audio, 1000);
+    assert.equal(fullBusAllocations, 2, "one master sum + one reusable scratch, not 32 dry buses");
+    for (let index = 0; index < output.length; index++) assert.ok(Math.abs(output[index] - reference[index] * 32) < 0.00001);
+    assert.equal(audio.get("stem")!.getChannelData()[900], Math.fround(0.4), "input buffers remain immutable");
+  } finally { globalThis.Float32Array = Native; }
+});

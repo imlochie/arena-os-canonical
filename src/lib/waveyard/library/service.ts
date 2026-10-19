@@ -78,6 +78,8 @@ export interface TrackSummary {
 }
 
 export interface TrackStem {
+  /** Registry model identity is required to distinguish MDX melody from deep residual. */
+  model?: string | null;
   id: string;
   stemType: string;
   engine: string;
@@ -353,7 +355,7 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
   if (source === undefined) return null;
 
   const stemRows = await db
-    .select({ id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine })
+    .select({ id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine, model: stemAssets.model })
     .from(stemAssets)
     .where(eq(stemAssets.sourceAssetId, row.sourceAssetId));
 

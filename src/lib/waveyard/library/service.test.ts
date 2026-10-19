@@ -1195,3 +1195,20 @@ test("completed mixed transitions survive handoff, donors, save/version restore 
   } finally { if (priorWorker === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = priorWorker; if (priorRedis === undefined) delete process.env.REDIS_URL; else process.env.REDIS_URL = priorRedis; }
  }
 });
+
+
+test("library and session payloads retain persisted model identity for honest residual labels", async () => {
+  const detail = await service.getTrack(OWNER, trackA.id);
+  const residual = detail!.stems.find(stem => stem.stemType === "other")!;
+  assert.equal(residual.model, "pcm-tone");
+  await db.db.update(schema.stemAssets).set({ model: "deep_6s" }).where(eq(schema.stemAssets.id, residual.id));
+  try {
+    const reread = await service.getTrack(OWNER, trackA.id);
+    assert.equal(reread!.stems.find(stem => stem.id === residual.id)!.model, "deep_6s");
+    const session = await sessions.createSession(OWNER, "Model identity contract");
+    const result = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackA.id });
+    assert.equal(result.tracks[0].stems.find(stem => stem.id === residual.id)!.model, "deep_6s");
+  } finally {
+    await db.db.update(schema.stemAssets).set({ model: "pcm-tone" }).where(eq(schema.stemAssets.id, residual.id));
+  }
+});

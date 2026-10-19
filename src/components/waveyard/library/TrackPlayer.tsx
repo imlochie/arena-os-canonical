@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { laneDisplayName } from "@/lib/waveyard/separation/stem-display";
 import { useRouter } from "next/navigation";
 
 import { formatPlayClock, STEM_CHANNEL_LABELS } from "@/lib/waveyard/library/model";
@@ -47,7 +48,7 @@ interface TrackDetail {
   stemAvailability: { status: string; stemCount?: number; reason?: string };
   studioProjectId: string;
   source: { id: string; originalFilename: string; codec: string; sampleRate: number; channels: number; bitrate: number | null };
-  stems: Array<{ id: string; stemType: string; engine: string }>;
+  stems: Array<{ id: string; stemType: string; engine: string; model?: string | null }>;
   analysis: { status: string; bpm: number | null; musicalKey: string | null } | null;
   playback: { assetIds: string[]; kind: "stems" | "source" };
 }
@@ -488,7 +489,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
     ? playableStems.map((stem) => ({
         assetId: stem.id,
         stemType: stem.stemType,
-        label: STEM_CHANNEL_LABELS[stem.stemType] ?? stem.stemType[0]?.toUpperCase() + stem.stemType.slice(1),
+        label: laneDisplayName(stem, playableStems),
       }))
     : ["vocals", "drums", "bass", "other"].map((stemType) => ({
         assetId: "",

@@ -81,9 +81,9 @@ async function api(url, method = "GET", body) {
   const response = await dispatch(new URL(url, "http://fixture"), method, body === undefined ? undefined : JSON.stringify(body));
   assert.ok(response.ok, `${method} ${url}: ${response.status} ${await response.clone().text()}`); return response.json();
 }
-async function source(impulse = false, seconds = 3) {
+async function source(impulse = false, seconds = 3, frequency = 440) {
   const input = new Float32Array(44100 * seconds * 2);
-  for (let frame = 0; frame < input.length / 2; frame++) input[frame * 2] = input[frame * 2 + 1] = 0.2 * Math.sin(2 * Math.PI * 440 * frame / 44100);
+  for (let frame = 0; frame < input.length / 2; frame++) input[frame * 2] = input[frame * 2 + 1] = 0.2 * Math.sin(2 * Math.PI * frequency * frame / 44100);
   if (impulse) { input.fill(0); input[Math.round(2.9 * 44100) * 2] = input[Math.round(2.9 * 44100) * 2 + 1] = 0.4; }
   const filename = path.join(root, "fx-input.wav"); await writeFile(filename, synth.encodeWav16(input, 44100));
   process.env.WAVEYARD_LOCAL_WORKER = "0";
@@ -607,4 +607,55 @@ test("Arcade browser reopens private failed attempts after restart without repla
  const download=page.waitForEvent("download");await failedRow.getByRole("link",{name:"Download exact attempt",exact:true}).click();assert.equal(await readFile(await(await download).path(),"utf8"),partial);
  await f.stop();await f.start();await page.reload();await expect(failedRow).toContainText("failed");await failedRow.getByRole("button",{name:"Inspect retained draft",exact:true}).click();await retained.locator("summary").click();await expect(retained.locator("pre")).toHaveText(partial);
  const validRow=page.getByRole("article",{name:`Attempt ${validated.id}`,exact:true});await validRow.getByRole("button",{name:"Retry saving exact attempt",exact:true}).click();await expect(validRow).toContainText("completed");await expect(page.locator("iframe")).toHaveAttribute("srcdoc",code);await page.reload();await validRow.getByRole("button",{name:"Open saved result",exact:true}).click();await expect(page.locator("iframe")).toHaveAttribute("srcdoc",code);await expect(page.frameLocator("iframe").locator("canvas")).toBeVisible();
+});
+
+
+// Distinct private sources, unlike the repeated-one-source renderer benchmark
+// above. Real canonical controller/Worker/HTTP/PG; not the compiled Next UI.
+test("distinct-source preparation profiles 4/16/32 stereo ten-second assets without hiding browser memory behind decoded-byte counters", { timeout: 180000 }, async t => {
+  const arrangements = [];
+  for (let index = 0; index < 32; index++) {
+    const { remixId } = await source(false, 10, 220 + index * 17);
+    const result = await api(`/api/remixes/${remixId}`);
+    arrangements.push({ ...result.remix, tracks: result.tracks });
+  }
+  const trackRows = arrangements.map(state => state.tracks[0]);
+  assert.equal(new Set(trackRows.map(track => track.stemAssetId)).size, 32);
+  const cdp = await browser.newBrowserCDPSession();
+  const processes = await cdp.send("SystemInfo.getProcessInfo");
+  const pid = processes.processInfo.find(process => process.type === "browser")?.id;
+  const { readdir, readFile } = await import("node:fs/promises");
+  async function samplePss() {
+    if (process.platform !== "linux" || !pid) return null;
+    const entries = (await readdir("/proc")).filter(name => /^\d+$/.test(name));
+    const parents = await Promise.all(entries.map(async name => {
+      try { const stat = await readFile(`/proc/${name}/stat`, "utf8"); return [Number(name), Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])]; }
+      catch { return null; }
+    }));
+    const children = new Set([pid]);
+    for (let changed = true; changed;) { changed = false; for (const item of parents) if (item && children.has(item[1]) && !children.has(item[0])) { children.add(item[0]); changed = true; } }
+    const values = await Promise.all([...children].map(async id => {
+      try { return Number((await readFile(`/proc/${id}/smaps_rollup`, "utf8")).match(/^Pss:\s+(\d+)/m)?.[1] ?? 0) * 1024; } catch { return 0; }
+    }));
+    return values.reduce((sum, value) => sum + value, 0);
+  }
+  for (const count of [4, 16, 32]) {
+    const page = await browser.newPage();
+    const errors = []; page.on("pageerror", error => errors.push(error.message));
+    let peak = await samplePss(), busy = false;
+    const timer = setInterval(async () => { if (busy) return; busy = true; try { const pss = await samplePss(); if (pss !== null) peak = Math.max(peak ?? 0, pss); } finally { busy = false; } }, 50);
+    try {
+      await page.goto(`${origin}/?room=preparation`);
+      const state = { ...arrangements[0], tracks: trackRows.slice(0, count).map(track => ({ ...track, volume: 1 / count })) };
+      const result = await page.evaluate(state => window.measurePreparation(state), state);
+      console.log(JSON.stringify({ kind: "distinct-source-canonical-worker", sources: count, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result, scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak" }));
+      assert.equal(result.frames, 441000);
+      assert.equal(result.latestEditError, 0);
+      assert.equal(result.diagnostics.decodedBytes, count * 441000 * 2 * 4);
+      assert.ok(result.maximumGapMs < 250, `preparation-stage main-thread gap ${result.maximumGapMs}ms`);
+      assert.ok(result.replayMs < 20);
+      assert.deepEqual(errors, []);
+    } finally { clearInterval(timer); await page.close(); }
+  }
+  await cdp.detach();
 });

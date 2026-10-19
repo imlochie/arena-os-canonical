@@ -45,10 +45,15 @@ export function prepareArrangementPcm(state: ArrangementPreviewState, buffers: R
   }
   let mix = new Float32Array(drySamples);
   const anySolo = state.tracks.some((track) => track.solo && !track.muted);
+  // Tracks are processed serially into the master sum. Reuse ONE zeroed dry
+  // bus rather than allocating a full arrangement per track and waiting for
+  // worker GC. FX may return a separate longer tail; it is summed before reuse.
+  let scratch: Float32Array | null = null;
   for (const track of state.tracks) {
     const inserts = previewChain(track.inserts);
     if (effectiveMuted(track, anySolo)) continue;
-    const bus = new Float32Array(drySamples);
+    const bus = scratch ??= new Float32Array(drySamples);
+    bus.fill(0);
     for (const clip of track.clips) {
       // Never silently audition a different pitch or timing from the snapshot.
       if (clip.tempoSyncEnabled || clip.keySyncEnabled) throw new Error("Tempo/key-synced arrangement audition is not available yet. Use the WAV render to hear these transforms.");

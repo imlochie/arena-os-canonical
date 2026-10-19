@@ -1816,3 +1816,70 @@ post-push exact-head check. The resulting full head and both run outcomes will
 be recorded at the stable PR progress comment linked above. Earlier totals
 (1373 source, 98 durable, 24 session, 10 music, 12 focused units) are overlapping
 or differently scoped executions, not a single sum. No PR was merged.
+
+## P0 replacement mandate — source-first reconciliation, live donor repair and fresh load evidence (2026-10-19)
+
+### Revision / scope reconciliation
+
+Started from clean/pushed `ff09a715fe88185acec01a7dd2dc6c44468b5493` on the fixed session branch `arena/331aa502-arena-os-canonical`. Actual Git/gh checks reconfirmed PR15 OPEN at that head, PR14 OPEN at `536c940c2df502f12f0945789e0053fa68466eff`, paired ff09 CI `39247535107` / `39247528392` SUCCESS. Those historical 1375-source / codec / production results are revision-scoped; they do not establish replacement acceptance. No merge, branch switch or new product dependency. The final exact result head/checks are recorded in the PR publication receipt because a document cannot contain its own future commit hash.
+
+The new durable map is **`docs/waveyard-replacement-scorecard.md`**. Overall cancellation gate remains **CLOSED**, with explicit Verified/Partial/Broken/Missing/Blocked boundaries and essential catalogue access retained. This entry appends, rather than replaces, earlier chronology and counter-evidence.
+
+### Source/runtime and catalogue inspection (no acquisition)
+
+Traced library/player/session/Studio through actual handlers/services, worker publication, tables, private files and saved work. Reused existing `useStemTransport`, model-aware `laneDisplayName`, native intake, canonical PCM Worker/DSP, embedded PG and browser fixtures. Reviewed the branch-sweep source integration ledger and prior REA evidence-contract research; no new library/player/engine/queue wrapper. Inspected PR14 source/provisioning documentation via gh API at its separate PR head, without cherry-picking/merging it.
+
+Actual Node `loadOrtModule()` succeeds. `probeDeepEngine()` reports prepared=false, python=null, checkpointPresent=false for `.data/waveyard-models/5c90dfd2-34c22ccb.th`; system Python is 3.11.2 but required Python music/inference packages absent. No `.onnx/.th/.ckpt` model found in inspected repository/cache/opt paths. MDX registry model URLs are Hugging Face; deep checkpoint URL is Meta's model host; neither is in this sandbox's outbound allowlist. Missing weights/runtime block genuine inference only. No repeated inaccessible download, Torch install, unverified mirror, dummy model or owner-Windows prerequisite. No model-license/redistribution grant inferred from an engine code license. `/home/user/master-runtime-probe.txt` retains the actual current probe.
+
+`DiscoverCatalog` searches Arena's published-project API, not a licensed song catalogue. Streaming adapters normalize metadata; authorized-source acquisition requires a compliant configured resolver, absent in this process. Existing ordered TSV/M3U import distinguishes verified local bytes from reference-only/ambiguous entries. None establishes subscription-catalogue access or turns a Spotify/Apple/YouTube link into an audio file. This remains an essential replacement gap, superseding old vision exclusions.
+
+### Reproduced and fixed: a saved donor swap could stay silent
+
+Actual browser baseline reproduced failure: session A changes a real media URL to donor B, but HTML media pauses/resets on `src` replacement. UI could claim alignment while that lane never resumes. `/home/user/master-live-swap-before-runtime.txt`: exit1, donor remained paused; separate initial missing-default-Playwright-browser failure is retained in `master-live-swap-before.txt`. Reused existing packaged Chromium153 `/tmp/chromium` plus `/tmp/al2023/lib`, no download.
+
+- Shared transport adds cancellable `synchronizeSource` for a URL change on the **same** registered media element. It retains the graph/mix/inserts, waits for actual new metadata, reads the unaffected audible lane's current clock at readiness, seeks/resumes only the changed lane, and honors explicit pause/stop. With no other audible lane it retains the last observed cursor, not the new source's zero. Source tokens fence obsolete loads/play rejections; 30s/error failure is actionable, never successful missing-lane playback.
+- The real cursor ref updates each animation frame while React position display stays throttled. Pending sources do not become zero-valued clock/drift anchors.
+- Session media uses stable registration and per-source layout-effect cleanup. Unrelated lanes retain their media and keep playing. Status says the swap is saved/loading, not that inference/audio alignment completed before readiness.
+- Regression covers live audible donor + revert, unchanged bass element/zero reloads, real lane clocks, delayed single-lane donor/pause/resume, pending donor reverted before readiness, missing donor/error/recovery. Fixtures control HTTP/state, but HTML media, actual decoded PCM, Web Audio analysers and production controller execute.
+- One delayed fixture initially lacked byte-range behavior and Chromium reported seekable `[0,0]`. Corrected delay now gates the existing real range-serving fixture route (`route.continue()`), not a fabricated seekable response. Earlier failed logs/debug evidence remain; they are not relabelled passes.
+
+### Correct model-aware labels and lower allocation churn
+
+Library now carries persisted `stemAssets.model` into TrackStem/session payloads; both TrackPlayer and session mix reuse existing `laneDisplayName`. Deep six-stem residual is **Other**, not Melody. MDX four-stem residual remains Melody. Actual PG/API-shape and real UI label regressions execute; this is NOT learned-model verification or six-to-four audio recombination.
+
+Canonical serial PCM rendering reuses one zeroed dry scratch bus, instead of allocating a full arrangement bus per audible track. It preserves source immutability, overlap-before-nonlinear-FX ordering, pan/polarity/automation and independent effect tails. Deterministic 32-track regression measures **two** full dry-sized allocations (sum + scratch), not 33, and checks PCM/no prior-lane bleed. Existing canonical FX/export tests also pass. No claim of a solved browser-memory bound.
+
+### Fresh distinct-source measurements, including failed optimization evidence
+
+Added reproducible 4/16/32 **distinct-source** stereo10s acceptance in the existing Studio harness, not a repeated-one-source benchmark. It actually ingests 32 different frequency/checksum sources, creates existing explicit passthrough/arrangement references, executes the canonical controller/Worker, verifies 441000 frames and exact half-amplitude master edit/cache reuse, and samples whole Chromium descendant-tree PSS every50ms. No inference, full compiled Next hydration or Electron is claimed.
+
+Baseline `master-distinct-before.txt`: cold371.0/950.5/1600.3ms; PSS294922240/403607552/553030656bytes. Scratch-repeat `master-distinct-after.txt`:395.3/857.7/1422.3ms; PSS274016256/387618816/553324544bytes. **32-source whole-browser peak did not materially improve.** A direct `copyFromChannel` experiment also did not reduce memory (`master-distinct-direct-copy.txt`, 32-source559699968bytes); reverted it rather than retaining an unproven optimization. Single observations do not establish a statistical speedup.
+
+Final full-suite receipts in `master-studio-full.txt`: cold327.9/850.8/1415.8ms; sampled PSS289872896/404722688/556816384bytes; prep-stage max UI gap34.3/50.4/93.7ms; warm replay0.2/0.2/0.1ms; master edit13.5/20.9/17.4ms. Decoded112896000bytes at32 sources is NOT the531MiB browser peak. Enforced gap<250ms and replay<20ms pass in this harness; provisional512MiB sampled-browser target fails. Historical full compiled-page614.7MiB/16-source254.9ms observations are NOT newly revalidated or disproven by a preparation-only harness. Main/Worker immutable source duplication and cold acquisition remain bottlenecks needing further profiling/fix, not declared completed.
+
+### Current compiled production connected donor → Studio/export proof
+
+After typecheck/lint/build, restarted actual Next production on3050 using the existing private test PG/storage. `/home/user/master-production-swap.mjs` drives the real compiled session page, private authenticated-session fixture, actual API/PG ledger, real media/analysers, explicit Studio handoff, immutable version and actual queued FFmpeg export/download/decode/reopen. Two30s distinct source mixes and eight independently encoded synthetic fixture lanes are explicitly labelled **not inference**. Intake is native service intake here, not new browser upload or model acceptance. Fixture auth is not a real WebAuthn ceremony.
+
+Final `master-production-swap-final3.txt` / `master-production-swap-result.json` PASS10328.145ms:
+
+- audible220Hz→660Hz donor replacement145.540ms including UI/API/poll scheduling, single observation;
+- four clocks4.191565s, all playing, unaffected bass retained with0 reloads;
+- saved drums swap4.020317s survives real session reload;
+- actual Studio saved WAV decodes2646000frames/60s; pre-swap220Hz amplitude0.02121296,660Hz2.42e-7; post-swap220Hz2.74e-7,660Hz0.02121252;
+- completed version/export survives Studio reload, zero renderer exceptions. Screenshot `master-production-swap.png`.
+
+Earlier failures remain: a timed-split export was2645999 rather than2646000frames (one-frame FFmpeg rounding; final check permits≤1frame, not universal sample-perfect parity); rerunning identical synthetic bytes deduped the old library track and appended a second bank (confirmed separate defect below, not automatic app inference); a completed reopened export is a Download link, not the fixture's assumed Export button. Corrected fixture varies actual content phase and asserts newly created source identity. No competing production scripts wrote this DB concurrently.
+
+### Critical independently reproduced remaining defect — NOT hidden by passing tests
+
+`/home/user/master-stemset-probe.mjs` creates real private playable WAVs, actual native intake/PG and deliberately synthetic complete job/stem rows for two four-lane banks, then calls actual library/session/Studio services. Exit0 means the **diagnostic observed the defect**, not product acceptance. `master-stemset-probe.txt` reports **8 library playback assets,8 session playback assets,8 Studio lanes** for2 banks. Current getTrack queries all stems of a source, including repeat passes/layered rows; saved donor swaps resolve by track/type rather than pinned immutable asset. This can double mixes and change historical donor identity. Must implement explicit coherent publication/root-layer choice and session/donor asset pinning with honest legacy recovery, not silently pick latest or drop old cues. This essential unblocked engineering gap remains recorded as Broken; no cancellation recommendation.
+
+### Executed checks / evidence boundaries
+
+- `node --import ./scripts/register-src-loader.mjs --test src/lib/waveyard/arrangement-pcm.test.ts src/lib/waveyard/library/service.test.ts src/lib/waveyard/separation/stem-display.test.ts`: **40PASS0FAIL**,6551.499ms (`master-focused-final.txt`). Includes real embedded PG; includes synthetic PCM, not genuine learned inference. Counts overlap full-source invocation.
+- `LD_LIBRARY_PATH=/tmp/al2023/lib CHROMIUM_EXECUTABLE_PATH=/tmp/chromium node --test tests/acceptance/session-runtime.test.mjs tests/acceptance/stem-transport.test.mjs`: **28PASS0FAIL**,41182.602ms (`master-session-final.txt`), after label integration. Earlier27-pass source shape superseded, failed delayed-fixture runs retained.
+- Same browser env + `node --import ./scripts/register-src-loader.mjs --test tests/acceptance/studio-fx.test.mjs`: **23PASS0FAIL**,71582.409ms (`master-studio-full.txt`). Real browser/HTTP handlers/nativePG/FFmpeg/isolated worker; source fixtures synthetic. Separate suites/layers, not summed as unique end-to-end capabilities.
+- `npm run typecheck`, `npm run lint`, `npm run build`: exit0 (`master-types-final2.txt`, `master-lint.txt`, `master-build.txt`),48 existing lint warnings/0 errors. Initial fixture API arity / zero-argument getter type errors were corrected before final pass; earlier logs retained.
+- `npm run desktop:compile && npm run desktop:prepare-server`: exit0 (`master-desktop-compile.txt`, `master-desktop-stage.txt`). This stages a package, NOT Electron execution; precommit identity showed ff09 with changed source, not an exact-head desktop acceptance. No Electron executable/display. Later clean-head staging/headless-supervisor evidence, if executed, is recorded separately in publication receipts.
+- Full exact-head source/CI publication results follow in the PR receipt; neither CI nor mocked/provider/PCM evidence closes the replacement gate. No PR14/15 merge authorized or performed.

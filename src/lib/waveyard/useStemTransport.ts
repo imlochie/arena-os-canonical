@@ -231,6 +231,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
   const positionRef = useRef(0);
   const playRequest = useRef(0);
   const wantsPlayback = useRef(false);
+  const pendingSources = useRef(new Map<string, symbol>());
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [masterVolume, setMasterVolumeState] = useState(1);
@@ -456,6 +457,55 @@ export function useStemTransport(assetIds: string[], duration: number) {
     }
   }, [applyInserts, applyMix, duration, ensureGraph, ids, pause]);
 
+  /** Rejoin a changed URL on the SAME registered media element. Keep its graph,
+   * mixer and inserts, and leave every unaffected lane playing. The caller must
+   * dispose this operation when that URL changes again or the element unmounts. */
+  const synchronizeSource = useCallback((id: string) => {
+    const element = media.current[id];
+    if (!element) return () => {};
+    const source = element.src;
+    const token = Symbol(id);
+    pendingSources.current.set(id, token);
+    element.pause();
+    const current = () => pendingSources.current.get(id) === token && media.current[id] === element && element.src === source;
+    const dispose = () => {
+      clearTimeout(timeout);
+      element.removeEventListener("loadedmetadata", ready);
+      element.removeEventListener("error", failed);
+      if (pendingSources.current.get(id) === token) pendingSources.current.delete(id);
+    };
+    const failed = () => {
+      if (!current()) return;
+      dispose();
+      setError("The replacement stem could not load or play. Revert the swap or retry the audio source.");
+      pause();
+    };
+    const ready = async () => {
+      if (!current() || element.currentSrc !== source) return;
+      element.removeEventListener("loadedmetadata", ready);
+      try {
+        // Read the clock at readiness, not when the request began. A slow donor
+        // must not rewind the other lanes. With no other lane, retain the last
+        // observed playhead rather than adopting the new element's zero clock.
+        const anchor = ids.filter(key => key !== id && !pendingSources.current.has(key))
+          .map(key => media.current[key]).find(candidate => candidate && !candidate.paused);
+        element.currentTime = anchor?.currentTime ?? positionRef.current;
+        if (wantsPlayback.current) await element.play();
+        if (current()) dispose();
+      } catch {
+        // A later source, pause, or seek/play request may deliberately abort
+        // this promise. Never let an obsolete load stop the new performance.
+        if (current() && wantsPlayback.current) failed();
+        else if (current()) dispose();
+      }
+    };
+    const timeout = setTimeout(failed, 30_000);
+    element.addEventListener("loadedmetadata", ready);
+    element.addEventListener("error", failed);
+    if (element.readyState >= 1 && element.currentSrc === source) void ready();
+    return dispose;
+  }, [ids, pause]);
+
   // An actual asset change stops the old deck, but does not poison the shared
   // context. Equal ID lists from project polling do not enter this effect.
   useEffect(() => {
@@ -476,8 +526,13 @@ export function useStemTransport(assetIds: string[], duration: number) {
         pause();
         return;
       }
+      const available = ids.filter(id => !pendingSources.current.has(id));
+      if (available.length === 0 && pendingSources.current.size > 0) {
+        clockId.current = requestAnimationFrame(tick);
+        return;
+      }
       const anchor =
-        ids
+        available
           .map((id) => media.current[id])
           .find((element) => element && !element.paused) ??
         media.current[ids[0]];
@@ -503,14 +558,15 @@ export function useStemTransport(assetIds: string[], duration: number) {
         // This is a browser-level drift correction, not a sample-perfect DAW claim.
         if (
           element &&
+          !pendingSources.current.has(id) &&
           element !== anchor &&
           Math.abs(element.currentTime - current) > 0.075
         )
           element.currentTime = current;
       }
+      positionRef.current = current;
       if (now - lastUiUpdate.current > 100) {
         lastUiUpdate.current = now;
-        positionRef.current = current;
         setPosition(current);
       }
       clockId.current = requestAnimationFrame(tick);
@@ -638,6 +694,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
 
   return {
     register,
+    synchronizeSource,
     readSpectrum,
     readMasterSpectrum,
     readWaveform,
