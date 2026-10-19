@@ -9,7 +9,10 @@ export function previewStateKey(state: ArrangementPreviewState, revision = "") {
 export function transformedClipKey(clip: ArrangementPreviewState["tracks"][number]["clips"][number], state: ArrangementPreviewState, revision: string) {
   return JSON.stringify([clip.stemAssetId, clip.sourceOffsetMs, clip.durationMs, clip.tempoSyncEnabled, clip.keySyncEnabled, state.tempoBpm, state.targetKey, revision]);
 }
-type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number } };
+function sourceCacheKey(assetId: string, revision: string | undefined) {
+  return revision ? JSON.stringify([assetId, revision]) : assetId;
+}
+type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number; sourceBytesByKey: Record<string, number> } };
 const MAX_DECODED_BYTES = 128 * 1024 * 1024;
 /** Owns decoded/worker buffers for one open workspace. Hard cancellation kills
  * CPU work as well as fetches. Immutable sources are sent only once per worker.
@@ -39,10 +42,10 @@ export class ArrangementPreparation {
       const pending = this.pending; this.pending = null;
       if (data.error) pending.reject(new Error(data.error)); else pending.resolve(data);
     };
-    worker.onerror = () => { this.pending?.reject(new Error("Arrangement DSP worker failed; no dry substitute was played.")); this.pending = null; worker.terminate(); this.worker = null; this.sent.clear(); };
+    worker.onerror = () => { this.pending?.reject(new Error("Arrangement DSP worker failed; no dry substitute was played.")); this.pending = null; worker.terminate(); this.worker = null; this.sent.clear(); this.workerStats = undefined; };
     return this.worker = worker;
   }
-  async prepare(snapshot: ArrangementPreviewState, context: AudioContext, revision = "") {
+  async prepare(snapshot: ArrangementPreviewState, context: AudioContext, revision = "", sourceRevisions: ReadonlyMap<string, string> = new Map()) {
     this.cancel();
     if (this.rate && this.rate !== context.sampleRate) this.dispose();
     this.rate = context.sampleRate;
@@ -60,19 +63,31 @@ export class ArrangementPreparation {
       for (const clip of track.clips) {
         if (clip.tempoSyncEnabled || clip.keySyncEnabled) {
           const id = clip.stemAssetId;
-          const sourceKey = transformedClipKey(clip, state, revision);
+          const sourceKey = transformedClipKey(clip, state, sourceRevisions.get(id) ?? revision);
           requests.set(sourceKey, { url: `/api/assets/${id}/audition`, body: JSON.stringify({ sourceOffsetMs: clip.sourceOffsetMs, durationMs: clip.durationMs, tempoSyncEnabled: clip.tempoSyncEnabled, keySyncEnabled: clip.keySyncEnabled, tempoBpm: state.tempoBpm, targetKey: state.targetKey, sampleRate: context.sampleRate }) });
           clip.stemAssetId = sourceKey; clip.sourceOffsetMs = 0; clip.tempoSyncEnabled = false; clip.keySyncEnabled = false;
           needed.add(sourceKey);
-        } else { needed.add(clip.stemAssetId); requests.set(clip.stemAssetId, { url: `/api/assets/${clip.stemAssetId}` }); }
+        } else {
+          const id = clip.stemAssetId;
+          const sourceKey = sourceCacheKey(id, sourceRevisions.get(id));
+          needed.add(sourceKey);
+          requests.set(sourceKey, { url: `/api/assets/${id}` });
+          clip.stemAssetId = sourceKey;
+        }
       }
     }
     // Drop removed clips, old transform variants and closed-project data, rather
     // than keeping every edit's AudioBuffer until the tab eventually exits.
     for (const id of this.decoded.keys()) if (!needed.has(id)) this.decoded.delete(id);
-    let bytes = [...this.decoded.values()].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0);
+    // The 128 MiB safety limit applies to selected source PCM regardless of
+    // whether this instance currently owns it on the main thread or in Worker.
+    let bytes = [...needed].reduce((sum, id) => sum + (this.workerStats?.sourceBytesByKey?.[id] ?? 0), 0) +
+      [...this.decoded.values()].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0);
     for (const [id, request] of requests) {
-      signal.throwIfAborted(); if (this.decoded.has(id)) continue;
+      // Once a successful render has handed a source to the worker, the worker
+      // is its cache owner. Do not decode it back into the main thread for a
+      // master-only edit or another replay.
+      signal.throwIfAborted(); if (this.decoded.has(id) || this.sent.has(id)) continue;
       const response = await fetch(request.url, { signal, ...(request.body ? { method: "POST", headers: { "content-type": "application/json" }, body: request.body } : {}) });
       if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? "A stem could not be prepared for arrangement audition."); }
       if (Number(response.headers.get("content-length")) > MAX_DECODED_BYTES) { await response.body?.cancel(); throw new Error("Source exceeds the 128 MiB audition decode budget; use a shorter source range or export."); }
@@ -89,13 +104,28 @@ export class ArrangementPreparation {
       const audio = this.decoded.get(id)!;
       const channels = Array.from({ length: audio.numberOfChannels }, (_, channel) => audio.getChannelData(channel).slice());
       sources.push({ key: id, sampleRate: audio.sampleRate, channels });
-      transfer.push(...channels.map(channel => channel.buffer)); this.sent.add(id);
+      transfer.push(...channels.map(channel => channel.buffer));
     }
     const id = ++this.sequence;
     const work: PreviewWork = { id, state, sampleRate: context.sampleRate, sources, retain: [...needed], revision };
     const rendered = new Promise<Prepared>((resolve, reject) => { this.pending = { id, resolve, reject }; });
-    worker.postMessage(work, transfer);
+    try {
+      worker.postMessage(work, transfer);
+    } catch (error) {
+      this.pending = null;
+      worker.terminate();
+      if (this.worker === worker) this.worker = null;
+      this.sent.clear();
+      this.workerStats = undefined;
+      throw error;
+    }
+    for (const source of sources) this.sent.add(source.key);
     const { left, right, stats } = await rendered; signal.throwIfAborted(); this.workerStats = stats;
+    // The worker now has the reusable source copies; retaining these decoded
+    // AudioBuffers as well only duplicates every selected source. Keep the
+    // main-thread copy until the render succeeds so cancellation and worker
+    // failures can retry without fetching or decoding again.
+    for (const sourceKey of needed) if (this.sent.has(sourceKey)) this.decoded.delete(sourceKey);
     const buffer = context.createBuffer(2, left.length, context.sampleRate);
     buffer.copyToChannel(left as Float32Array<ArrayBuffer>, 0); buffer.copyToChannel(right as Float32Array<ArrayBuffer>, 1);
     this.finished = { key, buffer }; return buffer;

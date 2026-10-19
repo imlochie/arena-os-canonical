@@ -126,8 +126,12 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     applyInserts: applyStemInserts, setMasterVolume: setTransportMasterVolume,
   } = transport;
   const seekArrangementPosition = useCallback((milliseconds: number) => seekTransport(milliseconds / 1000), [seekTransport]);
-  const previewSourceRevision = useMemo(() => JSON.stringify([stems.map(stem => [stem.id, stem.checksumSha256]), sources.map(source => [source.id, source.analysis])]), [stems, sources]);
-  const arrangementPreview = useArrangementPreview(seekArrangementPosition, remix, previewSourceRevision, projectId);
+  const previewSourceRevision = useMemo(() => JSON.stringify([stems.map(stem => [stem.id, stem.checksumSha256]), sources.map(source => [source.id, source.checksumSha256, source.analysis])]), [stems, sources]);
+  const previewSourceRevisions = useMemo(() => new Map([
+    ...stems.map(stem => [stem.id, stem.checksumSha256] as const),
+    ...sources.map(source => [source.id, JSON.stringify([source.checksumSha256, source.analysis])] as const),
+  ]), [stems, sources]);
+  const arrangementPreview = useArrangementPreview(seekArrangementPosition, remix, previewSourceRevision, projectId, previewSourceRevisions);
   const sourceById = useMemo(
     () => new Map(sources.map((source) => [source.id, source])),
     [sources],

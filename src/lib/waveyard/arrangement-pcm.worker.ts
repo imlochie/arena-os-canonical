@@ -14,6 +14,10 @@ scope.onmessage = ({ data }) => {
     const pcm = prepareArrangementPcm(data.state, buffers, data.sampleRate, mixCache);
     const left = new Float32Array(pcm.length / 2), right = new Float32Array(pcm.length / 2);
     for (let frame = 0; frame < left.length; frame++) { left[frame] = pcm[frame * 2]; right[frame] = pcm[frame * 2 + 1]; }
-    scope.postMessage({ id: data.id, left, right, stats: { mixCacheHit: !!mixCache.hit, retainedMixBytes: mixCache.pcm?.byteLength ?? 0, sourceBytes: [...sources.values()].reduce((sum, source) => sum + source.channels.reduce((bytes, channel) => bytes + channel.byteLength, 0), 0) } }, [left.buffer, right.buffer]);
+    const sourceBytesByKey = Object.fromEntries([...sources].map(([key, source]) => [
+      key,
+      source.channels.reduce((bytes, channel) => bytes + channel.byteLength, 0),
+    ]));
+    scope.postMessage({ id: data.id, left, right, stats: { mixCacheHit: !!mixCache.hit, retainedMixBytes: mixCache.pcm?.byteLength ?? 0, sourceBytesByKey, sourceBytes: Object.values(sourceBytesByKey).reduce((sum, bytes) => sum + bytes, 0) } }, [left.buffer, right.buffer]);
   } catch (error) { scope.postMessage({ id: data.id, error: error instanceof Error ? error.message : "Arrangement preparation failed." }); }
 };
