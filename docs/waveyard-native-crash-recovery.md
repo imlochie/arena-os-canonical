@@ -73,3 +73,9 @@ Raw logs are retained in `docs/evidence/gate-d-local/`; counts below are separat
 - Follow-up changes at this point are CI evidence publishing/retained-failure diagnostics and documentation only; native product source is unchanged frome52957a. New CI/genuine run results are separate and not claimed in advance.
 
 D6/D9/D10 now have genuine trained crash/retry and product-flow evidence within this bounded Linux scope. **Gate D is still OPEN**: original CI crash failure needs a concrete identity/root cause, independent durable reconciler-in-progress/history remains unaccepted (D8), and unsupported OS/changed boot/namespace ownership is fail-closed rather than recovered. No claim that all requested acceptance is complete.
+
+### b268460 — genuine repeat and historical CI failure identity
+
+Hosted39415820794/job118604440450 SUCCESS, exactb268460, again passes genuine trained4/6 workflow and both trained SIGKILL/fresh recovery/native retry cases. Separate complete machine-readable crash receipt is now retrieved through Checks in `docs/evidence/gate-d-b268460/genuine-crash-receipt.json`: ordinary interrupted job63efa6c9… → fresh retry1c0bd408… complete; pending-cancel jobadb573e1… → fresh retry1521de30… complete. Both six-lane retry banks have their actual UUID/checksum lists. Core native source is byte-identical toe52957a. Current-head typecheck, lint0errors/49warnings and build pass.
+
+Changed acquisition strategy successfully retrieved the **original**, not rerun, failed CI artifact on the hosted runner. Its failing child is **actual FFmpeg lifetime: decoder-running** (plus parent). Initial diagnostic publisher exposed identity only, not assertion text; bounded raw assertion-context publishing is added next so this is diagnosed before a fix, not guessed. Old e52957a PR CI39413581190 was cancelled by the subsequent publication, not reported successful. D remains OPEN; ongoing newer CI is not acceptance.

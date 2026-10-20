@@ -1,0 +1,131 @@
+{
+  "commit": "b26846080cb261079de00f64ae422d60241109ff",
+  "scope": "Actual trained native Demucs child, real SIGKILL, fresh recovery process, actual native retry; NOT complete D matrix or platform acceptance",
+  "cases": [
+    {
+      "cancellationPending": false,
+      "interruptedJobId": "63efa6c9-20e2-434f-92f0-8b4a3f555439",
+      "execution": {
+        "id": "e6c7bdb2-bfcd-4f47-89e3-cadf993ae3e7",
+        "child": {
+          "pid": 3864,
+          "boot": "0e5789ac-d564-4585-964d-37823f78dc53",
+          "host": "runnervm8k3b6",
+          "start": "38147",
+          "namespace": "pid:[4026531836]"
+        },
+        "input": {
+          "key": "projects/8b30a932-7431-4324-afb2-cec12a964ef0/source/511d4d6e-bbfd-42a7-b0e4-59d556f04295.mp3",
+          "checksum": "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507",
+          "sourceChecksum": "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507"
+        },
+        "owner": {
+          "pid": 3837,
+          "boot": "0e5789ac-d564-4585-964d-37823f78dc53",
+          "host": "runnervm8k3b6",
+          "start": "38031",
+          "namespace": "pid:[4026531836]"
+        },
+        "phase": "native-registered",
+        "frames": 479832,
+        "outputs": [],
+        "expected": 6,
+        "provenance": {},
+        "workDirectory": "/tmp/arena-separation-e6c7bdb2-bfcd-4f47-89e3-cadf993ae3e7-work",
+        "cleanupPending": true
+      },
+      "recoveredStatus": "failed",
+      "retryJobId": "1c0bd408-3495-46e0-87e1-a744e4eb4648",
+      "retryStatus": "complete",
+      "checksums": [
+        {
+          "id": "e00e6aae-3e8e-4ffe-ae85-9f250834b505",
+          "checksum": "e4e09dd09caab1096744b4891edadd7eea00f3cdd40c2d3f475f01b8b650872b"
+        },
+        {
+          "id": "8b9e3537-afd8-4b55-9efb-bf5d8a463280",
+          "checksum": "0a8acdd63a4fa540a2ca324f6b4f9d5136d430912ab8356050e22c27a97e9b09"
+        },
+        {
+          "id": "9c17513f-1d83-4dba-ac36-ed22f7a0975b",
+          "checksum": "a898414c7bdf11c848aa02f758204d13ca70edcfd14c83a88732cbc55197d60d"
+        },
+        {
+          "id": "14eb3896-e028-48aa-95a1-4c0ec0affd55",
+          "checksum": "418367c96424b35f3b749b1e2f83ccd8a61a569f8bc72024a54f02f1f507caa5"
+        },
+        {
+          "id": "2a80a44c-1de3-4378-a6f8-276e0f93dcfc",
+          "checksum": "0dfe35612f8ee2b8088856ea59acbcc2af25f030b16edcbd97fc503d70f57e43"
+        },
+        {
+          "id": "92455b4c-2f5a-4a02-a1d2-e0e0e413d84a",
+          "checksum": "9f511beb063ef26ed16c16c49f173347046b4027914cd2a648cd517a8947cb1b"
+        }
+      ]
+    },
+    {
+      "cancellationPending": true,
+      "interruptedJobId": "adb573e1-4fa6-4db7-8e4b-0271220ba28d",
+      "execution": {
+        "id": "3c37443d-c792-4547-82a0-70f485e86224",
+        "child": {
+          "pid": 3981,
+          "boot": "0e5789ac-d564-4585-964d-37823f78dc53",
+          "host": "runnervm8k3b6",
+          "start": "39774",
+          "namespace": "pid:[4026531836]"
+        },
+        "input": {
+          "key": "projects/8b30a932-7431-4324-afb2-cec12a964ef0/source/511d4d6e-bbfd-42a7-b0e4-59d556f04295.mp3",
+          "checksum": "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507",
+          "sourceChecksum": "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507"
+        },
+        "owner": {
+          "pid": 3953,
+          "boot": "0e5789ac-d564-4585-964d-37823f78dc53",
+          "host": "runnervm8k3b6",
+          "start": "39655",
+          "namespace": "pid:[4026531836]"
+        },
+        "phase": "native-registered",
+        "frames": 479832,
+        "outputs": [],
+        "expected": 6,
+        "provenance": {},
+        "workDirectory": "/tmp/arena-separation-3c37443d-c792-4547-82a0-70f485e86224-work",
+        "cleanupPending": true
+      },
+      "recoveredStatus": "cancelled",
+      "retryJobId": "1521de30-fa0e-4758-8900-b3923c87c849",
+      "retryStatus": "complete",
+      "checksums": [
+        {
+          "id": "5939c955-5763-4477-abd4-8aec9c8e1fd7",
+          "checksum": "5aeb0f26412a337876da88a67d5a42cf5c4c3edd8b7ca41a7825bb6e0dc08bbe"
+        },
+        {
+          "id": "66ead403-e1fc-4707-8aa6-42315cf97a2e",
+          "checksum": "5c543c46d6ebd2877d02a9da4b689d44e7b13408d37313e329a21818c79e6e5e"
+        },
+        {
+          "id": "58704981-230e-45f4-84eb-1f3c205c6f29",
+          "checksum": "fcf85c7fb3682836082a539b17931d9ff5a6613fe23b4460de5b93d88cf82466"
+        },
+        {
+          "id": "a904242e-0162-4924-acd5-3937c79ef976",
+          "checksum": "473f4d2d3bd1f327c86532dafd62682cc2692772106c008b032c83ef81b14ac0"
+        },
+        {
+          "id": "6e1aed49-a553-4a27-bf39-b151f820c167",
+          "checksum": "0d3c46e9e41067e72f3dc26fa0d21b7966e3f616edebe39e9e7e1752929bc194"
+        },
+        {
+          "id": "cb5d6309-402e-4e36-a69f-0c8d2c84bd26",
+          "checksum": "ee6ea11252b0efe81226d5da6f858468496d7ce6b57470713765c90673204c89"
+        }
+      ]
+    }
+  ],
+  "error": null
+}

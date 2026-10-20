@@ -48,7 +48,7 @@ jobs:
           github-token: ${{ github.token }}
           path: .data/acceptance/a8/prior-ci
       - name: Publish retained crash failure identity (not a new test result)
-        run: node scripts/ci-test-summary.mjs .data/acceptance/a8/prior-ci/crashes.tap
+        run: node scripts/ci-test-summary.mjs .data/acceptance/a8/prior-ci/crashes.tap --details
       - name: Exercise managed preparation, genuine music inference, native player and exported arrangement
         run: |
           mkdir -p .data/acceptance/a8
