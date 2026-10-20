@@ -2361,3 +2361,47 @@ manually loading a query-only fixture URL. No production router is substituted;
 this mounts the existing SessionExperience at the same route the product uses.
 The next genuine run must verify this stronger path and the guardian with real
 trained checkpoints. No new Electron or Windows execution claim.
+
+### b92f183 complete source regression; D publication uncertainty counterexample and repair
+
+Exact clean revision `b92f1835fc5ca117a57e64e7c2a02c110da52e0c` completed
+**1478PASS / 1478tests / 39suites / 0FAIL / 0SKIP**,834740ms wrapper elapsed.
+Receipt `.data/acceptance/source-suite/2026-10-20T08-32-08.444Z-38975.json`.
+CI39394119736 also SUCCESS across source/type/lint/build, real-runtime
+PostgreSQL/Redis/BullMQ, image build and browser audio/workflows. That includes
+the new actual-Web-Audio sparse/stale solo regression, not trained-model proof.
+Genuine39393483566 (37d9ae0) and39394119731 (b92f183) are still running at this
+entry; neither has a final receipt yet. Do not infer that their new music-level
+solo or actual session-button assertions passed from ordinary CI.
+
+A separate controlled failure proved a real destructive recovery defect:
+transaction successfully commits, then executor receives a lost-acknowledgement
+error. At b92f183 the durable job remained complete and both stem rows remained,
+but finally-cleanup deleted both referenced audio objects. Reproducer outside
+the source tree recorded `status:complete, stems:2, objectsExist:[false,false]`;
+this is explicitly a controlled DB/process boundary, not learned inference.
+
+Shared separation cleanup now checks durable stem references before deletion,
+preserves referenced objects even if local completion acknowledgement failed,
+and fails closed (retains output plus cleanup keys) if publication cannot be
+queried. It cannot overwrite completed provenance with cleanup metadata. Storage
+keys are tracked BEFORE provider writes so partial-write/rejection paths are
+also cleaned. The executor still reports a lost acknowledgement as an error;
+the durable completed bank stays authoritative, immutable and usable.
+
+Affected two-file run initially22PASS/1FAIL: new redispatch immutability assertion
+compared unordered SQL arrays. Both bank objects and all row identities/fields
+were preserved; only result order differed. Fixed the regression to compare
+maps by asset id (no behavior assertion removed). Focused three new cases then
+3PASS0FAIL: lost COMMIT acknowledgement with immutable redispatch, unknown
+publication lookup retaining output, provider writes then rejects cleanup.
+Other22 tests passed in the earlier affected run, including cancellation,
+previous-bank preservation and derived-waveform reporting failure. Typecheck
+and build pass; lint0errors49warnings. These results do not claim a full source
+pass on the subsequent cleanup revision until its own run completes.
+
+D remains OPEN: durable execution identity/reconciliation, before/during/after
+inference and upload abrupt-restart coverage, retry ownership and staged-manifest
+cleanup across restarts are not complete. In particular preserving unknown
+output is the safe action, not proof it was reconciled. No Electron/Windows,
+MDX, catalogue or replacement-complete claim.

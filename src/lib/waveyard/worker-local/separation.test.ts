@@ -615,3 +615,52 @@ test("partial upload failure cleans unpublished objects; actual retry preserves 
     await f.close();
   }
 });
+
+test("lost COMMIT acknowledgement cannot delete a bank already referenced by durable stem rows", async () => {
+  const f = await fixture();
+  const db = new Proxy(f.database, { get(target, key) {
+    if (key === "transaction") return async (...args: Parameters<typeof target.transaction>) => {
+      await target.transaction(...args); throw new Error("controlled lost commit acknowledgement");
+    };
+    const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
+  } });
+  try {
+    await assert.rejects(handleSeparationJob(payloadOf(f), { db, openEngine: identityEngine() }), /lost commit acknowledgement/);
+    const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    assert.equal(job.status, "complete"); assert.equal(job.errorCode, null);
+    const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id)); assert.equal(stems.length, 2);
+    for (const stem of stems) assert.equal(await getStorage().exists(stem.storageKey), true, "committed audio must survive executor reporting failure");
+    await handleSeparationJob(payloadOf(f), { db: f.database, openEngine: identityEngine() });
+    assert.deepEqual(new Map((await f.database.select().from(stemAssets)).map(row => [row.id, row])), new Map(stems.map(row => [row.id, row])), "completed bank remains immutable on redispatch (SQL row order is unspecified)");
+    assert.equal(JSON.parse(job.metadata).outputCount, 2, "provenance is not overwritten by cleanup");
+  } finally { await f.close(); }
+});
+
+test("uncertain publication lookup retains output and cleanup keys instead of guessing and deleting", async () => {
+  const f = await fixture(); const storage = getStorage(); const put = storage.putFile; const keys: string[] = []; let uncertain = false;
+  const db = new Proxy(f.database, { get(target, key) {
+    if (key === "transaction") return async () => { uncertain = true; throw new Error("controlled commit status unavailable"); };
+    if (key === "select") return (...args: Parameters<typeof target.select>) => { if (uncertain) throw new Error("controlled publication lookup outage"); return target.select(...args); };
+    const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
+  } });
+  try {
+    storage.putFile = async (...args) => { keys.push(args[0]); await put.apply(storage, args); };
+    await assert.rejects(handleSeparationJob(payloadOf(f), { db, openEngine: identityEngine() }), /commit status unavailable/);
+    const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)); assert.equal(job.status, "failed");
+    assert.equal(keys.length, 2); assert.deepEqual(JSON.parse(job.metadata).cleanupFailedKeys, keys);
+    assert.match(job.errorMessage!, /publication status could not be verified/);
+    for (const key of keys) assert.equal(await storage.exists(key), true);
+    assert.equal((await f.database.select().from(stemAssets)).length, 0);
+  } finally { storage.putFile = put; await f.close(); }
+});
+
+test("provider writes output then rejects: the partially uploaded object is still tracked and removed", async () => {
+  const f = await fixture(); const storage = getStorage(); const put = storage.putFile; const keys: string[] = [];
+  try {
+    storage.putFile = async (...args) => { keys.push(args[0]); await put.apply(storage, args); throw new Error("controlled failure after writing object"); };
+    await assert.rejects(handleSeparationJob(payloadOf(f), { db: f.database, openEngine: identityEngine() }), /failure after writing object/);
+    assert.equal(keys.length, 1); assert.equal(await storage.exists(keys[0]), false);
+    assert.equal((await f.database.select().from(stemAssets)).length, 0);
+    assert.equal(await storage.exists(f.source.storageKey), true);
+  } finally { storage.putFile = put; await f.close(); }
+});

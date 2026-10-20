@@ -437,8 +437,9 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       await writeFile(stemPath, wav);
       const checksum = await checksumFile(stemPath);
       const storageKey = privateObjectKey(job.projectId, "stem", "wav");
-      await storage.putFile(storageKey, stemPath, "audio/wav");
+      // Track before writing: a provider can partially write and then reject.
       uploadedKeys.push(storageKey);
+      await storage.putFile(storageKey, stemPath, "audio/wav");
       values.push({
         projectId: job.projectId,
         sourceAssetId: source.id,
@@ -548,12 +549,27 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     await polling;
     let cleanupWarning = false;
     if (!completed) {
-      const cleanup = await Promise.allSettled(uploadedKeys.map((key) => storage.delete(key)));
-      const failedKeys = uploadedKeys.filter((_, index) => cleanup[index].status === "rejected");
+      let unpublishedKeys: string[] = [];
+      let uncertainKeys: string[] = [];
+      if (uploadedKeys.length) {
+        try {
+          // COMMIT may have succeeded even when its acknowledgement was lost.
+          // Durable asset references, not a local boolean, decide deletion.
+          const published = await database.select({ storageKey: stemAssets.storageKey }).from(stemAssets).where(eq(stemAssets.separationJobId, job.id));
+          const referenced = new Set(published.map(row => row.storageKey));
+          unpublishedKeys = uploadedKeys.filter(key => !referenced.has(key));
+        } catch {
+          // Unknown publication outcome: retain output rather than destroy a
+          // potentially committed bank. Keep keys for explicit reconciliation.
+          uncertainKeys = uploadedKeys;
+        }
+      }
+      const cleanup = await Promise.allSettled(unpublishedKeys.map((key) => storage.delete(key)));
+      const failedKeys = [...uncertainKeys, ...unpublishedKeys.filter((_, index) => cleanup[index].status === "rejected")];
       if (failedKeys.length) {
         cleanupWarning = true;
-        await database.update(processingJobs).set({ errorMessage: "Separation stopped without publishing a bank, but some unpublished objects could not be removed. Cleanup keys are retained in this job's metadata.", metadata: JSON.stringify({ ...jobMetadata(job.metadata), cleanupFailedKeys: failedKeys }) })
-          .where(eq(processingJobs.id, job.id));
+        await database.update(processingJobs).set({ errorMessage: "Separation stopped, but some output could not be removed or its publication status could not be verified. Cleanup keys are retained in this job's metadata; published audio is preserved.", metadata: JSON.stringify({ ...jobMetadata(job.metadata), cleanupFailedKeys: failedKeys }) })
+          .where(and(eq(processingJobs.id, job.id), notInArray(processingJobs.status, ["complete"])));
       }
     }
     await rm(temporaryDirectory, { recursive: true, force: true });

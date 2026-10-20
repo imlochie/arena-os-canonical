@@ -300,3 +300,16 @@ are implemented; the unchanged genuine signal assertion and new controlled
 Web-Audio regression must pass before this finding is closed. A/B/C/F execution
 from earlier trained-model runs is preserved; D, semantic quality, MDX and
 Electron/full replacement are still open, never averaged into a pass.
+
+### Incremental D data-safety fixes (not a recovery acceptance pass)
+
+An executor-owned pipe now bounds native Demucs lifetime to its Node executor;
+real OS-process tests cover normal exit and abrupt executor death without
+signalling an orphan/persisted PID. Recovery adversarial testing then exposed
+lost COMMIT acknowledgement deleting an already published bank. Cleanup is now
+reference-aware and retains uncertain output, tracks even failed partial writes,
+and preserves completed provenance. Three controlled boundary regressions pass.
+These are meaningful D improvements, but durable ownership, restart reconciliation
+and the full requested crash matrix remain OPEN. b92f183 source1478PASS and CI
+39394119736SUCCESS include browser sparse/stale solo regression; outstanding
+trained-model runs are not converted into an E/F pass before final receipts.
