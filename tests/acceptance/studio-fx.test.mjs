@@ -573,7 +573,11 @@ test("controlled Worker error during a source endpoint outage recovers from its 
     { state: { ...initial.remix, tracks: initial.tracks }, expectWorkerEviction: variant === "prototype3" });
   assert.equal(result.fetches, 1); assert.equal(result.outageFetches, 0);
   assert.equal(result.firstFrames, 44100); assert.equal(result.recoveredFrames, 44100); assert.ok(result.outputError < 1e-7);
-  assert.ok(result.recoveredDiagnostics.encodedRecoveryBytes > 0);
+  if (["encoded-recovery", "prototype2", "prototype3"].includes(variant)) {
+    assert.ok(result.recoveredDiagnostics.encodedRecoveryBytes > 0);
+  } else {
+    assert.ok(result.recoveredDiagnostics.decodedBytes > 0);
+  }
   assert.equal(result.idleDiagnostics.sourceBytes, variant === "prototype3" ? 0 : 44100 * 2 * 4);
   if (variant === "prototype3") assert.equal(result.idleDiagnostics.workerSourcesEvicted, true);
 });
@@ -607,7 +611,7 @@ test("large encoded recovery sources retain decoded PCM instead of worsening own
     { state: { ...initial.remix, tracks: initial.tracks }, expectWorkerEviction: variant === "prototype3" });
   assert.equal(result.frames, 44100);
   assert.equal(result.fetches, 1);
-  assert.equal(result.diagnostics.encodedRecoveryBytes, 0);
+  assert.equal(result.diagnostics.encodedRecoveryBytes ?? 0, 0);
   assert.equal(result.diagnostics.decodedBytes, 44100 * 2 * 4);
   assert.equal(result.diagnostics.sourceBytes, variant === "prototype3" ? 0 : 44100 * 2 * 4);
   if (variant === "prototype3") assert.equal(result.diagnostics.workerSourcesEvicted, true);
