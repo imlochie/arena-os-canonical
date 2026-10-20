@@ -52,6 +52,7 @@ function unpreparedReport(envDir: string, modelsDir: string): EnvironmentReport 
 
 /** The machine operations a test can replace. */
 type ManagerHooks = Partial<{
+  onReadyPublished: () => Promise<void>;
   discover: () => Promise<EnvironmentReport>;
   venv: (python: string, dir: string, c: ProvisionContext) => Promise<string>;
   install: (python: string, c: ProvisionContext) => Promise<void>;
@@ -81,7 +82,7 @@ function makeManager(envDir: string, modelsDir: string, hooks: ManagerHooks = {}
     verifyEngine: hooks.verify ?? (async () => ({ demucsVersion: "4.0.1", torchVersion: "2.0.1+cpu", cuda: false })),
     runInferenceProbe: hooks.probe ?? (async () => ["vocals", "drums", "bass", "guitar", "piano", "other"] as const),
   };
-  return createPreparationManager({ envDir, modelsDir, runtime });
+  return createPreparationManager({ envDir, modelsDir, runtime, onReadyPublished: hooks.onReadyPublished });
 }
 
 test("a fresh machine reports not_prepared with an empty record", async () => {
@@ -340,4 +341,31 @@ test("changed checkpoint bytes invalidate the recorded smoke, even with the same
     await writeFile(status.environment.checkpointPath, "replaced-controlled-checkpoint");
     assert.equal((await manager.getStatus()).state, "not_prepared");
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test("published readiness joins final settlement, while an actual preparation remains single-flight", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wy-ready-settlement-"));
+  const installing = deferred<void>(), installGate = deferred<void>(), ready = deferred<void>(), cleanupGate = deferred<void>();
+  let installs = 0;
+  const manager = makeManager(join(directory, "env"), join(directory, "models"), {
+    install: async () => { installs++; installing.resolve(); await installGate.promise; },
+    onReadyPublished: async () => { ready.resolve(); await cleanupGate.promise; },
+  });
+  try {
+    const grants = (await manager.inspect()).plan.consent.map(item => item.id);
+    assert.equal((await manager.start(grants)).outcome, "started");
+    await installing.promise;
+    assert.equal((await manager.start(grants)).outcome, "already-running");
+    installGate.resolve(); await ready.promise;
+    assert.equal((await manager.getStatus()).state, "ready");
+    let settled = false;
+    const repeated = manager.start(grants).then(result => { settled = true; return result; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false, "ready caller joins still-blocked lifecycle cleanup");
+    cleanupGate.resolve();
+    assert.equal((await repeated).outcome, "already-ready");
+    assert.equal((await manager.start(grants)).outcome, "already-ready");
+    assert.equal(installs, 1);
+  } finally { installGate.resolve(); cleanupGate.resolve(); await rm(directory, { recursive: true, force: true }); }
 });

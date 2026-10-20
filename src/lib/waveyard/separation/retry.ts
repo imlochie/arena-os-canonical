@@ -20,11 +20,11 @@
  * would let a retry be triggered for a target another request just took.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import type { drizzle } from "drizzle-orm/node-postgres";
 
-import { executionHistory, metadata } from "./recovery";
+import { executionHistory } from "./recovery";
 import { processingJobs } from "@/db/waveyardSchema";
 import { enqueueSeparation, type QueueLike } from "@/lib/waveyard/queue";
 import { findActiveProcessingJob, type ProcessingJobRow } from "./claim";
@@ -178,7 +178,7 @@ export async function retrySeparationJob(db: SeparationDb, jobId: string, option
   try {
     claimed = await db
       .update(processingJobs)
-      .set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date(), metadata: JSON.stringify({ ...metadata(job.metadata), executionHistory: executionHistory(job) }) })
+      .set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date(), metadata: sql`(${processingJobs.metadata}::jsonb || ${JSON.stringify({ executionHistory: executionHistory(job) })}::jsonb)::text` })
       .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "failed")))
       .returning({ id: processingJobs.id });
   } catch (error) {
@@ -197,7 +197,7 @@ export async function retrySeparationJob(db: SeparationDb, jobId: string, option
       .set({
         status: "failed",
         stage: job.stage,
-        metadata: job.metadata,
+        metadata: sql`case when ${processingJobs.metadata}::jsonb ? 'recoveryHistory' then (${job.metadata}::jsonb || jsonb_build_object('recoveryHistory', ${processingJobs.metadata}::jsonb->'recoveryHistory'))::text else ${job.metadata} end`,
         errorCode: job.errorCode,
         errorMessage: job.errorMessage,
         completedAt: job.completedAt,

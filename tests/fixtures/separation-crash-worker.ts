@@ -29,7 +29,7 @@ if (process.env.CRASH_CORRUPT_WRITE === "1") {
 }
 if (process.env.CRASH_LOST_ACK === "1") {
   const transaction = db.transaction.bind(db);
-  db.transaction = async (...args: Parameters<typeof db.transaction>) => { await transaction(...args); throw new Error("controlled lost recovery COMMIT acknowledgement"); };
+  db.transaction = (async (...args: Parameters<typeof db.transaction>) => { const result = await transaction(...args); if (result === "recovered-bank") throw new Error("controlled lost recovery COMMIT acknowledgement"); return result; }) as typeof db.transaction;
 }
 try {
   if (process.env.CRASH_MODE === "recover") {

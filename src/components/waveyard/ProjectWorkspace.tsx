@@ -432,6 +432,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         <button className="button secondary" disabled={retrying || job.status === "cancelling"} onClick={() => void cancelSeparation(job.id)}>{job.status === "cancelling" ? "Stopping separation…" : "Cancel separation"}</button>
         {canRecoverSeparation && <button className="button secondary" disabled={retrying} onClick={() => void recoverSeparation(job.id)}>Check interrupted separation recovery</button>}
       </div>)}
+      {data.jobs.filter(job => recoveryAudit(job.metadata).length > 0).map(job => <details key={`audit-${job.id}`}>
+        <summary>Separation recovery audit · {job.id}</summary>
+        <ol>{recoveryAudit(job.metadata).map(check => <li key={check.id}>
+          <time>{check.startedAt}</time> · {check.state}{check.result ? ` · ${check.result}` : ""}{check.error ? ` · ${check.error}` : ""}
+          {check.state === "in-progress" && " · No durable outcome yet; an interrupted checker requires a fresh ownership check."}
+          {check.resolvedBy ? ` · Reconciled by check ${check.resolvedBy}; original outcome was not assumed.` : check.state === "outcome-unknown" && " · Outcome unverified; audio retained pending reconciliation."}
+        </li>)}</ol>
+      </details>)}
       {latest?.status === "cancelled" && <div><p className="notice">Separation cancelled. Source and existing stem banks are unchanged.</p>{latest.errorMessage && <p>{latest.errorMessage}</p>}{editable && canCancelSeparation && <button className="button" disabled={retrying} onClick={() => void retry(latest.id)}>Restart separation</button>}</div>}
       {latest?.status === "failed" && (
         <div>
@@ -526,4 +534,11 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       </p>
     </>
   );
+}
+
+function recoveryAudit(raw: string | null) {
+  try {
+    const history = JSON.parse(raw ?? "{}").recoveryHistory;
+    return Array.isArray(history) ? history.filter(item => item && typeof item.id === "string" && typeof item.state === "string") as Array<{ id: string; state: string; startedAt: string; result?: string; error?: string; resolvedBy?: string }> : [];
+  } catch { return []; }
 }

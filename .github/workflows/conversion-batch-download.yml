@@ -1,7 +1,7 @@
 name: Verified conversion batch download
 on:
   push:
-    branches: ["arena/conversion-batch-download"]
+    branches: ["arena/conversion-batch-download", "arena/331aa502-arena-os-canonical"]
   workflow_dispatch:
 permissions:
   contents: read

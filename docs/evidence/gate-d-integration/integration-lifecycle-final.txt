@@ -1,0 +1,395 @@
+TAP version 13
+# (node:5910) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/separation/provision-runtime.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:5910) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:5910) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: validateTrustedUrl: the authoritative engine hosts are allowed over HTTPS
+ok 1 - validateTrustedUrl: the authoritative engine hosts are allowed over HTTPS
+  ---
+  duration_ms: 3.041385
+  type: 'test'
+  ...
+# Subtest: validateTrustedUrl: plain HTTP, unknown hosts, credentials and non-URLs are refused
+ok 2 - validateTrustedUrl: plain HTTP, unknown hosts, credentials and non-URLs are refused
+  ---
+  duration_ms: 0.53967
+  type: 'test'
+  ...
+# Subtest: trustedFetch: a redirect to an untrusted host is refused
+ok 3 - trustedFetch: a redirect to an untrusted host is refused
+  ---
+  duration_ms: 21.651012
+  type: 'test'
+  ...
+# Subtest: downloadToTemp: streams to a temp file and reports size + sha256
+ok 4 - downloadToTemp: streams to a temp file and reports size + sha256
+  ---
+  duration_ms: 51.028311
+  type: 'test'
+  ...
+# Subtest: downloadToTemp: a declared length wildly off the expectation is refused before writing
+ok 5 - downloadToTemp: a declared length wildly off the expectation is refused before writing
+  ---
+  duration_ms: 1.601712
+  type: 'test'
+  ...
+# Subtest: downloadToTemp: an interrupted stream is cleaned up and reported
+ok 6 - downloadToTemp: an interrupted stream is cleaned up and reported
+  ---
+  duration_ms: 5.316858
+  type: 'test'
+  ...
+# Subtest: downloadToTemp: a byte cap refuses an oversized response
+ok 7 - downloadToTemp: a byte cap refuses an oversized response
+  ---
+  duration_ms: 3.373818
+  type: 'test'
+  ...
+# Subtest: acquireCheckpoint: a wrong-checksum download is refused and never placed
+ok 8 - acquireCheckpoint: a wrong-checksum download is refused and never placed
+  ---
+  duration_ms: 3.439255
+  type: 'test'
+  ...
+# Subtest: acquireCheckpoint: a matching file is verified and atomically placed
+ok 9 - acquireCheckpoint: a matching file is verified and atomically placed
+  ---
+  duration_ms: 14.98637
+  type: 'test'
+  ...
+# Subtest: importCheckpoint: a wrong file is refused, a matching one is imported
+ok 10 - importCheckpoint: a wrong file is refused, a matching one is imported
+  ---
+  duration_ms: 24.715853
+  type: 'test'
+  ...
+# Subtest: verifyEngine: reports the real Demucs and PyTorch versions
+ok 11 - verifyEngine: reports the real Demucs and PyTorch versions
+  ---
+  duration_ms: 0.506941
+  type: 'test'
+  ...
+# Subtest: verifyEngine: an import failure is an engine failure, not a crash
+ok 12 - verifyEngine: an import failure is an engine failure, not a crash
+  ---
+  duration_ms: 0.254377
+  type: 'test'
+  ...
+# Subtest: runInferenceProbe: six controlled valid WAVs pass; missing stems are named and refused
+ok 13 - runInferenceProbe: six controlled valid WAVs pass; missing stems are named and refused
+  ---
+  duration_ms: 356.628443
+  type: 'test'
+  ...
+# Subtest: createManagedVenv: returns the environment's interpreter after a clean exit
+ok 14 - createManagedVenv: returns the environment's interpreter after a clean exit
+  ---
+  duration_ms: 9.886909
+  type: 'test'
+  ...
+# Subtest: a failing dependency install surfaces its exit code and diagnostic tail
+ok 15 - a failing dependency install surfaces its exit code and diagnostic tail
+  ---
+  duration_ms: 0.582852
+  type: 'test'
+  ...
+# Subtest: acquireManagedPython: downloads, extracts, bootstraps pip and proves the version
+ok 16 - acquireManagedPython: downloads, extracts, bootstraps pip and proves the version
+  ---
+  duration_ms: 36.18526
+  type: 'test'
+  ...
+# Subtest: acquireManagedPython: a runtime that reports the wrong version is refused
+ok 17 - acquireManagedPython: a runtime that reports the wrong version is refused
+  ---
+  duration_ms: 9.391535
+  type: 'test'
+  ...
+# Subtest: discoverEnvironment: reports every interpreter, the checkpoint and FFmpeg honestly
+ok 18 - discoverEnvironment: reports every interpreter, the checkpoint and FFmpeg honestly
+  ---
+  duration_ms: 5.327919
+  type: 'test'
+  ...
+# Subtest: discoverEnvironment: an interpreter that cannot run reports version null
+ok 19 - discoverEnvironment: an interpreter that cannot run reports version null
+  ---
+  duration_ms: 2.645926
+  type: 'test'
+  ...
+# Subtest: a cancelled preparation aborts before any work is done
+ok 20 - a cancelled preparation aborts before any work is done
+  ---
+  duration_ms: 0.577768
+  type: 'test'
+  ...
+# Subtest: a cancelled subprocess is killed and reported as cancelled
+ok 21 - a cancelled subprocess is killed and reported as cancelled
+  ---
+  duration_ms: 62.041951
+  type: 'test'
+  ...
+# Subtest: trusted source cannot change the publisher's HTTPS port
+ok 22 - trusted source cannot change the publisher's HTTPS port
+  ---
+  duration_ms: 0.384169
+  type: 'test'
+  ...
+# Subtest: four-source owner import is atomic and cannot replace the six-source checkpoint
+ok 23 - four-source owner import is atomic and cannot replace the six-source checkpoint
+  ---
+  duration_ms: 6.527299
+  type: 'test'
+  ...
+# (node:5953) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/separation/provision-store.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:5953) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# (node:5953) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# Subtest: a fresh machine reports not_prepared with an empty record
+ok 24 - a fresh machine reports not_prepared with an empty record
+  ---
+  duration_ms: 9.705027
+  type: 'test'
+  ...
+# Subtest: consent is required before any material step, and a partial grant is refused
+ok 25 - consent is required before any material step, and a partial grant is refused
+  ---
+  duration_ms: 3.170092
+  type: 'test'
+  ...
+# Subtest: a full preparation runs the lifecycle, publishes the pointer only after the probe, and reaches ready
+ok 26 - a full preparation runs the lifecycle, publishes the pointer only after the probe, and reaches ready
+  ---
+  duration_ms: 36.428082
+  type: 'test'
+  ...
+# Subtest: two concurrent starts cannot corrupt each other — the second is refused
+ok 27 - two concurrent starts cannot corrupt each other — the second is refused
+  ---
+  duration_ms: 41.727508
+  type: 'test'
+  ...
+# Subtest: a failing dependency install lands in failed with an actionable error
+ok 28 - a failing dependency install lands in failed with an actionable error
+  ---
+  duration_ms: 29.483974
+  type: 'test'
+  ...
+# Subtest: cancellation lands in cancelled, not ready
+ok 29 - cancellation lands in cancelled, not ready
+  ---
+  duration_ms: 40.277815
+  type: 'test'
+  ...
+# Subtest: an interrupted run (Arena restarted) is honestly reported as recovering, then resettable
+ok 30 - an interrupted run (Arena restarted) is honestly reported as recovering, then resettable
+  ---
+  duration_ms: 7.700715
+  type: 'test'
+  ...
+# Subtest: the status record is durable and valid JSON across transitions
+ok 31 - the status record is durable and valid JSON across transitions
+  ---
+  duration_ms: 29.60233
+  type: 'test'
+  ...
+# Subtest: a checkpoint removed after preparation is detected — readiness does not lie
+ok 32 - a checkpoint removed after preparation is detected — readiness does not lie
+  ---
+  duration_ms: 29.325102
+  type: 'test'
+  ...
+# Subtest: changed checkpoint bytes invalidate the recorded smoke, even with the same filename
+ok 33 - changed checkpoint bytes invalidate the recorded smoke, even with the same filename
+  ---
+  duration_ms: 31.03653
+  type: 'test'
+  ...
+# Subtest: published readiness joins final settlement, while an actual preparation remains single-flight
+ok 34 - published readiness joins final settlement, while an actual preparation remains single-flight
+  ---
+  duration_ms: 20.728742
+  type: 'test'
+  ...
+# (node:6003) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/separation/provision.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:6003) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: evaluatePythonVersion: 3.10 and 3.11 are the reliable baseline
+ok 35 - evaluatePythonVersion: 3.10 and 3.11 are the reliable baseline
+  ---
+  duration_ms: 1.605742
+  type: 'test'
+  ...
+# Subtest: evaluatePythonVersion: 3.12 is refused with the precise reason
+ok 36 - evaluatePythonVersion: 3.12 is refused with the precise reason
+  ---
+  duration_ms: 0.278512
+  type: 'test'
+  ...
+# Subtest: evaluatePythonVersion: too old and too new are refused
+ok 37 - evaluatePythonVersion: too old and too new are refused
+  ---
+  duration_ms: 0.130152
+  type: 'test'
+  ...
+# Subtest: checkpoint identity matches the upstream contract
+ok 38 - checkpoint identity matches the upstream contract
+  ---
+  duration_ms: 0.151287
+  type: 'test'
+  ...
+# Subtest: plan: a clean, unprepared Windows machine needs runtime + deps + model, all consented
+ok 39 - plan: a clean, unprepared Windows machine needs runtime + deps + model, all consented
+  ---
+  duration_ms: 0.81816
+  type: 'test'
+  ...
+# Subtest: plan: a compatible interpreter with Demucs and a valid checkpoint needs nothing
+ok 40 - plan: a compatible interpreter with Demucs and a valid checkpoint needs nothing
+  ---
+  duration_ms: 0.302007
+  type: 'test'
+  ...
+# Subtest: plan: a present-but-wrong checkpoint is still acquired
+ok 41 - plan: a present-but-wrong checkpoint is still acquired
+  ---
+  duration_ms: 0.264314
+  type: 'test'
+  ...
+# Subtest: plan: a compatible interpreter without Demucs installs dependencies but not a runtime
+ok 42 - plan: a compatible interpreter without Demucs installs dependencies but not a runtime
+  ---
+  duration_ms: 0.212507
+  type: 'test'
+  ...
+# Subtest: consent: granting every required item satisfies the plan
+ok 43 - consent: granting every required item satisfies the plan
+  ---
+  duration_ms: 0.28778
+  type: 'test'
+  ...
+# Subtest: consent: a partial grant is refused and names exactly what is missing
+ok 44 - consent: a partial grant is refused and names exactly what is missing
+  ---
+  duration_ms: 0.6389
+  type: 'test'
+  ...
+# Subtest: lifecycle: terminal states are exactly ready/failed/cancelled
+ok 45 - lifecycle: terminal states are exactly ready/failed/cancelled
+  ---
+  duration_ms: 0.898816
+  type: 'test'
+  ...
+# Subtest: lifecycle: an interrupted in-flight run reports recovering, a finished one stays finished
+ok 46 - lifecycle: an interrupted in-flight run reports recovering, a finished one stays finished
+  ---
+  duration_ms: 0.111536
+  type: 'test'
+  ...
+# Subtest: checkpoint status: absence and presence are distinguishable
+ok 47 - checkpoint status: absence and presence are distinguishable
+  ---
+  duration_ms: 0.093133
+  type: 'test'
+  ...
+# (node:6013) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/separation/retry.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:6013) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:6013) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: a failed separation job is re-enqueued from its own row (claimed first, then handed to the queue)
+ok 48 - a failed separation job is re-enqueued from its own row (claimed first, then handed to the queue)
+  ---
+  duration_ms: 5753.528266
+  type: 'test'
+  ...
+# Subtest: non-failed and non-separation jobs are refused; a missing job is not found
+ok 49 - non-failed and non-separation jobs are refused; a missing job is not found
+  ---
+  duration_ms: 3384.484425
+  type: 'test'
+  ...
+# Subtest: a queue that cannot accept the job leaves the row honestly failed
+ok 50 - a queue that cannot accept the job leaves the row honestly failed
+  ---
+  duration_ms: 3977.694719
+  type: 'test'
+  ...
+# Subtest: a retried layer job carries its parent stem in the payload again
+ok 51 - a retried layer job carries its parent stem in the payload again
+  ---
+  duration_ms: 3596.378425
+  type: 'test'
+  ...
+# Subtest: a failed row is not resurrected while a newer attempt at its target is active — and is retryable once that attempt is over
+ok 52 - a failed row is not resurrected while a newer attempt at its target is active — and is retryable once that attempt is over
+  ---
+  duration_ms: 3631.929521
+  type: 'test'
+  ...
+# Subtest: the post-seed sweep requeues ONLY this model's retryable failures
+ok 53 - the post-seed sweep requeues ONLY this model's retryable failures
+  ---
+  duration_ms: 4119.864393
+  type: 'test'
+  ...
+# Subtest: server-mode hand-off: invoked only AFTER the row is claimed, never when a newer attempt holds the target, restored when it fails
+ok 54 - server-mode hand-off: invoked only AFTER the row is claimed, never when a newer attempt holds the target, restored when it fails
+  ---
+  duration_ms: 3853.903479
+  type: 'test'
+  ...
+# Subtest: server mode: a queue_unavailable row with NO queue record is retried by a FRESH submission — claimed first
+ok 55 - server mode: a queue_unavailable row with NO queue record is retried by a FRESH submission — claimed first
+  ---
+  duration_ms: 3596.627544
+  type: 'test'
+  ...
+# Subtest: server mode: an existing FINISHED record is retried in place — no fresh submission
+ok 56 - server mode: an existing FINISHED record is retried in place — no fresh submission
+  ---
+  duration_ms: 3854.862776
+  type: 'test'
+  ...
+# Subtest: server mode: a record BullMQ still holds (waiting / delayed / active) is left alone — the claimed row is honestly queued
+ok 57 - server mode: a record BullMQ still holds (waiting / delayed / active) is left alone — the claimed row is honestly queued
+  ---
+  duration_ms: 3376.079872
+  type: 'test'
+  ...
+# Subtest: server mode: a Redis that never answers is a bounded refusal — the claimed row is restored, never held hostage
+ok 58 - server mode: a Redis that never answers is a bounded refusal — the claimed row is restored, never held hostage
+  ---
+  duration_ms: 4011.074288
+  type: 'test'
+  ...
+1..58
+# tests 58
+# suites 0
+# pass 58
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 46631.964474

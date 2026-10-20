@@ -1,10 +1,11 @@
 name: Converted music to Waveyard and Studio
 on:
   push:
-    branches: ["product/converter-waveyard-flow"]
+    branches: ["product/converter-waveyard-flow", "arena/331aa502-arena-os-canonical"]
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 defaults:
   run:
     shell: bash
@@ -13,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      OWNER_SNAPSHOT: 794be8ce3e3d5c3d6fe84adff9646467f99bb2be
+      OWNER_SNAPSHOT: ${{ github.ref_name == 'arena/331aa502-arena-os-canonical' && github.sha || '794be8ce3e3d5c3d6fe84adff9646467f99bb2be' }}
       ARENA_CONVERTER_FLOW_EVIDENCE_DIR: ${{ github.workspace }}/.data/converter-waveyard
     steps:
       - uses: actions/checkout@v4
@@ -68,12 +69,26 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/node_modules/@embedded-postgres/linux-x64/native/lib:${LD_LIBRARY_PATH:-}"
           export ARENA_CONVERSION_REAL_INPUT="$RUNNER_TEMP/Slow Motion Dream.mp3"
           node --import ./scripts/register-src-loader.mjs --test tests/acceptance/converter-waveyard.test.mjs 2>&1 | tee .data/converter-waveyard/receipts/tests.tap
+      - name: Publish integrated connected-journey measurements
+        if: always()
+        run: node scripts/publish-converter-acceptance.mjs .data/converter-waveyard/receipts/receipt.json
+      - name: Retrieve Agent B original CI receipts for independent inspection
+        uses: actions/download-artifact@v4
+        with:
+          name: converter-waveyard-receipts-39435365934
+          run-id: 39435365934
+          github-token: ${{ github.token }}
+          path: .data/converter-waveyard/donor-receipts
+      - name: Publish original companion CI measurements separately
+        run: node scripts/publish-converter-acceptance.mjs .data/converter-waveyard/donor-receipts/receipt.json
       - name: Upload small independently inspectable receipts, including failures
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: converter-waveyard-receipts-${{ github.run_id }}
-          path: .data/converter-waveyard/receipts/
+          path: |
+            .data/converter-waveyard/receipts/
+            .data/converter-waveyard/donor-receipts/
           retention-days: 90
           if-no-files-found: warn
       - name: Upload real downloaded audio, original recording and browser trace

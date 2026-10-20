@@ -94,8 +94,8 @@ jobs:
       - name: Publish failing test identities to check annotations
         if: failure()
         run: |
-          node scripts/ci-test-summary.mjs .data/acceptance/waveyard-handoff/crashes.tap
-          node scripts/ci-test-summary.mjs .data/acceptance/waveyard-handoff/tests.tap
+          node scripts/ci-test-summary.mjs .data/acceptance/waveyard-handoff/crashes.tap --details
+          node scripts/ci-test-summary.mjs .data/acceptance/waveyard-handoff/tests.tap --details
 
       - name: Retain Waveyard persistence/render evidence (including failures)
         if: always()

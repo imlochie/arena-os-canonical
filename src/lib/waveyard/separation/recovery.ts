@@ -14,6 +14,7 @@ import { checksumFile } from "../audio";
 import { decodeWav16 } from "../mixer/synth";
 import { getStorage } from "../storage";
 
+export type RecoveryAttempt = { id: string; owner: Owner | null; startedAt: string; state: "in-progress" | "outcome-unknown" | "interrupted" | "finished"; result?: string; finishedAt?: string; error?: string; resolvedBy?: string };
 type Job = typeof processingJobs.$inferSelect;
 export type Output = typeof stemAssets.$inferInsert;
 export type Owner = { host: string; boot: string; namespace: string; pid: number; start: string };
@@ -83,60 +84,96 @@ async function cleanupWork(e: Execution) {
 /** No timeout-based reclamation. A locked row fences retry, cancel and concurrent
  * recovery. A crash rolls back this transaction; planned keys remain journaled. */
 export async function reconcileSeparation(db: SeparationDb, id: string, boundary?: (phase: string) => Promise<void>) {
-  return db.transaction(async tx => {
-    const [job] = await tx.select().from(processingJobs).where(eq(processingJobs.id, id)).for("update");
-    if (!job || job.type !== "separation") return "not-found";
-    const e = metadata(job.metadata).execution as Execution | undefined;
-    if (!e) return job.status === "queued" ? "queued" : "legacy-unknown-owner";
-    if (e.phase === "retired") return "already-retired";
-    if (await ownerState(e.owner) !== "dead" || (e.child && await ownerState(e.child) !== "dead")) return "owner-not-proven-dead";
-    if (e.outputs.length) {
-      const [source] = await tx.select().from(sourceAssets).where(eq(sourceAssets.id, job.sourceAssetId!));
-      const input = e.input && getStorage().getLocalPath(e.input.key);
-      if (!source || source.projectId !== job.projectId || source.checksumSha256 !== e.input?.sourceChecksum || !input || await checksumFile(input) !== e.input?.checksum) throw new Error("Recovery source identity cannot be verified; staged audio retained.");
-    }
-    const published = await tx.select().from(stemAssets).where(eq(stemAssets.separationJobId, job.id));
-    if (published.length) {
-      // Existing referenced audio is never deleted, including inconsistent banks.
-      if (published.length !== e.expected || !published.every(row => e.outputs.some(o => o.storageKey === row.storageKey && o.checksumSha256 === row.checksumSha256)) || !await validateExecutionOutputs(job, e)) return "inconsistent-bank-preserved";
-      await cleanupWork(e);
-      await tx.update(processingJobs).set({ status: "complete", stage: "complete", completedAt: job.completedAt ?? new Date(), updatedAt: new Date(), metadata: JSON.stringify({ ...metadata(job.metadata), execution: { ...e, phase: "committed" } }) }).where(eq(processingJobs.id, id));
-      return "committed";
-    }
-    if (job.status === "complete") return "inconsistent-bank-preserved";
-    await boundary?.("reconciling");
-    if (job.status !== "cancelling" && job.status !== "cancelled" && ["validated", "staging"].includes(e.phase) && await validateExecutionOutputs(job, e)) {
-      await boundary?.("recovery-publication");
-      await publishBank(tx, job, e.outputs, e.provenance);
-      await boundary?.("recovery-committed-before-ack");
-      await cleanupWork(e);
-      await tx.update(processingJobs).set({ metadata: JSON.stringify({ ...metadata(job.metadata), ...e.provenance, execution: { ...e, phase: "committed" } }) }).where(eq(processingJobs.id, id));
-      return "recovered-bank";
-    }
-    // No committed bank. Delete only this journal's planned, private keys;
-    // reference lookup is global rather than limited to this job.
-    for (const o of e.outputs) {
-      if (o.projectId !== job.projectId || o.separationJobId !== id || !o.storageKey.startsWith(`projects/${job.projectId}/stem/`) || !/^projects\/[\w-]+\/stem\/[\w-]+\.wav$/.test(o.storageKey)) throw new Error("Unsafe recovery object ownership.");
-      const refs = await tx.select({ id: stemAssets.id }).from(stemAssets).where(eq(stemAssets.storageKey, o.storageKey));
-      const active = await tx.select({ id: processingJobs.id }).from(processingJobs).where(sql`${processingJobs.id} <> ${id} and ${processingJobs.status} not in ('complete','failed','cancelled') and ${processingJobs.metadata}::jsonb->'execution'->'outputs' @> ${JSON.stringify([{ storageKey: o.storageKey }])}::jsonb`);
-      if (active.length) throw new Error("Output retained: another active operation references this planned key.");
-      if (!refs.length) { await boundary?.("cleanup"); await getStorage().delete(o.storageKey); await boundary?.("cleanup-written"); }
-    }
-    await cleanupWork(e);
-    const cancelled = ["cancelling", "cancelled"].includes(job.status);
-    e.history = [...(e.history ?? []), `${new Date().toISOString()}: interrupted ${e.phase}; outputs retired`];
-    e.phase = "retired";
-    await tx.update(processingJobs).set({ status: cancelled ? "cancelled" : "failed", stage: cancelled ? "cancelled" : "interrupted", errorCode: job.status === "failed" ? job.errorCode : cancelled ? "cancelled" : "execution_interrupted", errorMessage: job.status === "failed" ? job.errorMessage : "Executor death verified by process incarnation; unpublished output retired. A fresh separation can now be requested.", completedAt: new Date(), updatedAt: new Date(), metadata: JSON.stringify({ ...metadata(job.metadata), execution: e }) }).where(eq(processingJobs.id, id));
-    return cancelled ? "cancelled" : "interrupted";
-  });
+  const attempt: RecoveryAttempt = { id: randomUUID(), owner: await ownerIdentity(), startedAt: new Date().toISOString(), state: "in-progress" };
+  // Independently committed intent: visible even while the main row-locked
+  // transaction is running, or after its executor is killed. Not a lease and
+  // never authority to reclaim/kill another process.
+  const [recorded] = await db.update(processingJobs).set({ metadata: sql`jsonb_set(${processingJobs.metadata}::jsonb, '{recoveryHistory}', coalesce(${processingJobs.metadata}::jsonb->'recoveryHistory', '[]'::jsonb) || ${JSON.stringify([attempt])}::jsonb)::text` }).where(and(eq(processingJobs.id, id), eq(processingJobs.type, "separation"))).returning({ id: processingJobs.id });
+  if (!recorded) return "not-found";
+  try {
+    await boundary?.("recovery-intent");
+    const result = await db.transaction(async tx => {
+      const outcome = await (async () => {
+        const [job] = await tx.select().from(processingJobs).where(eq(processingJobs.id, id)).for("update");
+        if (!job || job.type !== "separation") return "not-found";
+        const e = metadata(job.metadata).execution as Execution | undefined;
+        if (!e) return job.status === "queued" ? "queued" : "legacy-unknown-owner";
+        if (e.phase === "retired") return "already-retired";
+        if (await ownerState(e.owner) !== "dead" || (e.child && await ownerState(e.child) !== "dead")) return "owner-not-proven-dead";
+        if (e.outputs.length) {
+          const [source] = await tx.select().from(sourceAssets).where(eq(sourceAssets.id, job.sourceAssetId!));
+          const input = e.input && getStorage().getLocalPath(e.input.key);
+          if (!source || source.projectId !== job.projectId || source.checksumSha256 !== e.input?.sourceChecksum || !input || await checksumFile(input) !== e.input?.checksum) throw new Error("Recovery source identity cannot be verified; staged audio retained.");
+        }
+        const published = await tx.select().from(stemAssets).where(eq(stemAssets.separationJobId, job.id));
+        if (published.length) {
+          // Existing referenced audio is never deleted, including inconsistent banks.
+          if (published.length !== e.expected || !published.every(row => e.outputs.some(o => o.storageKey === row.storageKey && o.checksumSha256 === row.checksumSha256)) || !await validateExecutionOutputs(job, e)) return "inconsistent-bank-preserved";
+          await cleanupWork(e);
+          await tx.update(processingJobs).set({ status: "complete", stage: "complete", completedAt: job.completedAt ?? new Date(), updatedAt: new Date(), metadata: JSON.stringify({ ...metadata(job.metadata), execution: { ...e, phase: "committed" } }) }).where(eq(processingJobs.id, id));
+          return "committed";
+        }
+        if (job.status === "complete") return "inconsistent-bank-preserved";
+        await boundary?.("reconciling");
+        if (job.status !== "cancelling" && job.status !== "cancelled" && ["validated", "staging"].includes(e.phase) && await validateExecutionOutputs(job, e)) {
+          await boundary?.("recovery-publication");
+          await publishBank(tx, job, e.outputs, e.provenance);
+          await boundary?.("recovery-committed-before-ack");
+          await cleanupWork(e);
+          await tx.update(processingJobs).set({ metadata: JSON.stringify({ ...metadata(job.metadata), ...e.provenance, execution: { ...e, phase: "committed" } }) }).where(eq(processingJobs.id, id));
+          return "recovered-bank";
+        }
+        // No committed bank. Delete only this journal's planned, private keys;
+        // reference lookup is global rather than limited to this job.
+        for (const o of e.outputs) {
+          if (o.projectId !== job.projectId || o.separationJobId !== id || !o.storageKey.startsWith(`projects/${job.projectId}/stem/`) || !/^projects\/[\w-]+\/stem\/[\w-]+\.wav$/.test(o.storageKey)) throw new Error("Unsafe recovery object ownership.");
+          const refs = await tx.select({ id: stemAssets.id }).from(stemAssets).where(eq(stemAssets.storageKey, o.storageKey));
+          const active = await tx.select({ id: processingJobs.id }).from(processingJobs).where(sql`${processingJobs.id} <> ${id} and ${processingJobs.status} not in ('complete','failed','cancelled') and ${processingJobs.metadata}::jsonb->'execution'->'outputs' @> ${JSON.stringify([{ storageKey: o.storageKey }])}::jsonb`);
+          if (active.length) throw new Error("Output retained: another active operation references this planned key.");
+          if (!refs.length) { await boundary?.("cleanup"); await getStorage().delete(o.storageKey); await boundary?.("cleanup-written"); }
+        }
+        await cleanupWork(e);
+        const cancelled = ["cancelling", "cancelled"].includes(job.status);
+        e.history = [...(e.history ?? []), `${new Date().toISOString()}: interrupted ${e.phase}; outputs retired`];
+        e.phase = "retired";
+        await tx.update(processingJobs).set({ status: cancelled ? "cancelled" : "failed", stage: cancelled ? "cancelled" : "interrupted", errorCode: job.status === "failed" ? job.errorCode : cancelled ? "cancelled" : "execution_interrupted", errorMessage: job.status === "failed" ? job.errorMessage : "Executor death verified by process incarnation; unpublished output retired. A fresh separation can now be requested.", completedAt: new Date(), updatedAt: new Date(), metadata: JSON.stringify({ ...metadata(job.metadata), execution: e }) }).where(eq(processingJobs.id, id));
+        return cancelled ? "cancelled" : "interrupted";
+      })();
+      const [current] = await tx.select().from(processingJobs).where(eq(processingJobs.id, id));
+      if (current) {
+        const history = (metadata(current.metadata).recoveryHistory ?? []) as RecoveryAttempt[];
+        const finishedAt = new Date().toISOString();
+        for (const entry of history) {
+          if (entry.id === attempt.id) Object.assign(entry, { state: "finished", result: outcome, finishedAt });
+          else if (entry.state === "outcome-unknown" && !entry.resolvedBy) entry.resolvedBy = attempt.id;
+          else if (entry.state === "in-progress" && await ownerState(entry.owner) === "dead") Object.assign(entry, { state: "interrupted", finishedAt, resolvedBy: attempt.id });
+        }
+        // Outcome and bank/cleanup commit atomically. A lost COMMIT ack cannot
+        // leave a successful bank with a falsely unfinished audit record.
+        await tx.update(processingJobs).set({ metadata: sql`jsonb_set(${processingJobs.metadata}::jsonb, '{recoveryHistory}', ${JSON.stringify(history)}::jsonb)::text` }).where(eq(processingJobs.id, id));
+      }
+      return outcome;
+    });
+    await boundary?.("recovery-after-commit");
+    return result;
+  } catch (error) {
+    const unknown = JSON.stringify({ state: "outcome-unknown", error: error instanceof Error ? error.message.slice(0, 1000) : String(error), finishedAt: new Date().toISOString() });
+    // Never downgrade an atomically committed outcome after lost ack. If DB
+    // is unavailable, the durable intent remains for the next fresh process.
+    try {
+      await db.update(processingJobs).set({ metadata: sql`jsonb_set(${processingJobs.metadata}::jsonb, '{recoveryHistory}', (select jsonb_agg(case when item->>'id' = ${attempt.id} and item->>'state' = 'in-progress' then item || ${unknown}::jsonb else item end order by ordinal) from jsonb_array_elements(${processingJobs.metadata}::jsonb->'recoveryHistory') with ordinality as entries(item, ordinal)))::text` }).where(eq(processingJobs.id, id));
+    } catch { console.error("Recovery outcome unavailable; durable intent retained", id, attempt.id); }
+    throw error;
+  }
 }
 export async function reconcileNativeSeparations(db: SeparationDb, queued: (job: Job) => Promise<unknown>) {
   const jobs = await db.select().from(processingJobs).where(eq(processingJobs.type, "separation"));
   const results: Record<string, string> = {};
   for (const job of jobs) {
     const base = metadata(job.metadata), execution = base.execution as Execution | undefined;
-    if (["failed", "cancelled"].includes(job.status) && !base.cleanupFailedKeys && !execution?.cleanupPending) continue;
-    if (job.status === "complete" && !execution?.cleanupPending) continue;
+    const auditPending = ((base.recoveryHistory ?? []) as RecoveryAttempt[]).some(item => ["in-progress", "outcome-unknown"].includes(item.state) && !item.resolvedBy);
+    if (["failed", "cancelled"].includes(job.status) && !base.cleanupFailedKeys && !execution?.cleanupPending && !auditPending) continue;
+    if (job.status === "complete" && !execution?.cleanupPending && !auditPending) continue;
     try { const result = await reconcileSeparation(db, job.id); results[job.id] = result; if (result === "queued") await queued(job); }
     catch (error) { results[job.id] = `recovery-pending: ${error instanceof Error ? error.message : String(error)}`; }
   }

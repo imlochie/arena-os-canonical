@@ -119,7 +119,7 @@ async function updateJob(
 ) {
   await database
     .update(processingJobs)
-    .set({ ...patch, ...(patch.metadata ? { metadata: sql`(${processingJobs.metadata}::jsonb || ${JSON.stringify(Object.fromEntries(Object.entries(recoveryMetadata(patch.metadata)).filter(([key]) => !["execution", "executionHistory"].includes(key))))}::jsonb)::text` } : {}), updatedAt: new Date() })
+    .set({ ...patch, ...(patch.metadata ? { metadata: sql`(${processingJobs.metadata}::jsonb || ${JSON.stringify(Object.fromEntries(Object.entries(recoveryMetadata(patch.metadata)).filter(([key]) => !["execution", "executionHistory", "recoveryHistory"].includes(key))))}::jsonb)::text` } : {}), updatedAt: new Date() })
     .where(and(eq(processingJobs.id, id), notInArray(processingJobs.status, ["complete", "failed", "cancelling", "cancelled"])));
 }
 
@@ -273,7 +273,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
   try {
     await checkCancellation();
     await deps.boundary?.("before-claim");
-    const [claimed] = await database.update(processingJobs).set({ status: "preparing", stage: "preparing", startedAt: new Date(), updatedAt: new Date(), errorCode: null, errorMessage: null, metadata: JSON.stringify({ ...jobMetadata(job.metadata), executionHistory: executionHistory(job), execution }) })
+    const [claimed] = await database.update(processingJobs).set({ status: "preparing", stage: "preparing", startedAt: new Date(), updatedAt: new Date(), errorCode: null, errorMessage: null, metadata: sql`(${processingJobs.metadata}::jsonb || ${JSON.stringify({ executionHistory: executionHistory(job), execution })}::jsonb)::text` })
       .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "queued"))).returning({ id: processingJobs.id });
     if (!claimed) return;
     ownsAttempt = true;

@@ -241,6 +241,8 @@ export function createPreparationManager(
     /** Injectable machine operations (tests supply doubles). */
     runtime?: Partial<typeof import("./provision-runtime")>;
     now?: () => number;
+    /** Controlled lifecycle boundary; production has no callback. */
+    onReadyPublished?: () => Promise<void>;
   } = { envDir: resolveDeepEnvDir(), modelsDir: resolveModelsDir() },
 ): PreparationManager {
   const spec = deepModelSpec(options.modelId);
@@ -339,7 +341,14 @@ export function createPreparationManager(
   async function start(grants: readonly string[], retest = false): Promise<StartOutcome> {
     // Same-process single flight.
     if (state.active !== null) {
+      const active = state.active;
       const current = await getStatus();
+      // Ready is persisted before final heartbeat/lock cleanup settles. A
+      // caller observing ready must join that cleanup, not get a phantom run.
+      if (current.state === "ready") {
+        await active.promise;
+        return start(grants, retest);
+      }
       return { outcome: "already-running", state: current.state };
     }
     const status = await getStatus();
@@ -379,14 +388,13 @@ export function createPreparationManager(
     };
     await persist();
 
-    const promise = runPlan(plan, report, { signal: controller.signal, log }, epoch, controller);
+    const promise = runPlan(plan, report, { signal: controller.signal, log }, epoch, controller).finally(async () => {
+      try { await releaseLock(envDir, epoch); }
+      finally { if (state.active?.epoch === epoch) state.active = null; }
+    });
     state.active = { epoch, cancel: () => controller.abort(), promise };
-    // The start request returns NOW; the run continues in the
-    // background and its state is polled from disk.
-    void promise.finally(async () => {
-      if (state.active?.epoch === epoch) state.active = null;
-      await releaseLock(envDir, epoch);
-    }).catch(error => { console.error("Preparation lifecycle persistence failed", error instanceof Error ? error.message : "unknown error"); });
+    // Track settlement INCLUDING cleanup; active is not cleared prematurely.
+    void promise.catch(error => { console.error("Preparation lifecycle persistence failed", error instanceof Error ? error.message : "unknown error"); });
     return { outcome: "started", epoch };
   }
 
@@ -508,6 +516,7 @@ export function createPreparationManager(
         result: { provenance, readyAt: new Date().toISOString() },
         completedAt: new Date().toISOString(),
       });
+      await options.onReadyPublished?.();
       if (state.status !== null) {
         const steps = state.status.steps.map((step) => ({ ...step, state: "done" as StepState }));
         state.status.steps = steps;

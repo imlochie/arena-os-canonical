@@ -80,10 +80,20 @@ test("native separation real SIGKILL/restart matrix", { timeout: 360000 }, async
       const m = await worker(row, "startup").done(); assert.ok(m.some(v => v.queued === row.id));
       await worker(row, "execute").done(); await assertBank(row, 4);
     });
-    for (const phase of ["cleanup-written", "recovery-committed-before-ack"]) await t.test(`reconciler crash: ${phase}`, async () => {
+    for (const phase of ["recovery-intent", "cleanup-written", "recovery-committed-before-ack", "recovery-after-commit"]) await t.test(`reconciler crash: ${phase}`, async () => {
       const row = await job(); const w = worker(row, "execute", phase === "cleanup-written" ? "object-written:1" : "validated"); await w.at(phase === "cleanup-written" ? "object-written:1" : "validated"); await w.kill();
-      const r = worker(row, "recover", phase); await r.at(phase); await r.kill();
-      await recover(row); await assertBank(row, phase === "cleanup-written" ? 0 : 4);
+      const r = worker(row, "recover", phase); await r.at(phase);
+      const [visible] = await pg.database.select().from(processingJobs).where(eq(processingJobs.id, row.id));
+      const history = JSON.parse(visible.metadata).recoveryHistory;
+      assert.equal(history.at(-1).state, phase === "recovery-after-commit" ? "finished" : "in-progress", "audit is visible from independent connection while recovery is blocked");
+      const previousId = history.at(-1).id;
+      await r.kill();
+      await recover(row);
+      const [after] = await pg.database.select().from(processingJobs).where(eq(processingJobs.id, row.id));
+      const retained = JSON.parse(after.metadata).recoveryHistory;
+      assert.equal(retained.find((entry: { id: string }) => entry.id === previousId).state, phase === "recovery-after-commit" ? "finished" : "interrupted");
+      assert.equal(retained.at(-1).state, "finished");
+      await assertBank(row, phase === "cleanup-written" ? 0 : 4);
     });
     for (const phase of ["native-unregistered", "native-registered", "inference-running"]) await t.test(`real Python ownership pipe: ${phase}`, async () => {
       const stub = await writeStubDeepEngine(join(root, randomUUID()), sourcePath, { hangIgnoringTermination: true, demucsVersion: "4.0.1" }); assert.ok(stub);
@@ -140,7 +150,10 @@ test("native separation real SIGKILL/restart matrix", { timeout: 360000 }, async
     await t.test("lost recovery COMMIT acknowledgement preserves the published bank", async () => {
       const row = await job(), w = worker(row, "execute", "validated"); await w.at("validated"); await w.kill();
       await worker(row, "recover", "", { CRASH_LOST_ACK: "1" }).done(1);
-      await assertBank(row, 4); await recover(row); await assertBank(row, 4);
+      const bank = await assertBank(row, 4);
+      const audit = JSON.parse(bank.metadata).recoveryHistory;
+      assert.equal(audit.at(-1).state, "finished"); assert.equal(audit.at(-1).result, "recovered-bank", "lost acknowledgement must not downgrade atomically committed audit");
+      await recover(row); await assertBank(row, 4);
     });
     for (const phase of ["claimed", "inference-starting", "inference-running", "object-partial", "validated", "committed"]) await t.test(`cancel and SIGKILL at ${phase}`, async () => {
       const row = await job(), w = worker(row, "execute", phase); await w.at(phase);
