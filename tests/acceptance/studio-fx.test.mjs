@@ -985,6 +985,7 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
       } else if (implementation === "prototype5") {
         const warmBytes = warmSourceCount * 441000 * 2 * 4;
         assert.equal(result.warmSourceBytes, warmBytes);
+        const oneSourceBytes = 441000 * 2 * 4;
         assert.equal(result.warmSourceBytesAfterHotEdit, warmBytes);
         assert.equal(result.warmSourceBytesAfterRepeatedHotEdit, warmBytes);
         assert.equal(result.warmSourceBytesAfterColdEdit, warmBytes);
