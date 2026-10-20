@@ -84,7 +84,9 @@ test("real Spaces workshop repairs and verifies workspace files, retains immutab
     page = await context.newPage(); page.setDefaultTimeout(20000);
     await page.goto(`${origin}/spaces`);
     await page.getByLabel("Title", { exact: true }).fill("Controlled software workshop");
-    await page.getByLabel("Task prompt", { exact: true }).fill("Prepare reviewable workspace changes and recorded tests; do not publish externally.");
+    // Playwright's implicit-label name includes the textarea's initial value.
+    // Match the stable label prefix, not that entire changing accessible name.
+    await page.getByLabel(/^Task prompt\b/).fill("Prepare reviewable workspace changes and recorded tests; do not publish externally.");
     const createdPromise = page.waitForResponse(r => r.url() === `${origin}/api/spaces` && r.request().method() === "POST");
     await page.getByRole("button", { name: "🪟 Create space", exact: true }).click();
     const createdHttp = await createdPromise, created = await createdHttp.json();
