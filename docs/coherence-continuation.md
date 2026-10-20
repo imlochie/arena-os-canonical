@@ -2405,3 +2405,45 @@ inference and upload abrupt-restart coverage, retry ownership and staged-manifes
 cleanup across restarts are not complete. In particular preserving unknown
 output is the safe action, not proof it was reconciled. No Electron/Windows,
 MDX, catalogue or replacement-complete claim.
+
+### 7adf16a full source1481PASS; actual session navigation test-body hang repaired
+
+Exact clean `7adf16a2e6c2c9e3db5e034ad58789e78e9bff03` completed
+**1481/1481PASS,39suites,0FAIL,0SKIP**,932664ms wrapper elapsed. Receipt:
+`.data/acceptance/source-suite/2026-10-20T08-58-03.777Z-68625.json`. This includes
+all three publication-safety cases and the corrected unordered-SQL assertion.
+
+Changed available local execution strategy: npm-published @sparticuz/chromium
+153.0.0 (Chromium153.0.8010.0), cached outside Git; its provided Linux libraries
+resolved the initially missing libnspr4.so. No source dependency/lock changed.
+Real local Chromium/WebAudio transport acceptance12PASS0FAIL, including actual
+sparse/stale mixer signals. This is browser execution, not Electron/Windows.
+
+Both genuine39393483566/job118530386509/37d9ae0 and39394119731/job118532488179/
+b92f183 ultimately **FAILED** the40min test timeout. Receipts independently
+reconstructed from numbered Checks annotations confirm real four-model A/B/C
+and advancement past the unchanged vocal mute/drum isolate/Bass-zero signal
+assertions. The guardian thus also ran real four inference in the latter run.
+Neither reached six/export. Exact error: `response.text: Target page, context or
+browser has been closed`, at old test1134:109. The inline assert's eager
+`await addedResponse.text()` waited indefinitely on the old document response
+body while the actual player navigated to its new session. These failures are
+not reclassified as whole-gate passes. Attempted cancellation was refused403
+by the integration's Actions permission; both runs ended by their existing
+bounded timeout, not a repeated unauthorized cancellation.
+
+A local controlled actual-product browser reproduction timed out at the same
+boundary; changing only verification to query the real persisted session API
+completed in5.9sec, including native route and reload. Integrated a shared
+acceptance helper which observes real POST201 statuses, verifies the actual
+bankId request, proves a fresh session id against preexisting sessions, reads
+persisted exact asset identities through the real API, then waits for actual
+`/waveyard/session/:id` navigation. It never manually replaces product navigation
+or relies on reading a response body invalidated by navigation. Both genuine
+and a new controlled two-bank browser regression use it. The controlled test
+checks bank1 actual solo silence, bank2 reset/restored actual Bass signal, exact
+bank2 session pin, real route and reload. Initial new test used a nonexistent
+CSS selector; corrected to the existing accessible combobox name, then1PASS
+in5.4sec. Copied-PCM controlled banks are explicitly not trained inference.
+Types/build pass, lint0errors49warnings. Next genuine run must complete both
+models and the stronger E/F path. D still open; replacement not accepted.

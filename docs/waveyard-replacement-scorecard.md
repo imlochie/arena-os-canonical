@@ -313,3 +313,16 @@ These are meaningful D improvements, but durable ownership, restart reconciliati
 and the full requested crash matrix remain OPEN. b92f183 source1478PASS and CI
 39394119736SUCCESS include browser sparse/stale solo regression; outstanding
 trained-model runs are not converted into an E/F pass before final receipts.
+
+### Stronger E progress, without concealing two genuine timeout failures
+
+7adf16a exact full source1481PASS/39suites/0SKIP; real local browser transport
+12PASS. Genuine39393483566 and39394119731 executed four-source inference,
+validation and the real post-fader mute/isolation assertions, but FAILED on a
+navigation-invalidated POST response-body read in the test, before six/export.
+The shared bank/session acceptance helper now independently verifies actual
+request bankId and persisted fresh session asset identities, actual native
+navigation and reopen, rather than awaiting the abandoned response body.
+A controlled actual-player two-bank regression passes with real analyser signal
+checks and saved-bank reopen. Complete learned four/six E/F remains pending the
+next genuine run; D and complete replacement remain OPEN.

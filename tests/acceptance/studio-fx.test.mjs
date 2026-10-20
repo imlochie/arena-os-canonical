@@ -1043,6 +1043,57 @@ test("PostgreSQL publication lock arbitrates concurrent cancel: committed bank w
   } finally { commit(); await executing.catch(() => {}); }
 });
 
+// Navigation can invalidate Chromium's response-body handle for the old page.
+// Observe actual POST statuses/intent, then independently read durable session
+// state. Never await that abandoned response body or replace product navigation.
+async function playPlayerAsSession(page, bankId, assetIds) {
+  const previous = new Set((await api("/api/library/sessions")).sessions.map(session => session.id));
+  const responses = Promise.all([
+    page.waitForResponse(response => response.url().endsWith("/api/library/sessions") && response.request().method() === "POST"),
+    page.waitForResponse(response => /\/api\/library\/sessions\/[^/]+\/tracks$/.test(response.url()) && response.request().method() === "POST"),
+  ]);
+  await page.getByRole("button", { name: "Play as session", exact: true }).click();
+  const [created, added] = await responses;
+  assert.equal(created.status(), 201); assert.equal(added.status(), 201);
+  assert.equal(added.request().postDataJSON().bankId, bankId, "actual player request must pin the auditioned bank");
+  const id = new URL(added.url()).pathname.split("/").at(-2);
+  assert.equal(previous.has(id), false, "the player must create a fresh session, not reuse an old one");
+  const { session } = await api(`/api/library/sessions/${id}`);
+  assert.equal(session.id, id);
+  assert.deepEqual(new Set(session.tracks[0].playback.assetIds), new Set(assetIds), "persisted session must contain exactly the auditioned bank");
+  await expect(page).toHaveURL(`${origin}/waveyard/session/${id}`);
+  return session;
+}
+
+test("actual player switches controlled banks, clears stale solo, and natively opens/reopens the exact new session bank", { timeout: 120000 }, async t => {
+  // Actual product/routes/audio, controlled copied PCM: NOT learned inference.
+  const input = await source(false, 3, 1009);
+  const { track } = await api(`/api/library/tracks/${input.trackId}`);
+  broker = (await import("../../src/lib/waveyard/worker-local/index.ts")).startLocalWorker();
+  const { handleSeparationJob } = await import("../../src/lib/waveyard/worker-local/separation.ts");
+  async function publish() {
+    const [job] = await database.db.insert(schema.processingJobs).values({ projectId: input.projectId, sourceAssetId: track.source.id, type: "separation", model: "deep_4s", requestedDevice: "cpu", idempotencyKey: crypto.randomUUID() }).returning();
+    await handleSeparationJob({ processingJobId: job.id, projectId: job.projectId, sourceAssetId: job.sourceAssetId, model: job.model, requestedDevice: "cpu" }, { db: database.db, runDeep: async request => ({ engine: "demucs", model: "deep_4s", modelName: "CONTROLLED-NOT-LEARNED", modelVersion: "CONTROLLED-NOT-LEARNED", checkpointPath: "NO-WEIGHTS", resolvedDevice: "cpu", stems: ["vocals", "drums", "bass", "other"].map(stemType => ({ stemType, path: request.inputPath, bytes: 44 + 44100 * 3 * 4 })) }) });
+    const stems = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.separationJobId, job.id));
+    return { job, stems };
+  }
+  const first = await publish(), second = await publish(); assert.equal(await broker.drain(30000), true);
+  const page = await browser.newPage(); page.setDefaultTimeout(15000); t.after(() => page.close());
+  await page.goto(`${origin}/?room=player&track=${input.trackId}`);
+  await page.getByRole("combobox", { name: "Audition separation bank", exact: true }).selectOption(first.job.id);
+  await expect(page.getByLabel("Mute Vocals", { exact: true })).toBeEnabled(); await page.locator(".wplayer-play").click();
+  await expect.poll(async () => Number(await page.getByRole("meter", { name: "Bass level", exact: true }).getAttribute("aria-valuenow"))).toBeGreaterThan(0);
+  await page.getByLabel("Isolate Drums", { exact: true }).click();
+  await expect.poll(async () => Number(await page.getByRole("meter", { name: "Bass level", exact: true }).getAttribute("aria-valuenow"))).toBe(0);
+  await page.getByRole("combobox", { name: "Audition separation bank", exact: true }).selectOption(second.job.id);
+  await expect(page.getByLabel("Isolate Drums", { exact: true })).toHaveAttribute("aria-pressed", "false");
+  await page.locator(".wplayer-play").click();
+  await expect.poll(async () => Number(await page.getByRole("meter", { name: "Bass level", exact: true }).getAttribute("aria-valuenow"))).toBeGreaterThan(0);
+  await playPlayerAsSession(page, second.job.id, second.stems.map(stem => stem.id));
+  const deck = page.getByTestId("session-deck-current"); await expect(deck.locator("audio")).toHaveCount(4);
+  await page.reload(); await expect(deck.locator("audio")).toHaveCount(4);
+});
+
 // Opt-in trained-model acceptance. No openEngine/runDeep/process/download doubles.
 // Other tests in this file remain explicitly controlled contract tests.
 test("A8 genuine managed Demucs music → bank → native player → session → Studio → decoded export", { skip: process.env.ARENA_A8_INFERENCE !== "1", timeout: 2_400_000 }, async t => {
@@ -1127,13 +1178,8 @@ test("A8 genuine managed Demucs music → bank → native player → session →
       await page.locator(".wplayer-play").click(); await page.screenshot({ path: path.join(directory, `${model}-native-player.png`) });
       // Actual persistent session pins only this completed bank, independently
       // of the player's current mute/isolate audition state.
-      const createSession = page.waitForResponse(response => response.url().endsWith("/api/library/sessions") && response.request().method() === "POST");
-      const addSession = page.waitForResponse(response => /\/api\/library\/sessions\/[^/]+\/tracks$/.test(response.url()) && response.request().method() === "POST");
-      await page.getByRole("button", { name: "Play as session", exact: true }).click();
-      const createdResponse = await createSession; assert.equal(createdResponse.status(), 201); const { session } = await createdResponse.json();
-      const addedResponse = await addSession; assert.equal(addedResponse.status(), 201, await addedResponse.text());
-      const added = await addedResponse.json(); assert.deepEqual(new Set(added.session.tracks[0].playback.assetIds), new Set(engine.stems.map(stem => stem.id)), "actual player action must pin the bank just auditioned, even with two banks");
-      await expect(page).toHaveURL(`${origin}/waveyard/session/${session.id}`); const deck = page.getByTestId("session-deck-current"); await expect(deck.locator("audio")).toHaveCount(spec.stems.length);
+      const session = await playPlayerAsSession(page, job.id, engine.stems.map(stem => stem.id));
+      const deck = page.getByTestId("session-deck-current"); await expect(deck.locator("audio")).toHaveCount(spec.stems.length);
       await page.getByTestId("session-play").click(); await expect.poll(() => deck.locator("audio").evaluateAll(elements => elements.every(element => !element.paused && element.currentTime > .1))).toBe(true); await page.getByTestId("session-play").click();
       await page.reload(); await expect(deck.locator("audio")).toHaveCount(spec.stems.length); receipt.gates.E = "passed native browser player/session controls and persisted-bank reopen; NOT Electron acceptance";
       const { handoff } = await api(`/api/library/sessions/${session.id}/studio-handoff`, "POST", { mode: "sequential" });
