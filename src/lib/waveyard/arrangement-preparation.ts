@@ -1,5 +1,5 @@
 import { effectiveMuted } from "./remix";
-import { MAX_ARRANGEMENT_SECONDS, type ArrangementPreviewState } from "./arrangement-pcm";
+import { arrangementPreMasterCacheKey, MAX_ARRANGEMENT_SECONDS, type ArrangementPreviewState } from "./arrangement-pcm";
 import type { PreviewSource, PreviewWork } from "./arrangement-pcm.worker";
 /** Only editable audible state enters the cache identity. Save acknowledgements,
  * names, cursors and loop toggles must not redo an unchanged musical bounce. */
@@ -9,15 +9,17 @@ export function previewStateKey(state: ArrangementPreviewState, revision = "", s
 export function transformedClipKey(clip: ArrangementPreviewState["tracks"][number]["clips"][number], state: ArrangementPreviewState, revision: string) {
   return JSON.stringify([clip.stemAssetId, clip.sourceOffsetMs, clip.durationMs, clip.tempoSyncEnabled, clip.keySyncEnabled, state.tempoBpm, state.targetKey, revision]);
 }
-type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number; sourceBytesByKey: Record<string, number> } };
+type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number; sourceBytesByKey: Record<string, number>; evictedSourceBytes?: number; workerSourcesEvicted?: boolean } };
 const MAX_DECODED_BYTES = 128 * 1024 * 1024;
 const MAX_ENCODED_RECOVERY_BYTES = 128 * 1024 * 1024;
 const MAX_RECOVERY_TO_PCM_RATIO = 0.9;
+export const WORKER_SOURCE_IDLE_EVICTION_MS = 5_000;
 /** Owns decoded/worker buffers for one open workspace. Hard cancellation kills
  * CPU work as well as fetches. Encoded recovery blobs remain only when they are
  * materially smaller than decoded PCM and fit the bounded per-workspace budget.
- * Immutable sources are sent only once per worker. A single finished mix serves
- * pause/seek/replay, not one full render per seek. */
+ * Worker source PCM stays warm across active edits, then is evicted after a
+ * short idle window; local owners support a later rebuild. A retained pre-master
+ * mix still serves master-only edits without rehydrating source data. */
 export class ArrangementPreparation {
   private worker: Worker | null = null;
   private sent = new Set<string>();
@@ -27,7 +29,10 @@ export class ArrangementPreparation {
   private pending: { id: number; resolve(value: Prepared): void; reject(error: Error): void } | null = null;
   private sequence = 0;
   private rate = 0;
+  private workerMixKey: string | null = null;
   private workerStats: Prepared["stats"];
+  private sourceEvictionTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingSourceRelease: { id: number; promise: Promise<void>; resolve(): void } | null = null;
   get diagnostics() {
     return {
       decodedBytes: [...this.decoded.values()].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0),
@@ -39,19 +44,63 @@ export class ArrangementPreparation {
   private finished: { key: string; buffer: AudioBuffer } | null = null;
   cancel() {
     this.abort?.abort(); this.abort = null;
-    if (this.pending) { this.pending.reject(new DOMException("Preparation cancelled", "AbortError")); this.pending = null; this.worker?.terminate(); this.worker = null; this.sent.clear(); this.workerStats = undefined; }
+    if (this.pending) { this.pending.reject(new DOMException("Preparation cancelled", "AbortError")); this.pending = null; this.worker?.terminate(); this.worker = null; this.sent.clear(); this.workerMixKey = null; this.workerStats = undefined; }
   }
-  dispose() { this.cancel(); this.worker?.terminate(); this.worker = null; this.sent.clear(); this.decoded.clear(); this.encodedRecovery.clear(); this.finished = null; this.workerStats = undefined; }
+  private clearSourceEvictionTimer() {
+    if (this.sourceEvictionTimer) clearTimeout(this.sourceEvictionTimer);
+    this.sourceEvictionTimer = null;
+  }
+  private scheduleSourceEviction(worker: Worker) {
+    this.clearSourceEvictionTimer();
+    if (!this.workerStats?.sourceBytes) return;
+    this.sourceEvictionTimer = setTimeout(() => {
+      this.sourceEvictionTimer = null;
+      if (this.worker !== worker || !this.workerStats?.sourceBytes || this.pendingSourceRelease) return;
+      const id = ++this.sequence;
+      let resolve!: () => void;
+      const promise = new Promise<void>(done => { resolve = done; });
+      this.pendingSourceRelease = { id, promise, resolve };
+      try {
+        worker.postMessage({ kind: "release-sources", id });
+      } catch {
+        const release = this.pendingSourceRelease;
+        this.pendingSourceRelease = null;
+        release?.resolve();
+        worker.terminate();
+        if (this.worker === worker) this.worker = null;
+        this.sent.clear(); this.workerMixKey = null; this.workerStats = undefined;
+      }
+    }, WORKER_SOURCE_IDLE_EVICTION_MS);
+  }
+  dispose() {
+    this.clearSourceEvictionTimer();
+    const release = this.pendingSourceRelease; this.pendingSourceRelease = null; release?.resolve();
+    this.cancel(); this.worker?.terminate(); this.worker = null; this.sent.clear(); this.workerMixKey = null; this.decoded.clear(); this.encodedRecovery.clear(); this.finished = null; this.workerStats = undefined;
+  }
   private getWorker() {
     if (this.worker) return this.worker;
     if (typeof Worker === "undefined") throw new Error("This browser cannot run the arrangement DSP worker; no dry substitute was played.");
     const worker = new Worker(new URL("./arrangement-pcm.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = ({ data }) => {
+      if (data.kind === "sources-released") {
+        const release = this.pendingSourceRelease;
+        if (!release || release.id !== data.id) return;
+        this.pendingSourceRelease = null;
+        this.sent.clear(); this.workerStats = data.stats;
+        release.resolve();
+        return;
+      }
       if (!this.pending || data.id !== this.pending.id) return;
       const pending = this.pending; this.pending = null;
       if (data.error) pending.reject(new Error(data.error)); else pending.resolve(data);
     };
-    worker.onerror = () => { this.pending?.reject(new Error("Arrangement DSP worker failed; no dry substitute was played.")); this.pending = null; worker.terminate(); this.worker = null; this.sent.clear(); this.workerStats = undefined; };
+    worker.onerror = () => {
+      this.clearSourceEvictionTimer();
+      this.pending?.reject(new Error("Arrangement DSP worker failed; no dry substitute was played."));
+      this.pending = null;
+      const release = this.pendingSourceRelease; this.pendingSourceRelease = null; release?.resolve();
+      worker.terminate(); this.worker = null; this.sent.clear(); this.workerMixKey = null; this.workerStats = undefined;
+    };
     return this.worker = worker;
   }
   async prepare(snapshot: ArrangementPreviewState, context: AudioContext, revision = "", sourceRevisions: ReadonlyMap<string, string> = new Map()) {
@@ -61,6 +110,12 @@ export class ArrangementPreparation {
     const key = previewStateKey(snapshot, revision, sourceRevisions);
     if (this.finished?.key === key) return this.finished.buffer;
     const abort = this.abort = new AbortController(), signal = abort.signal;
+    this.clearSourceEvictionTimer();
+    const sourceRelease = this.pendingSourceRelease;
+    if (sourceRelease) {
+      await sourceRelease.promise;
+      signal.throwIfAborted();
+    }
     const end = Math.max(0, ...snapshot.tracks.flatMap(track => track.clips.map(clip => clip.timelineStartMs + clip.durationMs)));
     if (!Number.isFinite(end) || end > MAX_ARRANGEMENT_SECONDS * 1000) throw new Error("Processed arrangement audition is limited to 5 minutes.");
     const state = structuredClone(snapshot);
@@ -84,6 +139,7 @@ export class ArrangementPreparation {
         }
       }
     }
+    const preMasterKey = arrangementPreMasterCacheKey(state, context.sampleRate, revision);
     // Drop removed clips, old transform variants and closed-project data, rather
     // than keeping every edit's AudioBuffer until the tab eventually exits.
     for (const id of this.decoded.keys()) if (!needed.has(id)) this.decoded.delete(id);
@@ -93,6 +149,7 @@ export class ArrangementPreparation {
     let recoveryBytes = [...this.encodedRecovery.values()].reduce((sum, blob) => sum + blob.size, 0);
     const id = ++this.sequence;
     const worker = this.getWorker();
+    const reusePreMasterMix = this.workerMixKey === preMasterKey;
     const rendered = new Promise<Prepared>((resolve, reject) => { this.pending = { id, resolve, reject }; });
     // Upload or worker failure can reject before the render await; attach an
     // observer immediately while preserving rejection for the original await.
@@ -107,7 +164,7 @@ export class ArrangementPreparation {
       // channel copies. A decoded buffer is released only after its bounded
       // encoded recovery copy is safely retained; otherwise it remains the
       // network-independent retry owner.
-      for (const [sourceKey, request] of requests) {
+      for (const [sourceKey, request] of reusePreMasterMix ? [] : requests) {
         signal.throwIfAborted();
         if (this.sent.has(sourceKey)) continue;
 
@@ -151,6 +208,10 @@ export class ArrangementPreparation {
       const { left, right, stats } = await rendered;
       signal.throwIfAborted();
       this.workerStats = stats;
+      this.sent.clear();
+      for (const sourceKey of Object.keys(stats?.sourceBytesByKey ?? {})) this.sent.add(sourceKey);
+      this.workerMixKey = preMasterKey;
+      if (!stats?.workerSourcesEvicted) this.scheduleSourceEviction(worker);
       const buffer = context.createBuffer(2, left.length, context.sampleRate);
       buffer.copyToChannel(left as Float32Array<ArrayBuffer>, 0); buffer.copyToChannel(right as Float32Array<ArrayBuffer>, 1);
       this.finished = { key, buffer }; return buffer;
@@ -159,9 +220,10 @@ export class ArrangementPreparation {
       // trusted Worker ownership behind. Encoded copies and decoded fallbacks
       // remain available to retry without the source endpoint.
       if (this.pending?.id === id) this.pending = null;
+      this.clearSourceEvictionTimer();
       if (this.worker === worker) worker.terminate();
       if (this.worker === worker) this.worker = null;
-      this.sent.clear(); this.workerStats = undefined;
+      this.sent.clear(); this.workerMixKey = null; this.workerStats = undefined;
       throw error;
     }
   }

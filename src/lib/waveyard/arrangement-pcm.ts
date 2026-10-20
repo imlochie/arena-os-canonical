@@ -27,6 +27,9 @@ export function assertBoundedPcm(pcm: Float32Array, sampleRate: number) {
  * The caller's immutable source revision participates in the full identity. */
 export type ArrangementMixCache = { revision: string; key?: string; pcm?: Float32Array; hit?: boolean };
 export const MAX_MIX_CACHE_BYTES = 64 * 1024 * 1024;
+export function arrangementPreMasterCacheKey(state: ArrangementPreviewState, sampleRate: number, revision: string) {
+  return JSON.stringify([state.tracks, state.automation, state.tempoBpm, state.targetKey, sampleRate, revision]);
+}
 function finishMix(mix: Float32Array, state: ArrangementPreviewState, sampleRate: number, drySamples: number) {
   for (let sample = 0; sample < mix.length; sample++) mix[sample] *= state.masterVolume;
   const result = processWithChain(mix, previewChain(state.masterInserts), sampleRate); assertBoundedPcm(result, sampleRate);
@@ -37,7 +40,7 @@ export function prepareArrangementPcm(state: ArrangementPreviewState, buffers: R
   const endMs = Math.max(0, ...state.tracks.flatMap((track) => track.clips.map((clip) => clip.timelineStartMs + clip.durationMs)));
   if (!Number.isFinite(endMs) || endMs > MAX_ARRANGEMENT_SECONDS * 1000) throw new Error("Processed arrangement audition is limited to 5 minutes.");
   const drySamples = Math.ceil(endMs * sampleRate / 1000) * 2;
-  const key = cache ? JSON.stringify([state.tracks, state.automation, state.tempoBpm, state.targetKey, sampleRate, cache.revision]) : "";
+  const key = cache ? arrangementPreMasterCacheKey(state, sampleRate, cache.revision) : "";
   if (cache) {
     cache.hit = cache.key === key && !!cache.pcm;
     if (cache.hit) return finishMix(cache.pcm!.slice(), state, sampleRate, drySamples);

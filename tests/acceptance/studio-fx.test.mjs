@@ -522,10 +522,22 @@ test("real preparation cancellation recovers from encoded sources and releases w
   console.log(JSON.stringify({ kind: "real-worker-cancel-cache-dispose", ...result }));
   assert.equal(result.cancelled, "AbortError"); assert.equal(result.latestError, 0); assert.equal(result.replaySame, true);
   assert.equal(result.coldFetches, 1); assert.equal(result.afterEditFetches, 1); assert.equal(result.reopenedFetches, 2);
-  assert.equal(result.initialDiagnostics.decodedBytes, 0);
-  assert.ok(result.initialDiagnostics.encodedRecoveryBytes > 0);
-  assert.equal(result.recoveredDiagnostics.decodedBytes, 0);
-  assert.equal(result.recoveredDiagnostics.encodedRecoveryBytes, result.initialDiagnostics.encodedRecoveryBytes);
+  const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
+  if (["encoded-recovery", "prototype2", "prototype3"].includes(variant)) {
+    assert.equal(result.initialDiagnostics.decodedBytes, 0);
+    assert.ok(result.initialDiagnostics.encodedRecoveryBytes > 0);
+    assert.equal(result.recoveredDiagnostics.decodedBytes, 0);
+    assert.equal(result.recoveredDiagnostics.encodedRecoveryBytes, result.initialDiagnostics.encodedRecoveryBytes);
+  } else {
+    const decodedBytes = 44100 * 2 * 4;
+    assert.equal(result.initialDiagnostics.decodedBytes, decodedBytes);
+    assert.equal(result.recoveredDiagnostics.decodedBytes, decodedBytes);
+  }
+  if (variant === "prototype3") {
+    assert.equal(result.initialDiagnostics.sourceBytes, 44100 * 2 * 4);
+    assert.equal(result.recoveredDiagnostics.sourceBytes, 44100 * 2 * 4);
+    assert.equal(result.initialDiagnostics.workerSourcesEvicted, false);
+  }
   assert.equal(result.disposedDiagnostics.encodedRecoveryBytes, 0);
   assert.equal(result.disposedWorkers.created, result.disposedWorkers.terminated); assert.equal(result.disposedWorkers.created, 2);
 });
@@ -552,16 +564,53 @@ test("real Chromium structured-clone failure recovers without orphaned rejection
   assert.equal(result.fetches, 1); assert.deepEqual(result.unhandled, []);
 });
 
+test("controlled Worker error during a source endpoint outage recovers from its local owner", async (t) => {
+  const { remixId } = await source(false, 1);
+  const initial = await api(`/api/remixes/${remixId}`);
+  const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
+  const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
+  const result = await page.evaluate(input => window.verifyWorkerErrorDuringOutage(input.state, input.expectWorkerEviction),
+    { state: { ...initial.remix, tracks: initial.tracks }, expectWorkerEviction: variant === "prototype3" });
+  assert.equal(result.fetches, 1); assert.equal(result.outageFetches, 0);
+  assert.equal(result.firstFrames, 44100); assert.equal(result.recoveredFrames, 44100); assert.ok(result.outputError < 1e-7);
+  assert.ok(result.recoveredDiagnostics.encodedRecoveryBytes > 0);
+  assert.equal(result.idleDiagnostics.sourceBytes, variant === "prototype3" ? 0 : 44100 * 2 * 4);
+  if (variant === "prototype3") assert.equal(result.idleDiagnostics.workerSourcesEvicted, true);
+});
+
+test("removing a track releases its obsolete recovery owners and reuses the remaining local source", async (t) => {
+  const first = await source(false, 1, 220), second = await source(false, 1, 440);
+  const firstState = await api(`/api/remixes/${first.remixId}`), secondState = await api(`/api/remixes/${second.remixId}`);
+  const state = { ...firstState.remix, tracks: [firstState.tracks[0], secondState.tracks[0]] };
+  const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
+  const result = await page.evaluate(state => window.verifyRemovedTrackRecovery(state), state);
+  assert.equal(result.singleHash, result.removedHash);
+  assert.notEqual(result.pairHash, result.removedHash);
+  assert.equal(result.removalFetches, 0);
+  assert.equal(result.removedFrames, 44100);
+  const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
+  if (["encoded-recovery", "prototype2", "prototype3"].includes(variant)) {
+    assert.ok(result.removedDiagnostics.encodedRecoveryBytes < result.pairDiagnostics.encodedRecoveryBytes);
+    assert.equal(result.removedDiagnostics.decodedBytes, 0);
+  } else {
+    assert.equal(result.removedDiagnostics.decodedBytes, 44100 * 2 * 4);
+  }
+  assert.equal(result.removedDiagnostics.sourceBytes, 44100 * 2 * 4);
+});
+
 test("large encoded recovery sources retain decoded PCM instead of worsening ownership", async (t) => {
   const { remixId } = await source(false, 1);
   const initial = await api(`/api/remixes/${remixId}`);
   const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
-  const result = await page.evaluate(state => window.verifyRecoveryBudgetFallback(state), { ...initial.remix, tracks: initial.tracks });
+  const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
+  const result = await page.evaluate(input => window.verifyRecoveryBudgetFallback(input.state, input.expectWorkerEviction),
+    { state: { ...initial.remix, tracks: initial.tracks }, expectWorkerEviction: variant === "prototype3" });
   assert.equal(result.frames, 44100);
   assert.equal(result.fetches, 1);
   assert.equal(result.diagnostics.encodedRecoveryBytes, 0);
   assert.equal(result.diagnostics.decodedBytes, 44100 * 2 * 4);
-  assert.equal(result.diagnostics.sourceBytes, 44100 * 2 * 4);
+  assert.equal(result.diagnostics.sourceBytes, variant === "prototype3" ? 0 : 44100 * 2 * 4);
+  if (variant === "prototype3") assert.equal(result.diagnostics.workerSourcesEvicted, true);
 });
 
 test("warm preparation cancellation recovers from retained audio while its source endpoint is unavailable", async (t) => {
@@ -572,7 +621,8 @@ test("warm preparation cancellation recovers from retained audio while its sourc
   const result = await page.evaluate(state => window.verifyPreparationLifecycle(state, true), state);
   assert.equal(result.cancelled, "AbortError"); assert.equal(result.latestError, 0);
   assert.equal(result.afterEditFetches, 1); assert.equal(result.replaySame, true);
-  if (process.env.ARENA_MEMORY_CANDIDATE === "encoded-recovery") {
+  const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
+  if (["encoded-recovery", "prototype2", "prototype3"].includes(variant)) {
     assert.equal(result.initialDiagnostics.decodedBytes, 0);
     assert.ok(result.initialDiagnostics.encodedRecoveryBytes > 0);
     assert.equal(result.recoveredDiagnostics.decodedBytes, 0);
@@ -729,28 +779,64 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
       page.setDefaultNavigationTimeout(120000);
       await page.goto(`${origin}/?room=preparation`);
       const state = { ...arrangements[0], tracks: trackRows.slice(0, count).map(track => ({ ...track, volume: 1 / count })) };
-      const result = await page.evaluate(state => window.measurePreparation(state, true), state);
+      const implementation = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
+      const result = await page.evaluate(input => window.measurePreparation(input.state, true, input.expectWorkerEviction),
+        { state, expectWorkerEviction: implementation === "prototype3" });
       // Keep the real open preparation/controller alive. Report natural retained
       // memory separately from the sampled high-water mark. GC-assisted retained
       // memory is a diagnostic, never a claim about ordinary cold peak.
+      // Measure ordinary post-render residency after one quarter-second of
+      // idle time; the following forced-GC sample remains diagnostic only.
+      await new Promise(resolve => setTimeout(resolve, 250));
       const retainedPssBytes = await samplePss();
       const pageCdp = await page.context().newCDPSession(page);
       await pageCdp.send("HeapProfiler.collectGarbage");
       const gcRetainedPssBytes = await samplePss();
       await pageCdp.detach();
       console.log(JSON.stringify({ kind: "distinct-source-canonical-worker", retainedPssBytes, gcRetainedPssBytes,
-        implementation: process.env.ARENA_MEMORY_CANDIDATE ?? "baseline", sources: count, repeat, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result, scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak" }));
+        implementation, sources: count, repeat, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result, scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak" }));
       assert.equal(result.frames, 441000);
       assert.equal(result.latestEditError, 0);
       const expectedBytes = count * 441000 * 2 * 4;
-      assert.equal(result.diagnostics.sourceBytes, expectedBytes);
-      if (process.env.ARENA_MEMORY_CANDIDATE === "encoded-recovery") {
+      assert.equal(result.replaySame, true);
+      assert.equal(result.replayFetches, 0); assert.equal(result.replayDecodeCalls, 0);
+      assert.equal(result.masterEditFetches, 0); assert.equal(result.masterEditDecodeCalls, 0);
+      assert.equal(result.masterMixCacheHit, true); assert.ok(result.masterRetainedMixBytes > 0);
+      assert.equal(result.trackEditFetches, 0); assert.equal(result.trackEditMixCacheHit, false);
+      assert.equal(result.trackEditDecodeCalls, 0);
+      assert.equal(result.trackEditWorkerSourceBytes, expectedBytes);
+      assert.equal(result.postIdleMasterEditFetches, 0); assert.equal(result.postIdleMasterEditDecodeCalls, 0);
+      assert.equal(result.postIdleMasterMixCacheHit, true);
+      assert.equal(result.postIdleTrackEditFetches, 0);
+      assert.equal(result.peakWorkerSourceBytes, expectedBytes);
+      assert.match(result.trackEditedPcmSha256, /^[a-f0-9]{64}$/);
+      assert.match(result.postIdleMasterPcmSha256, /^[a-f0-9]{64}$/);
+      assert.match(result.postIdleTrackPcmSha256, /^[a-f0-9]{64}$/);
+      if (implementation === "prototype3") {
+        assert.equal(result.diagnostics.sourceBytes, 0);
+        assert.equal(result.diagnostics.workerSourcesEvicted, true);
+        assert.equal(result.diagnostics.evictedSourceBytes, expectedBytes);
+        assert.equal(result.masterWorkerSourceBytes, expectedBytes);
+        assert.equal(result.idleWorkerSourceBytes, 0);
+        assert.equal(result.idleWorkerSourcesEvicted, true);
+        assert.equal(result.postIdleMasterWorkerSourceBytes, 0);
+        assert.equal(result.postIdleTrackEditDecodeCalls, count);
+        assert.equal(result.postIdleTrackEditDecodeMs > 0, true);
+        assert.equal(result.postIdleTrackWorkerSourceBytes, expectedBytes);
+      } else {
+        assert.equal(result.diagnostics.sourceBytes, expectedBytes);
+        assert.equal(result.idleWorkerSourceBytes, expectedBytes);
+        assert.equal(result.idleWorkerSourcesEvicted, false);
+        assert.equal(result.postIdleMasterWorkerSourceBytes, expectedBytes);
+        assert.equal(result.postIdleTrackEditDecodeCalls, 0);
+      }
+      if (["encoded-recovery", "prototype2", "prototype3"].includes(implementation)) {
         assert.equal(result.diagnostics.decodedBytes, 0);
         assert.ok(result.diagnostics.encodedRecoveryBytes > 0);
         assert.ok(result.diagnostics.encodedRecoveryBytes < expectedBytes * 0.9);
          assert.ok(result.diagnostics.encodedRecoveryBytes <= 128 * 1024 * 1024);
       } else {
-        assert.equal(result.diagnostics.decodedBytes, process.env.ARENA_MEMORY_CANDIDATE === "pr16" ? 0 : expectedBytes);
+        assert.equal(result.diagnostics.decodedBytes, implementation === "pr16" ? 0 : expectedBytes);
       }
       assert.match(result.pcmSha256, /^[a-f0-9]{64}$/);
       assert.match(result.editedPcmSha256, /^[a-f0-9]{64}$/);
