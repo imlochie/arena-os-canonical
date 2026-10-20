@@ -404,3 +404,16 @@ test("public readiness rejects metadata-only packages and corrupt checkpoints wi
     assert.equal(corrupt.inferenceVerified, false);
   } finally { await f.close(); }
 });
+
+test("four-source Demucs selects its own authoritative signature and provenance, not grouped six outputs (controlled CLI)", async t => {
+  const f = await setup(t, { demucsVersion: "4.0.1", stems: ["vocals", "drums", "bass", "other"] }); if (!f) return;
+  try {
+    await writeFile(join(f.engine.modelsDir, "955717e8-8726e21a.th"), "controlled four-source checkpoint, NOT trained weights");
+    const result = await runDeepSeparation({ inputPath: f.fixture, outputDirectory: join(f.directory, "out"), env: f.env, modelId: "deep_4s", requestedDevice: "cpu" });
+    assert.equal(result.model, "deep_4s"); assert.equal(result.modelName, "htdemucs");
+    assert.equal(result.modelVersion, "htdemucs@955717e8-8726e21a/demucs-4.0.1");
+    assert.deepEqual(result.stems.map(stem => stem.stemType), ["vocals", "drums", "bass", "other"]);
+    assert.match(result.checkpointSha256!, /^[a-f0-9]{64}$/);
+    assert.ok((await f.engine.calls()).some(call => /--name 955717e8/.test(call)));
+  } finally { await f.close(); }
+});

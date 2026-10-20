@@ -1,4 +1,5 @@
 "use client";
+import { DeepEngineSetup } from "./DeepEngineSetup";
 import { ModelAssetImport } from "./ModelAssetImport";
 
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
@@ -410,6 +411,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           );
         })}
       </section>}
+      <DeepEngineSetup onReady={() => setRefresh(value => value + 1)} />
       <ModelAssetImport onReviewChange={setModelRightsReviewed} />
       {preparingEngine && <button type="button" onClick={() => engineAbort.current?.abort()}>Cancel model preparation (retain resumable bytes)</button>}
       {editable && canCancelSeparation && data.jobs.filter(job => ["queued", "preparing", "processing", "finalizing", "cancelling"].includes(job.status)).map(job => <div key={`cancel-${job.id}`}>

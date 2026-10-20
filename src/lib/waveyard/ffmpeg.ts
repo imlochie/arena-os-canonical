@@ -16,7 +16,7 @@ import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants, existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 
 import { resolveExecutable } from "@/lib/capabilities/resolver";
 
@@ -198,4 +198,14 @@ export async function toolVersion(pathOrTool: string): Promise<string | null> {
       });
     });
   return run(pathOrTool);
+}
+
+
+/** CLI libraries (Demucs) launch ffmpeg/ffprobe by basename. Give those child
+ * processes Arena's resolved native tools, not an accidental system install. */
+export async function audioToolEnvironment(env: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
+  const tools = await Promise.all([requireTool("ffmpeg"), requireTool("ffprobe")]);
+  const key = Object.keys(env).find(name => name.toLowerCase() === "path") ?? "PATH";
+  const directories = [...new Set(tools.map(tool => dirname(tool.path)))];
+  return { ...env, [key]: [...directories, env[key] ?? ""].join(delimiter), PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" };
 }

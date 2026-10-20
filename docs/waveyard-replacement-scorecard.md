@@ -261,3 +261,16 @@ See `waveyard-native-separation-lifecycle.md` for execution scope and limits.
 PyPI was rechecked: latest Demucs is now4.1.0 (Python>=3.10), not the independent
 PR14's pinned4.0.1. Local legacy-repo compatibility is source-inspected, not a
 claim that either version executed inference. No PR merged. **Gate CLOSED.**
+
+## A8 preparation/inference execution checkpoint (2026-10-20)
+
+Gate remains **CLOSED**. PR14 provisioning is selectively reconciled on owner
+PR15, not merged. See `DEEP-ENGINE-PROVISIONING.md` and the appended continuation
+for changed paths and controlled regressions. The new explicit native Demucs
+four-source model is independent of the MDX `stems_4` recipe; accepting one never
+accepts the other. A new opt-in hosted test exercises genuine publisher music
+and independently trained four/six checkpoints through the existing product.
+Its implementation is not its execution: A/B/C/E/F remain unaccepted until an
+actual retained per-engine receipt passes; D (crash recovery/guardian matrix)
+remains open regardless. Browser evidence cannot become Electron acceptance.
+Full replacement, commercial clearance and catalogue access are not claimed.

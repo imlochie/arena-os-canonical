@@ -1,0 +1,52 @@
+name: A8 genuine native inference
+on:
+  push:
+    branches: ["arena/331aa502-arena-os-canonical"]
+permissions:
+  contents: read
+# A later implementation push must not interrupt already-running inference.
+concurrency:
+  group: a8-inference-${{ github.sha }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  genuine:
+    if: contains(github.event.head_commit.message, '[a8-inference]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ARENA_A8_INFERENCE: '1'
+      ARENA_A8_EVIDENCE_DIR: .data/acceptance/a8
+      WAVEYARD_DEEP_ENV_DIR: ${{ github.workspace }}/.data/a8-runtime
+      WAVEYARD_MODELS_DIR: ${{ github.workspace }}/.data/a8-models
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      ONNXRUNTIME_NODE_INSTALL: skip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Exercise managed preparation, genuine music inference, native player and exported arrangement
+        run: |
+          mkdir -p .data/acceptance/a8
+          node --import ./scripts/register-src-loader.mjs --test --test-name-pattern='A8 genuine' tests/acceptance/studio-fx.test.mjs | tee .data/acceptance/a8/run.tap
+      - name: Preserve evidence, including honest failure and attribution (never weights or runtime)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a8-genuine-${{ github.sha }}
+          path: |
+            .data/acceptance/a8/
+            .data/a8-runtime/preparation*.json
+            .data/a8-runtime/dependencies.lock.txt
+            .data/deep-probe-*/receipt.json
+          if-no-files-found: warn

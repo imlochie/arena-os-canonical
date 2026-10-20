@@ -38,14 +38,16 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { checksumFile } from "../audio";
+import { audioToolEnvironment } from "../ffmpeg";
 import { resolveExecutable } from "@/lib/capabilities/resolver";
-import { statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { resolveModelsDir, SeparationUnavailableError } from "./session";
 import { processingModeExplanation, resolveProcessingMode } from "../worker-local/runtime-policy";
 import {
+  deepModelSpec,
   DEEP_LABEL,
   DEEP_MODEL_ID,
   DEEP_STEM_TYPES,
@@ -77,15 +79,16 @@ const DEFAULT_RUN_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** The absolute path of the local checkpoint for the given environment —
  *  the SAME resolution the probe, the run and every diagnostic use. */
-export function deepCheckpointPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(resolveModelsDir(env), DEEP_CHECKPOINT_FILE);
+export function deepCheckpointPath(env: NodeJS.ProcessEnv = process.env, modelId = DEEP_MODEL_ID): string {
+  return join(resolveModelsDir(env), deepModelSpec(modelId).file);
 }
 
 /** The provenance string every deep stem row carries: model family, the
  *  exact checkpoint identity (signature + checksum) and the engine version
  *  that ran it. Two outputs from different weights can never share it. */
-export function deepModelVersion(demucsVersion: string): string {
-  return `${DEEP_MODEL_NAME}@${DEEP_MODEL_SIGNATURE}-${DEEP_CHECKPOINT_CHECKSUM}/demucs-${demucsVersion}`;
+export function deepModelVersion(demucsVersion: string, modelId = DEEP_MODEL_ID): string {
+  const spec = deepModelSpec(modelId);
+  return `${spec.name}@${spec.signature}-${spec.checksum}/demucs-${demucsVersion}`;
 }
 
 /** The checkpoint half of the prepare step — names the exact path for the
@@ -105,7 +108,7 @@ export function deepCheckpointHint(env: NodeJS.ProcessEnv = process.env): string
 export function deepPrepareHint(env: NodeJS.ProcessEnv = process.env): string {
   const interpreter = process.platform === "win32" ? "py -3" : "python3";
   return (
-    `Install Demucs on this machine ("${interpreter} -m pip install demucs"), or point ` +
+    `Use Prepare deep separation in Arena for an isolated runtime, or install Demucs on this machine ("${interpreter} -m pip install demucs"), or point ` +
     "WAVEYARD_DEEP_PYTHON at an interpreter that has it, and place the " +
     `${DEEP_MODEL_NAME} checkpoint ${DEEP_CHECKPOINT_FILE} at ${deepCheckpointPath(env)} ` +
     "(WAVEYARD_MODELS_DIR), then retry. The deep pass runs your own local engine and loads only " +
@@ -119,20 +122,73 @@ export type DeepPythonCandidate = {
   bin: string;
   /** Prefix args (Windows launcher: py -3). */
   prefixArgs: string[];
-  source: "env" | "system";
+  source: "env" | "managed" | "system";
 };
 
-/** Candidate interpreters, most explicit first. */
+/** Where Arena keeps the isolated environment it prepares for the
+ *  deep pass (the venv / managed CPython and its packages). Mirrors
+ *  resolveModelsDir's env convention so diagnostics, preparation and
+ *  execution all resolve the SAME directory and report it. */
+export function resolveDeepEnvDir(env: NodeJS.ProcessEnv = process.env): string {
+  const root = env.WAVEYARD_DEEP_ENV_DIR ?? join(dirname(resolveModelsDir(env)), "waveyard-deep-env");
+  return resolve(/*turbopackIgnore: true*/ process.cwd(), root);
+}
+
+/** The prepared-environment pointer the provisioner writes on
+ *  success: the exact interpreter the deep pass should run, plus
+ *  the versions it verified. Read on every candidate resolution so
+ *  replacing/removing the interpreter is detected (no remembered
+ *  install result). */
+export type DeepManagedInterpreter = {
+  python: string;
+  pythonVersion: string;
+  demucsVersion: string;
+  venv: string;
+  preparedAt: string;
+  checkpointSha256?: string;
+  smokeVerified?: boolean;
+  modelId?: string;
+};
+
+const POINTER_FILE = "interpreter.json";
+
+/** The managed interpreter for this environment, or null when none
+ *  was prepared (or the pointer is stale — the file it names is
+ *  gone, which must drop readiness rather than keep a phantom). */
+export function readManagedInterpreter(env: NodeJS.ProcessEnv = process.env): DeepManagedInterpreter | null {
+  const path = join(resolveDeepEnvDir(env), POINTER_FILE);
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw) as DeepManagedInterpreter;
+    if (
+      typeof parsed.python !== "string" ||
+      !isAbsolute(parsed.python) ||
+      !existsSync(parsed.python)
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Candidate interpreters, most explicit first. The managed
+ *  environment Arena prepared ranks just below the owner's own
+ *  explicit override: once provisioned, it IS the engine, but an
+ *  owner who points WAVEYARD_DEEP_PYTHON somewhere still wins. */
 export function deepPythonCandidates(env: NodeJS.ProcessEnv = process.env): DeepPythonCandidate[] {
   const candidates: DeepPythonCandidate[] = [];
   const seen = new Set<string>();
-  const push = (bin: string | undefined, prefixArgs: string[], source: "env" | "system") => {
+  const push = (bin: string | undefined, prefixArgs: string[], source: "env" | "managed" | "system") => {
     const trimmed = bin?.trim();
     if (!trimmed || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push({ bin: trimmed, prefixArgs, source });
   };
   push(env.WAVEYARD_DEEP_PYTHON, [], "env");
+  const managed = readManagedInterpreter(env);
+  push(managed?.python, [], "managed");
   push(env.PYTHON_BIN, [], "env");
   // System interpreters are a labelled fallback, resolved to absolute paths.
   const system = (name: string) => resolveExecutable(name, { env })?.path;
@@ -155,7 +211,7 @@ function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export type DeepEngineReady = {
   prepared: true;
   python: string;
-  pythonSource: "env" | "system";
+  pythonSource: "env" | "managed" | "system";
   demucsVersion: string;
   modelId: string;
   modelName: string;
@@ -291,15 +347,16 @@ function checkpointPresent(path: string): boolean {
  * interpreter set (the checkpoint is re-checked every call) — safe to call
  * from a route to gate a request before any work is queued. Never throws.
  */
-export function probeDeepEngine(options: { env?: NodeJS.ProcessEnv; force?: boolean } = {}): DeepEngineStatus {
+export function probeDeepEngine(options: { env?: NodeJS.ProcessEnv; modelId?: string; force?: boolean } = {}): DeepEngineStatus {
   const env = options.env ?? process.env;
-  const checkpointPath = deepCheckpointPath(env);
+  const spec = deepModelSpec(options.modelId);
+  const checkpointPath = deepCheckpointPath(env, spec.id);
   const present = checkpointPresent(checkpointPath);
   const base = {
-    modelId: DEEP_MODEL_ID,
-    modelName: DEEP_MODEL_NAME,
-    label: DEEP_LABEL,
-    stems: DEEP_STEM_TYPES,
+    modelId: spec.id,
+    modelName: spec.name,
+    label: spec.label,
+    stems: spec.stems,
     checkpointPath,
   } as const;
 
@@ -343,7 +400,7 @@ export function probeDeepEngine(options: { env?: NodeJS.ProcessEnv; force?: bool
  * at all reports that honestly instead of probing for an engine it would
  * never run.
  */
-export function deepEngineStatusForThisRuntime(env: NodeJS.ProcessEnv = process.env): DeepEngineStatus {
+export function deepEngineStatusForThisRuntime(env: NodeJS.ProcessEnv = process.env, modelId = DEEP_MODEL_ID): DeepEngineStatus {
   const mode = resolveProcessingMode(env);
   if (mode !== "in-process") {
     const checkpointPath = deepCheckpointPath(env);
@@ -360,7 +417,7 @@ export function deepEngineStatusForThisRuntime(env: NodeJS.ProcessEnv = process.
       checkpointPresent: checkpointPresent(checkpointPath),
     };
   }
-  return probeDeepEngine({ env });
+  return probeDeepEngine({ env, modelId });
 }
 
 // -------------------------------------------------------------------- run
@@ -368,6 +425,7 @@ export function deepEngineStatusForThisRuntime(env: NodeJS.ProcessEnv = process.
 export type DeepRunRequest = {
   /** Input audio file (the handler writes the decoded 44.1 kHz WAV here). */
   inputPath: string;
+  modelId?: string;
   /** Directory Demucs writes into; scanned recursively for the six stems. */
   outputDirectory: string;
   requestedDevice?: "auto" | "cpu" | "cuda";
@@ -388,6 +446,7 @@ export type DeepRunResult = {
   modelVersion: string;
   /** The local checkpoint that produced the stems. */
   checkpointPath: string;
+  checkpointSha256?: string;
   resolvedDevice: "cpu" | "cuda";
   stems: DeepRunStem[];
 };
@@ -462,10 +521,10 @@ const readinessCache = new Map<string, { until: number; result: Promise<DeepRunt
  * CLI (including its native dependencies), then hash the checkpoint WITHOUT
  * deserialising pickle. The 8-hex upstream prefix is integrity, not a signature
  * or an independent permission/security attestation. */
-export async function inspectDeepRuntimeReadiness(options: { env?: NodeJS.ProcessEnv; force?: boolean } = {}): Promise<DeepRuntimeReadiness> {
+export async function inspectDeepRuntimeReadiness(options: { env?: NodeJS.ProcessEnv; modelId?: string; force?: boolean } = {}): Promise<DeepRuntimeReadiness> {
   const env = options.env ?? process.env;
-  if (options.force && resolveProcessingMode(env) === "in-process") probeDeepEngine({ env, force: true });
-  const status = deepEngineStatusForThisRuntime(env);
+  if (options.force && resolveProcessingMode(env) === "in-process") probeDeepEngine({ env, modelId: options.modelId, force: true });
+  const status = deepEngineStatusForThisRuntime(env, options.modelId);
   const unavailable = (reason: string, runtimeLoadable = false, checkpointSha256: string | null = null): DeepRuntimeReadiness => ({ prepared: false, reason, runtimeLoadable, checkpointSha256, inferenceVerified: false });
   if (!status.prepared) return unavailable(status.reason);
   const candidate = deepPythonCandidates(env).find(value => value.bin === status.python);
@@ -483,7 +542,7 @@ export async function inspectDeepRuntimeReadiness(options: { env?: NodeJS.Proces
         return unavailable(`Demucs package metadata exists, but its CLI/native runtime cannot load: ${detail}`);
       }
       const digest = await checksumFile(status.checkpointPath);
-      if (!digest.startsWith(DEEP_CHECKPOINT_CHECKSUM)) return unavailable("The local deep checkpoint does not match the upstream SHA-256 prefix; replace it with the authorised original checkpoint.", true, digest);
+      if (!digest.startsWith(deepModelSpec(options.modelId).checksum)) return unavailable("The local deep checkpoint does not match the upstream SHA-256 prefix; replace it with the authorised original checkpoint.", true, digest);
       return { prepared: true, reason: null, runtimeLoadable: true, checkpointSha256: digest, inferenceVerified: false };
     } catch (error) { return unavailable(`Deep readiness could not be verified: ${error instanceof Error ? error.message : String(error)}`); }
   })();
@@ -549,7 +608,8 @@ async function collectWavFiles(directory: string): Promise<Map<string, string>> 
 export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRunResult> {
   request.signal?.throwIfAborted();
   const env = request.env ?? process.env;
-  const status = probeDeepEngine({ env });
+  const spec = deepModelSpec(request.modelId);
+  const status = probeDeepEngine({ env, modelId: spec.id });
   if (!status.prepared) throw new SeparationUnavailableError(status.reason);
   const ready: DeepEngineReady = status;
   const candidate =
@@ -571,7 +631,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
     "-m",
     "demucs",
     "--name",
-    DEEP_MODEL_SIGNATURE,
+    spec.signature,
     "--repo",
     resolveModelsDir(env),
     "--device",
@@ -582,7 +642,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
   ];
 
   let lastPercent = -1;
-  const outcome = await runPython(candidate.bin, args, env, {
+  const outcome = await runPython(candidate.bin, args, await audioToolEnvironment(env), {
     timeoutMs,
     signal: request.signal,
     onStderr: (chunk) => {
@@ -619,7 +679,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
   const candidates = await collectWavFiles(request.outputDirectory);
   const stems: DeepRunStem[] = [];
   const missing: string[] = [];
-  for (const stemType of DEEP_STEM_TYPES) {
+  for (const stemType of spec.stems) {
     const path = candidates.get(`${stemType}.wav`);
     if (path === undefined) {
       missing.push(stemType);
@@ -632,17 +692,18 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
   if (missing.length > 0) {
     throw new Error(
       `Demucs completed without usable output for: ${missing.join(", ")}. ` +
-        `The engine is expected to produce all ${DEEP_STEM_TYPES.length} stems — nothing was stored. ` +
+        `The engine is expected to produce all ${spec.stems.length} stems — nothing was stored. ` +
         (tail ? `Engine tail: ${tail.slice(-600)}` : ""),
     );
   }
 
   return {
     engine: "demucs",
-    model: DEEP_MODEL_ID,
-    modelName: DEEP_MODEL_NAME,
-    modelVersion: deepModelVersion(ready.demucsVersion),
+    model: spec.id,
+    modelName: spec.name,
+    modelVersion: deepModelVersion(ready.demucsVersion, spec.id),
     checkpointPath: ready.checkpointPath,
+    checkpointSha256: await checksumFile(ready.checkpointPath),
     resolvedDevice,
     stems,
   };

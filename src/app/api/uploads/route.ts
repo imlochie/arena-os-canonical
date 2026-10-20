@@ -45,7 +45,7 @@ export async function POST(request: Request) {
     // before a byte is stored (the queue would only fail later, after the
     // upload) with the exact prepare step — never a doomed job.
     if (isDeepSeparationMode(requestedModel)) {
-      const deep = deepEngineStatusForThisRuntime();
+      const deep = deepEngineStatusForThisRuntime(undefined, requestedModel);
       if (!deep.prepared) {
         return NextResponse.json({ error: deep.reason, deep: { prepared: false } }, { status: 503 });
       }

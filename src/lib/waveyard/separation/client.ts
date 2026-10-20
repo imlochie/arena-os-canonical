@@ -107,3 +107,125 @@ export function modelPreparationLabel(model: StemEngineModelStatus): string {
   if (state.state === "verifying") return `${model.label}: verifying SHA-256 before installation.`;
   return `${model.label}: preparation failed. ${state.error ?? "Retry preparation."}`;
 }
+// ------------------------------------------------------- deep preparation
+
+export type DeepPreparationStatus = {
+  state: string;
+  step: string | null;
+  progress: { percent: number; label: string } | null;
+  steps: Array<{ id: string; label: string; state: string }>;
+  consent: { required: string[]; granted: string[]; grantedAt: string | null };
+  error: { code: string; message: string } | null;
+  log: string[];
+  environment: {
+    python: string | null;
+    pythonVersion: string | null;
+    demucsVersion: string | null;
+    torchVersion: string | null;
+    checkpointPath: string;
+    checkpointPresent: boolean;
+    checkpointVerified: boolean | null;
+    managedEnvDir: string;
+    modelsDir: string;
+  };
+  result: { provenance: string | null; readyAt: string | null };
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type DeepPreparationConsent = {
+  id: string;
+  kind: "runtime" | "install" | "download";
+  label: string;
+  reason: string;
+  sizeBytes: number | null;
+  source: string;
+  destination: string;
+  license: string;
+};
+
+export type DeepPreparationStep = { id: string; label: string; detail: string };
+export type DeepPreparationPhase = { state: string; steps: DeepPreparationStep[] };
+export type DeepPreparationPlan = {
+  phases: DeepPreparationPhase[];
+  needsConsent: boolean;
+  consent: DeepPreparationConsent[];
+};
+
+export type DeepPreparationInspect = {
+  status: DeepPreparationStatus;
+  runtime: { processingMode: string; engine: { prepared: boolean; reason: string | null } };
+  report?: unknown;
+  plan?: DeepPreparationPlan;
+};
+
+/** The durable preparation status (cheap, pollable). */
+export async function fetchDeepPreparation(inspect = false, model = "deep_6s"): Promise<DeepPreparationInspect | null> {
+  try {
+    const response = await fetch(`/api/waveyard/separation/deep/prepare?model=${encodeURIComponent(model)}${inspect ? "&inspect=1" : ""}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    return (await response.json()) as DeepPreparationInspect;
+  } catch {
+    return null;
+  }
+}
+
+/** Start (or resume) preparation with the granted consents. */
+export async function startDeepPreparation(
+  consent: readonly string[], model = "deep_6s", retest = false,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const response = await fetch("/api/waveyard/separation/deep/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ consent, model, retest }),
+    });
+    const json = (await response.json().catch(() => ({}))) as { outcome?: string; missing?: unknown; state?: unknown };
+    if (response.ok) return { ok: true };
+    if (json.outcome === "consent-missing" && Array.isArray(json.missing)) {
+      return { ok: false, error: `Agree to the required steps first: ${(json.missing as string[]).join(", ")}.` };
+    }
+    if (json.outcome === "already-running") {
+      return { ok: false, error: "Preparation is already running — its progress is shown below." };
+    }
+    return { ok: false, error: "Preparation could not be started." };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Preparation could not be started." };
+  }
+}
+
+export async function cancelDeepPreparation(model = "deep_6s"): Promise<{ ok: boolean }> {
+  try {
+    const response = await fetch("/api/waveyard/separation/deep/prepare/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) });
+    return { ok: response.ok };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function recoverDeepPreparation(model = "deep_6s"): Promise<{ ok: boolean }> {
+  try {
+    const response = await fetch("/api/waveyard/separation/deep/prepare/recover", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) });
+    return { ok: response.ok };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** Import a checkpoint the owner already possesses. */
+export async function importDeepCheckpoint(
+  file: File, model = "deep_6s",
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const form = new FormData();
+    form.set("checkpoint", file);
+    form.set("model", model);
+    const response = await fetch("/api/waveyard/separation/deep/prepare/import", { method: "POST", body: form });
+    const json = (await response.json().catch(() => ({}))) as { error?: unknown };
+    if (response.ok) return { ok: true };
+    return { ok: false, error: typeof json.error === "string" ? json.error : "The checkpoint could not be imported." };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "The checkpoint could not be imported." };
+  }
+}

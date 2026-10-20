@@ -9,7 +9,7 @@
  */
 
 import { isValidSeparationModelId, MDX_MODELS, SEPARATION_RECIPES } from "./mdx";
-import { DEEP_MODE, deepStemsEnabled, isDeepSeparationMode } from "./modes";
+import { DEEP_MODE, deepModelSpec, DEEP_FOUR_MODEL_ID, deepStemsEnabled, isDeepSeparationMode } from "./modes";
 import { localWorkerActive } from "../worker-local/broker";
 
 export function defaultSeparationModel(): string {
@@ -44,7 +44,7 @@ export function separationModelChoices(): Array<{
       engine: "mdx" as const,
     })),
   ];
-  if (deepStemsEnabled()) choices.push(DEEP_MODE);
+  if (deepStemsEnabled()) { const spec = deepModelSpec(DEEP_FOUR_MODEL_ID); choices.push({ id: spec.id, label: spec.label, description: "Native four-source htdemucs checkpoint; not the MDX recipe", stemCount: spec.stems.length, engine: "demucs" }); choices.push(DEEP_MODE); }
   return choices;
 }
 

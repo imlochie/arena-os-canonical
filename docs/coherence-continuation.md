@@ -2106,3 +2106,59 @@ policy; known blocked fetches were not repeated. Electron doctor still lacks
 binary/display. Interrupted cancellation after a process crash remains a distinct
 recovery limit, not claimed as handled by in-process cancellation. Replacement
 gate stays CLOSED; independent PR14/16 preserved and unmerged.
+
+## 2026-10-20 A8 — managed preparation reconciliation and genuine-run harness
+
+Continued from owner `dc5f6c4391a7a94df18df1e3a7df3422aa1bad8a`, on the fixed
+PR15 branch. Actual GitHub status rechecked: PR14 open, PR15 open, PR16 draft;
+none merged or modified as an independent branch. PR14's absent preparation
+files were selectively integrated; owner bridge cancellation, source validation
+and bank publication fencing were preserved. Corrected its torchaudio/torch
+pair to 2.0.2/2.0.1, explicit legacy Demucs4.0.1/numpy1.26.4, pip25.0.1,
+official isolated indexes, bounded/validated redirects and downloads, process
+close/output handling, exclusive preparation lock, fresh-peer recovery refusal,
+interrupted-manager detection and persisted heartbeat/log. Synthetic CLI smoke
+now decodes each stem/frame/channel and retains full hashes; mandatory resolved
+dependency record precedes ready. Recorded checkpoint/dependency-record changes
+invalidate remembered readiness. This is not a complete process-crash lease or
+a pre-resolved transitive hash lock. PR14's unsupported categorical research-only
+weight-license claim was removed; unknown separate checkpoint grants remain
+explicit, not silently interpreted as legal clearance.
+
+Owned library-player separation/history now dispatches the existing claim/job/
+worker path and explicitly loads completed banks; no new library or queue.
+Setup is mounted on existing upload/project/player paths, including real CLI
+re-test rather than metadata-only refresh. The same provisioner/bridge now
+accepts an additional explicitly labelled native `deep_4s`/htdemucs checkpoint
+`955717e8-8726e21a.th`, independently of `deep_6s`/htdemucs_6s
+`5c90dfd2-34c22ccb.th`. It does not alias `stems_4`, group six-source outputs,
+or claim MDX inference. Successful jobs retain full checkpoint hash and selected
+model/version. Python CLI receives Arena-resolved ffmpeg/ffprobe directories so
+bundled native tools are usable without a coincidental system installation.
+Owner checkpoint uploads use the existing bounded form reader and a unique,
+streamed temporary file rather than a second whole-file buffer.
+
+New opt-in `.github/workflows/a8-inference.yml` uses the existing hosted execution
+route, only on `[a8-inference]` pushes. Unique-SHA concurrency does not cancel a
+running model test on subsequent pushes. Actual managed setup, authoritative
+publisher weights, pinned publisher CC-BY recording, actual player separation,
+independent full FFmpeg stem decode, bank/session reopen, explicit Studio handoff
+and decoded immutable export are wired into the existing browser/PG harness.
+Always-written gate/audio/rights/trace artifacts retain failures. This entry
+records implementation, NOT a completed workflow run or genuine inference.
+
+Executed during this segment: initial preparation43tests had one real recovery
+regression; repaired resetting the interrupted PID, then43/43 passed. Broader
+separation137/137 passed (243068ms; code was still being edited, not exact-head
+acceptance). Final focused64/64 passed with new four-source contract, changed
+checkpoint and nondefault HTTPS port cases. Typecheck/build passed; lint latest
+completed0errors49warnings before the final small tool-environment/upload edits.
+Exact final checks and hosted outcome follow in an appended receipt. Synthetic
+fixtures/dummy weights are controlled contracts, never trained inference.
+
+A–F are not collapsed. Durable native execution lease/child guardian/crash-window
+matrix, genuine MDX four-source inference, semantic stem quality, Electron/
+Windows, and full replacement/catalogue parity remain open. Replacement gate
+CLOSED. No demand to return to Windows and no reattempt of blocked sandbox
+weight hosts. Hosted runner acquisition is a changed approved execution strategy,
+not an unverified mirror or bypass.

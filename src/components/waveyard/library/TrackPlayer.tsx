@@ -18,6 +18,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { separationTargetOptions } from "@/lib/waveyard/separation/modes";
+import { DeepEngineSetup } from "../DeepEngineSetup";
 import { laneDisplayName } from "@/lib/waveyard/separation/stem-display";
 import { useRouter } from "next/navigation";
 
@@ -83,6 +85,33 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   const [repeat, setRepeat] = useState<RepeatMode>("off");
   const [shuffle, setShuffle] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [separationModel, setSeparationModel] = useState("stems_4");
+  const [separationJobs, setSeparationJobs] = useState<Array<{ id: string; status: string; stage: string; model: string; errorMessage: string | null }>>([]);
+  const [separationBusy, setSeparationBusy] = useState(false);
+  const [separationRefresh, setSeparationRefresh] = useState(0);
+  useEffect(() => {
+    let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
+      try {
+        const response = await fetch(`/api/library/tracks/${trackId}/separation`, { cache: "no-store" });
+        if (!response.ok) return;
+        const body = await response.json();
+        if (stopped) return;
+        setSeparationJobs(body.jobs ?? []);
+        if (body.jobs?.some((job: { status: string }) => !["complete", "failed", "cancelled"].includes(job.status))) timer = setTimeout(() => void load(), 2000);
+      } catch { /* Existing playback remains usable; errors on actions stay visible. */ }
+    };
+    void load(); return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, [trackId, separationRefresh]);
+  async function requestSeparation() {
+    setSeparationBusy(true);
+    try {
+      const response = await fetch(`/api/library/tracks/${trackId}/separation`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: separationModel }) });
+      const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Separation could not start.");
+      setStatus("Separation queued. Original audio and existing banks are retained."); setSeparationRefresh(value => value + 1);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Separation could not start."); }
+    finally { setSeparationBusy(false); }
+  }
   const [startingSession, setStartingSession] = useState(false);
 
   const countedRef = useRef(false);
@@ -99,6 +128,11 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   const assetIds = useMemo(() => track?.playback.assetIds ?? [], [track]);
   const duration = track?.durationSeconds ?? 0;
   const transport = useStemTransport(assetIds, duration);
+  async function auditionBank(id: string) {
+    const response = await fetch(`/api/library/tracks/${trackId}?bankId=${encodeURIComponent(id)}`, { cache: "no-store" });
+    const body = await response.json(); if (!response.ok) { setStatus(body.error ?? "Bank unavailable."); return; }
+    transport.pause(); setTrack(body.track); setStatus("Loaded the selected validated stem bank.");
+  }
   const seek = transport.seek;
 
   // ---------------------------------------------------------------- loading
@@ -545,6 +579,13 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
         </div>
       </header>
 
+      <details className="separation-workbench"><summary>Separate this recording</summary>
+        <label>Separation engine<select aria-label="Separation engine" value={separationModel} onChange={event => setSeparationModel(event.target.value)}>{separationTargetOptions().map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+        <button type="button" disabled={separationBusy} onClick={() => void requestSeparation()}>Start separation</button>
+        {separationModel.startsWith("deep_") && <DeepEngineSetup key={separationModel} modelId={separationModel} />}
+        <p>Processing uses this stored recording, not a new upload. Playback changes only when you choose a completed bank.</p>
+        <div role="status" aria-live="polite">{separationJobs.slice(0, 3).map(job => <div key={job.id}><span>{job.model}: {job.status} · {job.stage}</span>{job.errorMessage && <p>{job.errorMessage}</p>}{job.status === "complete" && <button type="button" onClick={() => void auditionBank(job.id)}>Load bank {job.id}</button>}<Link href={`/waveyard/projects/${track.studioProjectId}`}>Processing and recovery</Link></div>)}</div>
+      </details>
       {track.selectionRequired && <p role="alert">{track.selectionRequired}</p>}
       {!!track.banks?.length && <label>Audition separation bank<select aria-label="Audition separation bank" value="" onChange={event => {
         const bankId = event.target.value; if (!bankId) return;

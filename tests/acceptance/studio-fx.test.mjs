@@ -20,7 +20,7 @@ async function dispatch(url, method = "GET", body, headers = {}) {
   for (const route of routes) {
     const match = url.pathname.match(route.pattern); if (!match) continue;
     const handler = route.handlers[method]; if (!handler) return Response.json({ error: "Method unsupported" }, { status: 405 });
-    return handler(new Request(url, { method, headers: { host: "localhost", "content-type": "application/json", ...headers }, ...(body !== undefined ? { body } : {}) }), { params: Promise.resolve(Object.fromEntries(route.names.map((name, index) => [name, match[index + 1]]))) });
+    return handler(new Request(url, { method, headers: { host: "localhost", ...(body instanceof FormData ? {} : { "content-type": "application/json" }), ...headers }, ...(body !== undefined ? { body } : {}) }), { params: Promise.resolve(Object.fromEntries(route.names.map((name, index) => [name, match[index + 1]]))) });
   }
   return Response.json({ error: `No real route in this acceptance harness: ${url.pathname}` }, { status: 404 });
 }
@@ -28,6 +28,9 @@ before(async () => {
   f = await missionPostgres(); root = await mkdtemp(path.join(tmpdir(), "arena-studio-fx-"));
   process.env.DATABASE_URL = f.url; process.env.WAVEYARD_STORAGE_DIR = path.join(root, "storage"); process.env.WAVEYARD_LOCAL_WORKER = "0"; delete process.env.REDIS_URL;
   database = await import("../../src/db/index.ts"); schema = await import("../../src/db/waveyardSchema.ts"); synth = await import("../../src/lib/waveyard/mixer/synth.ts");
+  await register(/^\/api\/jobs\/([^/]+)$/, ["id"], "jobs/[id]");
+  await register(/^\/api\/library\/tracks\/([^/]+)\/separation$/, ["id"], "library/tracks/[id]/separation");
+  for (const suffix of ["", "/cancel", "/recover", "/import"]) await register(new RegExp("^/api/waveyard/separation/deep/prepare" + suffix + "$"), [], "waveyard/separation/deep/prepare" + suffix);
   await register(/^\/api\/jobs\/([^/]+)\/cancel$/, ["id"], "jobs/[id]/cancel");
   await register(/^\/api\/jobs\/([^/]+)\/retry$/, ["id"], "jobs/[id]/retry");
   await register(/^\/api\/waveyard\/processing-status$/, [], "waveyard/processing-status");
@@ -1038,4 +1041,103 @@ test("PostgreSQL publication lock arbitrates concurrent cancel: committed bank w
     assert.equal(result.stems.filter(stem => stem.separationJobId === job.id).length, 6);
     assert.equal(result.jobs.find(value => value.id === job.id).status, "complete");
   } finally { commit(); await executing.catch(() => {}); }
+});
+
+// Opt-in trained-model acceptance. No openEngine/runDeep/process/download doubles.
+// Other tests in this file remain explicitly controlled contract tests.
+test("A8 genuine managed Demucs music → bank → native player → session → Studio → decoded export", { skip: process.env.ARENA_A8_INFERENCE !== "1", timeout: 2_400_000 }, async t => {
+  const { mkdir, copyFile } = await import("node:fs/promises");
+  const { createHash } = await import("node:crypto");
+  const { spawnSync } = await import("node:child_process");
+  const { prepareInstalledNativeTools } = await import("../../scripts/lib/installed-tool-preparation.mjs");
+  const { resolveToolPath } = await import("../../src/lib/waveyard/ffmpeg.ts");
+  const { deepModelSpec } = await import("../../src/lib/waveyard/separation/modes.ts");
+  const { getStorage } = await import("../../src/lib/waveyard/storage.ts");
+  const directory = path.resolve(process.env.ARENA_A8_EVIDENCE_DIR || ".data/acceptance/a8"); await mkdir(directory, { recursive: true });
+  const sha = bytes => createHash("sha256").update(bytes).digest("hex");
+  const receipt = { scope: "Genuine legacy Demucs 4/6, NOT MDX ONNX acceptance, NOT Electron/Windows or a complete crash matrix", commit: process.env.GITHUB_SHA ?? null, source: null, engines: [], gates: { A: "not_run", B: "not_run", C: "not_run", D: "open: crash/guardian work incomplete", E: "not_run", F: "not_run" }, error: null };
+  const rights = "Slow Motion Dream — Steven M Bryant © 2011 / CSoul / AlexBeroza / Robert Siekawitch. CC BY 3.0 https://creativecommons.org/licenses/by/3.0/ . Publisher evidence: https://github.com/deezer/spleeter/blob/c8854001ac8acad34a9bc2bd15f28475541828b1/README.md#note . Modifications: trained Demucs separation and derived Arena arrangement/render; no endorsement. These notices accompany all audio in this evidence directory. Engine MIT declarations are not recording permission or a commercial clearance warranty.\n";
+  await writeFile(path.join(directory, "RIGHTS.txt"), rights);
+  const page = await browser.newPage(); t.after(() => page.close());
+  await page.context().tracing.start({ screenshots: true, snapshots: true });
+  try {
+    prepareInstalledNativeTools(process.cwd());
+    const ffmpeg = await resolveToolPath("ffmpeg"); assert.ok(ffmpeg);
+    const decode = file => {
+      const run = spawnSync(ffmpeg.path, ["-v", "error", "-i", file, "-ar", "44100", "-ac", "2", "-f", "f32le", "pipe:1"], { maxBuffer: 128 * 1024 * 1024 });
+      assert.equal(run.status, 0, run.stderr?.toString()); assert.ok(run.stdout.length > 8);
+      const values = new Float32Array(run.stdout.buffer.slice(run.stdout.byteOffset, run.stdout.byteOffset + run.stdout.byteLength));
+      let peak = 0, energy = 0; for (const value of values) { assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value)); energy += value * value; }
+      return { frames: values.length / 2, sampleRate: 44100, channels: 2, peak, rms: Math.sqrt(energy / values.length), pcmSha256: sha(run.stdout) };
+    };
+    // Immutable publisher repository blob; downloaded bytes must match the known
+    // complete recording digest, not a shortened generated/tone substitute.
+    const response = await fetch("https://api.github.com/repos/deezer/spleeter/git/blobs/cc91788843d20ae7af169d6e0f72c2c5658fdb39"); assert.ok(response.ok, `Publisher blob HTTP ${response.status}`);
+    const blob = await response.json(); assert.equal(blob.encoding, "base64"); const music = Buffer.from(blob.content, "base64");
+    assert.equal(sha(music), "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507");
+    const input = path.join(directory, "Slow Motion Dream.mp3"); await writeFile(input, music);
+    const sourcePcm = decode(input); receipt.source = { blob: blob.sha, sha256: sha(music), bytes: music.length, decoded: sourcePcm, rights: "RIGHTS.txt" };
+    // Exercise the actual upload route before enabling processing; there is no
+    // passthrough stem, copied input bank or injected inference seam.
+    process.env.WAVEYARD_LOCAL_WORKER = "0";
+    const form = new FormData(); form.set("prepareSeparation", "false"); form.set("file", new File([music], "Slow Motion Dream.mp3", { type: "audio/mpeg" }));
+    const uploaded = await dispatch(new URL("/api/library/tracks", origin), "POST", form); assert.ok(uploaded.ok, await uploaded.clone().text()); const { track } = await uploaded.json();
+    process.env.WAVEYARD_LOCAL_WORKER = "1";
+    broker = (await import("../../src/lib/waveyard/worker-local/index.ts")).startLocalWorker(); assert.ok(broker);
+    for (const model of ["deep_4s", "deep_6s"]) {
+      const spec = deepModelSpec(model);
+      const engine = { model, name: spec.name, checkpoint: spec.file, preparation: null, job: null, stems: [], export: null }; receipt.engines.push(engine);
+      const inspect = await api(`/api/waveyard/separation/deep/prepare?inspect=1&model=${model}`); assert.ok(inspect.plan);
+      const started = await api("/api/waveyard/separation/deep/prepare", "POST", { model, consent: inspect.plan.consent.map(item => item.id) }); assert.ok(["started", "already-ready"].includes(started.outcome));
+      const deadline = Date.now() + 1_200_000;
+      let preparation;
+      do {
+        preparation = await api(`/api/waveyard/separation/deep/prepare?model=${model}`); engine.preparation = preparation;
+        await writeFile(path.join(directory, "receipt.json"), JSON.stringify(receipt, null, 2));
+        if (["ready", "failed", "cancelled"].includes(preparation.status.state)) break;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } while (Date.now() < deadline);
+      assert.equal(preparation.status.state, "ready", JSON.stringify(preparation.status)); assert.equal(preparation.runtime.engine.prepared, true); receipt.gates.A = "passed for prepared engines so far; see per-engine receipts";
+      await page.goto(`${origin}/?room=player&track=${track.id}`); await expect(page.getByTestId("track-player")).toBeVisible();
+      await page.getByText("Separate this recording", { exact: true }).click(); await page.getByLabel("Separation engine", { exact: true }).selectOption(model);
+      const queued = page.waitForResponse(response => response.url().endsWith(`/api/library/tracks/${track.id}/separation`) && response.request().method() === "POST");
+      await page.getByRole("button", { name: "Start separation", exact: true }).click(); const queuedResponse = await queued; assert.equal(queuedResponse.status(), 202, await queuedResponse.text()); const { job } = await queuedResponse.json();
+      assert.equal(await broker.drain(600_000), true);
+      const [finished] = await database.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.id, job.id)); engine.job = finished; assert.equal(finished.status, "complete", finished.errorMessage); assert.equal(finished.resolvedDevice, "cpu");
+      const metadata = typeof finished.metadata === "string" ? JSON.parse(finished.metadata) : finished.metadata;
+      assert.ok(metadata.checkpointSha256.startsWith(spec.checksum)); receipt.gates.B = "passed for completed engines so far; real music and real child process";
+      const detail = (await api(`/api/library/tracks/${track.id}?bankId=${job.id}`)).track; assert.equal(detail.stems.length, spec.stems.length);
+      for (const stem of detail.stems) {
+        const [row] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, stem.id));
+        const output = path.join(directory, `${model}-${stem.stemType}.wav`); await copyFile(getStorage().getLocalPath(row.storageKey), output);
+        const pcm = decode(output), bytes = await readFile(output); assert.ok(Math.abs(pcm.frames - sourcePcm.frames) <= 441, `${stem.stemType}: duration mismatch`); assert.ok(pcm.peak <= 1.001); assert.equal(row.model, model); assert.ok(row.modelVersion.startsWith(`${spec.name}@${spec.signature}-${spec.checksum}/`));
+        engine.stems.push({ id: row.id, stemType: row.stemType, model: row.model, modelVersion: row.modelVersion, sha256: sha(bytes), decoded: pcm });
+      }
+      assert.equal(new Set(engine.stems.map(stem => stem.sha256)).size, spec.stems.length); assert.ok(engine.stems.some(stem => stem.decoded.rms > 0.001)); receipt.gates.C = "passed for validated engines so far; FFmpeg independently decoded each complete stem";
+      await page.getByRole("button", { name: `Load bank ${job.id}`, exact: true }).waitFor({ timeout: 10000 }); await page.getByRole("button", { name: `Load bank ${job.id}`, exact: true }).click();
+      await expect(page.getByLabel("Mute Vocals", { exact: true })).toBeEnabled(); await page.locator(".wplayer-play").click();
+      await expect.poll(async () => Number(await page.getByLabel("Seek", { exact: true }).inputValue())).toBeGreaterThan(.05);
+      await page.getByLabel("Mute Vocals", { exact: true }).click(); await expect(page.getByLabel("Mute Vocals", { exact: true })).toHaveAttribute("aria-pressed", "true");
+      await page.getByLabel("Isolate Drums", { exact: true }).click(); await expect(page.getByLabel("Isolate Drums", { exact: true })).toHaveAttribute("aria-pressed", "true");
+      await range(page.getByLabel("Vocals volume", { exact: true }), .65); await range(page.getByLabel("Seek", { exact: true }), 2);
+      await page.locator(".wplayer-play").click(); await page.screenshot({ path: path.join(directory, `${model}-native-player.png`) });
+      // Actual persistent session pins only this completed bank, independently
+      // of the player's current mute/isolate audition state.
+      const { session } = await api("/api/library/sessions", "POST", { name: `Genuine ${spec.name} music acceptance` });
+      await api(`/api/library/sessions/${session.id}/tracks`, "POST", { trackId: track.id, bankId: job.id });
+      await page.goto(`${origin}/?room=listening&session=${session.id}`); const deck = page.getByTestId("session-deck-current"); await expect(deck.locator("audio")).toHaveCount(spec.stems.length);
+      await page.getByTestId("session-play").click(); await expect.poll(() => deck.locator("audio").evaluateAll(elements => elements.every(element => !element.paused && element.currentTime > .1))).toBe(true); await page.getByTestId("session-play").click();
+      await page.reload(); await expect(deck.locator("audio")).toHaveCount(spec.stems.length); receipt.gates.E = "passed native browser player/session controls and persisted-bank reopen; NOT Electron acceptance";
+      const { handoff } = await api(`/api/library/sessions/${session.id}/studio-handoff`, "POST", { mode: "sequential" });
+      const arrangement = await api(`/api/remixes/${handoff.remixSessionId}`); const used = new Set(arrangement.tracks.flatMap(track => track.clips.map(clip => clip.stemAssetId))); assert.deepEqual(used, new Set(engine.stems.map(stem => stem.id)));
+      await page.goto(`${origin}/?project=${handoff.projectId}&remix=${handoff.remixSessionId}`);
+      await expect(page.getByLabel("Waveyard Studio", { exact: true })).toBeVisible();
+      const { version } = await api(`/api/remixes/${handoff.remixSessionId}/versions`, "POST", { name: "Genuine trained-stem immutable render" }); const output = await render(version.id);
+      const exported = path.join(directory, `${model}-arrangement.wav`); await writeFile(exported, output.bytes); const pcm = decode(exported); assert.ok(pcm.rms > .001); assert.ok(Math.abs(pcm.frames - sourcePcm.frames) <= 441);
+      engine.export = { jobId: output.job.id, versionId: version.id, remixId: handoff.remixSessionId, stemAssetIds: [...used], sha256: sha(output.bytes), decoded: pcm }; receipt.gates.F = "passed genuine source → job → bank → persistent session → derived Studio arrangement → independent full export decode";
+      await writeFile(path.join(directory, "receipt.json"), JSON.stringify(receipt, null, 2));
+    }
+    for (const gate of ["A", "B", "C", "E", "F"]) receipt.gates[gate] += "; both independently trained 4/6-source checkpoints completed";
+  } catch (error) { receipt.error = error.stack ?? String(error); throw error; }
+  finally { await writeFile(path.join(directory, "receipt.json"), JSON.stringify(receipt, null, 2)); await page.context().tracing.stop({ path: path.join(directory, "browser-trace.zip") }); }
 });

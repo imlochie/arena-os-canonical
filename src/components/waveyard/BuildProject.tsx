@@ -1,12 +1,13 @@
 "use client";
+import { DeepEngineSetup } from "./DeepEngineSetup";
 import { ModelAssetImport } from "./ModelAssetImport";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { summariseSourceIntake } from "@/lib/waveyard/types";
 import { computeBrowserAudioMetadata, computeBrowserWaveform } from "@/lib/waveyard/browser-waveform";
-import { fetchDeepEngineStatus, fetchStemEngineStatus, prepareStemEngine, modelPreparationLabel, type StemEngineDeepStatus, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
-import { DEEP_MODEL_ID, separationTargetOptions } from "@/lib/waveyard/separation/modes";
+import { fetchStemEngineStatus, prepareStemEngine, modelPreparationLabel, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
+import { separationTargetOptions } from "@/lib/waveyard/separation/modes";
 
 /** The upload's separation target. Empty = the machine default (vocals +
  *  instrumental, fastest). Ids are server-validated against the registry
@@ -27,7 +28,6 @@ export function BuildProject() {
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [engine, setEngine] = useState<StemEngineModelStatus[] | null>(null);
-  const [deepEngine, setDeepEngine] = useState<StemEngineDeepStatus | null>(null);
   const [engineRefresh, setEngineRefresh] = useState(0);
   const engineAbort = useRef<AbortController | null>(null);
   const [modelRightsReviewed, setModelRightsReviewed] = useState(false);
@@ -36,10 +36,9 @@ export function BuildProject() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [status, deepStatus] = await Promise.all([fetchStemEngineStatus(), fetchDeepEngineStatus()]);
+      const status = await fetchStemEngineStatus();
       if (!cancelled) {
         setEngine(status);
-        setDeepEngine(deepStatus);
       }
     })();
     return () => {
@@ -53,7 +52,7 @@ export function BuildProject() {
   }, [preparingEngine]);
   const relevantModels = engine?.filter(model => model.requiredFor?.includes(separationTarget || "default") ?? true) ?? null;
   const runtimeIssue = relevantModels?.find(model => model.runtimeAvailable === false)?.runtimeReason;
-  const engineMissing = separationTarget !== DEEP_MODEL_ID && relevantModels !== null && relevantModels.some((model) => !model.ready);
+  const engineMissing = !separationTarget.startsWith("deep_") && relevantModels !== null && relevantModels.some((model) => !model.ready);
   async function prepareEngine() {
     const missing = relevantModels?.find((model) => !model.ready);
     if (!missing) return;
@@ -148,11 +147,7 @@ export function BuildProject() {
           {SEPARATION_TARGETS.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}
         </select>
       </label>
-      {separationTarget === DEEP_MODEL_ID && deepEngine !== null && !deepEngine.prepared && (
-        <p className="notice" role="status" data-testid="deep-engine-hint">
-          Deep separation needs the deep engine prepared on this machine. {deepEngine.reason ?? "It is not ready yet."}
-        </p>
-      )}
+      {separationTarget.startsWith("deep_") && <DeepEngineSetup key={separationTarget} modelId={separationTarget} />}
       <div className="build-or">or</div>
       <label>Paste authorized source links<textarea aria-label="Authorized source links" value={urls} onChange={(event) => setUrls(event.target.value)} rows={4} placeholder={"https://youtube.com/...\nhttps://youtube.com/..."} /><small>One link per line. This deployment uses only a configured authorized resolver; unsupported links can always be added as local audio.</small></label>
     </>}

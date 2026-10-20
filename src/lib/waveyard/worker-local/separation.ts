@@ -41,7 +41,7 @@ import { decodeSourceToStereoPcm } from "@/lib/waveyard/measure/pcm";
 import type { SeparationJobPayload } from "@/lib/waveyard/types";
 import { demixMdx, findMdxModel, findSeparationRecipe, type MdxInfer, type MdxModelSpec } from "@/lib/waveyard/separation/mdx";
 import { runDeepSeparation } from "@/lib/waveyard/separation/deep";
-import { DEEP_MODEL_ID, isDeepSeparationMode } from "@/lib/waveyard/separation/modes";
+import { isDeepSeparationMode } from "@/lib/waveyard/separation/modes";
 import {
   loadOrtModule,
   sessionInfer,
@@ -302,10 +302,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     let resolvedDevice: string | null = null;
     let engineKind: "mdx" | "demucs" = "mdx";
     let runModels: string[] = [];
+    let checkpointSha256: string | null = null;
 
     if (deepPass) {
       engineKind = "demucs";
-      runModels = [DEEP_MODEL_ID];
+      runModels = [payload.model];
       // Demucs reads a FILE, so hand it the exact PCM this handler already
       // decoded (44.1 kHz stereo) — never the raw stored container, whose
       // decode-ability would otherwise be the owner's engine's problem.
@@ -316,6 +317,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       let lastDeepPercent = -1;
       const deep = await runDeep({
         inputPath: deepInputPath,
+        modelId: payload.model,
         outputDirectory: join(temporaryDirectory, "deep-output"),
         requestedDevice: payload.requestedDevice,
         signal: controller.signal,
@@ -326,12 +328,13 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           void updateJob(database, job.id, {
             metadata: JSON.stringify({
               ...base,
-              progress: { done: percent, total: 100, percent, phase: "deep", model: DEEP_MODEL_ID },
+              progress: { done: percent, total: 100, percent, phase: "deep", model: payload.model },
             }),
           }).catch(() => undefined);
         },
       });
       resolvedDevice = deep.resolvedDevice;
+      checkpointSha256 = deep.checkpointSha256 ?? null;
       for (const stem of deep.stems) {
         // The bridge guarantees six WAV files; the handler still verifies
         // each one is exactly what persistence will claim (16-bit stereo
@@ -359,7 +362,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         stemOutputs.push({
           stemType: nameStem(stem.stemType),
           channels: [stemLeft, stemRight],
-          model: DEEP_MODEL_ID,
+          model: payload.model,
           modelVersion: deep.modelVersion,
           sampleCount: stemFrames,
         });
@@ -492,6 +495,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
             engine: engineKind,
             model: job.model,
             models: runModels,
+            checkpointSha256,
             resolvedDevice,
             outputCount: values.length,
             stems: stemOutputs.map((stem) => stem.stemType),
