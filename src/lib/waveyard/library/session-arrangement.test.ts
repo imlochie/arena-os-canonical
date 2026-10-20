@@ -33,3 +33,9 @@ test("historical configs remain valid; malformed present cues cannot silently di
   for (const cue of [null, {}, { ...items()[0].transition.cue, fromSeconds: NaN }, { ...items()[0].transition.cue, toDeck: 0 }])
     assert.equal(normalizeTransitionConfig({ ...defaultTransitionConfig(), cue }), null);
 });
+
+test("fractional decoded lengths never round a full-source clip beyond available samples", () => {
+  const seconds = 479832 / 44100;
+  const [plan] = sessionPlacements([{ id: a, durationSeconds: seconds, transition: defaultTransitionConfig() }]);
+  assert.equal(plan.sourceEndMs, 10880); assert.ok(plan.sourceEndMs <= seconds * 1000);
+});

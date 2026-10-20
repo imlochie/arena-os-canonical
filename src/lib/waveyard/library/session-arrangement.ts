@@ -14,7 +14,7 @@ export interface SessionPlacement {
 export function sessionPlacements(items: Array<{ id: string; durationSeconds: number; transition: TransitionConfig }>): SessionPlacement[] {
   let timelineStartMs = 0, sourceStartMs = 0, fadeInMs = 0;
   return items.map((item, index) => {
-    const duration = Math.round(item.durationSeconds * 1000);
+    const duration = Math.floor(item.durationSeconds * 1000);
     const next = items[index + 1];
     const cue = next ? item.transition.cue : undefined;
     if (next && (!cue || cue.toSessionTrackId !== next.id)) throw new Error(`Track ${index + 1} has no completed transition to its next track. Play that transition, or explicitly choose a sequential edit.`);

@@ -603,7 +603,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
       refused.push(`“${item.track.title}” has no stems or explicit unseparated-source bridge.`);
       continue;
     }
-    const durationMs = placement?.sourceEndMs ?? Math.round(item.track.durationSeconds * 1000);
+    const durationMs = placement?.sourceEndMs ?? Math.floor(item.track.durationSeconds * 1000);
     const sourceStartMs = placement?.sourceStartMs ?? 0;
     if (durationMs <= 0) {
       refused.push(`“${item.track.title}” has no usable duration.`);
@@ -633,9 +633,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
       const assets = await db.select().from(stemAssets).where(inArray(stemAssets.id, [...new Set(clips.map((clip) => clip.stemAssetId))]));
       if (clips.some((clip) => {
         const asset = assets.find((candidate) => candidate.id === clip.stemAssetId);
-        // Studio clips have integer-ms boundaries. Permit only the final
-        // sub-millisecond quantization ceiling, never container padding.
-        return !asset || !Number.isFinite(asset.durationSeconds) || clip.sourceOffsetMs + clip.durationMs > Math.ceil(asset.durationSeconds * 1000);
+        return !asset || !Number.isFinite(asset.durationSeconds) || clip.sourceOffsetMs + clip.durationMs > asset.durationSeconds * 1000;
       })) { invalid = `a saved stem or swap is missing or shorter than its timeline range`; break; }
       itemLanes.push({ stemAssetId: stem.id, name: `${item.track.title} — ${stem.stemType}`, volume: item.stemMix[stem.stemType] ?? 1, clips, ...(placement ? { points: sessionVolumePoints(placement, stem.stemType, item.stemMix[stem.stemType] ?? 1) } : {}) });
     }
@@ -676,7 +674,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
   });
   return {
     projectId: project.id, remixSessionId: remix.id, remixTrackCount: lanes.length,
-    notice: mode === "transitions" ? "Completed transitions, source ranges, stem levels and timed donor swaps are preserved as Studio clips and volume automation. The source cursor is retained as provenance, not live playback. Pauses, seeks, cancelled/forced-shortened fades and mix gestures are not a performance recording." : "Created a sequential arrangement with saved stem levels and timed swaps. Live transition triggers, crossfades and the playback cursor are not recorded into this arrangement; edit transitions in Studio. Original sources and the listening session are unchanged.",
+    notice: (mode === "transitions" ? "Completed transitions, source ranges, stem levels and timed donor swaps are preserved as Studio clips and volume automation. The source cursor is retained as provenance, not live playback. Pauses, seeks, cancelled/forced-shortened fades and mix gestures are not a performance recording." : "Created a sequential arrangement with saved stem levels and timed swaps. Live transition triggers, crossfades and the playback cursor are not recorded into this arrangement; edit transitions in Studio. Original sources and the listening session are unchanged.") + " Full-length endpoints use Studio’s integer-millisecond grid, rounding down by less than 1 ms to stay within the decoded asset. Original stem files retain every sample.",
     ...(refused.length ? { refused: refused.join(" ") } : {}),
   };
 }

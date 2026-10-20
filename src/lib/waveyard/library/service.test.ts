@@ -1238,5 +1238,18 @@ test("decoded bank duration overrides compressed-container padding through sessi
   const handoff = await sessions.sendSessionToStudio(OWNER, session.id); assert.equal(handoff.remixTrackCount, 4);
   const clips = await db.db.select({ durationMs: schema.remixClips.durationMs }).from(schema.remixClips).innerJoin(schema.remixTracks, eq(schema.remixTracks.id, schema.remixClips.remixTrackId)).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
   assert.equal(clips.length, 4); assert.ok(clips.every(clip => Math.abs(clip.durationMs - exact * 1000) < 1));
+  // Actual version/queue/renderer must agree with handoff's range validation.
+  const versions = await import("@/app/api/remixes/[id]/versions/route");
+  const versionResponse = await versions.POST(new Request("http://arena.test/version", { method: "POST", body: JSON.stringify({ name: "Fractional bank regression" }) }), { params: Promise.resolve({ id: handoff.remixSessionId }) });
+  assert.equal(versionResponse.status, 201); const { version } = await versionResponse.json();
+  const { getLocalJobBroker } = await import("../worker-local/broker"); const { handleExportJob } = await import("../worker-local/export");
+  const priorWorker = process.env.WAVEYARD_LOCAL_WORKER; process.env.WAVEYARD_LOCAL_WORKER = "1";
+  const broker = getLocalJobBroker(); broker.register("waveyard-export", handleExportJob);
+  try {
+    const exports = await import("@/app/api/remix-versions/[id]/exports/route");
+    const response = await exports.POST(new Request("http://arena.test/export", { method: "POST", body: JSON.stringify({ format: "wav" }) }), { params: Promise.resolve({ id: version.id }) });
+    assert.equal(response.status, 201, await response.clone().text()); const { job } = await response.json(); assert.equal(await broker.drain(30_000), true);
+    const [finished] = await db.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id)); assert.equal(finished.status, "complete", finished.errorMessage ?? "export failed");
+  } finally { if (priorWorker === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = priorWorker; }
   const [unchanged] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, track.id)); assert.equal(unchanged.durationSeconds, exact + .039);
 });

@@ -2208,3 +2208,21 @@ source metadata remains unchanged; full library/session arrangement33/33 PASS,
 types PASS. Numbered sub4KiB annotations now preserve the full compact receipt
 instead of losing the model/output sections. A fresh genuine run follows; F,
 six-source, D and overall replacement remain open until independently evidenced.
+
+### A8 independent export fence caught a second duration defect
+
+Run39389589802 / job118517599348 on `fa43496257fbf267a84a37db52f784fff74f924f`
+again executed genuine four-source processing/player/session and reached Studio,
+but **FAILED** the independent export validator: its rounded integer-ms clip
+extended beyond the fractional decoded source length. The earlier handoff-only
+ceiling accommodation was insufficient. It is now removed; export/source range
+validation is NOT weakened. Full-length producers (sequential and completed-cue
+placement) floor only their terminal length to Studio's existing whole-ms grid;
+explicit cues/ranges remain validated/refused, never silently moved. The handoff
+notice discloses the sub1ms endpoint quantization; original complete stem files
+remain unchanged. A strengthened real-PG regression now goes through actual
+version creation, existing queue and FFmpeg renderer, rather than stopping at
+successful handoff. Library/session34/34 and types PASS. An additional placement
+regression pins479832/44100s to10880ms, inside available samples. The genuine
+music harness still independently verifies exported frame tolerance. These
+failed runs remain failures; no F or six-source acceptance is borrowed from them.
