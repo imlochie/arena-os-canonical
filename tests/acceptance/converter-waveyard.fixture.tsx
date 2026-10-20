@@ -4,7 +4,9 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ConversionWorkbench from "../../src/components/waveyard/library/ConversionWorkbench";
 import SessionExperience from "../../src/components/waveyard/library/SessionExperience";
+import { TrackPlayer } from "../../src/components/waveyard/library/TrackPlayer";
 import { StudioCore } from "../../src/components/waveyard/StudioCore";
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 
 type ProjectAudio = Pick<React.ComponentProps<typeof StudioCore>, "stems" | "sources">;
 function Studio({ projectId }: { projectId: string }) {
@@ -23,7 +25,16 @@ function Studio({ projectId }: { projectId: string }) {
 }
 const sessionId = location.pathname.match(/^\/waveyard\/session\/([^/]+)$/)?.[1];
 const projectId = location.pathname.match(/^\/waveyard\/projects\/([^/]+)$/)?.[1];
+const trackId = location.pathname.match(/^\/waveyard\/play\/([^/]+)$/)?.[1];
+const router = {
+  push: (url: string) => location.assign(url), replace: (url: string) => location.replace(url),
+  back: () => history.back(), forward: () => history.forward(), refresh: () => location.reload(),
+  prefetch: async () => {}, hmrRefresh: () => {},
+};
 createRoot(document.getElementById("root")!).render(
-  sessionId ? <SessionExperience sessionId={sessionId} /> :
-    projectId ? <Studio projectId={projectId} /> : <ConversionWorkbench />,
+  <AppRouterContext.Provider value={router}>
+    {sessionId ? <SessionExperience sessionId={sessionId} /> :
+      trackId ? <TrackPlayer trackId={trackId} /> :
+        projectId ? <Studio projectId={projectId} /> : <ConversionWorkbench />}
+  </AppRouterContext.Provider>,
 );

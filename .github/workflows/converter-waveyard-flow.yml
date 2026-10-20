@@ -25,9 +25,10 @@ jobs:
           git config user.name "Isolated product verification"
           git config user.email "ci@users.noreply.github.com"
           git merge --no-commit --no-ff "$OWNER_SNAPSHOT"
+          echo "TESTED_COMBINED_TREE=$(git write-tree)" >> "$GITHUB_ENV"
           {
             echo "Test branch: $(git rev-parse HEAD)"
-            echo "PR17 parent: 566a33ba6989f39064965264d458b92d942b60a6"
+            echo "PR17 dependency: 566a33ba6989f39064965264d458b92d942b60a6"
             echo "Owner snapshot: $OWNER_SNAPSHOT"
             echo "Temporary combined tree: $(git write-tree)"
             echo "No merge commit or shared branch update is performed."
@@ -75,7 +76,7 @@ jobs:
           path: .data/converter-waveyard/receipts/
           retention-days: 90
           if-no-files-found: warn
-      - name: Upload real downloaded audio and original authorised excerpt
+      - name: Upload real downloaded audio, original recording and browser trace
         if: always()
         uses: actions/upload-artifact@v4
         with:
