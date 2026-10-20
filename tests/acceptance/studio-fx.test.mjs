@@ -1133,7 +1133,7 @@ test("A8 genuine managed Demucs music → bank → native player → session →
       const createdResponse = await createSession; assert.equal(createdResponse.status(), 201); const { session } = await createdResponse.json();
       const addedResponse = await addSession; assert.equal(addedResponse.status(), 201, await addedResponse.text());
       const added = await addedResponse.json(); assert.deepEqual(new Set(added.session.tracks[0].playback.assetIds), new Set(engine.stems.map(stem => stem.id)), "actual player action must pin the bank just auditioned, even with two banks");
-      await page.goto(`${origin}/?room=listening&session=${session.id}`); const deck = page.getByTestId("session-deck-current"); await expect(deck.locator("audio")).toHaveCount(spec.stems.length);
+      await expect(page).toHaveURL(`${origin}/waveyard/session/${session.id}`); const deck = page.getByTestId("session-deck-current"); await expect(deck.locator("audio")).toHaveCount(spec.stems.length);
       await page.getByTestId("session-play").click(); await expect.poll(() => deck.locator("audio").evaluateAll(elements => elements.every(element => !element.paused && element.currentTime > .1))).toBe(true); await page.getByTestId("session-play").click();
       await page.reload(); await expect(deck.locator("audio")).toHaveCount(spec.stems.length); receipt.gates.E = "passed native browser player/session controls and persisted-bank reopen; NOT Electron acceptance";
       const { handoff } = await api(`/api/library/sessions/${session.id}/studio-handoff`, "POST", { mode: "sequential" });

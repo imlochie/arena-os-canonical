@@ -2332,3 +2332,32 @@ lint0errors49warnings. Browser regressions/actual music run follow. Desktop comp
 also passed; current Linux Electron doctor reports44.7.0 package but no binary
 or display, so no desktop UI acceptance is claimed. D remains open engineering
 work, not a download or Windows prerequisite.
+
+### A8 D incremental implementation: child lifetime bound to real executor
+
+The Demucs inference process now starts through a minimal Python module guardian
+and an executor-owned stdin pipe. A daemon in the **same** Python process blocks
+on that pipe before loading Demucs. EOF on abrupt Node termination makes Python
+exit itself; normal execution preserves module arguments, stdout, stderr,
+progress, cancellation/force-kill and checkpoint verification. There is no
+persisted-PID kill, PID-age heuristic, or external app launcher. Torch readiness
+probes remain ordinary short-lived interpreter probes. This closes the orphaned
+long-running Python inference risk on executor death, NOT the durable DB-job
+reconciliation gate.
+
+Real process regression17PASS0FAIL0SKIP across the existing controlled Demucs
+CLI suite and two new guardian tests: normal interpreter module invocation with
+spaces/empty/unicode argv; SIGKILL of a separately spawned Node executor while
+its Python module ignores SIGTERM, with native process termination observed in
+under the1.5sec assertion bound (no signal sent to the orphan PID). These are
+real OS-process/pipe tests, NOT learned inference or the full DB crash matrix.
+Two worker controlled CLI tests also pass with the guardian. Types/build pass;
+lint0errors49warnings. Durable ownership identity, staged-object recovery and
+all required transaction/publication crash points remain D OPEN.
+
+The genuine browser harness now recognizes the real `/waveyard/session/:id`
+route, and its actual player-action check waits for that navigation instead of
+manually loading a query-only fixture URL. No production router is substituted;
+this mounts the existing SessionExperience at the same route the product uses.
+The next genuine run must verify this stronger path and the guardian with real
+trained checkpoints. No new Electron or Windows execution claim.

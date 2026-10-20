@@ -37,6 +37,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { ownedPythonModuleArgs } from "./python-guardian";
 import { checksumFile } from "../audio";
 import { audioToolEnvironment } from "../ffmpeg";
 import { resolveExecutable } from "@/lib/capabilities/resolver";
@@ -461,7 +462,7 @@ function runPython(
 ): Promise<SpawnedOutcome> {
   return new Promise((resolvePromise) => {
     if (options.signal?.aborted) return resolvePromise({ status: null, stdout: "", stderr: "", error: new DOMException("Separation cancelled", "AbortError") });
-    const child = spawn(bin, args, { env: childEnv(env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(bin, args, { env: childEnv(env), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     let abortError: Error | null = null;
     let spawnError: Error | null = null;
     let forceKill: ReturnType<typeof setTimeout> | undefined;
@@ -635,17 +636,17 @@ export async function runDeepSeparation(request: DeepRunRequest, deps: { verifyC
   // filename carries — Demucs verifies the encoded checksum before loading.
   const args = [
     ...candidate.prefixArgs,
-    "-m",
-    "demucs",
-    "--name",
-    spec.signature,
-    "--repo",
-    resolveModelsDir(env),
-    "--device",
-    resolvedDevice,
-    "--out",
-    request.outputDirectory,
-    request.inputPath,
+    ...ownedPythonModuleArgs("demucs", [
+      "--name",
+      spec.signature,
+      "--repo",
+      resolveModelsDir(env),
+      "--device",
+      resolvedDevice,
+      "--out",
+      request.outputDirectory,
+      request.inputPath,
+    ]),
   ];
 
   let lastPercent = -1;
