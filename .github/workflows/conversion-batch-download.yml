@@ -1,0 +1,52 @@
+name: Verified conversion batch download
+on:
+  push:
+    branches: ["arena/conversion-batch-download"]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  product-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - name: Install real browser
+        run: npx playwright install --with-deps chromium
+      - name: Acquire hash-pinned publisher-licensed music
+        run: |
+          mkdir -p .data/acceptance/conversion-archive
+          curl --fail --silent --show-error --location https://api.github.com/repos/deezer/spleeter/git/blobs/cc91788843d20ae7af169d6e0f72c2c5658fdb39 > "$RUNNER_TEMP/music-blob.json"
+          python3 - "$RUNNER_TEMP/music-blob.json" "$RUNNER_TEMP/Slow Motion Dream.mp3" <<'PY'
+          import sys,json,base64,hashlib
+          blob=json.load(open(sys.argv[1]))
+          assert blob["encoding"]=="base64"
+          music=base64.b64decode(blob["content"])
+          assert hashlib.sha256(music).hexdigest()=="4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507"
+          open(sys.argv[2],"wb").write(music)
+          PY
+      - name: Typecheck and changed-source lint
+        run: |
+          npm run typecheck
+          npx eslint src/lib/waveyard/conversion/archive.ts src/lib/waveyard/conversion/archive.test.ts src/app/api/library/conversions/archive/route.ts src/components/waveyard/library/ConversionWorkbench.tsx
+      - name: ZIP integrity and actual browser conversion/download acceptance
+        run: |
+          export LD_LIBRARY_PATH="$PWD/node_modules/@embedded-postgres/linux-x64/native/lib:${LD_LIBRARY_PATH:-}"
+          export ARENA_CONVERSION_REAL_INPUT="$RUNNER_TEMP/Slow Motion Dream.mp3"
+          export ARENA_ARCHIVE_EVIDENCE_DIR="$PWD/.data/acceptance/conversion-archive"
+          node --import ./scripts/register-src-loader.mjs --test src/lib/waveyard/conversion/archive.test.ts tests/acceptance/conversion-archive.test.mjs 2>&1 | tee .data/acceptance/conversion-archive/tests.tap
+      - name: Retain evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conversion-batch-download-${{ github.sha }}
+          path: .data/acceptance/conversion-archive/
+          if-no-files-found: warn
