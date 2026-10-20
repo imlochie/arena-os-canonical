@@ -36,6 +36,7 @@ function indexRuns(runs, implementation) {
     assert.ok(Number.isFinite(run.sampledWholeBrowserPeakPssBytes) && run.sampledWholeBrowserPeakPssBytes > 0, `${implementation} ${key}: missing peak PSS`);
     assert.ok(Number.isFinite(run.retainedPssBytes) && run.retainedPssBytes > 0, `${implementation} ${key}: missing retained PSS`);
     assert.ok(Number.isFinite(run.gcRetainedPssBytes) && run.gcRetainedPssBytes > 0, `${implementation} ${key}: missing post-GC PSS`);
+    assert.ok(Number.isFinite(run.peakAccountedSourcePcmOverlapBytes) && run.peakAccountedSourcePcmOverlapBytes > 0, `${implementation} ${key}: missing source-ownership overlap instrumentation`);
     const expectedBytes = run.sources * 441000 * 2 * 4;
     assert.equal(run.diagnostics.sourceBytes, expectedBytes, `${implementation} ${key}: source-byte accounting mismatch`);
     if (implementation === "baseline") {
@@ -63,6 +64,9 @@ function median(values) {
 function metricSummary(runs) {
   const metrics = [
     "sampledWholeBrowserPeakPssBytes",
+    "peakAccountedSourcePcmOverlapBytes",
+    "peakDecodedSourceBytes",
+    "peakWorkerSourceBytes",
     "retainedPssBytes",
     "gcRetainedPssBytes",
     "readyMs",
@@ -82,6 +86,8 @@ for (const sources of expectedSources) {
     const after = candidateRows[index];
     assert.equal(after.pcmSha256, before.pcmSha256, `${sources} sources, repeat ${index + 1}: cold stereo PCM hash differs`);
     assert.equal(after.editedPcmSha256, before.editedPcmSha256, `${sources} sources, repeat ${index + 1}: edited stereo PCM hash differs`);
+    assert.ok(after.peakAccountedSourcePcmOverlapBytes < before.peakAccountedSourcePcmOverlapBytes, `${sources} sources, repeat ${index + 1}: source-transfer overlap did not fall`);
+    assert.ok(after.peakDecodedSourceBytes <= 441000 * 2 * 4, `${sources} sources, repeat ${index + 1}: candidate retained more than one synthetic source AudioBuffer during transfer`);
     assert.equal(after.pcmSha256, baselineRows[0].pcmSha256, `${sources} baseline cold hash varied across repeats`);
     assert.equal(after.pcmSha256, candidateRows[0].pcmSha256, `${sources} candidate cold hash varied across repeats`);
     assert.equal(after.editedPcmSha256, baselineRows[0].editedPcmSha256, `${sources} baseline edited hash varied across repeats`);

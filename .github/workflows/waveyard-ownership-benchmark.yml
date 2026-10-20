@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - benchmark/waveyard-encoded-recovery
+      - benchmark/waveyard-peak-recovery
 
 permissions:
   contents: read

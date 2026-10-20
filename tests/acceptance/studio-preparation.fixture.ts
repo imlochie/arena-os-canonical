@@ -15,6 +15,42 @@ async function stereoPcmHash(buffer: AudioBuffer) {
 }
 Object.assign(window, { async measurePreparation(state: ArrangementPreviewState, retainForMeasurement = false) {
   const context = new AudioContext({ sampleRate: 44100 }), engine = new ArrangementPreparation();
+  const NativeWorker = window.Worker;
+  const workerSourceBytes = new Map<string, number>();
+  let peakAccountedSourcePcmOverlapBytes = 0;
+  let peakDecodedSourceBytes = 0;
+  let peakWorkerSourceBytes = 0;
+  const internals = engine as unknown as { decoded?: Map<string, AudioBuffer> };
+  window.Worker = class extends NativeWorker {
+    postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
+      const payload = message as {
+        kind?: string;
+        source?: { key: string; channels: Float32Array[] };
+        sources?: { key: string; channels: Float32Array[] }[];
+        retain?: string[];
+      };
+      const added = payload.kind === "source" && payload.source
+        ? [payload.source]
+        : Array.isArray(payload.sources) ? payload.sources : [];
+      const addedBytes = added.map(source => [
+        source.key,
+        source.channels.reduce((sum, channel) => sum + channel.byteLength, 0),
+      ] as const);
+      if (Array.isArray(options)) super.postMessage(message, options);
+      else super.postMessage(message, options);
+      if (payload.retain) {
+        const retained = new Set(payload.retain);
+        for (const key of workerSourceBytes.keys()) if (!retained.has(key)) workerSourceBytes.delete(key);
+      }
+      for (const [key, bytes] of addedBytes) workerSourceBytes.set(key, bytes);
+      const decodedBytes = [...(internals.decoded?.values() ?? [])]
+        .reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0);
+      const workerBytes = [...workerSourceBytes.values()].reduce((sum, bytes) => sum + bytes, 0);
+      peakDecodedSourceBytes = Math.max(peakDecodedSourceBytes, decodedBytes);
+      peakWorkerSourceBytes = Math.max(peakWorkerSourceBytes, workerBytes);
+      peakAccountedSourcePcmOverlapBytes = Math.max(peakAccountedSourcePcmOverlapBytes, decodedBytes + workerBytes);
+    }
+  } as typeof Worker;
   let last = performance.now(), maximumGapMs = 0, ticks = 0;
   const timer = setInterval(() => { const now = performance.now(); maximumGapMs = Math.max(maximumGapMs, now - last); last = now; ticks++; }, 5);
   try {
@@ -35,8 +71,17 @@ Object.assign(window, { async measurePreparation(state: ArrangementPreviewState,
     const verificationMs = performance.now() - verificationStarted;
     const pcmSha256 = await stereoPcmHash(buffer), editedPcmSha256 = await stereoPcmHash(changed);
     if (retainForMeasurement) heldMeasurement = { engine, context, buffer, changed };
-    return { pcmSha256, editedPcmSha256, readyMs, replayMs, editMs, maximumGapMs: preparationMaximumGapMs, verificationMs, ticks, frames: buffer.length, latestEditError: error, outputPlanarBytes: buffer.length * 2 * 4, diagnostics: engine.diagnostics };
-  } finally { clearInterval(timer); if (!retainForMeasurement || !heldMeasurement) { engine.dispose(); await context.close(); } }
+    return {
+      pcmSha256, editedPcmSha256, readyMs, replayMs, editMs, maximumGapMs: preparationMaximumGapMs,
+      verificationMs, ticks, frames: buffer.length, latestEditError: error, outputPlanarBytes: buffer.length * 2 * 4,
+      peakAccountedSourcePcmOverlapBytes, peakDecodedSourceBytes, peakWorkerSourceBytes,
+      diagnostics: engine.diagnostics,
+    };
+  } finally {
+    clearInterval(timer);
+    if (!retainForMeasurement || !heldMeasurement) { engine.dispose(); await context.close(); }
+    window.Worker = NativeWorker;
+  }
 } });
 
 Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPreviewState, outageAfterCancel = false) {
@@ -47,7 +92,11 @@ Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPrevi
   window.fetch = (...args) => { fetches++; return outage ? Promise.reject(new TypeError("Controlled source endpoint outage")) : originalFetch(...args); };
   window.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) { super(url, options); created++; }
-    postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) { if (Array.isArray(options)) super.postMessage(message, options); else super.postMessage(message, options); onWork?.(); }
+    postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
+      if (Array.isArray(options)) super.postMessage(message, options); else super.postMessage(message, options);
+      const kind = (message as { kind?: string }).kind;
+      if (!kind || kind === "render") onWork?.();
+    }
     terminate() { terminated++; super.terminate(); }
   } as typeof Worker;
   try {
@@ -92,7 +141,10 @@ Object.assign(window, { async verifyPreparationCloneFailure(state: ArrangementPr
   window.Worker = class extends NativeWorker {
     postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
       // Exercise Chromium's real structured-clone rejection, not a fake Worker reply.
-      if (failOnce) { failOnce = false; super.postMessage(() => {}); return; }
+      const payload = message as { kind?: string; sources?: unknown[] };
+      if (failOnce && (payload.kind === "source" || Array.isArray(payload.sources))) {
+        failOnce = false; super.postMessage(() => {}); return;
+      }
       if (Array.isArray(options)) super.postMessage(message, options); else super.postMessage(message, options);
     }
   } as typeof Worker;

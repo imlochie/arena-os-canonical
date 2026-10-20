@@ -9,7 +9,7 @@ export function previewStateKey(state: ArrangementPreviewState, revision = "", s
 export function transformedClipKey(clip: ArrangementPreviewState["tracks"][number]["clips"][number], state: ArrangementPreviewState, revision: string) {
   return JSON.stringify([clip.stemAssetId, clip.sourceOffsetMs, clip.durationMs, clip.tempoSyncEnabled, clip.keySyncEnabled, state.tempoBpm, state.targetKey, revision]);
 }
-type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number } };
+type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number; sourceBytesByKey: Record<string, number> } };
 const MAX_DECODED_BYTES = 128 * 1024 * 1024;
 const MAX_ENCODED_RECOVERY_BYTES = 128 * 1024 * 1024;
 const MAX_RECOVERY_TO_PCM_RATIO = 0.9;
@@ -88,60 +88,78 @@ export class ArrangementPreparation {
     // than keeping every edit's AudioBuffer until the tab eventually exits.
     for (const id of this.decoded.keys()) if (!needed.has(id)) this.decoded.delete(id);
     for (const id of this.encodedRecovery.keys()) if (!needed.has(id)) this.encodedRecovery.delete(id);
-    let bytes = [...this.decoded.values()].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0);
+    let bytes = [...this.decoded.entries()].reduce((sum, [id, buffer]) => sum + (needed.has(id) ? buffer.length * buffer.numberOfChannels * 4 : 0), 0);
+    for (const id of this.sent) if (needed.has(id) && !this.decoded.has(id)) bytes += this.workerStats?.sourceBytesByKey?.[id] ?? 0;
     let recoveryBytes = [...this.encodedRecovery.values()].reduce((sum, blob) => sum + blob.size, 0);
-    for (const [id, request] of requests) {
-      signal.throwIfAborted(); if (this.decoded.has(id) || this.sent.has(id)) continue;
-      let recovery = this.encodedRecovery.get(id);
-      if (!recovery) {
-        const response = await fetch(request.url, { signal, ...(request.body ? { method: "POST", headers: { "content-type": "application/json" }, body: request.body } : {}) });
-        if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? "A stem could not be prepared for arrangement audition."); }
-        if (Number(response.headers.get("content-length")) > MAX_DECODED_BYTES) { await response.body?.cancel(); throw new Error("Source exceeds the 128 MiB audition decode budget; use a shorter source range or export."); }
-        recovery = await response.blob();
-      }
-      const buffer = await context.decodeAudioData(await recovery.arrayBuffer());
-      bytes += buffer.length * buffer.numberOfChannels * 4;
-      if (bytes > MAX_DECODED_BYTES) throw new Error("Selected source audio exceeds the 128 MiB decoded audition budget; no clips were dropped.");
-      this.decoded.set(id, buffer);
-      const pcmBytes = buffer.length * buffer.numberOfChannels * 4;
-      if (!this.encodedRecovery.has(id) &&
-          recovery.size < pcmBytes * MAX_RECOVERY_TO_PCM_RATIO &&
-          recoveryBytes + recovery.size <= MAX_ENCODED_RECOVERY_BYTES) {
-        this.encodedRecovery.set(id, recovery);
-        recoveryBytes += recovery.size;
-      }
-      signal.throwIfAborted();
-    }
-    signal.throwIfAborted();
-    const worker = this.getWorker(), sources: PreviewSource[] = [], transfer: Transferable[] = [];
-    for (const id of this.sent) if (!needed.has(id)) this.sent.delete(id);
-    for (const id of needed) {
-      if (this.sent.has(id)) continue;
-      const audio = this.decoded.get(id)!;
-      const channels = Array.from({ length: audio.numberOfChannels }, (_, channel) => audio.getChannelData(channel).slice());
-      sources.push({ key: id, sampleRate: audio.sampleRate, channels });
-      transfer.push(...channels.map(channel => channel.buffer)); this.sent.add(id);
-    }
     const id = ++this.sequence;
-    const work: PreviewWork = { id, state, sampleRate: context.sampleRate, sources, retain: [...needed], revision };
+    const worker = this.getWorker();
     const rendered = new Promise<Prepared>((resolve, reject) => { this.pending = { id, resolve, reject }; });
     try {
-      worker.postMessage(work, transfer);
+      // Prune stale worker-owned audio before adding sources for this snapshot.
+      worker.postMessage({ kind: "retain", retain: [...needed] });
+      for (const sourceKey of this.sent) if (!needed.has(sourceKey)) this.sent.delete(sourceKey);
+
+      // Decode, transfer and release one source at a time. This prevents all
+      // decoded AudioBuffers from coexisting with a second full set of Worker
+      // channel copies. A decoded buffer is released only after its bounded
+      // encoded recovery copy is safely retained; otherwise it remains the
+      // network-independent retry owner.
+      for (const [sourceKey, request] of requests) {
+        signal.throwIfAborted();
+        if (this.sent.has(sourceKey)) continue;
+
+        let recovery = this.encodedRecovery.get(sourceKey);
+        if (!recovery) {
+          const response = await fetch(request.url, { signal, ...(request.body ? { method: "POST", headers: { "content-type": "application/json" }, body: request.body } : {}) });
+          if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? "A stem could not be prepared for arrangement audition."); }
+          if (Number(response.headers.get("content-length")) > MAX_DECODED_BYTES) { await response.body?.cancel(); throw new Error("Source exceeds the 128 MiB audition decode budget; use a shorter source range or export."); }
+          recovery = await response.blob();
+        }
+
+        let audio = this.decoded.get(sourceKey);
+        if (!audio) {
+          audio = await context.decodeAudioData(await recovery.arrayBuffer());
+          const pcmBytes = audio.length * audio.numberOfChannels * 4;
+          bytes += pcmBytes;
+          if (bytes > MAX_DECODED_BYTES) throw new Error("Selected source audio exceeds the 128 MiB decoded audition budget; no clips were dropped.");
+          this.decoded.set(sourceKey, audio);
+          if (!this.encodedRecovery.has(sourceKey) &&
+              recovery.size < pcmBytes * MAX_RECOVERY_TO_PCM_RATIO &&
+              recoveryBytes + recovery.size <= MAX_ENCODED_RECOVERY_BYTES) {
+            this.encodedRecovery.set(sourceKey, recovery);
+            recoveryBytes += recovery.size;
+          }
+        }
+
+        signal.throwIfAborted();
+        const channels = Array.from({ length: audio.numberOfChannels }, (_, channel) => audio!.getChannelData(channel).slice());
+        const source: PreviewSource = { key: sourceKey, sampleRate: audio.sampleRate, channels };
+        worker.postMessage({ kind: "source", source }, channels.map(channel => channel.buffer));
+        this.sent.add(sourceKey);
+
+        if (this.encodedRecovery.has(sourceKey)) {
+          this.decoded.delete(sourceKey);
+        }
+      }
+
+      signal.throwIfAborted();
+      const work: PreviewWork = { kind: "render", id, state, sampleRate: context.sampleRate, retain: [...needed], revision };
+      worker.postMessage(work);
+      const { left, right, stats } = await rendered;
+      signal.throwIfAborted();
+      this.workerStats = stats;
+      const buffer = context.createBuffer(2, left.length, context.sampleRate);
+      buffer.copyToChannel(left as Float32Array<ArrayBuffer>, 0); buffer.copyToChannel(right as Float32Array<ArrayBuffer>, 1);
+      this.finished = { key, buffer }; return buffer;
     } catch (error) {
-      // No reply can settle this request. Do not leave an orphan promise for
-      // the next edit to reject, or trust partially posted source ownership.
-      // Decoded source data remains intact for a network-independent retry.
-      this.pending = null; worker.terminate(); this.worker = null;
+      // A partial upload or failed render cannot leave an orphan request or
+      // trusted Worker ownership behind. Encoded copies and decoded fallbacks
+      // remain available to retry without the source endpoint.
+      if (this.pending?.id === id) this.pending = null;
+      if (this.worker === worker) worker.terminate();
+      if (this.worker === worker) this.worker = null;
       this.sent.clear(); this.workerStats = undefined;
       throw error;
     }
-    const { left, right, stats } = await rendered; signal.throwIfAborted(); this.workerStats = stats;
-    // Keep a bounded encoded recovery copy for sources whose compressed/WAV
-    // representation is materially smaller than float PCM. If it cannot be
-    // retained, keep the decoded AudioBuffer as the safe retry owner instead.
-    for (const sourceKey of needed) if (this.sent.has(sourceKey) && this.encodedRecovery.has(sourceKey)) this.decoded.delete(sourceKey);
-    const buffer = context.createBuffer(2, left.length, context.sampleRate);
-    buffer.copyToChannel(left as Float32Array<ArrayBuffer>, 0); buffer.copyToChannel(right as Float32Array<ArrayBuffer>, 1);
-    this.finished = { key, buffer }; return buffer;
   }
 }
