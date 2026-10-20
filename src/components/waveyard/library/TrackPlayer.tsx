@@ -346,6 +346,8 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   // only one playback engine, never two running at once).
   const playAsSession = useCallback(() => {
     if (startingSession || track === null) return;
+    const selectedBank = track.playback.kind === "stems" ? (track.banks ?? []).find(bank => bank.stems.length === track.playback.assetIds.length && bank.stems.every(stem => track.playback.assetIds.includes(stem.id))) : undefined;
+    if (track.selectionRequired || (track.playback.kind === "stems" && !selectedBank)) { setStatus("Choose one completed bank before starting a session. Current playback is unchanged."); return; }
     setStartingSession(true);
     void (async () => {
       try {
@@ -362,7 +364,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
         const added = await fetch(`/api/library/sessions/${session.id}/tracks`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ trackId: track.id }),
+          body: JSON.stringify({ trackId: track.id, ...(selectedBank ? { bankId: selectedBank.id } : {}) }),
         });
         if (!added.ok) {
           setStatus("The track could not be added to the new session.");
@@ -695,7 +697,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
 
       <div className="player-actions">
         <button type="button" className="button" onClick={() => void addToQueue()}>+ Queue</button>
-        <button type="button" className="button secondary" onClick={playAsSession} disabled={startingSession} title="Create a session starting with this track">
+        <button type="button" className="button secondary" onClick={playAsSession} disabled={startingSession} title="Create a fresh session from this selected audio bank. Audition mute/solo controls reset in the new session.">
           {startingSession ? "Starting…" : "Play as session"}
         </button>
         {playlists.length > 0 && (

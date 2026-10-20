@@ -2276,3 +2276,33 @@ semantic six-source quality and complete replacement/catalogue parity remain
 unaccepted. The original sandbox model-host restriction was overcome for real
 execution by the hosted runner, not by an unofficial mirror. Replacement gate
 remains CLOSED; no cancel-subscription or production/commercial claim.
+
+### A8 pinned-runtime recheck and real player-to-session identity fix
+
+Run39390829225 / job118521654716 on
+`75949186b5237cfe12ef13a6311ea43f926e79a1` **SUCCESS**, exercising the new full
+checkpoint digest gate on both trained models through complete music export.
+Artifact12250235109,37128634bytes. Final four/six arrangement SHA256 respectively
+`acd5fd9ccf381cf09ffc5369f9470bcb94828e69e5e602ef0fcfed6ea81352e0` /
+`c912ec4160acc493fbb8fa25b896caed8c3571e2e796b595c9976157eb9749e6`;
+both479808frames. Reconstructed full receipt `/home/user/a8-fifth-receipt.json`.
+Exact-head local full suite1476tests/39suites ran:1474PASS/2FAIL, no skips,
+838188ms. Both failures were old controlled CLI fixtures using dummy weights
+through the newly strict production verifier. These are now explicitly injected
+controlled verifier seams, as the bridge contract tests already were; the real
+production dummy-rejection regression and hosted genuine test remain untouched.
+Focused rerun of the two affected contracts2/2 PASS. Original failed TAP/identity
+receipt retained (`a8-source-7594918.txt`, `.data/acceptance/source-suite/`).
+
+Review additionally found the actual player's “Play as session” omitted bankId,
+so with both completed generations it lost the bank being auditioned. The
+player now resolves its exact selected bank by asset identity, passes that bank
+to existing session insertion, and refuses unresolved selections before creating
+a new session. Tooltip explicitly states this is a fresh session and audition
+mute/solo resets. The genuine test now uses THAT actual player button and checks
+the persisted asset set, rather than manually supplying bankId through its API
+helper. It also checks live post-fader meters (signal, mute zero, isolated drums
+signal/bass zero), and records mean/AC RMS so low/DC-dominated outputs cannot be
+misrepresented as meaningful instrument extraction by total RMS alone. No
+semantic quality gate is declared passed. Types/build and lint0errors49warnings
+pass; final connected run and full regressions follow. D remains open.

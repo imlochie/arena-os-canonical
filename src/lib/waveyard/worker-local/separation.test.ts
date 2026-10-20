@@ -12,7 +12,7 @@ import { decodeWav16, encodeWav16 } from "@/lib/waveyard/mixer/synth";
 import { getStorage } from "@/lib/waveyard/storage";
 import { processingJobs, stemAssets, waveformJobs } from "@/db/waveyardSchema";
 import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@/lib/waveyard/separation/mdx";
-import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@/lib/waveyard/separation/deep";
+import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests, runDeepSeparation } from "@/lib/waveyard/separation/deep";
 import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@/lib/waveyard/separation/deep-fixtures";
 import { DEEP_STEM_TYPES } from "@/lib/waveyard/separation/modes";
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
@@ -349,7 +349,8 @@ test("deep pass: the prepared engine runs end to end and stores six attributed s
     }
     installDeepEnv(engine.env);
 
-    await handleSeparationJob(payloadOf(f), { db: f.database });
+    // Explicit controlled CLI seam: this fixture is NOT trained weights.
+    await handleSeparationJob(payloadOf(f), { db: f.database, runDeep: request => runDeepSeparation(request, { verifyCheckpoint: checksumFile }) });
 
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
     assert.equal(row.status, "complete");
@@ -440,7 +441,7 @@ test("deep layers: a deep pass on a STEM names every lane <parent>/<child>", asy
 
     await handleSeparationJob(
       { ...payloadOf(f), parentStemAssetId: parentStem.id },
-      { db: f.database },
+      { db: f.database, runDeep: request => runDeepSeparation(request, { verifyCheckpoint: checksumFile }) },
     );
 
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));

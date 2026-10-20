@@ -1067,8 +1067,8 @@ test("A8 genuine managed Demucs music → bank → native player → session →
       const run = spawnSync(ffmpeg.path, ["-v", "error", "-i", file, "-ar", "44100", "-ac", "2", "-f", "f32le", "pipe:1"], { maxBuffer: 128 * 1024 * 1024 });
       assert.equal(run.status, 0, run.stderr?.toString()); assert.ok(run.stdout.length > 8);
       const values = new Float32Array(run.stdout.buffer.slice(run.stdout.byteOffset, run.stdout.byteOffset + run.stdout.byteLength));
-      let peak = 0, energy = 0; for (const value of values) { assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value)); energy += value * value; }
-      return { frames: values.length / 2, sampleRate: 44100, channels: 2, peak, rms: Math.sqrt(energy / values.length), pcmSha256: sha(run.stdout) };
+      let peak = 0, energy = 0, sum = 0; for (const value of values) { assert.ok(Number.isFinite(value)); peak = Math.max(peak, Math.abs(value)); energy += value * value; sum += value; }
+      return { frames: values.length / 2, sampleRate: 44100, channels: 2, peak, rms: Math.sqrt(energy / values.length), mean: sum / values.length, acRms: Math.sqrt(Math.max(0, energy / values.length - (sum / values.length) ** 2)), pcmSha256: sha(run.stdout) };
     };
     // Immutable publisher repository blob; downloaded bytes must match the known
     // complete recording digest, not a shortened generated/tone substitute.
@@ -1117,14 +1117,22 @@ test("A8 genuine managed Demucs music → bank → native player → session →
       await page.getByRole("button", { name: `Load bank ${job.id}`, exact: true }).waitFor({ timeout: 10000 }); await page.getByRole("button", { name: `Load bank ${job.id}`, exact: true }).click();
       await expect(page.getByLabel("Mute Vocals", { exact: true })).toBeEnabled(); await page.locator(".wplayer-play").click();
       await expect.poll(async () => Number(await page.getByLabel("Seek", { exact: true }).inputValue())).toBeGreaterThan(.05);
+      await expect.poll(async () => Number(await page.getByRole("meter", { name: "Vocals level", exact: true }).getAttribute("aria-valuenow"))).toBeGreaterThan(0);
       await page.getByLabel("Mute Vocals", { exact: true }).click(); await expect(page.getByLabel("Mute Vocals", { exact: true })).toHaveAttribute("aria-pressed", "true");
+      await expect.poll(async () => Number(await page.getByRole("meter", { name: "Vocals level", exact: true }).getAttribute("aria-valuenow"))).toBe(0);
       await page.getByLabel("Isolate Drums", { exact: true }).click(); await expect(page.getByLabel("Isolate Drums", { exact: true })).toHaveAttribute("aria-pressed", "true");
+      await expect.poll(async () => Number(await page.getByRole("meter", { name: "Drums level", exact: true }).getAttribute("aria-valuenow"))).toBeGreaterThan(0);
+      await expect.poll(async () => Number(await page.getByRole("meter", { name: "Bass level", exact: true }).getAttribute("aria-valuenow"))).toBe(0);
       await range(page.getByLabel("Vocals volume", { exact: true }), .65); await range(page.getByLabel("Seek", { exact: true }), 2);
       await page.locator(".wplayer-play").click(); await page.screenshot({ path: path.join(directory, `${model}-native-player.png`) });
       // Actual persistent session pins only this completed bank, independently
       // of the player's current mute/isolate audition state.
-      const { session } = await api("/api/library/sessions", "POST", { name: `Genuine ${spec.name} music acceptance` });
-      await api(`/api/library/sessions/${session.id}/tracks`, "POST", { trackId: track.id, bankId: job.id });
+      const createSession = page.waitForResponse(response => response.url().endsWith("/api/library/sessions") && response.request().method() === "POST");
+      const addSession = page.waitForResponse(response => /\/api\/library\/sessions\/[^/]+\/tracks$/.test(response.url()) && response.request().method() === "POST");
+      await page.getByRole("button", { name: "Play as session", exact: true }).click();
+      const createdResponse = await createSession; assert.equal(createdResponse.status(), 201); const { session } = await createdResponse.json();
+      const addedResponse = await addSession; assert.equal(addedResponse.status(), 201, await addedResponse.text());
+      const added = await addedResponse.json(); assert.deepEqual(new Set(added.session.tracks[0].playback.assetIds), new Set(engine.stems.map(stem => stem.id)), "actual player action must pin the bank just auditioned, even with two banks");
       await page.goto(`${origin}/?room=listening&session=${session.id}`); const deck = page.getByTestId("session-deck-current"); await expect(deck.locator("audio")).toHaveCount(spec.stems.length);
       await page.getByTestId("session-play").click(); await expect.poll(() => deck.locator("audio").evaluateAll(elements => elements.every(element => !element.paused && element.currentTime > .1))).toBe(true); await page.getByTestId("session-play").click();
       await page.reload(); await expect(deck.locator("audio")).toHaveCount(spec.stems.length); receipt.gates.E = "passed native browser player/session controls and persisted-bank reopen; NOT Electron acceptance";
