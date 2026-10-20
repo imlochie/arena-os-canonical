@@ -29,3 +29,27 @@ SIGKILL cases are genuine process termination; this does not establish Windows,
 Electron, reboot, subjective audio quality or live-provider acceptance.
 
 Final exact-revision checks and later cycles are recorded below when executed.
+
+## Cycle 2: conversion lost acquisition rights
+
+Real PostgreSQL/native FFmpeg reproduction: authorized WAV → FLAC completed,
+but `getTrack` returned `rights: null` instead of the original attribution and
+notice (`campaign-provenance-before.json`). The converted source was ingested
+with the default local-upload provenance.
+
+Fix: carry the existing acquisition method/URL/notice through normal ingestion,
+with immediate parent source ID/checksum and processing job ID in existing
+acquisition metadata. No new identity table, licence inference, or audio rewrite.
+Normalize absent source URLs in existing-intake comparisons so a legitimate
+local-upload publication can reconcile after a lost completion acknowledgement.
+Corrupt/unknown provenance fails closed; verified objects remain recoverable.
+
+`node --import ./scripts/register-src-loader.mjs --test src/lib/waveyard/conversion/provenance.test.ts`:
+3 pass (parent plus two subtests). Covers WAV → FLAC → AIFF with inherited
+rights, repeat completion, local unknown-rights, interrupted library handoff,
+and malformed JSON/null/array → durable failed job → provenance repair → same
+verified bytes → completion. Uses actual PostgreSQL, FFmpeg and full decode;
+controlled PCM, not model/provider/music-quality evidence. `npm run typecheck`
+passes. The intermediate harness failure is retained: it initially omitted
+`assert.rejects` around the intentionally corrupt provenance execution, which
+correctly rejects as well as persisting failure. The final test asserts both.

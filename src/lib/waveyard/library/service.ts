@@ -264,7 +264,7 @@ export async function addTrackFromAudioFile(input: {
   if (existing !== undefined) {
     if (input.provenance) {
       const [acquisition] = await db.select().from(sourceAcquisitions).where(eq(sourceAcquisitions.sourceAssetId, existing.sourceAssetId)).limit(1);
-      if (acquisition?.sourceUrl !== input.provenance.sourceUrl) throw new Error("These audio bytes already exist under a different acquisition. Original rights/provenance were preserved; no catalogue rights were attached to that track.");
+      if ((acquisition?.sourceUrl ?? null) !== (input.provenance.sourceUrl ?? null)) throw new Error("These audio bytes already exist under a different acquisition. Original rights/provenance were preserved; no catalogue rights were attached to that track.");
     }
     const [summary] = await summariesFor([existing]);
     return { track: summary, created: false, separationQueued: false };

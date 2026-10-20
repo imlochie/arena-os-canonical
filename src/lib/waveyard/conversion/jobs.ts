@@ -10,12 +10,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { and, eq, desc } from "drizzle-orm";
 import { db, pool } from "@/db";
-import { processingJobs, projects, sourceAssets, tracks } from "@/db/waveyardSchema";
+import { processingJobs, projects, sourceAcquisitions, sourceAssets, tracks } from "@/db/waveyardSchema";
 import { checksumFile } from "../audio";
 import { getStorage } from "../storage";
 import { localWorkerActive, getLocalJobBroker } from "../worker-local/broker";
 import { addTrackFromAudioFile } from "../library/service";
 import { verifyStoredFile } from "../../../../waveyard-worker/packages/dsp/src/verified-file";
+import type { SourceAcquisitionProvenance } from "../source-ingest";
 import { convert, inspect, outputName, verify, formats, type Settings, type Tags } from "./engine";
 
 const QUEUE = "waveyard-conversion";
@@ -163,7 +164,22 @@ export async function execute(id: string) {
     // than redundantly decoding the same temporary file a second time.
     await verifyStoredFile(storage, { storageKey: m.outputKey, ...m.verification! });
     await save("adding-to-library");
-    const result = await addTrackFromAudioFile({ ownerId: m.ownerId, filePath: output, filename: m.name.split("/").at(-1)!, mimeType: formats[m.settings.format].mime, title: m.tags.title, artist: m.tags.artist, album: m.tags.album, existingObject: { storageKey: m.outputKey, checksumSha256: m.verification.checksumSha256 }, prepareSeparation: false });
+    // Conversion changes bytes, not permission. Carry the original acquisition
+    // notice plus a checksum-bound parent link through the existing ingest path.
+    // Never reinterpret corrupt/unknown provenance as a fresh local upload.
+    const [acquisition] = await db.select().from(sourceAcquisitions).where(eq(sourceAcquisitions.sourceAssetId, source.id));
+    if (acquisition && acquisition.method !== "local-upload" && acquisition.method !== "authorized-url") throw new Error("Unsupported original acquisition provenance; restore it before retrying. Verified output was retained.");
+    let inherited: unknown;
+    try { inherited = JSON.parse(acquisition?.metadata ?? "{}"); }
+    catch { throw new Error("Original acquisition provenance is malformed; restore it before retrying. Verified output was retained."); }
+    if (!inherited || typeof inherited !== "object" || Array.isArray(inherited)) throw new Error("Original acquisition provenance is malformed; restore it before retrying. Verified output was retained.");
+    const provenance: SourceAcquisitionProvenance = {
+      method: acquisition?.method === "authorized-url" ? "authorized-url" : "local-upload",
+      sourceUrl: acquisition?.sourceUrl ?? undefined,
+      title: acquisition?.title ?? undefined, artist: acquisition?.artist ?? undefined, resolver: acquisition?.resolver ?? undefined,
+      metadata: { ...inherited, conversion: { sourceAssetId: source.id, sourceChecksumSha256: source.checksumSha256, processingJobId: job.id } },
+    };
+    const result = await addTrackFromAudioFile({ provenance, ownerId: m.ownerId, filePath: output, filename: m.name.split("/").at(-1)!, mimeType: formats[m.settings.format].mime, title: m.tags.title, artist: m.tags.artist, album: m.tags.album, existingObject: { storageKey: m.outputKey, checksumSha256: m.verification.checksumSha256 }, prepareSeparation: false });
     m.outputTrackId = result.track.id;
     const [track] = await db.select().from(tracks).where(eq(tracks.id, result.track.id));
     m.outputSourceId = track.sourceAssetId;
