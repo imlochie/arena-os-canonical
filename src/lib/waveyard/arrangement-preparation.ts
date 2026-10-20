@@ -11,25 +11,37 @@ export function transformedClipKey(clip: ArrangementPreviewState["tracks"][numbe
 }
 type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number } };
 const MAX_DECODED_BYTES = 128 * 1024 * 1024;
+const MAX_ENCODED_RECOVERY_BYTES = 128 * 1024 * 1024;
+const MAX_RECOVERY_TO_PCM_RATIO = 0.9;
 /** Owns decoded/worker buffers for one open workspace. Hard cancellation kills
- * CPU work as well as fetches. Immutable sources are sent only once per worker.
- * A single finished mix serves pause/seek/replay, not one full render per seek. */
+ * CPU work as well as fetches. Encoded recovery blobs remain only when they are
+ * materially smaller than decoded PCM and fit the bounded per-workspace budget.
+ * Immutable sources are sent only once per worker. A single finished mix serves
+ * pause/seek/replay, not one full render per seek. */
 export class ArrangementPreparation {
   private worker: Worker | null = null;
   private sent = new Set<string>();
   private decoded = new Map<string, AudioBuffer>();
+  private encodedRecovery = new Map<string, Blob>();
   private abort: AbortController | null = null;
   private pending: { id: number; resolve(value: Prepared): void; reject(error: Error): void } | null = null;
   private sequence = 0;
   private rate = 0;
   private workerStats: Prepared["stats"];
-  get diagnostics() { return { decodedBytes: [...this.decoded.values()].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0), finishedBytes: this.finished ? this.finished.buffer.length * this.finished.buffer.numberOfChannels * 4 : 0, ...this.workerStats }; }
+  get diagnostics() {
+    return {
+      decodedBytes: [...this.decoded.values()].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0),
+      encodedRecoveryBytes: [...this.encodedRecovery.values()].reduce((sum, blob) => sum + blob.size, 0),
+      finishedBytes: this.finished ? this.finished.buffer.length * this.finished.buffer.numberOfChannels * 4 : 0,
+      ...this.workerStats,
+    };
+  }
   private finished: { key: string; buffer: AudioBuffer } | null = null;
   cancel() {
     this.abort?.abort(); this.abort = null;
     if (this.pending) { this.pending.reject(new DOMException("Preparation cancelled", "AbortError")); this.pending = null; this.worker?.terminate(); this.worker = null; this.sent.clear(); this.workerStats = undefined; }
   }
-  dispose() { this.cancel(); this.worker?.terminate(); this.worker = null; this.sent.clear(); this.decoded.clear(); this.finished = null; this.workerStats = undefined; }
+  dispose() { this.cancel(); this.worker?.terminate(); this.worker = null; this.sent.clear(); this.decoded.clear(); this.encodedRecovery.clear(); this.finished = null; this.workerStats = undefined; }
   private getWorker() {
     if (this.worker) return this.worker;
     if (typeof Worker === "undefined") throw new Error("This browser cannot run the arrangement DSP worker; no dry substitute was played.");
@@ -75,16 +87,30 @@ export class ArrangementPreparation {
     // Drop removed clips, old transform variants and closed-project data, rather
     // than keeping every edit's AudioBuffer until the tab eventually exits.
     for (const id of this.decoded.keys()) if (!needed.has(id)) this.decoded.delete(id);
+    for (const id of this.encodedRecovery.keys()) if (!needed.has(id)) this.encodedRecovery.delete(id);
     let bytes = [...this.decoded.values()].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0);
+    let recoveryBytes = [...this.encodedRecovery.values()].reduce((sum, blob) => sum + blob.size, 0);
     for (const [id, request] of requests) {
-      signal.throwIfAborted(); if (this.decoded.has(id)) continue;
-      const response = await fetch(request.url, { signal, ...(request.body ? { method: "POST", headers: { "content-type": "application/json" }, body: request.body } : {}) });
-      if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? "A stem could not be prepared for arrangement audition."); }
-      if (Number(response.headers.get("content-length")) > MAX_DECODED_BYTES) { await response.body?.cancel(); throw new Error("Source exceeds the 128 MiB audition decode budget; use a shorter source range or export."); }
-      const buffer = await context.decodeAudioData(await response.arrayBuffer()); signal.throwIfAborted();
+      signal.throwIfAborted(); if (this.decoded.has(id) || this.sent.has(id)) continue;
+      let recovery = this.encodedRecovery.get(id);
+      if (!recovery) {
+        const response = await fetch(request.url, { signal, ...(request.body ? { method: "POST", headers: { "content-type": "application/json" }, body: request.body } : {}) });
+        if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? "A stem could not be prepared for arrangement audition."); }
+        if (Number(response.headers.get("content-length")) > MAX_DECODED_BYTES) { await response.body?.cancel(); throw new Error("Source exceeds the 128 MiB audition decode budget; use a shorter source range or export."); }
+        recovery = await response.blob();
+      }
+      const buffer = await context.decodeAudioData(await recovery.arrayBuffer());
       bytes += buffer.length * buffer.numberOfChannels * 4;
       if (bytes > MAX_DECODED_BYTES) throw new Error("Selected source audio exceeds the 128 MiB decoded audition budget; no clips were dropped.");
       this.decoded.set(id, buffer);
+      const pcmBytes = buffer.length * buffer.numberOfChannels * 4;
+      if (!this.encodedRecovery.has(id) &&
+          recovery.size < pcmBytes * MAX_RECOVERY_TO_PCM_RATIO &&
+          recoveryBytes + recovery.size <= MAX_ENCODED_RECOVERY_BYTES) {
+        this.encodedRecovery.set(id, recovery);
+        recoveryBytes += recovery.size;
+      }
+      signal.throwIfAborted();
     }
     signal.throwIfAborted();
     const worker = this.getWorker(), sources: PreviewSource[] = [], transfer: Transferable[] = [];
@@ -110,6 +136,10 @@ export class ArrangementPreparation {
       throw error;
     }
     const { left, right, stats } = await rendered; signal.throwIfAborted(); this.workerStats = stats;
+    // Keep a bounded encoded recovery copy for sources whose compressed/WAV
+    // representation is materially smaller than float PCM. If it cannot be
+    // retained, keep the decoded AudioBuffer as the safe retry owner instead.
+    for (const sourceKey of needed) if (this.sent.has(sourceKey) && this.encodedRecovery.has(sourceKey)) this.decoded.delete(sourceKey);
     const buffer = context.createBuffer(2, left.length, context.sampleRate);
     buffer.copyToChannel(left as Float32Array<ArrayBuffer>, 0); buffer.copyToChannel(right as Float32Array<ArrayBuffer>, 1);
     this.finished = { key, buffer }; return buffer;

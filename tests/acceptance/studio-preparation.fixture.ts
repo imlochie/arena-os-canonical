@@ -53,6 +53,7 @@ Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPrevi
   try {
     const first = await engine.prepare(state, context);
     const coldFetches = fetches;
+    const initialDiagnostics = engine.diagnostics;
     const edit = structuredClone(state); edit.masterVolume *= 0.25;
     const workPosted = new Promise<void>(resolve => { onWork = resolve; });
     const pending = engine.prepare(edit, context).then(() => "unexpected success", error => error.name);
@@ -62,15 +63,21 @@ Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPrevi
     outage = outageAfterCancel;
     const latest = structuredClone(state); latest.masterVolume *= 0.5;
     const result = await engine.prepare(latest, context);
+    const recoveredDiagnostics = engine.diagnostics;
     let error = 0;
     for (let frame = 0; frame < first.length; frame++) error = Math.max(error, Math.abs(result.getChannelData(0)[frame] - first.getChannelData(0)[frame] * 0.5));
     const afterEditFetches = fetches;
     const cached = await engine.prepare(latest, context);
     engine.dispose();
+    const disposedDiagnostics = engine.diagnostics;
     const disposedWorkers = { created, terminated };
     outage = false;
     await engine.prepare(state, context, "reopened-source-revision");
-    return { coldFetches, afterEditFetches, reopenedFetches: fetches, cancelled, latestError: error, replaySame: cached === result, disposedWorkers };
+    return {
+      coldFetches, afterEditFetches, reopenedFetches: fetches, cancelled, latestError: error,
+      replaySame: cached === result, disposedWorkers,
+      initialDiagnostics, recoveredDiagnostics, disposedDiagnostics,
+    };
   } finally { engine.dispose(); window.fetch = originalFetch; window.Worker = NativeWorker; await context.close(); }
 } });
 
@@ -98,6 +105,34 @@ Object.assign(window, { async verifyPreparationCloneFailure(state: ArrangementPr
   } finally {
     engine.dispose(); window.Worker = NativeWorker; window.fetch = originalFetch;
     window.removeEventListener("unhandledrejection", onUnhandled); await context.close();
+  }
+} });
+
+Object.assign(window, { async verifyRecoveryBudgetFallback(state: ArrangementPreviewState) {
+  const context = new AudioContext({ sampleRate: 44100 }), engine = new ArrangementPreparation();
+  const originalFetch = window.fetch;
+  const assetId = state.tracks[0].clips[0].stemAssetId;
+  let fetches = 0;
+  window.fetch = async (input, init) => {
+    const response = await originalFetch(input, init);
+    fetches++;
+    if (String(input) !== `/api/assets/${assetId}`) return response;
+    const original = new Uint8Array(await response.arrayBuffer());
+    const paddingBytes = 200_000;
+    const padded = new Uint8Array(original.length + 8 + paddingBytes);
+    padded.set(original);
+    padded.set([0x4a, 0x55, 0x4e, 0x4b], original.length); // valid RIFF JUNK chunk
+    new DataView(padded.buffer).setUint32(original.length + 4, paddingBytes, true);
+    new DataView(padded.buffer).setUint32(4, padded.length - 8, true);
+    const headers = new Headers(response.headers);
+    headers.set("content-length", String(padded.length));
+    return new Response(padded, { status: response.status, headers });
+  };
+  try {
+    const rendered = await engine.prepare(state, context);
+    return { frames: rendered.length, fetches, diagnostics: engine.diagnostics };
+  } finally {
+    engine.dispose(); window.fetch = originalFetch; await context.close();
   }
 } });
 
