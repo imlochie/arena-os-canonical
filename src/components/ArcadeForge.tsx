@@ -27,6 +27,7 @@ import {
 } from "@/lib/webllm";
 
 import type { ForgeDraft } from "@/lib/games/forge-ai";
+import { sandboxGameDocument } from "@/lib/games/sandbox";
 
 type Strategy = "auto" | "instant" | "ai";
 
@@ -142,7 +143,10 @@ export default function ArcadeForge() {
       body: JSON.stringify({ ...payload, ...privacyFlags() }),
     }).then(async (r) => {
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "save failed");
+      if (!r.ok) {
+        if (j.draft && typeof j.draft.code === "string") setFailedDraft(j.draft);
+        throw new Error(j.error ?? "save failed");
+      }
       return j.game;
     });
   }
@@ -191,14 +195,14 @@ export default function ArcadeForge() {
       if (body.draft && typeof body.draft.code === "string" && Array.isArray(body.draft.validation?.issues)) setFailedDraft({...body.draft,validation:{...body.draft.validation,issues:body.draft.validation.issues.map(String)},runtime:body.draft.runtime??{modelId:"unreported",ms:0}});
       throw new Error(body.error ?? "Generative forge unavailable. Connect a model and retry.");
     }
-    if(typeof body.code!=="string"||!validateGameCode(body.code).ok)throw new Error("Generation response lacks a valid complete game. Previous playable game unchanged.");
+    if(typeof body.code!=="string"||!validateGameCode(body.code).ok||body.runtimeValidation?.ok!==true)throw new Error("Generation lacks a passing browser smoke receipt. Previous playable game unchanged.");
     const rt = body.runtime ?? {};
     if(body.persistenceError || !body.game) { setFailedDraft({code:body.code,validation:body.validation,runtime:rt}); throw new Error(body.persistenceError ?? "Generated code was not saved. Previous playable game unchanged; inspect the retained attempt and retry saving."); }
     setFailedDraft(null);
     setGame({ prompt: p, gameType: "custom", ...(body.game ?? {}), code: body.code, engine: "ai-codegen", genMs: rt.ms });
     fetchHistory();
     setNotice(
-      `${body.game?.ephemeral ? "Ephemeral — not saved. " : body.game ? "Saved. " : "Not saved — download this game before leaving. "}✨ ${body.title} built by AI (${rt.backend ?? "?"} / ${rt.modelId ?? "unreported model"}${rt.fallback ? " · fallback" : ""}) — validated${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. This is generated code, not a template.`
+      `${body.game?.ephemeral ? "Ephemeral — not saved. " : body.game ? "Saved. " : "Not saved — download this game before leaving. "}✨ ${body.title} built by AI (${rt.backend ?? "?"} / ${rt.modelId ?? "unreported model"}${rt.fallback ? " · fallback" : ""}) — browser smoke passed${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. Prompt fidelity and game quality still need playtesting.`
     );
   }
 
@@ -230,13 +234,14 @@ export default function ArcadeForge() {
       const v = validateGameCode(code);
       const type = gameType === "auto" ? detectGameType(p) : gameType;
       if (!v.ok) {
+        setFailedDraft({ code, validation: v, runtime: { modelId: engineModel ?? "on-device", backend: "webllm", ms: res.ms } });
         throw new Error(`AI draft failed validation: ${v.issues.join("; ")}. Existing game unchanged; retry generation.`);
       }
-      const saved = await persistGame({ prompt: p, clientCode: code, gameType: type ?? "custom", parentId });
+      const saved = await persistGame({ prompt: p, clientCode: code, gameType: type ?? "custom", parentId, attemptId: crypto.randomUUID() });
       ctrl.signal.throwIfAborted(); if(token!==generation.current)return;
       setGame({ ...saved, code, genMs: res.ms, tokps: res.tokps, tokens: res.tokens, engine: "on-device-ai" });
       if (!saved.ephemeral) fetchHistory();
-      setNotice(`🧠 On-device AI forged a ${(code.length / 1024).toFixed(1)}KB game in ${(res.ms / 1000).toFixed(1)}s (${res.tokps} tok/s) — 100% offline, validated.`);
+      setNotice(`🧠 On-device AI forged a ${(code.length / 1024).toFixed(1)}KB game in ${(res.ms / 1000).toFixed(1)}s (${res.tokps} tok/s) — browser smoke passed. Prompt fidelity and game quality still need playtesting.`);
     } finally {
       if(abortRef.current===ctrl){setStreamed("");abortRef.current = null;}
     }
@@ -316,7 +321,7 @@ export default function ArcadeForge() {
   async function attemptAction(id:string, action:"cancel"|"save"|"inspect") {
     const response=await fetch(action==="inspect"?`/api/arcade/attempts?id=${id}`:"/api/arcade/attempts",action==="inspect"?{}:{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id,action})}), body=await response.json();
     if(!response.ok)throw new Error(body.error);
-    if(action==="inspect" && body.code)setFailedDraft({code:body.code,validation:body.attempt.value.validation??{ok:false,issues:["Incomplete attempt; not playable"],bytes:0},runtime:body.attempt.value.runtime??{modelId:"unreported",ms:0}});
+    if(action==="inspect" && body.code)setFailedDraft({code:body.code,validation:body.attempt.value.validation??{ok:false,issues:["Incomplete attempt; not playable"],bytes:0},runtime:body.attempt.value.runtime??{modelId:"unreported",ms:0},runtimeValidation:body.attempt.value.runtimeValidation});
     if(action==="save"){if(!body.game||typeof body.game.code!=="string"||!validateGameCode(body.game.code).ok)throw new Error("Save acknowledgement lacks the exact playable result. Inspect the retained attempt before retrying.");if(body.game){setGame(body.game);setFailedDraft(null);}setNotice("Exact validated attempt saved; no generation was replayed.");void fetchHistory();}
     await fetchAttempts();return body;
   }
@@ -552,9 +557,9 @@ export default function ArcadeForge() {
             </article>)}
           </section>
           {failedDraft && <details className="mt-3 rounded-lg border border-amber-500/30 p-3 text-sm text-amber-200" data-testid="arcade-failed-draft">
-            <summary>{failedDraft.validation.ok ? "Inspect validated draft — save not acknowledged" : "Inspect failed draft — not validated, not saved or launched"}</summary>
+            <summary>Inspect retained draft — not published or launched</summary>
             <p>Previous playable game is unchanged. Draft runtime: {failedDraft.runtime.backend ?? "unknown"} / {failedDraft.runtime.modelId}. Server attempts are retained privately when acknowledged. Inspect recovery below; if storage was unavailable, download before leaving.</p>
-            <ul>{failedDraft.validation.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>
+            <ul>{[...failedDraft.validation.issues, ...(failedDraft.runtimeValidation?.issues ?? [])].map((issue, index) => <li key={index}>{issue}</li>)}</ul>
             <button type="button" onClick={() => {
               const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([failedDraft.code], { type: "text/plain" }));
               link.download = "arena-failed-draft.html.txt"; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 5000);
@@ -593,7 +598,8 @@ export default function ArcadeForge() {
                   key={game.id}
                   title={game.prompt}
                   sandbox="allow-scripts"
-                  srcDoc={game.code}
+                  referrerPolicy="no-referrer"
+                  srcDoc={sandboxGameDocument(game.code)}
                   className="h-[640px] w-full bg-black"
                 />
               </div>

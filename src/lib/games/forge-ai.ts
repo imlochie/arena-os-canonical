@@ -16,6 +16,7 @@
 
 import { generate } from "@/lib/ai";
 import { detectGameType, extractGameCode, validateGameCode, type Mods, parseMods } from "./index";
+import type { GameRuntimeReport } from "./sandbox";
 
 const KNOWLEDGE = `You are a master single-file game developer. You build COMPLETE, PLAYABLE games in ONE HTML file: no imports, no CDNs, no external assets, no network calls — everything inline.
 
@@ -49,12 +50,14 @@ export interface ForgeAIResult {
   runtime: { backend?: string; modelId: string; via?: string; fallback?: boolean; ms: number };
   repairRuntime?: { backend?: string; modelId?: string };
   title: string;
+  runtimeValidation?: GameRuntimeReport;
 }
 
 export interface ForgeDraft {
   code: string;
   validation: ForgeAIResult["validation"];
   runtime: ForgeAIResult["runtime"];
+  runtimeValidation?: GameRuntimeReport;
 }
 /** An unvalidated draft is inspectable data, never a playable/saved game. */
 export class ForgeDraftError extends Error {
@@ -69,7 +72,7 @@ function titleFromPrompt(prompt: string): string {
 
 export async function forgeGameWithAI(
   prompt: string,
-  opts: { keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string }; localOnly?: boolean; modelId?: string; priorCode?: string; failedDraftCode?: string; onDraft?: (draft: ForgeDraft) => Promise<void> } = {},
+  opts: { keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string }; localOnly?: boolean; modelId?: string; priorCode?: string; failedDraftCode?: string; onDraft?: (draft: ForgeDraft) => Promise<void>; validateRuntime?: (code: string) => Promise<GameRuntimeReport> } = {},
   deps: { generate?: typeof generate } = {}
 ): Promise<ForgeAIResult> {
   const gen = deps.generate ?? generate;
@@ -111,15 +114,24 @@ export async function forgeGameWithAI(
   let validation = validateGameCode(code);
   let repairsUsed = 0;
   let repairRuntime: ForgeAIResult["repairRuntime"] | undefined;
+  let runtimeValidation: GameRuntimeReport | undefined;
 
-  const draft = (): ForgeDraft => ({ code, validation, runtime: { backend: executed.backend, modelId: executed.modelId, via: executed.via, fallback: executed.fallback, ms: executed.ms } });
+  const draft = (): ForgeDraft => ({ code, validation, runtimeValidation, runtime: { backend: executed.backend, modelId: executed.modelId, via: executed.via, fallback: executed.fallback, ms: executed.ms } });
+  const checkRuntime = async () => {
+    if (validation.ok && opts.validateRuntime) {
+      runtimeValidation = await opts.validateRuntime(code);
+      await opts.onDraft?.(draft());
+      if (runtimeValidation.status === "unavailable") throw new ForgeDraftError(runtimeValidation.issues.join("; "), draft());
+    }
+  };
   await opts.onDraft?.(draft());
-  // One repair round with the validator's real complaints.
-  if (!validation.ok && code) {
+  await checkRuntime();
+  // One TOTAL repair, whether static checks or actual browser execution failed.
+  if ((!validation.ok || runtimeValidation?.ok === false) && code) {
     repairsUsed = 1;
     let repair: Awaited<ReturnType<typeof generate>>;
     try { repair = await call(
-      `Your previous HTML attempt:\n${code}\n\nYour previous attempt failed validation with these issues:\n- ${validation.issues.join("\n- ")}\n\nReturn the FIXED complete HTML document.`
+      `Your previous HTML attempt:\n${code}\n\nYour previous attempt failed validation with these issues:\n- ${[...validation.issues, ...(runtimeValidation?.issues ?? [])].join("\n- ")}\n\nReturn the FIXED complete HTML document.`
     ); } catch { throw new ForgeDraftError("Repair model unavailable. The previous game has not been changed; the failed draft is available for inspection/download.", draft()); }
     if (repair.fallback || repair.backend === "arena-local-engine") throw new ForgeDraftError("Repair model unavailable. The previous game has not been changed; reconnect a model and retry. The failed draft is retained for inspection.", draft());
     repairRuntime = { backend: repair.backend, modelId: repair.modelId };
@@ -130,13 +142,15 @@ export async function forgeGameWithAI(
         executed = repair;
         code = fixed;
         validation = fixedValidation;
+        runtimeValidation = undefined;
         await opts.onDraft?.(draft());
+        await checkRuntime();
       }
     }
   }
 
-  if (!validation.ok) {
-    throw new ForgeDraftError(`AI draft failed validation: ${validation.issues.join("; ")}`, draft());
+  if (!validation.ok || runtimeValidation?.ok === false) {
+    throw new ForgeDraftError(`AI draft failed validation: ${[...validation.issues, ...(runtimeValidation?.issues ?? [])].join("; ")}`, draft());
   }
 
   return {
@@ -148,5 +162,6 @@ export async function forgeGameWithAI(
     runtime: { backend: executed.backend, modelId: executed.modelId, via: executed.via, fallback: executed.fallback, ms: first.ms + (executed === first ? 0 : executed.ms) },
     repairRuntime,
     title: titleFromPrompt(prompt),
+    runtimeValidation,
   };
 }
