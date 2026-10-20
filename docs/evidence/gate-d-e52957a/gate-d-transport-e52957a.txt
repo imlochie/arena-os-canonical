@@ -1,0 +1,87 @@
+
+> nextjs-postgresql-template@0.1.0 test:acceptance:transport
+> node --test tests/acceptance/stem-transport.test.mjs
+
+TAP version 13
+# {"evidenceKind":"browser-audio-acceptance","browser":"153.0.8010.0","source":"src/lib/waveyard/useStemTransport.ts","sourceSha256":"5c612d9690008bf148e160bad56d388112092a3e50c6ee851941327365d3e3d3","inputs":"deterministic 2-second PCM tones (not separation outputs)","limitations":["not Electron acceptance","not inference evidence","not sample-perfect synchronisation","not full session/export acceptance"]}
+# Subtest: actual stem gain, mute, solo, seek and stop operate on the audio graph
+ok 1 - actual stem gain, mute, solo, seek and stop operate on the audio graph
+  ---
+  duration_ms: 1152.773352
+  type: 'test'
+  ...
+# Subtest: loop crosses multiple boundaries without stale-position restart or stalled clock
+ok 2 - loop crosses multiple boundaries without stale-position restart or stalled clock
+  ---
+  duration_ms: 2380.005753
+  type: 'test'
+  ...
+# Subtest: equivalent asset refresh keeps playback and context alive; a new deck plays cleanly
+ok 3 - equivalent asset refresh keeps playback and context alive; a new deck plays cleanly
+  ---
+  duration_ms: 541.457878
+  type: 'test'
+  ...
+# Subtest: missing required stem fails the whole performance instead of reporting partial success
+ok 4 - missing required stem fails the whole performance instead of reporting partial success
+  ---
+  duration_ms: 214.643768
+  type: 'test'
+  ...
+# Subtest: master inserts restored before first play affect the real master signal
+ok 5 - master inserts restored before first play affect the real master signal
+  ---
+  duration_ms: 274.935661
+  type: 'test'
+  ...
+# Subtest: end of audio clears playing state, without endless drift correction
+ok 6 - end of audio clears playing state, without endless drift correction
+  ---
+  duration_ms: 2531.069646
+  type: 'test'
+  ...
+# Subtest: remounted media elements reconnect to their actual sources
+ok 7 - remounted media elements reconnect to their actual sources
+  ---
+  duration_ms: 414.400297
+  type: 'test'
+  ...
+# Subtest: pause cancels a pending start rather than allowing late audio
+ok 8 - pause cancels a pending start rather than allowing late audio
+  ---
+  duration_ms: 753.932729
+  type: 'test'
+  ...
+# Subtest: a media failure stops all stems and can recover after the file is restored
+ok 9 - a media failure stops all stems and can recover after the file is restored
+  ---
+  duration_ms: 376.224383
+  type: 'test'
+  ...
+# Subtest: master recording tap produces decodable non-silent mixed audio
+ok 10 - master recording tap produces decodable non-silent mixed audio
+  ---
+  duration_ms: 594.310642
+  type: 'test'
+  ...
+# Subtest: master gain intent takes effect in the same turn as play, before React commits
+ok 11 - master gain intent takes effect in the same turn as play, before React commits
+  ---
+  duration_ms: 263.835312
+  type: 'test'
+  ...
+# Subtest: sparse mixer intent silences unlisted channels during solo and ignores removed-bank solos
+ok 12 - sparse mixer intent silences unlisted channels during solo and ignores removed-bank solos
+  ---
+  duration_ms: 549.827029
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10887.040532

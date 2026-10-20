@@ -1,0 +1,27 @@
+{
+  "runId": "2026-10-20T11-15-00.763Z-19902",
+  "startedAt": "2026-10-20T11:15:00.763Z",
+  "command": "npm test",
+  "identity": {
+    "commit": "e52957ae0b417eb0b9425bd3b6f6060b671af5f3",
+    "sourceDigest": "03ea036512f01bab7e3e57d82db8807ddd2b42d330730099521ea2e7bce411f4"
+  },
+  "phase": "passed",
+  "tapPath": "/home/user/arena-os-canonical/.data/acceptance/source-suite/2026-10-20T11-15-00.763Z-19902.tap",
+  "database": "owned embedded PostgreSQL; canonical desktop migrations",
+  "exitCode": 0,
+  "endedAt": "2026-10-20T11:31:34.167Z",
+  "endingIdentity": {
+    "commit": "e52957ae0b417eb0b9425bd3b6f6060b671af5f3",
+    "sourceDigest": "03ea036512f01bab7e3e57d82db8807ddd2b42d330730099521ea2e7bce411f4"
+  },
+  "durationMs": 993404,
+  "totals": {
+    "tests": 1481,
+    "suites": 39,
+    "pass": 1481,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0
+  }
+}

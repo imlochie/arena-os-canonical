@@ -4,6 +4,7 @@ on:
     branches: ["arena/331aa502-arena-os-canonical"]
 permissions:
   contents: read
+  actions: read
 # A later implementation push must not interrupt already-running inference.
 concurrency:
   group: a8-inference-${{ github.sha }}
@@ -35,6 +36,19 @@ jobs:
           python-version: '3.11'
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      # The sandbox cannot reach signed artifact-storage hosts. Fetch the
+      # retained failing matrix on the hosted runner, without rerunning or
+      # replacing that historical failure, then expose its identity via Checks.
+      - name: Read retained first Gate D CI crash failure (diagnostic only)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: waveyard-handoff-evidence
+          run-id: 39413573987
+          github-token: ${{ github.token }}
+          path: .data/acceptance/a8/prior-ci
+      - name: Publish retained crash failure identity (not a new test result)
+        run: node scripts/ci-test-summary.mjs .data/acceptance/a8/prior-ci/crashes.tap
       - name: Exercise managed preparation, genuine music inference, native player and exported arrangement
         run: |
           mkdir -p .data/acceptance/a8
@@ -42,6 +56,9 @@ jobs:
       - name: Publish concise gate and failure receipt through Checks annotations
         if: always()
         run: node scripts/a8-publish-receipt.mjs
+      - name: Publish separate trained crash receipt within its own notice budget
+        if: always()
+        run: node scripts/a8-publish-receipt.mjs --gate-d
       - name: Preserve evidence, including honest failure and attribution (never weights or runtime)
         if: always()
         uses: actions/upload-artifact@v4

@@ -3,6 +3,20 @@
 import { readFile, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 const directory = path.resolve(process.env.ARENA_A8_EVIDENCE_DIR || '.data/acceptance/a8');
+// A separate workflow step has its own annotation budget; the A8 receipt can
+// already consume GitHub's per-step notice limit before this crash receipt.
+if (process.argv.includes('--gate-d')) {
+  const escape = value => value.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+
+try {
+  const recovery = await readFile(path.join(directory, 'gate-d-genuine.json'), 'utf8');
+  const chunks = recovery.match(/[\s\S]{1,2800}/g) ?? [];
+  for (const [index, chunk] of chunks.entries()) console.log(`::notice title=Gate D genuine part ${String(index + 1).padStart(2, '0')}/${chunks.length}::${escape(chunk)}`);
+} catch { console.log('::notice title=Gate D genuine::No separate trained crash receipt; NOT ACCEPTED.'); }
+
+  process.exit(0);
+}
+
 let receipt;
 try { receipt = JSON.parse(await readFile(path.join(directory, 'receipt.json'), 'utf8')); }
 catch { receipt = { error: 'No inference receipt was produced: acceptance did not reach its test body.', gates: 'NOT ACCEPTED' }; }
@@ -20,9 +34,3 @@ const escape = value => value.replaceAll('%', '%25').replaceAll('\r', '%0D').rep
 const pieces = text.match(/[\s\S]{1,2800}/g) ?? [];
 for (const [index, piece] of pieces.entries()) console.log(`::notice title=A8 receipt part ${String(index + 1).padStart(2, '0')}/${pieces.length}::${escape(piece)}`);
 console.log(`::notice title=A8 first failure::${escape(failure.slice(0, 2800))}`);
-
-try {
-  const recovery = await readFile(path.join(directory, 'gate-d-genuine.json'), 'utf8');
-  const chunks = recovery.match(/[\s\S]{1,2800}/g) ?? [];
-  for (const [index, chunk] of chunks.entries()) console.log(`::notice title=Gate D genuine part ${String(index + 1).padStart(2, '0')}/${chunks.length}::${escape(chunk)}`);
-} catch { console.log('::notice title=Gate D genuine::No separate trained crash receipt; NOT ACCEPTED.'); }
