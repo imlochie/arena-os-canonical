@@ -53,3 +53,36 @@ controlled PCM, not model/provider/music-quality evidence. `npm run typecheck`
 passes. The intermediate harness failure is retained: it initially omitted
 `assert.rejects` around the intentionally corrupt provenance execution, which
 correctly rejects as well as persisting failure. The final test asserts both.
+
+## Cycle 3: Studio attribution bundle
+
+Regression before implementation: the actual export download handler returned
+`audio/wav`, not a portable attribution bundle (`campaign-bundle-before.json`).
+Library acquisitions were not represented in Studio downloads.
+
+Fix: `download=1` now packages exact published WAV/MIDI + `RIGHTS.txt` +
+`export-manifest.json` with the existing bounded verified ZIP implementation.
+Manual/automatic versions capture notices inside the existing immutable version
+snapshot, with source checksum identities and every referenced lane. The UI
+explicitly labels the ZIP. Legacy current-acquisition evidence and extra MIDI
+analysis-source evidence are labelled, not backdated. Unknown permission remains
+unknown. Invalid/incomplete frozen notices, owner-mismatched references and
+MIDI source checksum drift refuse the bundle. Preview remains raw audio. No
+new dependency, audio renderer, storage registry or schema migration.
+
+Evidence (overlapping, do not sum):
+- Delivery regression: 4 pass (parent + 3 subtests), actual PostgreSQL/handlers/storage and independent Python ZIP/CRC extraction. Seeded publication receipts, not a renderer claim. Covers unchanged media, frozen notices despite later acquisition changes, legacy unknown rights, malformed/incomplete frozen snapshots, owner fencing, an additional MIDI source, changed source identity, corrupt media and raw preview.
+- Library + bundle integration: 34 pass. Existing actual FFmpeg render/decoded spectral/timing assertions are preserved; download tests now independently extract/verify ZIP bytes before those assertions. Raw-preview render coverage remains raw.
+- Connected real licensed music/browser acceptance: 1 pass, 18,029 ms including process startup. Production UI/HTTP/PG/native conversion/Web Audio/session reopen/Studio render/download/independent ZIP+decode. Existing maximum sample error `5.9664249420166016e-5`, 959684 stereo 44.1 kHz frames; integer-ms grid difference remains -21 frames, not claimed sample-exact grid duration. Unknown local-upload licences are explicitly tested, not inferred from embedded lyrics. This first exploratory run's receipt is in its raw log; final exact-revision run will retain actual media separately.
+- Typecheck/build pass; lint 0 errors, existing 49 warnings.
+
+Intermediate failures are retained, not hidden: the first delivery harness lacked
+the explicit passthrough bridge; a Buffer-vs-Uint8Array deep-equality failure
+compared equal bytes with different prototypes (full raw output compressed); two
+old download tests tried to decode ZIP as WAV and were upgraded to independent
+ZIP extraction without weakening their audio checks; one broad harness edit
+mistakenly applied ZIP extraction to raw preview and was corrected, retaining the
+raw MIME assertion. These are distinct from the reproduced missing-bundle defect.
+See `docs/STORAGE.md` for delivery semantics and limits. Desktop MIDI generation,
+installed Windows/Electron, legal clearance and trained inference are not proved
+by these bundle tests.

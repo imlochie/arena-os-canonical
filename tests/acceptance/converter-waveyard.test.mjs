@@ -296,12 +296,23 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
     await page.getByRole("button", { name: "Save version", exact: true }).click();
     const { version } = await (await versionResponse).json();
     await page.getByRole("button", { name: "Export WAV · Converted music — verified sequential edit", exact: true }).click();
-    const exportLink = page.getByRole("link", { name: "Download WAV · Converted music — verified sequential edit", exact: true });
+    const exportLink = page.getByRole("link", { name: "Download WAV + rights (ZIP) · Converted music — verified sequential edit", exact: true });
     await expect(exportLink).toBeVisible({ timeout: 45000 });
     const exportJobId = (await exportLink.getAttribute("href")).match(/\/exports\/([^/]+)\/media/)[1];
     const wavDownload = page.waitForEvent("download"); await exportLink.click();
     const wav = await wavDownload; assert.equal(await wav.failure(), null);
-    const wavPath = join(media, "converted-session-studio.wav"); await wav.saveAs(wavPath);
+    const studioZipPath = join(media, "converted-session-studio.zip"); await wav.saveAs(studioZipPath);
+    const studioExtracted = join(root, "studio-export");
+    const studioNames = JSON.parse(execFileSync("python3", ["-c", "import json,sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; assert z.namelist()==['export.wav','RIGHTS.txt','export-manifest.json']; print(json.dumps(z.namelist())); z.extractall(sys.argv[2])", studioZipPath, studioExtracted], { encoding: "utf8" }));
+    const studioManifest = JSON.parse(await readFile(join(studioExtracted, "export-manifest.json"), "utf8"));
+    const studioRights = await readFile(join(studioExtracted, "RIGHTS.txt"), "utf8");
+    assert.equal(studioManifest.remixVersionId, version.id); assert.equal(studioManifest.exportJobId, exportJobId);
+    assert.equal(studioManifest.attribution.basis, "saved-version"); assert.equal(studioManifest.attribution.sources.length, 2);
+    assert.ok(studioManifest.attribution.sources.every(source => source.status === "unknown"), "Local uploads/embedded lyrics are not verified acquisition licences.");
+    assert.ok(studioRights.includes("UNKNOWN"));
+    const wavPath = join(media, "converted-session-studio.wav"); await copyFile(join(studioExtracted, "export.wav"), wavPath);
+    assert.equal(sha(await readFile(wavPath)), studioManifest.media.sha256);
+    assert.equal((await readFile(wavPath)).length, studioManifest.media.bytes);
     const exportInfo = await engine.inspect(wavPath);
     assert.equal(exportInfo.sampleRate, 44100); assert.equal(exportInfo.channels, 2);
     const timelineMs = clipDurationsMs.reduce((sum, value) => sum + value, 0);
@@ -353,7 +364,7 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
     assert.deepEqual(routeErrors, []); assert.deepEqual(browserErrors, []);
     assert.ok(assetResponses.some(response => response.status === 200 || response.status === 206));
     await page.reload(); await page.getByTestId("waveyard-mode-studio").click();
-    await expect(page.getByRole("link", { name: "Download WAV · Converted music — verified sequential edit", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Download WAV + rights (ZIP) · Converted music — verified sequential edit", exact: true })).toBeVisible();
     await copyFile(original, join(media, "original-authorised-recording.mp3"));
     await page.screenshot({ path: join(receipts, "studio-completed-export.png"), fullPage: true });
     const receipt = {
@@ -364,6 +375,7 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
       player: { trackId: playerTrack.id, sourceAssetId: playerTrack.source.id, rms: playerRms },
       sessionRms, reopenedSessionRms, reopenedSessionIdentityVerified: true, handoff, versionId: version.id, exportJobId,
       zipSha256: sha(await readFile(zipPath)),
+      exportBundle: { names: studioNames, sha256: sha(await readFile(studioZipPath)), manifest: studioManifest, rights: studioRights },
       export: { sha256: sha(await readFile(wavPath)), fileSizeBytes: (await readFile(wavPath)).length, inspection: exportInfo, frames: actualFrames, exactDurationSeconds: actualFrames / 44100, idealTimelineFrames, expectedPhysicalTimelineFrames, gridEndpointDifferenceFrames: actualFrames - idealTimelineFrames, rounding, peak, rms, centrePanGain: Math.SQRT1_2, decodedPcmSha256: sha(actual), referencePcmSha256: sha(expected), maximumError, tolerance: 4 / 32768 },
       originalAndPublishedOutputsUnchanged: true, routeErrors, optionalPanelStates, browserErrors, assetResponses,
       runtime: { node: process.version, chromium: browser.version() },

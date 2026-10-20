@@ -44,8 +44,8 @@ function VersionExport({ version }: { version: RemixVersionSummary }) {
   }
   const active = job && !["complete", "failed", "cancelled"].includes(job.status);
   return <div className="version-export" aria-label={`Export ${version.name}`}>
-    {job?.status === "complete" ? <a className="button" href={`/api/exports/${job.id}/media?download=1`}>Download WAV · {version.name}</a> : <button className="button secondary" disabled={busy || loading || Boolean(active)} onClick={() => void request()}>{busy ? "Requesting export…" : job?.status === "failed" ? `Retry WAV · ${version.name}` : active ? `Exporting · ${job.stage}` : `Export WAV · ${version.name}`}</button>}
-    {job && <small>WAV: {job.status} · {job.stage} · immutable version</small>}
+    {job?.status === "complete" ? <a className="button" href={`/api/exports/${job.id}/media?download=1`}>Download WAV + rights (ZIP) · {version.name}</a> : <button className="button secondary" disabled={busy || loading || Boolean(active)} onClick={() => void request()}>{busy ? "Requesting export…" : job?.status === "failed" ? `Retry WAV · ${version.name}` : active ? `Exporting · ${job.stage}` : `Export WAV · ${version.name}`}</button>}
+    {job && <small>WAV: {job.status} · {job.stage} · immutable version · downloads include source notices</small>}
     {(error || job?.errorMessage) && <p role="alert">{error || job?.errorMessage}</p>}
     {error && <button className="button secondary" onClick={() => setRefresh((value) => value + 1)}>Refresh export status</button>}
   </div>;

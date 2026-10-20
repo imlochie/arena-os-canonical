@@ -21,6 +21,15 @@ import { createServer } from "node:net";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 
+/** Independent ZIP extraction before the existing native decode/sample checks. */
+async function extractStudioDownload(response: Response, filename: string) {
+  assert.equal(response.headers.get("content-type"), "application/zip");
+  assert.match(response.headers.get("content-disposition")!, /attachment/);
+  const archive = filename + ".zip"; writeFileSync(archive, Buffer.from(await response.arrayBuffer()));
+  const extracted = spawnSync("python3", ["-c", "import hashlib,json,pathlib,sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; assert z.namelist()==['export.wav','RIGHTS.txt','export-manifest.json']; data=z.read('export.wav'); m=json.loads(z.read('export-manifest.json')); assert hashlib.sha256(data).hexdigest()==m['media']['sha256']; assert len(data)==m['media']['bytes']; assert m['attribution']['basis']=='saved-version'; assert z.read('RIGHTS.txt'); pathlib.Path(sys.argv[2]).write_bytes(data)", archive, filename], { encoding: "utf8" });
+  assert.equal(extracted.status, 0, extracted.stderr);
+}
+
 const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..", "..", "..", "..");
 const OWNER = "00000000-0000-4000-8000-000000000001"; // actual local route owner
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -759,10 +768,10 @@ test("session handoff: all lanes, timed swap, workspace, save/reopen, version an
     const mediaRoute = await import("@/app/api/exports/[id]/media/route");
     const media = await mediaRoute.GET(new Request("http://arena.test/media?download=1"), { params: Promise.resolve({ id: job.id }) });
     assert.equal(media.status, 200);
-    assert.equal(media.headers.get("content-type"), "audio/wav");
+    assert.equal(media.headers.get("content-type"), "application/zip");
     assert.match(media.headers.get("content-disposition")!, /attachment/);
     const downloaded = path.join(root!, "downloaded-handoff.wav");
-    writeFileSync(downloaded, Buffer.from(await media.arrayBuffer()));
+    await extractStudioDownload(media, downloaded);
     const { validateAudio, exec } = await import("../audio");
     const { requireTool } = await import("../ffmpeg");
     const metadata = await validateAudio(downloaded);
@@ -990,6 +999,7 @@ test("handoff editing: referenced source beats, donor clips and sections retain 
       const download = await media.GET(new Request("http://arena.test/download"), { params: Promise.resolve({ id: job.id }) });
       assert.equal(download.status, 200);
       const filename = path.join(root!, "aligned-sections.wav");
+      assert.equal(download.headers.get("content-type"), "audio/wav");
       writeFileSync(filename, Buffer.from(await download.arrayBuffer()));
       const { validateAudio, exec } = await import("../audio");
       const { requireTool } = await import("../ffmpeg");
@@ -1172,7 +1182,7 @@ test("completed mixed transitions survive handoff, donors, save/version restore 
     const download = await media.GET(new Request("http://arena.test/media?download=1"), { params: Promise.resolve({ id: job.id }) });
     assert.equal(download.status, 200);
     const filename = path.join(root!, `completed-transitions${held ? "-held" : ""}.wav`), decoded = path.join(root!, "completed-transitions.f32");
-    writeFileSync(filename, Buffer.from(await download.arrayBuffer()));
+    await extractStudioDownload(download, filename);
     const { validateAudio, exec } = await import("../audio");
     const { requireTool } = await import("../ffmpeg");
     assert.ok(Math.abs((await validateAudio(filename)).durationSeconds - 3.25) < 0.02);

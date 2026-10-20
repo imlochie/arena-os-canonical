@@ -1,3 +1,5 @@
+import { captureVersionAttribution } from "@/lib/waveyard/export-bundle";
+import { ArchiveInputError } from "@/lib/waveyard/conversion/archive";
 import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { asc, eq, inArray } from "drizzle-orm";
@@ -60,8 +62,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       remixSessionId: remix.id,
       createdById: user.id,
       name,
-      snapshot: JSON.stringify(versionSnapshot),
+      snapshot: JSON.stringify({ ...versionSnapshot, sourceAttribution: await captureVersionAttribution(remix.projectId, versionSnapshot) }),
     }).returning({ id: remixVersions.id, name: remixVersions.name, createdAt: remixVersions.createdAt });
     return NextResponse.json({ version }, { status: 201 });
-  } catch (error) { if (error instanceof Response) return error; console.error("remix version failed", error); return NextResponse.json({ error: "Could not create a remix version." }, { status: 500 }); }
+  } catch (error) { if (error instanceof ArchiveInputError) return NextResponse.json({ error: error.message }, { status: error.status }); if (error instanceof Response) return error; console.error("remix version failed", error); return NextResponse.json({ error: "Could not create a remix version." }, { status: 500 }); }
 }
