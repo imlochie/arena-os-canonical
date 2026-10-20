@@ -1,5 +1,5 @@
 import { cleanupExportAttempt, exportAttemptKey, publishExport } from "../../../../waveyard-worker/packages/dsp/src/export-publication";
-import { verifyStoredFile } from "../../../../waveyard-worker/packages/dsp/src/verified-file";
+import { verifyFileIdentity, verifyStoredFile } from "../../../../waveyard-worker/packages/dsp/src/verified-file";
 import { projectAudio } from "@/lib/waveyard/project-audio";
 /**
  * Local export job handler — a faithful port of the worker's processExport
@@ -333,6 +333,10 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     for (const [index, stem] of stems.entries()) {
       const inputPath = join(temporaryDirectory, `stem-${index}.wav`);
       await storage.getToFile(stem.storageKey, inputPath);
+      // Verify the exact private copy FFmpeg will consume, not merely a DB
+      // identity or the remote/local object before a potentially faulty copy.
+      try { await verifyFileIdentity(inputPath, stem, "Export source copy"); }
+      catch (error) { throw new ExportFailure("source_identity_unverified", `Export source audio identity could not be verified. ${error instanceof Error ? error.message : "Restore the original stem and retry."} No substitute audio was rendered.`); }
       inputPaths.set(stem.id, inputPath);
     }
 

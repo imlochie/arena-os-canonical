@@ -169,3 +169,57 @@ zero sample error against the native reference. Raw log's pre-existing
 `redis-server --version` instead of hardcoding a version. The final rerun will
 record the actual version. This adds genuine server WAV/queue evidence to cycle
 4; full server MIDI-analysis execution and installed Windows remain unverified.
+
+## Cycle 6: exact copied export sources were never verified
+
+Confirmed P0, not an inferred risk: a real standalone worker, PostgreSQL,
+private storage and native FFmpeg exported a valid WAV after one PCM byte had
+changed without updating its saved checksum. It reported `complete` and one
+asset, instead of refusing the changed source. Original SHA-256:
+`c35c13a02b1c60aa3dcea86f2329d7facaf933ba1ee7bbb8d25ff9fd8331e226`;
+changed SHA-256:
+`8fa9418d5127fe702d0cb42337322c53915f251632c52d3b2a22b99e28cbb8a2`.
+The local production executor also failed the two newly added negative cases.
+Raw failures are retained in `raw/source-identity-{standalone,local}-before.txt`.
+
+Both renderers copied referenced stems into private working files without
+checking those bytes. Output verification cannot establish input identity.
+They now call the existing shared SHA-256/size/file-stability verifier on EACH
+actual private copy, after copying and before FFmpeg consumes it. Verifying the
+storage object before copying would miss faulty provider/copy results. Failures
+persist `source_identity_unverified`, publish no asset, and explain restoration
+and retry without treating every IO failure as corruption. Existing output
+messages remain unchanged; the helper accepts a source-copy diagnostic label.
+No metadata identities are rewritten and no substitute audio is rendered.
+
+Permanent regressions cover changed stored bytes, changed private-copy bytes
+(same-length, decodable WAV), an acknowledged copy with missing bytes, and
+repair/re-execution of the SAME frozen request. The standalone fixture uses
+actual PostgreSQL/storage/native FFmpeg, checks output SHA, independently fully
+decodes the repaired output, and verifies previous committed outputs survive
+later source faults. Library render fixtures now materialize real checksum/size
+metadata BEFORE their immutability snapshot; production checks were not bypassed
+for catalogue-only placeholder hashes. All pre-existing audio assertions remain.
+The standalone test is also part of the existing hosted native acceptance step.
+
+Focused command:
+`node --import ./scripts/register-src-loader.mjs --test tests/acceptance/export-source-identity.test.mjs src/lib/waveyard/export-bundle.test.ts src/lib/waveyard/library/service.test.ts`
+→ **42 pass, 0 fail, 14,897 ms** (overlapping parent/child counts; not 42 distinct
+workflows). Raw: `raw/source-identity-focused-pass.txt`. Controlled PCM, NOT
+trained inference or live cloud-provider evidence. The repaired standalone
+outputs are 176,478 bytes, SHA-256
+`e8026540aa00fa9c9b7953d717216db661fbebbd21b168d9b45ed4100680baef`.
+
+New-harness failures are retained rather than erased: its first fidelity check
+incorrectly assumed unity-centre pan, whereas Studio's existing legacy/live
+acceptance explicitly uses sqrt(0.5) at centre. No audible law changed. The
+subsequent one-PCM16-LSB numerical assumption also failed (maximum error
+0.0000484459); the new check uses a documented two-LSB numerical bound against
+original PCM times that existing law, below existing Studio parity tolerances.
+These were new test-oracle corrections, not relaxed pre-existing assertions.
+See `raw/new-harness-*-failed.txt`. This does not claim bit-identical source/output
+PCM: cryptographic input identity and rendered output identity are separate.
+
+The previous final full-source run on b025e86 was deliberately interrupted after
+this P0 reproduction. Like the earlier interrupted run it is NOT a pass. A fresh
+exact committed full-source run is required below.

@@ -659,14 +659,18 @@ test("session handoff: all lanes, timed swap, workspace, save/reopen, version an
   // Controlled signal fixtures exercise persistence and rendering, NOT Demucs.
   const { getStorage } = await import("../storage");
   const storage = getStorage();
-  const beforeStems = await db.db.select().from(schema.stemAssets);
-  const beforeSources = await db.db.select().from(schema.sourceAssets);
   const frequencies: Record<string, number> = { vocals: 330, drums: 220, bass: 110, other: 550 };
-  for (const stem of beforeStems) {
+  // Materialise controlled stems with REAL identities before taking the
+  // immutability snapshot. Catalogue-only fixture hashes are not audio proof.
+  for (const stem of await db.db.select().from(schema.stemAssets)) {
     const filename = storage.getLocalPath(stem.storageKey)!;
     mkdirSync(path.dirname(filename), { recursive: true });
     writeWav(filename, stem.durationSeconds, stem.storageKey.includes("b-drums") ? 880 : frequencies[stem.stemType] ?? 660);
+    const bytes = readFileSync(filename);
+    await db.db.update(schema.stemAssets).set({ checksumSha256: createHash("sha256").update(bytes).digest("hex"), fileSizeBytes: bytes.length }).where(eq(schema.stemAssets.id, stem.id));
   }
+  const beforeStems = await db.db.select().from(schema.stemAssets);
+  const beforeSources = await db.db.select().from(schema.sourceAssets);
   const created = await sessions.createSession(OWNER, "Handoff acceptance");
   await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
   const listening = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });

@@ -1,5 +1,5 @@
-/** Shared server-side publication verification; no registry or renderer code.
- * Verify exact bytes before certifying an existing output or serving media.
+/** Shared server-side file verification; no registry or renderer code.
+ * Verify exact bytes before rendering inputs, certifying outputs or serving media.
  */
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -16,6 +16,7 @@ export class PublishedFileError extends Error {
 export async function verifyFileIdentity(
   filename: string,
   expected: { checksumSha256: string; fileSizeBytes: number },
+  label = "Published output",
 ) {
   try {
     if (
@@ -24,12 +25,12 @@ export async function verifyFileIdentity(
       expected.fileSizeBytes < 1
     )
       throw new PublishedFileError(
-        "Published output has invalid checksum/size metadata.",
+        `${label} has invalid checksum/size metadata.`,
       );
     const before = await stat(filename);
     if (!before.isFile() || before.size !== expected.fileSizeBytes)
       throw new PublishedFileError(
-        "Published output checksum/size mismatch. Restore private storage; no corrupt bytes were certified.",
+        `${label} checksum/size mismatch. Restore private storage; no corrupt bytes were certified.`,
       );
     let size = 0;
     const hash = createHash("sha256");
@@ -37,7 +38,7 @@ export async function verifyFileIdentity(
       size += chunk.length;
       if (size > expected.fileSizeBytes)
         throw new PublishedFileError(
-          "Published output changed during verification.",
+          `${label} changed during verification.`,
         );
       hash.update(chunk);
     }
@@ -50,17 +51,17 @@ export async function verifyFileIdentity(
       before.ctimeMs !== after.ctimeMs
     )
       throw new PublishedFileError(
-        "Published output checksum changed; no corrupt bytes were certified.",
+        `${label} checksum changed; no corrupt bytes were certified.`,
       );
   } catch (error) {
     if (error instanceof PublishedFileError) throw error;
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
       throw new PublishedFileError(
-        "Published output is missing. Restore private storage; an existing metadata row is not a completed file.",
+        `${label} is missing. Restore private storage; an existing metadata row is not a completed file.`,
         410,
       );
     throw new PublishedFileError(
-      "Published output storage unavailable; verification was not acknowledged.",
+      `${label} storage unavailable; verification was not acknowledged.`,
       503,
     );
   }

@@ -1,5 +1,5 @@
 /** Delivery integration: actual PG/HTTP handlers/storage/ZIP, seeded publication
- * receipts. Not renderer/model evidence; connected music acceptance renders. */
+ * receipts plus native source-copy fault regressions. Not model evidence. */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID, createHash } from "node:crypto";
@@ -137,6 +137,26 @@ test("Studio downloads automatically bundle exact media, frozen source notices a
     assert.equal(keys.length, 1); assert.ok(keys[0].includes(`/export/${attempt.id}/`)); assert.equal(await storage.exists(keys[0]), true);
     const { cleanupExportAttempt } = await import("../../../waveyard-worker/packages/dsp/src/export-publication");
     assert.equal(await cleanupExportAttempt(database.db, storage, attempt.id, keys[0]), "deleted"); assert.equal(await storage.exists(keys[0]), false);
+  });
+  await t.test("native render refuses changed source bytes and corrupt copies before minting an export", async t => {
+    const handle = (await import("./worker-local/export")).handleExportJob;
+    const original = Buffer.from(media), corrupted = Buffer.from(media); corrupted[100] ^= 1;
+    const filename = storage.getLocalPath(sourceRow.storageKey)!;
+    const copy = storage.getToFile.bind(storage);
+    for (const fault of ["stored-bytes", "copied-bytes", "copy-unavailable"]) await t.test(fault, async () => {
+      const [attempt] = await database.db.insert(schema.exportJobs).values({ projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, requestedById: context.LOCAL_OWNER_ID, idempotencyKey: randomUUID() }).returning();
+      if (fault === "stored-bytes") await writeFile(filename, corrupted);
+      else storage.getToFile = async (...args) => { await copy(...args); if (args[0] === sourceRow.storageKey) { if (fault === "copy-unavailable") await rm(args[1]); else await writeFile(args[1], corrupted); } };
+      try {
+        await assert.rejects(handle({ exportJobId: attempt.id, projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, format: "wav" }), /identity|checksum/i);
+        const [failed] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, attempt.id));
+        assert.equal(failed.status, "failed"); assert.equal(failed.errorCode, "source_identity_unverified");
+        assert.equal((await database.db.select().from(schema.exportAssets).where(eq(schema.exportAssets.exportJobId, attempt.id))).length, 0);
+      } finally { storage.getToFile = copy; await writeFile(filename, original); }
+      // Repair permits the SAME request/version to render; no substitute source.
+      await handle({ exportJobId: attempt.id, projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, format: "wav" });
+      assert.equal((await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, attempt.id)))[0].status, "complete");
+    });
   });
   // Streaming/preview is still the original WAV, not a ZIP or a re-render.
   const raw = await route.GET(new Request(`http://arena/api/exports/${job.id}/media`), { params: Promise.resolve({ id: job.id }) });
