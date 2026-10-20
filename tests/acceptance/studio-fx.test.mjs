@@ -520,6 +520,7 @@ test("real preparation cancellation recovers from encoded sources and releases w
   const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
   const result = await page.evaluate(state => window.verifyPreparationLifecycle(state), state);
   const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
+  const recoverySourceBytes = 15 * 44100 * 2 * 4;
   console.log(JSON.stringify({ kind: "real-worker-cancel-cache-dispose", implementation: variant, ...result }));
   assert.equal(result.cancelled, "AbortError"); assert.equal(result.latestError, 0); assert.equal(result.replaySame, true);
   assert.equal(result.coldFetches, 1); assert.equal(result.afterEditFetches, 1); assert.equal(result.reopenedFetches, 2);
@@ -529,20 +530,19 @@ test("real preparation cancellation recovers from encoded sources and releases w
     assert.equal(result.recoveredDiagnostics.decodedBytes, 0);
     assert.equal(result.recoveredDiagnostics.encodedRecoveryBytes, result.initialDiagnostics.encodedRecoveryBytes);
   } else {
-    const decodedBytes = 15 * 44100 * 2 * 4;
-    assert.equal(result.initialDiagnostics.decodedBytes, decodedBytes);
-    assert.equal(result.recoveredDiagnostics.decodedBytes, decodedBytes);
+    assert.equal(result.initialDiagnostics.decodedBytes, recoverySourceBytes);
+    assert.equal(result.recoveredDiagnostics.decodedBytes, recoverySourceBytes);
   }
   if (variant === "prototype3") {
-    assert.equal(result.initialDiagnostics.sourceBytes, 44100 * 2 * 4);
-    assert.equal(result.recoveredDiagnostics.sourceBytes, 44100 * 2 * 4);
+    assert.equal(result.initialDiagnostics.sourceBytes, recoverySourceBytes);
+    assert.equal(result.recoveredDiagnostics.sourceBytes, recoverySourceBytes);
     assert.equal(result.initialDiagnostics.workerSourcesEvicted, false);
   }
   if (variant === "prototype4") {
     assert.equal(result.initialDiagnostics.sourceBytes, 0);
     assert.equal(result.recoveredDiagnostics.sourceBytes, 0);
     assert.equal(result.initialDiagnostics.workerSourcesEvicted, true);
-    assert.equal(result.initialDiagnostics.evictedSourceBytes, 44100 * 2 * 4);
+    assert.equal(result.initialDiagnostics.evictedSourceBytes, recoverySourceBytes);
   }
   if (["encoded-recovery", "prototype2", "prototype3", "prototype4"].includes(variant)) {
     assert.equal(result.disposedDiagnostics.encodedRecoveryBytes, 0);
