@@ -94,6 +94,9 @@ export class ArrangementPreparation {
     const id = ++this.sequence;
     const worker = this.getWorker();
     const rendered = new Promise<Prepared>((resolve, reject) => { this.pending = { id, resolve, reject }; });
+    // Upload or worker failure can reject before the render await; attach an
+    // observer immediately while preserving rejection for the original await.
+    void rendered.catch(() => undefined);
     try {
       // Prune stale worker-owned audio before adding sources for this snapshot.
       worker.postMessage({ kind: "retain", retain: [...needed] });

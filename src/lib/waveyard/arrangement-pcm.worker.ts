@@ -7,16 +7,16 @@ const scope = globalThis as unknown as { onmessage: (event: MessageEvent<Preview
 const sources = new Map<string, PreviewSource>();
 const mixCache: ArrangementMixCache = { revision: "" };
 scope.onmessage = ({ data }) => {
+  if (data.kind === "retain") {
+    const retain = new Set(data.retain);
+    for (const key of sources.keys()) if (!retain.has(key)) sources.delete(key);
+    return;
+  }
+  if (data.kind === "source") {
+    sources.set(data.source.key, data.source);
+    return;
+  }
   try {
-    if (data.kind === "retain") {
-      const retain = new Set(data.retain);
-      for (const key of sources.keys()) if (!retain.has(key)) sources.delete(key);
-      return;
-    }
-    if (data.kind === "source") {
-      sources.set(data.source.key, data.source);
-      return;
-    }
     const retain = new Set(data.retain); for (const key of sources.keys()) if (!retain.has(key)) sources.delete(key);
     const buffers = new Map([...sources].map(([key, source]) => [key, { sampleRate: source.sampleRate, numberOfChannels: source.channels.length, length: source.channels[0].length, getChannelData: (channel: number) => source.channels[channel] }]));
     mixCache.revision = data.revision;
