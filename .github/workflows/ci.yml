@@ -55,6 +55,8 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/app_db
+      # Explicit CI-only browser setting; production keeps Chromium's OS sandbox.
+      ARENA_ARCADE_CI_NO_SANDBOX: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -66,6 +68,9 @@ jobs:
 
       - name: Clean dependency install
         run: npm ci
+
+      - name: Browser for real Arcade publication security tests
+        run: npx playwright install --with-deps chromium
 
       - name: Initialize test database schema
         run: npx drizzle-kit push --force

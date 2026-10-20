@@ -2,6 +2,11 @@
 
 Run `npm ci` and **`npm test`** from the repository root. For an existing `--ignore-scripts` install, the runner hydrates only already-installed PostgreSQL symlinks and native FFmpeg/FFprobe permissions; it never downloads tools or models.
 
+Arcade custom-code publication security tests also exercise real Chromium.
+Install it once with `npx playwright install chromium`, or set
+`ARENA_ARCADE_CHROMIUM_PATH` to an installed executable. CI installs the browser
+explicitly; missing browser verification is not silently mocked or skipped.
+
 `npm test` now invokes `scripts/test-source.mjs` through the existing TS loader. It:
 
 1. Fingerprints starting commit and working-source bytes using the existing staged-identity helper.

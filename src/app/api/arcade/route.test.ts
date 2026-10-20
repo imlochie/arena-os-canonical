@@ -93,7 +93,7 @@ function __hud(score){ document.title = "score " + score; }
 var score = 0;
 var c = document.getElementById("game");
 var ctx = c.getContext("2d");
-function loop(){ ctx.fillRect(0,0,10,10); score++; __hud(score); requestAnimationFrame(loop); }
+function loop(){ ctx.clearRect(0,0,480,480); ctx.fillStyle="cyan"; ctx.fillRect((score*3)%400,30,30,30); score++; __hud(score); requestAnimationFrame(loop); }
 requestAnimationFrame(loop);
 window.addEventListener("keydown", function(e){ score += e.keyCode; });
 window.addEventListener("touchstart", function(){ score += 1; });
@@ -151,7 +151,7 @@ test("arcade security: validation gate, owner scoping, ownership-checked delete"
 
   // 3. Valid client code persists with the caller as owner.
   const clientGame = await routes.POST(arcadeRequest("/api/arcade", { prompt: "client game", clientCode: validGameHtml() }));
-  assert.equal(clientGame.status, 201);
+  assert.equal(clientGame.status, 201, String((await clientGame.clone().json()).error ?? "client publication failed"));
   const clientBody = (await clientGame.json()) as { game: { id: string; ownerId: string } };
   assert.equal(clientBody.game.ownerId, "00000000-0000-4000-8000-000000000001");
 

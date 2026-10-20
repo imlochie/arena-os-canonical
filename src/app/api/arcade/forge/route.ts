@@ -8,6 +8,7 @@ import { requireUser } from "@/lib/waveyard/local-context";
 import { isEphemeralBody } from "@/lib/privacy";
 import { validateGameCode } from "@/lib/games";
 import { requireApiAccess } from "@/lib/security/api-access";
+import { validateGameRuntime } from "@/lib/games/runtime-validation";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 240;
@@ -46,6 +47,7 @@ export async function POST(req: Request) {
       if(!begun.created) return Response.json({attempt:cursor,error:"This stable attempt already exists. Inspect/download it, retry saving validated code, or start a new attempt; generation was not replayed."},{status:409});
     }
     const result = await forgeGameWithAI(prompt, {
+      validateRuntime: validateGameRuntime,
       priorCode, failedDraftCode,
       onDraft: async draft => { lastDraft=draft; if(cursor)cursor=await checkpointAttempt(cursor,{state:draft.validation.ok?"validated":"draft"},draft); },
       keys: localOnly ? undefined : body?.keys,
@@ -59,7 +61,7 @@ export async function POST(req: Request) {
     let persistenceError: string | undefined;
     if (result.validation?.ok && !ephemeral) {
       try {
-        game = cursor ? await finishAttempt(cursor, result.code, result.gameType, "ai-codegen") : await insertArcadeGame(db, {
+        game = cursor ? await finishAttempt(cursor, result.code, result.gameType, "ai-codegen", result.runtimeValidation) : await insertArcadeGame(db, {
           prompt: prompt.slice(0, 2000),
           gameType: result.gameType,
           engine: "ai-codegen",
@@ -81,6 +83,7 @@ export async function POST(req: Request) {
       validation: result.validation,
       repairsUsed: result.repairsUsed,
       runtime: result.runtime,
+      runtimeValidation: result.runtimeValidation,
     });
   } catch (e) {
     if(cursor && !(e instanceof AttemptError)) { try { cursor=await checkpointAttempt(cursor,{state:"failed",error:e instanceof ForgeDraftError?e.message:"Generation unavailable/interrupted. Inspect retained partial work; original game unchanged."}); } catch { /* No false storage acknowledgement; retained last response is returned below. */ } }

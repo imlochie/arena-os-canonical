@@ -10,8 +10,10 @@ import { readArtifactObject, writeArtifactObject } from "@/lib/artifact-objects"
 import { isUuid } from "@/lib/api/ids";
 import { validateGameCode } from "./index";
 import type { ForgeDraft } from "./forge-ai";
+import { consumeFreshRuntimeCheck, validateGameRuntime } from "./runtime-validation";
+import type { GameRuntimeReport } from "./sandbox";
 type State = "running" | "draft" | "validated" | "failed" | "cancelled" | "completed";
-export type Attempt = { version: 1; state: State; prompt: string; fingerprint: string; parentId?: string; retryFrom?: string; retryFromRevisionId?: string; priorCodeSha256?: string; draftObject?: ArtifactContentObject; runtime?: ForgeDraft["runtime"]; validation?: ForgeDraft["validation"]; error?: string; gameId?: string; updatedAt: string; leaseExpiresAt: string };
+export type Attempt = { version: 1; state: State; prompt: string; fingerprint: string; parentId?: string; retryFrom?: string; retryFromRevisionId?: string; priorCodeSha256?: string; draftObject?: ArtifactContentObject; runtime?: ForgeDraft["runtime"]; validation?: ForgeDraft["validation"]; runtimeValidation?: ForgeDraft["runtimeValidation"]; error?: string; gameId?: string; updatedAt: string; leaseExpiresAt: string };
 export type AttemptCursor = { id: string; owner: string; revision: number; revisionId: string | null; value: Attempt };
 export class AttemptError extends Error { readonly status: number; constructor(message: string, status = 409) { super(message); this.status=status; } }
 function decode(row: typeof artifacts.$inferSelect): AttemptCursor {
@@ -43,7 +45,7 @@ export async function beginAttempt(owner: string, id: string, prompt: string, pa
 export async function checkpointAttempt(cursor: AttemptCursor, patch: Partial<Pick<Attempt,"state"|"error"|"gameId">>, draft?: ForgeDraft) {
   if (["completed","cancelled"].includes(cursor.value.state)) throw new AttemptError("Attempt is terminal; start a new attempt to retry.");
   const object=draft ? await writeArtifactObject(cursor.owner,draft.code,"text/plain; charset=utf-8") : undefined;
-  const now=new Date(); const value:Attempt={...cursor.value,...patch,...(draft ? {draftObject:object,runtime:draft.runtime,validation:validateGameCode(draft.code)}:{}),updatedAt:now.toISOString(),leaseExpiresAt:new Date(now.getTime()+240000).toISOString()};
+  const now=new Date(); const value:Attempt={...cursor.value,...patch,...(draft ? {draftObject:object,runtime:draft.runtime,validation:validateGameCode(draft.code),runtimeValidation:draft.runtimeValidation}:{}),updatedAt:now.toISOString(),leaseExpiresAt:new Date(now.getTime()+240000).toISOString()};
   const changed=await updateArtifact(db,cursor.id,cursor.owner,{body:JSON.stringify(value)},cursor.revision);
   if(changed.outcome!=="ok"||!changed.row) throw new AttemptError("Attempt changed/cancelled; no generated game was committed. Inspect its history."); return decode(changed.row);
 }
@@ -58,14 +60,23 @@ export async function completedAttemptGame(cursor:AttemptCursor, database:Pick<t
   const [game]=await database.select().from(arcadeGames).where(and(eq(arcadeGames.id,cursor.value.gameId),eq(arcadeGames.ownerId,cursor.owner))).limit(1);
   if(!game||createHash("sha256").update(game.code).digest("hex")!==cursor.value.draftObject.sha256)throw new AttemptError("Saved game differs from the verified attempt; no replacement was acknowledged.");return game;
 }
-export async function finishAttempt(cursor:AttemptCursor, code:string, gameType:string, engine="retained-code") {
+export async function finishAttempt(cursor:AttemptCursor, code:string, gameType:string, engine="retained-code", freshCheck?: GameRuntimeReport) {
   if(!validateGameCode(code).ok || cursor.value.state!=="validated" || !cursor.value.draftObject || createHash("sha256").update(code).digest("hex")!==cursor.value.draftObject.sha256) throw new AttemptError("Only the exact verified validated attempt can become a saved game.");
+  // Fresh server-owned execution also protects legacy attempts and retry-save.
+  // Never trust client/Artifact-provided 'passed' fields as publication proof.
+  const runtimeValidation = consumeFreshRuntimeCheck(code, freshCheck) ? freshCheck! : await validateGameRuntime(code);
+  if (!runtimeValidation.ok) {
+    await checkpointAttempt(cursor, { error: runtimeValidation.issues.join("; ") }, {
+      code, validation: validateGameCode(code), runtime: cursor.value.runtime ?? { modelId: "unreported", ms: 0 }, runtimeValidation,
+    });
+    throw new AttemptError(runtimeValidation.issues.join("; "), runtimeValidation.status === "unavailable" ? 503 : 422);
+  }
   return db.transaction(async tx=>{
     const [row]=await tx.select().from(artifacts).where(and(eq(artifacts.id,cursor.id),eq(artifacts.ownerId,cursor.owner))).for("update");
     if(row && !row.deletedAt && decode(row).value.state==="completed") { const game=await completedAttemptGame(decode(row),tx); if(game.code!==code)throw new AttemptError("Attempt completion identity changed."); return game; }
     if(!row || row.deletedAt || row.revision!==cursor.revision || decode(row).value.state!=="validated") throw new AttemptError("Attempt changed/cancelled; late completion was not committed.");
     const game=await insertArcadeGame(tx,{ownerId:cursor.owner,prompt:cursor.value.prompt,parentId:cursor.value.parentId,code,gameType,engine});
-    const changed=await updateArtifact(tx,cursor.id,cursor.owner,{body:JSON.stringify({...cursor.value,state:"completed",gameId:game.id,updatedAt:new Date().toISOString()})},cursor.revision);
+    const changed=await updateArtifact(tx,cursor.id,cursor.owner,{body:JSON.stringify({...cursor.value,runtimeValidation,state:"completed",gameId:game.id,updatedAt:new Date().toISOString()})},cursor.revision);
     if(changed.outcome!=="ok") throw new AttemptError("Completion conflicted; game insertion was rolled back.");
     return game;
   });
