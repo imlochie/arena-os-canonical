@@ -381,11 +381,13 @@ export function useStemTransport(assetIds: string[], duration: number) {
   const applyMix = useCallback(
     (values: Record<string, MixerValues>) => {
       mixValues.current = values;
-      const anySolo = Object.values(values).some((track) => track.solo);
+      const anySolo = ids.some(id => values[id]?.solo);
       for (const id of ids) {
         const graph = graphs.current[id];
-        const control = values[id];
-        if (!graph || !control) continue;
+        // applyMix replaces intent, so absent live channels use defaults and
+        // still obey a solo. Removed-bank controls cannot solo a new bank.
+        const control = values[id] ?? { volume: 1, pan: 0, muted: false, solo: false };
+        if (!graph) continue;
         // Phase inversion is a real polarity flip (negative gain), not a flag.
         const magnitude = isEffectivelyMuted(control, anySolo) ? 0 : control.volume;
         graph.gain.gain.value = control.phaseInvert ? -magnitude : magnitude;

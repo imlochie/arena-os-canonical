@@ -2306,3 +2306,29 @@ signal/bass zero), and records mean/AC RMS so low/DC-dominated outputs cannot be
 misrepresented as meaningful instrument extraction by total RMS alone. No
 semantic quality gate is declared passed. Types/build and lint0errors49warnings
 pass; final connected run and full regressions follow. D remains open.
+
+### A8 actual post-fader signal check reproduced broken solo; shared fix
+
+Run39392843074 / job118528284042 on `f3653ac2adc2114f2a7e7dd4b07294b456fcdbee`
+**FAILED** the newly strengthened genuine signal assertion: after soloing drums,
+Bass still measured21% rather than zero. A/B/C for four-source had executed;
+the new E/F assertion path did not finish and six-source had not run. Earlier
+passes only exercised control actions, not this post-fader solo measurement;
+they do not erase this failure or establish complete E. Root cause: a newly
+loaded bank had sparse mixer intent, and shared applyMix skipped unlisted
+channels, leaving their gain audible during another channel's solo. Removed-bank
+solo entries could also affect a later bank.
+
+Minimal shared repair in useStemTransport: determine solo only from active ids,
+and give every active channel default controls when omitted, so sparse solo
+actually silences unlisted channels. Player bank selection now initializes a
+bank-scoped dense control map, preserves matching existing asset controls only,
+and drops previous bank entries. Both the newly completed-bank button and
+existing bank selector use this same loader; network failures preserve current
+playback with an actionable status. Added actual-Web-Audio controlled regression
+for sparse solo and stale removed-bank intent; the genuine music meter assertion
+is retained unchanged (not weakened to a button-state check). Types/build pass,
+lint0errors49warnings. Browser regressions/actual music run follow. Desktop compile
+also passed; current Linux Electron doctor reports44.7.0 package but no binary
+or display, so no desktop UI acceptance is claimed. D remains open engineering
+work, not a download or Windows prerequisite.

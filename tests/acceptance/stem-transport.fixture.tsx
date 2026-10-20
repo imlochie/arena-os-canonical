@@ -38,6 +38,8 @@ function Fixture() {
   }
   return <main>
     <button onClick={() => { transport.applyMix(mix); void transport.play(); }}>Play</button>
+    <button onClick={() => transport.applyMix({ vocals: { volume: 1, pan: 0, muted: false, solo: true } })}>Sparse vocals solo</button>
+    <button onClick={() => transport.applyMix({ obsolete: { volume: 1, pan: 0, muted: false, solo: true } })}>Removed bank solo</button>
     <button onClick={transport.pause}>Pause</button>
     <button onClick={transport.stop}>Stop</button>
     <button onClick={() => change("vocals", { muted: !mix.vocals.muted })}>Mute vocals</button>

@@ -289,3 +289,14 @@ This establishes A/B/C and browser-scoped E/F, not MDX `stems_4`, Electron,
 Windows, semantic instrument quality, hash-locked transitive dependencies or D's
 process-crash lease/guardian matrix. In-process cancel/retry tests do not stand
 in for process-crash recovery. Low six-source guitar/residual levels are explicit.
+
+### Stronger A8 E check found a real isolation defect
+
+The prior browser-scoped E result did not measure post-fader solo behavior.
+Run39392843074 exposed Bass remaining audible after drums solo on a newly loaded
+learned bank. Treat that E behavior as **Broken at f3653ac**, not accepted from
+ARIA button state. A shared sparse/stale mixer-control fix and bank-scoped loader
+are implemented; the unchanged genuine signal assertion and new controlled
+Web-Audio regression must pass before this finding is closed. A/B/C/F execution
+from earlier trained-model runs is preserved; D, semantic quality, MDX and
+Electron/full replacement are still open, never averaged into a pass.

@@ -241,3 +241,13 @@ test("master gain intent takes effect in the same turn as play, before React com
   await page.evaluate(() => window.transport.setMasterVolume(1));
   await expect.poll(() => page.evaluate(() => window.transport.readMeters().master.rms)).toBeGreaterThan(0.05);
 });
+
+test("sparse mixer intent silences unlisted channels during solo and ignores removed-bank solos", { timeout: 20000 }, async t => {
+  const page = await fixture(t); await page.getByRole("button", { name: "Loop", exact: true }).click(); await start(page);
+  await page.getByRole("button", { name: "Sparse vocals solo", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.transport.readMeters().channels.drums.rms)).toBeLessThan(.001);
+  await expect.poll(() => page.evaluate(() => window.transport.readMeters().channels.vocals.rms)).toBeGreaterThan(.05);
+  await page.getByRole("button", { name: "Removed bank solo", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.transport.readMeters().channels.drums.rms)).toBeGreaterThan(.05);
+  await expect.poll(() => page.evaluate(() => window.transport.readMeters().channels.vocals.rms)).toBeGreaterThan(.05);
+});

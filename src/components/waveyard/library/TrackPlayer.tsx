@@ -129,9 +129,15 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   const duration = track?.durationSeconds ?? 0;
   const transport = useStemTransport(assetIds, duration);
   async function auditionBank(id: string) {
-    const response = await fetch(`/api/library/tracks/${trackId}?bankId=${encodeURIComponent(id)}`, { cache: "no-store" });
-    const body = await response.json(); if (!response.ok) { setStatus(body.error ?? "Bank unavailable."); return; }
-    transport.pause(); setTrack(body.track); setStatus("Loaded the selected validated stem bank.");
+    try {
+      const response = await fetch(`/api/library/tracks/${trackId}?bankId=${encodeURIComponent(id)}`, { cache: "no-store" });
+      const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Bank unavailable.");
+      const detail = body.track as TrackDetail;
+      const initial: Record<string, MixerValues> = {};
+      for (const stem of detail.stems) initial[stem.id] = mixRef.current[stem.id] ?? { volume: 1, pan: 0, muted: false, solo: false };
+      transport.pause(); setTrack(detail); setMix(initial); mixRef.current = initial; transport.applyMix(initial);
+      setStatus("Loaded the selected validated bank. New bank channels start at their default levels.");
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Bank could not load; current audio is unchanged."); }
   }
   const seek = transport.seek;
 
@@ -591,8 +597,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
       {track.selectionRequired && <p role="alert">{track.selectionRequired}</p>}
       {!!track.banks?.length && <label>Audition separation bank<select aria-label="Audition separation bank" value="" onChange={event => {
         const bankId = event.target.value; if (!bankId) return;
-        transport.pause();
-        void fetch(`/api/library/tracks/${track.id}?bankId=${encodeURIComponent(bankId)}`, {cache:"no-store"}).then(response => { if (!response.ok) throw new Error("Bank unavailable"); return response.json(); }).then(body => setTrack(body.track)).catch(() => setStatus("Bank could not load; saved audio unchanged."));
+        void auditionBank(bankId);
       }}><option value="">Choose an explicit bank</option>{track.banks.map(bank => <option key={bank.id} value={bank.id}>{bank.model} · {bank.createdAt} · {bank.id}</option>)}</select></label>}
       {availabilityNote !== null && <p className="player-note" role="note">{availabilityNote}</p>}
       {transport.error !== null && <><p className="error" role="alert">{transport.error}</p>{!separated && <p>This browser may not support the source codec, or the original bytes may be unavailable. <Link href={`/waveyard?convertTrack=${track.id}`}>Review browser-compatible conversion</Link> to explicitly create WAV/FLAC/MP3 from this same owned source. The original is retained; this does not repair missing/corrupt bytes or silently replace your audio.</p>}</>}
