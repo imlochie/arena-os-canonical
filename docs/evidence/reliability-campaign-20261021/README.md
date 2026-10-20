@@ -128,3 +128,44 @@ web apps compile. Server WAV/MIDI callers are typechecked and use the tested
 shared boundary; their full queue/MIDI-analysis runtime is not newly exercised.
 Abrupt export-process SIGKILL/restart, automatic orphan reconciliation and
 installed Windows/Electron remain limitations, not awarded passes.
+
+## Continuation: delivery-client compatibility and real queue proof
+
+The first broad freeze was `3b3ee39`; static type/lint/build/desktop and retained
+connected music passed, as did 44 native separation crash cases. While reviewing
+all download clients, the real Studio FX acceptance reproduced a remaining
+contract mismatch: older clients decoded the ZIP itself as WAV. The partial
+full-source run was explicitly stopped (receipt exit 1, 103813 ms); it is **not**
+a full-suite pass. Hosted browser/A7 jobs on that intermediate head failed for
+the same download-contract transition; their history is not overwritten.
+
+Existing acceptance consumers and the real-music CLI now retain/read the bundle
+before the same audio/spectral/identity checks. A strict, Node-only canonical ZIP
+reader checks directory/header/descriptor consistency, CRC, SHA-256/size, exact
+entry names, job/version identity and required notices; it never extracts an
+untrusted path or infers permission. Three reader tests pass, including actual
+WAV/MIDI-shaped archive entries and corrupt/truncated/wrong-checksum/missing or
+extra notice rejection. Independent Python ZIP extraction remains in connected
+music/delivery/library tests; the new reader does not replace that independent
+implementation.
+
+Updated complete Studio/browser/native-worker suite: **35 pass / 2 explicit
+trained-inference skips**, 348761 ms; raw output retained. Includes actual local
+and isolated server WAV render parity after source outage/retry, as well as
+unchanged FX/gain/polarity/timing checks. Other pre-existing product checks in
+this suite are regression coverage, not new Arcade/Spaces work or credit.
+
+Real export-lease acceptance initially failed because `redis-server` was absent
+(raw ENOENT retained). Rather than substitute a mock, Redis 7.2.12 was built from
+GitHub tag commit `9913c926510755fa0d241658f550338a02258edb` outside the repository:
+source archive SHA-256 `e66253c339d0b7130d7bbebef7ca32d23a53f538dca0765fa9eaa62a72415024`,
+`make -j2 MALLOC=libc REDIS_CFLAGS='' REDIS_LDFLAGS='' redis-server`.
+No application dependency or lockfile changed. With that binary on PATH, the
+actual PostgreSQL/Redis/BullMQ worker acceptance passes (1 test, 61866 ms): stale
+worker cannot revoke completion; interruptions at resolve/render/FFmpeg/
+validation/publication/commit/complete recover one checksum-valid asset with
+zero sample error against the native reference. Raw log's pre-existing
+`Redis7.2.6` label was inaccurate for this binary; the receipt producer now reads
+`redis-server --version` instead of hardcoding a version. The final rerun will
+record the actual version. This adds genuine server WAV/queue evidence to cycle
+4; full server MIDI-analysis execution and installed Windows remain unverified.

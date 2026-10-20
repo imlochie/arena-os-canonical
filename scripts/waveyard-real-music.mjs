@@ -1,3 +1,4 @@
+import { readStudioExportBundle } from "./lib/studio-export-bundle.mjs";
 /** Opt-in API acceptance against a RUNNING, PREPARED local Arena instance.
  * No models/downloads/doubles/fixture audio, no Electron/UI acceptance claim.
  * Keeps created project and evidence on success OR failure. Does not install
@@ -101,7 +102,13 @@ try {
   const rendered = await until(`/api/remix-versions/${version.id}/exports`, (body) => body.exports?.find((job) => job.id === exportJob.id && ["complete", "failed"].includes(job.status)));
   check("actual model-output mix rendered", rendered.status === "complete", rendered); report.export = rendered;
   const response = await fetch(new URL(`/api/exports/${rendered.id}/media?download=1`, base)); check("mix downloadable", response.ok);
-  const bytes = Buffer.from(await response.arrayBuffer()), filename = path.join(directory, "mix.wav"); writeFileSync(filename, bytes);
+  check("Studio export includes its portable attribution bundle", response.headers.get("content-type") === "application/zip");
+  const archive = Buffer.from(await response.arrayBuffer()); writeFileSync(path.join(directory, "mix.zip"), archive);
+  const bundle = readStudioExportBundle(archive, { jobId: rendered.id, versionId: version.id });
+  writeFileSync(path.join(directory, "RIGHTS.txt"), bundle.rights);
+  writeFileSync(path.join(directory, "export-manifest.json"), JSON.stringify(bundle.manifest, null, 2));
+  report.exportBundle = { sha256: sha(archive), manifest: bundle.manifest };
+  const bytes = bundle.media, filename = path.join(directory, "mix.wav"); writeFileSync(filename, bytes);
   report.mix = { sha256: sha(bytes), metadata: inspect(filename) };
   const level = spawnSync(tool("ffmpeg"), ["-v", "info", "-i", filename, "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8", timeout: 120_000 });
   const meanDb = /mean_volume:\s*(-?[\d.]+) dB/.exec(level.stderr ?? "")?.[1];

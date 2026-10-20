@@ -1,6 +1,7 @@
+import { readStudioExportBundle } from "../../scripts/lib/studio-export-bundle.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   mkdtemp,
@@ -329,7 +330,8 @@ test(
       console.log(
         JSON.stringify({
           runtime:
-            "real native PostgreSQL + Redis7.2.6 + BullMQ Worker production export handler",
+            "real native PostgreSQL + Redis + BullMQ Worker production export handler",
+          redisVersion: spawnSync("redis-server", ["--version"], { encoding: "utf8" }).stdout.trim(),
           queueState: await queued.getState(),
           beforeLateWorker: winner.status,
           afterLateWorker: finished.status,
@@ -550,7 +552,7 @@ test(
       );
       const download = await media.GET(request(), context);
       assert.equal(download.status, 200);
-      assert.deepEqual(Buffer.from(await download.arrayBuffer()), original);
+      assert.deepEqual(readStudioExportBundle(Buffer.from(await download.arrayBuffer()), { jobId: job.id }).media, original);
       assert.equal(
         (
           await database.db

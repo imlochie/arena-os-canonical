@@ -1,3 +1,4 @@
+import { readStudioExportBundle } from "../../scripts/lib/studio-export-bundle.mjs";
 // Actual UI + actual route handlers + PostgreSQL + queue + FFmpeg + decoded
 // download. The input is deliberately synthetic PCM, not model/inference proof.
 import test, { before, after } from "node:test";
@@ -131,7 +132,9 @@ async function render(versionId) {
   const { job } = await api(`/api/remix-versions/${versionId}/exports`, "POST", { format: "wav" }); assert.equal(await broker.drain(30000), true);
   const [finished] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id)); assert.equal(finished.status, "complete", finished.errorMessage);
   const response = await dispatch(new URL(`/api/exports/${job.id}/media?download=1`, "http://fixture")); assert.equal(response.status, 200);
-  const bytes = new Uint8Array(await response.arrayBuffer()); const decoded = synth.decodeWav16(bytes); assert.ok(decoded); return { decoded, bytes, job };
+  assert.equal(response.headers.get("content-type"), "application/zip");
+  const bundle = readStudioExportBundle(Buffer.from(await response.arrayBuffer()), { jobId: job.id, versionId });
+  const bytes = new Uint8Array(bundle.media); const decoded = synth.decodeWav16(bytes); assert.ok(decoded); return { decoded, bytes, job, bundle };
 }
 function rms(decoded) { const samples = decoded.samples; let sum = 0, n = 0; for (let frame = 22050; frame < 88200; frame++) { const sample = samples[frame * decoded.channels]; sum += sample * sample; n++; } return Math.sqrt(sum / n); }
 test("actual Studio FX rack → saved/reopened chains → immutable version → real decoded WAV reflects track AND master gain", async (t) => {
@@ -150,9 +153,9 @@ test("actual Studio FX rack → saved/reopened chains → immutable version → 
   page.once("dialog", (dialog) => dialog.accept("FX bounce")); const savedVersion = page.waitForResponse((response) => response.url().endsWith(`/remixes/${remixId}/versions`) && response.request().method() === "POST");
   await page.getByRole("button", { name: "Save version", exact: true }).click(); const { version } = await (await savedVersion).json();
   await page.getByRole("button", { name: "Export WAV · FX bounce", exact: true }).click();
-  const downloadLink = page.getByRole("link", { name: "Download WAV · FX bounce", exact: true }); await expect(downloadLink).toBeVisible({ timeout: 20000 });
+  const downloadLink = page.getByRole("link", { name: "Download WAV + rights (ZIP) · FX bounce", exact: true }); await expect(downloadLink).toBeVisible({ timeout: 20000 });
   const downloadPromise = page.waitForEvent("download"); await downloadLink.click(); const download = await downloadPromise;
-  const bytes = new Uint8Array(await readFile(await download.path())); const decoded = synth.decodeWav16(bytes); assert.ok(decoded);
+  const bytes = new Uint8Array(readStudioExportBundle(await readFile(await download.path()), { versionId: version.id }).media); const decoded = synth.decodeWav16(bytes); assert.ok(decoded);
   const processed = { decoded, bytes }; const ratio = rms(processed.decoded) / rms(dry.decoded);
   console.log(JSON.stringify({ kind: "actual-ui-sql-fx-bounce", ratio, expectedRatio: 10 ** (-12 / 20), input: "synthetic PCM, not inference", versionId: version.id }));
   assert.ok(Math.abs(ratio - 10 ** (-12 / 20)) < 0.003, `saved -6 dB track + -6 dB master must attenuate decoded export by 12 dB; actual ratio ${ratio}`);
@@ -176,12 +179,12 @@ test("Mixer master fader is persisted, undoable, versioned immediately and audib
   await page.getByRole("button", { name: "Save version", exact: true }).click();
   const exportButton = page.getByRole("button", { name: "Export WAV · Fader immediately versioned", exact: true }); await expect(exportButton).toBeEnabled();
   assert.equal((await api(`/api/remixes/${remixId}`)).remix.masterVolume, 0.5);
-  await exportButton.click(); const link = page.getByRole("link", { name: "Download WAV · Fader immediately versioned", exact: true }); await expect(link).toBeVisible({ timeout: 20000 });
+  await exportButton.click(); const link = page.getByRole("link", { name: "Download WAV + rights (ZIP) · Fader immediately versioned", exact: true }); await expect(link).toBeVisible({ timeout: 20000 });
   const downloadPromise = page.waitForEvent("download"); await link.click(); const download = await downloadPromise;
-  const decoded = synth.decodeWav16(new Uint8Array(await readFile(await download.path())));
+  const decoded = synth.decodeWav16(new Uint8Array(readStudioExportBundle(await readFile(await download.path())).media));
   assert.ok(Math.abs(rms(decoded) / rms(dry.decoded) - 0.5) < 0.003);
   await page.reload(); await page.getByTestId("waveyard-mode-studio").click(); await expect(master).toHaveValue("0.5");
-  await expect(page.getByRole("link", { name: "Download WAV · Fader immediately versioned", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Download WAV + rights (ZIP) · Fader immediately versioned", exact: true })).toBeVisible();
 });
 test("canonical export sums overlapping clips before nonlinear track FX and retains reverb tails", async () => {
   const { remixId } = await source();
@@ -279,7 +282,7 @@ test("isolated remote worker genuinely renders the same nonlinear, polarity and 
   const succeeded = runRemote(); assert.equal(succeeded.status, 0, succeeded.stderr);
   const [complete] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id)); assert.equal(complete.status, "complete"); assert.equal(complete.attempts, 2);
   const response = await dispatch(new URL(`/api/exports/${job.id}/media?download=1`, "http://fixture")); assert.equal(response.status, 200);
-  const remote = synth.decodeWav16(new Uint8Array(await response.arrayBuffer())); assert.equal(remote.samples.length, local.decoded.samples.length);
+  const remote = synth.decodeWav16(new Uint8Array(readStudioExportBundle(Buffer.from(await response.arrayBuffer()), { jobId: job.id }).media)); assert.equal(remote.samples.length, local.decoded.samples.length);
   let maxError = 0; for (let sample = 0; sample < remote.samples.length; sample++) maxError = Math.max(maxError, Math.abs(remote.samples[sample] - local.decoded.samples[sample]));
   console.log(JSON.stringify({ kind: "actual-local-remote-parity", maxError, frames: remote.samples.length / 2, attempts: complete.attempts }));
   assert.ok(maxError < 0.00015, `same persisted version, actual remote/local jobs max PCM error ${maxError}`);
@@ -504,7 +507,7 @@ test("tempo and key audition changes audible pitch/timing, rejects missing analy
   const [rejected] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, rejectedJob.id));
   assert.equal(rejected.status, "failed"); assert.equal(rejected.errorCode, "tempo_sync_analysis_missing");
   const retained = await dispatch(new URL(`/api/exports/${exported.job.id}/media?download=1`, "http://fixture"));
-  assert.equal(retained.status, 200); assert.deepEqual(new Uint8Array(await retained.arrayBuffer()), exported.bytes, "published export stays immutable when source analysis changes");
+  assert.equal(retained.status, 200); assert.deepEqual(new Uint8Array(readStudioExportBundle(Buffer.from(await retained.arrayBuffer()), { jobId: exported.job.id }).media), exported.bytes, "published export stays immutable when source analysis changes");
 
 });
 
@@ -629,7 +632,7 @@ test("mixed-tempo library handoff auditions and exports the same owned immutable
     const [finished] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id)); return { job: finished, child };
   }
   const actual = await remote(); assert.equal(actual.child.status, 0, actual.child.stderr); assert.equal(actual.job.status, "complete");
-  const media = await dispatch(new URL(`/api/exports/${actual.job.id}/media?download=1`, "http://fixture")); assert.equal(media.status, 200); const decoded = synth.decodeWav16(new Uint8Array(await media.arrayBuffer())); assert.equal(decoded.samples.length, local.decoded.samples.length);
+  const media = await dispatch(new URL(`/api/exports/${actual.job.id}/media?download=1`, "http://fixture")); assert.equal(media.status, 200); const decoded = synth.decodeWav16(new Uint8Array(readStudioExportBundle(Buffer.from(await media.arrayBuffer()), { jobId: actual.job.id }).media)); assert.equal(decoded.samples.length, local.decoded.samples.length);
   let workerError = 0; for (let i = 0; i < decoded.samples.length; i++) workerError = Math.max(workerError, Math.abs(decoded.samples[i] - local.decoded.samples[i])); assert.ok(workerError < 0.00015, `mixed-source actual worker/local parity ${workerError}`);
   await database.db.update(schema.sourceAnalyses).set({ sourceChecksumSha256: "0".repeat(64) }).where(eq(schema.sourceAnalyses.sourceAssetId, stems[1].sourceAssetId));
   const stale = await remote(); assert.equal(stale.child.status, 1); assert.equal(stale.job.status, "failed"); assert.equal(stale.job.errorCode, "tempo_sync_analysis_missing");
