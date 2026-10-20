@@ -83,6 +83,8 @@ export default function ConversionWorkbench() {
       setReview([]); await reload();
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
+  const selectedOutputs = jobs.filter(job => selected.includes(job.id) && job.status === "complete" && job.outputTrackId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.index - b.index);
   const toSession = async () => {
     setBusy(true); setError(""); try {
       const ordered = jobs.filter(j => selected.includes(j.id) && j.status === "complete" && j.outputTrackId).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.index - b.index);
@@ -104,7 +106,7 @@ export default function ConversionWorkbench() {
     {open && <div className="panel" style={{ padding: 20 }}>
       <h2>Local music conversion</h2><p>Import → review tags → configure → convert → decode/verify → library → session / Studio. Only local files you are authorized to process. No Apple Music streaming export or DRM removal. TunePat is not required.</p>
       <p>Browser playback depends on its codecs. AIFF/ALAC may need an explicitly reviewed WAV/FLAC/MP3 conversion; originals remain retained. Native format verification does not promise browser codec support.</p>
-      <p>Destination: Arena private storage, organized by the naming template. Download each verified file. A stable item suffix prevents collisions; no existing user file is overwritten. No arbitrary host-folder writes.</p>
+      <p>Destination: Arena private storage, organized by the naming template. Download verified files individually or select a batch for one ZIP with the same folders and filenames. A stable item suffix prevents collisions; no existing user file is overwritten. No arbitrary host-folder writes.</p>
       {error && <p role="alert">{error}</p>}
       <TunePatBridge onImport={intake} busy={busy} />
       <PlaylistImport />
@@ -134,11 +136,16 @@ export default function ConversionWorkbench() {
         {job.tags.lyrics && <><button onClick={()=>downloadLyrics(job.tags.lyrics,"lrc")}>Export retained LRC</button><button onClick={()=>downloadLyrics(job.tags.lyrics,"txt")}>Export retained TXT</button></>}
         {job.verification?.warnings.map(warning => <p key={warning}>{warning}</p>)}
         {job.verification && <><p>{job.verification.actual.codec} · {job.verification.actual.sampleRate} Hz · {job.verification.actual.channels} channels · SHA256 {job.verification.checksumSha256}</p>{job.status === "complete" ? <a className="button" href={`/api/library/conversions/${job.id}/media`}>Download verified output</a> : <p>Temporary-file verification is not completion. Resume/retry to reconcile publication before a completed download is offered.</p>}</>}
-        {job.status === "complete" && job.outputTrackId && <><Link href={`/waveyard/play/${job.outputTrackId}`}>Open in library</Link><label><input aria-label={`Select output ${job.name}`} type="checkbox" checked={selected.includes(job.id)} onChange={e => setSelected(ids => e.target.checked ? [...ids, job.id] : ids.filter(id => id !== job.id))} />Use in session</label></>}
+        {job.status === "complete" && job.outputTrackId && <><Link href={`/waveyard/play/${job.outputTrackId}`}>Open in library</Link><label><input aria-label={`Select output ${job.name}`} type="checkbox" checked={selected.includes(job.id)} onChange={e => setSelected(ids => e.target.checked ? [...ids, job.id] : ids.filter(id => id !== job.id))} />Select for download / session</label></>}
         {!["complete", "failed", "cancelled"].includes(job.status) && <><button onClick={() => void act("cancel", job.id)}>Cancel conversion</button><button onClick={() => void act("resume", job.id)}>Resume unfinished item</button></>}
         {["failed", "cancelled"].includes(job.status) && <button onClick={() => void act("retry", job.id)}>Retry same item</button>}
       </article>)}
-      <h3>Continue with selected completed files</h3><p>This explicitly arranges full unseparated audio; it does not run or claim vocal separation. Batch order is preserved.</p>
+      <h3>Continue with selected completed files</h3>
+      <button type="button" disabled={busy} onClick={() => setSelected(jobs.filter(job => job.status === "complete" && job.outputTrackId).map(job => job.id))}>Select all completed outputs</button>
+      <button type="button" disabled={busy || !selected.length} onClick={() => setSelected([])}>Clear output selection</button>
+      {!!selectedOutputs.length && selectedOutputs.length <= 100 && <a className="button" target="_blank" rel="noreferrer" href={`/api/library/conversions/archive?ids=${selectedOutputs.map(job => job.id).join(",")}`}>Download selected verified files (ZIP)</a>}
+      <p>{selectedOutputs.length} selected. ZIP download supports up to 100 files / 2 GiB, preserves folder names and embedded metadata, and includes a checksum manifest. Every selected output is checked before the download starts; large batches may take time. Errors open separately, leaving your work here unchanged. Split larger selections or download files individually.</p>
+      <p>Adding to a session explicitly arranges full unseparated audio; it does not run or claim vocal separation. Batch order is preserved.</p>
       <label>New session name<input aria-label="Conversion session name" value={sessionName} onChange={e => setSessionName(e.target.value)} /></label>
       <button onClick={() => void request("/api/library/sessions").then(d => setSessions(d.sessions)).catch(e => setError(String(e)))}>Choose existing session</button>
       <select aria-label="Conversion destination session" value={existingSession} onChange={e => setExistingSession(e.target.value)}><option value="">Create new session</option>{sessions.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
