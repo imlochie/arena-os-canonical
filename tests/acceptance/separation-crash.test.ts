@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile, chmod, readFile, access } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, chmod, readFile, access, readlink, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -190,7 +190,18 @@ test("native separation real SIGKILL/restart matrix", { timeout: 360000 }, async
       if (phase === "decoder-running") {
         const deadline = Date.now() + 3000; let children: string[] = [];
         while (!children.length && Date.now() < deadline) { children = (await readFile(`/proc/${pid}/task/${pid}/children`, "utf8")).trim().split(/\s+/).filter(Boolean); if (!children.length) await new Promise(resolve => setTimeout(resolve, 10)); }
-        assert.equal(children.length, 1); native = await ownerIdentity(Number(children[0])); assert.match(await readFile(`/proc/${children[0]}/cmdline`, "utf8"), /ffmpeg/); assert.equal(await ownerState(native), "live");
+        assert.equal(children.length, 1);
+        // /proc exposes the child during fork/exec, when cmdline may be empty
+        // or still name the launcher. Observe the real executable, not just a
+        // process that will eventually become FFmpeg. No skipped assertions.
+        const executable = await realpath(ffmpeg.path);
+        while (Date.now() < deadline) {
+          try {
+            if (await readlink(`/proc/${children[0]}/exe`) === executable && (await readFile(`/proc/${children[0]}/cmdline`, "utf8")).length > 0) { native = await ownerIdentity(Number(children[0])); break; }
+          } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        assert.ok(native, "Actual FFmpeg executable must be observed before killing its executor"); assert.equal(await ownerState(native), "live");
       }
       await w.kill();
       const deadline = Date.now() + 5000; while (await ownerState(guardian) === "live" && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(await ownerState(guardian), "dead"); if (native) assert.equal(await ownerState(native), "dead");
