@@ -529,7 +529,7 @@ test("real preparation cancellation recovers from encoded sources and releases w
     assert.equal(result.recoveredDiagnostics.decodedBytes, 0);
     assert.equal(result.recoveredDiagnostics.encodedRecoveryBytes, result.initialDiagnostics.encodedRecoveryBytes);
   } else {
-    const decodedBytes = 44100 * 2 * 4;
+    const decodedBytes = 15 * 44100 * 2 * 4;
     assert.equal(result.initialDiagnostics.decodedBytes, decodedBytes);
     assert.equal(result.recoveredDiagnostics.decodedBytes, decodedBytes);
   }
