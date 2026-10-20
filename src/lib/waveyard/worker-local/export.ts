@@ -1,3 +1,4 @@
+import { cleanupExportAttempt, exportAttemptKey, publishExport } from "../../../../waveyard-worker/packages/dsp/src/export-publication";
 import { verifyStoredFile } from "../../../../waveyard-worker/packages/dsp/src/verified-file";
 import { projectAudio } from "@/lib/waveyard/project-audio";
 /**
@@ -22,7 +23,7 @@ import { db } from "@/db";
 import { exportAssets, exportJobs, remixSessions, remixVersions, sourceAnalyses } from "@/db/waveyardSchema";
 import { checksumFile, exec, validateAudio } from "@/lib/waveyard/audio";
 import { requireTool } from "@/lib/waveyard/ffmpeg";
-import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
+import { getStorage } from "@/lib/waveyard/storage";
 import {
   AUTOMATION_PARAMETERS,
   normaliseAutomationPoints,
@@ -203,7 +204,7 @@ function panGains(pan: number) {
 }
 
 async function updateJob(id: string, patch: Partial<typeof exportJobs.$inferInsert>, integrityFailure = false) {
-  const updated = await db.update(exportJobs).set({ ...patch, updatedAt: new Date() }).where(and(eq(exportJobs.id, id), ...(integrityFailure ? [] : [ne(exportJobs.status, "complete")]))).returning({ id: exportJobs.id });
+  const updated = await db.update(exportJobs).set({ ...patch, updatedAt: new Date() }).where(and(eq(exportJobs.id, id), ...(integrityFailure ? [] : [ne(exportJobs.status, "complete"), ne(exportJobs.status, "cancelled")]))).returning({ id: exportJobs.id });
   return updated.length > 0;
 }
 
@@ -442,10 +443,10 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     if (!await updateJob(job.id, { status: "finalizing", stage: "validating" })) return;
     const metadata = await validateAudio(outputPath);
     const checksum = await checksumFile(outputPath);
-    storedKey = privateObjectKey(job.projectId, "export", "wav");
+    storedKey = exportAttemptKey(job.projectId, job.id, "wav");
     await storage.putFile(storedKey, outputPath, "audio/wav");
 
-    await db.transaction(async (tx) => {
+    complete = await publishExport(db, job.id, async (tx) => {
       await tx.insert(exportAssets).values({
         projectId: job.projectId,
         exportJobId: job.id,
@@ -462,7 +463,6 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       });
       await tx.update(exportJobs).set({ status: "complete", stage: "complete", completedAt: new Date(), updatedAt: new Date() }).where(eq(exportJobs.id, job.id));
     });
-    complete = true;
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown export failure.";
     await updateJob(job.id, {
@@ -474,7 +474,10 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     });
     throw error;
   } finally {
-    if (!complete && storedKey) await storage.delete(storedKey).catch(() => undefined);
+    if (!complete && storedKey && await cleanupExportAttempt(db, storage, job.id, storedKey) === "unknown") {
+      console.warn("Export output retained for reconciliation", { exportJobId: job.id, storageKey: storedKey });
+      await updateJob(job.id, { stage: "reconciliation_required", errorCode: "publication_unknown", errorMessage: "Export publication or cleanup could not be verified. Output was retained in this job's private export directory. Retry to reconcile a committed asset; do not manually delete unknown output." }).catch(() => undefined);
+    }
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 }

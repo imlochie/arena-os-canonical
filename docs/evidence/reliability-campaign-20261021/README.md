@@ -86,3 +86,45 @@ raw MIME assertion. These are distinct from the reproduced missing-bundle defect
 See `docs/STORAGE.md` for delivery semantics and limits. Desktop MIDI generation,
 installed Windows/Electron, legal clearance and trained inference are not proved
 by these bundle tests.
+
+## Cycle 4: export cleanup destroyed committed audio after lost COMMIT ACK
+
+Actual PostgreSQL + native FFmpeg reproduction: commit the normal export
+transaction, then throw as if its acknowledgement was lost. The completed job
+and asset row survived, but `finally` deleted the audio because a local boolean
+was still false. `campaign-export-ack-before.json` retains the failed existence
+assertion. The same local-boolean deletion existed in server WAV and MIDI paths.
+
+Fix: one shared publication/cleanup boundary in existing DSP infrastructure.
+Publication locks the job before inserting its asset. Cleanup takes the same
+row lock, proves attempt ownership from its job-scoped key, and checks canonical
+export/source/stem references before deleting. Unknown lookup/storage outcomes
+retain the file. Completed/cancelled states fence late progress and failure
+writes. All three desktop/server publication paths use the same boundary.
+Unknown output is identifiable by durable job ID in its existing private storage
+path; this is not a second output registry or an automatic orphan sweeper.
+
+Evidence: combined bundle/native export and shared-boundary tests **14 pass**.
+Includes actual local FFmpeg lost-COMMIT-ACK → checksum-valid completed asset →
+redispatch without replacement; cancel after upload → no asset/no resurrection;
+controlled publication/lookup outage → retained bytes and actionable durable
+uncertainty → healthy explicit reconciliation. Actual PostgreSQL tests separately
+prove rollback cleanup, cross-table reference protection, wrong-attempt refusal,
+cancel fence, two concurrent publishers → exactly one asset, and independent
+`pg_stat_activity` observation of cleanup blocked on the publication lock until
+COMMIT. Primitive tests use controlled bytes, not rendered/model output.
+
+The independently locked worker dependencies were installed with
+`npm ci --ignore-scripts` in `waveyard-worker` (no manifest/lock changes).
+Root and standalone worker-export dependency-graph typechecks pass with both
+installations present. The first root typecheck after that install exposed
+nominal private Drizzle-driver types crossing the shared boundary (raw failure
+retained). The fix preserves the caller's transaction type and bridges only the
+public SQL execution API; real PostgreSQL tests pass with both packages installed.
+The standalone command uses `/home/user/campaign-worker-tsconfig.json`, extending
+`waveyard-worker/tsconfig.json` and including `apps/worker/src/export.ts` plus its
+transitive dependencies; this is not a claim that all legacy worker tests or
+web apps compile. Server WAV/MIDI callers are typechecked and use the tested
+shared boundary; their full queue/MIDI-analysis runtime is not newly exercised.
+Abrupt export-process SIGKILL/restart, automatic orphan reconciliation and
+installed Windows/Electron remain limitations, not awarded passes.

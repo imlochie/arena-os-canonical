@@ -98,6 +98,46 @@ test("Studio downloads automatically bundle exact media, frozen source notices a
     assert.equal((await route.GET(new Request(`http://arena/api/exports/${midiJob.id}/media?download=1`), { params: Promise.resolve({ id: midiJob.id }) })).status, 422);
     assert.equal(await storage.exists(midiKey), true);
   });
+  await t.test("native export lost COMMIT acknowledgement never deletes already-published audio", async () => {
+    const [attempt] = await database.db.insert(schema.exportJobs).values({ projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, requestedById: context.LOCAL_OWNER_ID, idempotencyKey: randomUUID() }).returning();
+    const handle = (await import("./worker-local/export")).handleExportJob;
+    const transaction = database.db.transaction.bind(database.db);
+    database.db.transaction = async (...args) => { await transaction(...args); throw new Error("controlled export lost COMMIT acknowledgement"); };
+    try {
+      await assert.rejects(handle({ exportJobId: attempt.id, projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, format: "wav" }), /lost COMMIT acknowledgement/);
+    } finally { database.db.transaction = transaction; }
+    const [finished] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, attempt.id));
+    const [published] = await database.db.select().from(schema.exportAssets).where(eq(schema.exportAssets.exportJobId, attempt.id));
+    assert.equal(finished.status, "complete"); assert.ok(published);
+    assert.equal(await storage.exists(published.storageKey), true, "an acknowledged asset row must retain its actual audio");
+    const bytes = await storage.getBuffer(published.storageKey, published.fileSizeBytes);
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), published.checksumSha256);
+    await handle({ exportJobId: attempt.id, projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, format: "wav" });
+    const [again] = await database.db.select().from(schema.exportAssets).where(eq(schema.exportAssets.exportJobId, attempt.id)); assert.deepEqual(again, published);
+  });
+  await t.test("native export cancelled after upload cannot publish or resurrect the job", async () => {
+    const [attempt] = await database.db.insert(schema.exportJobs).values({ projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, requestedById: context.LOCAL_OWNER_ID, idempotencyKey: randomUUID() }).returning();
+    const handle = (await import("./worker-local/export")).handleExportJob, put = storage.putFile.bind(storage), keys: string[] = [];
+    storage.putFile = async (...args) => { await put(...args); keys.push(args[0]); await database.db.update(schema.exportJobs).set({ status: "cancelled", stage: "cancelled" }).where(eq(schema.exportJobs.id, attempt.id)); };
+    try { await handle({ exportJobId: attempt.id, projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, format: "wav" }); }
+    finally { storage.putFile = put; }
+    assert.equal((await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, attempt.id)))[0].status, "cancelled");
+    assert.equal((await database.db.select().from(schema.exportAssets).where(eq(schema.exportAssets.exportJobId, attempt.id))).length, 0);
+    assert.equal(keys.length, 1); assert.equal(await storage.exists(keys[0]), false);
+  });
+  await t.test("native export uncertain publication retains job-scoped bytes until explicit healthy reconciliation", async () => {
+    const [attempt] = await database.db.insert(schema.exportJobs).values({ projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, requestedById: context.LOCAL_OWNER_ID, idempotencyKey: randomUUID() }).returning();
+    const handle = (await import("./worker-local/export")).handleExportJob, transaction = database.db.transaction.bind(database.db), put = storage.putFile.bind(storage), keys: string[] = [];
+    database.db.transaction = async () => { throw new Error("controlled publication database unavailable"); };
+    storage.putFile = async (...args) => { keys.push(args[0]); await put(...args); };
+    try { await assert.rejects(handle({ exportJobId: attempt.id, projectId: project.id, remixSessionId: session.id, remixVersionId: versionId, format: "wav" }), /database unavailable/); }
+    finally { database.db.transaction = transaction; storage.putFile = put; }
+    const [failed] = await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, attempt.id));
+    assert.equal(failed.status, "failed"); assert.equal(failed.stage, "reconciliation_required"); assert.equal(failed.errorCode, "publication_unknown");
+    assert.equal(keys.length, 1); assert.ok(keys[0].includes(`/export/${attempt.id}/`)); assert.equal(await storage.exists(keys[0]), true);
+    const { cleanupExportAttempt } = await import("../../../waveyard-worker/packages/dsp/src/export-publication");
+    assert.equal(await cleanupExportAttempt(database.db, storage, attempt.id, keys[0]), "deleted"); assert.equal(await storage.exists(keys[0]), false);
+  });
   // Streaming/preview is still the original WAV, not a ZIP or a re-render.
   const raw = await route.GET(new Request(`http://arena/api/exports/${job.id}/media`), { params: Promise.resolve({ id: job.id }) });
   assert.equal(raw.headers.get("content-type"), "audio/wav"); assert.deepEqual(Buffer.from(await raw.arrayBuffer()), Buffer.from(media));

@@ -42,3 +42,13 @@ or successful conversion is not licence verification or permission to share.
 Recorded notices are retained, not legal clearance. Internal object keys, volume
 paths and arbitrary acquisition metadata are excluded; source URL credentials,
 query strings and fragments are removed from the portable URL field.
+
+Export publication and unsuccessful-attempt cleanup share the export-job row
+lock. A lost COMMIT/reporting acknowledgement cannot remove media referenced by
+an export, source or stem row. Only this attempt's job-scoped, proven-unreferenced
+key can be removed. Lookup/lock/storage failures retain the output and, when SQL
+is available, expose `publication_unknown` / `reconciliation_required`. Cancelled
+and completed jobs cannot be resurrected by late progress/error writes.
+Unknown objects remain under `projects/<project>/export/<export-job>/<nonce>` for
+explicit reconciliation; this does **not** implement automatic orphan discovery
+or prove abrupt export-process crash recovery on every platform.
