@@ -18,6 +18,7 @@ export class ArrangementPreparation {
   private worker: Worker | null = null;
   private sent = new Set<string>();
   private decoded = new Map<string, AudioBuffer>();
+  private encoded = new Map<string, { blob: Blob; decodedBytes: number }>();
   private abort: AbortController | null = null;
   private pending: { id: number; resolve(value: Prepared): void; reject(error: Error): void } | null = null;
   private sequence = 0;
@@ -29,7 +30,7 @@ export class ArrangementPreparation {
     this.abort?.abort(); this.abort = null;
     if (this.pending) { this.pending.reject(new DOMException("Preparation cancelled", "AbortError")); this.pending = null; this.worker?.terminate(); this.worker = null; this.sent.clear(); this.workerStats = undefined; }
   }
-  dispose() { this.cancel(); this.worker?.terminate(); this.worker = null; this.sent.clear(); this.decoded.clear(); this.finished = null; this.workerStats = undefined; }
+  dispose() { this.cancel(); this.worker?.terminate(); this.worker = null; this.sent.clear(); this.decoded.clear(); this.encoded.clear(); this.finished = null; this.workerStats = undefined; }
   private getWorker() {
     if (this.worker) return this.worker;
     if (typeof Worker === "undefined") throw new Error("This browser cannot run the arrangement DSP worker; no dry substitute was played.");
@@ -75,15 +76,28 @@ export class ArrangementPreparation {
     // Drop removed clips, old transform variants and closed-project data, rather
     // than keeping every edit's AudioBuffer until the tab eventually exits.
     for (const id of this.decoded.keys()) if (!needed.has(id)) this.decoded.delete(id);
-    let bytes = [...this.decoded.values()].reduce((sum, buffer) => sum + buffer.length * buffer.numberOfChannels * 4, 0);
+    for (const id of this.encoded.keys()) if (!needed.has(id)) this.encoded.delete(id);
+    let bytes = [...needed].reduce((sum, id) => {
+      const decoded = this.decoded.get(id);
+      return sum + (decoded ? decoded.length * decoded.numberOfChannels * 4 : this.encoded.get(id)?.decodedBytes ?? 0);
+    }, 0);
+    if (bytes > MAX_DECODED_BYTES) throw new Error("Selected source audio exceeds the 128 MiB decoded audition budget; no clips were dropped.");
     for (const [id, request] of requests) {
-      signal.throwIfAborted(); if (this.decoded.has(id)) continue;
+      signal.throwIfAborted(); if (this.decoded.has(id) || this.sent.has(id)) continue;
+      const recovery = this.encoded.get(id);
+      if (recovery) {
+        const buffer = await context.decodeAudioData(await recovery.blob.arrayBuffer()); signal.throwIfAborted();
+        this.decoded.set(id, buffer); continue;
+      }
       const response = await fetch(request.url, { signal, ...(request.body ? { method: "POST", headers: { "content-type": "application/json" }, body: request.body } : {}) });
       if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? "A stem could not be prepared for arrangement audition."); }
       if (Number(response.headers.get("content-length")) > MAX_DECODED_BYTES) { await response.body?.cancel(); throw new Error("Source exceeds the 128 MiB audition decode budget; use a shorter source range or export."); }
-      const buffer = await context.decodeAudioData(await response.arrayBuffer()); signal.throwIfAborted();
+      const blob = await response.blob();
+      const buffer = await context.decodeAudioData(await blob.arrayBuffer()); signal.throwIfAborted();
+      const decodedBytes = buffer.length * buffer.numberOfChannels * 4;
       bytes += buffer.length * buffer.numberOfChannels * 4;
       if (bytes > MAX_DECODED_BYTES) throw new Error("Selected source audio exceeds the 128 MiB decoded audition budget; no clips were dropped.");
+      if (blob.size < decodedBytes) this.encoded.set(id, { blob, decodedBytes });
       this.decoded.set(id, buffer);
     }
     signal.throwIfAborted();
@@ -110,6 +124,9 @@ export class ArrangementPreparation {
       throw error;
     }
     const { left, right, stats } = await rendered; signal.throwIfAborted(); this.workerStats = stats;
+    // Successful reply permits discarding decoded copies only when an independent,
+    // lossless original encoding remains here. Cancel/error never destroys that copy.
+    for (const id of this.decoded.keys()) if (this.encoded.has(id) && this.sent.has(id)) this.decoded.delete(id);
     const buffer = context.createBuffer(2, left.length, context.sampleRate);
     buffer.copyToChannel(left as Float32Array<ArrayBuffer>, 0); buffer.copyToChannel(right as Float32Array<ArrayBuffer>, 1);
     this.finished = { key, buffer }; return buffer;

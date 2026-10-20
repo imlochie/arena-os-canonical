@@ -20,7 +20,8 @@ let licence: unknown = "https://creativecommons.org/publicdomain/zero/1.0/",
   downloadCount = 0,
   badHash = false,
   badAudio = false,
-  fileLicence: string | undefined;
+  fileLicence: string | undefined,
+  batchFiles = false;
 let pcm: Buffer;
 const previous = {
   db: process.env.DATABASE_URL,
@@ -84,12 +85,16 @@ before(async () => {
                     .update(badAudio ? Buffer.alloc(pcm.length, 97) : pcm)
                     .digest("hex"),
             },
+            ...(batchFiles ? [{ name: "second.wav", title: "Second controlled recording", size: String(pcm.length), sha1: createHash("sha1").update(secondAudio()).digest("hex") }] : []),
             { name: "../secret.wav", size: "100" },
             { name: "private.wav", size: "100", private: true },
             { name: "list.m3u", size: "100" },
           ],
         }),
       );
+    if (req.url === "/download/owned-fixture/second.wav") {
+      res.setHeader("content-type", "audio/wav"); res.setHeader("content-length", pcm.length); return res.end(secondAudio());
+    }
     if (req.url === "/download/owned-fixture/owned.wav") {
       downloadCount++;
       res.setHeader("content-type", "audio/wav");
@@ -431,4 +436,40 @@ test("bank selection and explicit legacy repair retain exact lane order after Po
     after.stems.map((stem) => stem.stemType),
     ["vocals", "drums", "bass", "other"],
   );
+});
+
+function secondAudio() { const bytes = Buffer.from(pcm); bytes[50] ^= 32; return bytes; }
+test("durable multi-file acquisition persists intent/order, isolates owners, fences cancellation, rejects changed versions and publishes once", async () => {
+  const jobs = await import("./acquisition-jobs"); const { db, pool } = await import("../../db");
+  const schema = await import("../../db/waveyardSchema"); const { randomUUID } = await import("node:crypto");
+  const ownerId = "00000000-0000-4000-8000-000000000001";
+  licence = "https://creativecommons.org/publicdomain/zero/1.0/"; restricted = false; badHash = false; badAudio = false; fileLicence = undefined; batchFiles = true;
+  try {
+    const input = { ownerId, batchId: randomUUID(), id: "owned-fixture", files: ["second.wav", "owned.wav"], rightsReviewed: true };
+    await assert.rejects(jobs.createAcquisitions({ ...input, rightsReviewed: false }, fetcher), /Review/);
+    const rows = await jobs.createAcquisitions(input, fetcher);
+    assert.equal(rows.length, 2); assert.ok(rows.every(row => row.sourceAssetId === null && row.status === "queued"));
+    assert.deepEqual((await jobs.createAcquisitions(input, fetcher)).map(r => r.id), rows.map(r => r.id));
+    assert.deepEqual((await jobs.createAcquisitions(input, async () => { throw new Error("Controlled metadata outage"); })).map(r => r.id), rows.map(r => r.id));
+    await assert.rejects(jobs.createAcquisitions({ ...input, files: [...input.files].reverse() }, fetcher), /conflict/);
+    await assert.rejects(jobs.ownedAcquisition(randomUUID(), rows[0].id), /owner/);
+    await jobs.cancelAcquisition(ownerId, rows[0].id); await jobs.executeAcquisition(rows[0].id, fetcher);
+    assert.equal((await jobs.ownedAcquisition(ownerId, rows[0].id)).status, "cancelled");
+    // Mimic a dead process after claim. Resume reads persisted intent; it does
+    // not require an in-memory queue record or fabricate a source on restart.
+    await pool.query("UPDATE processing_jobs SET status='processing',stage='downloading',metadata=(metadata::jsonb || $2::jsonb)::text WHERE id=$1", [rows[1].id, JSON.stringify({runId: "terminated-process"})]);
+    await pg.stop(); await pg.start();
+    await jobs.executeAcquisition(rows[1].id, fetcher);
+    const done = await jobs.ownedAcquisition(ownerId, rows[1].id); assert.equal(done.status, "complete"); assert.ok(done.sourceAssetId);
+    const firstCount = (await pool.query("SELECT count(*)::int AS n FROM wy_playlist_items WHERE playlist_id=$1", [input.batchId])).rows[0].n;
+    await jobs.executeAcquisition(done.id, fetcher);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM wy_playlist_items WHERE playlist_id=$1", [input.batchId])).rows[0].n, firstCount);
+    await pool.query("UPDATE processing_jobs SET status='queued' WHERE id=$1", [rows[0].id]);
+    badHash = true; // second file stays pinned; mutate its expected intent instead.
+    await pool.query("UPDATE processing_jobs SET metadata=jsonb_set(metadata::jsonb,'{expected,sha1}',to_jsonb($2::text))::text WHERE id=$1", [rows[0].id, "0".repeat(40)]);
+    await assert.rejects(jobs.executeAcquisition(rows[0].id, fetcher), /version or licence changed/);
+    const failed = await jobs.ownedAcquisition(ownerId, rows[0].id); assert.equal(failed.status, "failed"); assert.match(failed.errorMessage!, /version or licence changed/);
+    assert.equal(failed.sourceAssetId, null);
+    assert.equal((await db.select().from(schema.playlistItems).where(eq(schema.playlistItems.playlistId, input.batchId))).length, 1);
+  } finally { batchFiles = false; badHash = false; }
 });

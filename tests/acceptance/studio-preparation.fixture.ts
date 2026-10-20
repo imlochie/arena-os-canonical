@@ -123,3 +123,50 @@ Object.assign(window, { async verifyPreparationSourceRevision(state: Arrangement
       firstFetches: counts[`/api/assets/${first}`], neighborFetches: counts[`/api/assets/${second}`], replaySame: after === replay };
   } finally { engine.dispose(); window.fetch = originalFetch; await context.close(); }
 } });
+
+Object.assign(window, { async verifyWarmPreparationFailure(state: ArrangementPreviewState, fault: "clone" | "worker-error") {
+  const context = new AudioContext({ sampleRate: 44100 }), engine = new ArrangementPreparation();
+  const NativeWorker = window.Worker, originalFetch = window.fetch;
+  let inject = false, offline = false, fetches = 0;
+  window.fetch = (...args) => { fetches++; return offline ? Promise.reject(new TypeError("Controlled source outage")) : originalFetch(...args); };
+  window.Worker = class extends NativeWorker {
+    postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
+      if (inject) {
+        inject = false;
+        if (fault === "clone") { super.postMessage(() => {}); return; }
+        // Controlled host error event, not a fake DSP reply or actual OS crash.
+        queueMicrotask(() => this.dispatchEvent(new ErrorEvent("error", { message: "Controlled Worker failure" }))); return;
+      }
+      if (Array.isArray(options)) super.postMessage(message, options); else super.postMessage(message, options);
+    }
+  } as typeof Worker;
+  try {
+    const initial = await engine.prepare(state, context); inject = true; offline = true;
+    const edited = structuredClone(state); edited.masterVolume *= 0.5;
+    const failure = await engine.prepare(edited, context).then(() => "unexpected success", error => error.message);
+    const afterFailure = engine.diagnostics;
+    const recovered = await engine.prepare(edited, context);
+    let maximumError = 0;
+    for (let channel = 0; channel < 2; channel++) {
+      const before = initial.getChannelData(channel), after = recovered.getChannelData(channel);
+      for (let i = 0; i < before.length; i++) maximumError = Math.max(maximumError, Math.abs(after[i] - before[i] * 0.5));
+    }
+    return { failure, fetches, maximumError, frames: recovered.length, afterFailure, sha256: await stereoPcmHash(recovered) };
+  } finally { engine.dispose(); window.Worker = NativeWorker; window.fetch = originalFetch; await context.close(); }
+} });
+
+Object.assign(window, { async verifyPreparationBudgetRetry(state: ArrangementPreviewState) {
+  const context = new AudioContext({ sampleRate: 44100 }), engine = new ArrangementPreparation();
+  const decode = context.decodeAudioData.bind(context), originalFetch = window.fetch;
+  let fetches = 0; window.fetch = (...args) => { fetches++; return originalFetch(...args); };
+  // Controlled decoder metadata fault; actual tiny PCM is decoded by Chromium.
+  // Do not allocate 128MiB merely to prove rejection/cache accounting.
+  context.decodeAudioData = async bytes => {
+    const buffer = await decode(bytes); Object.defineProperty(buffer, "length", { value: 128 * 1024 * 1024 / 8 + 1 }); return buffer;
+  };
+  try {
+    const results = [];
+    for (let i = 0; i < 2; i++) results.push(await engine.prepare(state, context).then(() => "unexpected success", error => error.message));
+    return { results, fetches };
+  } finally { engine.dispose(); window.fetch = originalFetch; await context.close(); }
+} });

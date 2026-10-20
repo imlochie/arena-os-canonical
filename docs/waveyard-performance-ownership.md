@@ -211,3 +211,109 @@ claim that an immutable production asset was overwritten or that a real provider
 was offline. No sources, bank identities, sessions or DSP kernels were replaced.
 Genuine learned4/6stems, live authorised acquisition, recording/recovery
 replacement acceptance and actual Electron remain blocked/unaccepted. Gate CLOSED.
+
+## 2026-10-20 next mandate — recoverable encoded ownership alternative
+
+Re-anchored live PR15 at a8e015592e81fcd0916e5a0f97baf3f8721ec091, PR16 draft
+at349cd678/unmerged, PR14 open. Local HEAD had reset to f0e4180 while all files
+were restored to a8e0155. A temporary-index comparison against fetched a8e0155
+showed ZERO tracked differences and ZERO extra untracked files; only then a
+mixed metadata reset restored HEAD/index, preserving every working file. Prior
+push39313141508/PR39313146456 independently report completedSUCCESS. No branch
+switch, conflict resolution, PR merge or retarget occurred.
+
+### Lifecycle design and decision
+
+The original PR16 Worker-only source owner remains rejected/unmerged. A different
+minimal alternative was developed in an isolated a8e archive, without touching
+owner source ownership while investigating. Keep original encoded audio bytes in
+an immutable main-thread Blob only when smaller than decoded PCM. Before a
+successful reply retain decoded buffers, exactly as before; after success release
+a decoded copy ONLY if the independent encoded bytes remain. Warm edits reuse
+Worker PCM. Cancel/Worker error/clone failure still terminates CPU work, clears
+sent/stats, and a retry decodes its locally retained Blob without a network call.
+If encoding is not smaller, keep the decoded recovery copy instead. This means
+no source depends solely on a terminable Worker. No re-encoding/quality loss,
+new cache database, external service or second music collection. Blobs may use
+browser-managed backing storage; memory savings are not a promise of zero disk
+cost. Retry after Worker loss spends decode CPU instead of fetching again.
+Removal, source revision, sample-rate change and workspace dispose prune both
+representations. The128MiB logical selected-PCM budget counts either recovery
+representation once, including Worker-owned selections. A self-found prototype
+bug cached an oversized encoding before budget rejection, allowing retry to
+bypass the limit. New controlled-decoder-metadata browser regression reproduced
+that failure; fixed by rejecting the budget BEFORE caching and checking the
+known-selection budget upfront. Two consecutive oversized attempts now reject.
+No oversized real allocation or relaxed assertion was needed.
+
+Isolated variant fresh full-source1407/1407PASS; a8e baseline independently
+1407/1407PASS. Both same-session-branch local archive metadata, no candidate
+commits/pushes or owner Git mutation; receipts have exact dirty-content digests.
+Candidate isolated full music browsers58/58PASS, baseline58/58PASS, including
+warm-success→cancel/outage, warm native clone failure/outage, controlled Worker
+error-event/outage, cold native clone failure, individual source revision with
+stable global revision and unchanged neighbor, plus existing complete workflows.
+Worker error is a controlled browser event, not an OS-kill claim. New two-channel
+recovery comparisons have error0/one fetch. Source suites overlap, not additive.
+
+After these bounded acceptance checks the repaired variant—not PR16's strategy—
+was integrated into the owner implementation. Original PR16 stays draft and
+unmerged; no wholesale source/checksum wiring or conflicting branch was copied.
+Combined final-head source/browser/build/native acceptance is pending at this
+tracked documentation checkpoint; read the final exact-head receipt separately.
+
+### Fresh comparable memory measurements, not transferred historical figures
+
+Latest comparison: identical acquisition-enhanced a8e working-tree snapshots,
+sole production difference `arrangement-preparation.ts` baseline versus repaired
+variant (including budget fix). Shared installed dependencies, Node22.22.3,
+Chromium153, same private HTTP/PG/native ten-second stereo assets. Three serial
+runs each, B,C,C,B,B,C, no competing local suite/build. Existing 4/16/32-source
+harness, same full stereo hashes and441000frames/error0, real50ms Chromium
+actual-descendant-tree PSS. No new benchmark or counter-only memory claim.
+
+| Sources | Variant | Sampled peak MiB | Natural retained MiB | GC-assisted retained MiB | Cold ms | Replay ms | Edit ms | Max task gap ms |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+|4|baseline|290.48|290.48|269.74|358.5|0.2|18.4|13.9|
+|4|encoded recovery|287.16|287.16|252.69|346.4|0.2|18.0|15.2|
+|16|baseline|392.26|386.93|377.35|848.3|0.1|20.5|49.2|
+|16|encoded recovery|368.57|321.93|312.34|802.5|0.2|22.2|51.0|
+|32|baseline|526.59|521.35|515.27|1458.4|0.2|21.4|89.5|
+|32|encoded recovery|508.69|403.50|397.41|1414.4|0.2|22.2|93.4|
+
+At32:17.90MiB less sampled median peak;117.85MiB less natural retained median.
+Cold/edit complete stereo SHA256 match across all6runs for EACH workload, with
+the SAME hashes already listed in the prior review table above. Final candidate
+32-source peaks496.219/508.690/510.586MiB (baseline530.683/521.350/526.591).
+All three latest samples meet provisional512MiB, but this is NOT a general memory
+ceiling: the initial isolated candidate set measured median519.13MiB, and coarse
+sampling can miss instantaneous peaks. Earlier results remain in the receipts;
+no blanket whole-app/Next/inference/Electron performance-gate claim follows.
+
+Exact latest measurements/core source SHA, raw6logs, source-suite digests,
+recovery evidence and repair patch: `.data/acceptance/acquisition-next/`.
+`memory-comparison.json` identifies snapshots and the exact measured preparation
+source SHA256. `encoded-final-{baseline,candidate}-{1,2,3}.txt` hold raw results.
+Initial dependency failures (missing Chromium libnspr4 / worker local tsx/S3
+packages), syntax-fixture failure and concurrent browser timing failures are
+retained, not reported as passes. Local dependencies were restored from locked
+npm packages without changing manifests. Candidate first full browser54/56 failed
+because its worker executable/dependencies weren't linked; installed declared
+worker lockfile and reran. Later57/58 failed Session seek persistence, and owner
+58/59 failed natural-end/loop restart timing under concurrent workloads. Isolated
+complete58/58 candidate and58/58 baseline then passed unchanged assertions/timeouts;
+contention is not proven as the sole cause. Owner loop case also passes isolated.
+These historical failures remain reliability signals, not hidden by source green.
+
+Reproduce latest comparison from matching snapshots:
+
+```sh
+CHROMIUM_EXECUTABLE_PATH=/tmp/chromium LD_LIBRARY_PATH=/tmp/al2023/lib \
+  ARENA_MEMORY_CANDIDATE=baseline node --import ./scripts/register-src-loader.mjs \
+  --test --test-name-pattern='distinct-source preparation' tests/acceptance/studio-fx.test.mjs
+# Candidate: ARENA_MEMORY_CANDIDATE=encoded-recovery. Default on repaired owner is
+# encoded-recovery; explicit baseline mode retains its full decoded-byte gate.
+```
+
+Original SHA/version fixes remain intact. No real model weights or learned
+inference produced; replacement gate remains CLOSED irrespective of cache wins.

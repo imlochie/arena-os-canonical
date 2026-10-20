@@ -29,6 +29,7 @@ before(async () => {
   process.env.DATABASE_URL = f.url; process.env.WAVEYARD_STORAGE_DIR = path.join(root, "storage"); process.env.WAVEYARD_LOCAL_WORKER = "0"; delete process.env.REDIS_URL;
   database = await import("../../src/db/index.ts"); schema = await import("../../src/db/waveyardSchema.ts"); synth = await import("../../src/lib/waveyard/mixer/synth.ts");
   await register(/^\/api\/library\/catalogue$/, [], "library/catalogue");
+  await register(/^\/api\/library\/catalogue\/jobs$/, [], "library/catalogue/jobs");
   await register(/^\/api\/library\/catalogue\/([^/]+)$/, ["id"], "library/catalogue/[id]");
   await register(/^\/api\/waveyard\/separation\/models$/, [], "waveyard/separation/models");
   await register(/^\/api\/waveyard\/separation\/models\/([^/]+)\/import$/, ["id"], "waveyard/separation/models/[id]/import");
@@ -706,12 +707,12 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
       const gcRetainedPssBytes = await samplePss();
       await pageCdp.detach();
       console.log(JSON.stringify({ kind: "distinct-source-canonical-worker", retainedPssBytes, gcRetainedPssBytes,
-        implementation: process.env.ARENA_MEMORY_CANDIDATE ?? "baseline", sources: count, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result, scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak" }));
+        implementation: process.env.ARENA_MEMORY_CANDIDATE ?? "encoded-recovery", sources: count, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result, scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak" }));
       assert.equal(result.frames, 441000);
       assert.equal(result.latestEditError, 0);
       const expectedBytes = count * 441000 * 2 * 4;
       assert.equal(result.diagnostics.sourceBytes, expectedBytes);
-      assert.equal(result.diagnostics.decodedBytes, process.env.ARENA_MEMORY_CANDIDATE === "pr16" ? 0 : expectedBytes);
+      assert.equal(result.diagnostics.decodedBytes, (process.env.ARENA_MEMORY_CANDIDATE ?? "encoded-recovery") === "baseline" ? expectedBytes : 0);
       assert.match(result.pcmSha256, /^[a-f0-9]{64}$/);
       assert.match(result.editedPcmSha256, /^[a-f0-9]{64}$/);
       assert.ok(result.maximumGapMs < 250, `preparation-stage main-thread gap ${result.maximumGapMs}ms`);
@@ -843,4 +844,108 @@ test("catalogue controlled HTTP → review/preview → actual import → reopene
   await fileInput.setInputFiles({name:"wrong.onnx",mimeType:"application/octet-stream",buffer:Buffer.alloc(weightBytes.length,7)});await expect(page.getByText(/does not match pinned/)).toBeVisible();
   await fileInput.setInputFiles({name:"controlled-contract-not-a-model.onnx",mimeType:"application/octet-stream",buffer:weightBytes});await expect(page.getByText(/Exact pinned bytes verified. No inference has run/)).toBeVisible();
   const { getModelFileStatus }=await import("../../src/lib/waveyard/separation/seed.ts");assert.equal((await getModelFileStatus(spec)).acquisition.kind,"owner-supplied-file");
+});
+
+async function verifyAcquisitionBatch(t, files, realRecording = false) {
+  let blockDownload = false;
+  const originalFetch = globalThis.fetch, { createHash } = await import("node:crypto");
+  const licence = realRecording ? "https://creativecommons.org/licenses/by/3.0/" : "https://creativecommons.org/publicdomain/zero/1.0/";
+  const identifier = realRecording ? "controlled-licensed-excerpt" : "controlled-multi-file";
+  const title = realRecording ? "Slow Motion Dream — publisher-licensed excerpt" : "Owned batch recordings";
+  catalogueProviderHandler = url => {
+    const pathname = url.pathname.replace("/archive-controlled", "");
+    if (pathname === "/advancedsearch.php") return Response.json({ response: { docs: [{ identifier, title, creator: realRecording ? "Steven M Bryant; Ft CSoul, Alex Beroza & Robert Siekawitch" : "Arena test", licenseurl: licence }] } });
+    if (pathname === `/metadata/${identifier}`) return Response.json({ metadata: { identifier, title, creator: realRecording ? "Steven M Bryant" : "Arena test", mediatype: "audio", licenseurl: licence }, files: files.map(file => ({ name: file.name, size: String(file.bytes.length), sha1: createHash("sha1").update(file.bytes).digest("hex") })) });
+    const file = files.find(f => pathname === `/download/${identifier}/${f.name}`);
+    return file ? new Response(file.bytes, { headers: { "content-type": file.name.endsWith("mp3") ? "audio/mpeg" : "audio/wav", "content-length": String(file.bytes.length) } }) : new Response("missing", { status: 404 });
+  };
+  globalThis.fetch = (url, init) => {
+    if (blockDownload && String(url).startsWith(`https://archive.org/download/${identifier}/`)) return new Promise((_, reject) => {
+      const abort = () => reject(new DOMException("Controlled in-flight cancellation", "AbortError"));
+      if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener("abort", abort, { once: true });
+    });
+    return String(url).startsWith("https://archive.org/") ? originalFetch(`${origin}/archive-controlled${new URL(String(url)).pathname}${new URL(String(url)).search}`, init) : originalFetch(url, init);
+  };
+  process.env.WAVEYARD_LOCAL_WORKER = "1";
+  t.after(() => { globalThis.fetch = originalFetch; catalogueProviderHandler = undefined; });
+  const page = await browser.newPage(); t.after(() => page.close());
+  await page.goto(`${origin}/?room=catalogue`);
+  await page.getByLabel("Find public audio", { exact: true }).fill(title);
+  await page.getByRole("button", { name: "Search public audio", exact: true }).click();
+  await page.getByRole("button", { name: "Review source / available audio", exact: true }).click();
+  const enqueue = page.getByRole("button", { name: /Enqueue selected audio/ }); await expect(enqueue).toBeDisabled();
+  await page.getByRole("checkbox", { name: /I reviewed the recording/ }).check();
+  for (const file of [...files].reverse()) await page.getByRole("checkbox", { name: `Select ${file.name}`, exact: true }).check();
+  await enqueue.click();
+  await expect.poll(async () => {
+    const result = await api("/api/library/catalogue/jobs");
+    return result.jobs.filter(job => job.title === title).map(job => job.status);
+  }, { timeout: 30000 }).toEqual(files.map(() => "complete"));
+  const { jobs } = await api("/api/library/catalogue/jobs"); const completed = jobs.filter(job => job.title === title).sort((a,b) => a.index - b.index);
+  assert.deepEqual(completed.map(job => job.file), [...files].reverse().map(f => f.name));
+  assert.equal(new Set(completed.map(job => job.batchId)).size, 1);
+  const playlist = await database.db.select().from(schema.playlistItems).where(eq(schema.playlistItems.playlistId, completed[0].batchId));
+  assert.deepEqual(playlist.sort((a,b) => a.position - b.position).map(item => item.trackId), completed.map(job => job.outputTrackId));
+  await page.reload(); await expect(page.getByRole("link", { name: "Play verified library audio / open in Waveyard", exact: true }).first()).toBeVisible();
+  for (const job of completed) {
+    const detail = (await api(`/api/library/tracks/${job.outputTrackId}`)).track;
+    assert.match(detail.rights.attribution, realRecording ? /creativecommons.org\/licenses\/by\/3.0/ : /creativecommons.org\/publicdomain\/zero/);
+    const [provenance] = await database.db.select().from(schema.sourceAcquisitions).where(eq(schema.sourceAcquisitions.sourceAssetId, detail.source.id));
+    assert.equal(JSON.parse(provenance.metadata).fullyDecoded, true);
+    const asset = await dispatch(new URL(`/api/assets/${detail.source.id}`, origin));
+    const bytes = Buffer.from(await asset.arrayBuffer()); assert.deepEqual(bytes, files.find(f => f.name === job.file).bytes);
+    await page.goto(`${origin}/?room=player&track=${job.outputTrackId}`);
+    await expect(page.getByTestId("track-player")).toBeVisible(); await page.locator(".wplayer-play").click();
+    await expect.poll(async () => Number(await page.getByLabel("Seek", { exact: true }).inputValue())).toBeGreaterThan(0.05);
+    await page.locator(".wplayer-play").click();
+    await expect(page.getByRole("link", { name: "Open in Studio ↗", exact: true })).toHaveAttribute("href", `/waveyard/projects/${detail.studioProjectId}`);
+    // Deliberate original-audio bridge. No learned stems, no second library.
+    const passthrough = await import("../../src/app/api/stems/passthrough/route.ts");
+    const response = await passthrough.POST(new Request("http://fixture/api/stems/passthrough", { method: "POST", body: JSON.stringify({ sourceAssetId: detail.source.id }) }));
+    assert.ok(response.ok); const { remix } = await api(`/api/waveyard/projects/${detail.studioProjectId}/remixes`, "POST", { name: "Explicit unseparated acquisition" });
+    const arrangement = await api(`/api/remixes/${remix.id}`); assert.ok(arrangement.tracks.length);
+    console.log(JSON.stringify({ kind: "acquired-library-playback-studio", scope: realRecording ? "real publisher-granted MP3, controlled Archive provider boundary; NOT live Archive acquisition or inference" : "owned synthetic audio; controlled provider", jobId: job.id, trackId: job.outputTrackId, sourceId: detail.source.id, framesScope: "native full decoder + browser playback + existing Studio references", sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length, remixId: remix.id }));
+  }
+  if (!realRecording) {
+    const { randomUUID } = await import("node:crypto"); blockDownload = true;
+    const created = await api("/api/library/catalogue/jobs", "POST", { action: "create", batchId: randomUUID(), id: identifier, files: [files[0].name], rightsReviewed: true });
+    const id = created.jobs[0].id;
+    await expect.poll(async () => (await api("/api/library/catalogue/jobs")).jobs.find(job => job.id === id).status).toBe("processing");
+    await api("/api/library/catalogue/jobs", "POST", { action: "cancel", id });
+    assert.equal((await api("/api/library/catalogue/jobs")).jobs.find(job => job.id === id).status, "cancelled");
+    blockDownload = false;
+    // Retry immediately, while the old cancelled broker task may still be
+    // winding down. It must not be swallowed by active-job deduplication.
+    await api("/api/library/catalogue/jobs", "POST", { action: "retry", id });
+    await expect.poll(async () => (await api("/api/library/catalogue/jobs")).jobs.find(job => job.id === id).status, { timeout: 15000 }).toBe("complete");
+    const retried = (await api("/api/library/catalogue/jobs")).jobs.find(job => job.id === id);
+    assert.equal(retried.attempts, 2);
+    assert.equal(retried.outputTrackId, completed.find(job => job.file === files[0].name).outputTrackId);
+  }
+}
+test("multi-file reviewed acquisition uses durable jobs, preserves selected playlist order, reloads and plays the same library assets in Waveyard", async t => {
+  const files = [223, 337].map((frequency, i) => ({ name: `batch-${i}.wav`, bytes: Buffer.from(synth.encodeWav16(Float32Array.from({ length: 88200 }, (_, frame) => 0.2 * Math.sin(Math.floor(frame / 2) * frequency / 44100)), 44100)) }));
+  await verifyAcquisitionBatch(t, files);
+});
+if (process.env.ARENA_REAL_ACQUISITION_INPUT) test("publisher-granted real recording traverses queued acquisition, native validation, library and browser playback", async t => {
+  const bytes = await readFile(process.env.ARENA_REAL_ACQUISITION_INPUT);
+  const { createHash } = await import("node:crypto"); assert.equal(createHash("sha256").update(bytes).digest("hex"), "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507");
+  await verifyAcquisitionBatch(t, [{ name: "licensed-excerpt.mp3", bytes }], true);
+});
+
+for (const fault of ["clone", "worker-error"]) test(`successful render then warm ${fault} failure recovers during source outage without refetch`, async t => {
+  const { remixId } = await source(false, 1); const initial = await api(`/api/remixes/${remixId}`);
+  const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
+  const result = await page.evaluate(({ state, fault }) => window.verifyWarmPreparationFailure(state, fault), { state: { ...initial.remix, tracks: initial.tracks }, fault });
+  assert.notEqual(result.failure, "unexpected success"); assert.equal(result.fetches, 1);
+  assert.equal(result.maximumError, 0); assert.equal(result.frames, 44100);
+  assert.equal(result.afterFailure.sourceBytes, undefined); assert.match(result.sha256, /^[a-f0-9]{64}$/);
+});
+
+test("over-budget decoded metadata cannot seed an encoded recovery entry that bypasses rejection on retry", async t => {
+  const { remixId } = await source(false, 1); const initial = await api(`/api/remixes/${remixId}`);
+  const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
+  const result = await page.evaluate(state => window.verifyPreparationBudgetRetry(state), { ...initial.remix, tracks: initial.tracks });
+  for (const message of result.results) assert.match(message, /128 MiB.*budget/);
+  assert.equal(result.fetches, 2);
 });

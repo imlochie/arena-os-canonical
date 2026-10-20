@@ -2031,3 +2031,46 @@ rechecked: ELv2 explicitly prohibits substantial hosted/managed-service exposure
 NO code/dependency absorbed (GH licence API NOASSERTION is not permission).
 Real learned4/6stem/quality, live licensed catalogue/acquisition, full connected
 recording/recovery and actual Electron remain unaccepted. Gate CLOSED.
+
+### 2026-10-20 next mandate execution checkpoint
+
+Owner branch re-anchored to a8e0155 only after temporary-index equality proved
+all restored working files exactly matched it (metadata alone had reverted to
+f0e4180). Live PR15a8e/open, PR16draft349/unmerged, PR14open rechecked; prior exact
+CI JSON completedSUCCESS. No files overwritten during reconciliation. Locked
+root/worker deps and Chromium153 restored; Node22.22.3. No branch switch or merge.
+
+Implemented native ordered multi-file public Archive intake through existing
+Discover UI/processing_jobs/LocalJobBroker/library/playlists/private storage;
+no fake source before acquisition. Source FK nullable ONLY acquisition type,
+non-acquisition CHECK retained. Pinned digest/size/licence intent, persistent
+progress/events, owner guards, same-intent replay through metadata outage,
+cancel/immediate retry, real PG restart/explicit resume, native complete decode,
+physical output verification and atomic playlist/completion. Source/version drift
+fails safely. Existing playback/explicit unseparated Studio refs use same assets.
+Browser+native tests pass with two owned sources and separately real publisher
+CCBY3 excerpt from pinned GitHub; latter Archive provider seam controlled, NOT
+live Archive acceptance. Fresh real Archive preflight failed, no blocked retry.
+Exact original MP3SHA4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507.
+
+Memory investigation isolated on archived a8e copies/shared deps and same local
+session-branch metadata (no candidate commits/pushes). Encoded immutable Blob
+outside Worker recovers after warm cancel/clone/error without network; original
+PR16only-owner release rejected. Candidate and baseline1407sourcePASS each,
+isolated music58browserPASS each. Dependencies initially missing caused54/56;
+later timing failure57/58 and owner58/59 retained; unchanged isolated complete
+runs pass, contention not claimed proven cause. Own prototype budget-retry bypass
+reproduced, fixed before final combined acceptance. Repaired alternative now
+integrated as owner source edit, no PR16 merge. Latest comparable identical
+acquisition snapshots only preparation differs:3serialruns each, complete stereo
+SHA256 all6match each4/16/32;32peak526.59→508.69MiB/naturalretained521.35→403.50MiB.
+Earlier519.13candidate median preserved; no whole-app peak guarantee or inference/
+Electron acceptance. Raw/digests/patch/grant `.data/acceptance/acquisition-next/`;
+full detail appended existing performance doc/scorecard, no parallel ledger.
+
+Focused integration6Archive+8browser (overlap, not total),types/lint pass0errors
+48existingwarnings. Final combined source/build/browser/packaged native/CI
+pending at tracked documentation checkpoint. Final receipt/PR comment must name
+its exact SHA/digest/results, no a8e historical CI inheritance. Remaining live
+collection/acquisition/terms, genuine4/6stem inference/quality, full recording/
+recovery and actual Electron gates CLOSED. No authorised merge performed.

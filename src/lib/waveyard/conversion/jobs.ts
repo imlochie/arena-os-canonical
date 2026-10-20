@@ -127,6 +127,7 @@ export async function execute(id: string) {
       const result = await connection.query("UPDATE processing_jobs SET status=$3,stage=$3,metadata=$2,updated_at=now(),error_message=null WHERE id=$1 AND metadata::jsonb->>'runId'=$4 AND status <> 'cancelled' RETURNING id", [id, JSON.stringify(m), status, runId]);
       if (!result.rowCount) throw new Error("Conversion lease lost; late result not published.");
     };
+    if (!job.sourceAssetId) throw new Error("Conversion requires a verified local source asset.");
     const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, job.sourceAssetId));
     if (!source || source.projectId !== job.projectId || source.checksumSha256 !== m.sourceChecksum) throw new Error("Source identity changed or unavailable.");
     temp = await mkdtemp(join(tmpdir(), "arena-conversion-"));

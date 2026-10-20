@@ -83,6 +83,7 @@ export function newerAttemptReason(status: string): string {
  *  field the handler checks is on it — no queue record needed). In server
  *  mode this is a BullMQ `add` keyed by the row id; locally, the broker. */
 export async function enqueueFromRow(job: ProcessingJobRow): Promise<void> {
+  if (!job.sourceAssetId) throw new Error("Separation requires a verified source asset; acquisition is not separation.");
   const parentStemAssetId = parentStemAssetIdOf(job);
   await enqueueSeparation({
     processingJobId: job.id,

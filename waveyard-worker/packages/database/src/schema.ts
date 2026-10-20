@@ -75,7 +75,7 @@ export const sourceAssets = pgTable("source_assets", {
 export const processingJobs = pgTable("processing_jobs", {
   id: uuid("id").defaultRandom().primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").references(() => sourceAssets.id, { onDelete: "cascade" }),
   type: text("type").notNull(),
   status: text("status").notNull().default("queued"),
   priority: integer("priority").notNull().default(0),

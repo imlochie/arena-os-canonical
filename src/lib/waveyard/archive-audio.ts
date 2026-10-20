@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { safeFetch } from "../security/outbound-url";
+import { execTool } from "./ffmpeg";
 import { MAX_UPLOAD_BYTES } from "./audio";
 import { addTrackFromAudioFile } from "./library/service";
 
@@ -140,9 +141,9 @@ export async function searchArchiveAudio(query: string, fetcher = fetchPublic) {
       ];
     });
 }
-export async function inspectArchiveAudio(id: string, fetcher = fetchPublic) {
+export async function inspectArchiveAudio(id: string, fetcher = fetchPublic, signal?: AbortSignal) {
   idOf(id);
-  const data = await json(`https://archive.org/metadata/${id}`, fetcher);
+  const data = await json(`https://archive.org/metadata/${id}`, (url, init) => fetcher(url, { ...init, signal }));
   const meta = data.metadata;
   if (
     !meta ||
@@ -164,6 +165,7 @@ export async function inspectArchiveAudio(id: string, fetcher = fetchPublic) {
   const licence = archiveLicence(meta.licenseurl);
   const files: Array<{
     name: string;
+    title: string;
     bytes: number;
     previewUrl: string;
     importEligible: boolean;
@@ -190,6 +192,7 @@ export async function inspectArchiveAudio(id: string, fetcher = fetchPublic) {
         return [
           {
             name,
+            title: text(file.title),
             bytes,
             sha1:
               typeof file.sha1 === "string" && /^[a-f0-9]{40}$/i.test(file.sha1)
@@ -221,6 +224,9 @@ export async function importArchiveAudio(
     file: string;
     rightsReviewed: boolean;
     signal?: AbortSignal;
+    onStage?: (stage: "verifying-audio" | "publishing") => Promise<void>;
+    onProgress?: (received: number, total: number) => Promise<void>;
+    expected?: { sha1: string; bytes: number; licenceUrl: string };
   },
   fetcher = fetchPublic,
 ) {
@@ -231,7 +237,7 @@ export async function importArchiveAudio(
     );
   // Re-fetch rights and file eligibility on the server; never trust a search
   // card, client licence field, arbitrary URL or previously signed audio URL.
-  const item = await inspectArchiveAudio(input.id, fetcher);
+  const item = await inspectArchiveAudio(input.id, fetcher, input.signal);
   if (!item.licence)
     throw new Error("No unambiguous supported remix licence; reference only.");
   const file = item.files.find((file) => file.name === input.file);
@@ -239,6 +245,8 @@ export async function importArchiveAudio(
     throw new Error(
       "Selected audio file is unavailable or exceeds the intake limit.",
     );
+  if (input.expected && (file.sha1 !== input.expected.sha1 || file.bytes !== input.expected.bytes || item.licence.url !== input.expected.licenceUrl))
+    throw new Error("Selected Archive version or licence changed. Inspect the collection again before creating a new request.");
   const signal = input.signal
     ? AbortSignal.any([input.signal, AbortSignal.timeout(120000)])
     : AbortSignal.timeout(120000);
@@ -264,12 +272,8 @@ export async function importArchiveAudio(
       transform(chunk: Buffer, _encoding, done) {
         received += chunk.length;
         sourceHash.update(chunk);
-        done(
-          received > file.bytes || received > MAX_UPLOAD_BYTES
-            ? new Error("Archive audio exceeded its declared size.")
-            : null,
-          chunk,
-        );
+        if (received > file.bytes || received > MAX_UPLOAD_BYTES) return done(new Error("Archive audio exceeded its declared size."));
+        Promise.resolve(input.onProgress?.(received, file.bytes)).then(() => done(null, chunk), done);
       },
     });
     await pipeline(
@@ -288,6 +292,10 @@ export async function importArchiveAudio(
     if (received !== file.bytes)
       throw new Error("Archive audio was truncated; nothing imported.");
     signal.throwIfAborted();
+    await input.onStage?.("verifying-audio");
+    await execTool("ffmpeg", ["-nostdin", "-v", "error", "-xerror", "-i", path, "-map", "0:a:0", "-f", "null", "-"], { signal, timeoutMs: 120000 });
+    signal.throwIfAborted();
+    await input.onStage?.("publishing");
     return await addTrackFromAudioFile({
       ownerId: input.ownerId,
       filePath: path,
@@ -301,7 +309,7 @@ export async function importArchiveAudio(
           ".m4a": "audio/mp4",
         } as Record<string, string>
       )[file.name.slice(file.name.lastIndexOf(".")).toLowerCase()],
-      title: item.title,
+      title: file.title || (item.files.length > 1 ? `${item.title} — ${file.name}` : item.title),
       artist: item.artist,
       prepareSeparation: false,
       provenance: {
@@ -316,6 +324,7 @@ export async function importArchiveAudio(
           file: file.name,
           providerSha1: file.sha1,
           downloadedSha1,
+          fullyDecoded: true,
           licence: item.licence,
           attribution: `${item.title} — ${item.artist}; ${item.sourceUrl}; ${item.licence.url}. Describe modifications and retain applicable notices on export.`,
           rightsReviewed: true,

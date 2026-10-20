@@ -167,3 +167,75 @@ browser/controller/Worker tests nowPASS; PCM7PASS/types/lintPASS. Broad final-he
 source/browser/build/staged-native receipts pending at this checkpoint, not
 inherited. Historical failed instrumentation preserved/excluded from table.
 No changed replacement/inference/acquisition/Electron claim. Gate CLOSED.
+
+### 2026-10-20 next mandate — durable collection-file acquisition + recovery
+
+**Acquisition implemented:** on existing Discover/Archive interface inspect an
+eligible public audio item (an album/file group, NOT arbitrary nested Archive
+collections), review rights, select files in desired order, Enqueue selected.
+Requires existing in-process Waveyard worker (desktop/local mode without Redis).
+`processing_jobs` persists stable batch/index/file/provider-SHA1/size/licence
+intent, statuses/stages/bytes/attempts/failures/publications. Same batch request
+replays saved intent even during metadata outage, never mutates it to another
+selection. Existing LocalJobBroker executes serially; PG advisory locks + run IDs
+fence other processes/cancel/late writes. Explicit Resume after runtime restart
+restarts the download; Retry is explicit for failed/cancelled items. Cancellation
+near publication may leave verified library audio, retained and linked rather
+than erased or falsely called absent. Attempt history survives retry. Active
+cancel→immediate retry tested through real API/broker, not swallowed by active-ID
+deduplication. No new downloader process, queue framework or parallel library.
+
+Source asset FK is now nullable ONLY for acquisition via a database CHECK;
+other job types still require source identity. No placeholder audio created.
+Desktop0024/server0025 migrations, matching worker schema and explicit
+conversion/separation guards preserve existing invariants. Import revalidates
+rights/file version, checks exact byte count/provider SHA1, performs complete
+native FFmpeg decode with `-xerror`, then uses existing checksum-locked library
+intake. Completed publication rechecks actual private stored SHA256/length and
+owner/source identity. Completion and membership in the existing library playlist
+are atomic; selected order survives out-of-order completion/retry. Same output
+is played in current TrackPlayer and referenced in existing Waveyard project;
+explicit unseparated bridge remains clearly labelled, not inferred stems.
+
+**Executed bounded proof:** existing PG/native Archive contracts6/6, including
+cancelled queued work, provider version change/no publication, same-batch offline
+replay, wrong-owner refusal, duplicate request/output and actual PG stop/start
+resume. Real-browser two-file selection→jobs→ordered playlist→reload→actual
+playback→same source/Studio references passes; active cancel/retry completes
+without duplicate library track. Separate opt-in real recording uses original
+CCBY3 publisher excerpt *Slow Motion Dream*, Steven M Bryant/Ft CSoul/Alex Beroza/
+Robert Siekawitch. Actual GitHub blobcc91788843d20ae7af169d6e0f72c2c5658fdb39
+retrieved262867bytes/SHA4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507;
+publisher-specific media grant at pinned Deezer/Spleeter README c8854001.
+Then queued native full-decode/import/provenance/download exact bytes/browser
+playback/explicit source-only Studio reference passes. **Archive boundary remains
+controlled in this run**, not a real Archive upload/listing/collection or live
+provider authorisation claim. Media grant is a publisher statement, not code
+licence or independently warranted authorship. Real file retained in ignored
+`.data/acceptance/acquisition-next/`, not made an essential shipped dependency.
+
+**Still NOT established:** live Archive inspection/acquisition (fresh request
+failed `TypeError: fetch failed` here), provider terms/region/uploader authority,
+nested collection traversal, byte-range resumption/automatic startup rescheduling
+or arbitrary commercial-service acquisition. Spotify/Apple/Tidal references are
+not downloadable audio. No DRM/access bypass or nominal support claim. This is
+an implemented/tested native slice with real-audio downstream proof, NOT the
+required complete live real-world acquisition acceptance. Recorded-source
+notices are visible/downloadable; automatic export notice propagation unfinished.
+
+**Memory:** original PR16 remains draft/unmerged. Independently developed encoded
+Blob recovery retains a usable source outside terminable Worker, releasing a
+decoded copy only after success and only when smaller original bytes survive.
+Warm cancel, warm clone/error during source outage retain1fetch/error0; individual
+revision/neighbor isolation and full stereo hashes preserved. Isolated baseline
+and candidate each1407sourcePASS/58browserPASS; overlaps not summed. A self-found
+budget-retry bypass was reproduced and fixed before combined verification.
+Latest comparable3runs each:32-source median PSS peak526.59→508.69MiB, natural
+retained521.35→403.50MiB; all6 cold/edit hashes match at4/16/32. Latest3peaks
+below512MiB, earlier candidate set median519.13MiB remains a limitation, not
+whole-app performance acceptance. Details/history: performance-ownership append.
+Repaired alternative integrated as source edits, NOT a merge of PR16. Final
+combined-head broad source/browser/build/native/CI pending at this checkpoint;
+final exact-head receipt closes it without borrowing historical checks.
+Genuine learned4/6stem quality, full real source→model→session→export and actual
+Electron still unaccepted. **Replacement gate CLOSED.**

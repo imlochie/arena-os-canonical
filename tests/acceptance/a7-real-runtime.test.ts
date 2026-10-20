@@ -190,7 +190,7 @@ function runAcceptanceSuite(): void {
 
   type FailedJob = ProcessingJobInsert & { id: string; projectId: string; sourceAssetId: string };
 
-  async function insertFailedJob(overrides: Partial<ProcessingJobInsert> = {}): Promise<FailedJob> {
+  async function insertFailedJob(overrides: Partial<Omit<ProcessingJobInsert, "sourceAssetId">> & { sourceAssetId?: string } = {}): Promise<FailedJob> {
     const { projectId, sourceId } = await createProject();
     const id = randomUUID();
     const values: FailedJob = {
