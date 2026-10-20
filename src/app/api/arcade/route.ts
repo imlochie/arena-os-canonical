@@ -11,6 +11,9 @@ import { insertArcadeGame } from "@/lib/arcadeStore";
 import { isEphemeralBody, logPrivacyEvent } from "@/lib/privacy";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireApiAccess } from "@/lib/security/api-access";
+import { validateGameRuntime } from "@/lib/games/runtime-validation";
+import { beginAttempt, checkpointAttempt, finishAttempt } from "@/lib/games/attempts";
+import { randomUUID } from "node:crypto";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -77,6 +80,28 @@ export async function POST(req: Request) {
           const core = generateGameOffline(prompt, body.gameType);
           if (core.code === code) engine = core.engine;
         } catch { /* custom code remains on-device-ai */ }
+      }
+      // Byte-identical built-in cores retain their trusted offline path.
+      // Arbitrary on-device/client HTML cannot bypass the browser gate.
+      if (engine === "on-device-ai") {
+        const draft = { code, validation: v, runtime: { modelId: "client-reported-on-device", backend: "browser", ms: 0 } };
+        let cursor;
+        if (!ephemeral) {
+          const begun = await beginAttempt(user.id, body.attemptId ?? randomUUID(), prompt || "Client game", parentId);
+          if (!begun.created) return Response.json({ error: "Attempt already exists; inspect or retry saving its exact retained bytes.", attemptId: begun.cursor.id }, { status: 409 });
+          cursor = await checkpointAttempt(begun.cursor, { state: "validated" }, draft);
+        }
+        const runtimeValidation = await validateGameRuntime(code);
+        if (!runtimeValidation.ok) {
+          if (cursor) await checkpointAttempt(cursor, { state: "failed", error: runtimeValidation.issues.join("; ") }, { ...draft, runtimeValidation });
+          return Response.json({ error: runtimeValidation.issues.join("; "), draft: { ...draft, runtimeValidation }, attemptId: cursor?.id }, { status: runtimeValidation.status === "unavailable" ? 503 : 422 });
+        }
+        if (cursor) {
+          const game = await finishAttempt(cursor, code, gameType, engine, runtimeValidation);
+          return Response.json({ game, validation: v, runtimeValidation, attemptId: cursor.id }, { status: 201 });
+        }
+        // Ephemeral still needs runtime verification, but never writes a draft.
+        return Response.json({ game: { id: `ephemeral-${Date.now().toString(36)}`, ephemeral: true, prompt, gameType, code, engine }, runtimeValidation });
       }
       if (ephemeral) {
         await logPrivacyEvent("ephemeral_arcade", `engine=${engine} type=${gameType}`);
