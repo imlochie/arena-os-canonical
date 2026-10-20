@@ -1,0 +1,65 @@
+name: Spaces real workshop and recovery acceptance
+on:
+  push:
+    branches: [product/spaces-workshop-proof]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: spaces-workshop-${{ github.ref }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Typecheck and focused source contracts
+        run: |
+          mkdir -p .data/spaces-workshop-acceptance
+          git rev-parse HEAD > .data/spaces-workshop-acceptance/source-commit.txt
+          npm run typecheck 2>&1 | tee .data/spaces-workshop-acceptance/typecheck.txt
+          npx eslint src/lib/spaces/mission-evidence.ts src/lib/spaces/mission-evidence.test.ts 2>&1 | tee .data/spaces-workshop-acceptance/lint.txt
+          node --import ./scripts/register-src-loader.mjs --test src/lib/spaces/mission-evidence.test.ts 2>&1 | tee .data/spaces-workshop-acceptance/focused.tap
+      - name: Preserve existing real mission/recovery/workbench acceptance
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/mission-recovery.test.mjs 2>&1 | tee .data/spaces-workshop-acceptance/existing-recovery.tap
+      - name: Build actual application
+        env:
+          DATABASE_URL: postgres://postgres@127.0.0.1:1/build-no-connect
+        run: npm run build 2>&1 | tee .data/spaces-workshop-acceptance/build.txt
+      - name: Real Next workbench to workspace tests, Artifacts and restart/reconciliation
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/spaces-workshop.test.mjs 2>&1 | tee .data/spaces-workshop-acceptance/workshop.tap
+      - name: Complete isolated source suite without weakening gates
+        run: npm test 2>&1 | tee .data/spaces-workshop-acceptance/source-suite.tap
+      - name: Retain evidence including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spaces-workshop-evidence-${{ github.run_id }}
+          path: |
+            .data/spaces-workshop-acceptance/*.json
+            .data/spaces-workshop-acceptance/*.txt
+            .data/spaces-workshop-acceptance/*.tap
+            .data/spaces-workshop-acceptance/*.log
+            .data/acceptance/source-suite/*.json
+          retention-days: 90
+      - name: Retain actual user-workflow browser trace and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spaces-workshop-browser-${{ github.run_id }}
+          path: |
+            .data/spaces-workshop-acceptance/*.png
+            .data/spaces-workshop-acceptance/*.zip
+          retention-days: 90
