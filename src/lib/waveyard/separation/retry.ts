@@ -20,6 +20,7 @@
  * would let a retry be triggered for a target another request just took.
  */
 
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 
 import type { drizzle } from "drizzle-orm/node-postgres";
@@ -37,7 +38,7 @@ export type RetryOutcome =
       queued: false;
       /** Why not — the route maps it: a conflict (409) or an executor that
        *  refused (503). */
-      kind: "not-found" | "not-retryable" | "newer-attempt" | "queue-refused";
+      kind: "not-found" | "not-retryable" | "newer-attempt" | "queue-refused" | "handoff-uncertain";
       reason: string;
     };
 
@@ -45,7 +46,7 @@ export type RetryOptions = {
   /** How the claimed row reaches an executor. Default: a fresh local-broker /
    *  queue payload rebuilt from the row. Server mode passes BullMQ's
    *  `queueJob.retry()`. Invoked ONLY after the row is claimed; a throw
-   *  restores the row to exactly its failed state. */
+   *  restores only its own still-queued claim; advanced state is preserved. */
   handOff?: (job: ProcessingJobRow) => Promise<unknown>;
 };
 
@@ -174,11 +175,12 @@ export async function retrySeparationJob(db: SeparationDb, jobId: string, option
 
   // The claim: under the active-only unique index this UPDATE is refused
   // (unique_violation) if a fresh attempt took the key in the meantime.
+  const retrySubmissionId = randomUUID();
   let claimed: Array<{ id: string }>;
   try {
     claimed = await db
       .update(processingJobs)
-      .set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date(), metadata: sql`(${processingJobs.metadata}::jsonb || ${JSON.stringify({ executionHistory: executionHistory(job) })}::jsonb)::text` })
+      .set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date(), metadata: sql`(${processingJobs.metadata}::jsonb || ${JSON.stringify({ executionHistory: executionHistory(job), retrySubmissionId })}::jsonb)::text` })
       .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "failed")))
       .returning({ id: processingJobs.id });
   } catch (error) {
@@ -190,9 +192,10 @@ export async function retrySeparationJob(db: SeparationDb, jobId: string, option
   try {
     await (options.handOff ?? enqueueFromRow)(job);
   } catch (error) {
-    // The executor did not take it: the row goes back to exactly the failed
-    // state it was in, so nothing is left "queued" that no executor holds.
-    await db
+    // A refusal/timeout is not proof of non-delivery. Roll back only THIS
+    // still-queued submission, never a claimed/completed/cancelled executor
+    // or a later retry which returned to queued (the ABA case).
+    const restored = await db
       .update(processingJobs)
       .set({
         status: "failed",
@@ -203,7 +206,9 @@ export async function retrySeparationJob(db: SeparationDb, jobId: string, option
         completedAt: job.completedAt,
         updatedAt: new Date(),
       })
-      .where(eq(processingJobs.id, job.id));
+      .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "queued"), sql`${processingJobs.metadata}::jsonb->>'retrySubmissionId' = ${retrySubmissionId}`))
+      .returning({ id: processingJobs.id });
+    if (!restored.length) return { queued: false, kind: "handoff-uncertain", reason: "The queue acknowledgement was lost, but this job has advanced or another retry owns it. Its current state and audio were preserved. Refresh job status; do not automatically submit duplicate work." };
     return {
       queued: false,
       kind: "queue-refused",

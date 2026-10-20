@@ -12,6 +12,7 @@ import { missionPostgres } from "../helpers/mission-postgres";
 import { projects, sourceAssets, processingJobs, stemAssets } from "../../src/db/waveyardSchema";
 import { encodeWav16 } from "../../src/lib/waveyard/mixer/synth";
 import { LocalStorageProvider } from "../../src/lib/waveyard/storage";
+import { retrySeparationJob } from "../../src/lib/waveyard/separation/retry";
 import { ownerIdentity, ownerState } from "../../src/lib/waveyard/separation/recovery";
 import { resolveToolPath } from "../../src/lib/waveyard/ffmpeg";
 import { writeStubDeepEngine } from "../../src/lib/waveyard/separation/deep-fixtures";
@@ -75,6 +76,20 @@ test("native separation real SIGKILL/restart matrix", { timeout: 360000 }, async
         assert.deepEqual(new Set((await pg.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, row.id))).map(s => s.id)), new Set(before.map(s => s.id)));
       });
     }
+    await t.test("lost retry handoff acknowledgement preserves the committed native bank", async () => {
+      const row = await job();
+      await pg.database.update(processingJobs).set({ status: "failed", stage: "failed", errorCode: "queue_unavailable" }).where(eq(processingJobs.id, row.id));
+      const result = await retrySeparationJob(pg.database, row.id, { handOff: async () => {
+        await worker(row, "execute").done();
+        await assertBank(row, 4);
+        throw new Error("queue accepted and executor finished, but acknowledgement was lost");
+      } });
+      assert.equal(!result.queued && result.kind, "handoff-uncertain");
+      const before = await assertBank(row, 4);
+      await recover(row);
+      const after = await assertBank(row, 4);
+      assert.deepEqual(JSON.parse(after.metadata).execution, JSON.parse(before.metadata).execution);
+    });
     await t.test("queued restart has no phantom executor", async () => {
       const row = await job(); const w = worker(row, "execute", "before-claim"); await w.at("before-claim"); await w.kill();
       const m = await worker(row, "startup").done(); assert.ok(m.some(v => v.queued === row.id));
