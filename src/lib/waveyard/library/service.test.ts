@@ -1214,3 +1214,29 @@ test("library and session payloads retain persisted model identity for honest re
     await db.db.update(schema.stemAssets).set({ model: "pcm-tone" }).where(eq(schema.stemAssets.id, residual.id));
   }
 });
+
+test("decoded bank duration overrides compressed-container padding through session and Studio handoff", async () => {
+  const file = path.join(root!, "fractional-bank.wav"); writeWav(file, 1.23456, 791);
+  const { track } = await service.addTrackFromAudioFile({ ownerId: OWNER, filePath: file, filename: "Fractional duration fixture.wav", mimeType: "audio/wav", prepareSeparation: false });
+  const [row] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, track.id));
+  const exact = Math.floor(1.23456 * 44100) / 44100;
+  // Reproduce MP3 encoder padding without pretending this controlled WAV is
+  // trained inference. Source/library container metadata must remain intact.
+  await db.db.update(schema.tracks).set({ durationSeconds: exact + .039 }).where(eq(schema.tracks.id, row.id));
+  const [job] = await db.db.insert(schema.processingJobs).values({ projectId: row.projectId, sourceAssetId: row.sourceAssetId, type: "separation", status: "complete", stage: "complete", model: "controlled-duration", requestedDevice: "cpu", idempotencyKey: `controlled-duration:${track.id}` }).returning();
+  const { getStorage } = await import("../storage"); const storage = getStorage();
+  for (const stemType of ["vocals", "drums", "bass", "other"]) {
+    const key = `duration-fixture/${job.id}/${stemType}.wav`; const destination = storage.getLocalPath(key)!;
+    mkdirSync(path.dirname(destination), { recursive: true }); copyFileSync(file, destination);
+    await db.db.insert(schema.stemAssets).values({ projectId: row.projectId, sourceAssetId: row.sourceAssetId, separationJobId: job.id, stemType, engine: "controlled-duration-fixture", model: "controlled-duration", modelVersion: "not-inference", storageKey: key, checksumSha256: createHash("sha256").update(readFileSync(file)).digest("hex"), durationSeconds: exact, sampleRate: 44100, channels: 1, codec: "pcm_s16le", format: "wav", fileSizeBytes: readFileSync(file).length });
+  }
+  const detail = await service.getTrack(OWNER, track.id, { bankId: job.id }); assert.ok(detail);
+  assert.equal(detail.durationSeconds, exact);
+  const sessions = await import("./session-service"); const session = await sessions.createSession(OWNER, "Fractional decoded bank");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: track.id, bankId: job.id });
+  const reread = await sessions.getSession(OWNER, session.id); assert.equal(reread.tracks[0].track.durationSeconds, exact);
+  const handoff = await sessions.sendSessionToStudio(OWNER, session.id); assert.equal(handoff.remixTrackCount, 4);
+  const clips = await db.db.select({ durationMs: schema.remixClips.durationMs }).from(schema.remixClips).innerJoin(schema.remixTracks, eq(schema.remixTracks.id, schema.remixClips.remixTrackId)).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
+  assert.equal(clips.length, 4); assert.ok(clips.every(clip => Math.abs(clip.durationMs - exact * 1000) < 1));
+  const [unchanged] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, track.id)); assert.equal(unchanged.durationSeconds, exact + .039);
+});

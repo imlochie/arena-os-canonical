@@ -633,7 +633,9 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string, tr
       const assets = await db.select().from(stemAssets).where(inArray(stemAssets.id, [...new Set(clips.map((clip) => clip.stemAssetId))]));
       if (clips.some((clip) => {
         const asset = assets.find((candidate) => candidate.id === clip.stemAssetId);
-        return !asset || !Number.isFinite(asset.durationSeconds) || clip.sourceOffsetMs + clip.durationMs > asset.durationSeconds * 1000;
+        // Studio clips have integer-ms boundaries. Permit only the final
+        // sub-millisecond quantization ceiling, never container padding.
+        return !asset || !Number.isFinite(asset.durationSeconds) || clip.sourceOffsetMs + clip.durationMs > Math.ceil(asset.durationSeconds * 1000);
       })) { invalid = `a saved stem or swap is missing or shorter than its timeline range`; break; }
       itemLanes.push({ stemAssetId: stem.id, name: `${item.track.title} — ${stem.stemType}`, volume: item.stemMix[stem.stemType] ?? 1, clips, ...(placement ? { points: sessionVolumePoints(placement, stem.stemType, item.stemMix[stem.stemType] ?? 1) } : {}) });
     }

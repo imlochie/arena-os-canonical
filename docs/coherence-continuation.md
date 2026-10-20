@@ -2179,3 +2179,32 @@ with explicit `include-hidden-files` and adding a Checks annotation/summary of
 the actual receipt plus first TAP failure makes the next failure diagnosable
 through the permitted GitHub API. This changes observation, not model sources
 or success criteria. No genuine gate is accepted from this failed run.
+
+### A8 genuine four-source inference executed; music handoff defect reproduced
+
+Hosted run39388689911 / job118514680247 on `08849deccbc47fdf028c94b25ab0c928fa5929aa`
+acquired the authoritative htdemucs checkpoint, prepared Python3.11.17 /
+Demucs4.0.1 / torch2.0.1+cpu, and ran the genuine music job via the native player.
+Checkpoint full SHA256:
+`8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4`;
+resolved dependency-record SHA256:
+`2c28fce643caf5d343940bee38b04a1f6469d620e6f6cc235d50ec41d880611e`.
+Publisher recording262867bytes matched the pinned SHA; independent decode
+479832stereo frames at44100Hz, PCM SHA256
+`89c6a2fc2ed54f49eb3289d362aaa2bf2d6caeec2779d2e0cb67f9e153e7fb79`.
+A/B/C and browser player/session controls/reopen executed for four-source
+Demucs, not MDX, not Electron and not semantic stem-quality approval. The test
+FAILED F at actual Studio handoff409: the MP3 container's padded10.919184s
+library duration exceeded the decoded bank's10.880544s. Six-source had not run.
+Artifact12248542229 (`a8-genuine-08849de...`,16018378bytes) retained original,
+stems, attribution and failure trace; the first annotation was truncated at4KiB.
+
+Repair uses the selected completed bank's actual stem durations in getTrack,
+without mutating original container/source metadata or selecting another bank.
+Handoff permits only Studio's integer-ms quantization ceiling, not a padding
+waiver or relaxed frame/source validation. Controlled native-PG regression
+reproduces the padded-duration case through session and handoff and checks
+source metadata remains unchanged; full library/session arrangement33/33 PASS,
+types PASS. Numbered sub4KiB annotations now preserve the full compact receipt
+instead of losing the model/output sections. A fresh genuine run follows; F,
+six-source, D and overall replacement remain open until independently evidenced.

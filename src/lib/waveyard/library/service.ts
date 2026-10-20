@@ -83,6 +83,8 @@ export type AssetSelection = { assetIds: string[]; kind: "stems" | "source" };
 export interface SeparationBank { id: string; model: string; createdAt: string; stems: TrackStem[] }
 
 export interface TrackStem {
+  /** Decoded/published audio duration, not the original container estimate. */
+  durationSeconds?: number;
   separationJobId?: string;
   /** Registry model identity is required to distinguish MDX melody from deep residual. */
   model?: string | null;
@@ -372,7 +374,7 @@ export async function getTrack(ownerId: string, trackId: string, selection?: Ass
   if (source === undefined) return null;
 
   const publishedRows = await db
-    .select({ id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine, model: stemAssets.model, separationJobId: stemAssets.separationJobId, createdAt: stemAssets.createdAt, jobStatus: processingJobs.status, jobModel: processingJobs.model })
+    .select({ durationSeconds: stemAssets.durationSeconds, id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine, model: stemAssets.model, separationJobId: stemAssets.separationJobId, createdAt: stemAssets.createdAt, jobStatus: processingJobs.status, jobModel: processingJobs.model })
     .from(stemAssets)
     .innerJoin(processingJobs, eq(processingJobs.id, stemAssets.separationJobId))
     .where(eq(stemAssets.sourceAssetId, row.sourceAssetId))
@@ -425,6 +427,12 @@ export async function getTrack(ownerId: string, trackId: string, selection?: Ass
       ? { assetIds: realStems.map((stem) => stem.id), kind: "stems" as const }
       : { assetIds: [passthrough?.id ?? source.id], kind: "source" as const };
 
+  // Compressed container timestamps can include encoder delay/padding. A
+  // pinned learned bank plays its validated decoded assets, not that estimate.
+  // Do not mutate the source/library metadata or choose a different bank.
+  const playbackDuration = playback.kind === "stems" && realStems.length > 0 && realStems.every(stem => typeof stem.durationSeconds === "number" && Number.isFinite(stem.durationSeconds) && stem.durationSeconds > 0)
+    ? Math.min(...realStems.map(stem => stem.durationSeconds!)) : row.durationSeconds;
+
   const [acquisition] = await db.select({ method: sourceAcquisitions.method, sourceUrl: sourceAcquisitions.sourceUrl, metadata: sourceAcquisitions.metadata }).from(sourceAcquisitions).where(eq(sourceAcquisitions.sourceAssetId, source.id)).limit(1);
   let rights: TrackDetail["rights"] = null;
   try {
@@ -433,6 +441,7 @@ export async function getTrack(ownerId: string, trackId: string, selection?: Ass
   } catch { /* Invalid provenance is not invented permission. */ }
   return {
     ...toSummary(row, availability),
+    durationSeconds: playbackDuration,
     rights,
     source: {
       id: source.id,

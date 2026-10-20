@@ -8,11 +8,15 @@ try { receipt = JSON.parse(await readFile(path.join(directory, 'receipt.json'), 
 catch { receipt = { error: 'No inference receipt was produced: acceptance did not reach its test body.', gates: 'NOT ACCEPTED' }; }
 const tap = await readFile(path.join(directory, 'run.tap'), 'utf8').catch(() => 'No TAP file was produced.');
 const failure = tap.includes('not ok') ? tap.slice(tap.indexOf('not ok')).slice(0, 18000) : tap.slice(-2500);
-const compact = { commit: process.env.GITHUB_SHA, scope: receipt.scope, source: receipt.source, gates: receipt.gates, error: receipt.error, engines: receipt.engines?.map(engine => ({ model: engine.model, checkpoint: engine.checkpoint, preparation: { state: engine.preparation?.status?.state, environment: engine.preparation?.status?.environment, error: engine.preparation?.status?.error, log: engine.preparation?.status?.log?.slice(-18) }, job: engine.job, stems: engine.stems, export: engine.export })) };
+const compact = { commit: process.env.GITHUB_SHA, scope: receipt.scope, source: receipt.source, gates: receipt.gates, error: receipt.error, engines: receipt.engines?.map(engine => ({ model: engine.model, checkpoint: engine.checkpoint, preparation: { state: engine.preparation?.status?.state, environment: engine.preparation?.status?.environment, error: engine.preparation?.status?.error, log: engine.preparation?.status?.error ? engine.preparation?.status?.log?.slice(-6) : undefined }, job: engine.job, stems: engine.stems, export: engine.export })) };
 const text = JSON.stringify(compact, null, 2).slice(0, 28000);
 const summary = `# A8 execution receipt\n\nThe test exit code remains authoritative. Open/failed gates are not accepted. Audio/trace artifacts include RIGHTS.txt; weights are not uploaded.\n\n\`\`\`json\n${text}\n\`\`\`\n\n## TAP result / failure\n\n\`\`\`text\n${failure}\n\`\`\`\n`;
 if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, summary);
 // Official Checks annotations remain retrievable through api.github.com even
 // when this environment cannot reach the separate signed log/artifact host.
 const escape = value => value.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
-console.log(`::notice title=A8 execution receipt::${escape(text + '\nTAP:\n' + failure)}`);
+// GitHub truncates each annotation near 4 KiB. Keep numbered pieces below
+// that bound so API consumers can reconstruct the complete JSON verbatim.
+const pieces = text.match(/[\s\S]{1,2800}/g) ?? [];
+for (const [index, piece] of pieces.entries()) console.log(`::notice title=A8 receipt part ${String(index + 1).padStart(2, '0')}/${pieces.length}::${escape(piece)}`);
+console.log(`::notice title=A8 first failure::${escape(failure.slice(0, 2800))}`);
