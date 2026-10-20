@@ -544,7 +544,11 @@ test("real preparation cancellation recovers from encoded sources and releases w
     assert.equal(result.initialDiagnostics.workerSourcesEvicted, true);
     assert.equal(result.initialDiagnostics.evictedSourceBytes, 44100 * 2 * 4);
   }
-  assert.equal(result.disposedDiagnostics.encodedRecoveryBytes, 0);
+  if (["encoded-recovery", "prototype2", "prototype3", "prototype4"].includes(variant)) {
+    assert.equal(result.disposedDiagnostics.encodedRecoveryBytes, 0);
+  } else {
+    assert.equal(result.disposedDiagnostics.decodedBytes, 0);
+  }
   assert.equal(result.disposedWorkers.created, result.disposedWorkers.terminated); assert.equal(result.disposedWorkers.created, 2);
 });
 
