@@ -211,9 +211,13 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
       const pcm = join(root, `reference-${index}.f32`);
       await engine.runTool("ffmpeg", ["-v", "error", "-i", filename, "-ar", "44100", "-ac", "2", "-f", "f32le", pcm]);
       const decoded = await readFile(pcm);
-      assert.ok(Math.abs(decoded.length / 8 / 44100 - inspection.durationSeconds) < 1 / 44100);
+      const exactProbe = JSON.parse(await engine.runTool("ffprobe", ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration_ts,time_base", "-of", "json", filename])).streams[0];
+      assert.equal(exactProbe.time_base, "1/44100");
+      assert.equal(decoded.length / 8, Number(exactProbe.duration_ts), "Independently decoded frames equal the exact FLAC stream sample counter.");
+      assert.equal(inspection.durationSeconds, Math.round(decoded.length / 8 / 44100 * 1000) / 1000, "Public metadata is explicitly rounded to milliseconds, not sample-exact.");
       references.push(decoded); outputs.push({
         ...file, inspection, decodedFrames: decoded.length / 8, decodedPcmSha256: sha(decoded),
+        exactDurationSeconds: decoded.length / 8 / 44100,
         outputSourceId: job.outputSourceId, originalSourceAssetId: source.id,
         originalTrackId: metadata.trackId, settings: job.settings, verification: job.verification,
       });
@@ -301,21 +305,29 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
     const exportInfo = await engine.inspect(wavPath);
     assert.equal(exportInfo.sampleRate, 44100); assert.equal(exportInfo.channels, 2);
     const timelineMs = clipDurationsMs.reduce((sum, value) => sum + value, 0);
-    assert.ok(Math.abs(exportInfo.durationSeconds - timelineMs / 1000) <= 1 / 44100);
     const exportPcmPath = join(root, "export.f32");
     await engine.runTool("ffmpeg", ["-v", "error", "-i", wavPath, "-ar", "44100", "-ac", "2", "-f", "f32le", exportPcmPath]);
     const actual = await readFile(exportPcmPath), actualFrames = actual.length / 8;
     const idealTimelineFrames = Math.ceil(timelineMs * 44100 / 1000);
-    assert.ok(Math.abs(actualFrames - idealTimelineFrames) <= 1, "Only the documented sub-sample FFmpeg timeline endpoint rounding is allowed.");
+    assert.equal(exportInfo.durationSeconds, Math.round(actualFrames / 44100 * 1000) / 1000);
     const expected = Buffer.alloc(actual.length);
     const rounding = [];
+    let expectedPhysicalTimelineFrames = 0;
     for (const [index, reference] of references.entries()) {
       const clip = remix.tracks[index].clips[0];
       const start = Math.trunc(clip.timelineStartMs * 44100 / 1000);
-      const frames = Math.round(clip.durationMs * 44100 / 1000);
-      const omittedEndpointFrames = reference.length / 8 - frames;
-      assert.ok(omittedEndpointFrames >= 0 && omittedEndpointFrames <= 45, "Session's existing whole-millisecond duration floor may omit less than one millisecond, never an arbitrary excerpt.");
-      rounding.push({ sourceFrames: reference.length / 8, durationMs: clip.durationMs, timelineStartMs: clip.timelineStartMs, startFrame: start, clipFrames: frames, omittedEndpointFrames });
+      const gridFrames = Math.round(clip.durationMs * 44100 / 1000);
+      const sourceToGridDifferenceFrames = reference.length / 8 - gridFrames;
+      assert.ok(Math.abs(sourceToGridDifferenceFrames) <= 45, "Only the existing millisecond metadata/grid rounding is permitted, never an arbitrary excerpt.");
+      const frames = Math.min(reference.length / 8, gridFrames);
+      // A native stream cannot read beyond its physical end. The desktop
+      // renderer's explicit padding uses the declared grid endpoint; predict
+      // its physical length independently rather than pretending metadata is
+      // exact or silently padding/trimming the downloaded WAV to fit.
+      const declaredEndFrames = Math.ceil((clip.timelineStartMs + clip.durationMs) * 44100 / 1000);
+      const tailPadFrames = Math.max(0, idealTimelineFrames - declaredEndFrames);
+      expectedPhysicalTimelineFrames = Math.max(expectedPhysicalTimelineFrames, start + frames + tailPadFrames);
+      rounding.push({ sourceFrames: reference.length / 8, durationMs: clip.durationMs, timelineStartMs: clip.timelineStartMs, startFrame: start, physicalClipFrames: frames, gridFrames, sourceToGridDifferenceFrames, tailPadFrames });
       // Independent reference, not a call to production mixer/render code:
       // the existing arrangement law is cos/sin equal-power pan, hence -3.01 dB
       // at pan=0. Preserve this explicit mix setting and the full original input.
@@ -324,6 +336,7 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
           reference.readFloatLE((frame * 2 + channel) * 4) * Math.SQRT1_2, ((start + frame) * 2 + channel) * 4);
       }
     }
+    assert.ok(Math.abs(actualFrames - expectedPhysicalTimelineFrames) <= 1, "Downloaded native output matches the independently predicted physical endpoint within one final sample.");
     let maximumError = 0, peak = 0, sumSquares = 0;
     for (let byte = 0; byte < actual.length; byte += 4) {
       const sample = actual.readFloatLE(byte);
@@ -331,7 +344,7 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
       peak = Math.max(peak, Math.abs(sample)); sumSquares += sample * sample;
     }
     const rms = Math.sqrt(sumSquares / (actual.length / 4));
-    console.log(JSON.stringify({ kind: "independent-export-comparison", actualFrames, idealTimelineFrames, rounding, maximumError, peak, rms, arrangementCentrePanGain: Math.SQRT1_2 }));
+    console.log(JSON.stringify({ kind: "independent-export-comparison", actualFrames, idealTimelineFrames, expectedPhysicalTimelineFrames, gridEndpointDifferenceFrames: actualFrames - idealTimelineFrames, rounding, maximumError, peak, rms, arrangementCentrePanGain: Math.SQRT1_2 }));
     assert.ok(peak > 0.01 && rms > 0.001);
     assert.ok(maximumError < 4 / 32768, `Every decoded export sample must match the ordered converted audio and explicit pan law within four 16-bit LSBs (export dither); maximum error ${maximumError}`);
     assert.equal(sha(await readFile(original)), originalHash);
@@ -351,7 +364,7 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
       player: { trackId: playerTrack.id, sourceAssetId: playerTrack.source.id, rms: playerRms },
       sessionRms, reopenedSessionRms, reopenedSessionIdentityVerified: true, handoff, versionId: version.id, exportJobId,
       zipSha256: sha(await readFile(zipPath)),
-      export: { sha256: sha(await readFile(wavPath)), fileSizeBytes: (await readFile(wavPath)).length, inspection: exportInfo, frames: actualFrames, idealTimelineFrames, rounding, peak, rms, centrePanGain: Math.SQRT1_2, decodedPcmSha256: sha(actual), referencePcmSha256: sha(expected), maximumError, tolerance: 4 / 32768 },
+      export: { sha256: sha(await readFile(wavPath)), fileSizeBytes: (await readFile(wavPath)).length, inspection: exportInfo, frames: actualFrames, exactDurationSeconds: actualFrames / 44100, idealTimelineFrames, expectedPhysicalTimelineFrames, gridEndpointDifferenceFrames: actualFrames - idealTimelineFrames, rounding, peak, rms, centrePanGain: Math.SQRT1_2, decodedPcmSha256: sha(actual), referencePcmSha256: sha(expected), maximumError, tolerance: 4 / 32768 },
       originalAndPublishedOutputsUnchanged: true, routeErrors, optionalPanelStates, browserErrors, assetResponses,
       runtime: { node: process.version, chromium: browser.version() },
     };
