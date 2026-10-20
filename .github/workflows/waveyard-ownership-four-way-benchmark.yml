@@ -1,0 +1,316 @@
+name: Waveyard four-way PCM lifetime benchmark
+
+on:
+  push:
+    branches:
+      - benchmark/waveyard-incremental-pcm
+
+permissions:
+  contents: read
+
+concurrency:
+  group: waveyard-ownership-four-way-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  four-way-comparison:
+    name: Baseline → Prototype 2 → Prototype 3 → Prototype 4 · 4/16/32 sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      BASELINE_SHA: a8e015592e81fcd0916e5a0f97baf3f8721ec091
+      PROTOTYPE2_SHA: dbd237c8730cb81293a94415a5ed3fc958bf86f8
+      PROTOTYPE3_SHA: 94b9a21ed7276c4375ba9db022bd777905dbd3dd
+      CHROMIUM_VERSION: 153.0.8010.0
+      ARENA_MEMORY_COUNTS: "4,16,32"
+      ARENA_MEMORY_REPEATS: "3"
+      ARENA_FFMPEG_PATH: /usr/bin/ffmpeg
+      ARENA_FFPROBE_PATH: /usr/bin/ffprobe
+      EVIDENCE_DIR: .data/waveyard-ownership-four-way
+
+    steps:
+      - name: Check out Prototype 4 snapshot
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install exact Node.js runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+
+      - name: Install browser and media system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes curl ffmpeg unzip
+
+      - name: Install locked project dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Prepare embedded PostgreSQL runtime libraries
+        run: |
+          set -euo pipefail
+          pg_native="$GITHUB_WORKSPACE/node_modules/@embedded-postgres/linux-x64/native"
+          pg_lib="$pg_native/lib"
+          for soname in libpq.so.5 libicui18n.so.60 libicuuc.so.60 libicudata.so.60; do
+            library="$(find "$pg_lib" -maxdepth 1 -type f -name "${soname}.*" -printf '%f\n' | sort -V | tail -n 1)"
+            if [[ -z "$library" ]]; then
+              echo "Embedded PostgreSQL runtime library missing: $soname"
+              exit 1
+            fi
+            ln -sfn "$library" "$pg_lib/$soname"
+          done
+          export LD_LIBRARY_PATH="$pg_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          for binary in initdb postgres pg_ctl; do
+            missing="$(ldd "$pg_native/bin/$binary" | awk '/not found/ {print}')"
+            if [[ -n "$missing" ]]; then
+              printf '%s has unresolved native libraries:\n%s\n' "$binary" "$missing"
+              exit 1
+            fi
+          done
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      - name: Install Chromium native dependencies
+        run: npx playwright install-deps chromium
+
+      - name: Install exact Chrome for Testing build
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/chrome-for-testing-${CHROMIUM_VERSION}.zip"
+          browser_dir="$RUNNER_TEMP/chrome-for-testing"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip" \
+            --output "$archive"
+          mkdir -p "$browser_dir"
+          unzip -q "$archive" -d "$browser_dir"
+          chrome="$browser_dir/chrome-linux64/chrome"
+          chmod +x "$chrome"
+          actual_version="$("$chrome" --version | awk '{print $NF}')"
+          test "$actual_version" = "$CHROMIUM_VERSION"
+          missing_libraries="$(ldd "$chrome" | awk '/not found/ {print}')"
+          if [[ -n "$missing_libraries" ]]; then
+            printf 'Chrome has unresolved native libraries:\n%s\n' "$missing_libraries"
+            exit 1
+          fi
+          echo "CHROMIUM_EXECUTABLE_PATH=$chrome" >> "$GITHUB_ENV"
+
+      - name: Record exact variants, runtime, and common harness
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          prototype4_sha="$(git rev-parse HEAD)"
+          test "$(node --version)" = "v22.22.3"
+          memory_kib="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+          if (( memory_kib < 8 * 1024 * 1024 )); then
+            echo "Runner exposes less than 8 GiB RAM; refusing an under-sized comparison."
+            exit 1
+          fi
+          for sha in "$BASELINE_SHA" "$PROTOTYPE2_SHA" "$PROTOTYPE3_SHA"; do git cat-file -e "${sha}^{commit}"; done
+          git diff --exit-code "$BASELINE_SHA" "$PROTOTYPE2_SHA" -- package.json package-lock.json
+          git diff --exit-code "$BASELINE_SHA" "$PROTOTYPE3_SHA" -- package.json package-lock.json
+          git diff --exit-code "$BASELINE_SHA" "$prototype4_sha" -- package.json package-lock.json
+          {
+            echo "baseline_sha=$BASELINE_SHA"
+            echo "prototype2_sha=$PROTOTYPE2_SHA"
+            echo "prototype3_sha=$PROTOTYPE3_SHA"
+            echo "prototype3_parent=$(git rev-parse "$PROTOTYPE3_SHA^")"
+            echo "prototype4_sha=$prototype4_sha"
+            echo "prototype4_parent=$(git rev-parse "$prototype4_sha^")"
+            echo "prototype4_branch=$GITHUB_REF_NAME"
+            echo "workflow_run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "node=$(node --version)"
+            echo "npm=$(npm --version)"
+            echo "chrome=$("$CHROMIUM_EXECUTABLE_PATH" --version)"
+            echo "ffmpeg=$(/usr/bin/ffmpeg -version | sed -n '1p')"
+            echo "ffprobe=$(/usr/bin/ffprobe -version | sed -n '1p')"
+            echo "embedded_postgres=$("$GITHUB_WORKSPACE/node_modules/@embedded-postgres/linux-x64/native/bin/postgres" --version)"
+            echo "MemTotal_kB=$memory_kib"
+            echo "runner_name=${RUNNER_NAME:-unknown}"
+            echo "runner_os=${RUNNER_OS:-unknown}"
+            echo "--- /etc/os-release ---"
+            cat /etc/os-release
+            echo "--- uname ---"
+            uname -a
+            echo "--- CPU ---"
+            lscpu
+            echo "--- cgroup memory limit ---"
+            if [[ -r /sys/fs/cgroup/memory.max ]]; then cat /sys/fs/cgroup/memory.max; else echo unavailable; fi
+          } > "$EVIDENCE_DIR/runtime-and-source.txt"
+
+          baseline_dir="$RUNNER_TEMP/waveyard-four-way-baseline"
+          prototype2_dir="$RUNNER_TEMP/waveyard-four-way-prototype2"
+          prototype3_dir="$RUNNER_TEMP/waveyard-four-way-prototype3"
+          git worktree add --detach "$baseline_dir" "$BASELINE_SHA"
+          git worktree add --detach "$prototype2_dir" "$PROTOTYPE2_SHA"
+          git worktree add --detach "$prototype3_dir" "$PROTOTYPE3_SHA"
+          for variant_dir in "$baseline_dir" "$prototype2_dir" "$prototype3_dir"; do
+            for file in tests/acceptance/studio-fx.test.mjs tests/acceptance/studio-preparation.fixture.ts; do
+              mkdir -p "$variant_dir/$(dirname "$file")"
+              git show "$prototype4_sha:$file" > "$variant_dir/$file"
+            done
+            ln -s "$GITHUB_WORKSPACE/node_modules" "$variant_dir/node_modules"
+          done
+          for file in tests/acceptance/studio-fx.test.mjs tests/acceptance/studio-preparation.fixture.ts; do
+            expected="$(sha256sum "$file" | awk '{print $1}')"
+            for variant_dir in "$baseline_dir" "$prototype2_dir" "$prototype3_dir"; do
+              actual="$(sha256sum "$variant_dir/$file" | awk '{print $1}')"
+              test "$actual" = "$expected"
+            done
+          done
+          {
+            echo "BASELINE SOURCES"
+            (cd "$baseline_dir" && sha256sum src/lib/waveyard/arrangement-preparation.ts src/lib/waveyard/arrangement-pcm.worker.ts src/lib/waveyard/arrangement-pcm.ts)
+            echo "PROTOTYPE 2 SOURCES"
+            (cd "$prototype2_dir" && sha256sum src/lib/waveyard/arrangement-preparation.ts src/lib/waveyard/arrangement-pcm.worker.ts src/lib/waveyard/arrangement-pcm.ts)
+            echo "PROTOTYPE 3 SOURCES"
+            (cd "$prototype3_dir" && sha256sum src/lib/waveyard/arrangement-preparation.ts src/lib/waveyard/arrangement-pcm.worker.ts src/lib/waveyard/arrangement-pcm.ts)
+            echo "PROTOTYPE 4 SOURCES"
+            sha256sum src/lib/waveyard/arrangement-preparation.ts src/lib/waveyard/arrangement-pcm.worker.ts src/lib/waveyard/arrangement-pcm.ts
+            echo "COMMON HARNESS"
+            sha256sum tests/acceptance/studio-fx.test.mjs tests/acceptance/studio-preparation.fixture.ts scripts/compare-waveyard-four-way-benchmark.mjs
+            echo "COPIED COMMON HARNESS SHA256"
+            for variant_dir in "$baseline_dir" "$prototype2_dir" "$prototype3_dir"; do
+              echo "$variant_dir"
+              (cd "$variant_dir" && sha256sum tests/acceptance/studio-fx.test.mjs tests/acceptance/studio-preparation.fixture.ts)
+            done
+          } > "$EVIDENCE_DIR/source-hashes.txt"
+          printf '%s\n' \
+            "Variants: baseline $BASELINE_SHA; Prototype 2 $PROTOTYPE2_SHA; Prototype 3 $PROTOTYPE3_SHA; Prototype 4 $prototype4_sha" \
+            "Order: baseline, then Prototype 2, Prototype 3, and Prototype 4 in one runner job" \
+            "Runtime: Node.js 22.22.3; Chrome for Testing $CHROMIUM_VERSION; identical locked dependencies and copied common acceptance harness" \
+            "Workloads: 4, 16, and 32 distinct stereo 10-second sources; 3 sequential repeats per variant" \
+            "P3 behavior: keep Worker PCM warm while editing; evict after 5 seconds idle; preserve pre-master mix and local recovery" \
+            "P4 behavior: stage track PCM in the Worker and release source PCM after its last track consumer; keep encoded recovery and pre-master mix" \
+            "Correctness: five exact stereo PCM hashes, finished-buffer replay identity, local recovery after Worker error/cancellation, and cache behavior" \
+            "Responsiveness: existing 250 ms UI-gap assertion and 300 ms comparison ceiling unchanged" \
+            "PSS: browser process tree sampled every 50 ms; natural retained PSS after 250 ms idle; post-GC result diagnostic only" \
+            "Runtime floor: median of five process-tree PSS samples after benchmark fixture page load, before AudioContext, Worker, or source PCM" \
+            "512 MiB peak remains a diagnostic target, not a release gate" \
+            > "$EVIDENCE_DIR/manifest.txt"
+
+      - name: Typecheck Prototype 4
+        run: npm run typecheck 2>&1 | tee "$EVIDENCE_DIR/prototype4-typecheck.log"
+
+      - name: Run original baseline gates and measurements
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|distinct-source preparation profiles 4/16/32'
+          variant_dir="$RUNNER_TEMP/waveyard-four-way-baseline"
+          {
+            echo "baseline-start=$(date -u +%FT%TZ)"
+            for file in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.events; do
+              if [[ -r "$file" ]]; then echo "--- $file ---"; cat "$file"; fi
+            done
+          } >> "$EVIDENCE_DIR/runner-memory.txt"
+          set +e
+          (cd "$variant_dir" && ARENA_MEMORY_VARIANT=baseline ARENA_MEMORY_COUNTS="$ARENA_MEMORY_COUNTS" ARENA_MEMORY_REPEATS="$ARENA_MEMORY_REPEATS" \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs) \
+            2>&1 | tee "$EVIDENCE_DIR/baseline.tap"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "baseline-end=$(date -u +%FT%TZ)"
+            for file in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.events; do
+              if [[ -r "$file" ]]; then echo "--- $file ---"; cat "$file"; fi
+            done
+          } >> "$EVIDENCE_DIR/runner-memory.txt"
+          exit "$test_status"
+
+      - name: Run Prototype 2 gates and measurements
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|distinct-source preparation profiles 4/16/32'
+          variant_dir="$RUNNER_TEMP/waveyard-four-way-prototype2"
+          {
+            echo "prototype2-start=$(date -u +%FT%TZ)"
+            for file in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.events; do
+              if [[ -r "$file" ]]; then echo "--- $file ---"; cat "$file"; fi
+            done
+          } >> "$EVIDENCE_DIR/runner-memory.txt"
+          set +e
+          (cd "$variant_dir" && ARENA_MEMORY_VARIANT=prototype2 ARENA_MEMORY_COUNTS="$ARENA_MEMORY_COUNTS" ARENA_MEMORY_REPEATS="$ARENA_MEMORY_REPEATS" \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs) \
+            2>&1 | tee "$EVIDENCE_DIR/prototype2.tap"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "prototype2-end=$(date -u +%FT%TZ)"
+            for file in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.events; do
+              if [[ -r "$file" ]]; then echo "--- $file ---"; cat "$file"; fi
+            done
+          } >> "$EVIDENCE_DIR/runner-memory.txt"
+          exit "$test_status"
+
+      - name: Run Prototype 3 gates and measurements
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|distinct-source preparation profiles 4/16/32'
+          variant_dir="$RUNNER_TEMP/waveyard-four-way-prototype3"
+          {
+            echo "prototype3-start=$(date -u +%FT%TZ)"
+            for file in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.events; do
+              if [[ -r "$file" ]]; then echo "--- $file ---"; cat "$file"; fi
+            done
+          } >> "$EVIDENCE_DIR/runner-memory.txt"
+          set +e
+          (cd "$variant_dir" && ARENA_MEMORY_VARIANT=prototype3 ARENA_MEMORY_COUNTS="$ARENA_MEMORY_COUNTS" ARENA_MEMORY_REPEATS="$ARENA_MEMORY_REPEATS" \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs) \
+            2>&1 | tee "$EVIDENCE_DIR/prototype3.tap"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "prototype3-end=$(date -u +%FT%TZ)"
+            for file in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.events; do
+              if [[ -r "$file" ]]; then echo "--- $file ---"; cat "$file"; fi
+            done
+          } >> "$EVIDENCE_DIR/runner-memory.txt"
+          exit "$test_status"
+
+      - name: Run Prototype 4 gates and measurements
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|distinct-source preparation profiles 4/16/32'
+          {
+            echo "prototype4-start=$(date -u +%FT%TZ)"
+            for file in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.events; do
+              if [[ -r "$file" ]]; then echo "--- $file ---"; cat "$file"; fi
+            done
+          } >> "$EVIDENCE_DIR/runner-memory.txt"
+          set +e
+          ARENA_MEMORY_VARIANT=prototype4 ARENA_MEMORY_COUNTS="$ARENA_MEMORY_COUNTS" ARENA_MEMORY_REPEATS="$ARENA_MEMORY_REPEATS" \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs \
+            2>&1 | tee "$EVIDENCE_DIR/prototype4.tap"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "prototype4-end=$(date -u +%FT%TZ)"
+            for file in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.events; do
+              if [[ -r "$file" ]]; then echo "--- $file ---"; cat "$file"; fi
+            done
+          } >> "$EVIDENCE_DIR/runner-memory.txt"
+          exit "$test_status"
+
+      - name: Compare exact hashes and produce four-way evidence
+        run: |
+          set -euo pipefail
+          BENCHMARK_BASELINE_SHA="$BASELINE_SHA" \
+          BENCHMARK_PROTOTYPE2_SHA="$PROTOTYPE2_SHA" \
+          BENCHMARK_PROTOTYPE3_SHA="$PROTOTYPE3_SHA" \
+          BENCHMARK_PROTOTYPE4_SHA="$(git rev-parse HEAD)" \
+          CHROMIUM_VERSION="$CHROMIUM_VERSION" \
+          node scripts/compare-waveyard-four-way-benchmark.mjs \
+            "$EVIDENCE_DIR/baseline.tap" \
+            "$EVIDENCE_DIR/prototype2.tap" \
+            "$EVIDENCE_DIR/prototype3.tap" \
+            "$EVIDENCE_DIR/prototype4.tap" \
+            "$EVIDENCE_DIR/comparison.json" \
+            2>&1 | tee "$EVIDENCE_DIR/comparison.log"
+
+      - name: Upload raw logs and machine-readable comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveyard-four-way-ownership-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .data/waveyard-ownership-four-way/
+          if-no-files-found: warn
+          retention-days: 90

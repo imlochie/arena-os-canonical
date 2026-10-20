@@ -1,6 +1,6 @@
 import { effectiveMuted } from "./remix";
 import { arrangementPreMasterCacheKey, MAX_ARRANGEMENT_SECONDS, type ArrangementPreviewState } from "./arrangement-pcm";
-import type { PreviewSource, PreviewWork } from "./arrangement-pcm.worker";
+import type { PreviewSource } from "./arrangement-pcm.worker";
 /** Only editable audible state enters the cache identity. Save acknowledgements,
  * names, cursors and loop toggles must not redo an unchanged musical bounce. */
 export function previewStateKey(state: ArrangementPreviewState, revision = "", sourceRevisions?: ReadonlyMap<string, string>) {
@@ -17,9 +17,9 @@ export const WORKER_SOURCE_IDLE_EVICTION_MS = 5_000;
 /** Owns decoded/worker buffers for one open workspace. Hard cancellation kills
  * CPU work as well as fetches. Encoded recovery blobs remain only when they are
  * materially smaller than decoded PCM and fit the bounded per-workspace budget.
- * Worker source PCM stays warm across active edits, then is evicted after a
- * short idle window; local owners support a later rebuild. A retained pre-master
- * mix still serves master-only edits without rehydrating source data. */
+ * Worker PCM is staged for each track and released after its last track
+ * consumer; local owners support a later rebuild. A retained pre-master mix
+ * still serves master-only edits without rehydrating source data. */
 export class ArrangementPreparation {
   private worker: Worker | null = null;
   private sent = new Set<string>();
@@ -27,6 +27,7 @@ export class ArrangementPreparation {
   private encodedRecovery = new Map<string, Blob>();
   private abort: AbortController | null = null;
   private pending: { id: number; resolve(value: Prepared): void; reject(error: Error): void } | null = null;
+  private pendingTrackAcks = new Map<string, { resolve(stats: Prepared["stats"]): void; reject(error: Error): void }>();
   private sequence = 0;
   private rate = 0;
   private workerMixKey: string | null = null;
@@ -44,7 +45,23 @@ export class ArrangementPreparation {
   private finished: { key: string; buffer: AudioBuffer } | null = null;
   cancel() {
     this.abort?.abort(); this.abort = null;
-    if (this.pending) { this.pending.reject(new DOMException("Preparation cancelled", "AbortError")); this.pending = null; this.worker?.terminate(); this.worker = null; this.sent.clear(); this.workerMixKey = null; this.workerStats = undefined; }
+    if (this.pending) {
+      const error = new DOMException("Preparation cancelled", "AbortError");
+      const id = this.pending.id; this.pending.reject(error); this.pending = null;
+      this.rejectTrackAcks(id, error);
+      this.worker?.terminate(); this.worker = null; this.sent.clear(); this.workerMixKey = null; this.workerStats = undefined;
+    }
+  }
+  private rejectTrackAcks(id: number, error: Error) {
+    for (const [key, ack] of this.pendingTrackAcks) {
+      if (!key.startsWith(`${id}:`)) continue;
+      this.pendingTrackAcks.delete(key); ack.reject(error);
+    }
+  }
+  private waitForTrack(id: number, trackIndex: number) {
+    return new Promise<Prepared["stats"]>((resolve, reject) => {
+      this.pendingTrackAcks.set(`${id}:${trackIndex}`, { resolve, reject });
+    });
   }
   private clearSourceEvictionTimer() {
     if (this.sourceEvictionTimer) clearTimeout(this.sourceEvictionTimer);
@@ -90,14 +107,32 @@ export class ArrangementPreparation {
         release.resolve();
         return;
       }
+      if (data.kind === "track-rendered") {
+        if (!this.pending || data.id !== this.pending.id) return;
+        this.workerStats = data.stats;
+        this.sent.clear();
+        for (const sourceKey of Object.keys(data.stats?.sourceBytesByKey ?? {})) this.sent.add(sourceKey);
+        const key = `${data.id}:${data.trackIndex}`;
+        const ack = this.pendingTrackAcks.get(key);
+        if (ack) { this.pendingTrackAcks.delete(key); ack.resolve(data.stats); }
+        return;
+      }
+      if (data.kind === "render-error") {
+        if (!this.pending || data.id !== this.pending.id) return;
+        const error = new Error(data.error ?? "Arrangement preparation failed.");
+        this.pending.reject(error); this.rejectTrackAcks(data.id, error);
+        return;
+      }
       if (!this.pending || data.id !== this.pending.id) return;
       const pending = this.pending; this.pending = null;
       if (data.error) pending.reject(new Error(data.error)); else pending.resolve(data);
     };
     worker.onerror = () => {
       this.clearSourceEvictionTimer();
+      const id = this.pending?.id;
       this.pending?.reject(new Error("Arrangement DSP worker failed; no dry substitute was played."));
       this.pending = null;
+      if (id !== undefined) this.rejectTrackAcks(id, new Error("Arrangement DSP worker failed; no dry substitute was played."));
       const release = this.pendingSourceRelease; this.pendingSourceRelease = null; release?.resolve();
       worker.terminate(); this.worker = null; this.sent.clear(); this.workerMixKey = null; this.workerStats = undefined;
     };
@@ -122,8 +157,12 @@ export class ArrangementPreparation {
     const solo = state.tracks.some(track => track.solo && !track.muted);
     const needed = new Set<string>();
     const requests = new Map<string, { url: string; body?: string }>();
-    for (const track of state.tracks) {
+    const trackOrder: number[] = [];
+    const lastUseByKey: Record<string, number> = {};
+    for (let trackIndex = 0; trackIndex < state.tracks.length; trackIndex++) {
+      const track = state.tracks[trackIndex];
       if (effectiveMuted(track, solo)) continue;
+      trackOrder.push(trackIndex);
       for (const clip of track.clips) {
         if (clip.tempoSyncEnabled || clip.keySyncEnabled) {
           const id = clip.stemAssetId;
@@ -137,6 +176,7 @@ export class ArrangementPreparation {
           needed.add(sourceKey); requests.set(sourceKey, { url: `/api/assets/${id}` });
           clip.stemAssetId = sourceKey;
         }
+        lastUseByKey[clip.stemAssetId] = trackIndex;
       }
     }
     const preMasterKey = arrangementPreMasterCacheKey(state, context.sampleRate, revision);
@@ -159,52 +199,62 @@ export class ArrangementPreparation {
       worker.postMessage({ kind: "retain", retain: [...needed] });
       for (const sourceKey of this.sent) if (!needed.has(sourceKey)) this.sent.delete(sourceKey);
 
-      // Decode, transfer and release one source at a time. This prevents all
-      // decoded AudioBuffers from coexisting with a second full set of Worker
-      // channel copies. A decoded buffer is released only after its bounded
-      // encoded recovery copy is safely retained; otherwise it remains the
-      // network-independent retry owner.
-      for (const [sourceKey, request] of reusePreMasterMix ? [] : requests) {
-        signal.throwIfAborted();
-        if (this.sent.has(sourceKey)) continue;
+      // Decode and transfer only the sources needed by the next track. The
+      // Worker releases each source after its final track consumer. A decoded
+      // buffer is released only after its bounded encoded recovery copy is
+      // safely retained; otherwise it remains the network-independent owner.
+      worker.postMessage({ kind: "render", id, state, sampleRate: context.sampleRate, retain: [...needed], revision, trackOrder, lastUseByKey });
+      if (!reusePreMasterMix) {
+        for (const trackIndex of trackOrder) {
+          signal.throwIfAborted();
+          const track = state.tracks[trackIndex];
+          const trackSources = [...new Set(track.clips.map(clip => clip.stemAssetId))];
+          for (const sourceKey of trackSources) {
+            if (this.sent.has(sourceKey)) continue;
+            const request = requests.get(sourceKey);
+            if (!request) throw new Error("Arrangement source request is unavailable.");
 
-        let recovery = this.encodedRecovery.get(sourceKey);
-        if (!recovery) {
-          const response = await fetch(request.url, { signal, ...(request.body ? { method: "POST", headers: { "content-type": "application/json" }, body: request.body } : {}) });
-          if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? "A stem could not be prepared for arrangement audition."); }
-          if (Number(response.headers.get("content-length")) > MAX_DECODED_BYTES) { await response.body?.cancel(); throw new Error("Source exceeds the 128 MiB audition decode budget; use a shorter source range or export."); }
-          recovery = await response.blob();
-        }
+            let recovery = this.encodedRecovery.get(sourceKey);
+            if (!recovery) {
+              const response = await fetch(request.url, { signal, ...(request.body ? { method: "POST", headers: { "content-type": "application/json" }, body: request.body } : {}) });
+              if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error ?? "A stem could not be prepared for arrangement audition."); }
+              if (Number(response.headers.get("content-length")) > MAX_DECODED_BYTES) { await response.body?.cancel(); throw new Error("Source exceeds the 128 MiB audition decode budget; use a shorter source range or export."); }
+              recovery = await response.blob();
+            }
 
-        let audio = this.decoded.get(sourceKey);
-        if (!audio) {
-          audio = await context.decodeAudioData(await recovery.arrayBuffer());
-          const pcmBytes = audio.length * audio.numberOfChannels * 4;
-          bytes += pcmBytes;
-          if (bytes > MAX_DECODED_BYTES) throw new Error("Selected source audio exceeds the 128 MiB decoded audition budget; no clips were dropped.");
-          this.decoded.set(sourceKey, audio);
-          if (!this.encodedRecovery.has(sourceKey) &&
-              recovery.size < pcmBytes * MAX_RECOVERY_TO_PCM_RATIO &&
-              recoveryBytes + recovery.size <= MAX_ENCODED_RECOVERY_BYTES) {
-            this.encodedRecovery.set(sourceKey, recovery);
-            recoveryBytes += recovery.size;
+            let audio = this.decoded.get(sourceKey);
+            if (!audio) {
+              audio = await context.decodeAudioData(await recovery.arrayBuffer());
+              const pcmBytes = audio.length * audio.numberOfChannels * 4;
+              bytes += pcmBytes;
+              if (bytes > MAX_DECODED_BYTES) throw new Error("Selected source audio exceeds the 128 MiB decoded audition budget; no clips were dropped.");
+              this.decoded.set(sourceKey, audio);
+              if (!this.encodedRecovery.has(sourceKey) &&
+                  recovery.size < pcmBytes * MAX_RECOVERY_TO_PCM_RATIO &&
+                  recoveryBytes + recovery.size <= MAX_ENCODED_RECOVERY_BYTES) {
+                this.encodedRecovery.set(sourceKey, recovery);
+                recoveryBytes += recovery.size;
+              }
+            }
+
+            signal.throwIfAborted();
+            const channels = Array.from({ length: audio.numberOfChannels }, (_, channel) => audio!.getChannelData(channel).slice());
+            const source: PreviewSource = { key: sourceKey, sampleRate: audio.sampleRate, channels };
+            worker.postMessage({ kind: "source", source }, channels.map(channel => channel.buffer));
+            this.sent.add(sourceKey);
+
+            if (this.encodedRecovery.has(sourceKey)) {
+              this.decoded.delete(sourceKey);
+            }
           }
+          const trackRendered = this.waitForTrack(id, trackIndex);
+          worker.postMessage({ kind: "render-track", id, trackIndex });
+          await trackRendered;
         }
-
-        signal.throwIfAborted();
-        const channels = Array.from({ length: audio.numberOfChannels }, (_, channel) => audio!.getChannelData(channel).slice());
-        const source: PreviewSource = { key: sourceKey, sampleRate: audio.sampleRate, channels };
-        worker.postMessage({ kind: "source", source }, channels.map(channel => channel.buffer));
-        this.sent.add(sourceKey);
-
-        if (this.encodedRecovery.has(sourceKey)) {
-          this.decoded.delete(sourceKey);
-        }
+        worker.postMessage({ kind: "finish-render", id });
       }
 
       signal.throwIfAborted();
-      const work: PreviewWork = { kind: "render", id, state, sampleRate: context.sampleRate, retain: [...needed], revision };
-      worker.postMessage(work);
       const { left, right, stats } = await rendered;
       signal.throwIfAborted();
       this.workerStats = stats;
@@ -221,6 +271,7 @@ export class ArrangementPreparation {
       // remain available to retry without the source endpoint.
       if (this.pending?.id === id) this.pending = null;
       this.clearSourceEvictionTimer();
+      this.rejectTrackAcks(id, error instanceof Error ? error : new Error("Arrangement preparation failed."));
       if (this.worker === worker) worker.terminate();
       if (this.worker === worker) this.worker = null;
       this.sent.clear(); this.workerMixKey = null; this.workerStats = undefined;

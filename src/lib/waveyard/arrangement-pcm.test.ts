@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { prepareArrangementPcm, type ArrangementPreviewState } from "./arrangement-pcm";
+import { addArrangementTrackToMix, finishArrangementMix, prepareArrangementPcm, startArrangementMix, type ArrangementPreviewState } from "./arrangement-pcm";
 import { makeInsert, parseInserts, processWithChain } from "./mixer/inserts";
 import { applyDelay } from "./mixer/dsp";
 function setup() {
@@ -84,4 +84,13 @@ test("serial tracks reuse one dry bus without bleeding prior lanes or mutating i
     for (let index = 0; index < output.length; index++) assert.ok(Math.abs(output[index] - reference[index] * 32) < 0.00001);
     assert.equal(audio.get("stem")!.getChannelData()[900], Math.fround(0.4), "input buffers remain immutable");
   } finally { globalThis.Float32Array = Native; }
+});
+
+test("track-wise Worker pass is bit-identical to canonical whole-arrangement rendering", () => {
+  const { state, audio } = setup();
+  state.tracks.push({ ...state.tracks[0], id: "second-track", sortOrder: 1, volume: 0.37, pan: -0.2 });
+  const canonical = prepareArrangementPcm(state, audio, 1000);
+  const pass = startArrangementMix(state, 1000);
+  for (const track of state.tracks) addArrangementTrackToMix(pass, state, track, audio, 1000);
+  assert.deepEqual(finishArrangementMix(pass.mix, state, 1000, pass.drySamples), canonical);
 });

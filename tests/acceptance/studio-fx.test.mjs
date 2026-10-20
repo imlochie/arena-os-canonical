@@ -519,11 +519,11 @@ test("real preparation cancellation recovers from encoded sources and releases w
   const state = { ...initial.remix, tracks: Array.from({ length: 4 }, (_, i) => ({ ...initial.tracks[0], id: String(i), volume: 0.25, inserts: [makeInsert("saturator", { drive: 3 })], clips: [{ ...initial.tracks[0].clips[0], durationMs: 15000 }] })) };
   const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
   const result = await page.evaluate(state => window.verifyPreparationLifecycle(state), state);
-  console.log(JSON.stringify({ kind: "real-worker-cancel-cache-dispose", ...result }));
+  const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
+  console.log(JSON.stringify({ kind: "real-worker-cancel-cache-dispose", implementation: variant, ...result }));
   assert.equal(result.cancelled, "AbortError"); assert.equal(result.latestError, 0); assert.equal(result.replaySame, true);
   assert.equal(result.coldFetches, 1); assert.equal(result.afterEditFetches, 1); assert.equal(result.reopenedFetches, 2);
-  const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
-  if (["encoded-recovery", "prototype2", "prototype3"].includes(variant)) {
+  if (["encoded-recovery", "prototype2", "prototype3", "prototype4"].includes(variant)) {
     assert.equal(result.initialDiagnostics.decodedBytes, 0);
     assert.ok(result.initialDiagnostics.encodedRecoveryBytes > 0);
     assert.equal(result.recoveredDiagnostics.decodedBytes, 0);
@@ -537,6 +537,12 @@ test("real preparation cancellation recovers from encoded sources and releases w
     assert.equal(result.initialDiagnostics.sourceBytes, 44100 * 2 * 4);
     assert.equal(result.recoveredDiagnostics.sourceBytes, 44100 * 2 * 4);
     assert.equal(result.initialDiagnostics.workerSourcesEvicted, false);
+  }
+  if (variant === "prototype4") {
+    assert.equal(result.initialDiagnostics.sourceBytes, 0);
+    assert.equal(result.recoveredDiagnostics.sourceBytes, 0);
+    assert.equal(result.initialDiagnostics.workerSourcesEvicted, true);
+    assert.equal(result.initialDiagnostics.evictedSourceBytes, 44100 * 2 * 4);
   }
   assert.equal(result.disposedDiagnostics.encodedRecoveryBytes, 0);
   assert.equal(result.disposedWorkers.created, result.disposedWorkers.terminated); assert.equal(result.disposedWorkers.created, 2);
@@ -570,16 +576,17 @@ test("controlled Worker error during a source endpoint outage recovers from its 
   const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
   const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
   const result = await page.evaluate(input => window.verifyWorkerErrorDuringOutage(input.state, input.expectWorkerEviction),
-    { state: { ...initial.remix, tracks: initial.tracks }, expectWorkerEviction: variant === "prototype3" });
+    { state: { ...initial.remix, tracks: initial.tracks }, expectWorkerEviction: ["prototype3", "prototype4"].includes(variant) });
+  console.log(JSON.stringify({ kind: "controlled-worker-error-recovery", implementation: variant, ...result }));
   assert.equal(result.fetches, 1); assert.equal(result.outageFetches, 0);
   assert.equal(result.firstFrames, 44100); assert.equal(result.recoveredFrames, 44100); assert.ok(result.outputError < 1e-7);
-  if (["encoded-recovery", "prototype2", "prototype3"].includes(variant)) {
+  if (["encoded-recovery", "prototype2", "prototype3", "prototype4"].includes(variant)) {
     assert.ok(result.recoveredDiagnostics.encodedRecoveryBytes > 0);
   } else {
     assert.ok(result.recoveredDiagnostics.decodedBytes > 0);
   }
-  assert.equal(result.idleDiagnostics.sourceBytes, variant === "prototype3" ? 0 : 44100 * 2 * 4);
-  if (variant === "prototype3") assert.equal(result.idleDiagnostics.workerSourcesEvicted, true);
+  assert.equal(result.idleDiagnostics.sourceBytes, ["prototype3", "prototype4"].includes(variant) ? 0 : 44100 * 2 * 4);
+  if (["prototype3", "prototype4"].includes(variant)) assert.equal(result.idleDiagnostics.workerSourcesEvicted, true);
 });
 
 test("removing a track releases its obsolete recovery owners and reuses the remaining local source", async (t) => {
@@ -593,13 +600,14 @@ test("removing a track releases its obsolete recovery owners and reuses the rema
   assert.equal(result.removalFetches, 0);
   assert.equal(result.removedFrames, 44100);
   const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
-  if (["encoded-recovery", "prototype2", "prototype3"].includes(variant)) {
+  if (["encoded-recovery", "prototype2", "prototype3", "prototype4"].includes(variant)) {
     assert.ok(result.removedDiagnostics.encodedRecoveryBytes < result.pairDiagnostics.encodedRecoveryBytes);
     assert.equal(result.removedDiagnostics.decodedBytes, 0);
   } else {
     assert.equal(result.removedDiagnostics.decodedBytes, 44100 * 2 * 4);
   }
-  assert.equal(result.removedDiagnostics.sourceBytes, 44100 * 2 * 4);
+  assert.equal(result.removedDiagnostics.sourceBytes, variant === "prototype4" ? 0 : 44100 * 2 * 4);
+  if (variant === "prototype4") assert.equal(result.removedDiagnostics.workerSourcesEvicted, true);
 });
 
 test("large encoded recovery sources retain decoded PCM instead of worsening ownership", async (t) => {
@@ -608,13 +616,13 @@ test("large encoded recovery sources retain decoded PCM instead of worsening own
   const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
   const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
   const result = await page.evaluate(input => window.verifyRecoveryBudgetFallback(input.state, input.expectWorkerEviction),
-    { state: { ...initial.remix, tracks: initial.tracks }, expectWorkerEviction: variant === "prototype3" });
+    { state: { ...initial.remix, tracks: initial.tracks }, expectWorkerEviction: ["prototype3", "prototype4"].includes(variant) });
   assert.equal(result.frames, 44100);
   assert.equal(result.fetches, 1);
   assert.equal(result.diagnostics.encodedRecoveryBytes ?? 0, 0);
   assert.equal(result.diagnostics.decodedBytes, 44100 * 2 * 4);
-  assert.equal(result.diagnostics.sourceBytes, variant === "prototype3" ? 0 : 44100 * 2 * 4);
-  if (variant === "prototype3") assert.equal(result.diagnostics.workerSourcesEvicted, true);
+  assert.equal(result.diagnostics.sourceBytes, ["prototype3", "prototype4"].includes(variant) ? 0 : 44100 * 2 * 4);
+  if (["prototype3", "prototype4"].includes(variant)) assert.equal(result.diagnostics.workerSourcesEvicted, true);
 });
 
 test("warm preparation cancellation recovers from retained audio while its source endpoint is unavailable", async (t) => {
@@ -623,10 +631,11 @@ test("warm preparation cancellation recovers from retained audio while its sourc
   const state = { ...initial.remix, tracks: initial.tracks };
   const page = await browser.newPage(); t.after(() => page.close()); await page.goto(`${origin}/?room=preparation`);
   const result = await page.evaluate(state => window.verifyPreparationLifecycle(state, true), state);
+  const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
+  console.log(JSON.stringify({ kind: "warm-cancel-local-recovery", implementation: variant, ...result }));
   assert.equal(result.cancelled, "AbortError"); assert.equal(result.latestError, 0);
   assert.equal(result.afterEditFetches, 1); assert.equal(result.replaySame, true);
-  const variant = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
-  if (["encoded-recovery", "prototype2", "prototype3"].includes(variant)) {
+  if (["encoded-recovery", "prototype2", "prototype3", "prototype4"].includes(variant)) {
     assert.equal(result.initialDiagnostics.decodedBytes, 0);
     assert.ok(result.initialDiagnostics.encodedRecoveryBytes > 0);
     assert.equal(result.recoveredDiagnostics.decodedBytes, 0);
@@ -779,13 +788,23 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
     const errors = []; page.on("pageerror", error => errors.push(error.message));
     let peak = await samplePss(), busy = false;
     const timer = setInterval(async () => { if (busy) return; busy = true; try { const pss = await samplePss(); if (pss !== null) peak = Math.max(peak ?? 0, pss); } finally { busy = false; } }, 50);
+    let fixedRuntimeFloorPssBytes = null;
     try {
       page.setDefaultNavigationTimeout(120000);
       await page.goto(`${origin}/?room=preparation`);
+      await page.waitForFunction(() => typeof window.measurePreparation === "function");
+      const floorSamples = [];
+      for (let sample = 0; sample < 5; sample++) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const pss = await samplePss();
+        if (pss !== null) floorSamples.push(pss);
+      }
+      floorSamples.sort((a, b) => a - b);
+      fixedRuntimeFloorPssBytes = floorSamples.length ? floorSamples[Math.floor(floorSamples.length / 2)] : null;
       const state = { ...arrangements[0], tracks: trackRows.slice(0, count).map(track => ({ ...track, volume: 1 / count })) };
       const implementation = process.env.ARENA_MEMORY_VARIANT ?? process.env.ARENA_MEMORY_CANDIDATE ?? "baseline";
       const result = await page.evaluate(input => window.measurePreparation(input.state, true, input.expectWorkerEviction),
-        { state, expectWorkerEviction: implementation === "prototype3" });
+        { state, expectWorkerEviction: ["prototype3", "prototype4"].includes(implementation) });
       // Keep the real open preparation/controller alive. Report natural retained
       // memory separately from the sampled high-water mark. GC-assisted retained
       // memory is a diagnostic, never a claim about ordinary cold peak.
@@ -797,8 +816,12 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
       await pageCdp.send("HeapProfiler.collectGarbage");
       const gcRetainedPssBytes = await samplePss();
       await pageCdp.detach();
-      console.log(JSON.stringify({ kind: "distinct-source-canonical-worker", retainedPssBytes, gcRetainedPssBytes,
-        implementation, sources: count, repeat, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result, scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak" }));
+      console.log(JSON.stringify({ kind: "distinct-source-canonical-worker", fixedRuntimeFloorPssBytes,
+        fixedRuntimeFloorSamplesPssBytes: floorSamples, retainedPssBytes, gcRetainedPssBytes,
+        implementation, sources: count, repeat, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result,
+        scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak",
+        fixedRuntimeFloorScope: "Loaded fixture page before AudioContext, Worker, or source PCM; not compiled Next hydration." }));
+      assert.ok(Number.isFinite(fixedRuntimeFloorPssBytes), "fixed browser/runtime floor PSS is missing");
       assert.equal(result.frames, 441000);
       assert.equal(result.latestEditError, 0);
       const expectedBytes = count * 441000 * 2 * 4;
@@ -807,12 +830,25 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
       assert.equal(result.masterEditFetches, 0); assert.equal(result.masterEditDecodeCalls, 0);
       assert.equal(result.masterMixCacheHit, true); assert.ok(result.masterRetainedMixBytes > 0);
       assert.equal(result.trackEditFetches, 0); assert.equal(result.trackEditMixCacheHit, false);
-      assert.equal(result.trackEditDecodeCalls, 0);
-      assert.equal(result.trackEditWorkerSourceBytes, expectedBytes);
+      if (implementation === "prototype4") {
+        assert.equal(result.trackEditDecodeCalls, count);
+        assert.equal(result.trackEditWorkerSourceBytes, 0);
+      } else {
+        assert.equal(result.trackEditDecodeCalls, 0);
+        assert.equal(result.trackEditWorkerSourceBytes, expectedBytes);
+      }
       assert.equal(result.postIdleMasterEditFetches, 0); assert.equal(result.postIdleMasterEditDecodeCalls, 0);
       assert.equal(result.postIdleMasterMixCacheHit, true);
       assert.equal(result.postIdleTrackEditFetches, 0);
-      assert.equal(result.peakWorkerSourceBytes, expectedBytes);
+      if (implementation === "prototype4") {
+        assert.equal(result.coldWorkerSourceBytes, 0);
+        assert.equal(result.coldEvictedSourceBytes, expectedBytes);
+        assert.equal(result.peakWorkerSourceBytes, 441000 * 2 * 4);
+        assert.equal(result.workerSourceBytesAfterTrack.length, count);
+        assert.ok(result.workerSourceBytesAfterTrack.every(track => track.sourceBytes === 0));
+      } else {
+        assert.equal(result.peakWorkerSourceBytes, expectedBytes);
+      }
       assert.match(result.trackEditedPcmSha256, /^[a-f0-9]{64}$/);
       assert.match(result.postIdleMasterPcmSha256, /^[a-f0-9]{64}$/);
       assert.match(result.postIdleTrackPcmSha256, /^[a-f0-9]{64}$/);
@@ -827,6 +863,18 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
         assert.equal(result.postIdleTrackEditDecodeCalls, count);
         assert.equal(result.postIdleTrackEditDecodeMs > 0, true);
         assert.equal(result.postIdleTrackWorkerSourceBytes, expectedBytes);
+      } else if (implementation === "prototype4") {
+        assert.equal(result.diagnostics.sourceBytes, 0);
+        assert.equal(result.diagnostics.workerSourcesEvicted, true);
+        assert.equal(result.diagnostics.evictedSourceBytes, expectedBytes);
+        assert.equal(result.masterWorkerSourceBytes, 0);
+        assert.equal(result.idleWorkerSourceBytes, 0);
+        assert.equal(result.idleWorkerSourcesEvicted, true);
+        assert.equal(result.postIdleMasterWorkerSourceBytes, 0);
+        assert.equal(result.trackEditDecodeCalls, count);
+        assert.ok(result.trackEditDecodeMs > 0);
+        assert.equal(result.postIdleTrackEditDecodeCalls, count);
+        assert.equal(result.postIdleTrackWorkerSourceBytes, 0);
       } else {
         assert.equal(result.diagnostics.sourceBytes, expectedBytes);
         assert.equal(result.idleWorkerSourceBytes, expectedBytes);
@@ -834,7 +882,7 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
         assert.equal(result.postIdleMasterWorkerSourceBytes, expectedBytes);
         assert.equal(result.postIdleTrackEditDecodeCalls, 0);
       }
-      if (["encoded-recovery", "prototype2", "prototype3"].includes(implementation)) {
+      if (["encoded-recovery", "prototype2", "prototype3", "prototype4"].includes(implementation)) {
         assert.equal(result.diagnostics.decodedBytes, 0);
         assert.ok(result.diagnostics.encodedRecoveryBytes > 0);
         assert.ok(result.diagnostics.encodedRecoveryBytes < expectedBytes * 0.9);

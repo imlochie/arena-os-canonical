@@ -29,6 +29,7 @@ Object.assign(window, { async measurePreparation(state: ArrangementPreviewState,
     try { return await nativeDecode(data); } finally { decodeMs += performance.now() - started; }
   } });
   const workerSourceBytes = new Map<string, number>();
+  const workerSourceBytesAfterTrack: { trackIndex: number; sourceBytes: number }[] = [];
   let peakAccountedSourcePcmOverlapBytes = 0;
   let peakDecodedSourceBytes = 0;
   let peakWorkerSourceBytes = 0;
@@ -37,7 +38,13 @@ Object.assign(window, { async measurePreparation(state: ArrangementPreviewState,
     constructor(url: string | URL, options?: WorkerOptions) {
       super(url, options);
       this.addEventListener("message", event => {
-        if ((event.data as { stats?: { workerSourcesEvicted?: boolean } }).stats?.workerSourcesEvicted) workerSourceBytes.clear();
+        const data = event.data as { kind?: string; trackIndex?: number; stats?: { workerSourcesEvicted?: boolean; sourceBytes?: number; sourceBytesByKey?: Record<string, number> } };
+        if (data.kind === "track-rendered" && data.stats?.sourceBytesByKey) {
+          workerSourceBytes.clear();
+          for (const [key, bytes] of Object.entries(data.stats.sourceBytesByKey)) workerSourceBytes.set(key, bytes);
+          workerSourceBytesAfterTrack.push({ trackIndex: data.trackIndex ?? -1, sourceBytes: data.stats.sourceBytes ?? 0 });
+        }
+        if (data.stats?.workerSourcesEvicted) workerSourceBytes.clear();
       });
     }
     postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
@@ -75,6 +82,8 @@ Object.assign(window, { async measurePreparation(state: ArrangementPreviewState,
     const started = performance.now();
     const coldFetchStart = assetFetches, coldDecodeStart = decodeCalls, coldDecodeTime = decodeMs;
     const buffer = await engine.prepare(state, context); const readyMs = performance.now() - started;
+    const coldDiagnostics = engine.diagnostics;
+    const coldWorkerSourceBytesAfterTrack = workerSourceBytesAfterTrack.splice(0);
     const coldFetches = assetFetches - coldFetchStart, coldDecodeCalls = decodeCalls - coldDecodeStart, coldDecodeMs = decodeMs - coldDecodeTime;
     await new Promise(resolve => setTimeout(resolve, 15));
     const replayFetchStart = assetFetches, replayDecodeStart = decodeCalls;
@@ -100,9 +109,9 @@ Object.assign(window, { async measurePreparation(state: ArrangementPreviewState,
           if (performance.now() >= deadline) throw new Error("Prototype 3 did not acknowledge idle Worker source eviction.");
           await new Promise(resolve => setTimeout(resolve, 25));
         }
-      } else {
-        await new Promise(resolve => setTimeout(resolve, WORKER_SOURCE_IDLE_EVICTION_MS + 100));
       }
+      const remaining = WORKER_SOURCE_IDLE_EVICTION_MS + 100 - (performance.now() - waitStarted);
+      if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
       return performance.now() - waitStarted;
     };
     const firstIdleWaitMs = await waitForIdle();
@@ -142,6 +151,8 @@ Object.assign(window, { async measurePreparation(state: ArrangementPreviewState,
       readyMs, replayMs, editMs, trackEditMs, maximumGapMs: preparationMaximumGapMs,
       verificationMs, ticks, frames: buffer.length, latestEditError: error, outputPlanarBytes: buffer.length * 2 * 4,
       peakAccountedSourcePcmOverlapBytes, peakDecodedSourceBytes, peakWorkerSourceBytes,
+        workerSourceBytesAfterTrack: coldWorkerSourceBytesAfterTrack, coldWorkerSourceBytes: coldDiagnostics.sourceBytes ?? 0,
+       coldEvictedSourceBytes: coldDiagnostics.evictedSourceBytes ?? 0,
       replaySame,
       coldFetches, coldDecodeCalls, coldDecodeMs, replayFetches, replayDecodeCalls,
       masterEditFetches, masterEditDecodeCalls, masterEditDecodeMs,
@@ -195,7 +206,9 @@ Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPrevi
     const cancelled = await pending;
     outage = outageAfterCancel;
     const latest = structuredClone(state); latest.masterVolume *= 0.5;
+    const recoveryStarted = performance.now();
     const result = await engine.prepare(latest, context);
+    const recoveryMs = performance.now() - recoveryStarted;
     const recoveredDiagnostics = engine.diagnostics;
     let error = 0;
     for (let frame = 0; frame < first.length; frame++) error = Math.max(error, Math.abs(result.getChannelData(0)[frame] - first.getChannelData(0)[frame] * 0.5));
@@ -207,7 +220,7 @@ Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPrevi
     outage = false;
     await engine.prepare(state, context, "reopened-source-revision");
     return {
-      coldFetches, afterEditFetches, reopenedFetches: fetches, cancelled, latestError: error,
+      coldFetches, afterEditFetches, reopenedFetches: fetches, cancelled, latestError: error, recoveryMs,
       replaySame: cached === result, disposedWorkers,
       initialDiagnostics, recoveredDiagnostics, disposedDiagnostics,
     };
@@ -231,15 +244,16 @@ Object.assign(window, { async verifyWorkerErrorDuringOutage(state: ArrangementPr
   try {
     const first = await engine.prepare(state, context);
     const firstDiagnostics = engine.diagnostics;
+    const idleWaitStarted = performance.now();
     if (expectWorkerEviction) {
-      const deadline = performance.now() + WORKER_SOURCE_IDLE_EVICTION_MS + 10_000;
+      const deadline = idleWaitStarted + WORKER_SOURCE_IDLE_EVICTION_MS + 10_000;
       while (!(engine.diagnostics.workerSourcesEvicted && engine.diagnostics.sourceBytes === 0)) {
-        if (performance.now() >= deadline) throw new Error("Prototype 3 did not evict Worker sources before the outage recovery test.");
+        if (performance.now() >= deadline) throw new Error("The candidate did not evict Worker sources before the outage recovery test.");
         await new Promise(resolve => setTimeout(resolve, 25));
       }
-    } else {
-      await new Promise(resolve => setTimeout(resolve, WORKER_SOURCE_IDLE_EVICTION_MS + 100));
     }
+    const remainingIdleWindow = WORKER_SOURCE_IDLE_EVICTION_MS + 100 - (performance.now() - idleWaitStarted);
+    if (remainingIdleWindow > 0) await new Promise(resolve => setTimeout(resolve, remainingIdleWindow));
     const idleDiagnostics = engine.diagnostics;
     outage = true;
     const workerToFail = activeWorker as unknown as Worker | null;
@@ -249,10 +263,12 @@ Object.assign(window, { async verifyWorkerErrorDuringOutage(state: ArrangementPr
     // from its local decoded/encoded owner while the endpoint is unavailable.
     workerToFail.dispatchEvent(new ErrorEvent("error", { message: "Controlled Worker failure" }));
     const edited = structuredClone(state); if (edited.tracks[0]) edited.tracks[0].volume *= 0.75;
+    const recoveryStarted = performance.now();
     const recovered = await engine.prepare(edited, context);
+    const recoveryMs = performance.now() - recoveryStarted;
     let outputError = 0;
     for (let frame = 0; frame < first.length; frame++) outputError = Math.max(outputError, Math.abs(recovered.getChannelData(0)[frame] - first.getChannelData(0)[frame] * 0.75));
-    return { fetches, outageFetches, outputError, firstFrames: first.length, recoveredFrames: recovered.length,
+    return { fetches, outageFetches, outputError, recoveryMs, firstFrames: first.length, recoveredFrames: recovered.length,
       firstDiagnostics, idleDiagnostics, recoveredDiagnostics: engine.diagnostics };
   } finally { engine.dispose(); window.fetch = originalFetch; window.Worker = NativeWorker; await context.close(); }
 } });
@@ -326,15 +342,16 @@ Object.assign(window, { async verifyRecoveryBudgetFallback(state: ArrangementPre
   };
   try {
     const rendered = await engine.prepare(state, context);
+    const idleWaitStarted = performance.now();
     if (expectWorkerEviction) {
-      const deadline = performance.now() + WORKER_SOURCE_IDLE_EVICTION_MS + 10_000;
+      const deadline = idleWaitStarted + WORKER_SOURCE_IDLE_EVICTION_MS + 10_000;
       while (!(engine.diagnostics.workerSourcesEvicted && engine.diagnostics.sourceBytes === 0)) {
-        if (performance.now() >= deadline) throw new Error("Prototype 3 did not evict its large-source Worker copy after idle.");
+        if (performance.now() >= deadline) throw new Error("The candidate did not release its large-source Worker copy.");
         await new Promise(resolve => setTimeout(resolve, 25));
       }
-    } else {
-      await new Promise(resolve => setTimeout(resolve, WORKER_SOURCE_IDLE_EVICTION_MS + 100));
     }
+    const remainingIdleWindow = WORKER_SOURCE_IDLE_EVICTION_MS + 100 - (performance.now() - idleWaitStarted);
+    if (remainingIdleWindow > 0) await new Promise(resolve => setTimeout(resolve, remainingIdleWindow));
     return { frames: rendered.length, fetches, diagnostics: engine.diagnostics };
   } finally {
     engine.dispose(); window.fetch = originalFetch; await context.close();
