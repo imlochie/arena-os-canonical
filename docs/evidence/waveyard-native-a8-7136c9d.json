@@ -1,0 +1,335 @@
+{
+  "commit": "7136c9ddc5c30994a53a38629d622c95d670dd1d",
+  "scope": "Genuine legacy Demucs 4/6, NOT MDX ONNX acceptance, NOT Electron/Windows or a complete crash matrix",
+  "source": {
+    "blob": "cc91788843d20ae7af169d6e0f72c2c5658fdb39",
+    "sha256": "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507",
+    "bytes": 262867,
+    "decoded": {
+      "frames": 479832,
+      "sampleRate": 44100,
+      "channels": 2,
+      "peak": 1.045414924621582,
+      "rms": 0.24962718278253068,
+      "mean": 0.0011924461177313433,
+      "acRms": 0.2496243346635085,
+      "pcmSha256": "89c6a2fc2ed54f49eb3289d362aaa2bf2d6caeec2779d2e0cb67f9e153e7fb79"
+    },
+    "rights": "RIGHTS.txt"
+  },
+  "gates": {
+    "A": "passed for prepared engines so far; see per-engine receipts; both independently trained 4/6-source checkpoints completed",
+    "B": "passed for completed engines so far; real music and real child process; both independently trained 4/6-source checkpoints completed",
+    "C": "passed for validated engines so far; FFmpeg independently decoded each complete stem; both independently trained 4/6-source checkpoints completed",
+    "D": "open: crash/guardian work incomplete",
+    "E": "passed native browser player/session controls and persisted-bank reopen; NOT Electron acceptance; both independently trained 4/6-source checkpoints completed",
+    "F": "passed genuine source → job → bank → persistent session → derived Studio arrangement → independent full export decode; both independently trained 4/6-source checkpoints completed"
+  },
+  "error": null,
+  "engines": [
+    {
+      "model": "deep_4s",
+      "checkpoint": "955717e8-8726e21a.th",
+      "preparation": {
+        "state": "ready",
+        "environment": {
+          "python": "/home/runner/work/arena-os-canonical/arena-os-canonical/.data/a8-runtime/venv/bin/python",
+          "pythonVersion": "3.11.17",
+          "demucsVersion": "4.0.1",
+          "torchVersion": "2.0.1+cpu",
+          "checkpointPath": "/home/runner/work/arena-os-canonical/arena-os-canonical/.data/a8-models/955717e8-8726e21a.th",
+          "checkpointPresent": true,
+          "checkpointVerified": true,
+          "checkpointSha256": "8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4",
+          "dependencyRecordSha256": "2c28fce643caf5d343940bee38b04a1f6469d620e6f6cc235d50ec41d880611e",
+          "managedEnvDir": "/home/runner/work/arena-os-canonical/arena-os-canonical/.data/a8-runtime",
+          "modelsDir": "/home/runner/work/arena-os-canonical/arena-os-canonical/.data/a8-models"
+        },
+        "error": null
+      },
+      "job": {
+        "id": "4d35c510-2716-4d16-a2cb-c58a3d87a388",
+        "projectId": "e2e54a2e-df4a-45a8-9dfb-a0837d9231e0",
+        "sourceAssetId": "d1047f2e-5e23-4f86-871c-3cc762906e3a",
+        "type": "separation",
+        "status": "complete",
+        "priority": 0,
+        "attempts": 1,
+        "stage": "complete",
+        "idempotencyKey": "separation:d1047f2e-5e23-4f86-871c-3cc762906e3a:deep_4s",
+        "model": "deep_4s",
+        "requestedDevice": "auto",
+        "resolvedDevice": "cpu",
+        "errorCode": null,
+        "errorMessage": null,
+        "metadata": "{\"engine\":\"demucs\",\"model\":\"deep_4s\",\"models\":[\"deep_4s\"],\"checkpointSha256\":\"8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4\",\"resolvedDevice\":\"cpu\",\"outputCount\":4,\"stems\":[\"vocals\",\"drums\",\"bass\",\"other\"]}",
+        "startedAt": "2026-10-20T09:17:34.619Z",
+        "completedAt": "2026-10-20T09:17:42.776Z",
+        "createdAt": "2026-10-20T09:17:34.604Z",
+        "updatedAt": "2026-10-20T09:17:42.776Z"
+      },
+      "stems": [
+        {
+          "id": "d2012677-91cc-4e54-966b-06240c851824",
+          "stemType": "vocals",
+          "model": "deep_4s",
+          "modelVersion": "htdemucs@955717e8-8726e21a/demucs-4.0.1",
+          "sha256": "80345e9ce82f29d85f19e8c62249dd53dee6038464d211ebe8c9a6e08530fde4",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.983978271484375,
+            "rms": 0.1136286656230175,
+            "mean": 0.0011491761679576133,
+            "acRms": 0.11362285441495702,
+            "pcmSha256": "d9b82a0f97e863021207b25a1138f64bd93e8d3df2bef62d8d281baa3d34c12e"
+          }
+        },
+        {
+          "id": "ce8413a4-67e4-4a72-bf38-bcf49e9f1036",
+          "stemType": "drums",
+          "model": "deep_4s",
+          "modelVersion": "htdemucs@955717e8-8726e21a/demucs-4.0.1",
+          "sha256": "d5fb37e5db1321bbbfc07e107b7d4f60aefb718c8026fadfed44f30474c98940",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.990081787109375,
+            "rms": 0.1403814348055472,
+            "mean": 0.0012702053712879097,
+            "acRms": 0.1403756881243289,
+            "pcmSha256": "ade8a975c60c0daaac64cf7488ce78a41f5f581fc6e04b4344c1c51b13b504b0"
+          }
+        },
+        {
+          "id": "08d60ce2-a23f-44b8-bd11-a97bb0adc95b",
+          "stemType": "bass",
+          "model": "deep_4s",
+          "modelVersion": "htdemucs@955717e8-8726e21a/demucs-4.0.1",
+          "sha256": "91adc2fcd6993f8879d1d2a35483f0ee7609d559c75b681d1e871c400cb0d6c2",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.3695068359375,
+            "rms": 0.09719681434675091,
+            "mean": 0.0011867625335839386,
+            "acRms": 0.09718956895596176,
+            "pcmSha256": "b06ce23f3cb0eca7482132381332b8e12aa3ad86a22e57a8bed663f2c59492f6"
+          }
+        },
+        {
+          "id": "b3c6a0da-5f5f-460d-874e-23e2a79edabf",
+          "stemType": "other",
+          "model": "deep_4s",
+          "modelVersion": "htdemucs@955717e8-8726e21a/demucs-4.0.1",
+          "sha256": "56a8b95c7d13407cce12fdea45a9ff7307e56b662fffe5d127dbf513911996cf",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.7803955078125,
+            "rms": 0.10948190948480913,
+            "mean": 0.001063913623175908,
+            "acRms": 0.10947673995987621,
+            "pcmSha256": "465b0fddc84d1d9e5753f060604c7d81d010027b1efa8ab04f29cf736ec5407f"
+          }
+        }
+      ],
+      "export": {
+        "jobId": "5dbac27e-d9ab-4668-8f24-296e8c0cdcd1",
+        "versionId": "fe15d4e2-7cd6-428b-b001-9b2ac755c169",
+        "remixId": "cd1a19a1-68b1-4546-aead-758dd81ceb67",
+        "stemAssetIds": [
+          "d2012677-91cc-4e54-966b-06240c851824",
+          "ce8413a4-67e4-4a72-bf38-bcf49e9f1036",
+          "08d60ce2-a23f-44b8-bd11-a97bb0adc95b",
+          "b3c6a0da-5f5f-460d-874e-23e2a79edabf"
+        ],
+        "sha256": "1539e08959fafed2d6e73fd6d1eb9cad24f1df5728341dfe7d4790ca22118097",
+        "decoded": {
+          "frames": 479808,
+          "sampleRate": 44100,
+          "channels": 2,
+          "peak": 0.726776123046875,
+          "rms": 0.17525416158748797,
+          "mean": 0.0033022783367700924,
+          "acRms": 0.17522304674762348,
+          "pcmSha256": "df587bc825da4e122de7695c2469fbe1b570946d11c53ced95559fdc615e682f"
+        }
+      }
+    },
+    {
+      "model": "deep_6s",
+      "checkpoint": "5c90dfd2-34c22ccb.th",
+      "preparation": {
+        "state": "ready",
+        "environment": {
+          "python": "/home/runner/work/arena-os-canonical/arena-os-canonical/.data/a8-runtime/venv/bin/python",
+          "pythonVersion": "3.11.17",
+          "demucsVersion": "4.0.1",
+          "torchVersion": "2.0.1+cpu",
+          "checkpointPath": "/home/runner/work/arena-os-canonical/arena-os-canonical/.data/a8-models/5c90dfd2-34c22ccb.th",
+          "checkpointPresent": true,
+          "checkpointVerified": true,
+          "checkpointSha256": "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd",
+          "dependencyRecordSha256": "2c28fce643caf5d343940bee38b04a1f6469d620e6f6cc235d50ec41d880611e",
+          "managedEnvDir": "/home/runner/work/arena-os-canonical/arena-os-canonical/.data/a8-runtime",
+          "modelsDir": "/home/runner/work/arena-os-canonical/arena-os-canonical/.data/a8-models"
+        },
+        "error": null
+      },
+      "job": {
+        "id": "8e4568e0-cd6a-417b-9513-164324769de5",
+        "projectId": "e2e54a2e-df4a-45a8-9dfb-a0837d9231e0",
+        "sourceAssetId": "d1047f2e-5e23-4f86-871c-3cc762906e3a",
+        "type": "separation",
+        "status": "complete",
+        "priority": 0,
+        "attempts": 1,
+        "stage": "complete",
+        "idempotencyKey": "separation:d1047f2e-5e23-4f86-871c-3cc762906e3a:deep_6s",
+        "model": "deep_6s",
+        "requestedDevice": "auto",
+        "resolvedDevice": "cpu",
+        "errorCode": null,
+        "errorMessage": null,
+        "metadata": "{\"engine\":\"demucs\",\"model\":\"deep_6s\",\"models\":[\"deep_6s\"],\"checkpointSha256\":\"34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd\",\"resolvedDevice\":\"cpu\",\"outputCount\":6,\"stems\":[\"vocals\",\"drums\",\"bass\",\"guitar\",\"piano\",\"other\"]}",
+        "startedAt": "2026-10-20T09:18:02.122Z",
+        "completedAt": "2026-10-20T09:18:09.370Z",
+        "createdAt": "2026-10-20T09:18:02.110Z",
+        "updatedAt": "2026-10-20T09:18:09.370Z"
+      },
+      "stems": [
+        {
+          "id": "f67d0dc5-47bb-4088-b218-56dbd3bf572e",
+          "stemType": "vocals",
+          "model": "deep_6s",
+          "modelVersion": "htdemucs_6s@5c90dfd2-34c22ccb/demucs-4.0.1",
+          "sha256": "a511468e8af68a935bd060cdf8915b60a3e2f35b83f9ecc1586b6bbad5709567",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.944732666015625,
+            "rms": 0.11345929207137835,
+            "mean": 0.0011103444400018358,
+            "acRms": 0.11345385887030417,
+            "pcmSha256": "63b5bbc0f9dc0abfb0c43d17eb26c67d842d8405c0a2bdb87092951c019e40ce"
+          }
+        },
+        {
+          "id": "9d29426e-511b-4c28-a3ad-bdd223abb03f",
+          "stemType": "drums",
+          "model": "deep_6s",
+          "modelVersion": "htdemucs_6s@5c90dfd2-34c22ccb/demucs-4.0.1",
+          "sha256": "e234e166ab6a1e031e7b715f53973594ca1d6bec977643191a76f2a2089a4729",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.989990234375,
+            "rms": 0.13868182704893603,
+            "mean": 0.001606948235104943,
+            "acRms": 0.13867251663902513,
+            "pcmSha256": "071d73b3eaab82e5392866564bc179febbb4bb4f3449a8ff6077a37a1b6e98f3"
+          }
+        },
+        {
+          "id": "c010e6d7-2dea-4578-b992-60fa35ecef30",
+          "stemType": "bass",
+          "model": "deep_6s",
+          "modelVersion": "htdemucs_6s@5c90dfd2-34c22ccb/demucs-4.0.1",
+          "sha256": "7a261b4155b49cdabca03182b1403e2b67a7babcf5accd8598ddf31dd2b3ad7d",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.41455078125,
+            "rms": 0.10176447622135398,
+            "mean": 0.0009992156477687927,
+            "acRms": 0.10175957050172615,
+            "pcmSha256": "50f2d98f9d30462d1b2181694ec15bc483f5e29438bd8e56009a1f235db6cae1"
+          }
+        },
+        {
+          "id": "253312c6-41fd-4897-82cb-5b808baa3bfe",
+          "stemType": "other",
+          "model": "deep_6s",
+          "modelVersion": "htdemucs_6s@5c90dfd2-34c22ccb/demucs-4.0.1",
+          "sha256": "4248623928519ab5f489c698fa9d36a699d834ff596e5e346e764364847198db",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.002044677734375,
+            "rms": 0.001190892807212324,
+            "mean": 0.0011858408662432894,
+            "acRms": 0.00010957699675303458,
+            "pcmSha256": "8d6f58ec2d009fd34efa87b0b8d5b1fba374fdb50e9668e1faac1823c2a8716b"
+          }
+        },
+        {
+          "id": "04648203-0c0f-42c5-8799-8bde64260b10",
+          "stemType": "guitar",
+          "model": "deep_6s",
+          "modelVersion": "htdemucs_6s@5c90dfd2-34c22ccb/demucs-4.0.1",
+          "sha256": "d875923bc420760fd3d86caf75149aa03a91186629e50cf342011b95a50932bf",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.028106689453125,
+            "rms": 0.0012668373192392228,
+            "mean": 0.0011867835217647628,
+            "acRms": 0.0004431948396414914,
+            "pcmSha256": "b1e2b37d4c58a6df8cde7b86d34e2f90d8360c1d6ed3da0fefe25ba6141be80d"
+          }
+        },
+        {
+          "id": "f1e301c8-8847-44c6-83fc-5954de079f75",
+          "stemType": "piano",
+          "model": "deep_6s",
+          "modelVersion": "htdemucs_6s@5c90dfd2-34c22ccb/demucs-4.0.1",
+          "sha256": "d6652a57120accef362dbe14a2f612724908080836c84245d9b8e1ddf9c47d8f",
+          "decoded": {
+            "frames": 479832,
+            "sampleRate": 44100,
+            "channels": 2,
+            "peak": 0.761993408203125,
+            "rms": 0.10445985182379046,
+            "mean": 0.001283601204900068,
+            "acRms": 0.104451965089198,
+            "pcmSha256": "a64dca6bab6e5d620f004702d68f5026222c4e781acd5fa8795db8815aeb5794"
+          }
+        }
+      ],
+      "export": {
+        "jobId": "5b937fbe-fd85-444c-9ffc-912e1fcdba2c",
+        "versionId": "a81f38ba-b132-48af-9ef0-b7e31c0f23bd",
+        "remixId": "9baba262-cecf-4373-b438-d12572d6dd88",
+        "stemAssetIds": [
+          "f67d0dc5-47bb-4088-b218-56dbd3bf572e",
+          "9d29426e-511b-4c28-a3ad-bdd223abb03f",
+          "c010e6d7-2dea-4578-b992-60fa35ecef30",
+          "253312c6-41fd-4897-82cb-5b808baa3bfe",
+          "04648203-0c0f-42c5-8799-8bde64260b10",
+          "f1e301c8-8847-44c6-83fc-5954de079f75"
+        ],
+        "sha256": "22f736deebb7ffcd5299b4978a503f00480f328ab0a221c653ed6802b67d4e12",
+        "decoded": {
+          "frames": 479808,
+          "sampleRate": 44100,
+          "channels": 2,
+          "peak": 0.796722412109375,
+          "rms": 0.17820871260112037,
+          "mean": 0.00521467758271318,
+          "acRms": 0.178132401276851,
+          "pcmSha256": "a2f874f727c2f11530d02477ad30adfb3bf680101c34838743360d6e95cb5f6f"
+        }
+      }
+    }
+  ]
+}

@@ -2447,3 +2447,83 @@ CSS selector; corrected to the existing accessible combobox name, then1PASS
 in5.4sec. Copied-PCM controlled banks are explicitly not trained inference.
 Types/build pass, lint0errors49warnings. Next genuine run must complete both
 models and the stronger E/F path. D still open; replacement not accepted.
+
+### Strong genuine A8 four/six workflow PASS on7136c9d; D remains OPEN
+
+Run https://github.com/imlochie/arena-os-canonical/actions/runs/39399418007 /
+job118550100654 **SUCCESS** on exact implementation
+`7136c9ddc5c30994a53a38629d622c95d670dd1d`. Numbered Checks receipt is retained
+verbatim-normalized in `docs/evidence/waveyard-native-a8-7136c9d.json` (no runtime
+or weights). Artifact12253472401, `a8-genuine-7136c9ddc5c30994a53a38629d622c95d670dd1d`,
+42,893,674bytes, contains actual permitted source/generated audio, attribution,
+trace and screenshots, independent decoded signal records and exports.
+
+Both native checkpoints now pass the **stronger** connected path: managed prepare
+and real trained inference, ten distinct independently decoded complete stems,
+live post-fader vocal mute-to-zero and drums isolation with Bass-zero, seek/level
+controls, actual Play-as-session POSTs pinning the just-auditioned bank, fresh
+session native navigation/playback/reopen, Studio handoff preserving exact stem
+identities, immutable arrangement version, actual FFmpeg render and independently
+decoded downloaded WAV. This supersedes the sparse-mixer failure for this exact
+browser-scoped E path, not the historical failed runs or D/Electron/MDX/quality
+exclusions. No API-created replacement session is substituted for the player
+button. The guardian and publication-safety code are included in this run.
+
+Managed Python3.11.17 / Demucs4.0.1 / torch2.0.1+cpu (CPU resolved) with previously
+recorded torchaudio2.0.2,numpy1.26.4,pip25.0.1. Per-run dependency freeze SHA256
+`2c28fce643caf5d343940bee38b04a1f6469d620e6f6cc235d50ec41d880611e`, not a fully
+hash-locked transitive install. Full native4 checkpoint SHA256
+`8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4`; native6
+`34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd`. Source remains
+CC-BY3 Slow Motion Dream,262867bytes/SHA256
+`4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507`.
+All ten generated stems479832frames,44100Hz stereo, finite and distinct. Six-source
+other AC RMS0.000109576997 and guitar0.000443194840: low-information/DC-dominated
+channels are disclosed, not semantic/perceptual quality acceptance; other is not
+renamed melody. Full recording and separated-output rights notices are retained.
+
+Four export job5dbac27e-d9ab-4668-8f24-296e8c0cdcd1, SHA256
+`1539e08959fafed2d6e73fd6d1eb9cad24f1df5728341dfe7d4790ca22118097`,
+peak0.726776123,RMS0.175254162. Six export job5b937fbe-fd85-444c-9ffc-912e1fcdba2c,
+SHA256`22f736deebb7ffcd5299b4978a503f00480f328ab0a221c653ed6802b67d4e12`,
+peak0.796722412,RMS0.178208713. Each479808frames,44100Hz stereo:24frames (<1ms)
+shorter due the previously disclosed strict integer-ms arrangement endpoints;
+original complete stem files are not shortened.
+
+Local actual Chromium153/WebAudio transport12PASS. Four connected controlled
+browser regressions also4PASS/0FAIL/0SKIP on7136c9d: bank generation/donor identity
+through real PostgreSQL restart and decoded Studio render, UI cancellation/reload/
+fresh restart, real PostgreSQL cancellation/publication row lock, two-bank player
+stale-solo reset and actual session bank/native route/reopen. Synthetic/injected
+separation in those four remains explicitly NOT genuine inference; do not add
+this focused four-count to earlier overlapping cases. Types/build pass;
+lint0errors49warnings. Local exact7adf16a source1481PASS/39suites/0SKIP is preserved;
+7136c9d changes acceptance logic/docs only, but is not reported as that exact-head
+local full-source run.
+
+Important retained discrepancy:7adf16a CI39397222684SUCCESS, while parallel CI
+39397215324FAILED `changed checkpoint bytes invalidate the recorded smoke, even
+with the same filename` (check118542802695). Full local1481 tests and a focused
+invalidation test plus30 isolated repetitions passed; failure not reproduced or
+silently waived. Signed TAP artifact is retained by CI; Checks expose its test
+identity, not assertion details. Current7136c9d CI results must be checked before
+claiming all CI green. D still OPEN for durable ownership, staged-output/restart
+reconciliation and full crash matrix. Guardian/lost-ack/partial-upload fixes are
+not that matrix. Desktop compile/preflight only; no Electron binary/display here,
+no Electron/Windows execution or acceptance. MDX, catalogue and complete STEM.FM
+replacement remain unaccepted. PR14/15 unmerged, PR16draft; no owner cancellation
+recommendation.
+
+###7136c9d final CI verification and evidence-only follow-up
+
+Both implementation CI runs39399418135 and39399423575 completed SUCCESS,
+including source suite/typecheck/lint/build, real PostgreSQL/Redis/BullMQ runtime,
+images and browser music/audio workflows. Genuine39399418007SUCCESS is separate
+trained-model evidence, not inferred from CI. Desktop compilation was rerun and
+passed; doctor still reports Electron44.7.0 package, binary:null, display:false,
+readyToLaunch:false (preflight only). The earlier7adf16a single readiness
+invalidation failure stays recorded; it was not reproduced or waived, and both
+current implementation CIs passed it. This follow-up only appends chronology,
+scorecard/provisioning scope and the normalized actual-run receipt. Verified
+implementation remains7136c9ddc5c30994a53a38629d622c95d670dd1d. D/replacement
+remain open for the explicitly listed engineering work; no auto-merge performed.

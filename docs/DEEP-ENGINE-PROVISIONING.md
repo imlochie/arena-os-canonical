@@ -114,3 +114,20 @@ grid). Source and complete stem files were not shortened. See continuation for
 full checkpoint/export hashes and prior honest failures. Guitar and residual
 have low measured RMS on this excerpt; semantic instrument quality and broader
 six-stem generalization are not accepted from labels/hashes alone.
+
+## Native trained workflow evidence (7136c9d)
+
+Genuine run39399418007 completed both local-signature Demucs4.0.1 native4/6
+checkpoints through actual player post-fader mute/solo, actual session button and
+pinned persistent bank, native session reopen, Studio arrangement and decoded
+export. `docs/evidence/waveyard-native-a8-7136c9d.json` records the interpreter,
+full observed checkpoint digests, dependency freeze digest, generated asset
+checksums/frame/signal records and both exports. Artifact12253472401 contains
+permitted source/generated audio and rights notices, never installed runtime or
+weights. The inference CLI now runs the same Demucs module through an
+executor-owned stdin-pipe guardian: Node death causes Python to exit itself,
+without persisted-PID killing. Production full-hash gates remain enforced.
+This proves native four/six on CPU and browser-scoped reuse, not MDX inference,
+Electron/Windows, semantic source quality or complete restart recovery. D remains
+open for durable ownership/reconciliation and staged-output/crash coverage;
+dependency freeze recording is not transitive package hash locking.

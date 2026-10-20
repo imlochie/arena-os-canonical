@@ -326,3 +326,25 @@ navigation and reopen, rather than awaiting the abandoned response body.
 A controlled actual-player two-bank regression passes with real analyser signal
 checks and saved-bank reopen. Complete learned four/six E/F remains pending the
 next genuine run; D and complete replacement remain OPEN.
+
+### Stronger trained-model browser E/F accepted on7136c9d, not full replacement
+
+Genuine run39399418007/job118550100654SUCCESS; durable normalized receipt at
+`docs/evidence/waveyard-native-a8-7136c9d.json`, audio/trace/export artifact12253472401.
+Both native4/6 trained checkpoints now complete A/B/C plus actual post-fader
+mute/isolation signal assertions, actual player session-bank POST/persistence,
+native session navigation/reopen and full Studio arrangement/export decode.
+This is stronger browser E/F evidence than the earlier UI-state/API-session
+runs. Ten full-length distinct stems, two decoded exports; no fake inference.
+Six guitar/other low AC RMS and all semantic-quality limitations remain explicit.
+Local controlled transport12PASS and connected music regressions4PASS support
+regression coverage, not trained-model evidence. Local source1481PASS was exact
+7adf16a;7136c9d only changes acceptance/docs, with current CI separate. One prior
+parallel CI failed the checkpoint-change invalidation case while the other and
+local full suite passed; retain that discrepancy rather than declaring blanket
+CI success. **D OPEN; Electron/Windows, MDX and catalogue not accepted; full
+replacement CLOSED.** Existing chronology failures are not deleted or reclassified.
+
+Implementation7136c9d subsequently passed BOTH CI39399418135 and39399423575
+(source/type/lint/build, real-runtime, images, browser workflows). This does not
+erase the prior readiness-test discrepancy or turn D/full replacement green.
