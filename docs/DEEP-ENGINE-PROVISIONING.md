@@ -21,9 +21,12 @@ Only the local repository/signature is passed to Demucs; no automatic remote
 model-name fallback. Downloads use the publisher's
 `https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/` store, HTTPS,
 manual redirects with a closed hostname allowlist, a 200 MB limit, bounded
-streaming, and upstream's eight-hex SHA-256 filename check before atomic placement.
-This prefix is **not** a publisher-signed full SHA-256. The full locally computed
-hash is retained in preparation and successful music-job receipts. Size shown
+streaming, and pinned full SHA-256 verification before atomic placement. The
+full hashes were observed from the authoritative downloads in genuine hosted
+run39390069082 and match upstream's eight-hex filename convention; they are
+**not** represented as publisher-signed full digests. They are checked during
+acquisition, owner import, runtime readiness and immediately before inference.
+The full locally computed hash is retained in preparation and music-job receipts. Size shown
 before acquisition is an estimate, not an invented authoritative byte count.
 
 ## Deliberate legacy compatibility baseline
@@ -93,3 +96,21 @@ stem quality assessment; Windows embedded Python publisher digest verification;
 preparation lock recovery/write ordering under adversarial process crashes.
 These remain open even if Demucs music execution passes. Do not average A–F or
 call the STEM.FM replacement gate complete.
+
+
+## Genuine execution milestone (not full replacement acceptance)
+
+Run [39390069082](https://github.com/imlochie/arena-os-canonical/actions/runs/39390069082)
+on `9e9aec50dc5f65ae3d57f86b9faf7fdc660224eb` **passed** actual native four/six
+preparation, trained music inference, full stem integrity, browser playback/
+controls, persistent session reopen, Studio handoff and independently decoded
+export. D remains explicitly open. Artifact `a8-genuine-9e9aec50...`, id
+12249491337, 36,885,721 bytes, contains the ten generated stems, both arrangement
+WAVs, original CC-BY MP3, RIGHTS.txt, per-output checksums/levels/frame receipts,
+screenshots and trace. No weights are redistributed. All ten stems independently
+decoded to479832frames,44100Hz,stereo; both exported arrangements decoded to
+479808frames (24frames/sub1ms shorter due to the disclosed integer-ms Studio
+grid). Source and complete stem files were not shortened. See continuation for
+full checkpoint/export hashes and prior honest failures. Guitar and residual
+have low measured RMS on this excerpt; semantic instrument quality and broader
+six-stem generalization are not accepted from labels/hashes alone.

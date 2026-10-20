@@ -16,7 +16,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -531,4 +531,19 @@ test("a cancelled subprocess is killed and reported as cancelled", async () => {
 
 test("trusted source cannot change the publisher's HTTPS port", () => {
   assert.throws(() => validateTrustedUrl("https://dl.fbaipublicfiles.com:8443/model.th"), /HTTPS port/);
+});
+
+test("four-source owner import is atomic and cannot replace the six-source checkpoint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wy-import-model-"));
+  try {
+    const models = join(directory, "models"); await mkdir(models, { recursive: true });
+    const six = join(models, DEEP_CHECKPOINT_FILE); await writeFile(six, "retained-six-source-bytes");
+    const source = join(directory, "owner.th"), body = Buffer.from("controlled four-source import identity, NOT weights"); await writeFile(source, body);
+    const four = join(models, "955717e8-8726e21a.th");
+    await importCheckpoint(source, models, ctx(), { modelId: "deep_4s", checksumPrefix: sha256Of(body) });
+    assert.deepEqual(await readFile(four), body); assert.equal(await readFile(six, "utf8"), "retained-six-source-bytes");
+    await writeFile(source, "wrong replacement");
+    await assert.rejects(importCheckpoint(source, models, ctx(), { modelId: "deep_4s", checksumPrefix: sha256Of(body) }), (error: unknown) => (error as ProvisionError).code === "INTEGRITY_FAILED");
+    assert.deepEqual(await readFile(four), body); assert.equal(await readFile(six, "utf8"), "retained-six-source-bytes");
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

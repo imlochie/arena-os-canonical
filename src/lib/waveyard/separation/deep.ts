@@ -542,7 +542,7 @@ export async function inspectDeepRuntimeReadiness(options: { env?: NodeJS.Proces
         return unavailable(`Demucs package metadata exists, but its CLI/native runtime cannot load: ${detail}`);
       }
       const digest = await checksumFile(status.checkpointPath);
-      if (!digest.startsWith(deepModelSpec(options.modelId).checksum)) return unavailable("The local deep checkpoint does not match the upstream SHA-256 prefix; replace it with the authorised original checkpoint.", true, digest);
+      if (digest !== deepModelSpec(options.modelId).sha256) return unavailable("The local deep checkpoint does not match the pinned full SHA-256; replace it with the authorised original checkpoint.", true, digest);
       return { prepared: true, reason: null, runtimeLoadable: true, checkpointSha256: digest, inferenceVerified: false };
     } catch (error) { return unavailable(`Deep readiness could not be verified: ${error instanceof Error ? error.message : String(error)}`); }
   })();
@@ -605,7 +605,13 @@ async function collectWavFiles(directory: string): Promise<Map<string, string>> 
  * with the honest reason — unavailable engine, failed run, missing output).
  * The caller persists; this function never touches the database.
  */
-export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRunResult> {
+export async function verifyDeepCheckpoint(path: string, expected: string): Promise<string> {
+  const digest = await checksumFile(path);
+  if (digest !== expected) throw new SeparationUnavailableError("The selected Demucs checkpoint does not match its pinned full SHA-256. No inference was started; import or prepare the authorised original.");
+  return digest;
+}
+
+export async function runDeepSeparation(request: DeepRunRequest, deps: { verifyCheckpoint?: typeof verifyDeepCheckpoint } = {}): Promise<DeepRunResult> {
   request.signal?.throwIfAborted();
   const env = request.env ?? process.env;
   const spec = deepModelSpec(request.modelId);
@@ -616,6 +622,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
     deepPythonCandidates(env).find((entry) => entry.bin === ready.python) ?? deepPythonCandidates(env)[0];
   if (candidate === undefined) throw new SeparationUnavailableError(deepPrepareHint(env));
 
+  const checkpointSha256 = await (deps.verifyCheckpoint ?? verifyDeepCheckpoint)(ready.checkpointPath, spec.sha256);
   const requestedDevice = request.requestedDevice ?? "auto";
   const timeoutMs = request.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   const resolvedDevice =
@@ -703,7 +710,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
     modelName: spec.name,
     modelVersion: deepModelVersion(ready.demucsVersion, spec.id),
     checkpointPath: ready.checkpointPath,
-    checkpointSha256: await checksumFile(ready.checkpointPath),
+    checkpointSha256,
     resolvedDevice,
     stems,
   };

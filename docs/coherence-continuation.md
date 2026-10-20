@@ -2226,3 +2226,53 @@ successful handoff. Library/session34/34 and types PASS. An additional placement
 regression pins479832/44100s to10880ms, inside available samples. The genuine
 music harness still independently verifies exported frame tolerance. These
 failed runs remain failures; no F or six-source acceptance is borrowed from them.
+
+### A8 genuine four AND six music-to-export milestone PASSED (D still OPEN)
+
+Authoritative hosted run39390069082 / job118519174199 on
+`9e9aec50dc5f65ae3d57f86b9faf7fdc660224eb` **SUCCESS**. A/B/C/E/F passed within
+the explicit Demucs/native-browser scope for BOTH independently trained models.
+No injected engine/process/download, copied-input stems, grouped six outputs,
+identity ONNX or passthrough bank. Same pinned CC-BY music; Python3.11.17,
+Demucs4.0.1, torch2.0.1+cpu, resolved dependency record SHA
+`2c28fce643caf5d343940bee38b04a1f6469d620e6f6cc235d50ec41d880611e`.
+
+| Native model | Full authoritative-download checkpoint SHA256 | Independent arrangement WAV SHA256 |
+|---|---|---|
+| htdemucs / deep_4s | 8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4 | ba903a5423093d19ddf4ef46c009cfb02931c1001a4993f3e8841edc4552134f |
+| htdemucs_6s / deep_6s | 34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd | 0e81dbc47949ce9a927712bd07a9ab0594fdd38816584da8cff25a357d542925 |
+
+All ten generated WAVs decoded independently via FFmpeg to479832frames,
+44100Hz/stereo, finite samples, distinct hashes. Four stem RMS: vocals0.113726,
+drums0.141546,bass0.095385,other0.111111. Six: vocals0.113458,drums0.139710,
+bass0.100436,other0.001195,guitar0.001198,piano0.104512. These low guitar/
+residual levels are recorded, not a promise of semantic instrument quality.
+Browser used actual generated banks, meters/seek/mute/isolate/level controls,
+persistent session reopen, actual Studio view/handoff and immutable versions.
+Both rendered exports decode to479808frames (24frame/sub1ms integer-ms grid
+quantization), RMS0.175665/0.178485. Original/stem files retain all479832frames.
+Artifact12249491337,36885721bytes, includes original MP3,10stems,2exports,
+RIGHTS.txt, receipt, screenshots and trace, no weights. Full reconstructed
+Checks receipt retained locally `/home/user/a8-fourth-receipt.json`; canonical
+original is also in the Actions artifact. The run's D value explicitly remains
+`open: crash/guardian work incomplete`.
+
+Following this evidence, full observed authoritative checkpoint hashes (not
+claimed publisher-signed hashes) are pinned for acquisition, owner import,
+runtime readiness and pre-inference verification. Controlled CLI tests explicitly
+inject their verifier; production has no HTTP bypass and rejects dummy weights
+before launching inference. Also repaired a reviewed four-model import defect:
+its final path had still defaulted to six. Imports now select the correct model,
+use unique staging, bound/cancel copy, hash the STAGED bytes, and atomically
+publish without first unlinking a working checkpoint. New regression retains
+six during four import and preserves both models on bad replacement. Focused
+full-hash/provision/deep61/61 and types PASS; final review/build/hosted recheck
+follow. The initial missing mkdir in the new controlled import test failed once,
+was fixed, and is not counted as a product/model failure.
+
+D durable execution ownership/guardian/crash matrix remains implementation work,
+not a Windows or model-download blocker. Genuine MDX ONNX and Electron/Windows,
+semantic six-source quality and complete replacement/catalogue parity remain
+unaccepted. The original sandbox model-host restriction was overcome for real
+execution by the hosted runner, not by an unofficial mirror. Replacement gate
+remains CLOSED; no cancel-subscription or production/commercial claim.

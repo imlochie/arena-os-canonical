@@ -207,6 +207,7 @@ export function DeepEngineSetup({ onReady, modelId = "deep_6s" }: { onReady?: ()
       </header>
 
       {/* What is actually missing — the honest self-diagnosis. */}
+      <p className="text-[11px] break-all">Checkpoint {spec.file} · pinned SHA-256 <code>{spec.sha256}</code></p>
       {!prepared && deep !== null && deep.reason !== null && !ACTIVE_STATES.has(state) && state !== "failed" && (
         <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-500/10 p-2.5 text-[11px] leading-4 text-amber-200" data-testid="deep-missing-reason">
           {deep.reason}
@@ -267,6 +268,8 @@ export function DeepEngineSetup({ onReady, modelId = "deep_6s" }: { onReady?: ()
         <dl className="mt-3 grid gap-1.5 text-[11px] leading-4" data-testid="deep-ready-facts">
           <div className="flex gap-2"><dt className="w-28 shrink-0 text-slate-500">Engine</dt><dd className="text-emerald-300">verified — real inference probe passed</dd></div>
           <div className="flex gap-2"><dt className="w-28 shrink-0 text-slate-500">Model</dt><dd className="text-slate-200">{spec.name} · checkpoint {spec.signature}-{spec.checksum}</dd></div>
+          {status.environment.checkpointSha256 && <div className="break-all"><dt>Verified full checkpoint SHA-256</dt><dd><code>{status.environment.checkpointSha256}</code></dd></div>}
+          {status.environment.dependencyRecordSha256 && <div className="break-all"><dt>Resolved dependency record SHA-256</dt><dd><code>{status.environment.dependencyRecordSha256}</code></dd></div>}
           <div className="flex gap-2"><dt className="w-28 shrink-0 text-slate-500">Provenance</dt><dd className="font-mono text-slate-300">{status.result.provenance ?? `${spec.name}@${spec.signature}-${spec.checksum}/demucs-…`}</dd></div>
           <div className="flex gap-2"><dt className="w-28 shrink-0 text-slate-500">Python</dt><dd className="font-mono text-slate-300">{status.environment.pythonVersion ?? "…"} · isolated environment</dd></div>
           <div className="flex gap-2"><dt className="w-28 shrink-0 text-slate-500">Demucs</dt><dd className="text-slate-300">{status.environment.demucsVersion ?? "…"}</dd></div>

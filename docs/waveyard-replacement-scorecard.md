@@ -274,3 +274,18 @@ Its implementation is not its execution: A/B/C/E/F remain unaccepted until an
 actual retained per-engine receipt passes; D (crash recovery/guardian matrix)
 remains open regardless. Browser evidence cannot become Electron acceptance.
 Full replacement, commercial clearance and catalogue access are not claimed.
+
+## A8 actual trained four/six workflow — verified limited scope
+
+**Do not cancel yet; D and broader replacement remain open.** Run
+[39390069082](https://github.com/imlochie/arena-os-canonical/actions/runs/39390069082)
+on `9e9aec50...` passed actual **Demucs** four AND six trained checkpoints on the
+publisher-permitted recording, through native product job/bank/browser player,
+persistent session, Studio/version and independently decoded arrangement WAV.
+Ten complete distinct stems479832frames each; two exports479808frames each at
+44100Hz stereo. Audio, attribution and per-model receipts are in artifact
+12249491337 (36.9MB). Exact weights/hashes/failures are appended in continuation.
+This establishes A/B/C and browser-scoped E/F, not MDX `stems_4`, Electron,
+Windows, semantic instrument quality, hash-locked transitive dependencies or D's
+process-crash lease/guardian matrix. In-process cancel/retry tests do not stand
+in for process-crash recovery. Low six-source guitar/residual levels are explicit.

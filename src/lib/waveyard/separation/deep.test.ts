@@ -19,6 +19,7 @@
  */
 
 import assert from "node:assert/strict";
+import { checksumFile } from "../audio";
 import test, { type TestContext } from "node:test";
 import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,7 +37,7 @@ import {
   probeDeepEngine,
   inspectDeepRuntimeReadiness,
   resetDeepProbeCacheForTests,
-  runDeepSeparation,
+  runDeepSeparation as checkedRunDeepSeparation,
 } from "./deep";
 import { SeparationUnavailableError } from "./session";
 import { NO_TEST_PYTHON, writeStubDeepEngine, type StubDeepOptions } from "./deep-fixtures";
@@ -56,6 +57,11 @@ async function writeFixtureWav(directory: string): Promise<string> {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+// This file tests a controlled CLI, never trained weights. The production
+// verifier is bypassed explicitly here only; separate tests below reject the
+// same dummy checkpoint through the unmodified production boundary.
+const runDeepSeparation = (request: Parameters<typeof checkedRunDeepSeparation>[0]) => checkedRunDeepSeparation(request, { verifyCheckpoint: checksumFile });
 
 async function setup(t: TestContext, options: StubDeepOptions = {}) {
   const directory = await mkdtemp(join(tmpdir(), "wy-deep-stub-"));
@@ -400,7 +406,7 @@ test("public readiness rejects metadata-only packages and corrupt checkpoints wi
     await writeFile(join(f.engine.sitePath, "demucs", "separate.py"), "# controlled import only, not inference\n");
     const corrupt = await inspectDeepRuntimeReadiness({ env, force: true });
     assert.equal(corrupt.runtimeLoadable, true); assert.equal(corrupt.prepared, false);
-    assert.match(corrupt.reason!, /SHA-256 prefix/); assert.match(corrupt.checkpointSha256!, /^[a-f0-9]{64}$/);
+    assert.match(corrupt.reason!, /full SHA-256/); assert.match(corrupt.checkpointSha256!, /^[a-f0-9]{64}$/);
     assert.equal(corrupt.inferenceVerified, false);
   } finally { await f.close(); }
 });
@@ -415,5 +421,13 @@ test("four-source Demucs selects its own authoritative signature and provenance,
     assert.deepEqual(result.stems.map(stem => stem.stemType), ["vocals", "drums", "bass", "other"]);
     assert.match(result.checkpointSha256!, /^[a-f0-9]{64}$/);
     assert.ok((await f.engine.calls()).some(call => /--name 955717e8/.test(call)));
+  } finally { await f.close(); }
+});
+
+test("the production bridge rejects a dummy checkpoint before launching inference, even with a working CLI", async t => {
+  const f = await setup(t, { demucsVersion: "4.0.1" }); if (!f) return;
+  try {
+    await assert.rejects(checkedRunDeepSeparation({ inputPath: f.fixture, outputDirectory: join(f.directory, "out"), env: f.env, requestedDevice: "cpu" }), /pinned full SHA-256/);
+    assert.equal((await f.engine.calls()).some(call => call.includes("-m demucs")), false);
   } finally { await f.close(); }
 });

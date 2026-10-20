@@ -102,7 +102,7 @@ test("plan: a compatible interpreter with Demucs and a valid checkpoint needs no
     python: [python("/usr/bin/python3.11", "3.11.9", "4.0.1")],
     compatiblePython: python("/usr/bin/python3.11", "3.11.9", "4.0.1"),
     managedEnvironmentExists: true,
-    checkpoint: { path: "/m", present: true, sha256: "34c22ccb" + "0".repeat(56), sizeBytes: 52_400_000 },
+    checkpoint: { path: "/m", present: true, sha256: "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd", sizeBytes: 52_400_000 },
   });
   const plan = planPreparation(r, { modelsDir: "/m", envDir: "/e" });
   assert.equal(plan.needsConsent, false, "nothing material is needed");

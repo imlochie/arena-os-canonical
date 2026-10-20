@@ -221,7 +221,7 @@ export function selectBaseInterpreter(report: EnvironmentReport): DiscoveredPyth
  *  A downloaded or imported file is valid only when its full sha256
  *  begins with that prefix. */
 export function checkpointChecksumMatches(sha256Hex: string, modelId = DEEP_MODEL_ID): boolean {
-  return sha256Hex.toLowerCase().startsWith(deepModelSpec(modelId).checksum.toLowerCase());
+  return sha256Hex.toLowerCase() === deepModelSpec(modelId).sha256;
 }
 
 /** The checkpoint's provenance string (family@signature-checksum/engine). */

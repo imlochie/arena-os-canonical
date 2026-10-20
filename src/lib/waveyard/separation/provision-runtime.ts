@@ -21,6 +21,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -637,7 +638,7 @@ export async function acquireCheckpoint(
   opts: { checksumPrefix?: string; expectedBytes?: number; modelId?: string } = {},
 ): Promise<void> {
   throwIfCancelled(ctx);
-  const expectedPrefix = opts.checksumPrefix ?? deepModelSpec(opts.modelId).checksum;
+  const expectedPrefix = opts.checksumPrefix ?? deepModelSpec(opts.modelId).sha256;
   const finalPath = join(modelsDir, deepModelSpec(opts.modelId).file);
   const tempPath = join(modelsDir, `.download-${deepModelSpec(opts.modelId).file}.tmp`);
   await mkdir(modelsDir, { recursive: true });
@@ -684,26 +685,32 @@ export async function importCheckpoint(
     throw new ProvisionError("IMPORT_INVALID", "The checkpoint to import must be an absolute path.");
   }
   const details = await stat(sourcePath).catch(() => null);
-  if (details === null || !details.isFile() || details.size <= 0) {
-    throw new ProvisionError("IMPORT_INVALID", `No readable checkpoint was found at ${sourcePath}.`);
+  if (details === null || !details.isFile() || details.size <= 0 || details.size > 200_000_000) {
+    throw new ProvisionError("IMPORT_INVALID", `No bounded readable checkpoint was found at ${sourcePath}.`);
   }
-  const expectedPrefix = opts.checksumPrefix ?? deepModelSpec(opts.modelId).checksum;
-  const sha256 = await checksumFile(sourcePath);
-  if (!sha256.toLowerCase().startsWith(expectedPrefix.toLowerCase())) {
-    throw new ProvisionError(
-      "INTEGRITY_FAILED",
-      `The file at ${sourcePath} is not the ${deepModelSpec(opts.modelId).name} checkpoint (its sha256 does not match the ${deepModelSpec(opts.modelId).file} identity Demucs verifies). Only that exact checkpoint is accepted.`,
-    );
-  }
+  const spec = deepModelSpec(opts.modelId);
+  const expectedPrefix = opts.checksumPrefix ?? spec.sha256;
   await mkdir(modelsDir, { recursive: true });
-  const finalPath = deepCheckpointPath({ ...process.env, WAVEYARD_MODELS_DIR: modelsDir });
-  await rm(finalPath, { force: true }).catch(() => undefined);
-  // Copy through a temp file in the same directory, then atomically
-  // rename, so a partial import can never be mistaken for the model.
-  const tempPath = `${finalPath}.import.tmp`;
-  await pipeline(createReadStream(sourcePath), createWriteStream(tempPath));
-  await rename(tempPath, finalPath);
-  ctx.log(`Imported checkpoint verified (sha256 ${sha256.slice(0, 12)}…) and placed at ${finalPath}.`);
+  const finalPath = deepCheckpointPath({ ...process.env, WAVEYARD_MODELS_DIR: modelsDir }, spec.id);
+  const tempPath = `${finalPath}.${randomUUID()}.import.tmp`;
+  try {
+    let bytes = 0;
+    const bound = new Transform({ transform(chunk: Buffer, _encoding, callback) {
+      bytes += chunk.length;
+      callback(bytes > 200_000_000 ? new ProvisionError("IMPORT_INVALID", "The checkpoint grew beyond the import size limit.") : null, chunk);
+    } });
+    await pipeline(createReadStream(sourcePath), bound, createWriteStream(tempPath, { flags: "wx" }), { signal: ctx.signal });
+    throwIfCancelled(ctx);
+    // Validate the exact staged bytes, not a source path that can change
+    // between hashing and copying. Never unlink a working model first.
+    const sha256 = await checksumFile(tempPath);
+    if (!sha256.toLowerCase().startsWith(expectedPrefix.toLowerCase())) {
+      throw new ProvisionError("INTEGRITY_FAILED", `The imported bytes are not ${spec.name} (${spec.file}). Existing checkpoints were retained.`);
+    }
+    throwIfCancelled(ctx);
+    await rename(tempPath, finalPath);
+    ctx.log(`Imported checkpoint verified (sha256 ${sha256}) and placed at ${finalPath}.`);
+  } finally { await rm(tempPath, { force: true }).catch(() => undefined); }
 }
 
 // --------------------------------------------------------------- verify/probe

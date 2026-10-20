@@ -125,6 +125,8 @@ export type DeepPreparationStatus = {
     checkpointPath: string;
     checkpointPresent: boolean;
     checkpointVerified: boolean | null;
+    checkpointSha256?: string;
+    dependencyRecordSha256?: string;
     managedEnvDir: string;
     modelsDir: string;
   };
