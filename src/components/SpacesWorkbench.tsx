@@ -1,9 +1,7 @@
 "use client";
 
-// Spaces — a multi-window workbench where agents run small recurring tasks.
-// Each panel is a "window" into one agent space; ⤢ pops it out into a real
-// browser window that keeps its agent ticking while open. All tasks produce
-// drafts for human review — nothing auto-posts anywhere.
+// Spaces — governed workspace missions and recurring draft schedules.
+// Workbench and pop-out reuse one Workshop; no second execution path.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "@/components/Markdown";
@@ -12,6 +10,7 @@ import { privacyFlags } from "@/lib/privacyClient";
 import { SPACE_TEMPLATES, SPACE_TEMPLATE_GROUPS, getSpaceTemplate } from "@/lib/spaceTemplates";
 import BrainCard from "@/components/BrainCard";
 import { readBrain } from "@/lib/connectedBrain";
+import { missionEvidence, type EvidenceAction } from "@/lib/spaces/mission-evidence";
 
 interface SpaceState {
   id: string;
@@ -31,7 +30,7 @@ interface SpaceState {
   createdAt: string;
 }
 
-interface ModelInfo {
+export interface ModelInfo {
   id: string;
   name: string;
   emoji: string;
@@ -246,17 +245,17 @@ export default function SpacesWorkbench() {
           <h1 className="mt-3 text-3xl font-black tracking-tight text-white sm:text-4xl">
             A workbench of{" "}
             <span className="bg-gradient-to-r from-cyan-300 to-violet-300 bg-clip-text text-transparent">
-              small repetitive tasks
+              persistent AI workspaces
             </span>
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-slate-300">
-            Each space is one recurring agent task on its own clock — with a persistent <em>briefcase</em> of notes it
-            carries between runs. Pop spaces out into real browser windows; each open window keeps its agent ticking.
+            Give a mission an objective, configure its agents, and review actual tool results and deliverables.
+            Recurring draft schedules and carry-forward notes remain available in the same space.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs font-bold">
           <span className="rounded-full bg-emerald-400/10 px-3 py-1.5 text-emerald-300 ring-1 ring-emerald-400/30">
-            ● {runningCount} running
+            {runningCount} schedules enabled
           </span>
           <span className="rounded-full bg-white/5 px-3 py-1.5 text-slate-400 ring-1 ring-white/10">
             {spaces.length} space{spaces.length === 1 ? "" : "s"}
@@ -506,9 +505,7 @@ function SpaceWindow({
           )}
         </div>
 
-        <AgentFleet spaceId={space.id} models={models} />
-        <MissionPanel spaceId={space.id} />
-        <ApprovalsPanel spaceId={space.id} onDecided={onRefresh} />
+        <SpaceWorkshop spaceId={space.id} models={models} onRefresh={onRefresh} />
 
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           <button
@@ -695,6 +692,7 @@ function AgentFleet({ spaceId, models }: { spaceId: string; models: ModelInfo[] 
             className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-slate-600"
           />
           <select
+            aria-label="Fleet agent model"
             value={modelId}
             onChange={(e) => setModelId(e.target.value)}
             className="rounded-lg border border-white/10 bg-[#0c1428] px-2.5 py-1.5 text-xs text-white outline-none"
@@ -779,6 +777,17 @@ function AgentFleet({ spaceId, models }: { spaceId: string; models: ModelInfo[] 
 
 // ---------------- mission panel ----------------
 
+/** Same governed workshop in the workbench and its pop-out, not a parallel UI
+ * or executor. Decisions remain in the existing approval component/API. */
+export function SpaceWorkshop({ spaceId, models, onRefresh }: { spaceId: string; models: ModelInfo[]; onRefresh: () => void }) {
+  return <section aria-label="Space mission workshop">
+    <p className="mt-2 text-xs text-slate-400">Objective → agents and tools → execution evidence → deliverables → review and continuation.</p>
+    <AgentFleet spaceId={spaceId} models={models} />
+    <MissionPanel spaceId={spaceId} />
+    <ApprovalsPanel spaceId={spaceId} onDecided={onRefresh} />
+  </section>;
+}
+
 interface MissionStepLite {
   modelState?: string;
   requestedActions?: { id: string; tool: string; args: Record<string, unknown>; state: string; resolutions?: { resolution: string; evidence: string; at: string }[] }[];
@@ -786,7 +795,7 @@ interface MissionStepLite {
   turn: number;
   thought: string;
   done: boolean;
-  actions: { tool: string; ok: boolean; output: string; input: Record<string, unknown> }[];
+  actions: (EvidenceAction & { output: string; input: Record<string, unknown> })[];
   runtime?: { backend?: string; modelId?: string; fallback?: boolean };
   ms: number;
 }
@@ -913,6 +922,7 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
   }
 
   const checkpointed = mission && ["running", "checkpointed", "awaiting_approval", "needs_reconciliation"].includes(mission.status);
+  const evidence = mission ? missionEvidence(mission) : null;
 
   return (
     <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
@@ -1054,6 +1064,15 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
       {(error || loadError) && <p role="alert" className="mt-2 text-xs text-amber-300">{error || loadError}</p>}
       {mission?.statusDetail && <p className="mt-2 text-xs text-amber-200">{mission.statusDetail}</p>}
       {mission?.persistence && <p className="mt-1 text-[10px] text-slate-500">Storage: {mission.persistence}{mission.persistence === "memory-only" ? " — does not survive restart" : " — durable requests and results"}</p>}
+      {mission && evidence && <section aria-label="Mission evidence summary" className="mt-2 rounded-lg bg-white/[0.03] p-2 text-xs text-slate-300">
+        <p><b>Objective:</b> {mission.goal}</p>
+        <p>Test-tool commands: {evidence.testCommandSuccesses} succeeded · {evidence.testCommandFailures} failed (history retained). Inspect their actual assertions and output; zero exit alone is not proof of passing tests.</p>
+        <p>Successful command outcomes: {evidence.commandSuccesses} — commands are not test passes.</p>
+        <p>Immutable outputs recorded: {evidence.immutableOutputs} · unavailable: {evidence.unavailableOutputs}.</p>
+        {evidence.humanReviewed > 0 && <p>Owner-reviewed outcomes: {evidence.humanReviewed} — not independently machine-verified.</p>}
+        {evidence.uncertain > 0 && <p role="status">Uncertain outcomes: {evidence.uncertain}. Inspect evidence before retrying an effect.</p>}
+        <p className="mt-1 text-slate-500">{mission.status === "running" ? "Saved as running; this is not a live-process health check." : "Execution status is not proof of product correctness. Review the command results and deliverables."}</p>
+      </section>}
 
       {mission && (
         <div className="scroll-thin mt-2.5 max-h-72 space-y-2 overflow-y-auto">
@@ -1066,7 +1085,7 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
               <p className="flex flex-wrap items-center gap-2 text-[11px]">
                 <b className="text-white">{s.agent}</b>
                 <span className="text-slate-600">turn {s.turn}</span>
-                <span className="text-emerald-300/80">{s.runtime?.backend ?? "?"}</span>
+                <span className="text-emerald-300/80">{s.runtime?.backend ?? "not observed"} · {s.runtime?.modelId ?? "model not reported"}{s.runtime?.fallback ? " · FALLBACK" : ""}</span>
                 <span className="text-slate-600">{s.ms}ms</span>
                 {s.done && <span className="text-emerald-300">done</span>}
               </p>
