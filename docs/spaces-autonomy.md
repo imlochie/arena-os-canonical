@@ -1,5 +1,61 @@
 # Spaces Autonomy Roadmap — genuine workspaces, strict check-ins
 
+## Current product entry points and evidence
+
+`/spaces` and the pop-out `/spaces/<id>` share the same Workshop components:
+agent fleet, mission controls/history, output retrieval/reuse, request
+reconciliation and human approvals. The pop-out defaults to Workshop; recurring
+drafts, history and setup remain in their own tabs.
+
+The mission evidence summary is a **view of stored observations**, not a new
+runner or proof that a process is alive. It separates successful commands,
+qualified machine-observed `run_tests` command outcomes, immutable output references,
+unavailable outputs, uncertain outcomes and human reconciliation. A model saying
+`done`, a historical unqualified observation, or owner review cannot create a
+machine test-command success. Even a `run_tests` command can be arbitrary;
+inspect the actual assertions/output rather than treating zero exit as proof
+of passing tests. Failed runs remain visible even after a later successful
+repair. The journal shows the actual reported backend/model and any fallback.
+Passing a command/test does not establish the correctness of an entire product.
+
+### Configuration and operational limits
+
+The scheduler is request-driven, not an always-on service. Visible clients poll
+recurring due spaces. `scripts/spaces-daemon.mjs` is a separate **opt-in** HTTP
+client (`npm run spaces:daemon`; `-- --once` for one tick). Continuous polling
+defaults to 60 seconds. The app and daemon need to remain running and authorised.
+The daemon resumes its supported decided-approval waits; it is not a general
+promise to restart every failed/checkpointed mission automatically.
+
+PostgreSQL is required for durable requests/results and mission restart
+recovery. Explicit memory-only missions cannot survive a restart. Browser tools
+need an installed Chromium binary; live provider actions need configured
+credentials and recorded decisions. Container mode needs Docker/Podman:
+automatic host-jail fallback is **not** container/VM isolation. Current runtime
+absence and unconfigured integrations must remain honest errors.
+
+### Remaining gaps, not claims of completion
+
+The existing `AGENT_NOTES.md` injection retrieves raw per-space notes, not a
+verified cross-mission knowledge service. A small future field-note convention
+can reuse owner/project-bound Artifacts: finding, source mission/request,
+environment/version, outcome (`verified`, `hypothesis`, `failed`, `untested`),
+evidence/checksum references and a superseded-revision reference. Retrieval must
+remain ownership/workspace-scoped and must not promote model prose into fact.
+That searchable convention is **not implemented by the Workshop UI increment**.
+
+Tools and governance already exist; a unified preflight capability inventory
+would still need real runtime probes, not a new registry or optimistic buttons.
+Live external publishing, live model reasoning, actual containers and Electron
+are separate acceptance boundaries. Controlled-agent regression tests prove
+the exercised orchestration/tool/recovery paths, not general intelligence.
+
+The focused Workshop acceptance must start from the actual Next page, execute
+real workspace commands/tests, retrieve checksum-bound output Artifacts and
+exercise restart/reconciliation without repeating an uncertain effect. Existing
+governance/recovery/browser/isolation tests remain in place. Pending or failed
+CI is not acceptance evidence; inspect the exact-revision receipts and logs.
+
 This is the build program that takes Spaces from "prompt loops with a journaled
 tool surface" to the user's stated goal:
 

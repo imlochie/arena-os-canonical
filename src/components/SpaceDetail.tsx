@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "@/components/Markdown";
 import { loadKeys } from "@/components/KeysBar";
 import { privacyFlags } from "@/lib/privacyClient";
+import { SpaceWorkshop, type ModelInfo } from "@/components/SpacesWorkbench";
 
 interface SpaceState {
   id: string;
@@ -51,7 +52,9 @@ export default function SpaceDetail({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [briefcaseDraft, setBriefcaseDraft] = useState<string | null>(null); // null = not editing
-  const [tab, setTab] = useState<"output" | "history" | "setup">("output");
+  const [tab, setTab] = useState<"mission" | "output" | "history" | "setup">("mission");
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const tickInFlight = useRef(false);
 
   const load = useCallback(async () => {
@@ -72,6 +75,16 @@ export default function SpaceDetail({ id }: { id: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    let alive = true;
+    void fetch("/api/models").then(async response => {
+      if (!response.ok) throw new Error("Model catalogue unavailable; existing mission history and controls remain available.");
+      const body = await response.json();
+      if (!Array.isArray(body.models)) throw new Error("Model catalogue returned an invalid response; no model availability is assumed.");
+      if (alive) setModels(body.models.filter((model: ModelInfo) => model.kind === "text"));
+    }).catch(error => { if (alive) setModelsError(error instanceof Error ? error.message : "Model catalogue unavailable."); });
+    return () => { alive = false; };
+  }, []);
 
   // this window keeps its agent ticking while open
   const tick = useCallback(async () => {
@@ -201,7 +214,7 @@ export default function SpaceDetail({ id }: { id: string }) {
 
           {/* tabs */}
           <div className="mt-3 flex gap-1.5">
-            {(["output", "history", "setup"] as const).map((t) => (
+            {(["mission", "output", "history", "setup"] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -211,12 +224,16 @@ export default function SpaceDetail({ id }: { id: string }) {
                     : "bg-white/5 text-slate-400 ring-1 ring-white/10 hover:bg-white/10"
                 }`}
               >
-                {t === "output" ? "📄 Latest" : t === "history" ? `🕘 History (${runs.length})` : "⚙️ Setup"}
+                {t === "mission" ? "Workshop" : t === "output" ? "📄 Latest" : t === "history" ? `🕘 History (${runs.length})` : "⚙️ Setup"}
               </button>
             ))}
           </div>
 
           <div className="mt-3">
+            {tab === "mission" && <>
+              {modelsError && <p role="status">{modelsError}</p>}
+              <SpaceWorkshop spaceId={id} models={models} onRefresh={() => void load()} />
+            </>}
             {tab === "output" && (
               <div className="scroll-thin max-h-[46vh] overflow-y-auto rounded-xl bg-black/30 p-4 ring-1 ring-white/5">
                 {space.lastOutput ? (
@@ -328,7 +345,7 @@ export default function SpaceDetail({ id }: { id: string }) {
         </div>
       </div>
       <p className="mt-3 text-center text-[11px] text-slate-600">
-        this window keeps its agent ticking while open · drafts only — you act on them
+        Visible windows poll recurring tasks. Unattended continuation requires an explicitly running daemon and app server. Missions retain their existing tool permissions and approval boundaries.
       </p>
     </div>
   );

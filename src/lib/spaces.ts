@@ -7,9 +7,9 @@
 // that becomes the space's new briefcase — so agents accumulate context run
 // over run.
 //
-// Execution model (same house pattern as Congress): no background workers.
-// POST /api/spaces/tick runs at most a few due spaces per request; the
-// workbench page and each popped-out window poll it while visible.
+// Recurring execution is request-driven. POST /api/spaces/tick runs a few due
+// spaces per request; visible windows poll it. The optional, separately started
+// spaces-daemon is another HTTP client, not an automatically running service.
 
 import { db } from "@/db";
 import { spaceAgents, spaceRuns, spaces } from "@/db/schema";
