@@ -28,6 +28,7 @@ export async function GET() {
     mode,
     explanation: processingModeExplanation(mode),
     queueConfigured: queueConfigured(),
+    separationRecovery: { available: mode === "in-process" && process.platform === "linux", scope: "verified-local-process-incarnation" },
     separationCancellation: { available: mode === "in-process" && getLocalJobBroker().hasHandler(SEPARATION_QUEUE), scope: "native-executor-only" },
     // Honest distinction: the policy may say in-process, but if the worker
     // has not actually registered handlers, nothing is executing yet.

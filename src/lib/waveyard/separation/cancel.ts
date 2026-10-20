@@ -21,7 +21,7 @@ export async function requestSeparationCancellation(db: ClaimDb, id: string) {
 /** A fresh durable attempt avoids racing an old broker task's final cleanup;
  * the cancelled attempt, its errors and original source identity stay intact. */
 export async function restartCancelledSeparation(db: ClaimDb, job: ProcessingJobRow, deps: StartSeparationDeps = {}) {
-  if (job.status !== "cancelled" || job.type !== "separation" || !job.sourceAssetId) throw new Error("Only a stopped separation can be restarted.");
+  if ((job.status !== "cancelled" && !(job.status === "failed" && job.errorCode === "execution_interrupted")) || job.type !== "separation" || !job.sourceAssetId) throw new Error("Only a stopped separation can be restarted.");
   const sourceAssetId = job.sourceAssetId;
   const id = randomUUID();
   const parentStemAssetId = parentStemAssetIdOf(job);

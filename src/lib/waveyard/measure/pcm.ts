@@ -41,7 +41,7 @@ export async function decodeSourceToStereoPcm(
   filePath: string,
   hint: { sampleRate?: number } = {},
   deps: { resolveFfmpeg?: FfmpegResolver } = {},
-  opts: { requireSampleRate?: number; signal?: AbortSignal } = {},
+  opts: { requireSampleRate?: number; signal?: AbortSignal; onSpawn?: (pid: number) => Promise<void> } = {},
 ): Promise<DecodedSource> {
   opts.signal?.throwIfAborted();
   // 1. Native WAV path — no external dependency. When the caller needs a
@@ -77,7 +77,7 @@ export async function decodeSourceToStereoPcm(
         rateNote,
     );
   }
-  return decodeWithFfmpeg(ffmpeg, filePath, opts.signal);
+  return decodeWithFfmpeg(ffmpeg, filePath, opts.signal, opts.onSpawn);
 }
 
 function monoToStereo(samples: Float32Array): Float32Array {
@@ -89,10 +89,37 @@ function monoToStereo(samples: Float32Array): Float32Array {
   return out;
 }
 
-function decodeWithFfmpeg(command: string, filePath: string, signal?: AbortSignal): Promise<DecodedSource> {
+// The registered process is a small guardian. It cannot start FFmpeg before
+// durable onSpawn acknowledgement, and on executor pipe EOF it kills FFmpeg
+// and waits for its exit before exiting itself. No persisted-PID signalling.
+const decoderGuardian = `
+const { spawn } = require('node:child_process');
+let child, started = false, stopping = false;
+function stop() {
+  stopping = true;
+  if (child) child.kill('SIGKILL');
+  else process.exit(130);
+}
+process.stdin.on('end', stop);
+process.stdin.on('error', stop);
+process.on('SIGTERM', stop);
+process.on('SIGINT', stop);
+process.stdin.on('data', data => {
+  if (started) return;
+  if (data[0] !== 83 || stopping) return stop();
+  started = true;
+  child = spawn(process.argv[1], process.argv.slice(2), { stdio: ['ignore', 'inherit', 'ignore'], windowsHide: true });
+  child.on('error', () => process.exit(127));
+  child.on('exit', code => process.exit(stopping ? 130 : (code ?? 1)));
+});
+`;
+function decodeWithFfmpeg(command: string, filePath: string, signal?: AbortSignal, onSpawn?: (pid: number) => Promise<void>): Promise<DecodedSource> {
   signal?.throwIfAborted();
   return new Promise<DecodedSource>((resolve, reject) => {
-    const child = spawn(command, ["-i", filePath, "-ac", "2", "-ar", "44100", "-f", "f32le", "-"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    const args = ["-i", filePath, "-ac", "2", "-ar", "44100", "-f", "f32le", "-"];
+    const child = onSpawn
+      ? spawn(process.execPath, ["--input-type=commonjs", "-e", decoderGuardian, "--", command, ...args], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } })
+      : spawn(command, args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     const chunks: Buffer[] = [];
     let total = 0;
     let failure: Error | undefined;
@@ -104,7 +131,16 @@ function decodeWithFfmpeg(command: string, filePath: string, signal?: AbortSigna
     const abort = () => { failure ??= new DOMException("Source decode cancelled", "AbortError"); terminate(); };
     signal?.addEventListener("abort", abort, { once: true });
     const deadline = setTimeout(() => { failure ??= new Error("Source decode timed out after 120 seconds."); terminate(); }, 120_000);
-    child.stdout.on("data", (chunk: Buffer) => {
+    if (onSpawn) {
+      child.stdin?.on("error", error => { failure ??= error; terminate(); });
+      child.once("spawn", () => {
+        void onSpawn(child.pid!).then(() => {
+          if (!failure && !signal?.aborted) child.stdin?.write("S");
+          else terminate();
+        }).catch(error => { failure ??= error; terminate(); });
+      });
+    }
+    child.stdout!.on("data", (chunk: Buffer) => {
       if (failure) return;
       if (total + chunk.length > MAX_DECODE_BYTES) {
         failure = new Error("Source exceeds the 15-minute cleanup decode limit.");

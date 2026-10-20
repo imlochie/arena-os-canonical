@@ -32,7 +32,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const [job] = await db.select().from(processingJobs).where(eq(processingJobs.id, id)).limit(1);
     if (!job) return NextResponse.json({ error: "Job not found." }, { status: 404 });
     await requireProjectRole(user.id, job.projectId, "editor");
-    if (job.status === "cancelled" && localWorkerActive()) {
+    if ((job.status === "cancelled" || (job.status === "failed" && job.errorCode === "execution_interrupted")) && localWorkerActive()) {
       const restarted = await restartCancelledSeparation(db, job);
       return restarted.outcome === "queued" ? NextResponse.json({ job: restarted.job }) : NextResponse.json({ error: restarted.outcome === "active" ? "Another attempt is already active." : restarted.reason }, { status: restarted.outcome === "active" ? 409 : 503 });
     }

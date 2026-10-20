@@ -1,0 +1,3686 @@
+
+> nextjs-postgresql-template@0.1.0 test
+> node --import ./scripts/register-src-loader.mjs scripts/test-source.mjs
+
+(node:8079) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/helpers/mission-postgres.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[source-suite] head=0a8541473b5696f4ac4fe4c096076170892e08ce sourceDigest=f4e0a8105e3182b3d309da02c67fbc27400c59be393a0617f742c622d8391d83; fresh PostgreSQL with canonical migrations; serial test files
+TAP version 13
+# (node:8184) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/acceptance-data-root.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: acceptance data root: genuinely fresh per run (isolated, no database state)
+ok 1 - acceptance data root: genuinely fresh per run (isolated, no database state)
+  ---
+  duration_ms: 2.579866
+  type: 'test'
+  ...
+# Subtest: launch plan: normal, abnormal, and recovery ALL reuse the SAME data root
+ok 2 - launch plan: normal, abnormal, and recovery ALL reuse the SAME data root
+  ---
+  duration_ms: 0.487157
+  type: 'test'
+  ...
+# Subtest: production defaults untouched: %LOCALAPPDATA%\\Arena on win32 without override; override wins when present
+ok 3 - production defaults untouched: %LOCALAPPDATA%\\Arena on win32 without override; override wins when present
+  ---
+  duration_ms: 10.39601
+  type: 'test'
+  ...
+# Subtest: cleanup is marker-guarded: only acceptance-created roots are removed
+ok 4 - cleanup is marker-guarded: only acceptance-created roots are removed
+  ---
+  duration_ms: 1.20901
+  type: 'test'
+  ...
+# Subtest: marker name stays stable (the guard depends on it)
+ok 5 - marker name stays stable (the guard depends on it)
+  ---
+  duration_ms: 0.178739
+  type: 'test'
+  ...
+# (node:8192) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/acceptance-paths.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: win32 platform default: %LOCALAPPDATA%\\Arena passes the acceptance contract
+ok 6 - win32 platform default: %LOCALAPPDATA%\\Arena passes the acceptance contract
+  ---
+  duration_ms: 1.127366
+  type: 'test'
+  ...
+# Subtest: win32 platform default coverage is real: any other root FAILS
+ok 7 - win32 platform default coverage is real: any other root FAILS
+  ---
+  duration_ms: 0.280207
+  type: 'test'
+  ...
+# Subtest: win32 ARENA_DATA_DIR override: the isolated acceptance root passes
+ok 8 - win32 ARENA_DATA_DIR override: the isolated acceptance root passes
+  ---
+  duration_ms: 0.144112
+  type: 'test'
+  ...
+# Subtest: env source honesty guard: a root that is NOT the override FAILS
+ok 9 - env source honesty guard: a root that is NOT the override FAILS
+  ---
+  duration_ms: 0.131284
+  type: 'test'
+  ...
+# Subtest: env source without ARENA_DATA_DIR in the env record FAILS (never a silent pass)
+ok 10 - env source without ARENA_DATA_DIR in the env record FAILS (never a silent pass)
+  ---
+  duration_ms: 0.089521
+  type: 'test'
+  ...
+# Subtest: portable mode keeps the recorded-location behavior
+ok 11 - portable mode keeps the recorded-location behavior
+  ---
+  duration_ms: 0.195749
+  type: 'test'
+  ...
+# Subtest: non-win32 platform keeps the recorded-location behavior
+ok 12 - non-win32 platform keeps the recorded-location behavior
+  ---
+  duration_ms: 0.084526
+  type: 'test'
+  ...
+# (node:8202) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/builder-tools.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: builderCacheRoot mirrors app-builder-lib on win32 / POSIX / override
+ok 13 - builderCacheRoot mirrors app-builder-lib on win32 / POSIX / override
+  ---
+  duration_ms: 2.316524
+  type: 'test'
+  ...
+# Subtest: seedArchive places a checksum-verified archive at the exact archive-cache path
+ok 14 - seedArchive places a checksum-verified archive at the exact archive-cache path
+  ---
+  duration_ms: 5.675269
+  type: 'test'
+  ...
+# Subtest: seedArchive rejects a truncated/altered archive (checksum mismatch)
+ok 15 - seedArchive rejects a truncated/altered archive (checksum mismatch)
+  ---
+  duration_ms: 1.75225
+  type: 'test'
+  ...
+# Subtest: seedArchive rejects unknown archive names
+ok 16 - seedArchive rejects unknown archive names
+  ---
+  duration_ms: 0.726779
+  type: 'test'
+  ...
+# Subtest: toolStatus distinguishes missing / seeded / extracted
+ok 17 - toolStatus distinguishes missing / seeded / extracted
+  ---
+  duration_ms: 4.20289
+  type: 'test'
+  ...
+# Subtest: the shipped checksum table matches the INSTALLED app-builder-lib source
+ok 18 - the shipped checksum table matches the INSTALLED app-builder-lib source
+  ---
+  duration_ms: 2.400522
+  type: 'test'
+  ...
+# (node:8222) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/contracts.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: DesktopAppInfo validates a real shape round-trip
+ok 19 - DesktopAppInfo validates a real shape round-trip
+  ---
+  duration_ms: 1.639208
+  type: 'test'
+  ...
+# Subtest: DesktopAppInfo rejects wrong types and unknown channels
+ok 20 - DesktopAppInfo rejects wrong types and unknown channels
+  ---
+  duration_ms: 0.770014
+  type: 'test'
+  ...
+# Subtest: the IPC allowlist is exactly the declared channels
+ok 21 - the IPC allowlist is exactly the declared channels
+  ---
+  duration_ms: 2.847387
+  type: 'test'
+  ...
+# (node:8230) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/desktop-shell-freshness.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: build contract: desktop:dist compiles the shell BEFORE prepare-server and electron-builder
+ok 22 - build contract: desktop:dist compiles the shell BEFORE prepare-server and electron-builder
+  ---
+  duration_ms: 1.00989
+  type: 'test'
+  ...
+# Subtest: build contract: the dist script preflights shell freshness (direct invocations are guarded too)
+ok 23 - build contract: the dist script preflights shell freshness (direct invocations are guarded too)
+  ---
+  duration_ms: 0.27154
+  type: 'test'
+  ...
+# Subtest: freshness: a compiled shell newer than every source passes
+ok 24 - freshness: a compiled shell newer than every source passes
+  ---
+  duration_ms: 0.267646
+  type: 'test'
+  ...
+# Subtest: freshness: a source newer than the newest compiled output fails LOUDLY, naming a file
+ok 25 - freshness: a source newer than the newest compiled output fails LOUDLY, naming a file
+  ---
+  duration_ms: 0.802446
+  type: 'test'
+  ...
+# Subtest: freshness: an uncompiled tree fails with the compile instruction
+ok 26 - freshness: an uncompiled tree fails with the compile instruction
+  ---
+  duration_ms: 0.14663
+  type: 'test'
+  ...
+# Subtest: freshness (repo layout): verifyDesktopShellFreshness detects stale, fresh, and uncompiled trees
+ok 27 - freshness (repo layout): verifyDesktopShellFreshness detects stale, fresh, and uncompiled trees
+  ---
+  duration_ms: 3.447648
+  type: 'test'
+  ...
+# Subtest: freshness (this repo): the scanner binds to the real desktop layout, decisively, whatever the dist state
+ok 28 - freshness (this repo): the scanner binds to the real desktop layout, decisively, whatever the dist state
+  ---
+  duration_ms: 4.037649
+  type: 'test'
+  ...
+# (node:8238) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/log.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: redact masks secret-looking keys at any depth
+ok 29 - redact masks secret-looking keys at any depth
+  ---
+  duration_ms: 1.653174
+  type: 'test'
+  ...
+# Subtest: logger appends JSONL, redacts secrets, keeps a ring buffer
+ok 30 - logger appends JSONL, redacts secrets, keeps a ring buffer
+  ---
+  duration_ms: 4.755228
+  type: 'test'
+  ...
+# Subtest: ring buffer is bounded
+ok 31 - ring buffer is bounded
+  ---
+  duration_ms: 1.261187
+  type: 'test'
+  ...
+# (node:8250) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/packaged-server.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: extraResources copy ships the standalone server with its node_modules runtime
+ok 32 - extraResources copy ships the standalone server with its node_modules runtime
+  ---
+  duration_ms: 29.9913
+  type: 'test'
+  ...
+# (node:8264) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/paths.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: win32 default: %LOCALAPPDATA%\\Arena with backslash-only subpaths
+ok 33 - win32 default: %LOCALAPPDATA%\\Arena with backslash-only subpaths
+  ---
+  duration_ms: 1.232686
+  type: 'test'
+  ...
+# Subtest: win32: home fallback when LOCALAPPDATA is missing
+ok 34 - win32: home fallback when LOCALAPPDATA is missing
+  ---
+  duration_ms: 0.2609
+  type: 'test'
+  ...
+# Subtest: env override wins and must be absolute
+ok 35 - env override wins and must be absolute
+  ---
+  duration_ms: 0.529837
+  type: 'test'
+  ...
+# Subtest: portable marker keeps data beside the executable (opt-in only)
+ok 36 - portable marker keeps data beside the executable (opt-in only)
+  ---
+  duration_ms: 0.452572
+  type: 'test'
+  ...
+# Subtest: posix default: XDG data home convention
+ok 37 - posix default: XDG data home convention
+  ---
+  duration_ms: 0.310845
+  type: 'test'
+  ...
+# Subtest: no resolvable location throws honestly instead of guessing
+ok 38 - no resolvable location throws honestly instead of guessing
+  ---
+  duration_ms: 0.234934
+  type: 'test'
+  ...
+# (node:8285) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/pg-backup.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: refuses a directory that is not a PostgreSQL cluster
+ok 39 - refuses a directory that is not a PostgreSQL cluster
+  ---
+  duration_ms: 4.007515
+  type: 'test'
+  ...
+# Subtest: refuses while the postmaster is alive; allows a stale pid file
+ok 40 - refuses while the postmaster is alive; allows a stale pid file
+  ---
+  duration_ms: 21.223965
+  type: 'test'
+  ...
+# Subtest: every file and symlink is hashed; a same-size tamper is caught
+ok 41 - every file and symlink is hashed; a same-size tamper is caught
+  ---
+  duration_ms: 20.132625
+  type: 'test'
+  ...
+# Subtest: restore re-creates the cluster in a separate directory and verifies the round-trip
+ok 42 - restore re-creates the cluster in a separate directory and verifies the round-trip
+  ---
+  duration_ms: 47.914022
+  type: 'test'
+  ...
+# (node:8297) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/processes.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: registry tracks children and captures their output
+ok 43 - registry tracks children and captures their output
+  ---
+  duration_ms: 57.499469
+  type: 'test'
+  ...
+# Subtest: shutdownAll leaves nothing behind even for slow children
+ok 44 - shutdownAll leaves nothing behind even for slow children
+  ---
+  duration_ms: 758.136901
+  type: 'test'
+  ...
+# Subtest: killTree uses taskkill /T /F on win32 (process trees have no groups)
+ok 45 - killTree uses taskkill /T /F on win32 (process trees have no groups)
+  ---
+  duration_ms: 1.132315
+  type: 'test'
+  ...
+# Subtest: killTree sends SIGTERM on posix
+ok 46 - killTree sends SIGTERM on posix
+  ---
+  duration_ms: 0.174391
+  type: 'test'
+  ...
+# (node:8332) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/recovery-verdict.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: recovery with firstRun=false passes the recovery verdict (no PROCESS CLEANUP fail)
+ok 47 - recovery with firstRun=false passes the recovery verdict (no PROCESS CLEANUP fail)
+  ---
+  duration_ms: 1.839009
+  type: 'test'
+  ...
+# Subtest: a failing processCleanup section still fails recovery
+ok 48 - a failing processCleanup section still fails recovery
+  ---
+  duration_ms: 0.252187
+  type: 'test'
+  ...
+# Subtest: supervisor not reaching ready fails recovery
+ok 49 - supervisor not reaching ready fails recovery
+  ---
+  duration_ms: 0.170452
+  type: 'test'
+  ...
+# Subtest: a missing section (crash before it ran) fails recovery
+ok 50 - a missing section (crash before it ran) fails recovery
+  ---
+  duration_ms: 0.174907
+  type: 'test'
+  ...
+# Subtest: a crashed recovery run (no report / report error) fails recovery
+ok 51 - a crashed recovery run (no report / report error) fails recovery
+  ---
+  duration_ms: 0.157091
+  type: 'test'
+  ...
+# Subtest: recovery re-initialising the database cluster fails (data loss, not recovery)
+ok 52 - recovery re-initialising the database cluster fails (data loss, not recovery)
+  ---
+  duration_ms: 1.496737
+  type: 'test'
+  ...
+# Subtest: any other failing firstLaunch step (e.g. health) fails recovery
+ok 53 - any other failing firstLaunch step (e.g. health) fails recovery
+  ---
+  duration_ms: 0.226149
+  type: 'test'
+  ...
+# Subtest: verdict tables stay in sync with desktop/acceptance.ts (drift guard)
+ok 54 - verdict tables stay in sync with desktop/acceptance.ts (drift guard)
+  ---
+  duration_ms: 0.606403
+  type: 'test'
+  ...
+# Subtest: windows-acceptance judges recovery via evaluateRecovery, not body.ok (wiring guard)
+ok 55 - windows-acceptance judges recovery via evaluateRecovery, not body.ok (wiring guard)
+  ---
+  duration_ms: 0.396481
+  type: 'test'
+  ...
+# Subtest: presentation: the recovery dump labels the one expected failure [EXPECTED], not a misleading [FAIL]
+ok 56 - presentation: the recovery dump labels the one expected failure [EXPECTED], not a misleading [FAIL]
+  ---
+  duration_ms: 0.666887
+  type: 'test'
+  ...
+# Subtest: presentation: real recovery failures still print [FAIL]; re-initialisation is never exempted
+ok 57 - presentation: real recovery failures still print [FAIL]; re-initialisation is never exempted
+  ---
+  duration_ms: 0.436138
+  type: 'test'
+  ...
+# Subtest: presentation: the report body is never rewritten — only the console lines are labeled
+ok 58 - presentation: the report body is never rewritten — only the console lines are labeled
+  ---
+  duration_ms: 0.152705
+  type: 'test'
+  ...
+# Subtest: windows-acceptance presents the recovery run self-explanatorily (wiring guard)
+ok 59 - windows-acceptance presents the recovery run self-explanatorily (wiring guard)
+  ---
+  duration_ms: 0.358046
+  type: 'test'
+  ...
+# (node:8340) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/repo-root.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: repoRootFromMeta resolves this test file's own URL to the repo root
+ok 60 - repoRootFromMeta resolves this test file's own URL to the repo root
+  ---
+  duration_ms: 0.872014
+  type: 'test'
+  ...
+# Subtest: no doubled drive letter and no percent-encoding leaks for Windows-style URLs
+ok 61 - no doubled drive letter and no percent-encoding leaks for Windows-style URLs
+  ---
+  duration_ms: 0.194516
+  type: 'test'
+  ...
+# Subtest: a child node process resolves its root from a spaced directory (end-to-end)
+ok 62 - a child node process resolves its root from a spaced directory (end-to-end)
+  ---
+  duration_ms: 35.507943
+  type: 'test'
+  ...
+# (node:8355) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/run-command.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: npmCommand shells npm.cmd on win32 and runs plain npm on POSIX
+ok 63 - npmCommand shells npm.cmd on win32 and runs plain npm on POSIX
+  ---
+  duration_ms: 1.242541
+  type: 'test'
+  ...
+# Subtest: runNpmSync executes npm end-to-end (a spawn error is never silent)
+ok 64 - runNpmSync executes npm end-to-end (a spawn error is never silent)
+  ---
+  duration_ms: 129.532247
+  type: 'test'
+  ...
+# (node:8395) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/runtime/embedded-postgres.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: readDataDirVersion reads the initdb major marker and treats garbage as missing
+ok 65 - readDataDirVersion reads the initdb major marker and treats garbage as missing
+  ---
+  duration_ms: 12.00331
+  type: 'test'
+  ...
+# Subtest: parsePostgresMajorVersion parses real postgres --version output and rejects noise
+ok 66 - parsePostgresMajorVersion parses real postgres --version output and rejects noise
+  ---
+  duration_ms: 0.349465
+  type: 'test'
+  ...
+# Subtest: describeVersionMismatch names both versions and forbids reinitialising
+ok 67 - describeVersionMismatch names both versions and forbids reinitialising
+  ---
+  duration_ms: 0.26127
+  type: 'test'
+  ...
+# Subtest: version mismatch refuses to start and NEVER falls back to initdb
+ok 68 - version mismatch refuses to start and NEVER falls back to initdb
+  ---
+  duration_ms: 22.459581
+  type: 'test'
+  ...
+# Subtest: a directory with contents but no readable PG_VERSION is refused, never initialised
+ok 69 - a directory with contents but no readable PG_VERSION is refused, never initialised
+  ---
+  duration_ms: 8.072075
+  type: 'test'
+  ...
+# Subtest: an unparseable PG_VERSION is treated as damaged metadata, not as a fresh directory
+ok 70 - an unparseable PG_VERSION is treated as damaged metadata, not as a fresh directory
+  ---
+  duration_ms: 8.60951
+  type: 'test'
+  ...
+# Subtest: a startup failure preserves the server's own output in the error and status.lastError
+ok 71 - a startup failure preserves the server's own output in the error and status.lastError
+  ---
+  duration_ms: 51.016486
+  type: 'test'
+  ...
+# Subtest: a matching major version proceeds past the guard to the real server spawn
+ok 72 - a matching major version proceeds past the guard to the real server spawn
+  ---
+  duration_ms: 5.864253
+  type: 'test'
+  ...
+# Subtest: a failing initdb preserves its output and does not continue to startup
+ok 73 - a failing initdb preserves its output and does not continue to startup
+  ---
+  duration_ms: 2.961553
+  type: 'test'
+  ...
+# Subtest: real cluster: version guard refuses a mismatched PG_VERSION and the data survives
+ok 74 - real cluster: version guard refuses a mismatched PG_VERSION and the data survives
+  ---
+  duration_ms: 1679.072131
+  type: 'test'
+  ...
+# (node:8471) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/runtime/fs-cleanup.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: removes a real nested directory tree
+ok 75 - removes a real nested directory tree
+  ---
+  duration_ms: 6.661975
+  type: 'test'
+  ...
+# Subtest: retries transient EBUSY and succeeds once the lock clears
+ok 76 - retries transient EBUSY and succeeds once the lock clears
+  ---
+  duration_ms: 0.853295
+  type: 'test'
+  ...
+# Subtest: permanent errors are rethrown immediately (no retry loop)
+ok 77 - permanent errors are rethrown immediately (no retry loop)
+  ---
+  duration_ms: 0.474795
+  type: 'test'
+  ...
+# Subtest: exhausted retries rethrow the last transient error
+ok 78 - exhausted retries rethrow the last transient error
+  ---
+  duration_ms: 0.286047
+  type: 'test'
+  ...
+# Subtest: missing directory is a no-op (force semantics preserved)
+ok 79 - missing directory is a no-op (force semantics preserved)
+  ---
+  duration_ms: 4.611341
+  type: 'test'
+  ...
+# (node:8489) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/runtime/migrate.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: migrations apply once, are tracked, and are skipped on the second run
+ok 80 - migrations apply once, are tracked, and are skipped on the second run
+  ---
+  duration_ms: 1049.454191
+  type: 'test'
+  ...
+# Subtest: a failing migration rolls back atomically
+ok 81 - a failing migration rolls back atomically
+  ---
+  duration_ms: 1073.165226
+  type: 'test'
+  ...
+# (node:8592) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/security.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: file:// is allowed only when the policy explicitly enables it
+ok 82 - file:// is allowed only when the policy explicitly enables it
+  ---
+  duration_ms: 5.186857
+  type: 'test'
+  ...
+# Subtest: the app origin is allowed; any other origin is denied
+ok 83 - the app origin is allowed; any other origin is denied
+  ---
+  duration_ms: 0.207458
+  type: 'test'
+  ...
+# Subtest: origin equality, never prefix matching
+ok 84 - origin equality, never prefix matching
+  ---
+  duration_ms: 0.172291
+  type: 'test'
+  ...
+# Subtest: non-http(s) schemes and garbage are denied
+ok 85 - non-http(s) schemes and garbage are denied
+  ---
+  duration_ms: 0.187361
+  type: 'test'
+  ...
+# (node:8600) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/staged-tree-guard.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a clean staged tree passes with no violations
+ok 86 - a clean staged tree passes with no violations
+  ---
+  duration_ms: 7.812227
+  type: 'test'
+  ...
+# Subtest: a desktop-release directory is rejected at ANY depth (the real defect shape)
+ok 87 - a desktop-release directory is rejected at ANY depth (the real defect shape)
+  ---
+  duration_ms: 1.318586
+  type: 'test'
+  ...
+# Subtest: desktop-package, win-unpacked and sibling unpacked layouts are rejected
+ok 88 - desktop-package, win-unpacked and sibling unpacked layouts are rejected
+  ---
+  duration_ms: 1.43378
+  type: 'test'
+  ...
+# Subtest: a nested packaged-app layout (resources/app) is rejected
+ok 89 - a nested packaged-app layout (resources/app) is rejected
+  ---
+  duration_ms: 5.606822
+  type: 'test'
+  ...
+# Subtest: legitimately-named files are NOT flagged (no false positives)
+ok 90 - legitimately-named files are NOT flagged (no false positives)
+  ---
+  duration_ms: 1.736991
+  type: 'test'
+  ...
+# (node:8608) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/desktop/windows-acceptance-harness.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: all module-level state is declared before the top-level execution block (TDZ guard)
+ok 91 - all module-level state is declared before the top-level execution block (TDZ guard)
+  ---
+  duration_ms: 1.859432
+  type: 'test'
+  ...
+# Subtest: resultFilePath is a hoisted function and its state is initialized before the main block
+ok 92 - resultFilePath is a hoisted function and its state is initialized before the main block
+  ---
+  duration_ms: 0.33176
+  type: 'test'
+  ...
+# Subtest: installed-app acceptance runs against an isolated fresh data root (never the real %LOCALAPPDATA%\\Arena state)
+ok 93 - installed-app acceptance runs against an isolated fresh data root (never the real %LOCALAPPDATA%\\Arena state)
+  ---
+  duration_ms: 0.38089
+  type: 'test'
+  ...
+# Subtest: summary keys: every mark()/pass() call targets a canonical report key (spaced-alias regression)
+ok 94 - summary keys: every mark()/pass() call targets a canonical report key (spaced-alias regression)
+  ---
+  duration_ms: 1.792318
+  type: 'test'
+  ...
+# Subtest: a successful full run cannot leave completed sections marked NOT RUN (simulation over the real harness keys)
+ok 95 - a successful full run cannot leave completed sections marked NOT RUN (simulation over the real harness keys)
+  ---
+  duration_ms: 0.480674
+  type: 'test'
+  ...
+# Subtest: failed test identities survive without publishing tool output/private assertions
+ok 96 - failed test identities survive without publishing tool output/private assertions
+  ---
+  duration_ms: 1.309885
+  type: 'test'
+  ...
+# Subtest: annotation message escapes percent markers and bounds result size
+ok 97 - annotation message escapes percent markers and bounds result size
+  ---
+  duration_ms: 0.394549
+  type: 'test'
+  ...
+# Subtest: a passing or absent TAP is never relabelled a test failure
+ok 98 - a passing or absent TAP is never relabelled a test failure
+  ---
+  duration_ms: 0.582353
+  type: 'test'
+  ...
+# Subtest: missing binary gives actionable diagnostics without importing/downloading Electron
+ok 99 - missing binary gives actionable diagnostics without importing/downloading Electron
+  ---
+  duration_ms: 2.507841
+  type: 'test'
+  ...
+# Subtest: present file is not enough: executable version must match
+ok 100 - present file is not enough: executable version must match
+  ---
+  duration_ms: 1.449201
+  type: 'test'
+  ...
+# Subtest: matching probe is preflight only, and Linux still requires a display
+ok 101 - matching probe is preflight only, and Linux still requires a display
+  ---
+  duration_ms: 1.156825
+  type: 'test'
+  ...
+# Subtest: offline preparation repairs already-installed packages even when tsc exists; repeatable without installers
+ok 102 - offline preparation repairs already-installed packages even when tsc exists; repeatable without installers
+  ---
+  duration_ms: 66.49709
+  type: 'test'
+  ...
+# Subtest: missing packages are not installed or invented
+ok 103 - missing packages are not installed or invented
+  ---
+  duration_ms: 0.660598
+  type: 'test'
+  ...
+# Subtest: staged identity detects edits even when porcelain status is unchanged
+ok 104 - staged identity detects edits even when porcelain status is unchanged
+  ---
+  duration_ms: 77.83542
+  type: 'test'
+  ...
+# Subtest: staged identity includes untracked source content but ignores excluded artifacts
+ok 105 - staged identity includes untracked source content but ignores excluded artifacts
+  ---
+  duration_ms: 45.888142
+  type: 'test'
+  ...
+# Subtest: real-music runner refuses invalid checkpoint before contacting or changing Arena
+ok 106 - real-music runner refuses invalid checkpoint before contacting or changing Arena
+  ---
+  duration_ms: 137.040955
+  type: 'test'
+  ...
+# Subtest: real-music runner refuses remote targets and never overwrites an evidence directory
+ok 107 - real-music runner refuses remote targets and never overwrites an evidence directory
+  ---
+  duration_ms: 75.91219
+  type: 'test'
+  ...
+# (node:8734) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/app/api/arcade/route.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: arcade security: validation gate, owner scoping, ownership-checked delete
+ok 108 - arcade security: validation gate, owner scoping, ownership-checked delete
+  ---
+  duration_ms: 60.337268
+  type: 'test'
+  ...
+# Subtest: artifact mutations are ownership-scoped the same way
+ok 109 - artifact mutations are ownership-scoped the same way
+  ---
+  duration_ms: 26.182578
+  type: 'test'
+  ...
+# Subtest: artifact reads are owner-private: no cross-owner or anonymous access
+ok 110 - artifact reads are owner-private: no cross-owner or anonymous access
+  ---
+  duration_ms: 76.514043
+  type: 'test'
+  ...
+# Subtest: arcade rejects unsupported offline mechanics and persists verified provenance
+ok 111 - arcade rejects unsupported offline mechanics and persists verified provenance
+  ---
+  duration_ms: 8.179468
+  type: 'test'
+  ...
+# Subtest: generative route rejects invalid iteration context and unavailable model honestly
+ok 112 - generative route rejects invalid iteration context and unavailable model honestly
+  ---
+  duration_ms: 75.392221
+  type: 'test'
+  ...
+# DrizzleQueryError: Failed query: select "id", "project_id", "kind", "title", "body", "content_object", "source_type", "source_id", "owner_id", "revision", "current_revision_id", "deleted_at", "created_at" from "artifacts" where ("artifacts"."owner_id" = $1 and "artifacts"."deleted_at" is null) order by "artifacts"."created_at" desc limit $2
+# params: 00000000-0000-4000-8000-000000000001,200
+#     at NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:41:15)
+#     at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#     at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#     ... 3 lines matching cause stack trace ...
+#     at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+#   query: 'select "id", "project_id", "kind", "title", "body", "content_object", "source_type", "source_id", "owner_id", "revision", "current_revision_id", "deleted_at", "created_at" from "artifacts" where ("artifacts"."owner_id" = $1 and "artifacts"."deleted_at" is null) order by "artifacts"."created_at" desc limit $2',
+#   params: [ '00000000-0000-4000-8000-000000000001', 200 ],
+#   cause: error: relation "artifacts" does not exist
+#       at /home/user/arena-os-canonical/node_modules/pg-pool/index.js:45:11
+#       at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:124:18
+#       at async NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:39:16)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#       at async Module.GET (file:///home/user/arena-os-canonical/src/app/api/artifacts/route.ts:22:16)
+#       at async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/app/api/arcade/route.test.ts:337:25)
+#       at async Test.run (node:internal/test_runner/test:1054:7)
+#       at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+#     length: 109,
+#     severity: 'ERROR',
+#     code: '42P01',
+#     detail: undefined,
+#     hint: undefined,
+#     position: '178',
+#     internalPosition: undefined,
+#     internalQuery: undefined,
+#     where: undefined,
+#     schema: undefined,
+#     table: undefined,
+#     column: undefined,
+#     dataType: undefined,
+#     constraint: undefined,
+#     file: 'parse_relation.c',
+#     line: '1452',
+#     routine: 'parserOpenTable'
+#   }
+# }
+# DrizzleQueryError: Failed query: select "id", "project_id", "kind", "title", "body", "content_object", "source_type", "source_id", "owner_id", "revision", "current_revision_id", "deleted_at", "created_at" from "artifacts" where ("artifacts"."owner_id" = $1 and "artifacts"."project_id" = $2 and "artifacts"."deleted_at" is null) order by "artifacts"."created_at" desc limit $3
+# params: 00000000-0000-4000-8000-000000000001,11111111-1111-4111-8111-111111111111,100
+#     at NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:41:15)
+#     at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#     at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#     ... 3 lines matching cause stack trace ...
+#     at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+#   query: 'select "id", "project_id", "kind", "title", "body", "content_object", "source_type", "source_id", "owner_id", "revision", "current_revision_id", "deleted_at", "created_at" from "artifacts" where ("artifacts"."owner_id" = $1 and "artifacts"."project_id" = $2 and "artifacts"."deleted_at" is null) order by "artifacts"."created_at" desc limit $3',
+#   params: [
+#     '00000000-0000-4000-8000-000000000001',
+#     '11111111-1111-4111-8111-111111111111',
+#     100
+#   ],
+#   cause: error: relation "artifacts" does not exist
+#       at /home/user/arena-os-canonical/node_modules/pg-pool/index.js:45:11
+#       at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:124:18
+#       at async NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:39:16)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#       at async Module.GET (file:///home/user/arena-os-canonical/src/app/api/projects/%5Bid%5D/artifacts/route.ts:20:18)
+#       at async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/app/api/arcade/route.test.ts:340:19)
+#       at async Test.run (node:internal/test_runner/test:1054:7)
+#       at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+#     length: 109,
+#     severity: 'ERROR',
+#     code: '42P01',
+#     detail: undefined,
+#     hint: undefined,
+#     position: '178',
+#     internalPosition: undefined,
+#     internalQuery: undefined,
+#     where: undefined,
+#     schema: undefined,
+#     table: undefined,
+#     column: undefined,
+#     dataType: undefined,
+#     constraint: undefined,
+#     file: 'parse_relation.c',
+#     line: '1452',
+#     routine: 'parserOpenTable'
+#   }
+# }
+# Subtest: artifact storage outage is an actionable 503; recovery returns the saved work
+ok 113 - artifact storage outage is an actionable 503; recovery returns the saved work
+  ---
+  duration_ms: 55.16626
+  type: 'test'
+  ...
+# (node:8832) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/app/api/archive/routes.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: context: assembles the six-part native context with normalized facts
+ok 114 - context: assembles the six-part native context with normalized facts
+  ---
+  duration_ms: 272.620922
+  type: 'test'
+  ...
+# Subtest: context: ?history=1 attaches one bounded history page per provider
+ok 115 - context: ?history=1 attaches one bounded history page per provider
+  ---
+  duration_ms: 44.159379
+  type: 'test'
+  ...
+# Subtest: context: fresh install (no providers) answers honestly, never guesses
+ok 116 - context: fresh install (no providers) answers honestly, never guesses
+  ---
+  duration_ms: 21.82726
+  type: 'test'
+  ...
+# Subtest: lineage: explicit lookup returns current + superseded observation
+ok 117 - lineage: explicit lookup returns current + superseded observation
+  ---
+  duration_ms: 26.14933
+  type: 'test'
+  ...
+# Subtest: lineage: non-positive or non-integer ids are 400
+ok 118 - lineage: non-positive or non-integer ids are 400
+  ---
+  duration_ms: 1.205232
+  type: 'test'
+  ...
+# Subtest: lineage: unknown id stays a 404 (no fabricated lineage)
+ok 119 - lineage: unknown id stays a 404 (no fabricated lineage)
+  ---
+  duration_ms: 4.949179
+  type: 'test'
+  ...
+# (node:8860) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/app/api/chat/route.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: chat: archiveContext=true folds cited native facts into an offline answer with zero network
+ok 120 - chat: archiveContext=true folds cited native facts into an offline answer with zero network
+  ---
+  duration_ms: 112.316011
+  type: 'test'
+  ...
+# Subtest: chat: Local Mode wins — zero egress, archive explicitly skipped
+ok 121 - chat: Local Mode wins — zero egress, archive explicitly skipped
+  ---
+  duration_ms: 5.648907
+  type: 'test'
+  ...
+# Subtest: chat: without the flag there is no archive work at all
+ok 122 - chat: without the flag there is no archive work at all
+  ---
+  duration_ms: 5.168392
+  type: 'test'
+  ...
+# Subtest: chat: browser leg still works with no credential when the internal key is configured
+ok 123 - chat: browser leg still works with no credential when the internal key is configured
+  ---
+  duration_ms: 1.876301
+  type: 'test'
+  ...
+# Subtest: chat: the internal credential authenticates service calls, and archive stays off that leg
+ok 124 - chat: the internal credential authenticates service calls, and archive stays off that leg
+  ---
+  duration_ms: 3.724619
+  type: 'test'
+  ...
+# Subtest: chat: an unknown bearer on plain chat is rejected; as a user token it chats with native archive context
+ok 125 - chat: an unknown bearer on plain chat is rejected; as a user token it chats with native archive context
+  ---
+  duration_ms: 40.3922
+  type: 'test'
+  ...
+# (node:8891) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/app/api/internal/chat/route.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: internal: fail closed when ARENA_INTERNAL_API_KEY is not configured
+ok 126 - internal: fail closed when ARENA_INTERNAL_API_KEY is not configured
+  ---
+  duration_ms: 26.056133
+  type: 'test'
+  ...
+# Subtest: internal: missing secret → 401
+ok 127 - internal: missing secret → 401
+  ---
+  duration_ms: 0.865117
+  type: 'test'
+  ...
+# Subtest: internal: wrong secret → 401, indistinguishable from missing
+ok 128 - internal: wrong secret → 401, indistinguishable from missing
+  ---
+  duration_ms: 1.418013
+  type: 'test'
+  ...
+# Subtest: internal: near-miss secrets are rejected (comparison is exact)
+ok 129 - internal: near-miss secrets are rejected (comparison is exact)
+  ---
+  duration_ms: 1.476409
+  type: 'test'
+  ...
+# Subtest: internal: correct secret → allowed, tagged as service caller, zero archive egress
+ok 130 - internal: correct secret → allowed, tagged as service caller, zero archive egress
+  ---
+  duration_ms: 39.39895
+  type: 'test'
+  ...
+# Subtest: internal: archiveContext is never honored for a service credential
+ok 131 - internal: archiveContext is never honored for a service credential
+  ---
+  duration_ms: 2.021053
+  type: 'test'
+  ...
+# Subtest: internal: missing and wrong secrets also gate archiveContext-carrying bodies
+ok 132 - internal: missing and wrong secrets also gate archiveContext-carrying bodies
+  ---
+  duration_ms: 0.907546
+  type: 'test'
+  ...
+# (node:9097) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/app/api/toolbox/routes.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: GET returns the manifest: presets, hardware honesty, empty queue
+ok 133 - GET returns the manifest: presets, hardware honesty, empty queue
+  ---
+  duration_ms: 160.913714
+  type: 'test'
+  ...
+# Subtest: POST multipart uploads and probes a real image
+ok 134 - POST multipart uploads and probes a real image
+  ---
+  duration_ms: 298.798186
+  type: 'test'
+  ...
+# Subtest: POST multipart with a text file gets a clean 400, nothing kept
+ok 135 - POST multipart with a text file gets a clean 400, nothing kept
+  ---
+  duration_ms: 14.035284
+  type: 'test'
+  ...
+# Subtest: full flow through the route: upload → convert → poll → download → clear
+ok 136 - full flow through the route: upload → convert → poll → download → clear
+  ---
+  duration_ms: 282.233515
+  type: 'test'
+  ...
+# Subtest: convert rejects paths outside the toolbox upload dir
+ok 137 - convert rejects paths outside the toolbox upload dir
+  ---
+  duration_ms: 1.649551
+  type: 'test'
+  ...
+# Subtest: convert rejects unknown presets and unknown actions
+ok 138 - convert rejects unknown presets and unknown actions
+  ---
+  duration_ms: 0.689772
+  type: 'test'
+  ...
+# Subtest: custom jobs persist their knobs through execution
+ok 139 - custom jobs persist their knobs through execution
+  ---
+  duration_ms: 264.946855
+  type: 'test'
+  ...
+# (node:9178) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/app/api/turboagent/health/route.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: internal and remote destinations are refused without any fetch
+ok 140 - internal and remote destinations are refused without any fetch
+  ---
+  duration_ms: 11.671183
+  type: 'test'
+  ...
+# Subtest: a loopback probe really runs and reports the runtime's answer
+ok 141 - a loopback probe really runs and reports the runtime's answer
+  ---
+  duration_ms: 21.864961
+  type: 'test'
+  ...
+# Subtest: no configured URL is an honest offline answer
+ok 142 - no configured URL is an honest offline answer
+  ---
+  duration_ms: 0.694367
+  type: 'test'
+  ...
+# (node:9187) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/app/api/waveyard/separation/deep/prepare/route.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:9187) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:9187) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: GET returns the durable status and the honest runtime boundary
+ok 143 - GET returns the durable status and the honest runtime boundary
+  ---
+  duration_ms: 10.38542
+  type: 'test'
+  ...
+# Subtest: GET ?inspect=1 reports the real machine and a plan with consent
+ok 144 - GET ?inspect=1 reports the real machine and a plan with consent
+  ---
+  duration_ms: 131.236927
+  type: 'test'
+  ...
+# Subtest: POST without the required consent is refused before anything runs
+ok 145 - POST without the required consent is refused before anything runs
+  ---
+  duration_ms: 113.199654
+  type: 'test'
+  ...
+# Subtest: a wrong checkpoint import is refused with an honest error
+ok 146 - a wrong checkpoint import is refused with an honest error
+  ---
+  duration_ms: 25.32829
+  type: 'test'
+  ...
+# Subtest: cancel and recover answer honestly when nothing is running
+ok 147 - cancel and recover answer honestly when nothing is running
+  ---
+  duration_ms: 5.247488
+  type: 'test'
+  ...
+# Subtest: teardown
+ok 148 - teardown
+  ---
+  duration_ms: 2.139927
+  type: 'test'
+  ...
+# (node:9221) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/apiErrors.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: serializes typed execution failure without exposing its raw cause
+ok 149 - serializes typed execution failure without exposing its raw cause
+  ---
+  duration_ms: 1.359686
+  type: 'test'
+  ...
+# Subtest: unknown failures use bounded route-specific fallback data
+ok 150 - unknown failures use bounded route-specific fallback data
+  ---
+  duration_ms: 0.145708
+  type: 'test'
+  ...
+# (node:9229) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/archive-assistant/context.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: classify: synced+complete is complete; syncing is in_progress
+ok 151 - classify: synced+complete is complete; syncing is in_progress
+  ---
+  duration_ms: 0.889719
+  type: 'test'
+  ...
+# Subtest: classify: sync_error+partial is incomplete; sync_error+unknown is failed
+ok 152 - classify: sync_error+partial is incomplete; sync_error+unknown is failed
+  ---
+  duration_ms: 0.152616
+  type: 'test'
+  ...
+# Subtest: refresh semantics: failed attempt does not move authority
+ok 153 - refresh semantics: failed attempt does not move authority
+  ---
+  duration_ms: 13.231196
+  type: 'test'
+  ...
+# Subtest: refresh semantics: sync_error+unknown reads as failed, contents unknown
+ok 154 - refresh semantics: sync_error+unknown reads as failed, contents unknown
+  ---
+  duration_ms: 0.269927
+  type: 'test'
+  ...
+# Subtest: refresh semantics: a never-refreshed provider is explicit about knowing nothing
+ok 155 - refresh semantics: a never-refreshed provider is explicit about knowing nothing
+  ---
+  duration_ms: 0.12213
+  type: 'test'
+  ...
+# Subtest: refresh semantics: synced attempt pinned as authority states it plainly
+ok 156 - refresh semantics: synced attempt pinned as authority states it plainly
+  ---
+  duration_ms: 0.203376
+  type: 'test'
+  ...
+# Subtest: refresh facts: attempt divergence is a separately citable fact
+ok 157 - refresh facts: attempt divergence is a separately citable fact
+  ---
+  duration_ms: 0.268618
+  type: 'test'
+  ...
+# Subtest: workload facts: items carry observation/refresh/evidence handles
+ok 158 - workload facts: items carry observation/refresh/evidence handles
+  ---
+  duration_ms: 0.966395
+  type: 'test'
+  ...
+# Subtest: workload facts: needs_you sorts ahead of waiting; output is bounded
+ok 159 - workload facts: needs_you sorts ahead of waiting; output is bounded
+  ---
+  duration_ms: 0.505839
+  type: 'test'
+  ...
+# Subtest: reconciliation fact is a single cited summary, not raw rows
+ok 160 - reconciliation fact is a single cited summary, not raw rows
+  ---
+  duration_ms: 0.463522
+  type: 'test'
+  ...
+# Subtest: lineage facts: current truth, superseded prior, provider linkage
+ok 161 - lineage facts: current truth, superseded prior, provider linkage
+  ---
+  duration_ms: 0.279632
+  type: 'test'
+  ...
+# Subtest: lineage facts: a finding without history still speaks explicitly
+ok 162 - lineage facts: a finding without history still speaks explicitly
+  ---
+  duration_ms: 0.148137
+  type: 'test'
+  ...
+# Subtest: assembly: six-part context with normalized facts, spec shape
+ok 163 - assembly: six-part context with normalized facts, spec shape
+  ---
+  duration_ms: 0.693157
+  type: 'test'
+  ...
+# Subtest: assembly: refresh history is opt-in and bounded
+ok 164 - assembly: refresh history is opt-in and bounded
+  ---
+  duration_ms: 0.502554
+  type: 'test'
+  ...
+# (node:9254) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/archive-assistant/prompt.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: safety rules: the non-negotiable clauses are present
+ok 165 - safety rules: the non-negotiable clauses are present
+  ---
+  duration_ms: 0.913284
+  type: 'test'
+  ...
+# Subtest: prompt: facts render with citation handles
+ok 166 - prompt: facts render with citation handles
+  ---
+  duration_ms: 4.896028
+  type: 'test'
+  ...
+# Subtest: prompt: system block is bounded and cites the snapshot timestamp
+ok 167 - prompt: system block is bounded and cites the snapshot timestamp
+  ---
+  duration_ms: 0.646218
+  type: 'test'
+  ...
+# Subtest: redaction: local paths never reach the model
+ok 168 - redaction: local paths never reach the model
+  ---
+  duration_ms: 0.278724
+  type: 'test'
+  ...
+# (node:9263) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/archive-assistant/reasoning-contract.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: trap: facts encode the full authority chain, with item counts
+ok 169 - trap: facts encode the full authority chain, with item counts
+  ---
+  duration_ms: 14.627415
+  type: 'test'
+  ...
+# Subtest: trap: the prompt handed to the reasoner arms the correct chain
+ok 170 - trap: the prompt handed to the reasoner arms the correct chain
+  ---
+  duration_ms: 0.870583
+  type: 'test'
+  ...
+# Subtest: trap: the boundary row — the prompt forbids action directives
+ok 171 - trap: the boundary row — the prompt forbids action directives
+  ---
+  duration_ms: 0.275042
+  type: 'test'
+  ...
+# Subtest: trap: a complete+authoritative latest state carries the observed size too
+ok 172 - trap: a complete+authoritative latest state carries the observed size too
+  ---
+  duration_ms: 0.298757
+  type: 'test'
+  ...
+# Subtest: ordinary: fixture coherence — r19 occupies every slot of the state
+ok 173 - ordinary: fixture coherence — r19 occupies every slot of the state
+  ---
+  duration_ms: 0.173672
+  type: 'test'
+  ...
+# Subtest: ordinary: authority fact states current truth with the observed size
+ok 174 - ordinary: authority fact states current truth with the observed size
+  ---
+  duration_ms: 0.172023
+  type: 'test'
+  ...
+# Subtest: differential: the same builder arms materially different evidence per state
+ok 175 - differential: the same builder arms materially different evidence per state
+  ---
+  duration_ms: 0.537081
+  type: 'test'
+  ...
+# Subtest: ordinary: no disappearance language is asserted here either — evidence is left to speak
+ok 176 - ordinary: no disappearance language is asserted here either — evidence is left to speak
+  ---
+  duration_ms: 0.202458
+  type: 'test'
+  ...
+# Subtest: attribution: ordinary evidence is snapshot-level — it licenses trust in r19, not any item's disappearance
+ok 177 - attribution: ordinary evidence is snapshot-level — it licenses trust in r19, not any item's disappearance
+  ---
+  duration_ms: 0.437711
+  type: 'test'
+  ...
+# (node:9271) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/archive-reasoning/lattice.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: 7.1 lattice: status ranks are ordered observed > derived > coverage-limited > unknown
+ok 178 - 7.1 lattice: status ranks are ordered observed > derived > coverage-limited > unknown
+  ---
+  duration_ms: 0.886523
+  type: 'test'
+  ...
+# Subtest: 7.1 lattice: minStatus returns the least certain element; duplicates and order are irrelevant
+ok 179 - 7.1 lattice: minStatus returns the least certain element; duplicates and order are irrelevant
+  ---
+  duration_ms: 0.212353
+  type: 'test'
+  ...
+# Subtest: 7.1 lattice: the ceiling of a conclusion is computed, never supplied
+ok 180 - 7.1 lattice: the ceiling of a conclusion is computed, never supplied
+  ---
+  duration_ms: 5.747377
+  type: 'test'
+  ...
+# Subtest: 7.1 lattice: a positive kind standing on unknown evidence is void
+ok 181 - 7.1 lattice: a positive kind standing on unknown evidence is void
+  ---
+  duration_ms: 0.661737
+  type: 'test'
+  ...
+# Subtest: 7.1 lattice: unknown-grounded material is legitimate only as an open uncertainty
+ok 182 - 7.1 lattice: unknown-grounded material is legitimate only as an open uncertainty
+  ---
+  duration_ms: 0.235404
+  type: 'test'
+  ...
+# Subtest: 7.1 lattice: windows union only when identical; differing windows refuse silently-merged claims
+ok 183 - 7.1 lattice: windows union only when identical; differing windows refuse silently-merged claims
+  ---
+  duration_ms: 0.297095
+  type: 'test'
+  ...
+# Subtest: 7.1 lattice: a conclusion cannot claim more scope than its evidence declares
+ok 184 - 7.1 lattice: a conclusion cannot claim more scope than its evidence declares
+  ---
+  duration_ms: 0.346644
+  type: 'test'
+  ...
+# Subtest: 7.1 lattice: empty load-bearing, dangling refs, and mismatched signalIds are all rejected
+ok 185 - 7.1 lattice: empty load-bearing, dangling refs, and mismatched signalIds are all rejected
+  ---
+  duration_ms: 0.290358
+  type: 'test'
+  ...
+# Subtest: 7.1 tripwires: five conclusion kinds, seven evidence collections, no silent seventh
+ok 186 - 7.1 tripwires: five conclusion kinds, seven evidence collections, no silent seventh
+  ---
+  duration_ms: 0.248349
+  type: 'test'
+  ...
+# Subtest: 7.1 lattice: missing epistemicStatus on evidence floors to unknown — it is never upgraded
+ok 187 - 7.1 lattice: missing epistemicStatus on evidence floors to unknown — it is never upgraded
+  ---
+  duration_ms: 3.815434
+  type: 'test'
+  ...
+# Subtest: 7.1 C4 defense-in-depth: handle-less provenance cannot ground a claim, even out-of-seam
+ok 188 - 7.1 C4 defense-in-depth: handle-less provenance cannot ground a claim, even out-of-seam
+  ---
+  duration_ms: 0.315014
+  type: 'test'
+  ...
+# Subtest: 7.1 lattice: conclusions are deterministic and frozen
+ok 189 - 7.1 lattice: conclusions are deterministic and frozen
+  ---
+  duration_ms: 0.733339
+  type: 'test'
+  ...
+# (node:9279) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/archive-reasoning/render.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: 7.4 render: restatement of a fact is a faithful sentence with a certified attribution
+ok 190 - 7.4 render: restatement of a fact is a faithful sentence with a certified attribution
+  ---
+  duration_ms: 4.519306
+  type: 'test'
+  ...
+# Subtest: 7.4 render: restated signal renders verbatim metrics without adjectives
+ok 191 - 7.4 render: restated signal renders verbatim metrics without adjectives
+  ---
+  duration_ms: 0.951589
+  type: 'test'
+  ...
+# Subtest: 7.4 render: class-only restatements do not parrot upstream prose
+ok 192 - 7.4 render: class-only restatements do not parrot upstream prose
+  ---
+  duration_ms: 0.287481
+  type: 'test'
+  ...
+# Subtest: 7.4 render: aggregation statements are the certified arithmetic, nothing more
+ok 193 - 7.4 render: aggregation statements are the certified arithmetic, nothing more
+  ---
+  duration_ms: 0.880601
+  type: 'test'
+  ...
+# Subtest: 7.4 render: an as-of statement speaks evidence time, never wall-clock time
+ok 194 - 7.4 render: an as-of statement speaks evidence time, never wall-clock time
+  ---
+  duration_ms: 1.508481
+  type: 'test'
+  ...
+# Subtest: 7.4 render: window comparison renders numbers and relation words only
+ok 195 - 7.4 render: window comparison renders numbers and relation words only
+  ---
+  duration_ms: 8.315139
+  type: 'test'
+  ...
+# Subtest: 7.4 render: a contradiction sentence preserves both sides and disclaims resolution
+ok 196 - 7.4 render: a contradiction sentence preserves both sides and disclaims resolution
+  ---
+  duration_ms: 1.406919
+  type: 'test'
+  ...
+# Subtest: 7.4 render: absence is always delivered with its qualifier attached
+ok 197 - 7.4 render: absence is always delivered with its qualifier attached
+  ---
+  duration_ms: 0.373717
+  type: 'test'
+  ...
+# Subtest: 7.4 render: the vocabulary guard throws on affect and upgrades — including 'love' outside quotes
+ok 198 - 7.4 render: the vocabulary guard throws on affect and upgrades — including 'love' outside quotes
+  ---
+  duration_ms: 0.664095
+  type: 'test'
+  ...
+# Subtest: 7.4 render: quoted subjects are data — a title containing 'love' renders without tripping the guard
+ok 199 - 7.4 render: quoted subjects are data — a title containing 'love' renders without tripping the guard
+  ---
+  duration_ms: 0.470054
+  type: 'test'
+  ...
+# Subtest: 7.4 render: unrecognized claim shapes fail closed — the mouth does not improvise
+ok 200 - 7.4 render: unrecognized claim shapes fail closed — the mouth does not improvise
+  ---
+  duration_ms: 0.312718
+  type: 'test'
+  ...
+# Subtest: 7.4 render: rendered verdicts are frozen and byte-stable; status is never raised
+ok 201 - 7.4 render: rendered verdicts are frozen and byte-stable; status is never raised
+  ---
+  duration_ms: 0.344136
+  type: 'test'
+  ...
+# (node:9287) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/archive-reasoning/synthesizers.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: 7.2 restatement: faithful re-voicing of one item — class, subject, value verbatim
+ok 202 - 7.2 restatement: faithful re-voicing of one item — class, subject, value verbatim
+  ---
+  duration_ms: 2.423907
+  type: 'test'
+  ...
+# Subtest: 7.2 restatement: observed fact keeps observed status; unknown fact is void (no positive slippage)
+ok 203 - 7.2 restatement: observed fact keeps observed status; unknown fact is void (no positive slippage)
+  ---
+  duration_ms: 0.723498
+  type: 'test'
+  ...
+# Subtest: 7.2 restatement: no affect or preference nouns exist anywhere in the claim payload
+ok 204 - 7.2 restatement: no affect or preference nouns exist anywhere in the claim payload
+  ---
+  duration_ms: 0.482211
+  type: 'test'
+  ...
+# Subtest: 7.2 aggregation count: same-class members over one window; ceiling is the minimum member status
+ok 205 - 7.2 aggregation count: same-class members over one window; ceiling is the minimum member status
+  ---
+  duration_ms: 0.586016
+  type: 'test'
+  ...
+# Subtest: 7.2 aggregation sum: finite numeric values add up; ceiling drops with the weakest member
+ok 206 - 7.2 aggregation sum: finite numeric values add up; ceiling drops with the weakest member
+  ---
+  duration_ms: 0.445094
+  type: 'test'
+  ...
+# Subtest: 7.2 aggregation sum: a non-numeric member rejects the sum (no silent skipping, no zero-filling)
+ok 207 - 7.2 aggregation sum: a non-numeric member rejects the sum (no silent skipping, no zero-filling)
+  ---
+  duration_ms: 1.092683
+  type: 'test'
+  ...
+# Subtest: 7.2 aggregation: mixed collections are rejected as mixed_class — same-class is structural
+ok 208 - 7.2 aggregation: mixed collections are rejected as mixed_class — same-class is structural
+  ---
+  duration_ms: 0.413284
+  type: 'test'
+  ...
+# Subtest: 7.2 aggregation: cross-scope evidence refuses (no scope creep via aggregation)
+ok 209 - 7.2 aggregation: cross-scope evidence refuses (no scope creep via aggregation)
+  ---
+  duration_ms: 0.273064
+  type: 'test'
+  ...
+# Subtest: 7.2 aggregation: empty membership, determinism, and frozen output
+ok 210 - 7.2 aggregation: empty membership, determinism, and frozen output
+  ---
+  duration_ms: 0.660301
+  type: 'test'
+  ...
+# (node:9309) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/archive-reasoning/temporal.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: 7.3 windows: extraction reads label and bounds honestly; rolling windows compute from derivedAt
+ok 211 - 7.3 windows: extraction reads label and bounds honestly; rolling windows compute from derivedAt
+  ---
+  duration_ms: 2.375362
+  type: 'test'
+  ...
+# Subtest: 7.3 windows: an item with no window material extracts nothing (null — not a fabricated span)
+ok 212 - 7.3 windows: an item with no window material extracts nothing (null — not a fabricated span)
+  ---
+  duration_ms: 0.228979
+  type: 'test'
+  ...
+# Subtest: 7.3 windows: producer-declared value.window is identified verbatim — bounds cross, no reconstruction
+ok 213 - 7.3 windows: producer-declared value.window is identified verbatim — bounds cross, no reconstruction
+  ---
+  duration_ms: 0.315004
+  type: 'test'
+  ...
+# Subtest: 7.3 windows: identical dual declarations collapse deterministically to the single window
+ok 214 - 7.3 windows: identical dual declarations collapse deterministically to the single window
+  ---
+  duration_ms: 0.304836
+  type: 'test'
+  ...
+# Subtest: 7.3 windows: conflicting declared windows are refused — never silently reconciled
+ok 215 - 7.3 windows: conflicting declared windows are refused — never silently reconciled
+  ---
+  duration_ms: 0.736555
+  type: 'test'
+  ...
+# Subtest: 7.3 windows: overlap is interval-exact; undetermined windows are reported, not guessed
+ok 216 - 7.3 windows: overlap is interval-exact; undetermined windows are reported, not guessed
+  ---
+  duration_ms: 0.258686
+  type: 'test'
+  ...
+# Subtest: 7.3 temporal: an as-of claim carries the evidence window, the evidence time, and verbatim metric
+ok 217 - 7.3 temporal: an as-of claim carries the evidence window, the evidence time, and verbatim metric
+  ---
+  duration_ms: 0.719567
+  type: 'test'
+  ...
+# Subtest: 7.3 temporal: no extractable window → the claim is not formed (lineage, not invention)
+ok 218 - 7.3 temporal: no extractable window → the claim is not formed (lineage, not invention)
+  ---
+  duration_ms: 0.209778
+  type: 'test'
+  ...
+# Subtest: 7.3 temporal: window comparison is arithmetic with explicit relation — greater/less/equal, never an adjective
+ok 219 - 7.3 temporal: window comparison is arithmetic with explicit relation — greater/less/equal, never an adjective
+  ---
+  duration_ms: 8.122006
+  type: 'test'
+  ...
+# Subtest: 7.3 temporal: trends refuse overlapping windows, missing metrics, mixed subjects, and mixed classes
+ok 220 - 7.3 temporal: trends refuse overlapping windows, missing metrics, mixed subjects, and mixed classes
+  ---
+  duration_ms: 0.827851
+  type: 'test'
+  ...
+# Subtest: 7.3 contradiction: overlapping windows + different values + distinct lineage → surfaced, both preserved
+ok 221 - 7.3 contradiction: overlapping windows + different values + distinct lineage → surfaced, both preserved
+  ---
+  duration_ms: 0.908806
+  type: 'test'
+  ...
+# Subtest: 7.3 contradiction: same lineage restating itself is one chain, not a conflict
+ok 222 - 7.3 contradiction: same lineage restating itself is one chain, not a conflict
+  ---
+  duration_ms: 0.229131
+  type: 'test'
+  ...
+# Subtest: 7.3 contradiction: different windows both stand — no conflict is manufactured across time
+ok 223 - 7.3 contradiction: different windows both stand — no conflict is manufactured across time
+  ---
+  duration_ms: 0.445766
+  type: 'test'
+  ...
+# Subtest: 7.3 contradiction: same values under overlapping windows are agreement — and silence is honest
+ok 224 - 7.3 contradiction: same values under overlapping windows are agreement — and silence is honest
+  ---
+  duration_ms: 0.22447
+  type: 'test'
+  ...
+# Subtest: 7.3 contradiction: determinism + frozen conclusions; unknown-grounded contradictions are emittable
+ok 225 - 7.3 contradiction: determinism + frozen conclusions; unknown-grounded contradictions are emittable
+  ---
+  duration_ms: 0.616087
+  type: 'test'
+  ...
+# (node:9317) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/arenaRooms.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: room inventory is exactly the fixed room list
+ok 226 - room inventory is exactly the fixed room list
+  ---
+  duration_ms: 1.128133
+  type: 'test'
+  ...
+# Subtest: every room in the inventory exists and is addressable by id
+ok 227 - every room in the inventory exists and is addressable by id
+  ---
+  duration_ms: 0.322918
+  type: 'test'
+  ...
+# Subtest: every room card routes to its real working surface
+ok 228 - every room card routes to its real working surface
+  ---
+  duration_ms: 0.215841
+  type: 'test'
+  ...
+# Subtest: every destination href resolves to a route that actually exists
+ok 229 - every destination href resolves to a route that actually exists
+  ---
+  duration_ms: 0.343433
+  type: 'test'
+  ...
+# Subtest: archive-assistant destination is its live bridge surface, not an address-only room
+ok 230 - archive-assistant destination is its live bridge surface, not an address-only room
+  ---
+  duration_ms: 0.304027
+  type: 'test'
+  ...
+# (node:9325) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/authorization.integration.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: owner, independent devices, credential-bound session, scoped grant and fresh auth authorize deterministically
+ok 231 - owner, independent devices, credential-bound session, scoped grant and fresh auth authorize deterministically
+  ---
+  duration_ms: 4111.730902
+  type: 'test'
+  ...
+# Subtest: revoked, expired, forged, stale, disabled and non-fresh identities fail closed
+ok 232 - revoked, expired, forged, stale, disabled and non-fresh identities fail closed
+  ---
+  duration_ms: 2526.122915
+  type: 'test'
+  ...
+# Subtest: revoked sessions, credentials, devices, expiry and idle staleness cannot authenticate
+ok 233 - revoked sessions, credentials, devices, expiry and idle staleness cannot authenticate
+  ---
+  duration_ms: 11554.731649
+  type: 'test'
+  ...
+# Subtest: security events contain no credential or token secrets
+ok 234 - security events contain no credential or token secrets
+  ---
+  duration_ms: 2296.012944
+  type: 'test'
+  ...
+# (node:9562) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/capabilities/capabilities.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: resolver: env override beats bundled beats system, all absolute
+ok 235 - resolver: env override beats bundled beats system, all absolute
+  ---
+  duration_ms: 2.013549
+  type: 'test'
+  ...
+# Subtest: resolver: never returns a bare name; missing tool is null
+ok 236 - resolver: never returns a bare name; missing tool is null
+  ---
+  duration_ms: 0.509572
+  type: 'test'
+  ...
+# Subtest: resolver: relative PATH entries and relative overrides are ignored
+ok 237 - resolver: relative PATH entries and relative overrides are ignored
+  ---
+  duration_ms: 0.149733
+  type: 'test'
+  ...
+# Subtest: resolver: allowSystem=false keeps bundled-only tools off PATH
+ok 238 - resolver: allowSystem=false keeps bundled-only tools off PATH
+  ---
+  duration_ms: 0.105867
+  type: 'test'
+  ...
+# Subtest: resolver finds a real bundled file on disk
+ok 239 - resolver finds a real bundled file on disk
+  ---
+  duration_ms: 1.580127
+  type: 'test'
+  ...
+# Subtest: report: all ready
+ok 240 - report: all ready
+  ---
+  duration_ms: 2.087162
+  type: 'test'
+  ...
+# Subtest: report: optional tools missing do not break overall; required missing does
+ok 241 - report: optional tools missing do not break overall; required missing does
+  ---
+  duration_ms: 0.631318
+  type: 'test'
+  ...
+# Subtest: report: degraded and throwing probes are honest
+ok 242 - report: degraded and throwing probes are honest
+  ---
+  duration_ms: 0.315909
+  type: 'test'
+  ...
+# (node:9570) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/completeCouncilSession.integration.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: completion rollback invariant: run failure
+ok 243 - completion rollback invariant: run failure
+  ---
+  duration_ms: 3373.398833
+  type: 'test'
+  ...
+# Subtest: completion rollback invariant: council_artifact failure
+ok 244 - completion rollback invariant: council_artifact failure
+  ---
+  duration_ms: 2378.342469
+  type: 'test'
+  ...
+# Subtest: completion rollback invariant: unified_artifact failure
+ok 245 - completion rollback invariant: unified_artifact failure
+  ---
+  duration_ms: 2319.154572
+  type: 'test'
+  ...
+# Subtest: completion rollback invariant: session_link failure
+ok 246 - completion rollback invariant: session_link failure
+  ---
+  duration_ms: 2247.993171
+  type: 'test'
+  ...
+# Subtest: completion rollback invariant: project_update failure
+ok 247 - completion rollback invariant: project_update failure
+  ---
+  duration_ms: 2320.420349
+  type: 'test'
+  ...
+# Subtest: completion rollback invariant: completion_event failure
+ok 248 - completion rollback invariant: completion_event failure
+  ---
+  duration_ms: 2420.443685
+  type: 'test'
+  ...
+# (node:9773) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/connectedBrain.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: groq key wins: any text alias routes via groq:free
+ok 249 - groq key wins: any text alias routes via groq:free
+  ---
+  duration_ms: 0.824734
+  type: 'test'
+  ...
+# Subtest: openrouter is second choice
+ok 250 - openrouter is second choice
+  ---
+  duration_ms: 0.125333
+  type: 'test'
+  ...
+# Subtest: turboagent local server is third and points at its catalog model
+ok 251 - turboagent local server is third and points at its catalog model
+  ---
+  duration_ms: 0.094139
+  type: 'test'
+  ...
+# Subtest: no keys → honest offline Local Engine, labeled for what it is
+ok 252 - no keys → honest offline Local Engine, labeled for what it is
+  ---
+  duration_ms: 0.237903
+  type: 'test'
+  ...
+# Subtest: precedence: groq over openrouter over turboagent; blank strings ignored
+ok 253 - precedence: groq over openrouter over turboagent; blank strings ignored
+  ---
+  duration_ms: 0.135273
+  type: 'test'
+  ...
+# (node:9781) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/councilSynthesis.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: validates the canonical synthesis contract
+ok 254 - validates the canonical synthesis contract
+  ---
+  duration_ms: 1.610759
+  type: 'test'
+  ...
+# Subtest: extracts fenced JSON but rejects malformed model output
+ok 255 - extracts fenced JSON but rejects malformed model output
+  ---
+  duration_ms: 0.688568
+  type: 'test'
+  ...
+# Subtest: normalizes non-JSON offline prose into a validated bounded contract
+ok 256 - normalizes non-JSON offline prose into a validated bounded contract
+  ---
+  duration_ms: 0.670142
+  type: 'test'
+  ...
+# Subtest: artifact boundary allowlists data and excludes transcript fields
+ok 257 - artifact boundary allowlists data and excludes transcript fields
+  ---
+  duration_ms: 0.339049
+  type: 'test'
+  ...
+# Subtest: deterministic artifact renders meaning without provenance or JSON keys
+ok 258 - deterministic artifact renders meaning without provenance or JSON keys
+  ---
+  duration_ms: 0.251969
+  type: 'test'
+  ...
+# (node:9789) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/creative/creative.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: captions: timecodes, SRT/VTT round-trip, auto-segmentation
+ok 259 - captions: timecodes, SRT/VTT round-trip, auto-segmentation
+  ---
+  duration_ms: 2.182854
+  type: 'test'
+  ...
+# Subtest: captions: transcription request shape (Groq tier first) and honest failure
+ok 260 - captions: transcription request shape (Groq tier first) and honest failure
+  ---
+  duration_ms: 18.16316
+  type: 'test'
+  ...
+# Subtest: slides: markdown → deck parsing and the honest offline fallback
+ok 261 - slides: markdown → deck parsing and the honest offline fallback
+  ---
+  duration_ms: 0.780315
+  type: 'test'
+  ...
+# Subtest: slides: HTML render and a real PPTX file
+ok 262 - slides: HTML render and a real PPTX file
+  ---
+  duration_ms: 65.722692
+  type: 'test'
+  ...
+# Subtest: podcast: script parsing handles model formats and falls back honestly
+ok 263 - podcast: script parsing handles model formats and falls back honestly
+  ---
+  duration_ms: 0.58709
+  type: 'test'
+  ...
+# Subtest: voice: ElevenLabs tier honored, all-fail is honest (never fake audio)
+ok 264 - voice: ElevenLabs tier honored, all-fail is honest (never fake audio)
+  ---
+  duration_ms: 93.141967
+  type: 'test'
+  ...
+# (node:9824) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/deepAgent-verification.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: review parser never invents PASS for unknown, quoted or malformed evidence
+ok 265 - review parser never invents PASS for unknown, quoted or malformed evidence
+  ---
+  duration_ms: 1.036872
+  type: 'test'
+  ...
+# Subtest: failed review retries once, persists failure and never executes a dependent step
+ok 266 - failed review retries once, persists failure and never executes a dependent step
+  ---
+  duration_ms: 4435.389528
+  type: 'test'
+  ...
+# Subtest: successful review chain persists only accepted drafts as completed steps
+ok 267 - successful review chain persists only accepted drafts as completed steps
+  ---
+  duration_ms: 3222.751947
+  type: 'test'
+  ...
+# Subtest: fallback review is not evidence even when it says PASS
+ok 268 - fallback review is not evidence even when it says PASS
+  ---
+  duration_ms: 3301.17399
+  type: 'test'
+  ...
+# Subtest: provider failure cannot strand a durable run in running state
+ok 269 - provider failure cannot strand a durable run in running state
+  ---
+  duration_ms: 3167.651119
+  type: 'test'
+  ...
+# (node:10001) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/deviceChannel.integration.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: authorized uploads are pathless, hashed, bounded and owner-only
+ok 270 - authorized uploads are pathless, hashed, bounded and owner-only
+  ---
+  duration_ms: 3707.172319
+  type: 'test'
+  ...
+# Subtest: node protocol is signed, digest-bound, expiring and single-use
+ok 271 - node protocol is signed, digest-bound, expiring and single-use
+  ---
+  duration_ms: 2384.730553
+  type: 'test'
+  ...
+# Subtest: encrypted artifacts keep plaintext out of relational storage
+ok 272 - encrypted artifacts keep plaintext out of relational storage
+  ---
+  duration_ms: 2436.744407
+  type: 'test'
+  ...
+# Subtest: signed node responses are request-bound, tamper-evident, single-use, and revoked by key
+ok 273 - signed node responses are request-bound, tamper-evident, single-use, and revoked by key
+  ---
+  duration_ms: 2568.488679
+  type: 'test'
+  ...
+# Subtest: concurrent quota reservations never exceed the configured limit
+ok 274 - concurrent quota reservations never exceed the configured limit
+  ---
+  duration_ms: 2754.663451
+  type: 'test'
+  ...
+# (node:10226) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/emailInbox.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: secretBox seals, opens, and rejects tampering
+ok 275 - secretBox seals, opens, and rejects tampering
+  ---
+  duration_ms: 16.339875
+  type: 'test'
+  ...
+# Subtest: htmlToText keeps the facts a receipt needs
+ok 276 - htmlToText keeps the facts a receipt needs
+  ---
+  duration_ms: 1410.007811
+  type: 'test'
+  ...
+# Subtest: mailparser + extraction pipeline on a real multipart receipt
+ok 277 - mailparser + extraction pipeline on a real multipart receipt
+  ---
+  duration_ms: 22.123591
+  type: 'test'
+  ...
+# Subtest: testImapConnection reports a refused port honestly
+ok 278 - testImapConnection reports a refused port honestly
+  ---
+  duration_ms: 11.00236
+  type: 'test'
+  ...
+# Subtest: email accounts: seal on save, upsert by address, never expose the password
+ok 279 - email accounts: seal on save, upsert by address, never expose the password
+  ---
+  duration_ms: 36.595036
+  type: 'test'
+  ...
+# Subtest: scanInboxForReceipts walks a real IMAP mailbox and extracts receipts
+ok 280 - scanInboxForReceipts walks a real IMAP mailbox and extracts receipts
+  ---
+  duration_ms: 342.689052
+  type: 'test'
+  ...
+# Subtest: scanInboxForReceipts fails honestly for an unknown account
+ok 281 - scanInboxForReceipts fails honestly for an unknown account
+  ---
+  duration_ms: 3.322147
+  type: 'test'
+  ...
+# (node:10294) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/executionPolicy.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: online permits local and remote workers
+ok 282 - online permits local and remote workers
+  ---
+  duration_ms: 1.663032
+  type: 'test'
+  ...
+# Subtest: offline excludes remote-only workers before ranking
+ok 283 - offline excludes remote-only workers before ranking
+  ---
+  duration_ms: 0.61069
+  type: 'test'
+  ...
+# Subtest: local_only excludes remote-only workers before ranking
+ok 284 - local_only excludes remote-only workers before ranking
+  ---
+  duration_ms: 0.151406
+  type: 'test'
+  ...
+# Subtest: a remote pinned worker fails explicitly under offline policy
+ok 285 - a remote pinned worker fails explicitly under offline policy
+  ---
+  duration_ms: 0.427122
+  type: 'test'
+  ...
+# Subtest: ranking remains deterministic after policy eligibility filtering
+ok 286 - ranking remains deterministic after policy eligibility filtering
+  ---
+  duration_ms: 0.302226
+  type: 'test'
+  ...
+# (node:10327) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/executionSession.integration.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: direct arena execution creates and starts one Cognitive Session
+ok 287 - direct arena execution creates and starts one Cognitive Session
+  ---
+  duration_ms: 2570.936763
+  type: 'test'
+  ...
+# Subtest: handoff-created arena session is continued without duplication
+ok 288 - handoff-created arena session is continued without duplication
+  ---
+  duration_ms: 1811.13566
+  type: 'test'
+  ...
+# Subtest: direct collab execution creates and starts one Cognitive Session
+ok 289 - direct collab execution creates and starts one Cognitive Session
+  ---
+  duration_ms: 1745.632348
+  type: 'test'
+  ...
+# Subtest: handoff-created collab session is continued without duplication
+ok 290 - handoff-created collab session is continued without duplication
+  ---
+  duration_ms: 1738.63137
+  type: 'test'
+  ...
+# Subtest: concurrent event writers reserve unique gapless per-session sequences
+ok 291 - concurrent event writers reserve unique gapless per-session sequences
+  ---
+  duration_ms: 1776.569539
+  type: 'test'
+  ...
+# Subtest: retryable failure creates distinct attempts on one assignment without terminal session state
+ok 292 - retryable failure creates distinct attempts on one assignment without terminal session state
+  ---
+  duration_ms: 1674.712056
+  type: 'test'
+  ...
+# Subtest: eligible-worker fallback creates a linked assignment through policy and Workforce
+ok 293 - eligible-worker fallback creates a linked assignment through policy and Workforce
+  ---
+  duration_ms: 1718.870773
+  type: 'test'
+  ...
+# Subtest: a target session cannot be continued by the wrong mode
+ok 294 - a target session cannot be continued by the wrong mode
+  ---
+  duration_ms: 1658.942184
+  type: 'test'
+  ...
+# (node:10384) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/foundry.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: foundry: extractHtml accepts fenced and raw documents, rejects prose
+ok 295 - foundry: extractHtml accepts fenced and raw documents, rejects prose
+  ---
+  duration_ms: 623.344762
+  type: 'test'
+  ...
+# Subtest: foundry: injectCsp hard-blocks network and lands after <head>
+ok 296 - foundry: injectCsp hard-blocks network and lands after <head>
+  ---
+  duration_ms: 1.945778
+  type: 'test'
+  ...
+# Subtest: foundry: fallbackScaffold is a real, honest offline app
+ok 297 - foundry: fallbackScaffold is a real, honest offline app
+  ---
+  duration_ms: 1.357918
+  type: 'test'
+  ...
+# Subtest: foundry: create → iterate → list → delete, versions and honesty labels
+ok 298 - foundry: create → iterate → list → delete, versions and honesty labels
+  ---
+  duration_ms: 66.24742
+  type: 'test'
+  ...
+# Subtest: mistral BYOK: request shape (OpenAI-compatible, mistral-small-latest) via cascade
+ok 299 - mistral BYOK: request shape (OpenAI-compatible, mistral-small-latest) via cascade
+  ---
+  duration_ms: 18.319196
+  type: 'test'
+  ...
+# (node:10395) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/games/forge-coherence.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: unknown mechanics never silently become a template: a turn based railway logistics puzzle with cargo contracts
+ok 300 - unknown mechanics never silently become a template: a turn based railway logistics puzzle with cargo contracts
+  ---
+  duration_ms: 1.41961
+  type: 'test'
+  ...
+# Subtest: unknown mechanics never silently become a template: a space trading economy with fuel and docking
+ok 301 - unknown mechanics never silently become a template: a space trading economy with fuel and docking
+  ---
+  duration_ms: 0.169318
+  type: 'test'
+  ...
+# Subtest: unknown mechanics never silently become a template: a ghost photography game where exposure determines the score
+ok 302 - unknown mechanics never silently become a template: a ghost photography game where exposure determines the score
+  ---
+  duration_ms: 0.104998
+  type: 'test'
+  ...
+# Subtest: explicit offline template selection remains usable
+ok 303 - explicit offline template selection remains usable
+  ---
+  duration_ms: 0.728644
+  type: 'test'
+  ...
+# Subtest: iteration sends the existing full game and instruction to the model
+ok 304 - iteration sends the existing full game and instruction to the model
+  ---
+  duration_ms: 1.904736
+  type: 'test'
+  ...
+# Subtest: model fallback is failure, not a template success
+ok 305 - model fallback is failure, not a template success
+  ---
+  duration_ms: 0.335175
+  type: 'test'
+  ...
+# Subtest: repair includes the failed draft, not just a fresh game request
+ok 306 - repair includes the failed draft, not just a fresh game request
+  ---
+  duration_ms: 0.611945
+  type: 'test'
+  ...
+# Subtest: a failed repair cannot be presented as successful generation
+ok 307 - a failed repair cannot be presented as successful generation
+  ---
+  duration_ms: 0.451283
+  type: 'test'
+  ...
+# Subtest: repair cannot claim AI codegen after a Local Engine response even if fallback flag is false
+ok 308 - repair cannot claim AI codegen after a Local Engine response even if fallback flag is false
+  ---
+  duration_ms: 0.509295
+  type: 'test'
+  ...
+# Subtest: failed validation retains an inspectable draft without presenting it as a playable game
+ok 309 - failed validation retains an inspectable draft without presenting it as a playable game
+  ---
+  duration_ms: 0.711288
+  type: 'test'
+  ...
+# Subtest: retry explicitly supplies the useful failed draft and checkpoints it before any repair request
+ok 310 - retry explicitly supplies the useful failed draft and checkpoints it before any repair request
+  ---
+  duration_ms: 0.471485
+  type: 'test'
+  ...
+# (node:10403) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/games/forge.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: prompt detection routes tetris and 2048
+ok 311 - prompt detection routes tetris and 2048
+  ---
+  duration_ms: 0.844913
+  type: 'test'
+  ...
+# Subtest: tetris core is a complete, valid, offline game
+ok 312 - tetris core is a complete, valid, offline game
+  ---
+  duration_ms: 2.518303
+  type: 'test'
+  ...
+# Subtest: tetris mods actually change the game (remix, not a fixed file)
+ok 313 - tetris mods actually change the game (remix, not a fixed file)
+  ---
+  duration_ms: 0.46201
+  type: 'test'
+  ...
+# Subtest: 2048 core is a complete, valid, offline game
+ok 314 - 2048 core is a complete, valid, offline game
+  ---
+  duration_ms: 0.673809
+  type: 'test'
+  ...
+# Subtest: 2048 grid-size variants are real variants
+ok 315 - 2048 grid-size variants are real variants
+  ---
+  duration_ms: 0.999171
+  type: 'test'
+  ...
+# Subtest: generateGameOffline forges tetris and 2048 end to end
+ok 316 - generateGameOffline forges tetris and 2048 end to end
+  ---
+  duration_ms: 0.915336
+  type: 'test'
+  ...
+# (node:10411) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/games/validator.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: every built-in game type passes the hardened validator
+ok 317 - every built-in game type passes the hardened validator
+  ---
+  duration_ms: 3.869537
+  type: 'test'
+  ...
+# Subtest: validator rejects network, navigation and embedding primitives by name
+ok 318 - validator rejects network, navigation and embedding primitives by name
+  ---
+  duration_ms: 1.672333
+  type: 'test'
+  ...
+# (node:10419) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/handoffs.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: immutable Artifact references require two valid IDs and never reinterpret bare, mutable or foreign-kind references
+ok 319 - immutable Artifact references require two valid IDs and never reinterpret bare, mutable or foreign-kind references
+  ---
+  duration_ms: 1.437773
+  type: 'test'
+  ...
+# (node:10427) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/identityConfig.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: development WebAuthn configuration is explicit
+ok 320 - development WebAuthn configuration is explicit
+  ---
+  duration_ms: 1.380155
+  type: 'test'
+  ...
+# Subtest: production never silently downgrades identity
+ok 321 - production never silently downgrades identity
+  ---
+  duration_ms: 0.344514
+  type: 'test'
+  ...
+# (node:10435) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/identitySurface.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: no HTTP Tool Effect approval surface exists before authenticated owner middleware
+ok 322 - no HTTP Tool Effect approval surface exists before authenticated owner middleware
+  ---
+  duration_ms: 2.399458
+  type: 'test'
+  ...
+# Subtest: identity is never established from URL query parameters
+ok 323 - identity is never established from URL query parameters
+  ---
+  duration_ms: 1.159577
+  type: 'test'
+  ...
+# (node:10447) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/luma/cameras/__tests__/catalog.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: camera catalog
+    # Subtest: exposes exactly five cameras
+    ok 1 - exposes exactly five cameras
+      ---
+      duration_ms: 3.515302
+      type: 'test'
+      ...
+    # Subtest: has unique ids and numbers
+    ok 2 - has unique ids and numbers
+      ---
+      duration_ms: 0.202042
+      type: 'test'
+      ...
+    # Subtest: every camera maps to a real preset family
+    ok 3 - every camera maps to a real preset family
+      ---
+      duration_ms: 0.182958
+      type: 'test'
+      ...
+    # Subtest: every look id resolves to an existing built-in preset
+    ok 4 - every look id resolves to an existing built-in preset
+      ---
+      duration_ms: 0.189171
+      type: 'test'
+      ...
+    # Subtest: each camera's looks all belong to its family
+    ok 5 - each camera's looks all belong to its family
+      ---
+      duration_ms: 0.229677
+      type: 'test'
+      ...
+    # Subtest: default look is one of the camera looks
+    ok 6 - default look is one of the camera looks
+      ---
+      duration_ms: 0.097339
+      type: 'test'
+      ...
+    # Subtest: collectively covers every preset family
+    ok 7 - collectively covers every preset family
+      ---
+      duration_ms: 0.248366
+      type: 'test'
+      ...
+    # Subtest: getCamera resolves and tolerates null/unknown
+    ok 8 - getCamera resolves and tolerates null/unknown
+      ---
+      duration_ms: 0.158529
+      type: 'test'
+      ...
+    # Subtest: DEFAULT_CAMERA_ID points to a real camera and its default look
+    ok 9 - DEFAULT_CAMERA_ID points to a real camera and its default look
+      ---
+      duration_ms: 0.224254
+      type: 'test'
+      ...
+    # Subtest: cameraForPresetId finds the owning camera
+    ok 10 - cameraForPresetId finds the owning camera
+      ---
+      duration_ms: 0.326787
+      type: 'test'
+      ...
+    # Subtest: hint values are within sane ranges
+    ok 11 - hint values are within sane ranges
+      ---
+      duration_ms: 0.156721
+      type: 'test'
+      ...
+    1..11
+ok 324 - camera catalog
+  ---
+  duration_ms: 6.742414
+  type: 'suite'
+  ...
+# (node:10455) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/luma/engine/__tests__/adaptive.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: adaptive looks
+    # Subtest: adapts dark, bright, saturated, warm, noisy and balanced inputs deterministically
+    ok 1 - adapts dark, bright, saturated, warm, noisy and balanced inputs deterministically
+      ---
+      duration_ms: 2.489026
+      type: 'test'
+      ...
+    # Subtest: intensity controls expression after adaptation
+    ok 2 - intensity controls expression after adaptation
+      ---
+      duration_ms: 0.2418
+      type: 'test'
+      ...
+    # Subtest: does not mutate the source preset
+    ok 3 - does not mutate the source preset
+      ---
+      duration_ms: 0.186616
+      type: 'test'
+      ...
+    # Subtest: derives deterministic statistics from samples
+    ok 4 - derives deterministic statistics from samples
+      ---
+      duration_ms: 0.376105
+      type: 'test'
+      ...
+    1..4
+ok 325 - adaptive looks
+  ---
+  duration_ms: 4.301681
+  type: 'suite'
+  ...
+# (node:10463) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/luma/engine/__tests__/adjustments.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: clamping
+    # Subtest: clamps a value to its spec range
+    ok 1 - clamps a value to its spec range
+      ---
+      duration_ms: 0.83307
+      type: 'test'
+      ...
+    # Subtest: handles NaN/Infinity safely
+    ok 2 - handles NaN/Infinity safely
+      ---
+      duration_ms: 0.223165
+      type: 'test'
+      ...
+    # Subtest: clamps a whole adjustment set
+    ok 3 - clamps a whole adjustment set
+      ---
+      duration_ms: 0.295043
+      type: 'test'
+      ...
+    1..3
+ok 326 - clamping
+  ---
+  duration_ms: 3.113848
+  type: 'suite'
+  ...
+# Subtest: preset expansion
+    # Subtest: fills unspecified keys with neutral
+    ok 1 - fills unspecified keys with neutral
+      ---
+      duration_ms: 0.179991
+      type: 'test'
+      ...
+    1..1
+ok 327 - preset expansion
+  ---
+  duration_ms: 0.350053
+  type: 'suite'
+  ...
+# Subtest: intensity scaling
+    # Subtest: intensity 0 => neutral
+    ok 1 - intensity 0 => neutral
+      ---
+      duration_ms: 0.266709
+      type: 'test'
+      ...
+    # Subtest: intensity 1 => full recipe
+    ok 2 - intensity 1 => full recipe
+      ---
+      duration_ms: 0.191714
+      type: 'test'
+      ...
+    # Subtest: intensity 0.5 => halfway
+    ok 3 - intensity 0.5 => halfway
+      ---
+      duration_ms: 0.253316
+      type: 'test'
+      ...
+    # Subtest: clamps intensity outside [0,1]
+    ok 4 - clamps intensity outside [0,1]
+      ---
+      duration_ms: 0.109092
+      type: 'test'
+      ...
+    1..4
+ok 328 - intensity scaling
+  ---
+  duration_ms: 1.121234
+  type: 'suite'
+  ...
+# Subtest: composition
+    # Subtest: adds two adjustment sets
+    ok 1 - adds two adjustment sets
+      ---
+      duration_ms: 0.319704
+      type: 'test'
+      ...
+    # Subtest: composes preset*intensity + manual offsets
+    ok 2 - composes preset*intensity + manual offsets
+      ---
+      duration_ms: 0.347546
+      type: 'test'
+      ...
+    # Subtest: with no preset uses only manual adjustments
+    ok 3 - with no preset uses only manual adjustments
+      ---
+      duration_ms: 0.221939
+      type: 'test'
+      ...
+    # Subtest: clamps the composed result
+    ok 4 - clamps the composed result
+      ---
+      duration_ms: 0.119759
+      type: 'test'
+      ...
+    1..4
+ok 329 - composition
+  ---
+  duration_ms: 1.259473
+  type: 'suite'
+  ...
+# Subtest: neutrality
+    # Subtest: detects a neutral recipe
+    ok 1 - detects a neutral recipe
+      ---
+      duration_ms: 0.151604
+      type: 'test'
+      ...
+    # Subtest: a preset makes it non-neutral
+    ok 2 - a preset makes it non-neutral
+      ---
+      duration_ms: 0.073625
+      type: 'test'
+      ...
+    # Subtest: an adjustment makes it non-neutral
+    ok 3 - an adjustment makes it non-neutral
+      ---
+      duration_ms: 0.070717
+      type: 'test'
+      ...
+    1..3
+ok 330 - neutrality
+  ---
+  duration_ms: 0.465928
+  type: 'suite'
+  ...
+# (node:10471) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/luma/engine/__tests__/colorPipeline.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: matrix helpers
+    # Subtest: identity is 20 elements and a true identity
+    ok 1 - identity is 20 elements and a true identity
+      ---
+      duration_ms: 1.244504
+      type: 'test'
+      ...
+    # Subtest: multiply of identity*identity is identity
+    ok 2 - multiply of identity*identity is identity
+      ---
+      duration_ms: 0.594135
+      type: 'test'
+      ...
+    1..2
+ok 331 - matrix helpers
+  ---
+  duration_ms: 3.118598
+  type: 'suite'
+  ...
+# Subtest: buildColorMatrix
+    # Subtest: neutral adjustments produce identity
+    ok 1 - neutral adjustments produce identity
+      ---
+      duration_ms: 1.94531
+      type: 'test'
+      ...
+    # Subtest: positive exposure brightens
+    ok 2 - positive exposure brightens
+      ---
+      duration_ms: 0.348563
+      type: 'test'
+      ...
+    # Subtest: full desaturation collapses channels to luma
+    ok 3 - full desaturation collapses channels to luma
+      ---
+      duration_ms: 0.381704
+      type: 'test'
+      ...
+    # Subtest: warm temperature raises red relative to blue
+    ok 4 - warm temperature raises red relative to blue
+      ---
+      duration_ms: 0.280136
+      type: 'test'
+      ...
+    # Subtest: shadow lift raises a black pixel
+    ok 5 - shadow lift raises a black pixel
+      ---
+      duration_ms: 0.355709
+      type: 'test'
+      ...
+    # Subtest: contrast increases separation around mid-grey
+    ok 6 - contrast increases separation around mid-grey
+      ---
+      duration_ms: 0.445726
+      type: 'test'
+      ...
+    1..6
+ok 332 - buildColorMatrix
+  ---
+  duration_ms: 4.34518
+  type: 'suite'
+  ...
+# Subtest: buildShaderUniforms
+    # Subtest: passes through and clamps character params
+    ok 1 - passes through and clamps character params
+      ---
+      duration_ms: 0.284526
+      type: 'test'
+      ...
+    1..1
+ok 333 - buildShaderUniforms
+  ---
+  duration_ms: 0.536533
+  type: 'suite'
+  ...
+# (node:10479) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/luma/engine/__tests__/history.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: history (undo/redo)
+    # Subtest: starts with no undo/redo
+    ok 1 - starts with no undo/redo
+      ---
+      duration_ms: 0.994588
+      type: 'test'
+      ...
+    # Subtest: commit adds an undo step and clears redo
+    ok 2 - commit adds an undo step and clears redo
+      ---
+      duration_ms: 0.254754
+      type: 'test'
+      ...
+    # Subtest: undo then redo round-trips
+    ok 3 - undo then redo round-trips
+      ---
+      duration_ms: 0.263762
+      type: 'test'
+      ...
+    # Subtest: undo/redo are no-ops at the ends
+    ok 4 - undo/redo are no-ops at the ends
+      ---
+      duration_ms: 0.14426
+      type: 'test'
+      ...
+    # Subtest: commit is a no-op for reference-equal present
+    ok 5 - commit is a no-op for reference-equal present
+      ---
+      duration_ms: 0.107219
+      type: 'test'
+      ...
+    # Subtest: respects the history limit
+    ok 6 - respects the history limit
+      ---
+      duration_ms: 1.403924
+      type: 'test'
+      ...
+    # Subtest: replacePresent does not record history
+    ok 7 - replacePresent does not record history
+      ---
+      duration_ms: 0.190872
+      type: 'test'
+      ...
+    # Subtest: resetHistory clears past and future
+    ok 8 - resetHistory clears past and future
+      ---
+      duration_ms: 0.198565
+      type: 'test'
+      ...
+    1..8
+ok 334 - history (undo/redo)
+  ---
+  duration_ms: 4.8425
+  type: 'suite'
+  ...
+# (node:10487) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/luma/engine/__tests__/layers.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: layer stack
+    # Subtest: adds layers in paint order (last = top)
+    ok 1 - adds layers in paint order (last = top)
+      ---
+      duration_ms: 1.187881
+      type: 'test'
+      ...
+    # Subtest: removes a layer by id
+    ok 2 - removes a layer by id
+      ---
+      duration_ms: 0.230616
+      type: 'test'
+      ...
+    # Subtest: updates a layer immutably
+    ok 3 - updates a layer immutably
+      ---
+      duration_ms: 0.289999
+      type: 'test'
+      ...
+    # Subtest: bringForward / sendBackward move one step
+    ok 4 - bringForward / sendBackward move one step
+      ---
+      duration_ms: 0.381135
+      type: 'test'
+      ...
+    # Subtest: bringToFront / sendToBack
+    ok 5 - bringToFront / sendToBack
+      ---
+      duration_ms: 0.169557
+      type: 'test'
+      ...
+    # Subtest: moveLayer clamps out-of-range indices
+    ok 6 - moveLayer clamps out-of-range indices
+      ---
+      duration_ms: 0.312693
+      type: 'test'
+      ...
+    # Subtest: does not mutate when id is missing
+    ok 7 - does not mutate when id is missing
+      ---
+      duration_ms: 0.186098
+      type: 'test'
+      ...
+    # Subtest: toggles visibility
+    ok 8 - toggles visibility
+      ---
+      duration_ms: 0.234845
+      type: 'test'
+      ...
+    1..8
+ok 335 - layer stack
+  ---
+  duration_ms: 5.093489
+  type: 'suite'
+  ...
+# (node:10495) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/luma/presets/__tests__/serialization.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: preset validation
+    # Subtest: accepts a valid preset
+    ok 1 - accepts a valid preset
+      ---
+      duration_ms: 2.250325
+      type: 'test'
+      ...
+    # Subtest: rejects non-objects and bad families
+    ok 2 - rejects non-objects and bad families
+      ---
+      duration_ms: 0.273509
+      type: 'test'
+      ...
+    # Subtest: rejects non-numeric adjustments
+    ok 3 - rejects non-numeric adjustments
+      ---
+      duration_ms: 0.128339
+      type: 'test'
+      ...
+    # Subtest: ignores unknown/future adjustment keys
+    ok 4 - ignores unknown/future adjustment keys
+      ---
+      duration_ms: 0.108273
+      type: 'test'
+      ...
+    1..4
+ok 336 - preset validation
+  ---
+  duration_ms: 3.64367
+  type: 'suite'
+  ...
+# Subtest: serialize / deserialize
+    # Subtest: round-trips a single preset
+    ok 1 - round-trips a single preset
+      ---
+      duration_ms: 0.522432
+      type: 'test'
+      ...
+    # Subtest: throws on invalid single preset json
+    ok 2 - throws on invalid single preset json
+      ---
+      duration_ms: 0.207311
+      type: 'test'
+      ...
+    # Subtest: round-trips a preset file
+    ok 3 - round-trips a preset file
+      ---
+      duration_ms: 0.346883
+      type: 'test'
+      ...
+    # Subtest: drops invalid entries when loading a file
+    ok 4 - drops invalid entries when loading a file
+      ---
+      duration_ms: 0.350812
+      type: 'test'
+      ...
+    # Subtest: every built-in preset survives a round-trip
+    ok 5 - every built-in preset survives a round-trip
+      ---
+      duration_ms: 0.530472
+      type: 'test'
+      ...
+    1..5
+ok 337 - serialize / deserialize
+  ---
+  duration_ms: 2.439193
+  type: 'suite'
+  ...
+# Subtest: duplicate / reset
+    # Subtest: duplicate creates an editable copy with a new id
+    ok 1 - duplicate creates an editable copy with a new id
+      ---
+      duration_ms: 0.233774
+      type: 'test'
+      ...
+    # Subtest: resetPresetTo restores recipe from a source
+    ok 2 - resetPresetTo restores recipe from a source
+      ---
+      duration_ms: 0.139511
+      type: 'test'
+      ...
+    1..2
+ok 338 - duplicate / reset
+  ---
+  duration_ms: 0.476509
+  type: 'suite'
+  ...
+# Subtest: built-in library integrity
+    # Subtest: has unique ids
+    ok 1 - has unique ids
+      ---
+      duration_ms: 0.123437
+      type: 'test'
+      ...
+    # Subtest: covers all required families
+    ok 2 - covers all required families
+      ---
+      duration_ms: 0.095511
+      type: 'test'
+      ...
+    # Subtest: all default intensities are within [0,1]
+    ok 3 - all default intensities are within [0,1]
+      ---
+      duration_ms: 0.270342
+      type: 'test'
+      ...
+    1..3
+ok 339 - built-in library integrity
+  ---
+  duration_ms: 0.584797
+  type: 'suite'
+  ...
+# (node:10503) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/luma/state/__tests__/editorStore.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: editorStore
+    # Subtest: begins a session with a neutral recipe
+    ok 1 - begins a session with a neutral recipe
+      ---
+      duration_ms: 1.297104
+      type: 'test'
+      ...
+    # Subtest: setAdjustment records a single undo step
+    ok 2 - setAdjustment records a single undo step
+      ---
+      duration_ms: 0.542016
+      type: 'test'
+      ...
+    # Subtest: previewAdjustment does NOT record history; commit does
+    ok 3 - previewAdjustment does NOT record history; commit does
+      ---
+      duration_ms: 1.110121
+      type: 'test'
+      ...
+    # Subtest: applyPreset sets id and default intensity, resolves activePreset
+    ok 4 - applyPreset sets id and default intensity, resolves activePreset
+      ---
+      duration_ms: 0.454481
+      type: 'test'
+      ...
+    # Subtest: intensity preview then settle records once
+    ok 5 - intensity preview then settle records once
+      ---
+      duration_ms: 0.461815
+      type: 'test'
+      ...
+    # Subtest: resetAll clears preset and adjustments
+    ok 6 - resetAll clears preset and adjustments
+      ---
+      duration_ms: 0.386201
+      type: 'test'
+      ...
+    # Subtest: layer add/update/remove flow through history
+    ok 7 - layer add/update/remove flow through history
+      ---
+      duration_ms: 0.393917
+      type: 'test'
+      ...
+    # Subtest: original source uri is never mutated by editing
+    ok 8 - original source uri is never mutated by editing
+      ---
+      duration_ms: 0.270496
+      type: 'test'
+      ...
+    1..8
+ok 340 - editorStore
+  ---
+  duration_ms: 6.036127
+  type: 'suite'
+  ...
+# (node:10511) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/luma/storage/__tests__/projectRepository.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: ProjectRepository
+    # Subtest: starts empty
+    ok 1 - starts empty
+      ---
+      duration_ms: 2.525911
+      type: 'test'
+      ...
+    # Subtest: creates a project with a neutral recipe and empty canvas
+    ok 2 - creates a project with a neutral recipe and empty canvas
+      ---
+      duration_ms: 0.623035
+      type: 'test'
+      ...
+    # Subtest: saves and retrieves a project
+    ok 3 - saves and retrieves a project
+      ---
+      duration_ms: 0.443182
+      type: 'test'
+      ...
+    # Subtest: does not modify the source asset uri (non-destructive)
+    ok 4 - does not modify the source asset uri (non-destructive)
+      ---
+      duration_ms: 0.323195
+      type: 'test'
+      ...
+    # Subtest: updates an existing project in place
+    ok 5 - updates an existing project in place
+      ---
+      duration_ms: 0.574092
+      type: 'test'
+      ...
+    # Subtest: lists most-recently-updated first
+    ok 6 - lists most-recently-updated first
+      ---
+      duration_ms: 0.306968
+      type: 'test'
+      ...
+    # Subtest: removes a project
+    ok 7 - removes a project
+      ---
+      duration_ms: 0.420995
+      type: 'test'
+      ...
+    # Subtest: survives corrupt storage gracefully
+    ok 8 - survives corrupt storage gracefully
+      ---
+      duration_ms: 0.178973
+      type: 'test'
+      ...
+    # Subtest: persists across repository instances sharing a store
+    ok 9 - persists across repository instances sharing a store
+      ---
+      duration_ms: 0.269046
+      type: 'test'
+      ...
+    1..9
+ok 341 - ProjectRepository
+  ---
+  duration_ms: 7.329552
+  type: 'suite'
+  ...
+# (node:10519) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/markdown.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: safeUrl allows http, https, mailto, and relative URLs
+ok 342 - safeUrl allows http, https, mailto, and relative URLs
+  ---
+  duration_ms: 1.005787
+  type: 'test'
+  ...
+# Subtest: safeUrl rejects script schemes, data, scheme-relative, and control chars
+ok 343 - safeUrl rejects script schemes, data, scheme-relative, and control chars
+  ---
+  duration_ms: 0.214509
+  type: 'test'
+  ...
+# Subtest: markdown: image URL quote-breakout is defanged
+ok 344 - markdown: image URL quote-breakout is defanged
+  ---
+  duration_ms: 0.86269
+  type: 'test'
+  ...
+# Subtest: markdown: javascript: links never become anchors
+ok 345 - markdown: javascript: links never become anchors
+  ---
+  duration_ms: 0.266449
+  type: 'test'
+  ...
+# Subtest: markdown: data: URLs never become images
+ok 346 - markdown: data: URLs never become images
+  ---
+  duration_ms: 0.191871
+  type: 'test'
+  ...
+# Subtest: markdown: legitimate links and images still render
+ok 347 - markdown: legitimate links and images still render
+  ---
+  duration_ms: 0.123485
+  type: 'test'
+  ...
+# Subtest: markdown: text and code contexts escape quotes and angles
+ok 348 - markdown: text and code contexts escape quotes and angles
+  ---
+  duration_ms: 0.287084
+  type: 'test'
+  ...
+# Subtest: markdown: ampersand URLs round-trip correctly
+ok 349 - markdown: ampersand URLs round-trip correctly
+  ---
+  duration_ms: 0.122037
+  type: 'test'
+  ...
+# Subtest: markdown: blocks still render (headings, lists, tables, fences)
+ok 350 - markdown: blocks still render (headings, lists, tables, fences)
+  ---
+  duration_ms: 0.463918
+  type: 'test'
+  ...
+# (node:10527) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/mediaArchive/local.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: local library: connect, scan with the real ffprobe, sync into the shared machinery
+ok 351 - local library: connect, scan with the real ffprobe, sync into the shared machinery
+  ---
+  duration_ms: 315.736967
+  type: 'test'
+  ...
+# Subtest: local library: playability is classified honestly
+ok 352 - local library: playability is classified honestly
+  ---
+  duration_ms: 10.525888
+  type: 'test'
+  ...
+# Subtest: local library: watch progress is OURS and survives rescans
+ok 353 - local library: watch progress is OURS and survives rescans
+  ---
+  duration_ms: 69.751532
+  type: 'test'
+  ...
+# Subtest: local library: transcode-on-demand builds a real playable copy through the Toolbox engine
+ok 354 - local library: transcode-on-demand builds a real playable copy through the Toolbox engine
+  ---
+  duration_ms: 345.205635
+  type: 'test'
+  ...
+# Subtest: local library: streaming works with real HTTP Range semantics
+ok 355 - local library: streaming works with real HTTP Range semantics
+  ---
+  duration_ms: 26.85103
+  type: 'test'
+  ...
+# Subtest: local library: nothing outside the configured root can ever be streamed
+ok 356 - local library: nothing outside the configured root can ever be streamed
+  ---
+  duration_ms: 13.15481
+  type: 'test'
+  ...
+# Subtest: local library: the shelf list and progress route work over HTTP
+ok 357 - local library: the shelf list and progress route work over HTTP
+  ---
+  duration_ms: 9.587501
+  type: 'test'
+  ...
+# Subtest: local library: local items flow into reconciliation as a first-class provider
+ok 358 - local library: local items flow into reconciliation as a first-class provider
+  ---
+  duration_ms: 27.366721
+  type: 'test'
+  ...
+# (node:10603) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/mediaArchive/mediaArchive.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: sync: plex refresh upserts items, records a complete snapshot, seals the token
+ok 359 - sync: plex refresh upserts items, records a complete snapshot, seals the token
+  ---
+  duration_ms: 675.387887
+  type: 'test'
+  ...
+# Subtest: sync: a failing library makes the snapshot partial, an unreachable provider errors without demoting authority
+ok 360 - sync: a failing library makes the snapshot partial, an unreachable provider errors without demoting authority
+  ---
+  duration_ms: 60.476711
+  type: 'test'
+  ...
+# Subtest: reconcile: classifies matches, local-only, provider-only and duplicates with lineage
+ok 361 - reconcile: classifies matches, local-only, provider-only and duplicates with lineage
+  ---
+  duration_ms: 116.782587
+  type: 'test'
+  ...
+# Subtest: review: approve/reject/reopen record decisions without executing anything
+ok 362 - review: approve/reject/reopen record decisions without executing anything
+  ---
+  duration_ms: 35.982952
+  type: 'test'
+  ...
+# Subtest: native client: six operations from the merged tables, contract-validated
+ok 363 - native client: six operations from the merged tables, contract-validated
+  ---
+  duration_ms: 52.154169
+  type: 'test'
+  ...
+# Subtest: bridge status: native states — no providers, ready, degraded
+ok 364 - bridge status: native states — no providers, ready, degraded
+  ---
+  duration_ms: 24.830179
+  type: 'test'
+  ...
+# (node:10623) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/mediaArchive/providers.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: plex client: libraries + items with watch state, normalized
+ok 365 - plex client: libraries + items with watch state, normalized
+  ---
+  duration_ms: 58.697895
+  type: 'test'
+  ...
+# Subtest: plex client: honest auth and bad-shape errors
+ok 366 - plex client: honest auth and bad-shape errors
+  ---
+  duration_ms: 16.043129
+  type: 'test'
+  ...
+# Subtest: jellyfin client: user resolution, views, items with ticks→ms
+ok 367 - jellyfin client: user resolution, views, items with ticks→ms
+  ---
+  duration_ms: 73.468479
+  type: 'test'
+  ...
+# Subtest: media identity keys normalize titles honestly
+ok 368 - media identity keys normalize titles honestly
+  ---
+  duration_ms: 2.157131
+  type: 'test'
+  ...
+# (node:10632) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/mindApps.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: mind: capture classification (link / quote / note)
+ok 369 - mind: capture classification (link / quote / note)
+  ---
+  duration_ms: 621.041661
+  type: 'test'
+  ...
+# Subtest: mind: local keyword tags are the honest offline floor
+ok 370 - mind: local keyword tags are the honest offline floor
+  ---
+  duration_ms: 9.083008
+  type: 'test'
+  ...
+# Subtest: mind: capture → auto-process → list → favorite → serendipity → smart space → delete
+ok 371 - mind: capture → auto-process → list → favorite → serendipity → smart space → delete
+  ---
+  duration_ms: 62.519173
+  type: 'test'
+  ...
+# Subtest: subscriptions: cadence math — monthly equivalents, rollover, days-until
+ok 372 - subscriptions: cadence math — monthly equivalents, rollover, days-until
+  ---
+  duration_ms: 7.192021
+  type: 'test'
+  ...
+# Subtest: subscriptions: stats, CRUD, and receipt extraction (regex floor + honest none)
+ok 373 - subscriptions: stats, CRUD, and receipt extraction (regex floor + honest none)
+  ---
+  duration_ms: 17.599766
+  type: 'test'
+  ...
+# (node:10642) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/modelHub/agentBridge.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: agent bridge: fast-fail when no bridge is polling
+ok 374 - agent bridge: fast-fail when no bridge is polling
+  ---
+  duration_ms: 599.712255
+  type: 'test'
+  ...
+# Subtest: agent bridge: full round-trip through the DB queue
+ok 375 - agent bridge: full round-trip through the DB queue
+  ---
+  duration_ms: 419.14692
+  type: 'test'
+  ...
+# Subtest: agent bridge: completing an unknown task is a safe no-op
+ok 376 - agent bridge: completing an unknown task is a safe no-op
+  ---
+  duration_ms: 2.262452
+  type: 'test'
+  ...
+# (node:10653) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/modelHub/aiHub.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: generate(): a registered hub model routes to its local OpenAI-compat server
+ok 377 - generate(): a registered hub model routes to its local OpenAI-compat server
+  ---
+  duration_ms: 75.097032
+  type: 'test'
+  ...
+# Subtest: generate(): a tampered public routing id is refused at execution time (SSRF re-assert)
+ok 378 - generate(): a tampered public routing id is refused at execution time (SSRF re-assert)
+  ---
+  duration_ms: 5.357924
+  type: 'test'
+  ...
+# Subtest: generate(): agent-bridge model answers via the injected executor with honest labeling
+ok 379 - generate(): agent-bridge model answers via the injected executor with honest labeling
+  ---
+  duration_ms: 1.084722
+  type: 'test'
+  ...
+# Subtest: generate(): agent-bridge model falls back honestly when no bridge is connected
+ok 380 - generate(): agent-bridge model falls back honestly when no bridge is connected
+  ---
+  duration_ms: 2.232817
+  type: 'test'
+  ...
+# (node:10663) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/modelHub/registry.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: registry: registering then unregistering is reflected immediately (replace-merge)
+ok 381 - registry: registering then unregistering is reflected immediately (replace-merge)
+  ---
+  duration_ms: 621.962721
+  type: 'test'
+  ...
+# (node:10673) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/modelHub/runtimes.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: assertLoopbackUrl: loopback passes, LAN needs the flag, public always refused
+ok 382 - assertLoopbackUrl: loopback passes, LAN needs the flag, public always refused
+  ---
+  duration_ms: 6.212686
+  type: 'test'
+  ...
+# Subtest: server routing ids round-trip and resist ambiguity
+ok 383 - server routing ids round-trip and resist ambiguity
+  ---
+  duration_ms: 0.825635
+  type: 'test'
+  ...
+# Subtest: hubModelFor produces an honest on-device registry entry
+ok 384 - hubModelFor produces an honest on-device registry entry
+  ---
+  duration_ms: 0.26806
+  type: 'test'
+  ...
+# Subtest: pull catalog entries are honest and well-formed
+ok 385 - pull catalog entries are honest and well-formed
+  ---
+  duration_ms: 0.250538
+  type: 'test'
+  ...
+# Subtest: parsePullLine parses NDJSON progress and rejects junk
+ok 386 - parsePullLine parses NDJSON progress and rejects junk
+  ---
+  duration_ms: 0.163552
+  type: 'test'
+  ...
+# Subtest: probeRuntime classifies an Ollama dialect server and lists its models
+ok 387 - probeRuntime classifies an Ollama dialect server and lists its models
+  ---
+  duration_ms: 23.891294
+  type: 'test'
+  ...
+# Subtest: probeRuntime classifies an OpenAI-compat server (LM Studio port) and reports offline when silent
+ok 388 - probeRuntime classifies an OpenAI-compat server (LM Studio port) and reports offline when silent
+  ---
+  duration_ms: 10.937187
+  type: 'test'
+  ...
+# (node:10682) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/personalisation/personalisation-adapter.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: contract sanity: the generated snapshot exposes exactly the seventh read, GET-only
+ok 389 - contract sanity: the generated snapshot exposes exactly the seventh read, GET-only
+  ---
+  duration_ms: 1.62948
+  type: 'test'
+  ...
+# Subtest: contract sanity: PersonalisationContext requires domain plus all eight collections
+ok 390 - contract sanity: PersonalisationContext requires domain plus all eight collections
+  ---
+  duration_ms: 0.197692
+  type: 'test'
+  ...
+# Subtest: contract sanity: temporal window is producer-declared, closed, and required
+ok 391 - contract sanity: temporal window is producer-declared, closed, and required
+  ---
+  duration_ms: 0.160916
+  type: 'test'
+  ...
+# Subtest: contract sanity: every fixture is valid against the generated snapshot
+ok 392 - contract sanity: every fixture is valid against the generated snapshot
+  ---
+  duration_ms: 1.790656
+  type: 'test'
+  ...
+# Subtest: gate-6 \#1: the seam is server-to-server only — one GET, no browser path, no mutations
+ok 393 - gate-6 \#1: the seam is server-to-server only — one GET, no browser path, no mutations
+  ---
+  duration_ms: 26.078564
+  type: 'test'
+  ...
+# Subtest: gate-6 \#2: owner scoping rides forwarded credentials, never request input
+ok 394 - gate-6 \#2: owner scoping rides forwarded credentials, never request input
+  ---
+  duration_ms: 2.641335
+  type: 'test'
+  ...
+# Subtest: gate-6 \#3: every response is validated against the generated snapshot at ingress
+ok 395 - gate-6 \#3: every response is validated against the generated snapshot at ingress
+  ---
+  duration_ms: 7.058751
+  type: 'test'
+  ...
+# Subtest: gate-6 \#4: domain plus all eight collections survive normalization verbatim
+ok 396 - gate-6 \#4: domain plus all eight collections survive normalization verbatim
+  ---
+  duration_ms: 0.844753
+  type: 'test'
+  ...
+# Subtest: gate-6 \#5: signalId/epistemicStatus/scopeIdentity/coverage/provenance (batchIds)/derivedAt survive
+ok 397 - gate-6 \#5: signalId/epistemicStatus/scopeIdentity/coverage/provenance (batchIds)/derivedAt survive
+  ---
+  duration_ms: 0.455598
+  type: 'test'
+  ...
+# Subtest: gate-6 \#6: coverage-limited and unknown evidence is preserved, never flattened to absence
+ok 398 - gate-6 \#6: coverage-limited and unknown evidence is preserved, never flattened to absence
+  ---
+  duration_ms: 0.536403
+  type: 'test'
+  ...
+# Subtest: validator: untyped unknown fact value accepts null (real surface emits it); typed null still refused
+ok 399 - validator: untyped unknown fact value accepts null (real surface emits it); typed null still refused
+  ---
+  duration_ms: 0.590522
+  type: 'test'
+  ...
+# Subtest: gate-6 \#7: no Gen-1 presentation identifier exists on this seam
+ok 400 - gate-6 \#7: no Gen-1 presentation identifier exists on this seam
+  ---
+  duration_ms: 0.654318
+  type: 'test'
+  ...
+# Subtest: gate-6 \#8: derived stays derived; empty stays empty; nothing is manufactured
+ok 401 - gate-6 \#8: derived stays derived; empty stays empty; nothing is manufactured
+  ---
+  duration_ms: 1.768757
+  type: 'test'
+  ...
+# (node:10691) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/retryPolicy.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: retry policy retries retryable failures below its deterministic limit
+ok 402 - retry policy retries retryable failures below its deterministic limit
+  ---
+  duration_ms: 1.251864
+  type: 'test'
+  ...
+# Subtest: retry policy stops for exhaustion, nonretryable failures, and started streams
+ok 403 - retry policy stops for exhaustion, nonretryable failures, and started streams
+  ---
+  duration_ms: 0.140366
+  type: 'test'
+  ...
+# Subtest: retry and fallback policy values are bounded
+ok 404 - retry and fallback policy values are bounded
+  ---
+  duration_ms: 0.198537
+  type: 'test'
+  ...
+# (node:10699) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/runtime.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: level 0: Arena Local Engine is available without any configuration
+ok 405 - level 0: Arena Local Engine is available without any configuration
+  ---
+  duration_ms: 44.443176
+  type: 'test'
+  ...
+# Subtest: level 0 + strict local mode: zero network calls (fetch never invoked)
+ok 406 - level 0 + strict local mode: zero network calls (fetch never invoked)
+  ---
+  duration_ms: 3.993709
+  type: 'test'
+  ...
+# Subtest: level 0: never reported as an LLM
+ok 407 - level 0: never reported as an LLM
+  ---
+  duration_ms: 1.898718
+  type: 'test'
+  ...
+# Subtest: no fake model ID can disguise the Local Engine as a different model
+ok 408 - no fake model ID can disguise the Local Engine as a different model
+  ---
+  duration_ms: 2.445133
+  type: 'test'
+  ...
+# Subtest: catalog: every model is level/backend annotated with honest flags
+ok 409 - catalog: every model is level/backend annotated with honest flags
+  ---
+  duration_ms: 0.620278
+  type: 'test'
+  ...
+# Subtest: level 1: WebLLM reports runtimeLevel=on-device (real executor)
+ok 410 - level 1: WebLLM reports runtimeLevel=on-device (real executor)
+  ---
+  duration_ms: 2.107412
+  type: 'test'
+  ...
+# Subtest: level 1: server-side WebLLM is an honest browser-only fallback
+ok 411 - level 1: server-side WebLLM is an honest browser-only fallback
+  ---
+  duration_ms: 1.472598
+  type: 'test'
+  ...
+# Subtest: level 1: TurboAgent reports runtimeLevel=on-device (real server)
+ok 412 - level 1: TurboAgent reports runtimeLevel=on-device (real server)
+  ---
+  duration_ms: 1.503431
+  type: 'test'
+  ...
+# Subtest: level 1: TurboAgent failures fall back visibly, never silently
+ok 413 - level 1: TurboAgent failures fall back visibly, never silently
+  ---
+  duration_ms: 3.99771
+  type: 'test'
+  ...
+# Subtest: level 2: remote provider reports runtimeLevel=remote
+ok 414 - level 2: remote provider reports runtimeLevel=remote
+  ---
+  duration_ms: 1.377765
+  type: 'test'
+  ...
+# Subtest: remote failures are visible and fallback metadata is preserved
+ok 415 - remote failures are visible and fallback metadata is preserved
+  ---
+  duration_ms: 1.665207
+  type: 'test'
+  ...
+# Subtest: local mode fallback preserves the requested execution metadata
+ok 416 - local mode fallback preserves the requested execution metadata
+  ---
+  duration_ms: 7.059573
+  type: 'test'
+  ...
+# Subtest: battles: same-engine selections are rejected as non-genuine
+ok 417 - battles: same-engine selections are rejected as non-genuine
+  ---
+  duration_ms: 0.288083
+  type: 'test'
+  ...
+# Subtest: battles: genuine cross-engine pairings are allowed
+ok 418 - battles: genuine cross-engine pairings are allowed
+  ---
+  duration_ms: 0.089084
+  type: 'test'
+  ...
+# Subtest: measured latency is recorded on every result
+ok 419 - measured latency is recorded on every result
+  ---
+  duration_ms: 3.847731
+  type: 'test'
+  ...
+# Subtest: provider/model/backend metadata survive persistence (JSON round-trip)
+ok 420 - provider/model/backend metadata survive persistence (JSON round-trip)
+  ---
+  duration_ms: 1.865186
+  type: 'test'
+  ...
+# Subtest: battle results are judged on actual execution metadata
+ok 421 - battle results are judged on actual execution metadata
+  ---
+  duration_ms: 1.642337
+  type: 'test'
+  ...
+# Subtest: ELO moves only from real battles (fallback/local-engine battles are unrated)
+ok 422 - ELO moves only from real battles (fallback/local-engine battles are unrated)
+  ---
+  duration_ms: 0.226325
+  type: 'test'
+  ...
+# Subtest: level 0 requires no keys — keys are never needed for the guaranteed floor
+ok 423 - level 0 requires no keys — keys are never needed for the guaranteed floor
+  ---
+  duration_ms: 1.187056
+  type: 'test'
+  ...
+# Subtest: local LLM availability is runtime-detected (probes), not catalog claims
+ok 424 - local LLM availability is runtime-detected (probes), not catalog claims
+  ---
+  duration_ms: 0.978287
+  type: 'test'
+  ...
+# Subtest: UI helpers report the true backend, never a false identity
+ok 425 - UI helpers report the true backend, never a false identity
+  ---
+  duration_ms: 0.158828
+  type: 'test'
+  ...
+# (node:10716) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/security/api-access.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: isLoopbackHost
+ok 426 - isLoopbackHost
+  ---
+  duration_ms: 0.861039
+  type: 'test'
+  ...
+# Subtest: api access: loopback allowed in desktop mode, LAN/DNS-rebinding hosts denied
+ok 427 - api access: loopback allowed in desktop mode, LAN/DNS-rebinding hosts denied
+  ---
+  duration_ms: 20.967612
+  type: 'test'
+  ...
+# Subtest: api access: dev server trusts loopback; production web mode denies anonymous even loopback
+ok 428 - api access: dev server trusts loopback; production web mode denies anonymous even loopback
+  ---
+  duration_ms: 2.262538
+  type: 'test'
+  ...
+# Subtest: api access: valid session or internal key is allowed; wrong key denied
+ok 429 - api access: valid session or internal key is allowed; wrong key denied
+  ---
+  duration_ms: 2.162885
+  type: 'test'
+  ...
+# (node:10725) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/security/local-request-gate.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: reads and preflights always pass
+ok 430 - reads and preflights always pass
+  ---
+  duration_ms: 0.851027
+  type: 'test'
+  ...
+# Subtest: non-browser mutations pass (curl, node fetch, worker, Playwright API)
+ok 431 - non-browser mutations pass (curl, node fetch, worker, Playwright API)
+  ---
+  duration_ms: 0.161317
+  type: 'test'
+  ...
+# Subtest: same-origin browser mutations pass
+ok 432 - same-origin browser mutations pass
+  ---
+  duration_ms: 0.216095
+  type: 'test'
+  ...
+# Subtest: cross-site browser mutations are rejected — the drive-by case
+ok 433 - cross-site browser mutations are rejected — the drive-by case
+  ---
+  duration_ms: 0.191211
+  type: 'test'
+  ...
+# Subtest: malformed origin headers are rejected, not guessed
+ok 434 - malformed origin headers are rejected, not guessed
+  ---
+  duration_ms: 0.154071
+  type: 'test'
+  ...
+# Subtest: sec-fetch-site same-site/none pass (same-site is not cross-site)
+ok 435 - sec-fetch-site same-site/none pass (same-site is not cross-site)
+  ---
+  duration_ms: 0.098195
+  type: 'test'
+  ...
+# (node:10733) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/security/outbound-url.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: classifyAddress: internal ranges of every spelling are never public
+ok 436 - classifyAddress: internal ranges of every spelling are never public
+  ---
+  duration_ms: 8.140019
+  type: 'test'
+  ...
+# Subtest: loopback policy: literals and localhost only — no DNS names
+ok 437 - loopback policy: literals and localhost only — no DNS names
+  ---
+  duration_ms: 0.826969
+  type: 'test'
+  ...
+# Subtest: URL-parser normalised aliases of loopback are recognised (decimal, hex, short)
+ok 438 - URL-parser normalised aliases of loopback are recognised (decimal, hex, short)
+  ---
+  duration_ms: 0.171524
+  type: 'test'
+  ...
+# Subtest: public policy: metadata and internal literals are refused with the class named
+ok 439 - public policy: metadata and internal literals are refused with the class named
+  ---
+  duration_ms: 0.627395
+  type: 'test'
+  ...
+# Subtest: credentials embedded in URLs are refused
+ok 440 - credentials embedded in URLs are refused
+  ---
+  duration_ms: 0.132184
+  type: 'test'
+  ...
+# Subtest: DNS answers pointing inward refuse the whole URL (rebinding-style multi-record)
+ok 441 - DNS answers pointing inward refuse the whole URL (rebinding-style multi-record)
+  ---
+  duration_ms: 0.781638
+  type: 'test'
+  ...
+# Subtest: safeFetch revalidates every redirect hop
+ok 442 - safeFetch revalidates every redirect hop
+  ---
+  duration_ms: 25.534125
+  type: 'test'
+  ...
+# Subtest: safeFetch preserves caller cancellation instead of silently replacing its signal
+ok 443 - safeFetch preserves caller cancellation instead of silently replacing its signal
+  ---
+  duration_ms: 0.843267
+  type: 'test'
+  ...
+# (node:10742) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/security/request-limits.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a declared Content-Length over the limit is refused before parsing
+ok 444 - a declared Content-Length over the limit is refused before parsing
+  ---
+  duration_ms: 22.530953
+  type: 'test'
+  ...
+# Subtest: a chunked body without Content-Length is cut off at the limit
+ok 445 - a chunked body without Content-Length is cut off at the limit
+  ---
+  duration_ms: 1.624148
+  type: 'test'
+  ...
+# Subtest: a normal upload parses and the file is intact
+ok 446 - a normal upload parses and the file is intact
+  ---
+  duration_ms: 3.296521
+  type: 'test'
+  ...
+# Subtest: the multipart slack is bounded and explicit
+ok 447 - the multipart slack is bounded and explicit
+  ---
+  duration_ms: 0.124083
+  type: 'test'
+  ...
+# (node:10751) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/spaces/browser.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: browser view tools execute with the real engine contract (fake engine records; output is the engine's honest result)
+ok 448 - browser view tools execute with the real engine contract (fake engine records; output is the engine's honest result)
+  ---
+  duration_ms: 10.737083
+  type: 'test'
+  ...
+# Subtest: browser input validation is honest — no engine touched for bad input
+ok 449 - browser input validation is honest — no engine touched for bad input
+  ---
+  duration_ms: 3.869315
+  type: 'test'
+  ...
+# Subtest: mission gate: browser_click is approval-gated — it cannot even LAUNCH a browser before a human decides
+ok 450 - mission gate: browser_click is approval-gated — it cannot even LAUNCH a browser before a human decides
+  ---
+  duration_ms: 50.996456
+  type: 'test'
+  ...
+# Subtest: mission gate: browser navigation is a VIEW action — it auto-executes without approval
+ok 451 - mission gate: browser navigation is a VIEW action — it auto-executes without approval
+  ---
+  duration_ms: 8.561852
+  type: 'test'
+  ...
+# Subtest: unavailability is honest: no chromium → actionable error, never a fabricated page
+ok 452 - unavailability is honest: no chromium → actionable error, never a fabricated page
+  ---
+  duration_ms: 3.031005
+  type: 'test'
+  ...
+# Subtest: per-space profile isolation: each space gets its own browser-profile directory
+ok 453 - per-space profile isolation: each space gets its own browser-profile directory
+  ---
+  duration_ms: 0.228839
+  type: 'test'
+  ...
+# (node:10772) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/spaces/command-timeout.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: a command ignoring SIGTERM cannot hold the mission past its deadline
+ok 454 - a command ignoring SIGTERM cannot hold the mission past its deadline
+  ---
+  duration_ms: 163.861824
+  type: 'test'
+  ...
+# Subtest: POSIX timeout kills spawned descendants before they can write late results
+ok 455 - POSIX timeout kills spawned descendants before they can write late results
+  ---
+  duration_ms: 962.909089
+  type: 'test'
+  ...
+# (node:10805) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/spaces/external.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+[source-suite] receipt=/home/user/arena-os-canonical/.data/acceptance/source-suite/2026-10-20T10-58-59.465Z-8079.json
+[source-suite] start=0a8541473b5696f4ac4fe4c096076170892e08ce end=0a8541473b5696f4ac4fe4c096076170892e08ce exit=1 durationMs=162675

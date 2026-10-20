@@ -348,3 +348,7 @@ replacement CLOSED.** Existing chronology failures are not deleted or reclassifi
 Implementation7136c9d subsequently passed BOTH CI39399418135 and39399423575
 (source/type/lint/build, real-runtime, images, browser workflows). This does not
 erase the prior readiness-test discrepancy or turn D/full replacement green.
+
+## 2026-10-20 continuation — Gate D crash-recovery implementation (OPEN)
+
+Durable native execution journal, incarnation-safe restart reconciliation, shared atomic bank publication, guarded Python **and actual FFmpeg** executor ownership, cancellation arbitration and durable postcommit temporary cleanup are implemented on PR15. Local expanded SIGKILL/fresh-process/real-PG crash matrix41PASS, browser audio transport12PASS, guardian/deep17PASS, typecheck/lint/build pass. Earlier failures and stopped/mixed-source runs are retained, not erased. See [Gate D implementation, crash methods, D1–D10 status and raw evidence](waveyard-native-crash-recovery.md). New genuine trained crash/retry and exact-revision full-source/CI remain outstanding at implementation publication; independent visible reconciler-attempt history remains unaccepted. **D is OPEN**, not averaged against prior genuine7136 A/B/C/E/F or other gates. PR14/15/16 unmerged; Agent B memory/PCM files untouched.

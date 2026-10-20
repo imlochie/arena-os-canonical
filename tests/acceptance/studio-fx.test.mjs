@@ -31,6 +31,7 @@ before(async () => {
   await register(/^\/api\/jobs\/([^/]+)$/, ["id"], "jobs/[id]");
   await register(/^\/api\/library\/tracks\/([^/]+)\/separation$/, ["id"], "library/tracks/[id]/separation");
   for (const suffix of ["", "/cancel", "/recover", "/import"]) await register(new RegExp("^/api/waveyard/separation/deep/prepare" + suffix + "$"), [], "waveyard/separation/deep/prepare" + suffix);
+  await register(/^\/api\/jobs\/([^/]+)\/recover$/, ["id"], "jobs/[id]/recover");
   await register(/^\/api\/jobs\/([^/]+)\/cancel$/, ["id"], "jobs/[id]/cancel");
   await register(/^\/api\/jobs\/([^/]+)\/retry$/, ["id"], "jobs/[id]/retry");
   await register(/^\/api\/waveyard\/processing-status$/, [], "waveyard/processing-status");
@@ -1194,4 +1195,59 @@ test("A8 genuine managed Demucs music → bank → native player → session →
     for (const gate of ["A", "B", "C", "E", "F"]) receipt.gates[gate] += "; both independently trained 4/6-source checkpoints completed";
   } catch (error) { receipt.error = error.stack ?? String(error); throw error; }
   finally { await writeFile(path.join(directory, "receipt.json"), JSON.stringify(receipt, null, 2)); await page.context().tracing.stop({ path: path.join(directory, "browser-trace.zip") }); }
+});
+
+
+test("Gate D genuine executor death and fresh restart preserve trained banks", { skip: process.env.ARENA_A8_INFERENCE !== "1", timeout: 600000 }, async () => {
+  const { fork } = await import("node:child_process");
+  const { once } = await import("node:events");
+  const { ownerState } = await import("../../src/lib/waveyard/separation/recovery.ts");
+  const { getStorage } = await import("../../src/lib/waveyard/storage.ts");
+  const { checksumFile } = await import("../../src/lib/waveyard/audio.ts");
+  const directory = path.resolve(process.env.ARENA_A8_EVIDENCE_DIR || ".data/acceptance/a8");
+  const original = JSON.parse(await readFile(path.join(directory, "receipt.json"), "utf8"));
+  const baseline = original.engines.flatMap(engine => engine.stems);
+  const template = original.engines.find(engine => engine.model === "deep_6s").job;
+  const receipt = { commit: process.env.GITHUB_SHA, scope: "Actual trained native Demucs child, real SIGKILL, fresh recovery process, actual native retry; NOT complete D matrix or platform acceptance", cases: [], error: null };
+  function child(row, mode, phase = "") {
+    const messages = [];
+    const worker = fork(path.resolve("tests/fixtures/separation-crash-worker.ts"), [], { execArgv: ["--import", path.resolve("scripts/register-src-loader.mjs")], env: { ...process.env, WAVEYARD_LOCAL_WORKER: "0", CRASH_NATIVE: "real", CRASH_MODE: mode, CRASH_PHASE: phase, CRASH_INPUT: JSON.stringify({ processingJobId: row.id, projectId: row.projectId, sourceAssetId: row.sourceAssetId, model: row.model, requestedDevice: "cpu" }) }, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    worker.stdout.resume(); worker.stderr.on("data", chunk => console.error(chunk.toString()));
+    worker.on("message", message => messages.push(message));
+    const exit = once(worker, "exit");
+    return { worker, messages, exit };
+  }
+  try {
+    for (const cancel of [false, true]) {
+      const [job] = await database.db.insert(schema.processingJobs).values({ projectId: template.projectId, sourceAssetId: template.sourceAssetId, type: "separation", model: "deep_6s", requestedDevice: "cpu", idempotencyKey: crypto.randomUUID() }).returning();
+      const running = child(job, "execute");
+      try {
+        const deadline = Date.now() + 120000;
+        while (!running.messages.some(message => message.phase === "inference-running")) {
+          assert.equal(running.worker.exitCode, null, JSON.stringify(running.messages)); assert.ok(Date.now() < deadline, "genuine model did not report inference progress");
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        if (cancel) await api(`/api/jobs/${job.id}/cancel`, "POST");
+        assert.equal(running.worker.kill("SIGKILL"), true); const [, signal] = await running.exit; assert.equal(signal, "SIGKILL", "executor must actually be killed, not merely finish");
+        const [interrupted] = await database.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.id, job.id));
+        const execution = JSON.parse(interrupted.metadata).execution; assert.ok(execution.child);
+        const stopped = Date.now() + 5000;
+        while (await ownerState(execution.child) === "live" && Date.now() < stopped) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.equal(await ownerState(execution.child), "dead", "trained Python must not survive executor death");
+        const recovery = child(job, "startup"); const [code] = await recovery.exit; assert.equal(code, 0, JSON.stringify(recovery.messages));
+        const [recovered] = await database.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.id, job.id));
+        assert.equal(recovered.status, cancel ? "cancelled" : "failed"); assert.equal((await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.separationJobId, job.id))).length, 0);
+        const repeated = child(job, "startup"); assert.equal((await repeated.exit)[0], 0);
+        const { job: retried } = await api(`/api/jobs/${job.id}/retry`, "POST"); assert.notEqual(retried.id, job.id);
+        assert.equal(await broker.drain(600000), true);
+        const [completed] = await database.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.id, retried.id)); assert.equal(completed.status, "complete", completed.errorMessage);
+        const stems = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.separationJobId, retried.id)); assert.equal(stems.length, 6);
+        receipt.cases.push({ cancellationPending: cancel, interruptedJobId: job.id, execution, recoveredStatus: recovered.status, retryJobId: retried.id, retryStatus: completed.status, checksums: stems.map(stem => ({ id: stem.id, checksum: stem.checksumSha256 })) });
+      } finally { if (running.worker.exitCode === null && running.worker.signalCode === null) { running.worker.kill("SIGKILL"); await running.exit; } }
+    }
+    for (const stem of baseline) {
+      const [row] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, stem.id)); assert.ok(row); assert.equal(await checksumFile(getStorage().getLocalPath(row.storageKey)), stem.sha256, "previously published trained bank audio remains intact");
+    }
+  } catch (error) { receipt.error = error.stack ?? String(error); throw error; }
+  finally { await writeFile(path.join(directory, "gate-d-genuine.json"), JSON.stringify(receipt, null, 2)); }
 });

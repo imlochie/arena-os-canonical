@@ -82,6 +82,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [processorNotice, setProcessorNotice] = useState<string | null>(null);
   const processorChecked = useRef(false);
+  const [canRecoverSeparation, setCanRecoverSeparation] = useState(false);
   const [canCancelSeparation, setCanCancelSeparation] = useState(false);
   const finalizingBuild = useRef<string | null>(null);
 
@@ -122,6 +123,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             const response = await fetch("/api/waveyard/processing-status", { cache: "no-store" });
             const body = await response.json();
             setCanCancelSeparation(response.ok && body.separationCancellation?.available === true);
+            setCanRecoverSeparation(response.ok && body.separationRecovery?.available === true);
             if (response.ok && (body.mode === "none" || (body.mode === "in-process" && body.localWorker === null))) {
               setProcessorNotice(body.explanation ?? "Processing is waiting — no processor is running.");
             } else {
@@ -216,6 +218,17 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setRetrying(false);
     if (!response.ok) setError(json.error ?? "Retry could not be started.");
     else setRefresh((value) => value + 1);
+  }
+
+  async function recoverSeparation(jobId: string) {
+    setRetrying(true); setError(null);
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/recover`, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Recovery could not verify the execution.");
+      setRefresh(value => value + 1);
+    } catch (error) { setError(error instanceof Error ? error.message : "Recovery pending; audio retained."); }
+    finally { setRetrying(false); }
   }
 
   async function cancelSeparation(jobId: string) {
@@ -417,6 +430,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       {editable && canCancelSeparation && data.jobs.filter(job => ["queued", "preparing", "processing", "finalizing", "cancelling"].includes(job.status)).map(job => <div key={`cancel-${job.id}`}>
         <p>{job.status === "cancelling" ? "Stopping separation; waiting for inference and partial-output cleanup. Existing stems and source are retained." : `Separation: ${job.stage}`}</p>
         <button className="button secondary" disabled={retrying || job.status === "cancelling"} onClick={() => void cancelSeparation(job.id)}>{job.status === "cancelling" ? "Stopping separation…" : "Cancel separation"}</button>
+        {canRecoverSeparation && <button className="button secondary" disabled={retrying} onClick={() => void recoverSeparation(job.id)}>Check interrupted separation recovery</button>}
       </div>)}
       {latest?.status === "cancelled" && <div><p className="notice">Separation cancelled. Source and existing stem banks are unchanged.</p>{latest.errorMessage && <p>{latest.errorMessage}</p>}{editable && canCancelSeparation && <button className="button" disabled={retrying} onClick={() => void retry(latest.id)}>Restart separation</button>}</div>}
       {latest?.status === "failed" && (

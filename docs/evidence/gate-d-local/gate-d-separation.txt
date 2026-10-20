@@ -1,0 +1,128 @@
+TAP version 13
+# (node:6349) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/worker-local/separation.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:6349) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:6349) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: full pipeline: fake identity session → stems stored, decoded back, and arithmetically exact
+ok 1 - full pipeline: fake identity session → stems stored, decoded back, and arithmetically exact
+  ---
+  duration_ms: 34302.045835
+  type: 'test'
+  ...
+# Subtest: model not seeded: honest separation_unavailable failure, no stem rows, no objects
+ok 2 - model not seeded: honest separation_unavailable failure, no stem rows, no objects
+  ---
+  duration_ms: 4041.693173
+  type: 'test'
+  ...
+# Subtest: unknown model for this machine: honest unknown_model failure
+ok 3 - unknown model for this machine: honest unknown_model failure
+  ---
+  duration_ms: 3647.532173
+  type: 'test'
+  ...
+# Subtest: payload/job mismatch: honest invalid_payload failure
+ok 4 - payload/job mismatch: honest invalid_payload failure
+  ---
+  duration_ms: 5953.765278
+  type: 'test'
+  ...
+# Subtest: engine failure mid-run: job fails honestly and uploaded stem objects are cleaned up
+ok 5 - engine failure mid-run: job fails honestly and uploaded stem objects are cleaned up
+  ---
+  duration_ms: 12092.843041
+  type: 'test'
+  ...
+# Subtest: the local broker registers the separation queue alongside the other engines
+ok 6 - the local broker registers the separation queue alongside the other engines
+  ---
+  duration_ms: 458.398743
+  type: 'test'
+  ...
+# Subtest: stem layers: a second pass on a STEM pulls named layers out of it
+ok 7 - stem layers: a second pass on a STEM pulls named layers out of it
+  ---
+  duration_ms: 47302.537652
+  type: 'test'
+  ...
+# Subtest: 4-stem recipe: four stems stored, each attributed to its own model
+ok 8 - 4-stem recipe: four stems stored, each attributed to its own model
+  ---
+  duration_ms: 47366.041541
+  type: 'test'
+  ...
+# Subtest: deep pass: the prepared engine runs end to end and stores six attributed stems
+ok 9 - deep pass: the prepared engine runs end to end and stores six attributed stems
+  ---
+  duration_ms: 2748.09788
+  type: 'test'
+  ...
+# Subtest: deep layers: a deep pass on a STEM names every lane <parent>/<child>
+ok 10 - deep layers: a deep pass on a STEM names every lane <parent>/<child>
+  ---
+  duration_ms: 2872.775804
+  type: 'test'
+  ...
+# Subtest: deep pass with no prepared engine: honest separation_unavailable, nothing stored
+ok 11 - deep pass with no prepared engine: honest separation_unavailable, nothing stored
+  ---
+  duration_ms: 2625.116781
+  type: 'test'
+  ...
+# Subtest: deep seam: the decoded 44.1 kHz PCM is the engine input, no MDX engine opens, lanes persist exactly
+ok 12 - deep seam: the decoded 44.1 kHz PCM is the engine input, no MDX engine opens, lanes persist exactly
+  ---
+  duration_ms: 2773.882921
+  type: 'test'
+  ...
+# Subtest: partial upload failure cleans unpublished objects; actual retry preserves the previous bank and publishes a distinct bank
+not ok 13 - partial upload failure cleans unpublished objects; actual retry preserves the previous bank and publishes a distinct bank
+  ---
+  duration_ms: 52450.197724
+  type: 'test'
+  location: '/home/user/arena-os-canonical/src/lib/waveyard/worker-local/separation.test.ts:581:1'
+  failureType: 'testCodeFailure'
+  error: "The requested module './recovery' does not provide an export named 'executionHistory'"
+  code: 'ERR_TEST_FAILURE'
+  name: 'SyntaxError'
+  stack: |-
+    ModuleJob._instantiate (node:internal/modules/esm/module_job:226:21)
+    async ModuleJob.run (node:internal/modules/esm/module_job:335:5)
+    async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:681:26)
+    async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/worker-local/separation.test.ts:603:36)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: lost COMMIT acknowledgement cannot delete a bank already referenced by durable stem rows
+ok 14 - lost COMMIT acknowledgement cannot delete a bank already referenced by durable stem rows
+  ---
+  duration_ms: 26472.482648
+  type: 'test'
+  ...
+# Subtest: uncertain publication lookup retains output and cleanup keys instead of guessing and deleting
+ok 15 - uncertain publication lookup retains output and cleanup keys instead of guessing and deleting
+  ---
+  duration_ms: 29065.689863
+  type: 'test'
+  ...
+# Subtest: provider writes output then rejects: the partially uploaded object is still tracked and removed
+ok 16 - provider writes output then rejects: the partially uploaded object is still tracked and removed
+  ---
+  duration_ms: 27744.137086
+  type: 'test'
+  ...
+1..16
+# tests 16
+# suites 0
+# pass 15
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 303159.447982

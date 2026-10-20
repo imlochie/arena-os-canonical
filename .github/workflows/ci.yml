@@ -70,6 +70,12 @@ jobs:
       - name: Initialize test database schema
         run: npx drizzle-kit push --force
 
+      - name: Native separation SIGKILL and fresh-process restart matrix
+        run: |
+          mkdir -p .data/acceptance/waveyard-handoff
+          set -o pipefail
+          node --import ./scripts/register-src-loader.mjs --test tests/acceptance/separation-crash.test.ts 2>&1 | tee .data/acceptance/waveyard-handoff/crashes.tap
+
       - name: Typecheck
         run: npm run typecheck
 

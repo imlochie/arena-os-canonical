@@ -1,0 +1,92 @@
+TAP version 13
+# (node:3270) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:3270) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:3270) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: native separation real SIGKILL/restart matrix
+    # Subtest: claimed
+    ok 1 - claimed
+      ---
+      duration_ms: 4076.849925
+      type: 'test'
+      ...
+    # Subtest: inference-starting
+    ok 2 - inference-starting
+      ---
+      duration_ms: 3947.933666
+      type: 'test'
+      ...
+    # Subtest: inference-running
+    ok 3 - inference-running
+      ---
+      duration_ms: 3837.77971
+      type: 'test'
+      ...
+    # Subtest: outputs-written
+    ok 4 - outputs-written
+      ---
+      duration_ms: 4043.115752
+      type: 'test'
+      ...
+    # Subtest: staging
+    ok 5 - staging
+      ---
+      duration_ms: 3952.414484
+      type: 'test'
+      ...
+    # Subtest: object-written:1
+    ok 6 - object-written:1
+      ---
+      duration_ms: 3725.860698
+      type: 'test'
+      ...
+    # Subtest: object-written:4
+    ok 7 - object-written:4
+      ---
+      duration_ms: 3851.334724
+      type: 'test'
+      ...
+    # Subtest: validated
+    ok 8 - validated
+      ---
+      duration_ms: 3703.120467
+      type: 'test'
+      ...
+    # Subtest: publication-locked
+    not ok 9 - publication-locked
+      ---
+      duration_ms: 147047.311216
+      type: 'test'
+      location: '/home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:56:15'
+      failureType: 'cancelledByParent'
+      error: 'test did not finish before its parent and was cancelled'
+      code: 'ERR_TEST_FAILURE'
+      ...
+    1..9
+not ok 1 - native separation real SIGKILL/restart matrix
+  ---
+  duration_ms: 180016.216514
+  type: 'test'
+  location: '/home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:18:1'
+  failureType: 'testTimeoutFailure'
+  error: 'test timed out after 180000ms'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: committed
+not ok 2 - committed
+  ---
+  duration_ms: 4192.4975
+  type: 'test'
+  location: '/home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:56:15'
+  failureType: 'parentAlreadyFinished'
+  error: 'test could not be started because its parent finished'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:56:15)
+  ...

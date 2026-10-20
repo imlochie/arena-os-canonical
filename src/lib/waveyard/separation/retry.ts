@@ -24,6 +24,7 @@ import { and, eq } from "drizzle-orm";
 
 import type { drizzle } from "drizzle-orm/node-postgres";
 
+import { executionHistory, metadata } from "./recovery";
 import { processingJobs } from "@/db/waveyardSchema";
 import { enqueueSeparation, type QueueLike } from "@/lib/waveyard/queue";
 import { findActiveProcessingJob, type ProcessingJobRow } from "./claim";
@@ -177,7 +178,7 @@ export async function retrySeparationJob(db: SeparationDb, jobId: string, option
   try {
     claimed = await db
       .update(processingJobs)
-      .set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date() })
+      .set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date(), metadata: JSON.stringify({ ...metadata(job.metadata), executionHistory: executionHistory(job) }) })
       .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "failed")))
       .returning({ id: processingJobs.id });
   } catch (error) {
@@ -196,6 +197,7 @@ export async function retrySeparationJob(db: SeparationDb, jobId: string, option
       .set({
         status: "failed",
         stage: job.stage,
+        metadata: job.metadata,
         errorCode: job.errorCode,
         errorMessage: job.errorMessage,
         completedAt: job.completedAt,

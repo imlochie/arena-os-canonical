@@ -21,6 +21,7 @@ sys.argv = sys.argv[2:]
 runpy.run_module(module, run_name='__main__', alter_sys=True)
 `;
 
-export function ownedPythonModuleArgs(module: string, args: string[]): string[] {
-  return ["-c", bootstrap, "-m", module, ...args];
+export function ownedPythonModuleArgs(module: string, args: string[], startGate = false): string[] {
+  const code = startGate ? bootstrap.replace("def watch_owner():", "if os.read(0, 1) != b\"S\":\n    os._exit(130)\n\ndef watch_owner():") : bootstrap;
+  return ["-c", code, "-m", module, ...args];
 }

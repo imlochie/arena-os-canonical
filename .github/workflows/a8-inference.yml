@@ -38,7 +38,7 @@ jobs:
       - name: Exercise managed preparation, genuine music inference, native player and exported arrangement
         run: |
           mkdir -p .data/acceptance/a8
-          node --import ./scripts/register-src-loader.mjs --test --test-name-pattern='A8 genuine' tests/acceptance/studio-fx.test.mjs | tee .data/acceptance/a8/run.tap
+          node --import ./scripts/register-src-loader.mjs --test --test-name-pattern='A8 genuine|Gate D genuine' tests/acceptance/studio-fx.test.mjs | tee .data/acceptance/a8/run.tap
       - name: Publish concise gate and failure receipt through Checks annotations
         if: always()
         run: node scripts/a8-publish-receipt.mjs

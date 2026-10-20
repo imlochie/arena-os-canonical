@@ -1,0 +1,65 @@
+# Gate D — native durable crash recovery
+
+2026-10-20 continuation; owner branch `arena/331aa502-arena-os-canonical`, PR15. **Gate D remains OPEN.** This implementation is not a global/platform acceptance or an acceptance inferred from historical A8 results. PR14/15/16 remain unmerged; Agent B's arrangement preparation, PCM ownership and benchmark files are untouched.
+
+## Implementation
+
+Existing `processing_jobs.metadata.execution` journals an execution UUID, Linux host/boot/PID namespace/start-tick identities, expected frames, verified source/input identity, planned immutable object keys/checksums, provenance, temporary directory and pending cleanup. Claims use queued-state compare-and-set; later journal writes fence by execution UUID. Failure/retry history is retained; interrupted/cancelled restarts use a fresh row.
+
+Python model code waits for a durable child-registration acknowledgement (`S`); stdin EOF on abrupt executor death exits Python. FFmpeg decoding, when invoked by separation, uses a separately registered Node guardian, with the same start gate. The guardian terminates its own FFmpeg child on executor pipe EOF and waits for child exit. No stored PID is signalled, no lease expiry authorizes takeover. Native WAV decoding stays in-process. Temporary directories are journaled **before creation**, private mode0700, UUID-scoped; committed-but-not-cleaned jobs are revisited on startup.
+
+Normal completion and restart share transactional, row-locked bank/stem/waveform/job publication. All stored output checksums, stereo44100Hz and exact frame counts are revalidated before normal publication and recovery. Complete staged banks are recovered without inference; partial/corrupt staging is safely retired. Cancellation uses the same job row lock: cancellation before publication prevents a bank, publication before cancellation preserves complete truth. Unknown COMMIT acknowledgement never authorizes deleting referenced audio. Cleanup checks global bank references; reconciliation also checks other active journals before deleting a planned key. Valid committed banks remain immutable.
+
+`instrumentation.register` awaits the native startup sweep. Queued requests are resubmitted; derived queued waveform records are resubmitted independently. An editor-authorized native recovery POST and capability-gated project action offer explicit recovery checks. Live, legacy, incompatible-scope and unverifiable ownership fail closed rather than pretending cancellation/retry succeeded.
+
+## Actual crash matrix and methods
+
+`tests/acceptance/separation-crash.test.ts` uses actual OS SIGKILL, fresh forked Node processes, real embedded PostgreSQL with canonical migrations and actual filesystem storage. Controlled PCM and dummy-checkpoint Python CLI cases are **not trained inference**. Final expanded local run: **41PASS/0FAIL/0SKIP**,40 child cases plus parent,149012ms (`gate-d-crashes-41.txt`). A final directory-mode-only change is covered by subsequent exact-commit CI, not attributed retroactively to this working-tree run.
+
+| Boundary | Execution / assertions |
+|---|---|
+| Before claim, claimed, inference startup/running | SIGKILL executor; fresh startup; no phantom bank; queued request remains dispatchable; live owner refused |
+| Python started before identity persisted, registered, running | Real Python CLI, start gate/EOF; SIGKILL Node; recorded incarnation dead; no retry overlap with a live owner |
+| Real FFmpeg unregistered, registered, actively decoding | Actual rate-conversion FFmpeg, rate-limited only by a test launcher; SIGKILL Node; guardian and actual FFmpeg incarnation dead; no bank; normal decoder completion also publishes intact four-lane controlled bank |
+| Outputs written, staging, half-file write, first/fourth object, validated | SIGKILL and fresh startup; incomplete output retired; complete validated staging recovered; exact stored checksums/frames; distinct bank identities preserved |
+| Publication row lock, committed before reporting | SIGKILL; waiter serializes on actual PG lock; commit/rollback truth; committed audio preserved; postcommit work-directory cleanup recovered |
+| Lost recovery COMMIT acknowledgement | Explicit controlled posttransaction acknowledgement exception, **not** an OS crash; durable bank preserved, repeated recovery converges |
+| Reconciler cleanup write / before transaction acknowledgement | SIGKILL reconciler, fresh retry; cleanup and publication converge without duplicate rows |
+| Concurrent recovery and retry | Actual separate recovery processes and actual retry; stable asset UUIDs, no duplicate execution/publication; old attempt/history retained |
+| Storage read / delete unavailable, corrupt stored output | Actual chmod faults and modified bytes; retain journal, retry after permissions restore; never publish corrupt audio |
+| Successful but corrupt object write | Provider writes then silently corrupts a byte; ordinary completion refuses checksum/frame validation; no bank, incomplete objects removed |
+| Database interrupted during recovery | Actual PG shutdown/restart; retained state, subsequent convergence |
+| Cancellation | Queued, claimed, startup, running, half-write, validated, committed, pending native cancellation; cancellation queued behind publication row lock and executor crash; complete wins never masquerades as cancellation |
+| Postcommit temp cleanup failure | Actual chmod failure; bank remains complete, cleanup pending survives; next fresh startup removes only owned temporary directory |
+| PID reuse / scope | Start-tick mismatch dead; incompatible boot/namespace remains unknown, never lease-only/PID-only takeover |
+
+The native trained SIGKILL/cancellation/retry test is added to `studio-fx.test.mjs` and the A8 hosted workflow, with separate `gate-d-genuine.json` evidence. **Not executed locally**: checkpoint hosts are outside this sandbox's outbound allowlist. The full checkpoint SHA-256 verifier is unchanged. Historical7136 trained four/six acceptance remains historical only; materially changed publication/inference requires the new hosted run.
+
+## D1–D10 status at implementation publication
+
+| Gate | Evidence / outstanding |
+|---|---|
+| D1 ownership | Linux incarnation/start-gate/EOF and real FFmpeg tests pass. Other OS, changed boot/namespace/hostname fail closed, not accepted recovery. Guardian-process independent SIGKILL is not claimed. |
+| D2 fresh restart | Actual new processes run the production startup sweep throughout matrix; legacy unknown-owner jobs remain preserved, not automatically reclaimed. |
+| D3 idempotence | Repeated/concurrent fresh recovery and recovery crash tests pass with stable bank UUIDs. |
+| D4 staging/retry | Complete staging recovers without inference; incomplete/corrupt objects retire; actual retry/history regression follows. |
+| D5 committed integrity | Matrix checks exact audio checksums and stable references. Normal publication/lost-ack targeted regression and exact source suite run separately. |
+| D6 cancellation | Controlled/real-CLI phase matrix passes. New genuine trained pending-cancel crash run outstanding. |
+| D7 cleanup | Planned private keys, global bank/active-journal reference checks, durable temp cleanup and real permission-failure retry covered. |
+| D8 history | Execution UUID journal and failed retry snapshots/old interrupted rows retained. Reconciliation is transaction-serialized; there is no independently committed visible “reconciling” state/history for a reconciler killed before its transaction commits. This requirement remains unaccepted. |
+| D9 product regression | Typecheck/lint/build pass; Chromium153 audio transport12PASS. Full source, hosted genuine 4/6, playback/session/Studio/export and exact-revision CI outstanding at publication. No Electron/Windows claim. |
+| D10 crash matrix |41PASS bounded Linux controlled/real native processes; trained inference crash evidence and exact-revision CI still outstanding. Explicit transaction seams are distinguished above. |
+
+**Do not close Gate D until outstanding requirements are accepted/executed.** There is no whole-machine reboot takeover or cross-machine recovery claim. Missing original input/storage prevents unverifiable stale-bank completion repair but never authorizes deleting a committed bank. Queued waveform outbox re-dispatch is implemented; broad regression results must establish product behavior, not handler/HTTP success alone.
+
+## Evidence chronology (append-only)
+
+Raw logs are retained in `docs/evidence/gate-d-local/`; counts below are separate runs, never additive acceptance:
+
+1. Initial matrix timeout: test-owned publication-lock deadlock; fixed test sequencing, not product lock. Next run15PASS/4FAIL (parent plus three fake-native version/model setup cases); fixed controlled fixture setup.
+2. Matrix3:20PASS/0FAIL. Expanded matrix4:24PASS/2FAIL (one child plus parent): worker started before input-journal edit, recovered under newer source; failed closed with source identity unverified. Files retained.
+3. Concurrent publication suite15PASS/1FAIL: old loaded recovery module/new retry import lacked the newly added `executionHistory` export. This mixed-source run is not a revision receipt. Final-source targeted repeat and full source run separately.
+4. Frozen35PASS matrix; then added guarded actual FFmpeg ownership and committed temp cleanup. Expanded40 matrix initially38PASS/2FAIL (one child plus parent): test's1MB metadata-read limit rejected its new1.76MB10-second PCM bank. Changed helper to the actual stored asset file size, not the checksum/frame assertions. Repeat40PASS. Added ordinary-publication silent corruption rejection; final41PASS.
+5. Guardian/deep17PASS; earlier cancellation7PASS. Final typecheck, lint0errors/49warnings and production build pass. Browser Chromium153.0.8010.0 transport12PASS. Trained audio is not implied by controlled browser transport.
+6. `npm run test:unit` failed because no such script exists; corrected to `npm test`. The first broad run was deliberately stopped before further implementation edits (exit1, partial TAP retained), not counted as a source pass. Final exact-commit full source and CI will be recorded as separate execution receipts.
+7. Final focused publication regression **3PASS/0FAIL/0SKIP**,152334ms: actual retry after partial upload preserves the prior bank and creates a distinct bank; lost normal COMMIT acknowledgement preserves referenced audio; uncertain publication lookup retains outputs/cleanup keys. Raw `gate-d-publication-final.txt`. Broad exact-commit source/hosted evidence remains separate.

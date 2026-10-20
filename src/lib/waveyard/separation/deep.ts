@@ -432,6 +432,7 @@ export type DeepRunRequest = {
   requestedDevice?: "auto" | "cpu" | "cuda";
   /** The engine's own percent, throttled by the caller. */
   onProgress?: (percent: number) => void;
+  onSpawn?: (pid: number) => Promise<void>;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -458,7 +459,7 @@ function runPython(
   bin: string,
   args: string[],
   env: NodeJS.ProcessEnv,
-  options: { timeoutMs: number; signal?: AbortSignal; onStderr?: (chunk: string) => void; onStdout?: (chunk: string) => void },
+  options: { timeoutMs: number; onSpawn?: (pid: number) => Promise<void>; startGate?: boolean; signal?: AbortSignal; onStderr?: (chunk: string) => void; onStdout?: (chunk: string) => void },
 ): Promise<SpawnedOutcome> {
   return new Promise((resolvePromise) => {
     if (options.signal?.aborted) return resolvePromise({ status: null, stdout: "", stderr: "", error: new DOMException("Separation cancelled", "AbortError") });
@@ -496,6 +497,13 @@ function runPython(
       options.signal?.removeEventListener("abort", abort);
       resolvePromise(outcome);
     };
+    if (options.startGate) child.once("spawn", () => {
+      void (async () => {
+        try { await options.onSpawn?.(child.pid!); if (!options.signal?.aborted) child.stdin?.write("S"); }
+        catch (error) { spawnError = error instanceof Error ? error : new Error(String(error)); child.kill("SIGKILL"); }
+      })();
+    });
+    child.stdin?.on("error", (error: Error) => { spawnError ??= error; child.kill("SIGKILL"); });
     child.once("error", (error: Error) => { spawnError = error; });
     child.once("close", (code: number | null) =>
       finish({
@@ -646,13 +654,15 @@ export async function runDeepSeparation(request: DeepRunRequest, deps: { verifyC
       "--out",
       request.outputDirectory,
       request.inputPath,
-    ]),
+    ], true),
   ];
 
   let lastPercent = -1;
   const outcome = await runPython(candidate.bin, args, await audioToolEnvironment(env), {
     timeoutMs,
     signal: request.signal,
+    startGate: true,
+    onSpawn: request.onSpawn,
     onStderr: (chunk) => {
       // Demucs renders its progress on stderr with carriage returns; forward
       // the engine's own percent, at most once per whole percent.

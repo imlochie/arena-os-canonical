@@ -20,3 +20,9 @@ const escape = value => value.replaceAll('%', '%25').replaceAll('\r', '%0D').rep
 const pieces = text.match(/[\s\S]{1,2800}/g) ?? [];
 for (const [index, piece] of pieces.entries()) console.log(`::notice title=A8 receipt part ${String(index + 1).padStart(2, '0')}/${pieces.length}::${escape(piece)}`);
 console.log(`::notice title=A8 first failure::${escape(failure.slice(0, 2800))}`);
+
+try {
+  const recovery = await readFile(path.join(directory, 'gate-d-genuine.json'), 'utf8');
+  const chunks = recovery.match(/[\s\S]{1,2800}/g) ?? [];
+  for (const [index, chunk] of chunks.entries()) console.log(`::notice title=Gate D genuine part ${String(index + 1).padStart(2, '0')}/${chunks.length}::${escape(chunk)}`);
+} catch { console.log('::notice title=Gate D genuine::No separate trained crash receipt; NOT ACCEPTED.'); }

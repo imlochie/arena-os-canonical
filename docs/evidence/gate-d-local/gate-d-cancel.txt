@@ -1,0 +1,62 @@
+TAP version 13
+# (node:4933) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/worker-local/separation-cancel.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:4933) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:4933) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: queued cancel is terminal, never opens inference; explicit restart preserves history and identity
+ok 1 - queued cancel is terminal, never opens inference; explicit restart preserves history and identity
+  ---
+  duration_ms: 26900.373156
+  type: 'test'
+  ...
+# Subtest: cancel during an in-flight MDX chunk retains active target until release; no output is published
+ok 2 - cancel during an in-flight MDX chunk retains active target until release; no output is published
+  ---
+  duration_ms: 5312.015807
+  type: 'test'
+  ...
+# Subtest: cancellation after upload fences atomic publication and removes staged objects; completed banks resist late cancel
+ok 3 - cancellation after upload fences atomic publication and removes staged objects; completed banks resist late cancel
+  ---
+  duration_ms: 49861.582359
+  type: 'test'
+  ...
+# Subtest: tampered stored source fails before opening a model
+ok 4 - tampered stored source fails before opening a model
+  ---
+  duration_ms: 2550.097583
+  type: 'test'
+  ...
+# Subtest: cancel cleanup failure retains orphan keys and warning on the cancelled attempt
+ok 5 - cancel cleanup failure retains orphan keys and warning on the cancelled attempt
+  ---
+  duration_ms: 2546.053753
+  type: 'test'
+  ...
+# Subtest: derived-waveform reporting outage after commit must never delete a published bank
+ok 6 - derived-waveform reporting outage after commit must never delete a published bank
+  ---
+  duration_ms: 2415.89597
+  type: 'test'
+  ...
+# Subtest: readable but truncated deep stems cannot publish a misaligned bank
+ok 7 - readable but truncated deep stems cannot publish a misaligned bank
+  ---
+  duration_ms: 2416.675976
+  type: 'test'
+  ...
+1..7
+# tests 7
+# suites 0
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 92905.995133

@@ -25,10 +25,10 @@
  *    metadata while separating, so the UI polls one honest number.
  */
 
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq, notInArray } from "drizzle-orm";
+import { and, eq, notInArray, inArray, sql } from "drizzle-orm";
 
 import type { drizzle } from "drizzle-orm/node-postgres";
 
@@ -41,6 +41,8 @@ import { decodeSourceToStereoPcm } from "@/lib/waveyard/measure/pcm";
 import type { SeparationJobPayload } from "@/lib/waveyard/types";
 import { demixMdx, findMdxModel, findSeparationRecipe, type MdxInfer, type MdxModelSpec } from "@/lib/waveyard/separation/mdx";
 import { runDeepSeparation } from "@/lib/waveyard/separation/deep";
+import { executionHistory, newExecution, ownerIdentity, saveExecution, publishBank, validateExecutionOutputs, metadata as recoveryMetadata } from "../separation/recovery";
+import { deepModelSpec } from "../separation/modes";
 import { isDeepSeparationMode } from "@/lib/waveyard/separation/modes";
 import {
   loadOrtModule,
@@ -56,6 +58,8 @@ import { DependencyMissingError } from "@/lib/waveyard/measure/pcm";
  *  with a fake inference session and a PGlite database. */
 export type SeparationHandlerDeps = {
   db?: ReturnType<typeof drizzle>;
+  /** Trusted crash-test seam; never selectable through a product request. */
+  boundary?: (phase: string) => Promise<void>;
   /** Opens the verified model and returns the inference seam. */
   openEngine?: (spec: MdxModelSpec, requestedDevice: "auto" | "cpu" | "cuda") => Promise<OpenedEngine>;
   decode?: typeof decodeSourceToStereoPcm;
@@ -115,7 +119,7 @@ async function updateJob(
 ) {
   await database
     .update(processingJobs)
-    .set({ ...patch, updatedAt: new Date() })
+    .set({ ...patch, ...(patch.metadata ? { metadata: sql`(${processingJobs.metadata}::jsonb || ${JSON.stringify(Object.fromEntries(Object.entries(recoveryMetadata(patch.metadata)).filter(([key]) => !["execution", "executionHistory"].includes(key))))}::jsonb)::text` } : {}), updatedAt: new Date() })
     .where(and(eq(processingJobs.id, id), notInArray(processingJobs.status, ["complete", "failed", "cancelling", "cancelled"])));
 }
 
@@ -142,7 +146,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
 
   const [job] = await database.select().from(processingJobs).where(eq(processingJobs.id, payload.processingJobId)).limit(1);
   if (!job) throw new Error("Processing job no longer exists.");
-  if (job.status === "complete" || job.status === "cancelled") return;
+  if (job.status !== "queued") return;
   if (
     job.projectId !== payload.projectId ||
     job.sourceAssetId !== payload.sourceAssetId ||
@@ -239,7 +243,12 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
   /** Layer naming: deep stems get the same "<parent>/<child>" treatment. */
   const nameStem = (child: string) => (parentStem === null ? child : `${parentStem.stemType}/${child}`);
 
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "arena-separation-"));
+  const execution = await newExecution(deepPass ? deepModelSpec(payload.model).stems.length : runs.length);
+  execution.input = { key: (parentStem ?? source).storageKey, checksum: (parentStem ?? source).checksumSha256, sourceChecksum: source.checksumSha256 };
+  const phase = async (name: string) => { execution.phase = name; await saveExecution(database, job.id, execution); await deps.boundary?.(name); };
+  const temporaryDirectory = join(tmpdir(), `arena-separation-${execution.id}-work`);
+  execution.workDirectory = temporaryDirectory;
+  execution.cleanupPending = true;
   const inputPath = join(temporaryDirectory, "source-upload");
   const storage = getStorage();
   const uploadedKeys: string[] = [];
@@ -263,10 +272,13 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
 
   try {
     await checkCancellation();
-    const [claimed] = await database.update(processingJobs).set({ status: "preparing", stage: "preparing", startedAt: new Date(), updatedAt: new Date(), errorCode: null, errorMessage: null })
+    await deps.boundary?.("before-claim");
+    const [claimed] = await database.update(processingJobs).set({ status: "preparing", stage: "preparing", startedAt: new Date(), updatedAt: new Date(), errorCode: null, errorMessage: null, metadata: JSON.stringify({ ...jobMetadata(job.metadata), executionHistory: executionHistory(job), execution }) })
       .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "queued"))).returning({ id: processingJobs.id });
     if (!claimed) return;
     ownsAttempt = true;
+    await deps.boundary?.("claimed");
+    await mkdir(temporaryDirectory, { mode: 0o700 });
     await storage.getToFile((parentStem ?? source).storageKey, inputPath);
     await checkCancellation();
     if (await checksumFile(inputPath) !== (parentStem ?? source).checksumSha256) {
@@ -280,7 +292,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     });
     // The engine is trained at 44.1 kHz — decode demands exactly that
     // (native WAV at other rates falls through to ffmpeg resampling).
-    const decoded = await decode(inputPath, {}, {}, { requireSampleRate: 44_100, signal: controller.signal });
+    const decoded = await decode(inputPath, {}, {}, { requireSampleRate: 44_100, signal: controller.signal, onSpawn: async pid => {
+      await deps.boundary?.("decoder-unregistered");
+      execution.child = await ownerIdentity(pid);
+      await phase("decoder-registered");
+    } });
     if (decoded.sampleRate !== 44_100) {
       throw new Error(`Decoder returned ${decoded.sampleRate} Hz — the engine requires 44100 Hz.`);
     }
@@ -304,6 +320,8 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     let runModels: string[] = [];
     let checkpointSha256: string | null = null;
 
+    execution.frames = frames;
+    await phase("inference-starting");
     if (deepPass) {
       engineKind = "demucs";
       runModels = [payload.model];
@@ -321,6 +339,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         outputDirectory: join(temporaryDirectory, "deep-output"),
         requestedDevice: payload.requestedDevice,
         signal: controller.signal,
+        onSpawn: async pid => {
+          await deps.boundary?.("native-unregistered");
+          execution.child = await ownerIdentity(pid);
+          await phase("native-registered");
+        },
         onProgress: (percent) => {
           if (percent === lastDeepPercent) return;
           lastDeepPercent = percent;
@@ -422,12 +445,14 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       runModels = [...new Set(runs.map((run) => run.spec.id))];
     }
 
+    await phase("outputs-written");
     await checkCancellation();
     await updateJob(database, job.id, {
       status: "finalizing",
       stage: "validating",
       resolvedDevice,
     });
+    execution.provenance = { engine: engineKind, model: job.model, models: runModels, checkpointSha256, resolvedDevice, outputCount: stemOutputs.length, stems: stemOutputs.map(stem => stem.stemType) };
     const values: (typeof stemAssets.$inferInsert)[] = [];
     for (const stem of stemOutputs) {
       await checkCancellation();
@@ -439,7 +464,6 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       const storageKey = privateObjectKey(job.projectId, "stem", "wav");
       // Track before writing: a provider can partially write and then reject.
       uploadedKeys.push(storageKey);
-      await storage.putFile(storageKey, stemPath, "audio/wav");
       values.push({
         projectId: job.projectId,
         sourceAssetId: source.id,
@@ -457,54 +481,26 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         format: "wav",
         fileSizeBytes: wav.length,
       });
+      execution.outputs = values;
+      await phase("staging");
+      await storage.putFile(storageKey, stemPath, "audio/wav");
+      await deps.boundary?.("object-written");
+      await deps.boundary?.(`object-written:${values.length}`);
     }
+    if (!await validateExecutionOutputs(job, execution)) throw new Error("Stored separation output failed checksum/frame validation; bank was not published.");
+    await phase("validated");
 
     const durableWork = await database.transaction(async (tx) => {
       // Serialize completion against the cancellation UPDATE. Cancellation wins
       // before this lock => no stem rows; publication wins => cancel sees complete.
       const [current] = await tx.select({ status: processingJobs.status }).from(processingJobs).where(eq(processingJobs.id, job.id)).for("update");
       if (!current || ["cancelling", "cancelled"].includes(current.status)) throw new DOMException("Separation cancelled", "AbortError");
-      // Published physical assets must never be replaced by a retry. Normal
-      // completion is terminal; a historical inconsistent job requires a fresh
-      // run, not deletion of references retained by sessions/Studio.
-      const previous = await tx.select({ id: stemAssets.id }).from(stemAssets).where(eq(stemAssets.separationJobId, job.id));
-      if (previous.length) throw new Error("This run already has published assets. They were preserved; start a new separation run rather than replacing this bank.");
-      const storedStems = await tx
-        .insert(stemAssets)
-        .values(values)
-        .returning({ id: stemAssets.id });
-      const waveformWork = await tx
-        .insert(waveformJobs)
-        .values(
-          storedStems.map((stem) => ({
-            projectId: job.projectId,
-            stemAssetId: stem.id,
-            status: "queued",
-            stage: "queued",
-            idempotencyKey: `waveform:stem:${stem.id}`,
-          })),
-        )
-        .returning({ id: waveformJobs.id, stemAssetId: waveformJobs.stemAssetId });
-      await tx
-        .update(processingJobs)
-        .set({
-          status: "complete",
-          stage: "complete",
-          completedAt: new Date(),
-          updatedAt: new Date(),
-          metadata: JSON.stringify({
-            engine: engineKind,
-            model: job.model,
-            models: runModels,
-            checkpointSha256,
-            resolvedDevice,
-            outputCount: values.length,
-            stems: stemOutputs.map((stem) => stem.stemType),
-          }),
-        })
-        .where(eq(processingJobs.id, job.id));
-      return waveformWork;
+      await deps.boundary?.("publication-locked");
+      const [locked] = await tx.select().from(processingJobs).where(eq(processingJobs.id, job.id));
+      if (recoveryMetadata(locked.metadata).execution && (recoveryMetadata(locked.metadata).execution as { id: string }).id !== execution.id) throw new Error("Execution ownership changed before publication.");
+      return publishBank(tx, locked, values, execution.provenance);
     });
+    await deps.boundary?.("committed");
     completed = true; // The committed bank is immutable, even if derived-job reporting fails.
     // Separation is complete even if a later derived-artifact queue needs
     // a retry. Each durable job records its own failure boundary.
@@ -555,7 +551,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         try {
           // COMMIT may have succeeded even when its acknowledgement was lost.
           // Durable asset references, not a local boolean, decide deletion.
-          const published = await database.select({ storageKey: stemAssets.storageKey }).from(stemAssets).where(eq(stemAssets.separationJobId, job.id));
+          const published = await database.select({ storageKey: stemAssets.storageKey }).from(stemAssets).where(inArray(stemAssets.storageKey, uploadedKeys));
           const referenced = new Set(published.map(row => row.storageKey));
           unpublishedKeys = uploadedKeys.filter(key => !referenced.has(key));
         } catch {
@@ -568,11 +564,12 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       const failedKeys = [...uncertainKeys, ...unpublishedKeys.filter((_, index) => cleanup[index].status === "rejected")];
       if (failedKeys.length) {
         cleanupWarning = true;
-        await database.update(processingJobs).set({ errorMessage: "Separation stopped, but some output could not be removed or its publication status could not be verified. Cleanup keys are retained in this job's metadata; published audio is preserved.", metadata: JSON.stringify({ ...jobMetadata(job.metadata), cleanupFailedKeys: failedKeys }) })
+        await database.update(processingJobs).set({ errorMessage: "Separation stopped, but some output could not be removed or its publication status could not be verified. Cleanup keys are retained in this job's metadata; published audio is preserved.", metadata: sql`(${processingJobs.metadata}::jsonb || ${JSON.stringify({ cleanupFailedKeys: failedKeys })}::jsonb)::text` })
           .where(and(eq(processingJobs.id, job.id), notInArray(processingJobs.status, ["complete"])));
       }
     }
     await rm(temporaryDirectory, { recursive: true, force: true });
+    if (ownsAttempt) await database.update(processingJobs).set({ metadata: sql`jsonb_set(${processingJobs.metadata}::jsonb, '{execution,cleanupPending}', 'false'::jsonb)::text` }).where(and(eq(processingJobs.id, job.id), sql`${processingJobs.metadata}::jsonb->'execution'->>'id' = ${execution.id}`));
     if (ownsAttempt) await database.update(processingJobs).set({ status: "cancelled", stage: "cancelled", ...(cleanupWarning ? {} : { errorMessage: "Separation stopped and unpublished output removed. Source and existing stem banks were preserved." }), completedAt: new Date(), updatedAt: new Date() })
       .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "cancelling")));
   }
