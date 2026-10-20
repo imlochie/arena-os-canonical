@@ -74,6 +74,9 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
   await register(/^\/api\/waveyard\/projects\/([^/]+)$/, ["id"], "waveyard/projects/[id]");
   await register(/^\/api\/waveyard\/projects\/([^/]+)\/remixes$/, ["id"], "waveyard/projects/[id]/remixes");
   await register(/^\/api\/waveyard\/projects\/([^/]+)\/master$/, ["id"], "waveyard/projects/[id]/master");
+  await register(/^\/api\/waveyard\/projects\/([^/]+)\/sound-design$/, ["id"], "waveyard/projects/[id]/sound-design");
+  await register(/^\/api\/waveyard\/projects\/([^/]+)\/cleanup$/, ["id"], "waveyard/projects/[id]/cleanup");
+  await register(/^\/api\/streaming\/accounts$/, [], "streaming/accounts");
   await register(/^\/api\/assets\/([^/]+)\/waveform$/, ["id"], "assets/[id]/waveform");
   await register(/^\/api\/assets\/([^/]+)$/, ["id"], "assets/[id]");
   await register(/^\/api\/remixes\/([^/]+)$/, ["id"], "remixes/[id]");
@@ -83,7 +86,7 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
   await register(/^\/api\/exports\/([^/]+)\/retry$/, ["id"], "exports/[id]/retry");
   const bundle = await build({ entryPoints: ["tests/acceptance/converter-waveyard.fixture.tsx"], bundle: true, write: false, platform: "browser", format: "esm", jsx: "automatic", define: { "process.env": JSON.stringify({ NODE_ENV: "development" }) } });
   const worker = await build({ entryPoints: ["src/lib/waveyard/arrangement-pcm.worker.ts"], bundle: true, write: false, platform: "browser", format: "iife" });
-  const routeErrors = [], browserErrors = [], assetResponses = [];
+  const routeErrors = [], optionalPanelStates = [], browserErrors = [], assetResponses = [];
   server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://127.0.0.1:${server.address().port}`);
@@ -101,7 +104,17 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
       for await (const chunk of req) chunks.push(chunk);
       const request = new Request(url, { method: req.method, headers: { ...req.headers, host: "localhost" }, ...(!["GET", "HEAD"].includes(req.method) ? { body: Buffer.concat(chunks) } : {}) });
       const response = await route.handlers[req.method](request, { params: Promise.resolve(Object.fromEntries(route.names.map((name, index) => [name, match[index + 1]]))) });
-      if (response.status >= 400) routeErrors.push({ path: url.pathname, status: response.status, error: await response.clone().text() });
+      if (response.status >= 400) {
+        const error = await response.clone().text();
+        // A derived arrangement has no project-owned source to master, and
+        // its referenced passthrough assets may lack optional waveform JSON.
+        // Record these exact product capability states, never hide arbitrary
+        // failures in conversion, playback, session, handoff or export.
+        const optional =
+          (/^\/api\/assets\/[^/]+\/waveform$/.test(url.pathname) && response.status === 404 && error === '{"error":"Waveform is not available for this asset yet."}') ||
+          (/^\/api\/waveyard\/projects\/[^/]+\/master$/.test(url.pathname) && response.status === 409 && error === '{"error":"This project has no source audio to master."}');
+        (optional ? optionalPanelStates : routeErrors).push({ path: url.pathname, status: response.status, error });
+      }
       res.writeHead(response.status, Object.fromEntries(response.headers));
       if (response.body) for await (const chunk of response.body) {
         if (!res.write(chunk)) await new Promise(resolve => res.once("drain", resolve));
@@ -339,7 +352,7 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
       sessionRms, reopenedSessionRms, reopenedSessionIdentityVerified: true, handoff, versionId: version.id, exportJobId,
       zipSha256: sha(await readFile(zipPath)),
       export: { sha256: sha(await readFile(wavPath)), fileSizeBytes: (await readFile(wavPath)).length, inspection: exportInfo, frames: actualFrames, idealTimelineFrames, rounding, peak, rms, centrePanGain: Math.SQRT1_2, decodedPcmSha256: sha(actual), referencePcmSha256: sha(expected), maximumError, tolerance: 4 / 32768 },
-      originalAndPublishedOutputsUnchanged: true, routeErrors, browserErrors, assetResponses,
+      originalAndPublishedOutputsUnchanged: true, routeErrors, optionalPanelStates, browserErrors, assetResponses,
       runtime: { node: process.version, chromium: browser.version() },
     };
     await writeFile(join(receipts, "receipt.json"), JSON.stringify(receipt, null, 2));
@@ -347,7 +360,7 @@ test("full authorised recording → FLAC batch → ZIP → TrackPlayer → reope
     console.log(JSON.stringify({ kind: "converter-waveyard-connected-acceptance", ...receipt }));
   } catch (error) {
     await page.screenshot({ path: join(receipts, "failure.png"), fullPage: true }).catch(() => {});
-    await writeFile(join(receipts, "failure.json"), JSON.stringify({ error: String(error), browserErrors, routeErrors }, null, 2));
+    await writeFile(join(receipts, "failure.json"), JSON.stringify({ error: String(error), browserErrors, routeErrors, optionalPanelStates }, null, 2));
     throw error;
   }
 });

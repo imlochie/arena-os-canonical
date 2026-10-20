@@ -27,6 +27,7 @@ const sessionId = location.pathname.match(/^\/waveyard\/session\/([^/]+)$/)?.[1]
 const projectId = location.pathname.match(/^\/waveyard\/projects\/([^/]+)$/)?.[1];
 const trackId = location.pathname.match(/^\/waveyard\/play\/([^/]+)$/)?.[1];
 const router = {
+  bfcacheId: location.href,
   push: (url: string) => location.assign(url), replace: (url: string) => location.replace(url),
   back: () => history.back(), forward: () => history.forward(), refresh: () => location.reload(),
   prefetch: async () => {}, hmrRefresh: () => {},
