@@ -1,0 +1,49 @@
+{
+  "scope": "Actual isolated worker dependency graph/PostgreSQL/storage/MIDI writer and post-COMMIT reporting fault. Analysis/chord rows are controlled fixtures; NOT actual chord analysis, inference, Electron or Windows.",
+  "jobId": "7f191256-6af9-442c-aa9d-5f3df2fb062a",
+  "status": "complete",
+  "sha256": "c17bac6f5f1cefb1a0442c66777d3ad3afc3ececc3cea3c3c037bf136027d5f1",
+  "bytes": 58,
+  "tempos": [
+    500000
+  ],
+  "events": [
+    {
+      "tick": 0,
+      "status": 145,
+      "note": 48,
+      "velocity": 114
+    },
+    {
+      "tick": 0,
+      "status": 145,
+      "note": 52,
+      "velocity": 114
+    },
+    {
+      "tick": 0,
+      "status": 145,
+      "note": 55,
+      "velocity": 114
+    },
+    {
+      "tick": 960,
+      "status": 129,
+      "note": 48,
+      "velocity": 0
+    },
+    {
+      "tick": 960,
+      "status": 129,
+      "note": 52,
+      "velocity": 0
+    },
+    {
+      "tick": 960,
+      "status": 129,
+      "note": 55,
+      "velocity": 0
+    }
+  ],
+  "redispatchPreservedAsset": true
+}

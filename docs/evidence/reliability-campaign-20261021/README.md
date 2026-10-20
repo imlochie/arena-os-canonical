@@ -223,3 +223,51 @@ PCM: cryptographic input identity and rendered output identity are separate.
 The previous final full-source run on b025e86 was deliberately interrupted after
 this P0 reproduction. Like the earlier interrupted run it is NOT a pass. A fresh
 exact committed full-source run is required below.
+
+## Cycle 7: hosted Redis-service receipt crashed after real rendering
+
+The b025e86 hosted A7 job failed at the native export-lease acceptance step,
+while the same local acceptance with a built Redis binary passed. Reproducing
+CI's actual external-service configuration, WITHOUT redis-server on PATH,
+failed in 4,866 ms at the receipt's `.stdout.trim()` (raw
+`raw/redis-service-before.txt`). The server-side export had already completed;
+this was not evidence that queue protection failed. The receipt wrongly invoked
+a host binary even when the test connected to an existing Redis service.
+
+Fix: read `queue.getBackend().redisVersion`, the installed BullMQ 6 API backed by
+its connected Redis INFO, and assert a real version is available. No hardcoded
+version, extra dependency, changed audio/lease assertion, timeout increase or
+skip. The first attempted fix used the obsolete BullMQ `.client` API and failed
+before commit; that failed raw run is retained too. This corrects cycle 5's
+host-binary version approach rather than deleting its failure history.
+
+`ARENA_FX_REDIS_URL=redis://127.0.0.1:16389/15 node --import ./scripts/register-src-loader.mjs --test tests/acceptance/export-lease.test.mjs`
+→ **1 pass, 0 fail, 56,986 ms**. Actual connected Redis 7.2.12, real BullMQ workers,
+PostgreSQL, native FFmpeg, expired lease/stale worker, frozen version after live
+workspace edits, and seven actual process interruption boundaries. All repaired
+media have zero PCM error against the native reference and one committed asset.
+Raw: `raw/redis-service-after.txt`. The service binary runs as a separate managed
+process; the test's PATH still lacks redis-server. This matches CI's topology;
+it is not itself a hosted runner result. Hosted checks on the next pushed commit
+remain a separate requirement.
+
+### Additional evidence and prior-checkpoint status
+
+- b025e86 exact local native separation matrix finished: **44 pass, 0 fail**,
+  173,037 ms. These overlap cycle 1's matrix, not 44 additional improvements.
+- b025e86 exact local types/lint/build/desktop/production-worker types/staging and
+  actual packaged-server headless acceptance all passed. Linux, native PG/FFmpeg,
+  loopback; not installed Electron/Windows.
+- b025e86 hosted genuine trained 4/6 inference run **39461277015 succeeded**;
+  conversion batch **39461276948** and connected workflow **39461276996** succeeded.
+  PR CI **39461286850** browser/static/Compose jobs succeeded, but A7 failed as
+  above. That revision is not labelled overall green. None of these results
+  certifies subsequent commits.
+- Supplemental actual standalone MIDI encoder/publication test used controlled
+  harmony rows (NOT chord inference), real PostgreSQL/storage and the real MIDI
+  writer. A reporting exception after commit retained the same asset through
+  redispatch; independent SMF parsing verified PPQ 480, tempo 500000, C48/E52/G55
+  at tick 0 with velocity 114 and note-offs at tick 960. The 58-byte file SHA-256
+  is `c17bac6f5f1cefb1a0442c66777d3ad3afc3ececc3cea3c3c037bf136027d5f1`.
+  Raw receipt: `raw/standalone-midi-controlled-harmony.json`. This does not close
+  trained chord-analysis, Windows/Electron, or export OS-kill acceptance gates.

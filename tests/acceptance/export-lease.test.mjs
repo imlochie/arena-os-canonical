@@ -327,11 +327,12 @@ test(
         .select()
         .from(schema.exportAssets)
         .where(eq(schema.exportAssets.exportJobId, job.id));
+      assert.match(queue.getBackend().redisVersion, /^\d+\.\d+\.\d+/, "Redis version must describe the connected queue service");
       console.log(
         JSON.stringify({
           runtime:
             "real native PostgreSQL + Redis + BullMQ Worker production export handler",
-          redisVersion: spawnSync("redis-server", ["--version"], { encoding: "utf8" }).stdout.trim(),
+          redisVersion: queue.getBackend().redisVersion,
           queueState: await queued.getState(),
           beforeLateWorker: winner.status,
           afterLateWorker: finished.status,
