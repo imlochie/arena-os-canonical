@@ -2162,3 +2162,20 @@ Windows, and full replacement/catalogue parity remain open. Replacement gate
 CLOSED. No demand to return to Windows and no reattempt of blocked sandbox
 weight hosts. Hosted runner acquisition is a changed approved execution strategy,
 not an unverified mirror or bypass.
+
+### A8 exact first milestone and first hosted failure
+
+Committed/pushed `0245ebdf0cb873cd214ebc137183a0fdb6ccac16` normally to the fixed
+owner branch. Typecheck, production build and lint0errors49warnings passed.
+Exact-head full source verification passed with no skips/failures; raw TAP and
+identity receipt are retained under `.data/acceptance/source-suite/` and
+`/home/user/a8-source-final.txt` (812928ms wall time). This is controlled/source
+regression evidence, not genuine inference. Hosted A8 run39387070402 (job
+118509340719) **FAILED** its actual acceptance step after dependency/browser
+installation succeeded. The detailed error is not yet known: GitHub's signed
+log host returned EOF from this sandbox. Upload reported no files because the
+artifact action excludes hidden `.data` paths by default. Correcting retention
+with explicit `include-hidden-files` and adding a Checks annotation/summary of
+the actual receipt plus first TAP failure makes the next failure diagnosable
+through the permitted GitHub API. This changes observation, not model sources
+or success criteria. No genuine gate is accepted from this failed run.
