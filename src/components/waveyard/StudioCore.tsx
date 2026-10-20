@@ -131,7 +131,16 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     ...stems.map(stem => [stem.id, stem.checksumSha256] as const),
     ...sources.map(source => [source.id, JSON.stringify([source.checksumSha256, source.analysis])] as const),
   ]), [stems, sources]);
-  const arrangementPreview = useArrangementPreview(seekArrangementPosition, remix, previewSourceRevision, projectId, previewSourceRevisions);
+  const activePreviewTrackIds = useMemo(() => {
+    const trackByClipId = new Map<string, string>();
+    for (const track of remix?.tracks ?? []) for (const clip of track.clips) trackByClipId.set(clip.id, track.id);
+    const selectedTrackIds = selectedClipIds.map(clipId => trackByClipId.get(clipId));
+    return [...new Set([
+      ...(clipSelection ? [clipSelection.trackId] : []),
+      ...selectedTrackIds.filter((trackId): trackId is string => Boolean(trackId)),
+    ])];
+  }, [clipSelection, remix, selectedClipIds]);
+  const arrangementPreview = useArrangementPreview(seekArrangementPosition, remix, previewSourceRevision, projectId, previewSourceRevisions, activePreviewTrackIds);
   const sourceById = useMemo(
     () => new Map(sources.map((source) => [source.id, source])),
     [sources],

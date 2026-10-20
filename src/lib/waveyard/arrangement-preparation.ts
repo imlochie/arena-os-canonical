@@ -9,10 +9,12 @@ export function previewStateKey(state: ArrangementPreviewState, revision = "", s
 export function transformedClipKey(clip: ArrangementPreviewState["tracks"][number]["clips"][number], state: ArrangementPreviewState, revision: string) {
   return JSON.stringify([clip.stemAssetId, clip.sourceOffsetMs, clip.durationMs, clip.tempoSyncEnabled, clip.keySyncEnabled, state.tempoBpm, state.targetKey, revision]);
 }
-type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number; sourceBytesByKey: Record<string, number>; evictedSourceBytes?: number; workerSourcesEvicted?: boolean } };
+type Prepared = { left: Float32Array; right: Float32Array; stats?: { mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number; sourceBytesByKey: Record<string, number>; evictedSourceBytes?: number; warmSourceBytes?: number; workerSourcesEvicted?: boolean } };
 const MAX_DECODED_BYTES = 128 * 1024 * 1024;
 const MAX_ENCODED_RECOVERY_BYTES = 128 * 1024 * 1024;
 const MAX_RECOVERY_TO_PCM_RATIO = 0.9;
+/** Selected-track PCM is a bounded Worker cache, not a second decoded owner. */
+export const MAX_WARM_SOURCE_PCM_BYTES = 16 * 1024 * 1024;
 export const WORKER_SOURCE_IDLE_EVICTION_MS = 5_000;
 /** Owns decoded/worker buffers for one open workspace. Hard cancellation kills
  * CPU work as well as fetches. Encoded recovery blobs remain only when they are
@@ -138,7 +140,7 @@ export class ArrangementPreparation {
     };
     return this.worker = worker;
   }
-  async prepare(snapshot: ArrangementPreviewState, context: AudioContext, revision = "", sourceRevisions: ReadonlyMap<string, string> = new Map()) {
+  async prepare(snapshot: ArrangementPreviewState, context: AudioContext, revision = "", sourceRevisions: ReadonlyMap<string, string> = new Map(), activeTrackIds: readonly string[] = []) {
     this.cancel();
     if (this.rate && this.rate !== context.sampleRate) this.dispose();
     this.rate = context.sampleRate;
@@ -157,12 +159,15 @@ export class ArrangementPreparation {
     const solo = state.tracks.some(track => track.solo && !track.muted);
     const needed = new Set<string>();
     const requests = new Map<string, { url: string; body?: string }>();
+    const activeTrackSet = new Set(activeTrackIds);
+    const activeSourcesByTrack = new Map<string, Set<string>>();
     const trackOrder: number[] = [];
     const lastUseByKey: Record<string, number> = {};
     for (let trackIndex = 0; trackIndex < state.tracks.length; trackIndex++) {
       const track = state.tracks[trackIndex];
       if (effectiveMuted(track, solo)) continue;
       trackOrder.push(trackIndex);
+      const activeSources = activeTrackSet.has(track.id) ? new Set<string>() : null;
       for (const clip of track.clips) {
         if (clip.tempoSyncEnabled || clip.keySyncEnabled) {
           const id = clip.stemAssetId;
@@ -170,15 +175,21 @@ export class ArrangementPreparation {
           requests.set(sourceKey, { url: `/api/assets/${id}/audition`, body: JSON.stringify({ sourceOffsetMs: clip.sourceOffsetMs, durationMs: clip.durationMs, tempoSyncEnabled: clip.tempoSyncEnabled, keySyncEnabled: clip.keySyncEnabled, tempoBpm: state.tempoBpm, targetKey: state.targetKey, sampleRate: context.sampleRate }) });
           clip.stemAssetId = sourceKey; clip.sourceOffsetMs = 0; clip.tempoSyncEnabled = false; clip.keySyncEnabled = false;
           needed.add(sourceKey);
+          activeSources?.add(sourceKey);
         } else {
           const id = clip.stemAssetId, sourceRevision = sourceRevisions.get(id) ?? revision;
           const sourceKey = sourceRevision ? JSON.stringify([id, sourceRevision]) : id;
           needed.add(sourceKey); requests.set(sourceKey, { url: `/api/assets/${id}` });
           clip.stemAssetId = sourceKey;
+          activeSources?.add(sourceKey);
         }
         lastUseByKey[clip.stemAssetId] = trackIndex;
       }
+      if (activeSources?.size) activeSourcesByTrack.set(track.id, activeSources);
     }
+    // Caller order expresses recent-selection priority; the Worker enforces the
+    // byte limit using actual decoded PCM lengths, not a fixed source count.
+    const warmSourceKeys = [...new Set(activeTrackIds.flatMap(trackId => [...(activeSourcesByTrack.get(trackId) ?? [])]))];
     const preMasterKey = arrangementPreMasterCacheKey(state, context.sampleRate, revision);
     // Drop removed clips, old transform variants and closed-project data, rather
     // than keeping every edit's AudioBuffer until the tab eventually exits.
@@ -203,7 +214,10 @@ export class ArrangementPreparation {
       // Worker releases each source after its final track consumer. A decoded
       // buffer is released only after its bounded encoded recovery copy is
       // safely retained; otherwise it remains the network-independent owner.
-      worker.postMessage({ kind: "render", id, state, sampleRate: context.sampleRate, retain: [...needed], revision, trackOrder, lastUseByKey });
+      worker.postMessage({
+        kind: "render", id, state, sampleRate: context.sampleRate, retain: [...needed], revision, trackOrder, lastUseByKey,
+        warmSourceKeys, warmSourceByteBudget: MAX_WARM_SOURCE_PCM_BYTES,
+      });
       if (!reusePreMasterMix) {
         for (const trackIndex of trackOrder) {
           signal.throwIfAborted();

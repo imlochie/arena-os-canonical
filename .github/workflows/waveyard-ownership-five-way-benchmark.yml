@@ -1,0 +1,265 @@
+name: Waveyard five-way hybrid ownership benchmark
+
+on:
+  push:
+    branches:
+      - benchmark/waveyard-hybrid-ownership
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: waveyard-ownership-five-way-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  five-way-comparison:
+    name: Baseline → P2 → P3 → P4 → P5 · 4/16/32 sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      BASELINE_SHA: a8e015592e81fcd0916e5a0f97baf3f8721ec091
+      PROTOTYPE2_SHA: dbd237c8730cb81293a94415a5ed3fc958bf86f8
+      PROTOTYPE3_SHA: 94b9a21ed7276c4375ba9db022bd777905dbd3dd
+      PROTOTYPE4_SHA: 92fee6b83aa1595a2e27658831c9d6606d173bc1
+      CHROMIUM_VERSION: 153.0.8010.0
+      ARENA_MEMORY_COUNTS: "4,16,32"
+      ARENA_MEMORY_REPEATS: "3"
+      ARENA_FFMPEG_PATH: /usr/bin/ffmpeg
+      ARENA_FFPROBE_PATH: /usr/bin/ffprobe
+      EVIDENCE_DIR: .data/waveyard-ownership-five-way
+
+    steps:
+      - name: Check out isolated Prototype 5 snapshot
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install exact Node.js runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+
+      - name: Install browser and media system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes curl ffmpeg unzip
+
+      - name: Install locked project dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Prepare embedded PostgreSQL runtime libraries
+        run: |
+          set -euo pipefail
+          pg_native="$GITHUB_WORKSPACE/node_modules/@embedded-postgres/linux-x64/native"
+          pg_lib="$pg_native/lib"
+          for soname in libpq.so.5 libicui18n.so.60 libicuuc.so.60 libicudata.so.60; do
+            library="$(find "$pg_lib" -maxdepth 1 -type f -name "${soname}.*" -printf '%f\n' | sort -V | tail -n 1)"
+            if [[ -z "$library" ]]; then echo "Embedded PostgreSQL runtime library missing: $soname"; exit 1; fi
+            ln -sfn "$library" "$pg_lib/$soname"
+          done
+          export LD_LIBRARY_PATH="$pg_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          for binary in initdb postgres pg_ctl; do
+            missing="$(ldd "$pg_native/bin/$binary" | awk '/not found/ {print}')"
+            if [[ -n "$missing" ]]; then printf '%s has unresolved libraries:\n%s\n' "$binary" "$missing"; exit 1; fi
+          done
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      - name: Install Chromium native dependencies
+        run: npx playwright install-deps chromium
+
+      - name: Install exact Chrome for Testing build
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/chrome-for-testing-${CHROMIUM_VERSION}.zip"
+          browser_dir="$RUNNER_TEMP/chrome-for-testing"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip" \
+            --output "$archive"
+          mkdir -p "$browser_dir"
+          unzip -q "$archive" -d "$browser_dir"
+          chrome="$browser_dir/chrome-linux64/chrome"
+          chmod +x "$chrome"
+          actual_version="$("$chrome" --version | awk '{print $NF}')"
+          test "$actual_version" = "$CHROMIUM_VERSION"
+          missing_libraries="$(ldd "$chrome" | awk '/not found/ {print}')"
+          if [[ -n "$missing_libraries" ]]; then printf 'Chrome has unresolved libraries:\n%s\n' "$missing_libraries"; exit 1; fi
+          echo "CHROMIUM_EXECUTABLE_PATH=$chrome" >> "$GITHUB_ENV"
+
+      - name: Verify source snapshots and stage the identical harness
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          prototype5_sha="$(git rev-parse HEAD)"
+          test "$(git rev-parse "$prototype5_sha^")" = "$PROTOTYPE4_SHA"
+          test "$(node --version)" = "v22.22.3"
+          memory_kib="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+          if (( memory_kib < 8 * 1024 * 1024 )); then echo "Runner exposes less than 8 GiB RAM; refusing comparison."; exit 1; fi
+          for sha in "$BASELINE_SHA" "$PROTOTYPE2_SHA" "$PROTOTYPE3_SHA" "$PROTOTYPE4_SHA"; do git cat-file -e "${sha}^{commit}"; done
+          for sha in "$PROTOTYPE2_SHA" "$PROTOTYPE3_SHA" "$PROTOTYPE4_SHA" "$prototype5_sha"; do
+            git diff --exit-code "$BASELINE_SHA" "$sha" -- package.json package-lock.json
+          done
+          {
+            echo "baseline_sha=$BASELINE_SHA"
+            echo "prototype2_sha=$PROTOTYPE2_SHA"
+            echo "prototype3_sha=$PROTOTYPE3_SHA"
+            echo "prototype4_control_snapshot_sha=$PROTOTYPE4_SHA"
+            echo "prototype4_implementation_commit=4d9bba4fe3d614fa07c4684ed0c343ac3c51f878"
+            echo "prototype5_sha=$prototype5_sha"
+            echo "prototype5_parent=$(git rev-parse "$prototype5_sha^")"
+            echo "branch=$GITHUB_REF_NAME"
+            echo "workflow_run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "node=$(node --version)"
+            echo "npm=$(npm --version)"
+            echo "chrome=$("$CHROMIUM_EXECUTABLE_PATH" --version)"
+            echo "ffmpeg=$(/usr/bin/ffmpeg -version | sed -n '1p')"
+            echo "ffprobe=$(/usr/bin/ffprobe -version | sed -n '1p')"
+            echo "MemTotal_kB=$memory_kib"
+            echo "--- /etc/os-release ---"; cat /etc/os-release
+            echo "--- uname ---"; uname -a
+            echo "--- CPU ---"; lscpu
+            echo "--- cgroup memory limit ---"
+            if [[ -r /sys/fs/cgroup/memory.max ]]; then cat /sys/fs/cgroup/memory.max; else echo unavailable; fi
+          } > "$EVIDENCE_DIR/runtime-and-source.txt"
+
+          baseline_dir="$RUNNER_TEMP/waveyard-five-way-baseline"
+          prototype2_dir="$RUNNER_TEMP/waveyard-five-way-prototype2"
+          prototype3_dir="$RUNNER_TEMP/waveyard-five-way-prototype3"
+          prototype4_dir="$RUNNER_TEMP/waveyard-five-way-prototype4"
+          git worktree add --detach "$baseline_dir" "$BASELINE_SHA"
+          git worktree add --detach "$prototype2_dir" "$PROTOTYPE2_SHA"
+          git worktree add --detach "$prototype3_dir" "$PROTOTYPE3_SHA"
+          git worktree add --detach "$prototype4_dir" "$PROTOTYPE4_SHA"
+          for variant_dir in "$baseline_dir" "$prototype2_dir" "$prototype3_dir" "$prototype4_dir"; do
+            for file in tests/acceptance/studio-fx.test.mjs tests/acceptance/studio-preparation.fixture.ts; do
+              mkdir -p "$variant_dir/$(dirname "$file")"
+              cp "$GITHUB_WORKSPACE/$file" "$variant_dir/$file"
+            done
+            ln -s "$GITHUB_WORKSPACE/node_modules" "$variant_dir/node_modules"
+          done
+          for file in tests/acceptance/studio-fx.test.mjs tests/acceptance/studio-preparation.fixture.ts; do
+            expected="$(sha256sum "$file" | awk '{print $1}')"
+            for variant_dir in "$baseline_dir" "$prototype2_dir" "$prototype3_dir" "$prototype4_dir"; do
+              actual="$(sha256sum "$variant_dir/$file" | awk '{print $1}')"
+              test "$actual" = "$expected"
+            done
+          done
+          {
+            echo "BASELINE"; (cd "$baseline_dir" && sha256sum src/lib/waveyard/arrangement-preparation.ts src/lib/waveyard/arrangement-pcm.worker.ts src/lib/waveyard/arrangement-pcm.ts)
+            echo "P2"; (cd "$prototype2_dir" && sha256sum src/lib/waveyard/arrangement-preparation.ts src/lib/waveyard/arrangement-pcm.worker.ts src/lib/waveyard/arrangement-pcm.ts)
+            echo "P3"; (cd "$prototype3_dir" && sha256sum src/lib/waveyard/arrangement-preparation.ts src/lib/waveyard/arrangement-pcm.worker.ts src/lib/waveyard/arrangement-pcm.ts)
+            echo "P4 control"; (cd "$prototype4_dir" && sha256sum src/lib/waveyard/arrangement-preparation.ts src/lib/waveyard/arrangement-pcm.worker.ts src/lib/waveyard/arrangement-pcm.ts)
+            echo "P5"; sha256sum src/lib/waveyard/arrangement-preparation.ts src/lib/waveyard/arrangement-pcm.worker.ts src/lib/waveyard/arrangement-pcm.ts src/lib/waveyard/useArrangementPreview.ts src/components/waveyard/StudioCore.tsx
+            echo "COMMON HARNESS"; sha256sum tests/acceptance/studio-fx.test.mjs tests/acceptance/studio-preparation.fixture.ts scripts/compare-waveyard-five-way-benchmark.mjs
+          } > "$EVIDENCE_DIR/source-hashes.txt"
+          printf '%s\n' \
+            "Variants: owner baseline $BASELINE_SHA; P2 $PROTOTYPE2_SHA; P3 $PROTOTYPE3_SHA; P4 control snapshot $PROTOTYPE4_SHA; P5 $prototype5_sha" \
+            "Order: baseline first, then P2, P3, P4 and P5 in one runner job" \
+            "Runtime: Node.js 22.22.3; Chrome for Testing $CHROMIUM_VERSION; same lockfile and identical copied acceptance harness" \
+            "Workloads: 4/16/32 distinct stereo 10-second sources, three repeats per source count and variant (45 cells)" \
+            "Active-source fixture: stable source-identity selection; hot, repeated-hot and cold edits measured separately" \
+            "P5: at most 16 MiB of explicitly selected source PCM; idle release after 5 seconds; encoded local recovery retained" \
+            "Measurements: fetch/body, decode, recovery/cache lookups, PCM copies, transfer enqueue, Worker track acknowledgements and render completion" \
+            "Correctness: seven exact stereo PCM hashes, replay identity, pre-master cache, local Worker-error/cancellation recovery" \
+            "Responsiveness: existing 250 ms UI-gap gate unchanged; 512 MiB PSS remains diagnostic only" \
+            "P4 remains the immutable control; P5 is a child commit on a separate branch. No PR or merge is created." \
+            > "$EVIDENCE_DIR/manifest.txt"
+
+      - name: Typecheck Prototype 5
+        run: npm run typecheck 2>&1 | tee "$EVIDENCE_DIR/prototype5-typecheck.log"
+
+      - name: Verify P5 recovery and warm ownership before performance sampling
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|P5 selected PCM working set'
+          ARENA_MEMORY_VARIANT=prototype5 \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs \
+            2>&1 | tee "$EVIDENCE_DIR/prototype5-correctness-preflight.tap"
+
+      - name: Run baseline first
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|P5 selected PCM working set|distinct-source preparation profiles 4/16/32'
+          set +e
+          (cd "$RUNNER_TEMP/waveyard-five-way-baseline" && ARENA_MEMORY_VARIANT=baseline ARENA_MEMORY_COUNTS="$ARENA_MEMORY_COUNTS" ARENA_MEMORY_REPEATS="$ARENA_MEMORY_REPEATS" \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs) \
+            2>&1 | tee "$EVIDENCE_DIR/baseline.tap"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          exit "$test_status"
+
+      - name: Run Prototype 2
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|P5 selected PCM working set|distinct-source preparation profiles 4/16/32'
+          set +e
+          (cd "$RUNNER_TEMP/waveyard-five-way-prototype2" && ARENA_MEMORY_VARIANT=prototype2 ARENA_MEMORY_COUNTS="$ARENA_MEMORY_COUNTS" ARENA_MEMORY_REPEATS="$ARENA_MEMORY_REPEATS" \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs) \
+            2>&1 | tee "$EVIDENCE_DIR/prototype2.tap"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          exit "$test_status"
+
+      - name: Run Prototype 3
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|P5 selected PCM working set|distinct-source preparation profiles 4/16/32'
+          set +e
+          (cd "$RUNNER_TEMP/waveyard-five-way-prototype3" && ARENA_MEMORY_VARIANT=prototype3 ARENA_MEMORY_COUNTS="$ARENA_MEMORY_COUNTS" ARENA_MEMORY_REPEATS="$ARENA_MEMORY_REPEATS" \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs) \
+            2>&1 | tee "$EVIDENCE_DIR/prototype3.tap"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          exit "$test_status"
+
+      - name: Run Prototype 4 control
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|P5 selected PCM working set|distinct-source preparation profiles 4/16/32'
+          set +e
+          (cd "$RUNNER_TEMP/waveyard-five-way-prototype4" && ARENA_MEMORY_VARIANT=prototype4 ARENA_MEMORY_COUNTS="$ARENA_MEMORY_COUNTS" ARENA_MEMORY_REPEATS="$ARENA_MEMORY_REPEATS" \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs) \
+            2>&1 | tee "$EVIDENCE_DIR/prototype4.tap"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          exit "$test_status"
+
+      - name: Run Prototype 5
+        run: |
+          set -euo pipefail
+          pattern='per-asset source revision|real Chromium structured-clone failure|real preparation cancellation|controlled Worker error during a source endpoint outage|removing a track releases its obsolete recovery owners|large encoded recovery sources|warm preparation cancellation|P5 selected PCM working set|distinct-source preparation profiles 4/16/32'
+          set +e
+          ARENA_MEMORY_VARIANT=prototype5 ARENA_MEMORY_COUNTS="$ARENA_MEMORY_COUNTS" ARENA_MEMORY_REPEATS="$ARENA_MEMORY_REPEATS" \
+            node --import ./scripts/register-src-loader.mjs --test --test-name-pattern "$pattern" tests/acceptance/studio-fx.test.mjs \
+            2>&1 | tee "$EVIDENCE_DIR/prototype5.tap"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          exit "$test_status"
+
+      - name: Compare all runs and write five-way evidence
+        run: |
+          set -euo pipefail
+          BENCHMARK_BASELINE_SHA="$BASELINE_SHA" \
+          BENCHMARK_PROTOTYPE2_SHA="$PROTOTYPE2_SHA" \
+          BENCHMARK_PROTOTYPE3_SHA="$PROTOTYPE3_SHA" \
+          BENCHMARK_PROTOTYPE4_SHA="$PROTOTYPE4_SHA" \
+          BENCHMARK_PROTOTYPE5_SHA="$(git rev-parse HEAD)" \
+          CHROMIUM_VERSION="$CHROMIUM_VERSION" \
+          node scripts/compare-waveyard-five-way-benchmark.mjs \
+            "$EVIDENCE_DIR/baseline.tap" "$EVIDENCE_DIR/prototype2.tap" \
+            "$EVIDENCE_DIR/prototype3.tap" "$EVIDENCE_DIR/prototype4.tap" \
+            "$EVIDENCE_DIR/prototype5.tap" "$EVIDENCE_DIR/comparison.json" \
+            2>&1 | tee "$EVIDENCE_DIR/comparison.log"
+
+      - name: Upload raw logs and machine-readable comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveyard-five-way-ownership-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .data/waveyard-ownership-five-way/
+          if-no-files-found: warn
+          retention-days: 90

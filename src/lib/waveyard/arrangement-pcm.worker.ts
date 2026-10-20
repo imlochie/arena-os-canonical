@@ -9,6 +9,7 @@ export type PreviewSource = { key: string; sampleRate: number; channels: Float32
 export type PreviewWork = {
   kind: "render"; id: number; state: ArrangementPreviewState; sampleRate: number;
   retain: string[]; revision: string; trackOrder: number[]; lastUseByKey: Record<string, number>;
+  warmSourceKeys?: string[]; warmSourceByteBudget?: number;
 };
 type PreviewMessage =
   | PreviewWork
@@ -20,11 +21,12 @@ type PreviewMessage =
 type RenderSession = {
   id: number; state: ArrangementPreviewState; sampleRate: number; revision: string;
   trackOrder: number[]; nextTrack: number; lastUseByKey: Record<string, number>;
+  warmSourceKeys: Set<string>; warmSourcePriority: string[]; warmSourceByteBudget: number;
   pass: ArrangementMixPass; evictedSourceBytes: number;
 };
 type SourceStats = {
   mixCacheHit: boolean; retainedMixBytes: number; sourceBytes: number;
-  sourceBytesByKey: Record<string, number>; evictedSourceBytes: number;
+  sourceBytesByKey: Record<string, number>; evictedSourceBytes: number; warmSourceBytes: number;
   workerSourcesEvicted: boolean;
 };
 const scope = globalThis as unknown as {
@@ -34,6 +36,7 @@ const scope = globalThis as unknown as {
 const sources = new Map<string, PreviewSource>();
 const mixCache: ArrangementMixCache = { revision: "" };
 let session: RenderSession | null = null;
+let warmSourceKeys = new Set<string>();
 
 function sourceBytes(source: PreviewSource) {
   return source.channels.reduce((bytes, channel) => bytes + channel.byteLength, 0);
@@ -43,6 +46,7 @@ function currentSourceStats(mixCacheHit: boolean, evictedSourceBytes: number): S
   return {
     mixCacheHit, retainedMixBytes: mixCache.pcm?.byteLength ?? 0,
     sourceBytesByKey, sourceBytes: Object.values(sourceBytesByKey).reduce((sum, bytes) => sum + bytes, 0),
+    warmSourceBytes: Object.entries(sourceBytesByKey).reduce((sum, [key, bytes]) => sum + (warmSourceKeys.has(key) ? bytes : 0), 0),
     evictedSourceBytes, workerSourcesEvicted: sources.size === 0,
   };
 }
@@ -66,6 +70,7 @@ scope.onmessage = ({ data }) => {
   if (data.kind === "retain") {
     const retain = new Set(data.retain);
     for (const key of sources.keys()) if (!retain.has(key)) sources.delete(key);
+    warmSourceKeys = new Set([...warmSourceKeys].filter(key => retain.has(key)));
     return;
   }
   if (data.kind === "source") {
@@ -75,6 +80,7 @@ scope.onmessage = ({ data }) => {
   if (data.kind === "release-sources") {
     const evictedSourceBytes = [...sources.values()].reduce((sum, source) => sum + sourceBytes(source), 0);
     sources.clear();
+    warmSourceKeys.clear();
     scope.postMessage({ kind: "sources-released", id: data.id, stats: currentSourceStats(!!mixCache.hit, evictedSourceBytes) });
     return;
   }
@@ -82,10 +88,15 @@ scope.onmessage = ({ data }) => {
     try {
       const retain = new Set(data.retain);
       for (const key of sources.keys()) if (!retain.has(key)) sources.delete(key);
+      const warmPriority = [...new Set(data.warmSourceKeys ?? [])].filter(key => retain.has(key));
+      warmSourceKeys = new Set(warmPriority);
       mixCache.revision = data.revision;
       const key = arrangementPreMasterCacheKey(data.state, data.sampleRate, data.revision);
       if (mixCache.key === key && mixCache.pcm) {
         mixCache.hit = true;
+        // A cache-only master edit does not consume source PCM. Drop sources
+        // that are no longer in the explicitly selected working set.
+        for (const sourceKey of sources.keys()) if (!warmSourceKeys.has(sourceKey)) sources.delete(sourceKey);
         const pcm = prepareArrangementPcm(data.state, buffersForSources(), data.sampleRate, mixCache);
         postResult(data.id, pcm, true, 0);
         return;
@@ -94,6 +105,8 @@ scope.onmessage = ({ data }) => {
       session = {
         id: data.id, state: data.state, sampleRate: data.sampleRate, revision: data.revision,
         trackOrder: data.trackOrder, nextTrack: 0, lastUseByKey: data.lastUseByKey,
+        warmSourceKeys, warmSourcePriority: warmPriority,
+        warmSourceByteBudget: Math.max(0, Math.floor(data.warmSourceByteBudget ?? 0)),
         pass: startArrangementMix(data.state, data.sampleRate), evictedSourceBytes: 0,
       };
     } catch (error) { fail(data.id, error); }
@@ -108,7 +121,31 @@ scope.onmessage = ({ data }) => {
       if (!track) throw new Error("Arrangement track is unavailable.");
       addArrangementTrackToMix(session.pass, session.state, track, buffersForSources(), session.sampleRate);
       for (const [key, source] of sources) {
-        if ((session.lastUseByKey[key] ?? -1) <= data.trackIndex) {
+        if ((session.lastUseByKey[key] ?? -1) <= data.trackIndex && !session.warmSourceKeys.has(key)) {
+          session.evictedSourceBytes += sourceBytes(source);
+          sources.delete(key);
+        }
+      }
+      // Keep only completed, explicitly selected sources, in selection
+      // priority order, and never exceed the per-worker PCM byte budget.
+      let warmBytes = 0;
+      const keepWarm = new Set<string>();
+      for (const key of session.warmSourcePriority) {
+        const source = sources.get(key);
+        if (!source || (session.lastUseByKey[key] ?? -1) > data.trackIndex) continue;
+        const bytes = sourceBytes(source);
+        if (warmBytes + bytes <= session.warmSourceByteBudget) {
+          keepWarm.add(key);
+          warmBytes += bytes;
+        } else {
+          session.evictedSourceBytes += bytes;
+          sources.delete(key);
+        }
+      }
+      for (const [key, source] of sources) {
+        if (session.warmSourceKeys.has(key) &&
+            (session.lastUseByKey[key] ?? -1) <= data.trackIndex &&
+            !keepWarm.has(key)) {
           session.evictedSourceBytes += sourceBytes(source);
           sources.delete(key);
         }
