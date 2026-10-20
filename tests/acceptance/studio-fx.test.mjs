@@ -28,6 +28,9 @@ before(async () => {
   f = await missionPostgres(); root = await mkdtemp(path.join(tmpdir(), "arena-studio-fx-"));
   process.env.DATABASE_URL = f.url; process.env.WAVEYARD_STORAGE_DIR = path.join(root, "storage"); process.env.WAVEYARD_LOCAL_WORKER = "0"; delete process.env.REDIS_URL;
   database = await import("../../src/db/index.ts"); schema = await import("../../src/db/waveyardSchema.ts"); synth = await import("../../src/lib/waveyard/mixer/synth.ts");
+  await register(/^\/api\/jobs\/([^/]+)\/cancel$/, ["id"], "jobs/[id]/cancel");
+  await register(/^\/api\/jobs\/([^/]+)\/retry$/, ["id"], "jobs/[id]/retry");
+  await register(/^\/api\/waveyard\/processing-status$/, [], "waveyard/processing-status");
   await register(/^\/api\/library\/catalogue$/, [], "library/catalogue");
   await register(/^\/api\/library\/catalogue\/jobs$/, [], "library/catalogue/jobs");
   await register(/^\/api\/library\/catalogue\/([^/]+)$/, ["id"], "library/catalogue/[id]");
@@ -948,4 +951,91 @@ test("over-budget decoded metadata cannot seed an encoded recovery entry that by
   const result = await page.evaluate(state => window.verifyPreparationBudgetRetry(state), { ...initial.remix, tracks: initial.tracks });
   for (const message of result.results) assert.match(message, /128 MiB.*budget/);
   assert.equal(result.fetches, 2);
+});
+
+test("native separation UI: request stop → reload while stopping → acknowledge → fresh restart, no partial bank (controlled deep seam, not learned inference)", { timeout: 120000 }, async t => {
+  const input = await source(false, 1);
+  const { handleSeparationJob } = await import("../../src/lib/waveyard/worker-local/separation.ts");
+  const { handleWaveformJob } = await import("../../src/lib/waveyard/worker-local/waveform.ts");
+  const { DEEP_MODEL_ID, DEEP_STEM_TYPES } = await import("../../src/lib/waveyard/separation/modes.ts");
+  const { getStorage } = await import("../../src/lib/waveyard/storage.ts");
+  const detail = await api(`/api/waveyard/projects/${input.projectId}`);
+  const previousIds = detail.stems.map(stem => stem.id);
+  const [job] = await database.db.insert(schema.processingJobs).values({ projectId: input.projectId, sourceAssetId: detail.sources[0].id, type: "separation", status: "queued", stage: "queued", model: DEEP_MODEL_ID, requestedDevice: "cpu", idempotencyKey: crypto.randomUUID() }).returning();
+  let releaseStop; const stopGate = new Promise(resolve => { releaseStop = resolve; });
+  let started; const startGate = new Promise(resolve => { started = resolve; });
+  let attempts = 0;
+  broker.register("waveyard-waveform", handleWaveformJob);
+  broker.register("waveyard-separation", payload => handleSeparationJob(payload, { db: database.db, runDeep: async request => {
+    if (++attempts === 1) {
+      started();
+      await new Promise(resolve => request.signal.aborted ? resolve() : request.signal.addEventListener("abort", resolve, { once: true }));
+      await stopGate; request.signal.throwIfAborted();
+    }
+    // Only the process seam is controlled; actual WAV validation, storage,
+    // transaction, waveform generation, UI and restart routes are production.
+    const stems = [];
+    for (const stemType of DEEP_STEM_TYPES) {
+      const file = path.join(root, `CONTROLLED-${job.id}-${stemType}.wav`);
+      await writeFile(file, await readFile(request.inputPath));
+      stems.push({ stemType, path: file, bytes: (await readFile(file)).length });
+    }
+    return { engine: "demucs", model: DEEP_MODEL_ID, modelName: "CONTROLLED-NOT-LEARNED", modelVersion: "CONTROLLED-CANCELLATION-SEAM-NOT-LEARNED", checkpointPath: "NO-TRAINED-WEIGHTS", resolvedDevice: "cpu", stems };
+  } }));
+  const page = await browser.newPage(); t.after(async () => { releaseStop(); await broker.drain(30000); await page.close(); });
+  await broker.submit("waveyard-separation", job.id, { processingJobId: job.id, projectId: input.projectId, sourceAssetId: job.sourceAssetId, model: job.model, requestedDevice: "cpu" });
+  await startGate;
+  await page.goto(`${origin}/?room=separation&project=${input.projectId}`);
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  await page.getByRole("button", { name: "Cancel separation", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Stopping separation…", exact: true })).toBeDisabled();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Stopping separation…", exact: true })).toBeDisabled();
+  assert.equal((await api(`/api/waveyard/projects/${input.projectId}`)).stems.length, previousIds.length);
+  releaseStop(); assert.equal(await broker.drain(30000), true);
+  await expect(page.getByRole("button", { name: "Restart separation", exact: true })).toBeVisible({ timeout: 10000 });
+  await page.getByRole("button", { name: "Restart separation", exact: true }).click();
+  assert.equal(await broker.drain(30000), true);
+  const result = await api(`/api/waveyard/projects/${input.projectId}`);
+  assert.equal(result.jobs.find(value => value.id === job.id).status, "cancelled");
+  const fresh = result.jobs.find(value => value.id !== job.id && value.model === job.model);
+  assert.ok(fresh); assert.equal(fresh.status, "complete");
+  assert.equal(result.stems.filter(stem => stem.separationJobId === fresh.id).length, 6);
+  for (const id of previousIds) assert.ok(result.stems.some(stem => stem.id === id));
+  for (const stem of result.stems.filter(stem => stem.separationJobId === fresh.id)) {
+    const [row] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, stem.id));
+    assert.equal(row.modelVersion, "CONTROLLED-CANCELLATION-SEAM-NOT-LEARNED");
+    assert.ok(synth.decodeWav16(new Uint8Array(await readFile(getStorage().getLocalPath(row.storageKey)))));
+  }
+  const late = await api(`/api/jobs/${fresh.id}/cancel`, "POST"); assert.equal(late.job.status, "complete");
+  process.env.WAVEYARD_LOCAL_WORKER = "0";
+  try { const unsupported = await dispatch(new URL(`/api/jobs/${job.id}/cancel`, "http://fixture"), "POST", "{}"); assert.equal(unsupported.status, 503); }
+  finally { process.env.WAVEYARD_LOCAL_WORKER = "1"; }
+  assert.deepEqual(errors, []);
+});
+
+test("PostgreSQL publication lock arbitrates concurrent cancel: committed bank wins without cancelled/complete contradiction (controlled inference)", { timeout: 60000 }, async () => {
+  const input = await source(false, 1, 1877);
+  const detail = await api(`/api/waveyard/projects/${input.projectId}`);
+  const { DEEP_MODEL_ID, DEEP_STEM_TYPES } = await import("../../src/lib/waveyard/separation/modes.ts");
+  const { handleSeparationJob } = await import("../../src/lib/waveyard/worker-local/separation.ts");
+  const { requestSeparationCancellation } = await import("../../src/lib/waveyard/separation/cancel.ts");
+  const [job] = await database.db.insert(schema.processingJobs).values({ projectId: input.projectId, sourceAssetId: detail.sources[0].id, type: "separation", status: "queued", stage: "queued", model: DEEP_MODEL_ID, requestedDevice: "cpu", idempotencyKey: crypto.randomUUID() }).returning();
+  let locked, commit; const lockedGate = new Promise(resolve => { locked = resolve; }), commitGate = new Promise(resolve => { commit = resolve; });
+  const db = new Proxy(database.db, { get(target, key) {
+    if (key === "transaction") return fn => target.transaction(async tx => { const result = await fn(tx); locked(); await commitGate; return result; });
+    const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const executing = handleSeparationJob({ processingJobId: job.id, projectId: job.projectId, sourceAssetId: job.sourceAssetId, model: job.model, requestedDevice: "cpu" }, { db, runDeep: async request => ({ engine: "demucs", model: DEEP_MODEL_ID, modelName: "CONTROLLED-NOT-LEARNED", modelVersion: "CONTROLLED-NOT-LEARNED", checkpointPath: "NO-WEIGHTS", resolvedDevice: "cpu", stems: DEEP_STEM_TYPES.map(stemType => ({ stemType, path: request.inputPath, bytes: 44 + 44100 * 4 })) }) });
+  try {
+    await lockedGate;
+    const cancelling = requestSeparationCancellation(database.db, job.id);
+    const race = await Promise.race([cancelling.then(() => "early"), new Promise(resolve => setTimeout(() => resolve("waiting-for-lock"), 50))]);
+    assert.equal(race, "waiting-for-lock"); commit();
+    await executing;
+    assert.equal((await cancelling).status, "complete");
+    const result = await api(`/api/waveyard/projects/${input.projectId}`);
+    assert.equal(result.stems.filter(stem => stem.separationJobId === job.id).length, 6);
+    assert.equal(result.jobs.find(value => value.id === job.id).status, "complete");
+  } finally { commit(); await executing.catch(() => {}); }
 });

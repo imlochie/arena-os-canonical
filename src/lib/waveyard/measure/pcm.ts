@@ -41,13 +41,15 @@ export async function decodeSourceToStereoPcm(
   filePath: string,
   hint: { sampleRate?: number } = {},
   deps: { resolveFfmpeg?: FfmpegResolver } = {},
-  opts: { requireSampleRate?: number } = {},
+  opts: { requireSampleRate?: number; signal?: AbortSignal } = {},
 ): Promise<DecodedSource> {
+  opts.signal?.throwIfAborted();
   // 1. Native WAV path — no external dependency. When the caller needs a
   //    specific rate (the separation engine is trained at 44.1 kHz), a
   //    native decode at a different rate is NOT acceptable output: fall
   //    through to the ffmpeg path, which resamples (-ar 44100).
   const bytes = await readFile(filePath).catch(() => null);
+  opts.signal?.throwIfAborted();
   if (bytes !== null) {
     const decoded = decodeWav16(new Uint8Array(bytes));
     if (decoded !== null) {
@@ -75,7 +77,7 @@ export async function decodeSourceToStereoPcm(
         rateNote,
     );
   }
-  return decodeWithFfmpeg(ffmpeg, filePath);
+  return decodeWithFfmpeg(ffmpeg, filePath, opts.signal);
 }
 
 function monoToStereo(samples: Float32Array): Float32Array {
@@ -87,31 +89,39 @@ function monoToStereo(samples: Float32Array): Float32Array {
   return out;
 }
 
-function decodeWithFfmpeg(command: string, filePath: string): Promise<DecodedSource> {
+function decodeWithFfmpeg(command: string, filePath: string, signal?: AbortSignal): Promise<DecodedSource> {
+  signal?.throwIfAborted();
   return new Promise<DecodedSource>((resolve, reject) => {
-    const child = spawn(
-      command,
-      ["-i", filePath, "-ac", "2", "-ar", "44100", "-f", "f32le", "-"],
-      { stdio: ["ignore", "pipe", "ignore"] },
-    );
+    const child = spawn(command, ["-i", filePath, "-ac", "2", "-ar", "44100", "-f", "f32le", "-"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     const chunks: Buffer[] = [];
     let total = 0;
+    let failure: Error | undefined;
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const terminate = () => {
+      child.kill("SIGTERM");
+      forceKill ??= setTimeout(() => child.kill("SIGKILL"), 1000);
+    };
+    const abort = () => { failure ??= new DOMException("Source decode cancelled", "AbortError"); terminate(); };
+    signal?.addEventListener("abort", abort, { once: true });
+    const deadline = setTimeout(() => { failure ??= new Error("Source decode timed out after 120 seconds."); terminate(); }, 120_000);
     child.stdout.on("data", (chunk: Buffer) => {
+      if (failure) return;
       if (total + chunk.length > MAX_DECODE_BYTES) {
-        child.kill("SIGKILL");
-        reject(new Error("Source exceeds the 15-minute cleanup decode limit."));
-        return;
+        failure = new Error("Source exceeds the 15-minute cleanup decode limit.");
+        terminate(); return;
       }
-      chunks.push(chunk);
-      total += chunk.length;
+      chunks.push(chunk); total += chunk.length;
     });
-    child.once("error", (error) => reject(error));
+    // Do not reject on abort/error before close: callers may delete inputs only
+    // once the process and its output pipes have actually stopped.
+    child.once("error", (error) => { failure ??= error; });
     child.once("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`ffmpeg exited ${code} while decoding the source.`));
-        return;
-      }
+      clearTimeout(deadline); if (forceKill) clearTimeout(forceKill);
+      signal?.removeEventListener("abort", abort);
+      if (failure) { reject(failure); return; }
+      if (code !== 0) { reject(new Error(`ffmpeg exited ${code} while decoding the source.`)); return; }
       const buffer = Buffer.concat(chunks);
+      if (buffer.length % 8 !== 0) { reject(new Error("Source decoder returned a partial stereo PCM frame.")); return; }
       const pcm = new Float32Array(buffer.length / 4);
       for (let i = 0; i < pcm.length; i += 1) pcm[i] = buffer.readFloatLE(i * 4);
       resolve({ pcm, sampleRate: 44_100 });

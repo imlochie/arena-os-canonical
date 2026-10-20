@@ -1,3 +1,4 @@
+import { restartCancelledSeparation } from "@/lib/waveyard/separation/cancel";
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -31,6 +32,10 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const [job] = await db.select().from(processingJobs).where(eq(processingJobs.id, id)).limit(1);
     if (!job) return NextResponse.json({ error: "Job not found." }, { status: 404 });
     await requireProjectRole(user.id, job.projectId, "editor");
+    if (job.status === "cancelled" && localWorkerActive()) {
+      const restarted = await restartCancelledSeparation(db, job);
+      return restarted.outcome === "queued" ? NextResponse.json({ job: restarted.job }) : NextResponse.json({ error: restarted.outcome === "active" ? "Another attempt is already active." : restarted.reason }, { status: restarted.outcome === "active" ? 409 : 503 });
+    }
     if (job.status !== "failed") return NextResponse.json({ error: "Only a failed job can be retried." }, { status: 409 });
 
     let options: RetryOptions = {};

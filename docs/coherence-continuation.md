@@ -2074,3 +2074,35 @@ pending at tracked documentation checkpoint. Final receipt/PR comment must name
 its exact SHA/digest/results, no a8e historical CI inheritance. Remaining live
 collection/acquisition/terms, genuine4/6stem inference/quality, full recording/
 recovery and actual Electron gates CLOSED. No authorised merge performed.
+
+### 2026-10-20 — master-mandate native inference lifecycle implementation
+
+Preserved owner3eb1410 and open PR14/15/16; inspected independent PR14 runtime
+provisioning source rather than duplicating its installer. Implemented native
+job cancel/ack/reload/restart in existing ProjectWorkspace/jobs/broker/storage;
+actual Python and decoder child abortion, cooperative ONNX chunk boundaries,
+atomic queued claim and row-locked completion/cancellation arbitration. Added
+source/parent-stem checksum validation and a repair preventing derived-waveform
+reporting failure from deleting already-committed banks. Failed cleanup retains
+keys/warnings. Models API now imports actual CLI/native dependencies and hashes
+checkpoint before public prepared; explicitly inferenceVerified=false. Probe
+caches expire and include Python environment. No parallel library/schema/queue.
+
+Focused tests and browser workflow were executed during implementation; initial
+failures retained (stub omitted its Demucs version, old parent fixtures claimed
+"test" instead of their bytes' hash, newly added browser fixtures accidentally
+reused the same deduplicated source). These were repaired without weakening
+integrity or removing failures. Current final broad verification pending at this
+checkpoint; final exact-revision receipt/PR comment will close it, not borrow
+older totals. See waveyard-native-separation-lifecycle.md for scope and limitations.
+
+Research correction: current PyPI Demucs4.1.0 uploaded2026-07-11, Python>=3.10,
+MIT package metadata, adefossez/demucs homepage. Current source retains explicit
+local legacy repository while trying HF first for remote names; CLI dependency
+requirements differ from pinned4.0.1. No inference version was accepted solely
+from this research, metadata, dummy checkpoints or fixture outputs. No trained
+weights/runtime located. Official weight hosts unavailable under outbound host
+policy; known blocked fetches were not repeated. Electron doctor still lacks
+binary/display. Interrupted cancellation after a process crash remains a distinct
+recovery limit, not claimed as handled by in-process cancellation. Replacement
+gate stays CLOSED; independent PR14/16 preserved and unmerged.

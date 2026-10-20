@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { MDX_MODELS, SEPARATION_RECIPES } from "@/lib/waveyard/separation/mdx";
-import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
+import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime, inspectDeepRuntimeReadiness } from "@/lib/waveyard/separation/deep";
 import { deepStemsEnabled } from "@/lib/waveyard/separation/modes";
 import { getModelFileStatus, modelLabel } from "@/lib/waveyard/separation/seed";
 import { loadOrtModule } from "@/lib/waveyard/separation/session";
@@ -37,6 +37,7 @@ export async function GET() {
       }),
     );
     const deepStatus = deepEngineStatusForThisRuntime();
+    const deepReadiness = await inspectDeepRuntimeReadiness();
     const runtimeAvailable = (await loadOrtModule()) !== null;
     return NextResponse.json({
       models: models.map(model => ({ ...model, runtimeAvailable, runtimeReason: runtimeAvailable ? null : "ONNX inference runtime is unavailable; verified model files alone cannot run separation." })),
@@ -46,8 +47,9 @@ export async function GET() {
         modelId: deepStatus.modelId,
         label: deepStatus.label,
         stems: deepStatus.stems,
-        prepared: deepStatus.prepared,
-        reason: deepStatus.prepared ? null : deepStatus.reason,
+        prepared: deepReadiness.prepared,
+        readiness: { ...deepReadiness, scope: "CLI import and upstream checkpoint checksum prefix; not inference acceptance" },
+        reason: deepReadiness.reason,
         checkpoint: { file: DEEP_CHECKPOINT_FILE, path: deepStatus.checkpointPath, present: deepStatus.checkpointPresent },
       },
     });

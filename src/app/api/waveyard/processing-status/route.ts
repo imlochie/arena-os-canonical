@@ -15,7 +15,8 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { localWorkerStats } from "@/lib/waveyard/worker-local";
 import { processingModeExplanation, resolveProcessingMode } from "@/lib/waveyard/worker-local/runtime-policy";
-import { queueConfigured } from "@/lib/waveyard/queue";
+import { getLocalJobBroker } from "@/lib/waveyard/worker-local/broker";
+import { SEPARATION_QUEUE, queueConfigured } from "@/lib/waveyard/queue";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,7 @@ export async function GET() {
     mode,
     explanation: processingModeExplanation(mode),
     queueConfigured: queueConfigured(),
+    separationCancellation: { available: mode === "in-process" && getLocalJobBroker().hasHandler(SEPARATION_QUEUE), scope: "native-executor-only" },
     // Honest distinction: the policy may say in-process, but if the worker
     // has not actually registered handlers, nothing is executing yet.
     localWorker: localStats === null

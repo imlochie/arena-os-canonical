@@ -37,6 +37,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { checksumFile } from "../audio";
 import { resolveExecutable } from "@/lib/capabilities/resolver";
 import { statSync } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
@@ -222,20 +223,21 @@ type InterpreterProbe =
   | { found: true; candidate: DeepPythonCandidate; demucsVersion: string }
   | { found: false; reason: string };
 
-const interpreterCache = new Map<string, InterpreterProbe>();
+const interpreterCache = new Map<string, { at: number; probe: InterpreterProbe }>();
 
 /** Test seam: probes are cached per interpreter set; tests reset between
  *  stub drivers. */
 export function resetDeepProbeCacheForTests(): void {
   interpreterCache.clear();
+  readinessCache.clear();
 }
 
 function probeInterpreter(env: NodeJS.ProcessEnv, force: boolean): InterpreterProbe {
   const candidates = deepPythonCandidates(env);
-  const cacheKey = candidates.map((candidate) => `${candidate.bin} ${candidate.prefixArgs.join(" ")}`).join("|");
+  const cacheKey = JSON.stringify([candidates, env.PYTHONPATH ?? process.env.PYTHONPATH, env.PYTHONHOME ?? process.env.PYTHONHOME]);
   if (!force) {
     const cached = interpreterCache.get(cacheKey);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && Date.now() - cached.at < 10_000) return cached.probe;
   }
 
   let lastError: string | null = null;
@@ -255,7 +257,7 @@ function probeInterpreter(env: NodeJS.ProcessEnv, force: boolean): InterpreterPr
     const demucsVersion = typeof parsed?.demucs === "string" ? parsed.demucs : null;
     if (demucsVersion !== null) {
       const probe: InterpreterProbe = { found: true, candidate, demucsVersion };
-      interpreterCache.set(cacheKey, probe);
+      interpreterCache.set(cacheKey, { at: Date.now(), probe });
       return probe;
     }
     // The interpreter ran but has no Demucs — remember it as the reason.
@@ -269,7 +271,7 @@ function probeInterpreter(env: NodeJS.ProcessEnv, force: boolean): InterpreterPr
         ? "Deep separation needs a Python interpreter with Demucs installed, and none was found on this machine."
         : lastError,
   };
-  interpreterCache.set(cacheKey, probe);
+  interpreterCache.set(cacheKey, { at: Date.now(), probe });
   return probe;
 }
 
@@ -373,6 +375,7 @@ export type DeepRunRequest = {
   onProgress?: (percent: number) => void;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 export type DeepRunStem = { stemType: DeepStemType; path: string; bytes: number };
@@ -395,10 +398,19 @@ function runPython(
   bin: string,
   args: string[],
   env: NodeJS.ProcessEnv,
-  options: { timeoutMs: number; onStderr?: (chunk: string) => void; onStdout?: (chunk: string) => void },
+  options: { timeoutMs: number; signal?: AbortSignal; onStderr?: (chunk: string) => void; onStdout?: (chunk: string) => void },
 ): Promise<SpawnedOutcome> {
   return new Promise((resolvePromise) => {
-    const child = spawn(bin, args, { env: childEnv(env), stdio: ["ignore", "pipe", "pipe"] });
+    if (options.signal?.aborted) return resolvePromise({ status: null, stdout: "", stderr: "", error: new DOMException("Separation cancelled", "AbortError") });
+    const child = spawn(bin, args, { env: childEnv(env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let abortError: Error | null = null;
+    let spawnError: Error | null = null;
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const abort = () => {
+      abortError = new DOMException("Separation cancelled", "AbortError");
+      child.kill("SIGTERM"); forceKill ??= setTimeout(() => child.kill("SIGKILL"), 1000);
+    };
+    options.signal?.addEventListener("abort", abort, { once: true });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -409,30 +421,75 @@ function runPython(
     }, options.timeoutMs);
     child.stdout?.on("data", (data: Buffer) => {
       const text = data.toString();
-      stdout += text;
+      stdout = (stdout + text).slice(-16384);
       options.onStdout?.(text);
     });
     child.stderr?.on("data", (data: Buffer) => {
       const text = data.toString();
-      stderr += text;
+      stderr = (stderr + text).slice(-16384);
       options.onStderr?.(text);
     });
     const finish = (outcome: SpawnedOutcome) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimeout(timer); if (forceKill) clearTimeout(forceKill);
+      options.signal?.removeEventListener("abort", abort);
       resolvePromise(outcome);
     };
-    child.once("error", (error: Error) => finish({ status: null, stdout, stderr, error }));
+    child.once("error", (error: Error) => { spawnError = error; });
     child.once("close", (code: number | null) =>
       finish({
         status: code,
         stdout,
         stderr,
-        error: timedOut ? new Error(`timed out after ${Math.round(options.timeoutMs / 1000)}s`) : null,
+        error: abortError ?? spawnError ?? (timedOut ? new Error(`timed out after ${Math.round(options.timeoutMs / 1000)}s`) : null),
       }),
     );
   });
+}
+
+export type DeepRuntimeReadiness = {
+  prepared: boolean;
+  reason: string | null;
+  runtimeLoadable: boolean;
+  checkpointSha256: string | null;
+  /** Importing packages and checking bytes is never learned-inference proof. */
+  inferenceVerified: false;
+};
+const readinessCache = new Map<string, { until: number; result: Promise<DeepRuntimeReadiness> }>();
+
+/** Stronger public readiness than the cheap intake probe: import the selected
+ * CLI (including its native dependencies), then hash the checkpoint WITHOUT
+ * deserialising pickle. The 8-hex upstream prefix is integrity, not a signature
+ * or an independent permission/security attestation. */
+export async function inspectDeepRuntimeReadiness(options: { env?: NodeJS.ProcessEnv; force?: boolean } = {}): Promise<DeepRuntimeReadiness> {
+  const env = options.env ?? process.env;
+  if (options.force && resolveProcessingMode(env) === "in-process") probeDeepEngine({ env, force: true });
+  const status = deepEngineStatusForThisRuntime(env);
+  const unavailable = (reason: string, runtimeLoadable = false, checkpointSha256: string | null = null): DeepRuntimeReadiness => ({ prepared: false, reason, runtimeLoadable, checkpointSha256, inferenceVerified: false });
+  if (!status.prepared) return unavailable(status.reason);
+  const candidate = deepPythonCandidates(env).find(value => value.bin === status.python);
+  if (!candidate) return unavailable("The selected deep interpreter is no longer resolvable.");
+  const info = await stat(status.checkpointPath).catch(() => null);
+  if (!info?.isFile()) return unavailable("The deep checkpoint is no longer a regular file.");
+  const key = JSON.stringify([candidate, env.PYTHONPATH ?? process.env.PYTHONPATH, env.PYTHONHOME ?? process.env.PYTHONHOME, status.checkpointPath, info.size, info.mtimeMs, info.ctimeMs, status.demucsVersion]);
+  const cached = readinessCache.get(key);
+  if (!options.force && cached && Date.now() < cached.until) return cached.result;
+  const result = (async (): Promise<DeepRuntimeReadiness> => {
+    try {
+      const outcome = await runPython(candidate.bin, [...candidate.prefixArgs, "-c", "import demucs.separate; import torch; print('ARENA_DEEP_RUNTIME_OK')"], env, { timeoutMs: PROBE_TIMEOUT_MS });
+      if (outcome.error || outcome.status !== 0 || !outcome.stdout.includes("ARENA_DEEP_RUNTIME_OK")) {
+        const detail = outcome.error?.message ?? (outcome.stderr || outcome.stdout).trim().slice(-1000);
+        return unavailable(`Demucs package metadata exists, but its CLI/native runtime cannot load: ${detail}`);
+      }
+      const digest = await checksumFile(status.checkpointPath);
+      if (!digest.startsWith(DEEP_CHECKPOINT_CHECKSUM)) return unavailable("The local deep checkpoint does not match the upstream SHA-256 prefix; replace it with the authorised original checkpoint.", true, digest);
+      return { prepared: true, reason: null, runtimeLoadable: true, checkpointSha256: digest, inferenceVerified: false };
+    } catch (error) { return unavailable(`Deep readiness could not be verified: ${error instanceof Error ? error.message : String(error)}`); }
+  })();
+  if (readinessCache.size >= 8) readinessCache.clear();
+  readinessCache.set(key, { until: Date.now() + 20_000, result });
+  return result;
 }
 
 async function resolveTorchDevice(
@@ -440,8 +497,10 @@ async function resolveTorchDevice(
   env: NodeJS.ProcessEnv,
   requested: "auto" | "cuda",
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<"cpu" | "cuda"> {
-  const outcome = await runPython(candidate.bin, [...candidate.prefixArgs, "-c", TORCH_SNIPPET], env, { timeoutMs });
+  const outcome = await runPython(candidate.bin, [...candidate.prefixArgs, "-c", TORCH_SNIPPET], env, { timeoutMs, signal });
+  signal?.throwIfAborted();
   const parsed = outcome.status === 0 ? parseJsonLine(outcome.stdout) : null;
   if (parsed === null) {
     throw new SeparationUnavailableError(
@@ -488,6 +547,7 @@ async function collectWavFiles(directory: string): Promise<Map<string, string>> 
  * The caller persists; this function never touches the database.
  */
 export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRunResult> {
+  request.signal?.throwIfAborted();
   const env = request.env ?? process.env;
   const status = probeDeepEngine({ env });
   if (!status.prepared) throw new SeparationUnavailableError(status.reason);
@@ -499,7 +559,8 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
   const requestedDevice = request.requestedDevice ?? "auto";
   const timeoutMs = request.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   const resolvedDevice =
-    requestedDevice === "cpu" ? "cpu" : await resolveTorchDevice(candidate, env, requestedDevice, PROBE_TIMEOUT_MS);
+    requestedDevice === "cpu" ? "cpu" : await resolveTorchDevice(candidate, env, requestedDevice, PROBE_TIMEOUT_MS, request.signal);
+  request.signal?.throwIfAborted();
 
   await mkdir(request.outputDirectory, { recursive: true });
   // `--repo <models dir>` makes Demucs read ONLY that local repository, and
@@ -523,6 +584,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
   let lastPercent = -1;
   const outcome = await runPython(candidate.bin, args, env, {
     timeoutMs,
+    signal: request.signal,
     onStderr: (chunk) => {
       // Demucs renders its progress on stderr with carriage returns; forward
       // the engine's own percent, at most once per whole percent.
@@ -535,6 +597,7 @@ export async function runDeepSeparation(request: DeepRunRequest): Promise<DeepRu
     },
   });
 
+  request.signal?.throwIfAborted();
   const tail = (outcome.stderr || outcome.stdout).trim().slice(-2000);
   if (outcome.error !== null && outcome.status === null) {
     throw new SeparationUnavailableError(`The deep engine could not run (${outcome.error.message}). ${deepPrepareHint(env)}`);

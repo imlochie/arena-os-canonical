@@ -81,6 +81,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [processorNotice, setProcessorNotice] = useState<string | null>(null);
   const processorChecked = useRef(false);
+  const [canCancelSeparation, setCanCancelSeparation] = useState(false);
   const finalizingBuild = useRef<string | null>(null);
 
   useEffect(() => {
@@ -108,17 +109,18 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         ...(json.stems ?? []).flatMap((stem: { drumAnalysis?: { status?: string } | null; vocalAnalysis?: { status?: string } | null }) => [stem.drumAnalysis, stem.vocalAnalysis]).filter(Boolean),
       ].some(
         (job: { status: string }) =>
-          ["queued", "preparing", "processing", "finalizing"].includes(
+          ["queued", "preparing", "processing", "finalizing", "cancelling"].includes(
             job.status,
           ),
       );
       if (active) timer = setTimeout(load, 2_500);
-      if (active && !processorChecked.current) {
+      if (!processorChecked.current) {
         processorChecked.current = true;
         void (async () => {
           try {
             const response = await fetch("/api/waveyard/processing-status", { cache: "no-store" });
             const body = await response.json();
+            setCanCancelSeparation(response.ok && body.separationCancellation?.available === true);
             if (response.ok && (body.mode === "none" || (body.mode === "in-process" && body.localWorker === null))) {
               setProcessorNotice(body.explanation ?? "Processing is waiting — no processor is running.");
             } else {
@@ -139,13 +141,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   useEffect(() => {
     const build = data?.build;
     if (!data || !build || build.status !== "processing" || finalizingBuild.current === build.id) return;
-    const processing = data.jobs.some((job) => ["queued", "preparing", "processing", "finalizing"].includes(job.status));
+    const processing = data.jobs.some((job) => ["queued", "preparing", "processing", "finalizing", "cancelling"].includes(job.status));
     const finalization = evaluateAutomaticBuildFinalization({
       acceptedSourceCount: build.acceptedSourceCount,
       persistedFailedSourceCount: build.failedSourceCount,
       processing,
       failedJobSourceIds: data.jobs
-        .filter((job) => job.status === "failed")
+        .filter((job) => job.status === "failed" || job.status === "cancelled")
         .map((job) => job.sourceAssetId),
       sources: data.sources.map((source) => ({
         id: source.id,
@@ -213,6 +215,17 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     setRetrying(false);
     if (!response.ok) setError(json.error ?? "Retry could not be started.");
     else setRefresh((value) => value + 1);
+  }
+
+  async function cancelSeparation(jobId: string) {
+    setRetrying(true); setError(null);
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Cancellation could not be recorded.");
+      setRefresh((value) => value + 1);
+    } catch (error) { setError(error instanceof Error ? error.message : "Cancellation could not be recorded."); }
+    finally { setRetrying(false); }
   }
 
   async function retryWaveform(jobId: string) {
@@ -399,6 +412,11 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       </section>}
       <ModelAssetImport onReviewChange={setModelRightsReviewed} />
       {preparingEngine && <button type="button" onClick={() => engineAbort.current?.abort()}>Cancel model preparation (retain resumable bytes)</button>}
+      {editable && canCancelSeparation && data.jobs.filter(job => ["queued", "preparing", "processing", "finalizing", "cancelling"].includes(job.status)).map(job => <div key={`cancel-${job.id}`}>
+        <p>{job.status === "cancelling" ? "Stopping separation; waiting for inference and partial-output cleanup. Existing stems and source are retained." : `Separation: ${job.stage}`}</p>
+        <button className="button secondary" disabled={retrying || job.status === "cancelling"} onClick={() => void cancelSeparation(job.id)}>{job.status === "cancelling" ? "Stopping separation…" : "Cancel separation"}</button>
+      </div>)}
+      {latest?.status === "cancelled" && <div><p className="notice">Separation cancelled. Source and existing stem banks are unchanged.</p>{latest.errorMessage && <p>{latest.errorMessage}</p>}{editable && canCancelSeparation && <button className="button" disabled={retrying} onClick={() => void retry(latest.id)}>Restart separation</button>}</div>}
       {latest?.status === "failed" && (
         <div>
           <p className="error" role="alert">
@@ -426,7 +444,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           )}
         </div>
       )}
-      {latest && latest.status !== "complete" && latest.status !== "failed" && (
+      {latest && latest.status !== "complete" && latest.status !== "failed" && latest.status !== "cancelled" && (
         <p className="notice">
           {(() => {
             const progress = parseJobProgress(latest.metadata);

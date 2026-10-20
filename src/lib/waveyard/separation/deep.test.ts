@@ -34,6 +34,7 @@ import {
   deepModelVersion,
   deepPrepareHint,
   probeDeepEngine,
+  inspectDeepRuntimeReadiness,
   resetDeepProbeCacheForTests,
   runDeepSeparation,
 } from "./deep";
@@ -373,4 +374,33 @@ test("the prepare hint names the interpreter command for this platform and the c
   const injected = deepPrepareHint({ ...process.env, WAVEYARD_MODELS_DIR: custom });
   assert.ok(injected.includes(join(custom, DEEP_CHECKPOINT_FILE)), `the injected models dir is reported: ${injected}`);
   assert.ok(!injected.includes(resolve(process.cwd(), ".data/waveyard-models")), "never the default when overridden");
+});
+
+test("aborting a TERM-ignoring Python child waits for kill/close and publishes no stem list", async (t) => {
+  const f = await setup(t, { demucsVersion: "4.0.1", hangIgnoringTermination: true }); if (!f) return;
+  const controller = new AbortController();
+  try {
+    const started = Date.now();
+    await assert.rejects(runDeepSeparation({ inputPath: f.fixture, outputDirectory: join(f.directory, "out"), env: f.env, requestedDevice: "cpu", signal: controller.signal, timeoutMs: 10_000, onProgress: () => controller.abort() }), { name: "AbortError" });
+    assert.ok(Date.now() - started < 8000, "does not wait for 60-second stub work");
+  } finally { await f.close(); }
+});
+
+
+test("public readiness rejects metadata-only packages and corrupt checkpoints without loading weights", async t => {
+  const f = await setup(t, { demucsVersion: "4.0.1" }); if (!f) return;
+  const env: NodeJS.ProcessEnv = { ...f.env, WAVEYARD_LOCAL_WORKER: "1" }; delete env.REDIS_URL;
+  try {
+    assert.equal(probeDeepEngine({ env }).prepared, true, "cheap metadata/presence probe is not readiness");
+    const missing = await inspectDeepRuntimeReadiness({ env, force: true });
+    assert.equal(missing.prepared, false); assert.equal(missing.runtimeLoadable, false);
+    assert.match(missing.reason!, /cannot load/); assert.equal(missing.inferenceVerified, false);
+    // Controlled import-only module; still no model. A dummy checkpoint must
+    // remain unavailable even after the import boundary passes.
+    await writeFile(join(f.engine.sitePath, "demucs", "separate.py"), "# controlled import only, not inference\n");
+    const corrupt = await inspectDeepRuntimeReadiness({ env, force: true });
+    assert.equal(corrupt.runtimeLoadable, true); assert.equal(corrupt.prepared, false);
+    assert.match(corrupt.reason!, /SHA-256 prefix/); assert.match(corrupt.checkpointSha256!, /^[a-f0-9]{64}$/);
+    assert.equal(corrupt.inferenceVerified, false);
+  } finally { await f.close(); }
 });

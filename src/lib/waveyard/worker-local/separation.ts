@@ -28,7 +28,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 
 import type { drizzle } from "drizzle-orm/node-postgres";
 
@@ -116,7 +116,7 @@ async function updateJob(
   await database
     .update(processingJobs)
     .set({ ...patch, updatedAt: new Date() })
-    .where(eq(processingJobs.id, id));
+    .where(and(eq(processingJobs.id, id), notInArray(processingJobs.status, ["complete", "failed", "cancelling", "cancelled"])));
 }
 
 function interleavePlanar(channels: Float32Array[]): Float32Array {
@@ -244,16 +244,34 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
   const storage = getStorage();
   const uploadedKeys: string[] = [];
   let completed = false;
+  let ownsAttempt = false;
+  const controller = new AbortController();
+  const checkCancellation = async () => {
+    const [current] = await database.select({ status: processingJobs.status }).from(processingJobs).where(eq(processingJobs.id, job.id)).limit(1);
+    if (!current || ["cancelling", "cancelled"].includes(current.status)) controller.abort(new DOMException("Separation cancelled", "AbortError"));
+    controller.signal.throwIfAborted();
+  };
+  // Serial polling, never overlapping DB reads. Durable status is the authority,
+  // not an in-memory controller lost on page reload.
+  let stopped = false;
+  let poll: ReturnType<typeof setTimeout> | undefined;
+  const pollCancellation = async () => {
+    try { await checkCancellation(); } catch (error) { controller.abort(error); }
+    if (!stopped && !controller.signal.aborted) poll = setTimeout(() => { polling = pollCancellation(); }, 250);
+  };
+  let polling = pollCancellation();
 
   try {
-    await updateJob(database, job.id, {
-      status: "preparing",
-      stage: "preparing",
-      startedAt: new Date(),
-      errorCode: null,
-      errorMessage: null,
-    });
+    await checkCancellation();
+    const [claimed] = await database.update(processingJobs).set({ status: "preparing", stage: "preparing", startedAt: new Date(), updatedAt: new Date(), errorCode: null, errorMessage: null })
+      .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "queued"))).returning({ id: processingJobs.id });
+    if (!claimed) return;
+    ownsAttempt = true;
     await storage.getToFile((parentStem ?? source).storageKey, inputPath);
+    await checkCancellation();
+    if (await checksumFile(inputPath) !== (parentStem ?? source).checksumSha256) {
+      throw new Error("Stored separation input no longer matches its verified source checksum; re-import the recording.");
+    }
 
     await updateJob(database, job.id, {
       status: "processing",
@@ -262,10 +280,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     });
     // The engine is trained at 44.1 kHz — decode demands exactly that
     // (native WAV at other rates falls through to ffmpeg resampling).
-    const decoded = await decode(inputPath, {}, {}, { requireSampleRate: 44_100 });
+    const decoded = await decode(inputPath, {}, {}, { requireSampleRate: 44_100, signal: controller.signal });
     if (decoded.sampleRate !== 44_100) {
       throw new Error(`Decoder returned ${decoded.sampleRate} Hz — the engine requires 44100 Hz.`);
     }
+    await checkCancellation();
     const frames = decoded.pcm.length >> 1;
     const left = new Float32Array(frames);
     const right = new Float32Array(frames);
@@ -299,6 +318,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         inputPath: deepInputPath,
         outputDirectory: join(temporaryDirectory, "deep-output"),
         requestedDevice: payload.requestedDevice,
+        signal: controller.signal,
         onProgress: (percent) => {
           if (percent === lastDeepPercent) return;
           lastDeepPercent = percent;
@@ -327,6 +347,9 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           throw new Error(`The deep engine's ${stem.stemType} stem has ${decodedStem.channels} channels — the pipeline stores stereo.`);
         }
         const stemFrames = decodedStem.frames;
+        if (stemFrames !== frames || frames === 0) {
+          throw new Error(`The deep engine’s ${stem.stemType} stem has ${stemFrames} frames; expected exactly ${frames} source frames. No bank was published.`);
+        }
         const stemLeft = new Float32Array(stemFrames);
         const stemRight = new Float32Array(stemFrames);
         for (let i = 0; i < stemFrames; i += 1) {
@@ -362,7 +385,12 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           const run = runs[runIndex];
           const engine = await getEngine(run.spec);
           resolvedDevice = engine.resolvedDevice;
-          const separated = await demixMdx([left, right], run.spec, engine.infer, (done, total) => {
+          const separated = await demixMdx([left, right], run.spec, async (...args) => {
+            await checkCancellation();
+            const result = await engine.infer(...args);
+            await checkCancellation();
+            return result;
+          }, (done, total) => {
             const runFraction = total > 0 ? done / total : 1;
             const percent = Math.floor(((runIndex + runFraction) / runs.length) * 100);
             if (done !== 1 && done !== total && percent === lastReportedPercent) return;
@@ -391,6 +419,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       runModels = [...new Set(runs.map((run) => run.spec.id))];
     }
 
+    await checkCancellation();
     await updateJob(database, job.id, {
       status: "finalizing",
       stage: "validating",
@@ -398,6 +427,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     });
     const values: (typeof stemAssets.$inferInsert)[] = [];
     for (const stem of stemOutputs) {
+      await checkCancellation();
       const wav = encodeWav16(interleavePlanar(stem.channels), 44_100);
       // Layered stem types ("other/vocals") must become safe filenames.
       const stemPath = join(temporaryDirectory, `${stem.stemType.replace(/[^a-zA-Z0-9_-]+/g, "-")}.wav`);
@@ -426,6 +456,10 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     }
 
     const durableWork = await database.transaction(async (tx) => {
+      // Serialize completion against the cancellation UPDATE. Cancellation wins
+      // before this lock => no stem rows; publication wins => cancel sees complete.
+      const [current] = await tx.select({ status: processingJobs.status }).from(processingJobs).where(eq(processingJobs.id, job.id)).for("update");
+      if (!current || ["cancelling", "cancelled"].includes(current.status)) throw new DOMException("Separation cancelled", "AbortError");
       // Published physical assets must never be replaced by a retry. Normal
       // completion is terminal; a historical inconsistent job requires a fresh
       // run, not deletion of references retained by sessions/Studio.
@@ -466,6 +500,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         .where(eq(processingJobs.id, job.id));
       return waveformWork;
     });
+    completed = true; // The committed bank is immutable, even if derived-job reporting fails.
     // Separation is complete even if a later derived-artifact queue needs
     // a retry. Each durable job records its own failure boundary.
     for (const waveformJob of durableWork) {
@@ -489,7 +524,6 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           .where(eq(waveformJobs.id, waveformJob.id));
       }
     }
-    completed = true;
   } catch (error) {
     let errorCode = "separation_failed";
     if (error instanceof SeparationUnavailableError) errorCode = "separation_unavailable";
@@ -505,10 +539,22 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     });
     throw error;
   } finally {
+    stopped = true;
+    if (poll) clearTimeout(poll);
+    await polling;
+    let cleanupWarning = false;
     if (!completed) {
-      await Promise.allSettled(uploadedKeys.map((key) => storage.delete(key)));
+      const cleanup = await Promise.allSettled(uploadedKeys.map((key) => storage.delete(key)));
+      const failedKeys = uploadedKeys.filter((_, index) => cleanup[index].status === "rejected");
+      if (failedKeys.length) {
+        cleanupWarning = true;
+        await database.update(processingJobs).set({ errorMessage: "Separation stopped without publishing a bank, but some unpublished objects could not be removed. Cleanup keys are retained in this job's metadata.", metadata: JSON.stringify({ ...jobMetadata(job.metadata), cleanupFailedKeys: failedKeys }) })
+          .where(eq(processingJobs.id, job.id));
+      }
     }
     await rm(temporaryDirectory, { recursive: true, force: true });
+    if (ownsAttempt) await database.update(processingJobs).set({ status: "cancelled", stage: "cancelled", ...(cleanupWarning ? {} : { errorMessage: "Separation stopped and unpublished output removed. Source and existing stem banks were preserved." }), completedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(processingJobs.id, job.id), eq(processingJobs.status, "cancelling")));
   }
 }
 

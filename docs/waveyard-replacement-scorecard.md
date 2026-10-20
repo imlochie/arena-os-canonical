@@ -239,3 +239,25 @@ combined-head broad source/browser/build/native/CI pending at this checkpoint;
 final exact-head receipt closes it without borrowing historical checks.
 Genuine learned4/6stem quality, full real source→model→session→export and actual
 Electron still unaccepted. **Replacement gate CLOSED.**
+
+## 2026-10-20 — native inference lifecycle repair (new master mandate)
+
+Implemented native cancellation/acknowledgement/restart in the actual project UI,
+process abortion, atomic executor claim and cancellation/publication arbitration.
+Verified source bytes precede inference; completed banks survive derived-waveform
+reporting failure. Public deep readiness now requires actual CLI import and
+checkpoint-prefix integrity; it explicitly does not assert learned inference.
+See `waveyard-native-separation-lifecycle.md` for execution scope and limits.
+
+| Capability | Current distinction |
+| --- | --- |
+| Native stop/reload/restart and bank preservation | Implemented; real browser/DB/storage/process checks, controlled inference |
+| Deep runtime/checkpoint diagnostics | Real import/hash checks; NOT an inference/quality result |
+| Actual learned 4/6 sources and melody assessment | Not accepted; trained checkpoint/runtime unavailable here |
+| Live permitted catalogue retrieval | Not accepted; controlled-provider/real-recording evidence remains separate |
+| Real recording → learned bank → reopened project → export | Not accepted; no learned bank produced |
+| Actual Electron / Windows | Not accepted; binary/display unavailable |
+
+PyPI was rechecked: latest Demucs is now4.1.0 (Python>=3.10), not the independent
+PR14's pinned4.0.1. Local legacy-repo compatibility is source-inspected, not a
+claim that either version executed inference. No PR merged. **Gate CLOSED.**
