@@ -14,6 +14,9 @@ PSS decreased.
   modified.
 - The local checkout was clean before creating
   `replit/waveyard-memory-ownership`.
+- Current PR #16 head: `43dd50997002e78c9dff893539c48b552e4dfdf2`, an evidence
+  and test-instrumentation commit on top of `349cd6788650cb3175c7305e1f0c65c2c66c9f7e`.
+  The production ownership implementation is unchanged from that earlier head.
 
 ## Observed ownership path
 
@@ -82,7 +85,8 @@ is **not verified**.
 
 The current runner has Node 22.22.0, Chromium 152.0.7977.64, and system
 PostgreSQL 16.15. The historical run used Node 22.22.3 and Chromium 153.0.8010.0;
-`/tmp/al2023/lib` is absent. The bundled embedded PostgreSQL tools require
+`/tmp/chromium`, `/tmp/al2023/lib`, and `/home/user/arena-browser-tools` are
+absent. The bundled embedded PostgreSQL tools require
 `libpq.so.5` and `libicuuc.so.60`, which are unavailable here, so the browser
 acceptance attempts used a temporary local-only wrapper for system PostgreSQL.
 The baseline acceptance attempt used `tsx` to resolve source imports; the
@@ -93,10 +97,17 @@ The harness timeout was raised to 600 seconds and page-navigation timeout to
 
 ## Performance evidence and remaining gate
 
-The existing PR #15 scorecard records the prior preparation-only baseline as
-**1,415.8 ms cold / 531.0 MiB sampled Chromium process-tree PSS at 32 sources**;
-it explicitly says the provisional 512 MiB sampled-browser target failed. That
-32-source scorecard point was not reproduced in this session.
+The supplied historical baseline receipt for commit
+`ee13987e8ea74d0c438d4c9be4d061a97862d033` records:
+
+| Distinct sources | Cold preparation | Sampled Chromium PSS | Maximum UI gap | Warm replay |
+| ---------------: | ---------------: | -------------------: | -------------: | ----------: |
+|                4 |         327.9 ms |            276.4 MiB |        34.3 ms |      0.2 ms |
+|               16 |         850.8 ms |            386.0 MiB |        50.4 ms |      0.2 ms |
+|               32 |       1,415.8 ms |            531.0 MiB |        93.7 ms |      0.1 ms |
+
+The provisional 512 MiB browser-memory target failed at 32 sources. These are
+historical values, not freshly measured results for PR #16.
 
 The established harness did complete the 4-source profile on both revisions:
 
