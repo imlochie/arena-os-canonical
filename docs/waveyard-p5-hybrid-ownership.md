@@ -1,10 +1,16 @@
 # P5: bounded selected-source PCM ownership (experimental)
 
 This experiment belongs only on `benchmark/waveyard-hybrid-ownership`, as a
-child of the verified P4 benchmark snapshot
+descendant of the verified P4 benchmark snapshot
 `92fee6b83aa1595a2e27658831c9d6606d173bc1`. It is not a production replacement,
 does not open a PR, and must not modify P4's branch or evidence. Product batch
 download PR #17 is separate.
+
+The first P5 commit is `ea6acb2abcd759999cc4c2771e91aff4a1c51c74`, directly
+parented by that P4 snapshot. Run `39416773752` stopped at typecheck because
+unsaved clips can omit their ID; no performance measurements ran. Its uploaded
+failure artifact is preserved. Follow-up fixes are ordinary linear commits,
+not amendments or rewrites of either P4 or the initial P5 attempt.
 
 ## Allocation lifetime
 

@@ -133,7 +133,9 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   ]), [stems, sources]);
   const activePreviewTrackIds = useMemo(() => {
     const trackByClipId = new Map<string, string>();
-    for (const track of remix?.tracks ?? []) for (const clip of track.clips) trackByClipId.set(clip.id, track.id);
+    for (const track of remix?.tracks ?? []) {
+      for (const clip of track.clips) if (clip.id) trackByClipId.set(clip.id, track.id);
+    }
     const selectedTrackIds = selectedClipIds.map(clipId => trackByClipId.get(clipId));
     return [...new Set([
       ...(clipSelection ? [clipSelection.trackId] : []),

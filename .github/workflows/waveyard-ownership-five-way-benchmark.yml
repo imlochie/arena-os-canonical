@@ -95,7 +95,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$EVIDENCE_DIR"
           prototype5_sha="$(git rev-parse HEAD)"
-          test "$(git rev-parse "$prototype5_sha^")" = "$PROTOTYPE4_SHA"
+          git merge-base --is-ancestor "$PROTOTYPE4_SHA" "$prototype5_sha"
           test "$(node --version)" = "v22.22.3"
           memory_kib="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
           if (( memory_kib < 8 * 1024 * 1024 )); then echo "Runner exposes less than 8 GiB RAM; refusing comparison."; exit 1; fi
@@ -111,6 +111,7 @@ jobs:
             echo "prototype4_implementation_commit=4d9bba4fe3d614fa07c4684ed0c343ac3c51f878"
             echo "prototype5_sha=$prototype5_sha"
             echo "prototype5_parent=$(git rev-parse "$prototype5_sha^")"
+            echo "prototype5_branch_base=$PROTOTYPE4_SHA"
             echo "branch=$GITHUB_REF_NAME"
             echo "workflow_run=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "node=$(node --version)"
@@ -166,7 +167,7 @@ jobs:
             "Measurements: fetch/body, decode, recovery/cache lookups, PCM copies, transfer enqueue, Worker track acknowledgements and render completion" \
             "Correctness: seven exact stereo PCM hashes, replay identity, pre-master cache, local Worker-error/cancellation recovery" \
             "Responsiveness: existing 250 ms UI-gap gate unchanged; 512 MiB PSS remains diagnostic only" \
-            "P4 remains the immutable control; P5 is a child commit on a separate branch. No PR or merge is created." \
+            "P4 remains the immutable control; P5 descends from it on a separate linear experimental branch. No PR or merge is created." \
             > "$EVIDENCE_DIR/manifest.txt"
 
       - name: Typecheck Prototype 5
