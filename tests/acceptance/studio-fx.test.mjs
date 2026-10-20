@@ -618,7 +618,7 @@ test("Arcade browser reopens private failed attempts after restart without repla
 
 // Distinct private sources, unlike the repeated-one-source renderer benchmark
 // above. Real canonical controller/Worker/HTTP/PG; not the compiled Next UI.
-test("distinct-source preparation profiles 4/16/32 stereo ten-second assets without hiding browser memory behind decoded-byte counters", { timeout: 180000 }, async t => {
+test("distinct-source preparation profiles 4/16/32 stereo ten-second assets without hiding browser memory behind decoded-byte counters", { timeout: 600000 }, async t => {
   const arrangements = [];
   for (let index = 0; index < 32; index++) {
     const { remixId } = await source(false, 10, 220 + index * 17);
@@ -651,13 +651,25 @@ test("distinct-source preparation profiles 4/16/32 stereo ten-second assets with
     let peak = await samplePss(), busy = false;
     const timer = setInterval(async () => { if (busy) return; busy = true; try { const pss = await samplePss(); if (pss !== null) peak = Math.max(peak ?? 0, pss); } finally { busy = false; } }, 50);
     try {
-      await page.goto(`${origin}/?room=preparation`);
+      await page.goto(`${origin}/?room=preparation`, { timeout: 120000 });
       const state = { ...arrangements[0], tracks: trackRows.slice(0, count).map(track => ({ ...track, volume: 1 / count })) };
-      const result = await page.evaluate(state => window.measurePreparation(state), state);
+      const result = await page.evaluate(state => window.measurePreparation(state, true), state);
+      clearInterval(timer);
+      while (busy) await new Promise(resolve => setTimeout(resolve, 5));
+      const finalPss = await samplePss();
+      if (finalPss !== null) peak = Math.max(peak ?? 0, finalPss);
+      const pcmHashes = await page.evaluate(() => window.hashPreparationPcm());
+      Object.assign(result, pcmHashes);
       console.log(JSON.stringify({ kind: "distinct-source-canonical-worker", sources: count, seconds: 10, sampledWholeBrowserPeakPssBytes: peak, ...result, scope: "real controller/Worker, synthetic owned PCM, 50ms descendant-tree PSS; not compiled Next hydration, inference, Electron or instantaneous peak" }));
       assert.equal(result.frames, 441000);
       assert.equal(result.latestEditError, 0);
-      assert.equal(result.diagnostics.decodedBytes, count * 441000 * 2 * 4);
+      const sourcePcmBytes = count * 441000 * 2 * 4;
+      if (result.diagnostics.sourceBytes !== undefined) assert.equal(result.diagnostics.sourceBytes, sourcePcmBytes);
+      assert.ok(result.diagnostics.decodedBytes === 0 || result.diagnostics.decodedBytes === sourcePcmBytes,
+        `decoded source ownership ${result.diagnostics.decodedBytes} is neither retained baseline nor released candidate state`);
+      assert.equal(result.originalPcmSha256.length, 2);
+      assert.equal(result.editedPcmSha256.length, 2);
+      assert.ok([...result.originalPcmSha256, ...result.editedPcmSha256].every(hash => /^[0-9a-f]{64}$/.test(hash)));
       assert.ok(result.maximumGapMs < 250, `preparation-stage main-thread gap ${result.maximumGapMs}ms`);
       assert.ok(result.replayMs < 20);
       assert.deepEqual(errors, []);

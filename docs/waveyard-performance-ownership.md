@@ -55,38 +55,83 @@ or persistence behavior was changed.
 
 ## Verification in this checkout
 
-The focused suite was run against the real `prepareArrangementPcm()` function
-with a Worker protocol fixture: **10 passed, 0 failed, 0 skipped**. Coverage
-includes pre-master cache reuse, main-copy release after a successful render,
-no refetch/redecode on a warm master edit, replacement of one track without
-reloading its neighbor, checksum invalidation for a single asset, and
-cancel-then-retry and synchronous Worker-post-failure recovery while retaining
-valid decoded data. This fixture does not measure browser process memory or
-prove native structured-clone behavior. The five changed TypeScript/TSX files
-also passed a TypeScript 5.9.3 syntax transpilation check; this was not a
-project typecheck.
+The added `src/lib/waveyard/arrangement-preparation.test.ts` ran with the
+repository's `scripts/register-src-loader.mjs` on Node 22.22.0:
+**3 passed, 0 failed**. It covers successful Worker ownership handoff and warm
+edits, cancellation/retry, and synchronous `postMessage` failure recovery. This
+unit fixture does not measure browser process memory or prove native
+structured-clone behavior. The five changed TypeScript/TSX files also passed a
+TypeScript 5.9.3 syntax-transpilation check; that is not a project typecheck.
 
-`git diff --check` passed. The repository typecheck and full browser/runtime
-acceptance have not passed in this environment: `npm ci --ignore-scripts` was
-killed with exit code 137 before completion, and no Chromium
-executable or checked-in 4/16/32-source PSS harness/receipt was available in
-this checkout. No PostgreSQL/private-media benchmark runtime was started here.
+The repository contains the established 4/16/32-source harness in
+`tests/acceptance/studio-fx.test.mjs` and browser instrumentation in
+`tests/acceptance/studio-preparation.fixture.ts` (imported by
+`studio-fx.fixture.tsx`). It uses the production preparation controller and
+Worker, synthetic owned PCM, and 50 ms descendant-tree Chromium PSS samples.
+It records per-channel SHA-256 hashes of original and edited little-endian
+float32 PCM after both the UI-gap and PSS samplers stop.
+
+`git diff --check` passed and `package-lock.json` is unchanged. The first
+`npm ci --ignore-scripts` attempt was killed with exit 137; a subsequent
+bounded/offline `npm install` completed. `npm run typecheck` then exited 1
+without a TypeScript diagnostic, and a direct `tsc` attempt ended without
+output. Across those attempts the hierarchical cgroup `oom_kill` count rose
+from 4 to 7 while `memory.events.local` remained 0. This supports resource
+pressure but does not identify which process was killed; the project typecheck
+is **not verified**.
+
+The current runner has Node 22.22.0, Chromium 152.0.7977.64, and system
+PostgreSQL 16.15. The historical run used Node 22.22.3 and Chromium 153.0.8010.0;
+`/tmp/al2023/lib` is absent. The bundled embedded PostgreSQL tools require
+`libpq.so.5` and `libicuuc.so.60`, which are unavailable here, so the browser
+acceptance attempts used a temporary local-only wrapper for system PostgreSQL.
+The baseline acceptance attempt used `tsx` to resolve source imports; the
+candidate retry used the repository loader. This loader difference is another
+reason not to treat the single-point comparison below as a repeated paired run.
+The harness timeout was raised to 600 seconds and page-navigation timeout to
+120 seconds; neither timeout is inside the measured preparation interval.
 
 ## Performance evidence and remaining gate
 
 The existing PR #15 scorecard records the prior preparation-only baseline as
 **1,415.8 ms cold / 531.0 MiB sampled Chromium process-tree PSS at 32 sources**;
 it explicitly says the provisional 512 MiB sampled-browser target failed. That
-baseline was not reproduced in this session. No before/after PSS, latency,
-UI-gap, decode-count, or full PCM-hash run is claimed here.
+32-source scorecard point was not reproduced in this session.
+
+The established harness did complete the 4-source profile on both revisions:
+
+- **Baseline:** ready 1,621.4 ms; replay 0.4 ms; edit 34.3 ms; maximum UI gap
+  32.5 ms; 441,000 output frames; sampled browser-tree peak PSS
+  **464,189,440 bytes (about 442.7 MiB)**. `decodedBytes` and `sourceBytes` were
+  both 14,112,000 bytes.
+- **Candidate:** ready 1,376.6 ms; replay 0.4 ms; edit 54.5 ms; maximum UI gap
+  122.2 ms; 441,000 output frames; sampled browser-tree peak PSS
+  **461,208,576 bytes (about 439.8 MiB)**. `decodedBytes` was 0 after the
+  successful render; Worker-owned `sourceBytes` was 14,112,000 bytes.
+
+Both 4-source results had zero latest-edit error and identical per-channel
+hashes: original `8233a302ed22a7d0014db820813584fc760747b5bdec19a8e4ca4a5f8e32194c`,
+edited `446720705711e3ec3b97c59415ac089947b39c8f0733a3fc5444ca886531defe`.
+The one-run PSS difference is 2,980,864 bytes (about 2.8 MiB); it is too small
+and too noisy to claim a memory improvement. The two runs used the same Node,
+Chromium, PostgreSQL and fixture, but different Node source loaders.
+
+The baseline run crashed in the 16-source `page.evaluate` with `Target crashed`.
+The candidate run emitted its 4-source result, then crashed at the 16-source
+`page.evaluate`; it produced no 16- or 32-source metric. During that candidate
+run, the hierarchical cgroup `oom_kill` count increased from 7 to 8 while the
+local counter remained 0. That is consistent with child-process memory
+pressure, but does not identify the process or prove the renderer's cause.
+No paired or repeated 16/32-source comparison is available.
 
 The change releases a known decoded-source owner after successful preparation,
 but because release occurs after the Worker reply, it may reduce retained
 workspace memory without reducing the cold-preparation peak. Garbage collection
-timing may also affect when the browser returns those pages. A fresh run of the
-same production harness at 4, 16, and 32 sources, with repeated runs and PCM
-hash/frame-count checks, is still required before claiming a measurable browser
-memory improvement or changing the scorecard's performance status.
+timing may also affect when the browser returns those pages. Keep this PR in
+draft until the project typecheck and repeated, same-runtime 4/16/32 runs on
+both base and candidate complete; compare PCM hashes, frame counts, PSS,
+latency and UI gaps before claiming a measurable browser-memory improvement or
+changing the scorecard's performance status.
 
 This branch is based on PR #15 because that is where the target implementation
 exists. It should be reviewed against that branch first and retargeted only

@@ -2,7 +2,8 @@
 // same controller used by StudioCore. Never a replacement transport/processor.
 import { ArrangementPreparation } from "../../src/lib/waveyard/arrangement-preparation";
 import type { ArrangementPreviewState } from "../../src/lib/waveyard/arrangement-pcm";
-Object.assign(window, { async measurePreparation(state: ArrangementPreviewState) {
+let pcmToHash: { original: AudioBuffer; edited: AudioBuffer } | null = null;
+Object.assign(window, { async measurePreparation(state: ArrangementPreviewState, capturePcmHash = false) {
   const context = new AudioContext({ sampleRate: 44100 }), engine = new ArrangementPreparation();
   let last = performance.now(), maximumGapMs = 0, ticks = 0;
   const timer = setInterval(() => { const now = performance.now(); maximumGapMs = Math.max(maximumGapMs, now - last); last = now; ticks++; }, 5);
@@ -21,9 +22,28 @@ Object.assign(window, { async measurePreparation(state: ArrangementPreviewState)
     const preparationMaximumGapMs = maximumGapMs; clearInterval(timer);
     const verificationStarted = performance.now(), changedSamples = changed.getChannelData(0), originalSamples = buffer.getChannelData(0);
     let error = 0; for (let frame = 0; frame < buffer.length; frame++) error = Math.max(error, Math.abs(changedSamples[frame] - originalSamples[frame] * 0.5));
+    if (capturePcmHash) pcmToHash = { original: buffer, edited: changed };
     const verificationMs = performance.now() - verificationStarted;
     return { readyMs, replayMs, editMs, maximumGapMs: preparationMaximumGapMs, verificationMs, ticks, frames: buffer.length, latestEditError: error, outputPlanarBytes: buffer.length * 2 * 4, diagnostics: engine.diagnostics };
   } finally { clearInterval(timer); engine.dispose(); await context.close(); }
+} });
+
+// Call only after the external PSS sampler stops. Hashing allocates temporary
+// buffers, so keep that instrumentation outside the measured browser peak.
+Object.assign(window, { async hashPreparationPcm() {
+  if (pcmToHash === null) throw new Error("No captured preparation PCM is available to hash.");
+  const captured = pcmToHash; pcmToHash = null;
+  async function pcmSha256(samples: Float32Array) {
+    const bytes = new Uint8Array(samples.length * Float32Array.BYTES_PER_ELEMENT);
+    const view = new DataView(bytes.buffer);
+    for (let index = 0; index < samples.length; index++) view.setFloat32(index * 4, samples[index], true);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return {
+    originalPcmSha256: await Promise.all([0, 1].map(channel => pcmSha256(captured.original.getChannelData(channel)))),
+    editedPcmSha256: await Promise.all([0, 1].map(channel => pcmSha256(captured.edited.getChannelData(channel)))),
+  };
 } });
 
 Object.assign(window, { async verifyPreparationLifecycle(state: ArrangementPreviewState) {
