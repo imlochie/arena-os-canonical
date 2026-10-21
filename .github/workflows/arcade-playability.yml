@@ -40,7 +40,7 @@ jobs:
       - name: Typecheck and focused lint
         run: |
           npm run typecheck 2>&1 | tee .data/arcade-acceptance/typecheck.txt
-          npx eslint src/lib/games/sandbox.ts src/lib/games/runtime-validation.ts src/lib/games/runtime-contract.test.ts src/lib/games/gameplay-contract.ts src/lib/games/gameplay-contract.test.ts next.config.ts 2>&1 | tee .data/arcade-acceptance/lint.txt
+          npx eslint src/lib/games/sandbox.ts src/lib/games/runtime-validation.ts src/lib/games/runtime-contract.test.ts src/lib/games/gameplay-contract.ts src/lib/games/gameplay-contract.test.ts src/lib/games/source-2048.ts src/lib/games/source-2048.test.ts src/app/api/arcade/source/route.ts src/components/ArcadeSourceWorkshop.tsx next.config.ts 2>&1 | tee .data/arcade-acceptance/lint.txt
       - name: Focused game contracts and durable attempt regressions
         run: |
           node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 src/lib/games/*.test.ts tests/acceptance/arcade-attempts.test.mjs 2>&1 | tee .data/arcade-acceptance/focused.tap

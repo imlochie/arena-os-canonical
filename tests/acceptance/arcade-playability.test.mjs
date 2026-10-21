@@ -105,6 +105,7 @@ test("actual /arcade page generates, browser-repairs, plays, retains failed revi
     assert.equal(generated.repairsUsed, 1); assert.equal(generated.runtimeValidation.ok, true);
     assert.equal(generated.code, photographyGame);
     assert.deepEqual(modelCalls.map(call => call.repairing), [false, true]);
+    await expect(page.getByText("This generation passed browser smoke and declared controls/progress/terminal/restart scenarios.", { exact: false })).toBeVisible();
     const frame = page.frameLocator("iframe[sandbox='allow-scripts']");
     await frame.getByRole("button", { name: "Start", exact: true }).click();
     await expect(frame.locator("#state")).toHaveText("playing");
@@ -149,9 +150,13 @@ test("actual /arcade page generates, browser-repairs, plays, retains failed revi
     await frame.getByRole("button", { name: "Start", exact: true }).click();
     await expect(frame.locator("#state")).toHaveText("playing");
     assert.equal(modelCalls.length, 4, "reopening is not generation");
+    await expect(page.getByText("No current gameplay receipt loaded for this reopened/retained game.", { exact: false })).toBeVisible();
     assert.equal(escapedRequests, 0);
     // A real user acquires the real MIT source through the actual Next route,
     // persists its provenance in Artifacts and downloads the actual patch.
+    const localOnlySource = await page.request.post(`${origin}/api/arcade/source`, { data: { adapter: "2048", initialTiles: 3, localOnly: true } });
+    assert.equal(localOnlySource.status(), 400);
+    assert.match((await localOnlySource.json()).error, /disabled in Local Mode/);
     await page.getByText("Source workshop · supported MIT 2048 adapter", { exact: true }).click();
     const acquiredResponse = page.waitForResponse(r => r.url() === `${origin}/api/arcade/source` && r.request().method() === "POST");
     await page.getByRole("button", { name: "Acquire source and create patch", exact: true }).click();

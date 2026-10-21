@@ -14,7 +14,7 @@ and restart counts are separate adapter acceptance checks. Acquisition itself
 reports runtime **not run**; a historical CI pass is not labelled a per-request
 gameplay execution receipt.
 
-The downloadable offline preview runs real upstream GameManager/Grid/Tile
+The opaque in-page and downloadable offline previews run real upstream GameManager/Grid/Tile
 through Arena's small canvas, keyboard and memory-storage presentation adapters.
 It is not the official 2048 UI, does not preserve playing-state across reloads,
 and is not automatically installed/published into the game catalogue. It retains
