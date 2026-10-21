@@ -1,15 +1,18 @@
+import { orchestratorErrorResponse } from "@/lib/orchestrator";
+import { requireApiAccess } from "@/lib/security/api-access";
 import { createCollaboration, listCollaborations } from "@/lib/orchestrator";
 
 export const dynamic = "force-dynamic";
 
 // GET → list collaborations (with participants + relays)
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const collaborations = await listCollaborations(30);
     return Response.json({ collaborations });
   } catch (e) {
     console.error(e);
-    return Response.json({ collaborations: [] });
+    return orchestratorErrorResponse(e);
   }
 }
 
@@ -18,6 +21,7 @@ export async function GET() {
 //  participants: [{name, key?, kind? model|human|external, modelId?, adapterUrl?, adapterModel?, capabilities?, trust?}],
 //  relay?: {target, purpose?, request, classification?, responseContract?}}
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const body = await req.json();
     const goal = String(body.goal ?? "").trim();
@@ -26,6 +30,7 @@ export async function POST(req: Request) {
       return Response.json({ error: "a collaboration needs at least one participant" }, { status: 400 });
     }
     const collaboration = await createCollaboration({
+      requestId: body.requestId,
       title: body.title,
       goal,
       context: body.context,
@@ -37,6 +42,6 @@ export async function POST(req: Request) {
     return Response.json({ collaboration }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: e instanceof Error ? e.message : "failed to create collaboration" }, { status: 400 });
+    return orchestratorErrorResponse(e);
   }
 }

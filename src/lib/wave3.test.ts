@@ -108,8 +108,8 @@ test("deep agent: a bounded run plans, verifies, and persists its transcript", {
 
   const run = await runDeepAgent("write a two-line haiku about local-first software", { steps: 2, timeBudgetMs: 60_000 });
   assert.ok(run.id);
-  assert.equal(run.status, "done");
-  assert.equal(run.steps.length, 2);
+  assert.equal(run.status, "failed", "the deterministic local engine cannot verify its own draft");
+  assert.equal(run.steps.length, 1, "failed work must not feed a subsequent step");
   for (const step of run.steps) {
     assert.ok(step.title.length > 0);
     assert.ok(step.output.length > 0);
@@ -120,10 +120,10 @@ test("deep agent: a bounded run plans, verifies, and persists its transcript", {
   assert.match(run.engine, /arena-local-engine|local/);
 
   const fetched = await getRun(run.id);
-  assert.equal(fetched?.steps.length, 2);
+  assert.equal(fetched?.steps.length, 1);
 
   const listed = await listRuns();
-  assert.ok(listed.some((r) => r.id === run.id && r.stepCount === 2));
+  assert.ok(listed.some((r) => r.id === run.id && r.stepCount === 1));
 
   assert.equal(await deleteRun(run.id), true);
   assert.equal(await getRun(run.id), null);

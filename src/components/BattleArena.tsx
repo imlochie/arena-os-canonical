@@ -186,7 +186,7 @@ export default function BattleArena() {
     const flags = privacyFlags();
     setIsEph(flags.ephemeral);
     setIsLocal(flags.localOnly);
-    const body: any = { prompt: q, category, keys: loadKeys(), ...flags };
+    const body: any = { prompt: q, source: handoffSource, category, keys: loadKeys(), ...flags };
     if (projectId) body.projectId = projectId;
     if (mode === "pick") {
       body.fighterA = parseFighter(fighterA);
@@ -204,7 +204,7 @@ export default function BattleArena() {
       if (!r.ok) throw new Error(j.error ?? "battle failed");
       setBattleId(j.battle.id);
       if (j.battle.ephemeral) setEphToken(j.battle.revealToken ?? null);
-      setTurns([{ prompt: q, a: j.battle.responseA, b: j.battle.responseB, runtimeA: j.battle.runtimeA, runtimeB: j.battle.runtimeB }]);
+      setTurns([{ prompt: j.battle.prompt, a: j.battle.responseA, b: j.battle.responseB, runtimeA: j.battle.runtimeA, runtimeB: j.battle.runtimeB }]);
       setSameEngineNotice(j.battle.sameEngineNotice ?? null);
     };
     try {
@@ -249,7 +249,8 @@ export default function BattleArena() {
     let buf = "";
     let accA = "";
     let accB = "";
-    const apply = () => setTurns([{ prompt: q, a: accA, b: accB }]);
+    let consumedPrompt = q;
+    const apply = () => setTurns([{ prompt: consumedPrompt, a: accA, b: accB }]);
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -265,12 +266,13 @@ export default function BattleArena() {
         } catch {
           continue;
         }
-        if (evt.type === "meta") setBattleId(evt.battleId);
+        if (evt.type === "meta") { setBattleId(evt.battleId); if (typeof evt.prompt === "string") consumedPrompt = evt.prompt; }
         else if (evt.type === "delta") {
           if (evt.side === "a") accA += evt.delta ?? "";
           else accB += evt.delta ?? "";
           apply();
         } else if (evt.type === "battle") {
+          consumedPrompt = evt.battle.prompt;
           accA = evt.battle.responseA;
           accB = evt.battle.responseB;
           setSameEngineNotice(evt.battle.sameEngineNotice ?? null);
@@ -522,6 +524,7 @@ export default function BattleArena() {
               placeholder="Ask anything… two anonymous fighters answer side-by-side, streamed live. You judge. (Ctrl+Enter to send)"
               className="min-h-[76px] flex-1 resize-y rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-[15px] text-white placeholder:text-slate-500 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
             />
+{handoffSource && <div role="note" className="my-2 text-xs"><code>{handoffSource}</code><p>The server resolves the complete owned Artifact revision. Preview edits are ignored while pinned; no mutable project context is injected.</p><button type="button" onClick={() => setHandoffSource(null)}>Clear reference and use edited text</button></div>}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button onClick={() => startBattle()} disabled={streaming || !prompt.trim()} className="btn-arena rounded-xl px-6 py-2.5 text-sm font-extrabold text-white">

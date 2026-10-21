@@ -1,3 +1,4 @@
+import { isUuid } from "@/lib/api/ids";
 // Client-safe: the Think → Challenge → Synthesize → Create → Test → Learn loop.
 // Helpers to pass work between Arena / Collab / Council with project +
 // source lineage preserved in the URL.
@@ -38,6 +39,12 @@ export function parseSource(source?: string | null): { type: string; id: string 
   if (!source || !source.includes(":")) return null;
   const [type, ...rest] = source.split(":");
   return { type, id: rest.join(":") };
+}
+
+/** Canonical immutable Artifact reference; never interpret a bare ID as latest. */
+export function parseArtifactReference(reference: string): { artifactId: string; revisionId: string } | null {
+  const match = /^artifact:([^@]+)@([^@]+)$/.exec(reference);
+  return match && isUuid(match[1]) && isUuid(match[2]) ? { artifactId: match[1], revisionId: match[2] } : null;
 }
 
 // Canonical loop recipes shown in the UI.

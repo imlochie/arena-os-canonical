@@ -12,7 +12,7 @@ import PoweredBy from "./PoweredBy";
 // The conductor (auto-route) can propose the next relay when a working model
 // is available; offline it declines honestly.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import Markdown from "@/components/Markdown";
 import { loadKeys } from "@/components/KeysBar";
 import { privacyFlags } from "@/lib/privacyClient";
@@ -61,6 +61,8 @@ const CLASSIFICATION_STYLE: Record<string, string> = {
   private: "bg-rose-400/10 text-rose-200 ring-rose-400/20",
 };
 const STATUS_STYLE: Record<string, string> = {
+  dispatching: "bg-cyan-400/10 text-cyan-200 ring-cyan-400/20",
+  uncertain: "bg-rose-400/10 text-rose-200 ring-rose-400/20",
   pending: "bg-amber-400/10 text-amber-200 ring-amber-400/20",
   responded: "bg-emerald-400/10 text-emerald-200 ring-emerald-400/20",
   cancelled: "bg-slate-400/10 text-slate-300 ring-slate-400/20",
@@ -94,6 +96,7 @@ export default function OrchestratorWorkbench() {
   ]);
   const [relayTarget, setRelayTarget] = useState("architect");
   const [relayPurpose, setRelayPurpose] = useState("draft");
+  const [relayReferences, setRelayReferences] = useState("");
   const [relayRequest, setRelayRequest] = useState("");
   const [relayClassification, setRelayClassification] = useState("internal");
   const [relayContract, setRelayContract] = useState("markdown text");
@@ -101,6 +104,7 @@ export default function OrchestratorWorkbench() {
   // ---- add-relay form (in detail) ----
   const [nextTarget, setNextTarget] = useState("");
   const [nextPurpose, setNextPurpose] = useState("contribute");
+  const [nextReferences, setNextReferences] = useState("");
   const [nextRequest, setNextRequest] = useState("");
   const [nextClassification, setNextClassification] = useState("internal");
 
@@ -125,9 +129,10 @@ export default function OrchestratorWorkbench() {
     try {
       const res = await fetch("/api/orchestrator");
       const data = await res.json();
+      if (!res.ok) { setNotice(data.error ?? "Collaboration list unavailable; last acknowledged sessions are retained."); return; }
       if (Array.isArray(data.collaborations)) setCollabs(data.collaborations);
     } catch {
-      /* offline */
+      setNotice("Collaboration list unavailable; last acknowledged sessions are retained. Retry after reconnecting.");
     }
   }, []);
 
@@ -135,13 +140,13 @@ export default function OrchestratorWorkbench() {
     try {
       const res = await fetch(`/api/orchestrator/${id}`);
       if (!res.ok) {
-        setDetail(null);
+        setNotice("Could not reload collaboration. Last acknowledged work is retained; retry after reconnecting.");
         return;
       }
       const data = await res.json();
       setDetail(data.collaboration);
     } catch {
-      /* offline */
+      setNotice("Could not reload collaboration. Last acknowledged work is retained; retry after reconnecting.");
     }
   }, []);
 
@@ -211,7 +216,8 @@ export default function OrchestratorWorkbench() {
 
   async function forgetPreference(id: string) {
     try {
-      await fetch(`/api/preferences/${id}`, { method: "DELETE" });
+      const response = await fetch(`/api/preferences/${id}`, { method: "DELETE" });
+      if (!response.ok) { setNotice("Preference removal was not acknowledged; it remains visible. Reload before retrying."); return; }
       setPrefs((current) => current.filter((p) => p.id !== id));
     } catch {
       /* offline */
@@ -236,6 +242,7 @@ export default function OrchestratorWorkbench() {
     }
   }
 
+  const createRequestId = useRef<string | null>(null);
   async function create() {
     if (!goal.trim() || busy) return;
     setBusy(true);
@@ -245,6 +252,7 @@ export default function OrchestratorWorkbench() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          requestId: createRequestId.current ?? (createRequestId.current = crypto.randomUUID()),
           title: title.trim() || undefined,
           goal: goal.trim(),
           context: context.trim() || undefined,
@@ -263,6 +271,7 @@ export default function OrchestratorWorkbench() {
                 target: relayTarget,
                 purpose: relayPurpose.trim() || "contribute",
                 request: relayRequest.trim(),
+                contextRefs: relayReferences.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean),
                 classification: relayClassification,
                 responseContract: relayContract.trim() || "markdown text",
               }
@@ -274,10 +283,11 @@ export default function OrchestratorWorkbench() {
         setNotice(data.error ?? "failed to create");
         return;
       }
+      createRequestId.current = null;
       setGoal("");
       setTitle("");
       setContext("");
-      setRelayRequest("");
+      setRelayRequest(""); setRelayReferences("");
       setNotice("Collaboration opened.");
       await refreshList();
       setSelectedId(data.collaboration.id);
@@ -324,14 +334,17 @@ export default function OrchestratorWorkbench() {
       const data = await res.json();
       if (res.ok) {
         setDetail(data.collaboration);
-        setNotice("Closed — the collaboration record was filed as an artifact.");
+        setNotice(`Closed — immutable Artifact revision ${data.collaboration.archive?.revisionId ?? ""} filed. Find the complete retained record in the Artifact Library.`);
       } else setNotice(data.error ?? "close failed");
       void refreshList();
+    } catch {
+      setNotice("Record filing was not acknowledged. Reload before retrying; the retained session remains available to download.");
     } finally {
       setBusy(false);
     }
   }
 
+  const relayRequestId = useRef<string | null>(null);
   async function addRelay() {
     if (!detail || !nextRequest.trim() || busy) return;
     setBusy(true);
@@ -339,20 +352,24 @@ export default function OrchestratorWorkbench() {
       const res = await fetch(`/api/orchestrator/${detail.id}/relays`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify({ requestId: relayRequestId.current ?? (relayRequestId.current = crypto.randomUUID()),
           target: nextTarget,
           purpose: nextPurpose.trim() || "contribute",
           request: nextRequest.trim(),
+          contextRefs: nextReferences.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean),
           classification: nextClassification,
           toolUse: nextToolUse,
         }),
       });
       const data = await res.json();
       if (res.ok) {
-        setNextRequest("");
-        setNotice(`Relay #${data.relay.seq} queued.`);
+        relayRequestId.current = null;
+        setNextRequest(""); setNextReferences("");
+        setNotice(`Relay #${data.relay.seq} acknowledged (${data.relay.status}); no duplicate was queued.`);
         await loadDetail(detail.id);
       } else setNotice(data.error ?? "failed to add relay");
+    } catch {
+      setNotice("Relay was not acknowledged. Request and references are retained; reload before retrying.");
     } finally {
       setBusy(false);
     }
@@ -373,6 +390,8 @@ export default function OrchestratorWorkbench() {
         setNotice(rejected ? "Relay rejected." : "Checkpoint answered.");
         if (detail) await loadDetail(detail.id);
       } else setNotice(data.error ?? "failed to respond");
+    } catch {
+      setNotice("Checkpoint was not acknowledged. Your answer is retained; reload before retrying.");
     } finally {
       setBusy(false);
     }
@@ -557,6 +576,7 @@ export default function OrchestratorWorkbench() {
                 placeholder="the request — what should this participant do first?"
                 className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-[11px] text-white outline-none"
               />
+              <label className="block text-xs">Initial immutable Artifact references<input aria-label="Initial immutable Artifact references" value={relayReferences} onChange={(event) => setRelayReferences(event.target.value)} placeholder="artifact:id@revisionId (comma-separated, maximum 8)" className="block w-full bg-black/30" /></label>
               <div className="mt-1.5 flex items-center gap-1.5">
                 <select
                   value={relayClassification}
@@ -588,6 +608,7 @@ export default function OrchestratorWorkbench() {
             >
               Open collaboration
             </button>
+            <button disabled={busy} className="mt-2 text-xs text-slate-400 underline" onClick={() => { if (window.confirm("A previous creation may already exist. Inspect Sessions first. Start a separate creation request with this draft?")) { createRequestId.current = null; setNotice("Separate creation request selected. Draft retained; opening it may create a second session."); } }}>Start a separate creation request</button>
           </div>
 
           {/* session list */}
@@ -741,12 +762,13 @@ export default function OrchestratorWorkbench() {
                   >
                     🎯 Round
                   </button>
+                  <a href={`/api/orchestrator/${detail.id}?download=1`} className="text-xs">Download retained session</a>
                   <button
                     onClick={() => void close()}
-                    disabled={busy || detail.status === "closed"}
+                    disabled={busy}
                     className="rounded-xl bg-white/5 px-3 py-2 text-xs font-bold text-slate-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-40"
                   >
-                    ■ Close
+                    {detail.status === "closed" ? "Retry filing record" : "■ Close"}
                   </button>
                 </div>
               </div>
@@ -809,11 +831,14 @@ export default function OrchestratorWorkbench() {
                         {(r as any).runtime ? <PoweredBy runtime={(r as any).runtime as any} /> : null}
                       </div>
                       <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{r.request}</div>
+                      {r.contextRefs.length > 0 && <div aria-label={`Pinned inputs for relay ${r.seq}`} className="text-[10px]">Pinned inputs: {r.contextRefs.map((reference) => <code key={reference} className="block break-all">{reference}</code>)}</div>}
                       {r.response && (
                         <div className="mt-2 rounded-xl bg-black/30 p-3 text-xs leading-5 text-slate-200">
-                          <Markdown text={r.response.slice(0, 4000)} />
+                          <Markdown text={r.response} />
                         </div>
                       )}
+                      {(r.resultReceipt || ((r.status === "dispatching" || r.status === "uncertain" || r.status === "cancelled") && target?.kind !== "human")) && <a className="mt-2 block text-xs text-cyan-300 underline" href={`/api/orchestrator/relays/${r.id}/result`} download>Download complete retained response</a>}
+                      {(r.status === "dispatching" || r.status === "uncertain") && <button disabled={busy} className="mt-2 text-xs text-amber-300 underline" onClick={() => { if (window.confirm("The executor may have run or still be running. This cancels the relay, not external effects. Inspect the executor first. Cancel this uncertain relay?")) void respond(r, true); }}>Explicitly cancel uncertain dispatch</button>}
                       {r.steps.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {r.steps.map((step, i) => (
@@ -848,6 +873,7 @@ export default function OrchestratorWorkbench() {
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Add relay (manual routing)</div>
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     <select
+                      aria-label="Relay target"
                       value={nextTarget}
                       onChange={(e) => setNextTarget(e.target.value)}
                       className="rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-[11px] text-white outline-none"
@@ -891,6 +917,7 @@ export default function OrchestratorWorkbench() {
                     placeholder="request — what should this participant do?"
                     className="mt-1.5 w-full rounded-lg border border-white/10 bg-black/40 px-2.5 py-2 text-[11px] text-white outline-none"
                   />
+                  <label className="block text-xs">Immutable Artifact references<input aria-label="Relay immutable Artifact references" value={nextReferences} onChange={(event) => setNextReferences(event.target.value)} placeholder="Copy artifact:id@revisionId from Artifact history; comma-separated, maximum 8" className="block w-full bg-black/30" /></label>
                   <button
                     onClick={() => void addRelay()}
                     disabled={busy || !nextTarget || !nextRequest.trim()}

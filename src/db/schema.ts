@@ -179,6 +179,7 @@ export const assistants = pgTable("assistants", {
 
 // ---- Arena battles ----
 export const battles = pgTable("battles", {
+  inputReference: jsonb("input_reference"),
   id: uuid("id").primaryKey().defaultRandom(),
   prompt: text("prompt").notNull(),
   category: text("category").notNull().default("general"),
@@ -224,6 +225,7 @@ export const promptTemplates = pgTable("prompt_templates", {
 
 // ---- Multi-collaboration challenges (cognitive-OS mode) ----
 export const collabs = pgTable("collabs", {
+  inputReference: jsonb("input_reference"),
   id: uuid("id").primaryKey().defaultRandom(),
   challenge: text("challenge").notNull(),
   category: text("category").notNull().default("general"),
@@ -254,6 +256,7 @@ export const collabContributions = pgTable("collab_contributions", {
 
 // ---- Cognitive Council runs (Cognitive OS: job → perspectives → cross-critique → synthesis → artifact) ----
 export const councilRuns = pgTable("council_runs", {
+  inputReference: jsonb("input_reference"),
   id: uuid("id").primaryKey().defaultRandom(),
   jobId: text("job_id").notNull().default("second_brain"),
   material: text("material").notNull(),
@@ -325,12 +328,34 @@ export const artifacts = pgTable("artifacts", {
   kind: text("kind").notNull().default("brief"), // brief|decision|research|concept|plan|critique|prompt|spec|comparison|answer
   title: text("title").notNull().default("Untitled artifact"),
   body: text("body").notNull().default(""),
+  contentObject: jsonb("content_object").$type<ArtifactContentObject>(),
   sourceType: text("source_type").notNull().default("manual"), // council|battle|collab|chat|arcade|manual
   sourceId: text("source_id"),
   /** Record owner — mutations are scoped to it (see desktop-migrations/0016). */
   ownerId: text("owner_id").notNull().default(LOCAL_OWNER_ID),
+  revision: integer("revision").notNull().default(1),
+  currentRevisionId: uuid("current_revision_id"),
+  deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+
+export type ArtifactContentObject = { version: 1; sha256: string; bytes: number; mediaType: string };
+export type ArtifactRevisionSnapshot = {
+  contentObject?: ArtifactContentObject | null;
+  title: string; body: string; kind: string; projectId: string | null;
+  sourceType: string; sourceId: string | null; ownerId: string;
+  deletedAt: string | null; createdAt: string | null;
+};
+export const artifactRevisions = pgTable("artifact_revisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  artifactId: uuid("artifact_id").notNull().references(() => artifacts.id),
+  revision: integer("revision").notNull(),
+  snapshot: jsonb("snapshot").notNull().$type<ArtifactRevisionSnapshot>(),
+  bodySha256: text("body_sha256"),
+  restoredFromRevisionId: uuid("restored_from_revision_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [uniqueIndex("artifact_revisions_number_unique").on(table.artifactId, table.revision)]);
 
 export const projectMemory = pgTable("project_memory", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -687,6 +712,7 @@ export const reconciliationRuns = pgTable("reconciliation_runs", {
 export const collaborations = pgTable("collaborations", {
   id: uuid("id").primaryKey().defaultRandom(),
   title: text("title").notNull().default("Untitled collaboration"),
+  requestHash: text("request_hash"),
   goal: text("goal").notNull(), // what the collaboration is for
   context: text("context").notNull().default(""), // shared context notes
   status: text("status").notNull().default("running"), // running | blocked | closed
@@ -723,6 +749,7 @@ export const collaborationRelays = pgTable("collaboration_relays", {
   classification: text("classification").notNull().default("internal"), // public | internal | private
   responseContract: text("response_contract").notNull().default("markdown text"),
   status: text("status").notNull().default("pending"), // pending | responded | cancelled | failed
+  resultReceipt: jsonb("result_receipt").$type<{ sha256: string; bytes: number }>(),
   response: text("response"),
   via: text("via").notNull().default(""),
   runtime: jsonb("runtime"), // what actually executed the relay response
@@ -838,3 +865,13 @@ export const roomHandoffs = pgTable("arena_room_handoffs", {
   index("arena_room_handoffs_room_project_idx").on(table.room, table.roomProjectId),
 ]);
 export type RoomHandoffRow = typeof roomHandoffs.$inferSelect;
+
+/** Cleanup operation receipts only. Never authoritative for reachability. */
+export const objectReclamations = pgTable("object_reclamations", {
+  id: uuid("id").primaryKey(), ownerId: text("owner_id").notNull(), sha256: text("sha256").notNull(), bytes: integer("bytes").notNull(),
+  identity: jsonb("identity").notNull().$type<{ dev: string; ino: string; size: number; modified: string; changed: string }>(),
+  state: text("state").notNull().default("marked"), markedAt: timestamp("marked_at", { withTimezone: true }).notNull().defaultNow(),
+  notBefore: timestamp("not_before", { withTimezone: true }).notNull(), purgeAfter: timestamp("purge_after", { withTimezone: true }),
+  quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
+  reason: text("reason").notNull(), audit: jsonb("audit").notNull().$type<Array<{ at: string; event: string }>>().default([]),
+});

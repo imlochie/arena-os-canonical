@@ -1,0 +1,10 @@
+{
+  "name": "@waveyard/dsp",
+  "private": true,
+  "version": "0.1.0",
+  "main": "./src/inserts.ts",
+  "types": "./src/inserts.ts",
+  "dependencies": {
+    "zod": "^3.25.76"
+  }
+}

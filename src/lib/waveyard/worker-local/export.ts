@@ -1,3 +1,6 @@
+import { cleanupExportAttempt, exportAttemptKey, publishExport } from "../../../../waveyard-worker/packages/dsp/src/export-publication";
+import { verifyFileIdentity, verifyStoredFile } from "../../../../waveyard-worker/packages/dsp/src/verified-file";
+import { projectAudio } from "@/lib/waveyard/project-audio";
 /**
  * Local export job handler — a faithful port of the worker's processExport
  * WAV path (waveyard-worker/apps/worker/src/export.ts): snapshot parsing,
@@ -14,13 +17,13 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 
 import { db } from "@/db";
-import { exportAssets, exportJobs, remixSessions, remixVersions, sourceAnalyses, stemAssets } from "@/db/waveyardSchema";
+import { exportAssets, exportJobs, remixSessions, remixVersions, sourceAnalyses } from "@/db/waveyardSchema";
 import { checksumFile, exec, validateAudio } from "@/lib/waveyard/audio";
 import { requireTool } from "@/lib/waveyard/ffmpeg";
-import { getStorage, privateObjectKey } from "@/lib/waveyard/storage";
+import { getStorage } from "@/lib/waveyard/storage";
 import {
   AUTOMATION_PARAMETERS,
   normaliseAutomationPoints,
@@ -28,7 +31,9 @@ import {
   type ExportJobPayload,
   type RemixAutomationLane,
 } from "@/lib/waveyard/types";
-import { automatedTrackBusFilters, atempoFilterChain, ffmpegFadeFilters, mixSumFilters, padToTimeline, pitchFilterChain, requiredSourceDurationMs, resolveKeySync, sourceDurationFits, tempoRatio, timelineSampleCount } from "./render-helpers";
+import { isCurrentSourceAnalysis, automatedTrackBusFilters, atempoFilterChain, ffmpegFadeFilters, mixSumFilters, padToTimeline, pitchFilterChain, requiredSourceDurationMs, resolveKeySync, sourceDurationFits, tempoRatio, timelineSampleCount } from "./render-helpers";
+import { bounceInsertBuses, insertBounceRequired } from "./export-inserts";
+import { INSERTS_FORMAT, parseInserts, type InsertChain } from "../mixer/inserts";
 import { isClipFadeShape, type ClipFadeShape } from "../fades";
 
 type SnapshotClip = {
@@ -53,9 +58,12 @@ type SnapshotTrack = {
   muted: boolean;
   solo: boolean;
   clips: SnapshotClip[];
+  inserts: InsertChain;
+  phaseInverted: boolean;
 };
 type ExportSnapshot = {
   masterVolume: number;
+  masterInserts: InsertChain;
   tempoBpm: number;
   targetKey: string | null;
   tracks: SnapshotTrack[];
@@ -76,6 +84,17 @@ function finite(value: unknown, lower: number, upper: number) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < lower || number > upper) throw new ExportFailure("invalid_snapshot", "Persisted remix version is invalid.");
   return number;
+}
+
+function snapshotInserts(raw: unknown): InsertChain {
+  if (raw === undefined || raw === null) return [];
+  if (typeof raw === "string") {
+    try { return snapshotInserts(JSON.parse(raw)); }
+    catch { throw new ExportFailure("invalid_snapshot", "Persisted insert chain is invalid JSON or contains an unsupported processor."); }
+  }
+  const chain = parseInserts(Array.isArray(raw) ? { format: INSERTS_FORMAT, inserts: raw } : raw);
+  if (!chain) throw new ExportFailure("invalid_snapshot", "Persisted insert chain is malformed or contains an unsupported processor.");
+  return chain;
 }
 
 export function parseExportSnapshot(raw: string): ExportSnapshot {
@@ -100,6 +119,8 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
       pan: finite(candidate.pan, -1, 1),
       muted: candidate.muted === true,
       solo: candidate.solo === true,
+      inserts: snapshotInserts(candidate.inserts),
+      phaseInverted: candidate.phaseInverted === true,
       clips: candidate.clips.map((clip): SnapshotClip => {
         if (!clip || typeof clip !== "object") throw new ExportFailure("invalid_snapshot", "Persisted remix clip is invalid.");
         const item = clip as Record<string, unknown>;
@@ -149,6 +170,7 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
   }
   return {
     masterVolume: finite(value.masterVolume, 0, 2),
+    masterInserts: snapshotInserts(value.masterInserts),
     tempoBpm: finite(value.tempoBpm ?? 120, 20, 300),
     targetKey: normaliseMusicalKey(value.targetKey),
     tracks,
@@ -181,21 +203,16 @@ function panGains(pan: number) {
   };
 }
 
-async function updateJob(id: string, patch: Partial<typeof exportJobs.$inferInsert>) {
-  await db.update(exportJobs).set({ ...patch, updatedAt: new Date() }).where(eq(exportJobs.id, id));
+async function updateJob(id: string, patch: Partial<typeof exportJobs.$inferInsert>, integrityFailure = false) {
+  const updated = await db.update(exportJobs).set({ ...patch, updatedAt: new Date() }).where(and(eq(exportJobs.id, id), ...(integrityFailure ? [] : [ne(exportJobs.status, "complete"), ne(exportJobs.status, "cancelled")]))).returning({ id: exportJobs.id });
+  return updated.length > 0;
 }
 
 /** Local export from immutable persisted RemixVersion authority. */
 export async function handleExportJob(payloadInput: Record<string, unknown>): Promise<void> {
   const payload = payloadInput as unknown as ExportJobPayload;
   const [job] = await db.select().from(exportJobs).where(eq(exportJobs.id, payload.exportJobId)).limit(1);
-  if (!job || job.status === "complete" || job.status === "cancelled") return;
-
-  const [existingAsset] = await db.select().from(exportAssets).where(eq(exportAssets.exportJobId, job.id)).limit(1);
-  if (existingAsset) {
-    await updateJob(job.id, { status: "complete", stage: "complete", completedAt: job.completedAt ?? new Date() });
-    return;
-  }
+  if (!job || job.status === "cancelled") return;
 
   const invalidPayload = job.projectId !== payload.projectId || job.remixSessionId !== payload.remixSessionId || job.remixVersionId !== payload.remixVersionId || job.format !== payload.format;
   if (invalidPayload) {
@@ -208,6 +225,21 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     });
     throw new Error("Export payload does not match its durable job target.");
   }
+
+  const [existingAsset] = await db.select().from(exportAssets).where(eq(exportAssets.exportJobId, job.id)).limit(1);
+  if (existingAsset) {
+    try {
+      if (existingAsset.projectId !== job.projectId || existingAsset.remixVersionId !== job.remixVersionId || existingAsset.format !== job.format) throw new Error("Published export provenance does not match its immutable job.");
+      await verifyStoredFile(getStorage(), existingAsset);
+    } catch (error) {
+      await updateJob(job.id, { status: "failed", stage: "failed", errorCode: "published_output_invalid", errorMessage: error instanceof Error ? error.message : "Published output unavailable; restore storage before retrying.", completedAt: new Date() }, true);
+      throw error;
+    }
+    await updateJob(job.id, { status: "complete", stage: "complete", completedAt: job.completedAt ?? new Date() });
+    return;
+  }
+
+  if (job.status === "complete") { await updateJob(job.id, { status: "failed", stage: "failed", errorCode: "published_output_missing", errorMessage: "Completed export has no retained asset; completion was invalidated.", completedAt: new Date() }, true); throw new Error("Completed export has no retained asset."); }
 
   const [version] = await db.select().from(remixVersions).where(eq(remixVersions.id, job.remixVersionId)).limit(1);
   const [session] = await db.select().from(remixSessions).where(eq(remixSessions.id, job.remixSessionId)).limit(1);
@@ -241,7 +273,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
   let storedKey: string | undefined;
   let complete = false;
   try {
-    await updateJob(job.id, {
+    if (!await updateJob(job.id, {
       status: "preparing",
       stage: "resolving-remix",
       attempts: (job.attempts ?? 0) + 1,
@@ -249,7 +281,7 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       completedAt: null,
       errorCode: null,
       errorMessage: null,
-    });
+    })) return;
 
     const snapshot = parseExportSnapshot(version.snapshot);
     assertValidCrossfades(snapshot.tracks);
@@ -259,8 +291,9 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     if (!clips.length) throw new ExportFailure("empty_remix", "The persisted remix version has no audible clips to export.");
 
     const stemIds = [...new Set(clips.map((clip) => clip.stemAssetId))];
-    const stems = await db.select().from(stemAssets).where(inArray(stemAssets.id, stemIds));
-    if (stems.length !== stemIds.length || stems.some((stem) => stem.projectId !== job.projectId))
+    const audio = await projectAudio(job.projectId);
+    const stems = audio.stems.filter((stem) => stemIds.includes(stem.id));
+    if (stems.length !== stemIds.length)
       throw new ExportFailure("asset_missing", "The persisted remix references an unavailable project stem.");
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
     const transformedSourceIds = [...new Set(clips.filter((clip) => clip.tempoSyncEnabled || clip.keySyncEnabled).map((clip) => stemById.get(clip.stemAssetId)!.sourceAssetId))];
@@ -273,15 +306,15 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       let sourceDurationMs = clip.durationMs;
       if (clip.tempoSyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        if (!analysis || analysis.projectId !== job.projectId || analysis.status !== "complete") throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
-        if (!Number.isFinite(analysis.bpm) || analysis.bpm! < 40 || analysis.bpm! > 300) throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
-        const ratio = tempoRatio(snapshot.tempoBpm, analysis.bpm!);
+        if (!isCurrentSourceAnalysis(analysis, audio.sources.find(source => source.id === stem.sourceAssetId))) throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
+        if (!Number.isFinite(analysis!.bpm) || analysis!.bpm! < 40 || analysis!.bpm! > 300) throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
+        const ratio = tempoRatio(snapshot.tempoBpm, analysis!.bpm!);
         sourceDurationMs = requiredSourceDurationMs(clip.durationMs, ratio);
         tempoByClip.set(index, { ratio, sourceDurationMs });
       }
       if (clip.keySyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        const resolution = resolveKeySync(analysis?.projectId === job.projectId ? analysis.status : undefined, normaliseMusicalKey(analysis?.musicalKey), snapshot.targetKey);
+        const resolution = resolveKeySync(isCurrentSourceAnalysis(analysis, audio.sources.find(source => source.id === stem.sourceAssetId)) ? "complete" : undefined, normaliseMusicalKey(analysis?.musicalKey), snapshot.targetKey);
         if ("errorCode" in resolution)
           throw new ExportFailure(
             resolution.errorCode,
@@ -300,10 +333,14 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     for (const [index, stem] of stems.entries()) {
       const inputPath = join(temporaryDirectory, `stem-${index}.wav`);
       await storage.getToFile(stem.storageKey, inputPath);
+      // Verify the exact private copy FFmpeg will consume, not merely a DB
+      // identity or the remote/local object before a potentially faulty copy.
+      try { await verifyFileIdentity(inputPath, stem, "Export source copy"); }
+      catch (error) { throw new ExportFailure("source_identity_unverified", `Export source audio identity could not be verified. ${error instanceof Error ? error.message : "Restore the original stem and retry."} No substitute audio was rendered.`); }
       inputPaths.set(stem.id, inputPath);
     }
 
-    await updateJob(job.id, { status: "processing", stage: "rendering" });
+    if (!await updateJob(job.id, { status: "processing", stage: "rendering" })) return;
 
     const inputIndex = new Map(stems.map((stem, index) => [stem.id, index]));
     const automationByTrackId = new Map(snapshot.automation.map((lane) => [`${lane.remixTrackId}:${lane.parameter}`, lane.points]));
@@ -357,6 +394,19 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       );
       trackBusLabels.set(trackId, `[${trackLabel}]`);
     }
+    const outputPath = join(temporaryDirectory, "export.wav");
+    const ffmpeg = await requireTool("ffmpeg");
+    if (insertBounceRequired(activeTracks, snapshot.masterInserts)) {
+      const buses = activeTracks.flatMap((track, index) => {
+        const labels = clips.flatMap((clip, clipIndex) => clip.track === track ? [`[clip${clipIndex}]`] : []);
+        if (!labels.length) return [];
+        let label = track.id ? trackBusLabels.get(track.id) : undefined;
+        if (!label) { label = `[fxbus${index}]`; filters.push(...mixSumFilters(labels, `fxbus${index}`)); }
+        return [{ label, inserts: track.inserts, phaseInverted: track.phaseInverted }];
+      });
+      await updateJob(job.id, { stage: "rendering-insert-buses" });
+      await bounceInsertBuses({ ffmpeg: ffmpeg.path, directory: temporaryDirectory, inputs: stems.flatMap((stem) => ["-i", inputPaths.get(stem.id)!]), filters, buses, masterVolume: snapshot.masterVolume, masterInserts: snapshot.masterInserts, sampleRate: job.sampleRate, timelineSamples, outputPath });
+    } else {
     const labels = clips
       .flatMap((clip, index) => {
         if (clip.track.id && trackBusLabels.has(clip.track.id)) {
@@ -374,7 +424,6 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     // (aresample) instead of truncating.
     filters.push(`[premaster]volume=${snapshot.masterVolume.toFixed(6)},aresample=out_sample_fmt=s16:dither_method=triangular_hp[mix]`);
 
-    const outputPath = join(temporaryDirectory, "export.wav");
     const args = [
       "-y",
       ...stems.flatMap((stem) => ["-i", inputPaths.get(stem.id)!]),
@@ -391,16 +440,17 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       String(job.channels),
       outputPath,
     ];
-    const ffmpeg = await requireTool("ffmpeg");
     await exec(ffmpeg.path, args, { cwd: temporaryDirectory });
 
-    await updateJob(job.id, { status: "finalizing", stage: "validating" });
+    }
+
+    if (!await updateJob(job.id, { status: "finalizing", stage: "validating" })) return;
     const metadata = await validateAudio(outputPath);
     const checksum = await checksumFile(outputPath);
-    storedKey = privateObjectKey(job.projectId, "export", "wav");
+    storedKey = exportAttemptKey(job.projectId, job.id, "wav");
     await storage.putFile(storedKey, outputPath, "audio/wav");
 
-    await db.transaction(async (tx) => {
+    complete = await publishExport(db, job.id, async (tx) => {
       await tx.insert(exportAssets).values({
         projectId: job.projectId,
         exportJobId: job.id,
@@ -417,7 +467,6 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
       });
       await tx.update(exportJobs).set({ status: "complete", stage: "complete", completedAt: new Date(), updatedAt: new Date() }).where(eq(exportJobs.id, job.id));
     });
-    complete = true;
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown export failure.";
     await updateJob(job.id, {
@@ -429,7 +478,10 @@ export async function handleExportJob(payloadInput: Record<string, unknown>): Pr
     });
     throw error;
   } finally {
-    if (!complete && storedKey) await storage.delete(storedKey).catch(() => undefined);
+    if (!complete && storedKey && await cleanupExportAttempt(db, storage, job.id, storedKey) === "unknown") {
+      console.warn("Export output retained for reconciliation", { exportJobId: job.id, storageKey: storedKey });
+      await updateJob(job.id, { stage: "reconciliation_required", errorCode: "publication_unknown", errorMessage: "Export publication or cleanup could not be verified. Output was retained in this job's private export directory. Retry to reconcile a committed asset; do not manually delete unknown output." }).catch(() => undefined);
+    }
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 }

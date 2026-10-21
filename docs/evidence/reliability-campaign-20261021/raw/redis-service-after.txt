@@ -1,0 +1,35 @@
+TAP version 13
+# (node:61166) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/helpers/mission-postgres.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:61166) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:61166) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# {"runtime":"real native PostgreSQL + Redis + BullMQ Worker production export handler","redisVersion":"7.2.12","queueState":"completed","beforeLateWorker":"complete","afterLateWorker":"complete","assets":1,"late":{"kind":"returned"},"checksumSha256":"bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602","expectedStatus":"complete"}
+# {"kind":"real-queue-FX-reference","inputSha256":"8f7c5c108f01deec126acce948671f42454c8345112046fcd6ccf0c3090d3cf0","snapshotSha256":"a4d4634a51f0175ce3849c926cc936054134830b6600a3135145154129d9662b","liveWorkspaceChangedAfterClaim":true,"maxError":0,"frames":308700,"checksumSha256":"bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602","versionId":"d5bcc311-3d57-4540-bc23-94ab11b0c316"}
+# {"kind":"real-Redis-BullMQ-FX-interruption","stage":"resolving-remix","queueState":"completed","databaseState":"complete","assets":1,"attempts":2,"maxError":0,"sha256":"bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602"}
+# {"kind":"real-Redis-BullMQ-FX-interruption","stage":"rendering","queueState":"completed","databaseState":"complete","assets":1,"attempts":2,"maxError":0,"sha256":"bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602"}
+# {"kind":"real-Redis-BullMQ-FX-interruption","stage":"ffmpeg-active","queueState":"completed","databaseState":"complete","assets":1,"attempts":2,"maxError":0,"sha256":"bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602"}
+# {"kind":"real-Redis-BullMQ-FX-interruption","stage":"validating","queueState":"completed","databaseState":"complete","assets":1,"attempts":2,"maxError":0,"sha256":"bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602"}
+# {"kind":"real-Redis-BullMQ-FX-interruption","stage":"publishing","queueState":"completed","databaseState":"complete","assets":1,"attempts":2,"maxError":0,"sha256":"bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602"}
+# {"kind":"real-Redis-BullMQ-FX-interruption","stage":"committing","queueState":"completed","databaseState":"complete","assets":1,"attempts":2,"maxError":0,"sha256":"bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602"}
+# {"kind":"real-Redis-BullMQ-FX-interruption","stage":"complete","queueState":"completed","databaseState":"complete","assets":1,"attempts":1,"maxError":0,"sha256":"bcd151dec249bf54cafdffc4a995a9fb9f838cf5fbc3e6556fb8b249c2292602"}
+# Subtest: real Redis/BullMQ expired export lease cannot let a stale worker revoke a verified FX publication; completed queue records recover explicitly
+ok 1 - real Redis/BullMQ expired export lease cannot let a stale worker revoke a verified FX publication; completed queue records recover explicitly
+  ---
+  duration_ms: 56986.048712
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 57751.012361

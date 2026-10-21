@@ -83,3 +83,53 @@ test("storage provider round-trips a file through the fixed path logic", async (
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("metadata reads handle empty/exact-limit files and reject overflow without truncation", async t => {
+  const { LocalStorageProvider } = await import("./storage");
+  const root = await mkdtemp(path.join(tmpdir(), "wy-bounded-metadata-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const storage = new LocalStorageProvider(root);
+  for (const length of [0, 64, 65]) {
+    const key = `derived/${length}.json`, body = "x".repeat(length);
+    await storage.putBuffer(key, body);
+    if (length > 64) await assert.rejects(storage.getBuffer(key, 64), /exceeds the allowed read size/);
+    else assert.deepEqual(await storage.getBuffer(key, 64), Buffer.from(body));
+    assert.equal((await readFile(storage.getLocalPath(key)!)).length, length);
+  }
+});
+
+test("metadata growth after stat is bounded to limit+1 actual IO bytes and never returned", async t => {
+  const { LocalStorageProvider } = await import("./storage");
+  const fs = (await import("node:fs")).promises;
+  const callbacks = (await import("node:fs")).default;
+  const root = await mkdtemp(path.join(tmpdir(), "wy-growing-metadata-"));
+  const storage = new LocalStorageProvider(root), key = "derived/waveform.json";
+  await storage.putBuffer(key, '{"complete":true}');
+  const location = storage.getLocalPath(key)!;
+  const statDescriptor = Object.getOwnPropertyDescriptor(fs, "stat")!;
+  const readDescriptor = Object.getOwnPropertyDescriptor(callbacks, "read")!;
+  const stat = fs.stat, read = callbacks.read;
+  let injected = false, actualReadBytes = 0;
+  const restore = () => { Object.defineProperty(fs, "stat", statDescriptor); Object.defineProperty(callbacks, "read", readDescriptor); };
+  t.after(async () => { restore(); await rm(root, { recursive: true, force: true }); });
+  Object.defineProperty(fs, "stat", { ...statDescriptor, value: async (...args: Parameters<typeof fs.stat>) => {
+    const before = await stat(...args);
+    if (String(args[0]) === location && !injected) {
+      injected = true;
+      await fs.appendFile(location, Buffer.alloc(8 * 1024 * 1024, 0x20));
+    }
+    return before;
+  } });
+  // Observe actual successful OS read callbacks, not a fake storage result.
+  Object.defineProperty(callbacks, "read", { ...readDescriptor, value: (...args: unknown[]) => {
+    const callback = args.pop() as (...values: unknown[]) => void;
+    return Reflect.apply(read, callbacks, [...args, (...values: unknown[]) => {
+      actualReadBytes += Number(values[1] ?? 0); callback(...values);
+    }]);
+  } });
+  try { await assert.rejects(storage.getBuffer(key, 64), /exceeds the allowed read size/); }
+  finally { restore(); }
+  assert.equal(injected, true);
+  assert.equal(actualReadBytes, 65, "the reader must stop at one overflow sentinel, not read all 8 MiB");
+  assert.equal((await fs.stat(location)).size, 8 * 1024 * 1024 + 17, "failed metadata reads never delete/truncate owner objects");
+});

@@ -1,0 +1,68 @@
+TAP version 13
+# (node:60178) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/ffmpeg.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# {"scope":"Actual standalone PostgreSQL/storage/native FFmpeg; not inference","fault":"stored-bytes","originalSha256":"c35c13a02b1c60aa3dcea86f2329d7facaf933ba1ee7bbb8d25ff9fd8331e226","changedSha256":"8fa9418d5127fe702d0cb42337322c53915f251632c52d3b2a22b99e28cbb8a2","status":"failed","assets":0,"errorCode":"source_identity_unverified"}
+# node:internal/modules/run_main:123
+#     triggerUncaughtException(
+#     ^
+# AssertionError [ERR_ASSERTION]: source fidelity max PCM error 0.05859375
+#     at <anonymous> (/home/user/arena-os-canonical/waveyard-worker/apps/worker/test-fixtures/export-source-identity.mts:63:65) {
+#   generatedMessage: false,
+#   code: 'ERR_ASSERTION',
+#   actual: false,
+#   expected: true,
+#   operator: '==',
+#   diff: 'simple'
+# }
+# Node.js v22.22.3
+# Subtest: standalone native exports reject changed stored/copied bytes and unavailable copies, then recover the same request
+not ok 1 - standalone native exports reject changed stored/copied bytes and unavailable copies, then recover the same request
+  ---
+  duration_ms: 3127.829808
+  type: 'test'
+  location: '/home/user/arena-os-canonical/tests/acceptance/export-source-identity.test.mjs:6:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    {"scope":"Actual standalone PostgreSQL/storage/native FFmpeg; not inference","fault":"stored-bytes","originalSha256":"c35c13a02b1c60aa3dcea86f2329d7facaf933ba1ee7bbb8d25ff9fd8331e226","changedSha256":"8fa9418d5127fe702d0cb42337322c53915f251632c52d3b2a22b99e28cbb8a2","status":"failed","assets":0,"errorCode":"source_identity_unverified"}
+    node:internal/modules/run_main:123
+        triggerUncaughtException(
+        ^
+    
+    AssertionError [ERR_ASSERTION]: source fidelity max PCM error 0.05859375
+        at <anonymous> (/home/user/arena-os-canonical/waveyard-worker/apps/worker/test-fixtures/export-source-identity.mts:63:65) {
+      generatedMessage: false,
+      code: 'ERR_ASSERTION',
+      actual: false,
+      expected: true,
+      operator: '==',
+      diff: 'simple'
+    }
+    
+    Node.js v22.22.3
+    
+    
+    1 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    <anonymous> (/home/user/arena-os-canonical/waveyard-worker/apps/worker/test-fixtures/export-source-identity.mts:63:65) {
+    TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/export-source-identity.test.mjs:17:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3260.413862

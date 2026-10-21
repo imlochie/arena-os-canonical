@@ -26,7 +26,7 @@ type Transport = {
   playing: boolean;
   position: number;
   error: string | null;
-  play: () => Promise<void>;
+  play: () => Promise<boolean | void>;
   pause: () => void;
   seek: (seconds: number) => void;
 };

@@ -15,7 +15,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { executeTool } from "./tools";
-import { runMission, type MissionAgentSpec } from "./mission";
+import { runMission as runDurableMission, type MissionAgentSpec } from "./mission";
 import type { GenerateResult } from "@/lib/runtime";
 import { browserProfileDir, resetEngine, type BrowserEngine } from "./browser";
 import { decideApproval, listApprovals } from "./governance";
@@ -150,8 +150,7 @@ test("mission gate: browser navigation is a VIEW action — it auto-executes wit
   const mission = await runMission(spaceId, { goal: "read probe", timeBudgetMs: 30_000, agentPlan: plan, maxTurnsPerAgent: 1 }, { generate: gen, browserEngine: engine });
   assert.equal(mission.status, "done");
   assert.ok(events.includes("navigate:https://example.com"), "viewing a page needs no approval");
-  const pending = (await listApprovals(spaceId, "pending")).filter((p) => p.missionId === mission.id);
-  assert.equal(pending.length, 0, "no approval was requested for a view action");
+  assert.equal(mission.journal[0].requestedActions?.[0].state, "finished", "the view action completed without waiting for a human decision");
 });
 
 test("unavailability is honest: no chromium → actionable error, never a fabricated page", async (t) => {
@@ -181,3 +180,6 @@ test("per-space profile isolation: each space gets its own browser-profile direc
   assert.ok(a.endsWith(path.join("space-a", "browser-profile")));
   assert.ok(b.endsWith(path.join("space-b", "browser-profile")));
 });
+
+// Explicitly ephemeral unless this fixture supplies real SQL.
+const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });

@@ -1,3 +1,4 @@
+import { projectAudio } from "@/lib/waveyard/project-audio";
 import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { nearestBeat } from "@/lib/waveyard/types";
@@ -10,7 +11,6 @@ import {
   remixSessions,
   remixTracks,
   sourceAnalyses,
-  stemAssets,
 } from "@/db/waveyardSchema";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
@@ -70,28 +70,8 @@ async function stateFor(remix: typeof remixSessions.$inferSelect) {
     .from(automaticRemixGenerations)
     .where(eq(automaticRemixGenerations.remixSessionId, remix.id))
     .limit(1);
-  const stems = tracks.length
-    ? await db
-        .select({
-          id: stemAssets.id,
-          sourceAssetId: stemAssets.sourceAssetId,
-          stemType: stemAssets.stemType,
-          durationSeconds: stemAssets.durationSeconds,
-          sampleRate: stemAssets.sampleRate,
-          channels: stemAssets.channels,
-          codec: stemAssets.codec,
-          format: stemAssets.format,
-          fileSizeBytes: stemAssets.fileSizeBytes,
-          checksumSha256: stemAssets.checksumSha256,
-        })
-        .from(stemAssets)
-        .where(
-          inArray(
-            stemAssets.id,
-            tracks.map((track) => track.stemAssetId),
-          ),
-        )
-    : [];
+  const referencedIds = new Set([...tracks.map((track) => track.stemAssetId), ...clips.map((clip) => clip.stemAssetId)]);
+  const stems = (await projectAudio(remix.projectId)).stems.filter((stem) => referencedIds.has(stem.id));
   return {
     remix,
     tracks: tracks.map((track) => ({
@@ -175,14 +155,7 @@ export async function PUT(
         { status: 409 },
       );
     }
-    const projectStems = await db
-      .select({
-        id: stemAssets.id,
-        sourceAssetId: stemAssets.sourceAssetId,
-        durationSeconds: stemAssets.durationSeconds,
-      })
-      .from(stemAssets)
-      .where(eq(stemAssets.projectId, remix.projectId));
+    const { stems: projectStems } = await projectAudio(remix.projectId);
     const durationByAssetId = new Map(
       projectStems.map((stem) => [stem.id, stem.durationSeconds * 1000]),
     );

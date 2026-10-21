@@ -1,3 +1,4 @@
+import { captureVersionAttribution } from "@/lib/waveyard/export-bundle";
 import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { asc, eq } from "drizzle-orm";
@@ -158,7 +159,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         remixSessionId: remix.id,
         createdById: user.id,
         name: "Automatic starting point",
-        snapshot: JSON.stringify(snapshot),
+        snapshot: JSON.stringify({ ...snapshot, sourceAttribution: await captureVersionAttribution(projectId, snapshot, tx) }),
       }).returning({ id: remixVersions.id, name: remixVersions.name, createdAt: remixVersions.createdAt });
       return { remix, version };
     });

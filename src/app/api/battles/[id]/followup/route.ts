@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { battles, battleMessages, assistants } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
@@ -12,6 +13,7 @@ const MAX_TURNS = 10;
 
 // POST → continue a battle with a follow-up message (multi-turn arena)
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     const body = await req.json();

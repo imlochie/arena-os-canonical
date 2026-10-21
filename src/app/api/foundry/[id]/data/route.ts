@@ -1,3 +1,5 @@
+import { requireApiAccess } from "@/lib/security/api-access";
+import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -20,7 +22,10 @@ async function appExists(appId: string): Promise<boolean> {
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+  const denied=await requireApiAccess(req); if(denied)return denied;
   const { id } = await params;
+  if(!isUuid(id))return NextResponse.json({error:"Valid app UUID required."},{status:400});
   if (!(await appExists(id))) return NextResponse.json({ error: "app not found" }, { status: 404 });
   const key = new URL(req.url).searchParams.get("key");
   if (key !== null) {
@@ -37,28 +42,35 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     .from(foundryAppData)
     .where(eq(foundryAppData.appId, id));
   return NextResponse.json({ keys: rows.map((r) => r.key), entries: rows.length, bytes: rows.reduce((n, r) => n + Buffer.byteLength(r.value), 0) });
+  } catch { return NextResponse.json({error:"App storage unavailable. No empty value/list was substituted; retry after services recover."},{status:503}); }
 }
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied=await requireApiAccess(req); if(denied)return denied;
   const { id } = await params;
+  if(!isUuid(id))return NextResponse.json({error:"Valid app UUID required."},{status:400});
   let body: { key?: string; value?: string } = {};
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
-  const key = body.key ?? "";
-  const value = body.value ?? "";
+  if(typeof body.key!=="string"||typeof body.value!=="string")return NextResponse.json({error:"App storage requires a string key and exact string value."},{status:400});
+  const key = body.key;
+  const value = body.value;
   if (!KV_KEY_PATTERN.test(key)) return NextResponse.json({ error: "key must match ^[a-zA-Z0-9_.-]{1,64}$" }, { status: 400 });
   if (Buffer.byteLength(value, "utf8") > KV_MAX_VALUE_BYTES)
     return NextResponse.json({ error: `value exceeds ${KV_MAX_VALUE_BYTES} bytes` }, { status: 413 });
-  if (!(await appExists(id))) return NextResponse.json({ error: "app not found" }, { status: 404 });
+  try { return await db.transaction(async tx => {
+  // Serialize quota calculation + replacement with every writer for this app.
+  const [app]=await tx.select({id:foundryApps.id}).from(foundryApps).where(eq(foundryApps.id,id)).for("update");
+  if(!app)return NextResponse.json({error:"app not found"},{status:404});
 
-  const totals = await db
+  const totals = await tx
     .select({ keys: sql<number>`count(*)::int`, bytes: sql<number>`coalesce(sum(octet_length(value)),0)::int` })
     .from(foundryAppData)
     .where(eq(foundryAppData.appId, id));
-  const [row] = await db
+  const [row] = await tx
     .select({ value: foundryAppData.value })
     .from(foundryAppData)
     .where(and(eq(foundryAppData.appId, id), eq(foundryAppData.key, key)))
@@ -69,15 +81,19 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   if (currentKeys > KV_MAX_KEYS) return NextResponse.json({ error: `app storage is capped at ${KV_MAX_KEYS} keys` }, { status: 413 });
   if (currentBytes > KV_MAX_TOTAL_BYTES) return NextResponse.json({ error: `app storage is capped at ${KV_MAX_TOTAL_BYTES} bytes` }, { status: 413 });
 
-  await db
+  await tx
     .insert(foundryAppData)
     .values({ appId: id, key, value })
     .onConflictDoUpdate({ target: [foundryAppData.appId, foundryAppData.key], set: { value, updatedAt: new Date() } });
   return NextResponse.json({ ok: true, keys: currentKeys, bytes: currentBytes });
+  }); }catch {return NextResponse.json({error:"App storage write not acknowledged. Retained data was not replaced by a default; retry after services recover."},{status:503});}
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+  const denied=await requireApiAccess(req); if(denied)return denied;
   const { id } = await params;
+  if(!isUuid(id))return NextResponse.json({error:"Valid app UUID required."},{status:400});
   const key = new URL(req.url).searchParams.get("key");
   if (key === null || !KV_KEY_PATTERN.test(key)) return NextResponse.json({ error: "bad key" }, { status: 400 });
   const removed = await db
@@ -85,4 +101,5 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     .where(and(eq(foundryAppData.appId, id), eq(foundryAppData.key, key)))
     .returning({ key: foundryAppData.key });
   return NextResponse.json({ ok: true, removed: removed.length > 0 });
+  } catch { return NextResponse.json({error:"App storage unavailable. No empty value/list was substituted; retry after services recover."},{status:503}); }
 }

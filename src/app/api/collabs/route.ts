@@ -1,3 +1,5 @@
+import { ArtifactInputError, resolveArtifactInput } from "@/lib/artifact-input";
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { collabs, collabContributions } from "@/db/schema";
 import { desc } from "drizzle-orm";
@@ -21,6 +23,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 export async function GET(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 20), 50);
   try {
@@ -33,10 +36,11 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
-    await ensureSeeded();
     const body = await req.json();
-    const challenge: string = (body.challenge ?? "").toString().trim();
+    const { text: challenge, inputReference } = await resolveArtifactInput(body.source, body.challenge);
+    await ensureSeeded();
     const category: string = (body.category ?? "general").toString();
     const strategyId: string = (body.strategy ?? "council").toString();
     const synthesisModelRaw: string = (body.synthesisModel ?? "openai").toString();
@@ -46,7 +50,7 @@ export async function POST(req: Request) {
     const genKeys = localOnly ? undefined : keys;
 
     if (!challenge) return Response.json({ error: "challenge required" }, { status: 400 });
-    if (challenge.length > 6000) return Response.json({ error: "challenge too long" }, { status: 400 });
+    if (!inputReference && challenge.length > 6000) return Response.json({ error: "challenge too long" }, { status: 400 });
 
     const strategy = getStrategy(strategyId);
     const synthesisModel = (() => {
@@ -81,7 +85,7 @@ export async function POST(req: Request) {
 
     const projectId = body.projectId ? String(body.projectId) : null;
     const ctx = await getProjectContext(projectId);
-    const effectiveChallenge = withProjectContext(challenge, ctx);
+    const effectiveChallenge = inputReference ? challenge : withProjectContext(challenge, ctx);
     const started = Date.now();
 
     // ---- Round 1: parallel drafts (local or cloud) ----
@@ -123,7 +127,7 @@ export async function POST(req: Request) {
               messages: [
                 {
                   role: "user",
-                  content: `ORIGINAL CHALLENGE:\n${challenge.slice(0, 2500)}\n\nALL ROUND-1 DRAFTS:\n${digest.slice(0, 8000)}\n\nYou are ${c.label} (${c.role}). Critique the OTHER drafts honestly (what's weak, wrong, or missing), steelman the strongest rival point, then sharpen YOUR position in 3-6 sentences. Markdown.`,
+                  content: `ORIGINAL CHALLENGE:\n${challenge}\n\nALL ROUND-1 DRAFTS:\n${digest.slice(0, 8000)}\n\nYou are ${c.label} (${c.role}). Critique the OTHER drafts honestly (what's weak, wrong, or missing), steelman the strongest rival point, then sharpen YOUR position in 3-6 sentences. Markdown.`,
                 },
               ],
               system: c.sys,
@@ -164,7 +168,7 @@ export async function POST(req: Request) {
             messages: [
               {
                 role: "user",
-                content: `CHALLENGE (${strategy.name}):\n${challenge.slice(0, 3000)}\n\nCOLLABORATOR MATERIAL:\n${material.slice(0, 11000)}`,
+                content: `CHALLENGE (${strategy.name}):\n${challenge}\n\nCOLLABORATOR MATERIAL:\n${material.slice(0, 11000)}`,
               },
             ],
             system: strategy.synthesisInstruction,
@@ -176,6 +180,7 @@ export async function POST(req: Request) {
 
     const collabMeta = {
       challenge,
+      inputReference,
       category,
       strategy: strategy.id,
       collaborators: JSON.stringify(
@@ -261,6 +266,7 @@ export async function POST(req: Request) {
       localOnly,
     });
   } catch (e) {
+    if (e instanceof ArtifactInputError) return Response.json({ error: e.message }, { status: e.status });
     console.error("collab error", e);
     return Response.json({ error: "collaboration failed" }, { status: 500 });
   }

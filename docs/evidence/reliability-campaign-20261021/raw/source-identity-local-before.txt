@@ -1,0 +1,130 @@
+TAP version 13
+# (node:58909) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:58909) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:58909) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: Studio downloads automatically bundle exact media, frozen source notices and honest unknowns
+    # Subtest: invalid or incomplete frozen notices never silently become legacy notices
+    ok 1 - invalid or incomplete frozen notices never silently become legacy notices
+      ---
+      duration_ms: 15.509854
+      type: 'test'
+      ...
+    # Subtest: new snapshots and legacy downloads refuse another owner's referenced source
+    ok 2 - new snapshots and legacy downloads refuse another owner's referenced source
+      ---
+      duration_ms: 15.866745
+      type: 'test'
+      ...
+    # Subtest: MIDI bundle includes its checksum-pinned analysis source even outside the arrangement
+    ok 3 - MIDI bundle includes its checksum-pinned analysis source even outside the arrangement
+      ---
+      duration_ms: 139.67911
+      type: 'test'
+      ...
+# Export output retained for reconciliation {
+#   exportJobId: '78b1545e-122b-4c31-98db-a7aabf985c96',
+#   storageKey: 'projects/a00e32e6-4dca-41c1-832a-c96b81b894cb/export/78b1545e-122b-4c31-98db-a7aabf985c96/b130cdfd-a69a-4751-b234-cdf00c9bac5d.wav'
+# }
+    # Subtest: native export lost COMMIT acknowledgement never deletes already-published audio
+    ok 4 - native export lost COMMIT acknowledgement never deletes already-published audio
+      ---
+      duration_ms: 368.19653
+      type: 'test'
+      ...
+    # Subtest: native export cancelled after upload cannot publish or resurrect the job
+    ok 5 - native export cancelled after upload cannot publish or resurrect the job
+      ---
+      duration_ms: 66.707465
+      type: 'test'
+      ...
+# Export output retained for reconciliation {
+#   exportJobId: '0144e61a-0e4b-47a3-8681-a7340f87f4bb',
+#   storageKey: 'projects/a00e32e6-4dca-41c1-832a-c96b81b894cb/export/0144e61a-0e4b-47a3-8681-a7340f87f4bb/e492ca66-ec95-4066-a166-46728fcfeeb5.wav'
+# }
+    # Subtest: native export uncertain publication retains job-scoped bytes until explicit healthy reconciliation
+    ok 6 - native export uncertain publication retains job-scoped bytes until explicit healthy reconciliation
+      ---
+      duration_ms: 69.680762
+      type: 'test'
+      ...
+    # Subtest: native render refuses changed source bytes and corrupt copies before minting an export
+        # Subtest: stored-bytes
+        not ok 1 - stored-bytes
+          ---
+          duration_ms: 72.535788
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:146:67'
+          failureType: 'testCodeFailure'
+          error: 'Missing expected rejection.'
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected:
+          operator: 'rejects'
+          stack: |-
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:151:9)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:146:59)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:141:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: copied-bytes
+        not ok 2 - copied-bytes
+          ---
+          duration_ms: 63.031998
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:146:67'
+          failureType: 'testCodeFailure'
+          error: 'Missing expected rejection.'
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected:
+          operator: 'rejects'
+          stack: |-
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:151:9)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:146:59)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:141:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        1..2
+    not ok 7 - native render refuses changed source bytes and corrupt copies before minting an export
+      ---
+      duration_ms: 137.668047
+      type: 'test'
+      location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:141:11'
+      failureType: 'subtestsFailed'
+      error: '2 subtests failed'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:141:3)
+      ...
+    1..7
+not ok 1 - Studio downloads automatically bundle exact media, frozen source notices and honest unknowns
+  ---
+  duration_ms: 3369.616226
+  type: 'test'
+  location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:14:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 10
+# suites 0
+# pass 6
+# fail 4
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4090.205293

@@ -25,6 +25,10 @@ export async function register() {
   if (!shouldRunLocalWorker()) return;
   const { startLocalWorker } = await import("@/lib/waveyard/worker-local");
   if (startLocalWorker() === null) return;
+  const { db } = await import("@/db");
+  const { reconcileNativeSeparations } = await import("@/lib/waveyard/separation/recovery");
+  const { enqueueFromRow } = await import("@/lib/waveyard/separation/retry");
+  await reconcileNativeSeparations(db, enqueueFromRow);
   const { wireDesktopSignals } = await import("@/lib/waveyard/worker-local/signals");
   wireDesktopSignals();
 }

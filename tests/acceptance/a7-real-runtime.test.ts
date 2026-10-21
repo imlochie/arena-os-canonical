@@ -190,7 +190,7 @@ function runAcceptanceSuite(): void {
 
   type FailedJob = ProcessingJobInsert & { id: string; projectId: string; sourceAssetId: string };
 
-  async function insertFailedJob(overrides: Partial<ProcessingJobInsert> = {}): Promise<FailedJob> {
+  async function insertFailedJob(overrides: Partial<Omit<ProcessingJobInsert, "sourceAssetId">> & { sourceAssetId?: string } = {}): Promise<FailedJob> {
     const { projectId, sourceId } = await createProject();
     const id = randomUUID();
     const values: FailedJob = {
@@ -529,6 +529,9 @@ function runAcceptanceSuite(): void {
     const seen: string[] = [];
 
     const workerHandle = openWorker(async (job) => {
+      // BullMQ claims in Redis before application processor setup finishes.
+      // Exercise that real lifecycle boundary rather than relying on speed.
+      await sleep(75);
       const id = String(job.id);
       seen.push(id);
       const gate = gates.get(id);
@@ -576,6 +579,7 @@ function runAcceptanceSuite(): void {
       deferred(activeRow.id, gates);
       await handle.queue.add("separate", payloadOf(activeRow), { jobId: activeRow.id, attempts: 1 });
       await waitForState(handle.queue, activeRow.id, "active");
+      await waitFor(() => seen.includes(activeRow.id) ? true : null, "the actual application processor to enter after Redis claim");
       assert.equal(seen.filter((id) => id === activeRow.id).length, 1, "the real worker is processing it");
 
       const activeRetry = await retrySeparationJob(db, activeRow.id, { handOff: serverQueueHandOff(handle.queue) });

@@ -1,0 +1,173 @@
+{
+  "date": "2026-10-20",
+  "branch": "arena/331aa502-arena-os-canonical",
+  "baseCommit": "0a8541473b5696f4ac4fe4c096076170892e08ce",
+  "gateD": "OPEN",
+  "scope": "Working-tree local evidence; code manifest is Git blobs. Logs retain failed, interrupted and mixed-source historical runs. Exact-commit source/CI/genuine receipts follow separately. Final directory mode0700-only edit occurred during matrix41, not a pristine-revision receipt.",
+  "codeBlobs": {
+    ".github/workflows/a8-inference.yml": "09f2001e07aeb4693ac6dc92cb8ded6e807efba3",
+    ".github/workflows/ci.yml": "6cd3896bba0173a4ff33d619270eb8889e85238c",
+    "scripts/a8-publish-receipt.mjs": "fc276636baa020fab61359e0ac5bdc797bbb4476",
+    "src/app/api/jobs/[id]/recover/route.ts": "0998ebadd67055e46106dd3f2735033d63598c96",
+    "src/app/api/jobs/[id]/retry/route.ts": "c3a7ab6a1ee8bd443fcdad5542c081b804758dd2",
+    "src/app/api/waveyard/processing-status/route.ts": "caeaafe06deaa08b9fea212497ab9a2baac3685a",
+    "src/components/waveyard/ProjectWorkspace.tsx": "488a0c968be88ee2581442fde4bee5cf7c00212f",
+    "src/instrumentation.ts": "0825e5aee3da997fa9002c13ddcc6f7c3df027b2",
+    "src/lib/waveyard/measure/pcm.ts": "c0f7a22d8faacac6921f9d8dd3cb2f50bbf4709a",
+    "src/lib/waveyard/separation/cancel.ts": "eeea0acb95721c0f35e50fb2341a2233eb2ad54c",
+    "src/lib/waveyard/separation/deep.ts": "62d2748eb299c4b5d74b04039e428c5b24a7a114",
+    "src/lib/waveyard/separation/python-guardian.ts": "66b7f57b09931b1a8ec5fe7af4685b18a1866c31",
+    "src/lib/waveyard/separation/recovery.ts": "c06600e446cc8e103171f6ade08658bb37f5e6ce",
+    "src/lib/waveyard/separation/retry.ts": "325fcc11b1d6a258a29076d41642dabab24d2f1b",
+    "src/lib/waveyard/worker-local/separation.ts": "b955e9f6978ab4f5f8c12281a8c8c3dc9c581363",
+    "tests/acceptance/separation-crash.test.ts": "85069c7e147060dfbf31647c9492a4ba908d4d2c",
+    "tests/acceptance/studio-fx.test.mjs": "e86dc200ba2baa983c9561702e9255f3b14c0355",
+    "tests/fixtures/separation-crash-worker.ts": "7ac08222c3abc9b3732e53dfbe3a1ca11b865668"
+  },
+  "logs": {
+    "gate-d-browser-transport.txt": {
+      "totals": {
+        "tests": 12,
+        "pass": 12,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 3291
+    },
+    "gate-d-build15.txt": {
+      "totals": {},
+      "bytes": 28317
+    },
+    "gate-d-cancel.txt": {
+      "totals": {
+        "tests": 7,
+        "pass": 7,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 3152
+    },
+    "gate-d-crashes-40.txt": {
+      "totals": {
+        "tests": 40,
+        "pass": 40,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 8405
+    },
+    "gate-d-crashes-41.txt": {
+      "totals": {
+        "tests": 41,
+        "pass": 41,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 8646
+    },
+    "gate-d-crashes-decoder.txt": {
+      "totals": {
+        "tests": 40,
+        "pass": 38,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 9520
+    },
+    "gate-d-crashes-final.txt": {
+      "totals": {
+        "tests": 35,
+        "pass": 35,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 7441
+    },
+    "gate-d-crashes.txt": {
+      "totals": {},
+      "bytes": 3533
+    },
+    "gate-d-crashes2.txt": {
+      "totals": {
+        "tests": 19,
+        "pass": 15,
+        "fail": 4,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 13087
+    },
+    "gate-d-crashes3.txt": {
+      "totals": {
+        "tests": 20,
+        "pass": 20,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 4506
+    },
+    "gate-d-crashes4.txt": {
+      "totals": {
+        "tests": 26,
+        "pass": 24,
+        "fail": 2,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 8436
+    },
+    "gate-d-guardian-final.txt": {
+      "totals": {
+        "tests": 17,
+        "pass": 17,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 6634
+    },
+    "gate-d-lint15.txt": {
+      "totals": {},
+      "bytes": 51353
+    },
+    "gate-d-publication-final.txt": {
+      "totals": {
+        "tests": 3,
+        "pass": 3,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 2291
+    },
+    "gate-d-separation.txt": {
+      "totals": {
+        "tests": 16,
+        "pass": 15,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "bytes": 6038
+    },
+    "gate-d-source-final.txt": {
+      "totals": {},
+      "bytes": 222
+    },
+    "gate-d-source-final2.txt": {
+      "totals": {},
+      "bytes": 152350
+    },
+    "gate-d-types15.txt": {
+      "totals": {},
+      "bytes": 76
+    }
+  }
+}

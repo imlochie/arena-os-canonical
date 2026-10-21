@@ -1,21 +1,41 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { ArtifactHistory } from "@/components/artifacts/ArtifactHistory";
+import { ArtifactStorageRecovery } from "@/components/artifacts/ArtifactStorageRecovery";
 import Markdown from "@/components/Markdown";
 
-const KINDS = ["brief", "decision", "research", "concept", "plan", "critique", "prompt", "spec", "comparison", "answer"];
+const KINDS = ["brief", "decision", "research", "concept", "plan", "critique", "prompt", "spec", "comparison", "answer", "archive", "mission-file", "test-report"];
 
 export default function ArtifactsPage() {
   const [artifacts, setArtifacts] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [q, setQ] = useState("");
   const [kind, setKind] = useState("");
+  const [trash, setTrash] = useState(false);
   const [projectId, setProjectId] = useState("");
 
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const response = await fetch(`/api/artifacts?limit=100${trash ? "&trash=1" : ""}`);
+      const result = await response.json();
+      if (!response.ok || !Array.isArray(result.artifacts)) throw new Error(result.error ?? "Artifact library could not be loaded. Retry.");
+      setArtifacts(result.artifacts);
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Artifact library unavailable. Retry."); }
+    finally { setLoading(false); }
+  }, [trash]);
   useEffect(() => {
-    fetch("/api/artifacts?limit=100").then((r) => r.json()).then((j) => setArtifacts(j.artifacts ?? []));
-    fetch("/api/projects").then((r) => r.json()).then((j) => setProjects(j.projects ?? []));
-  }, []);
+    void load();
+    void fetch("/api/projects").then(async (response) => {
+      if (!response.ok) throw new Error("Project filters unavailable; saved artifacts are still accessible.");
+      const result = await response.json(); setProjects(result.projects ?? []);
+    }).catch(() => setProjectError("Project filters unavailable; saved artifacts are still accessible."));
+  }, [load]);
 
   const filtered = artifacts.filter((a) => {
     if (kind && a.kind !== kind) return false;
@@ -26,8 +46,16 @@ export default function ArtifactsPage() {
 
   async function remove(id: string) {
     if (!confirm("Delete this artifact?")) return;
-    await fetch(`/api/artifacts/${id}`, { method: "DELETE" });
-    setArtifacts((l) => l.filter((x) => x.id !== id));
+    setDeleting(id); setError(null);
+    try {
+      const response = await fetch(`/api/artifacts/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error ?? "Artifact was not deleted. Retry when storage is available.");
+      }
+      setArtifacts((l) => l.filter((x) => x.id !== id));
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Artifact was not deleted. Retry."); }
+    finally { setDeleting(null); }
   }
 
   function copy(body: string) {
@@ -39,7 +67,7 @@ export default function ArtifactsPage() {
       <div className="text-center">
         <h1 className="text-2xl font-black tracking-tight text-white sm:text-3xl">📦 Artifact Library</h1>
         <p className="mx-auto mt-1 max-w-xl text-sm text-slate-300">
-          Reusable knowledge, not transcripts. Every artifact can re-enter the loop as Arena, Collab, or Council input.
+          Reusable knowledge and immutable files. Supported text revisions can re-enter Arena, Collab, or Council; complete files remain downloadable, with explicit input size/format limits.
         </p>
       </div>
       <div className="glass mt-4 flex flex-col gap-2 rounded-2xl p-3 sm:flex-row">
@@ -57,6 +85,11 @@ export default function ArtifactsPage() {
           ))}
         </select>
       </div>
+      <label><input type="checkbox" checked={trash} onChange={(event) => setTrash(event.target.checked)} />Include deleted artifacts (recoverable history)</label>
+      {loading && <p role="status">Loading saved artifacts…</p>}
+      {projectError && <p role="status">{projectError}</p>}
+      <ArtifactStorageRecovery onChange={load} />
+      {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => void load()} disabled={loading}>Retry loading artifacts</button></div>}
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         {filtered.map((a) => (
           <details key={a.id} className="glass overflow-hidden rounded-2xl">
@@ -69,18 +102,20 @@ export default function ArtifactsPage() {
               <div className="scroll-thin max-h-64 overflow-y-auto">
                 <Markdown text={a.body} />
               </div>
+              <ArtifactHistory artifact={a} onChange={load} />
+              {!a.currentRevisionId && <p>Load revision history to bind this legacy artifact before cross-room reuse.</p>}
               <div className="mt-3 flex flex-wrap gap-1.5">
-                <a href={`/?prompt=${encodeURIComponent(a.body.slice(0, 1500))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">⚔️ Battle it</a>
-                <a href={`/collab?challenge=${encodeURIComponent(a.body.slice(0, 2000))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🤝 Collab it</a>
-                <a href={`/council?material=${encodeURIComponent(a.body.slice(0, 2500))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🧠 Council it</a>
+                {a.currentRevisionId && <a href={`/?prompt=${encodeURIComponent(a.body.slice(0, 1500))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}@${a.currentRevisionId ?? "unbound-legacy"}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">⚔️ Battle it</a>}
+                {a.currentRevisionId && <a href={`/collab?challenge=${encodeURIComponent(a.body.slice(0, 2000))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}@${a.currentRevisionId ?? "unbound-legacy"}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🤝 Collab it</a>}
+                {a.currentRevisionId && <a href={`/council?material=${encodeURIComponent(a.body.slice(0, 2500))}${a.projectId ? `&projectId=${a.projectId}` : ""}&source=${encodeURIComponent(`artifact:${a.id}@${a.currentRevisionId ?? "unbound-legacy"}`)}`} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">🧠 Council it</a>}
                 <button onClick={() => copy(a.body)} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold hover:bg-white/10">📋</button>
-                <button onClick={() => remove(a.id)} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-red-300 hover:bg-red-500/20">🗑️</button>
+                <button aria-label={`Delete ${a.title}`} disabled={deleting !== null} onClick={() => remove(a.id)} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-red-300 hover:bg-red-500/20">🗑️</button>
               </div>
             </div>
           </details>
         ))}
       </div>
-      {filtered.length === 0 && <p className="mt-6 text-center text-sm text-slate-500">No artifacts match. Run a council or save outputs as artifacts to grow the library.</p>}
+      {!loading && !error && filtered.length === 0 && <p className="mt-6 text-center text-sm text-slate-500">No artifacts match. Run a council or save outputs as artifacts to grow the library.</p>}
     </div>
   );
 }

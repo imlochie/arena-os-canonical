@@ -1,0 +1,205 @@
+TAP version 13
+# (node:4006) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:4006) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:4006) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: native separation real SIGKILL/restart matrix
+    # Subtest: claimed
+    ok 1 - claimed
+      ---
+      duration_ms: 3819.360389
+      type: 'test'
+      ...
+    # Subtest: inference-starting
+    ok 2 - inference-starting
+      ---
+      duration_ms: 3783.898132
+      type: 'test'
+      ...
+    # Subtest: inference-running
+    ok 3 - inference-running
+      ---
+      duration_ms: 3794.104213
+      type: 'test'
+      ...
+    # Subtest: outputs-written
+    ok 4 - outputs-written
+      ---
+      duration_ms: 3774.215944
+      type: 'test'
+      ...
+    # Subtest: staging
+    ok 5 - staging
+      ---
+      duration_ms: 3729.005435
+      type: 'test'
+      ...
+    # Subtest: object-written:1
+    ok 6 - object-written:1
+      ---
+      duration_ms: 3944.197975
+      type: 'test'
+      ...
+    # Subtest: object-written:4
+    ok 7 - object-written:4
+      ---
+      duration_ms: 3867.905722
+      type: 'test'
+      ...
+    # Subtest: validated
+    ok 8 - validated
+      ---
+      duration_ms: 3839.516554
+      type: 'test'
+      ...
+    # Subtest: publication-locked
+    ok 9 - publication-locked
+      ---
+      duration_ms: 3911.642465
+      type: 'test'
+      ...
+    # Subtest: committed
+    ok 10 - committed
+      ---
+      duration_ms: 3899.13839
+      type: 'test'
+      ...
+    # Subtest: queued restart has no phantom executor
+    ok 11 - queued restart has no phantom executor
+      ---
+      duration_ms: 2725.436234
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: cleanup-written
+    ok 12 - reconciler crash: cleanup-written
+      ---
+      duration_ms: 2666.240105
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: recovery-committed-before-ack
+    ok 13 - reconciler crash: recovery-committed-before-ack
+      ---
+      duration_ms: 2652.99494
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: native-unregistered
+    not ok 14 - real Python ownership pipe: native-unregistered
+      ---
+      duration_ms: 978.700514
+      type: 'test'
+      location: '/home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:83:100'
+      failureType: 'testCodeFailure'
+      error: |-
+        No boundary native-unregistered: [{"phase":"before-claim"},{"phase":"claimed"},{"phase":"inference-starting"},{"error":"Demucs is not installed for \"/usr/bin/python\". Use Prepare deep separation in Arena for an isolated runtime, or install Demucs on this machine (\"python3 -m pip install demucs\"), or point WAVEYARD_DEEP_PYTHON at an interpreter that has it, and place the htdemucs_6s checkpoint 5c90dfd2-34c22ccb.th at /tmp/arena-separation-crashes-DLrqki/c26b2621-9409-4772-83de-f8b60d0d3251/models/5c90dfd2-34c22ccb.th (WAVEYARD_MODELS_DIR), then retry. The deep pass runs your own local engine and loads only that local checkpoint — nothing is downloaded from here."}] (node:4797) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/fixtures/separation-crash-worker.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+        (Use `node --trace-warnings ...` to show where the warning was created)
+        (node:4797) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+        (node:4797) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+        
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        Object.at (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:40:98)
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:85:109)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:83:92)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+      ...
+    # Subtest: real Python ownership pipe: native-registered
+    not ok 15 - real Python ownership pipe: native-registered
+      ---
+      duration_ms: 1037.772866
+      type: 'test'
+      location: '/home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:83:100'
+      failureType: 'testCodeFailure'
+      error: |-
+        No boundary native-registered: [{"phase":"before-claim"},{"phase":"claimed"},{"phase":"inference-starting"},{"error":"Demucs is not installed for \"/usr/bin/python\". Use Prepare deep separation in Arena for an isolated runtime, or install Demucs on this machine (\"python3 -m pip install demucs\"), or point WAVEYARD_DEEP_PYTHON at an interpreter that has it, and place the htdemucs_6s checkpoint 5c90dfd2-34c22ccb.th at /tmp/arena-separation-crashes-DLrqki/dcd002f5-4a28-4864-bddb-8cd8808d3335/models/5c90dfd2-34c22ccb.th (WAVEYARD_MODELS_DIR), then retry. The deep pass runs your own local engine and loads only that local checkpoint — nothing is downloaded from here."}] (node:4813) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/fixtures/separation-crash-worker.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+        (Use `node --trace-warnings ...` to show where the warning was created)
+        (node:4813) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+        (node:4813) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+        
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        Object.at (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:40:98)
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:85:109)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:83:92)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+      ...
+    # Subtest: real Python ownership pipe: inference-running
+    not ok 16 - real Python ownership pipe: inference-running
+      ---
+      duration_ms: 964.701527
+      type: 'test'
+      location: '/home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:83:100'
+      failureType: 'testCodeFailure'
+      error: |-
+        No boundary inference-running: [{"phase":"before-claim"},{"phase":"claimed"},{"phase":"inference-starting"},{"error":"Demucs is not installed for \"/usr/bin/python\". Use Prepare deep separation in Arena for an isolated runtime, or install Demucs on this machine (\"python3 -m pip install demucs\"), or point WAVEYARD_DEEP_PYTHON at an interpreter that has it, and place the htdemucs_6s checkpoint 5c90dfd2-34c22ccb.th at /tmp/arena-separation-crashes-DLrqki/3aa509ec-592a-4d8b-9c9b-77e019a5a821/models/5c90dfd2-34c22ccb.th (WAVEYARD_MODELS_DIR), then retry. The deep pass runs your own local engine and loads only that local checkpoint — nothing is downloaded from here."}] (node:4838) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/fixtures/separation-crash-worker.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+        (Use `node --trace-warnings ...` to show where the warning was created)
+        (node:4838) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+        (node:4838) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+        
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        Object.at (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:40:98)
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:85:109)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:83:92)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+      ...
+    # Subtest: pending cancellation plus executor crash
+    ok 17 - pending cancellation plus executor crash
+      ---
+      duration_ms: 1695.473998
+      type: 'test'
+      ...
+    # Subtest: PID incarnation mismatch is dead, unknown scope is not reclaimed
+    ok 18 - PID incarnation mismatch is dead, unknown scope is not reclaimed
+      ---
+      duration_ms: 7.364934
+      type: 'test'
+      ...
+    1..18
+not ok 1 - native separation real SIGKILL/restart matrix
+  ---
+  duration_ms: 52871.272405
+  type: 'test'
+  location: '/home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:18:1'
+  failureType: 'subtestsFailed'
+  error: '3 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 19
+# suites 0
+# pass 15
+# fail 4
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 53735.698266

@@ -1,3 +1,5 @@
+import { ArtifactInputError, resolveArtifactInput } from "@/lib/artifact-input";
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { battles, battleMessages } from "@/db/schema";
 import { desc } from "drizzle-orm";
@@ -15,6 +17,7 @@ export const maxDuration = 90;
 
 // GET → recent battles (history)
 export async function GET(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 20), 50);
   const category = url.searchParams.get("category");
@@ -36,17 +39,18 @@ export async function GET(req: Request) {
 // Privacy: localOnly → zero-egress on-device generation; ephemeral →
 // nothing is persisted (sealed reveal token keeps the battle blind).
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
-    await ensureSeeded();
     const body = await req.json();
-    const prompt: string = (body.prompt ?? "").toString().trim();
+    const { text: prompt, inputReference } = await resolveArtifactInput(body.source, body.prompt);
+    await ensureSeeded();
     const keys = body.keys;
     const imageSize: string | undefined = body.imageSize;
     const localOnly = isLocalOnlyBody(body);
     const ephemeral = isEphemeralBody(body);
 
     if (!prompt) return Response.json({ error: "prompt required" }, { status: 400 });
-    if (prompt.length > 4000) return Response.json({ error: "prompt too long" }, { status: 400 });
+    if (!inputReference && prompt.length > 4000) return Response.json({ error: "prompt too long" }, { status: 400 });
 
     const setup = await resolveFighters(body);
     const { left, right } = assignSides(setup);
@@ -62,7 +66,7 @@ export async function POST(req: Request) {
     const genKeys = localOnly ? undefined : keys;
     const projectId = body.projectId ? String(body.projectId) : null;
     const ctx = await getProjectContext(projectId);
-    const effectivePrompt = withProjectContext(prompt, ctx);
+    const effectivePrompt = inputReference ? prompt : withProjectContext(prompt, ctx);
 
     const [rA, rB] = await Promise.all([
       generate({ modelId: left.modelId, messages: [{ role: "user", content: effectivePrompt }], system: left.sys, keys: genKeys, imageSize, category: setup.category, localOnly }),
@@ -95,6 +99,7 @@ export async function POST(req: Request) {
           ephemeral: true,
           revealToken,
           prompt,
+          inputReference,
           category: setup.category,
           responseA: rA.text,
           responseB: rB.text,
@@ -115,6 +120,7 @@ export async function POST(req: Request) {
       .insert(battles)
       .values({
         prompt,
+        inputReference,
         category: setup.category,
         modelAId: left.modelId,
         modelBId: right.modelId,
@@ -147,6 +153,7 @@ export async function POST(req: Request) {
       battle: {
         id: battle.id,
         prompt: battle.prompt,
+        inputReference: battle.inputReference,
         category: battle.category,
         responseA: battle.responseA,
         responseB: battle.responseB,
@@ -162,6 +169,7 @@ export async function POST(req: Request) {
       },
     });
   } catch (e) {
+    if (e instanceof ArtifactInputError) return Response.json({ error: e.message }, { status: e.status });
     console.error("battle error", e);
     return Response.json({ error: "battle failed" }, { status: 500 });
   }

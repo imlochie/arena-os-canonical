@@ -96,3 +96,26 @@ test("localWorkerActive reflects desktop mode env", async () => {
     resetLocalJobBrokerForTests();
   }
 });
+
+test("drain observes new work after an earlier successful drain", async () => {
+  const broker = new LocalJobBroker();
+  assert.equal(await broker.drain(), true);
+  const gate = deferred();
+  broker.register("q", async () => gate.promise);
+  await broker.submit("q", "later", {});
+  try {
+    assert.equal(await broker.drain(10), false, "an old success cannot certify newly running work");
+  } finally { gate.resolve(); }
+  assert.equal(await broker.drain(2000), true);
+  assert.equal(broker.stats().succeeded, 1);
+});
+
+test("drain can recover after a previous wait timed out", async () => {
+  const broker = new LocalJobBroker();
+  const gate = deferred();
+  broker.register("q", async () => gate.promise);
+  await broker.submit("q", "slow", {});
+  try { assert.equal(await broker.drain(10), false); }
+  finally { gate.resolve(); }
+  assert.equal(await broker.drain(2000), true);
+});

@@ -46,3 +46,11 @@ test("acceptable model ids cover registry models and recipes, nothing else", () 
 test("default separation model is registry-acceptable on this machine", () => {
   assert.equal(isAcceptableSeparationModel(defaultSeparationModel()), true);
 });
+
+test("native trained four-source Demucs is explicit and never aliases the MDX four recipe", () => {
+  const native = separationModelChoices().find(choice => choice.id === "deep_4s");
+  assert.equal(native?.engine, "demucs"); assert.equal(native?.stemCount, 4);
+  assert.equal(isAcceptableSeparationModel("deep_4s"), true);
+  assert.equal(separationModelChoices().find(choice => choice.id === "stems_4")?.engine, "mdx");
+  assert.ok(separationTargetOptions().some(choice => choice.id === "deep_4s"));
+});

@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
     "strict": true,
     "noEmit": true,
     "module": "esnext",
@@ -13,16 +17,45 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@waveyard/audio": ["packages/audio/src/index.ts"],
-      "@waveyard/auth": ["packages/auth/src/index.ts"],
-      "@waveyard/database": ["packages/database/src/index.ts"],
-      "@waveyard/database/*": ["packages/database/src/*"],
-      "@waveyard/queue": ["packages/queue/src/index.ts"],
-      "@waveyard/storage": ["packages/storage/src/index.ts"],
-      "@waveyard/types": ["packages/types/src/index.ts"],
-      "@/*": ["apps/web/src/*"]
+      "@waveyard/audio": [
+        "packages/audio/src/index.ts"
+      ],
+      "@waveyard/auth": [
+        "packages/auth/src/index.ts"
+      ],
+      "@waveyard/database": [
+        "packages/database/src/index.ts"
+      ],
+      "@waveyard/database/*": [
+        "packages/database/src/*"
+      ],
+      "@waveyard/queue": [
+        "packages/queue/src/index.ts"
+      ],
+      "@waveyard/storage": [
+        "packages/storage/src/index.ts"
+      ],
+      "@waveyard/types": [
+        "packages/types/src/index.ts"
+      ],
+      "@/*": [
+        "apps/web/src/*"
+      ],
+      "@waveyard/dsp": [
+        "packages/dsp/src/inserts.ts"
+      ]
     }
   },
-  "include": ["apps/**/*.ts", "apps/**/*.tsx", "packages/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["node_modules", ".next", "dist"]
+  "include": [
+    "apps/**/*.ts",
+    "apps/**/*.tsx",
+    "packages/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next",
+    "dist"
+  ]
 }

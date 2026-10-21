@@ -1,0 +1,22 @@
+{"scope":"Actual standalone server FFmpeg/PostgreSQL valid-WAV bit fault; not inference","originalSha256":"c35c13a02b1c60aa3dcea86f2329d7facaf933ba1ee7bbb8d25ff9fd8331e226","alteredSha256":"8fa9418d5127fe702d0cb42337322c53915f251632c52d3b2a22b99e28cbb8a2","status":"complete","assets":1,"refusal":null}
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: changed but still decodable source bytes must not be certified as a faithful immutable-version export
++ actual - expected
+
++ 'complete'
+- 'failed'
+
+    at <anonymous> (/home/user/arena-os-canonical/.data/reliability-campaign/source-identity.mts:32:10)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: 'complete',
+  expected: 'failed',
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v22.22.3

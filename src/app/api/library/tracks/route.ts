@@ -47,7 +47,7 @@ export async function POST(request: Request) {
     const upload = form.get("file");
     if (!(upload instanceof File)) return NextResponse.json({ error: "An audio file is required." }, { status: 400 });
     if (!acceptedAudioFilename(upload.name)) {
-      return NextResponse.json({ error: "Supported formats are WAV, MP3, FLAC, M4A, AAC, and OGG." }, { status: 415 });
+      return NextResponse.json({ error: "Supported formats are WAV, MP3, FLAC, M4A, AAC, AIFF, and OGG." }, { status: 415 });
     }
     if (upload.size <= 0 || upload.size > MAX_UPLOAD_BYTES) {
       return NextResponse.json({ error: `Audio must be between 1 byte and ${MAX_UPLOAD_BYTES} bytes.` }, { status: 413 });
@@ -61,6 +61,7 @@ export async function POST(request: Request) {
     const result = await addTrackFromAudioFile({
       ownerId: user.id,
       filePath: localFile,
+      prepareSeparation: form.get("prepareSeparation") !== "false",
       filename: cleanName,
       mimeType: upload.type || "application/octet-stream",
       title: typeof form.get("title") === "string" ? String(form.get("title")) : undefined,

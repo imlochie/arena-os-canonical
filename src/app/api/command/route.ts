@@ -1,3 +1,5 @@
+import { requireApiAccess } from "@/lib/security/api-access";
+import { artifactScope } from "@/lib/arcadeStore";
 import { db } from "@/db";
 import {
   artifacts,
@@ -13,7 +15,8 @@ export const dynamic = "force-dynamic";
 
 // GET → Command Centre intelligence: active projects, recent activity,
 // decisions / open questions / artifacts / contradiction signals.
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const projs = await db.select().from(projects).orderBy(desc(projects.updatedAt)).limit(12);
     const [decisions] = await db
@@ -24,7 +27,7 @@ export async function GET() {
       .select({ n: sql<number>`count(*)::int` })
       .from(projectMemory)
       .where(eq(projectMemory.kind, "open_question"));
-    const [arts7] = await db.select({ n: sql<number>`count(*)::int` }).from(artifacts);
+    const [arts7] = await db.select({ n: sql<number>`count(*)::int` }).from(artifacts).where(artifactScope());
     const [bothBad] = await db
       .select({ n: sql<number>`count(*) filter (where winner = 'both-bad')::int` })
       .from(battles);
@@ -36,13 +39,13 @@ export async function GET() {
       db.select().from(battles).orderBy(desc(battles.createdAt)).limit(5),
       db.select().from(collabs).orderBy(desc(collabs.createdAt)).limit(5),
       db.select().from(councilRuns).orderBy(desc(councilRuns.createdAt)).limit(5),
-      db.select().from(artifacts).orderBy(desc(artifacts.createdAt)).limit(8),
+      db.select().from(artifacts).where(artifactScope()).orderBy(desc(artifacts.createdAt)).limit(8),
     ]);
 
     // Per-project pulse
     const pulse = await Promise.all(
       projs.slice(0, 6).map(async (p) => {
-        const [a] = await db.select({ n: sql<number>`count(*)::int` }).from(artifacts).where(eq(artifacts.projectId, p.id));
+        const [a] = await db.select({ n: sql<number>`count(*)::int` }).from(artifacts).where(artifactScope(undefined, p.id));
         const [d] = await db
           .select({ n: sql<number>`count(*)::int` })
           .from(projectMemory)

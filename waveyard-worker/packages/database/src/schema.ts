@@ -1,4 +1,4 @@
-import { boolean, index, integer, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { doublePrecision, boolean, index, integer, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -26,7 +26,9 @@ export const sessions = pgTable("sessions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex("sessions_token_hash_unique").on(table.tokenHash), index("sessions_user_id_idx").on(table.userId)]);
 
-export const projects = pgTable("projects", {
+// Canonical Arena owns an unrelated public.projects workspace table. Worker
+// audio permissions must use the same wy_projects identities as the web app.
+export const projects = pgTable("wy_projects", {
   id: uuid("id").defaultRandom().primaryKey(),
   ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: "restrict" }),
   title: text("title").notNull(),
@@ -61,7 +63,7 @@ export const sourceAssets = pgTable("source_assets", {
   mimeType: text("mime_type").notNull(),
   storageKey: text("storage_key").notNull(),
   checksumSha256: text("checksum_sha256").notNull(),
-  durationSeconds: integer("duration_seconds").notNull(),
+  durationSeconds: doublePrecision("duration_seconds").notNull(),
   sampleRate: integer("sample_rate").notNull(),
   channels: integer("channels").notNull(),
   codec: text("codec").notNull(),
@@ -73,7 +75,7 @@ export const sourceAssets = pgTable("source_assets", {
 export const processingJobs = pgTable("processing_jobs", {
   id: uuid("id").defaultRandom().primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").references(() => sourceAssets.id, { onDelete: "cascade" }),
   type: text("type").notNull(),
   status: text("status").notNull().default("queued"),
   priority: integer("priority").notNull().default(0),
@@ -106,7 +108,7 @@ export const stemAssets = pgTable("stem_assets", {
   // state live in waveform_assets, where source and stem assets share one model.
   waveformKey: text("waveform_key"),
   checksumSha256: text("checksum_sha256").notNull(),
-  durationSeconds: integer("duration_seconds").notNull(),
+  durationSeconds: doublePrecision("duration_seconds").notNull(),
   sampleRate: integer("sample_rate").notNull(),
   channels: integer("channels").notNull(),
   codec: text("codec").notNull(),

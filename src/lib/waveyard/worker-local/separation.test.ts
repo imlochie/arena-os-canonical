@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,12 +12,17 @@ import { decodeWav16, encodeWav16 } from "@/lib/waveyard/mixer/synth";
 import { getStorage } from "@/lib/waveyard/storage";
 import { processingJobs, stemAssets, waveformJobs } from "@/db/waveyardSchema";
 import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@/lib/waveyard/separation/mdx";
-import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@/lib/waveyard/separation/deep";
+import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests, runDeepSeparation } from "@/lib/waveyard/separation/deep";
 import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@/lib/waveyard/separation/deep-fixtures";
 import { DEEP_STEM_TYPES } from "@/lib/waveyard/separation/modes";
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
 import { handleSeparationJob } from "./separation";
 import { fixture, identityEngine, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
+
+async function parentPublicationJob(f: SeparationFixture) {
+  const [job] = await f.database.insert(processingJobs).values({ ...f.job, id: randomUUID(), status: "complete", idempotencyKey: randomUUID() }).returning();
+  return job.id;
+}
 
 const KIM = findMdxModel("kim_vocal_2")!;
 type Fixture = SeparationFixture;
@@ -215,13 +221,13 @@ test("stem layers: a second pass on a STEM pulls named layers out of it", async 
       .values({
         projectId: f.project.id,
         sourceAssetId: f.source.id,
-        separationJobId: f.job.id,
+        separationJobId: await parentPublicationJob(f),
         stemType: "other",
         engine: "mdx",
         model: "kuielab_b_other",
         modelVersion: "test",
         storageKey: f.source.storageKey,
-        checksumSha256: "test",
+        checksumSha256: f.source.checksumSha256,
         durationSeconds: 1,
         sampleRate: 44_100,
         channels: 2,
@@ -343,7 +349,8 @@ test("deep pass: the prepared engine runs end to end and stores six attributed s
     }
     installDeepEnv(engine.env);
 
-    await handleSeparationJob(payloadOf(f), { db: f.database });
+    // Explicit controlled CLI seam: this fixture is NOT trained weights.
+    await handleSeparationJob(payloadOf(f), { db: f.database, runDeep: request => runDeepSeparation(request, { verifyCheckpoint: checksumFile }) });
 
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
     assert.equal(row.status, "complete");
@@ -409,13 +416,13 @@ test("deep layers: a deep pass on a STEM names every lane <parent>/<child>", asy
       .values({
         projectId: f.project.id,
         sourceAssetId: f.source.id,
-        separationJobId: f.job.id,
+        separationJobId: await parentPublicationJob(f),
         stemType: "other",
         engine: "mdx",
         model: "kuielab_b_other",
         modelVersion: "test",
         storageKey: f.source.storageKey,
-        checksumSha256: "test",
+        checksumSha256: f.source.checksumSha256,
         durationSeconds: 1,
         sampleRate: 44_100,
         channels: 2,
@@ -434,7 +441,7 @@ test("deep layers: a deep pass on a STEM names every lane <parent>/<child>", asy
 
     await handleSeparationJob(
       { ...payloadOf(f), parentStemAssetId: parentStem.id },
-      { db: f.database },
+      { db: f.database, runDeep: request => runDeepSeparation(request, { verifyCheckpoint: checksumFile }) },
     );
 
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
@@ -568,4 +575,92 @@ test("deep seam: the decoded 44.1 kHz PCM is the engine input, no MDX engine ope
   } finally {
     await f.close();
   }
+});
+
+
+test("partial upload failure cleans unpublished objects; actual retry preserves the previous bank and publishes a distinct bank", async () => {
+  const f = await fixture();
+  const storage = getStorage();
+  const putFile = storage.putFile;
+  try {
+    await handleSeparationJob(payloadOf(f), { db: f.database, openEngine: identityEngine() });
+    const previous = await f.database.select().from(stemAssets);
+    const [attempt] = await f.database.insert(processingJobs).values({ ...f.job, id: randomUUID(), idempotencyKey: randomUUID(), status: "queued" }).returning();
+    const payload = { ...payloadOf(f), processingJobId: attempt.id };
+    const uploaded: string[] = [];
+    let calls = 0;
+    storage.putFile = async (key, path, contentType) => {
+      if (++calls === 2) throw new Error("simulated interrupted second upload");
+      await putFile.call(storage, key, path, contentType);
+      uploaded.push(key);
+    };
+    await assert.rejects(handleSeparationJob(payload, { db: f.database, openEngine: identityEngine() }), /interrupted second upload/);
+    storage.putFile = putFile;
+    assert.equal(uploaded.length, 1);
+    assert.equal(await storage.exists(uploaded[0]), false);
+    assert.deepEqual(await f.database.select().from(stemAssets), previous);
+    for (const stem of previous) assert.equal(await storage.exists(stem.storageKey), true);
+    const { retrySeparationJob } = await import("../separation/retry");
+    const outcome = await retrySeparationJob(f.database, attempt.id, { handOff: async () => {
+      await handleSeparationJob(payload, { db: f.database, openEngine: identityEngine() });
+    } });
+    assert.equal(outcome.queued, true);
+    const banks = await f.database.select().from(stemAssets);
+    assert.equal(banks.length, previous.length * 2);
+    assert.deepEqual(banks.filter(row => row.separationJobId === f.job.id), previous);
+    const [recovered] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, attempt.id));
+    assert.equal(recovered.status, "complete");
+  } finally {
+    storage.putFile = putFile;
+    await f.close();
+  }
+});
+
+test("lost COMMIT acknowledgement cannot delete a bank already referenced by durable stem rows", async () => {
+  const f = await fixture();
+  const db = new Proxy(f.database, { get(target, key) {
+    if (key === "transaction") return async (...args: Parameters<typeof target.transaction>) => {
+      await target.transaction(...args); throw new Error("controlled lost commit acknowledgement");
+    };
+    const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
+  } });
+  try {
+    await assert.rejects(handleSeparationJob(payloadOf(f), { db, openEngine: identityEngine() }), /lost commit acknowledgement/);
+    const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    assert.equal(job.status, "complete"); assert.equal(job.errorCode, null);
+    const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id)); assert.equal(stems.length, 2);
+    for (const stem of stems) assert.equal(await getStorage().exists(stem.storageKey), true, "committed audio must survive executor reporting failure");
+    await handleSeparationJob(payloadOf(f), { db: f.database, openEngine: identityEngine() });
+    assert.deepEqual(new Map((await f.database.select().from(stemAssets)).map(row => [row.id, row])), new Map(stems.map(row => [row.id, row])), "completed bank remains immutable on redispatch (SQL row order is unspecified)");
+    assert.equal(JSON.parse(job.metadata).outputCount, 2, "provenance is not overwritten by cleanup");
+  } finally { await f.close(); }
+});
+
+test("uncertain publication lookup retains output and cleanup keys instead of guessing and deleting", async () => {
+  const f = await fixture(); const storage = getStorage(); const put = storage.putFile; const keys: string[] = []; let uncertain = false;
+  const db = new Proxy(f.database, { get(target, key) {
+    if (key === "transaction") return async () => { uncertain = true; throw new Error("controlled commit status unavailable"); };
+    if (key === "select") return (...args: Parameters<typeof target.select>) => { if (uncertain) throw new Error("controlled publication lookup outage"); return target.select(...args); };
+    const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
+  } });
+  try {
+    storage.putFile = async (...args) => { keys.push(args[0]); await put.apply(storage, args); };
+    await assert.rejects(handleSeparationJob(payloadOf(f), { db, openEngine: identityEngine() }), /commit status unavailable/);
+    const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)); assert.equal(job.status, "failed");
+    assert.equal(keys.length, 2); assert.deepEqual(JSON.parse(job.metadata).cleanupFailedKeys, keys);
+    assert.match(job.errorMessage!, /publication status could not be verified/);
+    for (const key of keys) assert.equal(await storage.exists(key), true);
+    assert.equal((await f.database.select().from(stemAssets)).length, 0);
+  } finally { storage.putFile = put; await f.close(); }
+});
+
+test("provider writes output then rejects: the partially uploaded object is still tracked and removed", async () => {
+  const f = await fixture(); const storage = getStorage(); const put = storage.putFile; const keys: string[] = [];
+  try {
+    storage.putFile = async (...args) => { keys.push(args[0]); await put.apply(storage, args); throw new Error("controlled failure after writing object"); };
+    await assert.rejects(handleSeparationJob(payloadOf(f), { db: f.database, openEngine: identityEngine() }), /failure after writing object/);
+    assert.equal(keys.length, 1); assert.equal(await storage.exists(keys[0]), false);
+    assert.equal((await f.database.select().from(stemAssets)).length, 0);
+    assert.equal(await storage.exists(f.source.storageKey), true);
+  } finally { storage.putFile = put; await f.close(); }
 });

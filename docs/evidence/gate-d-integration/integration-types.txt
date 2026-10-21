@@ -1,0 +1,8 @@
+
+> nextjs-postgresql-template@0.1.0 typecheck
+> node scripts/typecheck.mjs
+
+tests/fixtures/separation-crash-worker.ts(32,3): error TS2322: Type '(transaction: (tx: PgTransaction<NodePgQueryResultHKT, Record<string, never>, ExtractTablesWithRelations<Record<string, never>>>) => Promise<...>, config?: PgTransactionConfig | undefined) => Promise<...>' is not assignable to type '<T>(transaction: (tx: PgTransaction<NodePgQueryResultHKT, Record<string, never>, ExtractTablesWithRelations<Record<string, never>>>) => Promise<...>, config?: PgTransactionConfig | undefined) => Promise<...>'.
+  Type 'Promise<unknown>' is not assignable to type 'Promise<T>'.
+    Type 'unknown' is not assignable to type 'T'.
+      'T' could be instantiated with an arbitrary type which could be unrelated to 'unknown'.

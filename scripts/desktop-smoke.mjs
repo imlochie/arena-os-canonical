@@ -8,8 +8,8 @@
  *
  * This script just runs it and checks the result:
  *
- *   npm run desktop:smoke        (needs the electron binary — allow its
- *                                 postinstall once, or run install.js)
+ *   npm run desktop:smoke        (needs a verified Electron binary; run
+ *                                 desktop:prepare-electron explicitly first)
  *
  * Works on any OS with a display (or under xvfb on Linux CI). On a
  * headless Linux box, wrap it:  xvfb-run -a npm run desktop:smoke
@@ -20,7 +20,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const electronPath = join("node_modules", "electron", "cli.js");
+const electronPath = join("scripts", "desktop-launch.mjs");
 const resultPath = join(
   mkdtempSync(join(tmpdir(), "arena-desktop-smoke-")),
   "result.json",
@@ -49,7 +49,7 @@ try {
 } catch {
   console.error(
     `[smoke] FAIL: no result written (electron exit=${run.status}, signal=${run.signal}). ` +
-      "If the binary is missing, run: node node_modules/electron/install.js",
+      "Run npm run desktop:doctor for binary/version/display diagnostics; explicitly prepare it on a capable host with npm run desktop:prepare-electron.",
   );
   process.exit(1);
 } finally {

@@ -91,6 +91,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   // committed its render. Keep the most recently edited arrangement available
   // to that explicit persistence boundary.
   const remixRef = useRef<Remix | null>(null);
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
   const [versions, setVersions] = useState<RemixVersionSummary[]>([]);
   const [buildingAutomaticRemix, setBuildingAutomaticRemix] = useState<AutomaticRemixVariant | null>(null);
@@ -120,9 +121,17 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const { history, future, reset, record, undo: historyUndo, redo: historyRedo } = arrangementHistory;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transport = useStemTransport(ids, duration);
-  const { setLoop, seek: seekTransport } = transport;
+  const {
+    setLoop, seek: seekTransport, applyMix: applyStemMix,
+    applyInserts: applyStemInserts, setMasterVolume: setTransportMasterVolume,
+  } = transport;
   const seekArrangementPosition = useCallback((milliseconds: number) => seekTransport(milliseconds / 1000), [seekTransport]);
-  const arrangementPreview = useArrangementPreview(seekArrangementPosition);
+  const previewSourceRevision = useMemo(() => JSON.stringify([stems.map(stem => [stem.id, stem.checksumSha256]), sources.map(source => [source.id, source.checksumSha256, source.analysis])]), [stems, sources]);
+  const previewSourceRevisions = useMemo(() => new Map([
+    ...stems.map(stem => [stem.id, stem.checksumSha256] as const),
+    ...sources.map(source => [source.id, JSON.stringify([source.checksumSha256, source.analysis])] as const),
+  ]), [stems, sources]);
+  const arrangementPreview = useArrangementPreview(seekArrangementPosition, remix, previewSourceRevision, projectId, previewSourceRevisions);
   const sourceById = useMemo(
     () => new Map(sources.map((source) => [source.id, source])),
     [sources],
@@ -184,7 +193,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
       else transport.pause();
     },
     seek: (seconds: number) => {
-      if (remix && arrangementPreview.playing) arrangementPreview.pause();
+      if (remix) arrangementPreview.seek(seconds);
       transport.seek(seconds);
     },
   }), [arrangementPreview, observedTransportPlaying, remix, transport]);
@@ -217,7 +226,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const visualMotion = motionPolicy(reducedMotion);
   const environment = artworkEnvironment(`${source?.checksumSha256 ?? projectId}:${source?.originalFilename ?? "waveyard"}`);
 
-  useEffect(() => { transport.applyMix(mixerControls); }, [mixerControls, transport]);
+  useEffect(() => { applyStemMix(mixerControls); }, [mixerControls, applyStemMix]);
   // Insert chains are canonical remix state; the live graph follows them.
   const chainsByStem = useMemo(() => {
     const record: Record<string, InsertChain> = {};
@@ -226,10 +235,10 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   }, [remix]);
   useEffect(() => {
     if (!remix) return;
-    transport.applyInserts(chainsByStem, remix.masterInserts ?? []);
-  }, [chainsByStem, remix, transport]);
+    applyStemInserts(chainsByStem, remix.masterInserts ?? []);
+  }, [chainsByStem, remix, applyStemInserts]);
   useEffect(() => { remixRef.current = remix; }, [remix]);
-  useEffect(() => { if (remix) transport.setMasterVolume(remix.masterVolume); }, [remix, transport]);
+  useEffect(() => { if (remix) setTransportMasterVolume(remix.masterVolume); }, [remix, setTransportMasterVolume]);
   const loopStartMs = remix?.loopStartMs ?? 0;
   const loopEndMs = remix?.loopEndMs ?? null;
   useEffect(() => {
@@ -246,16 +255,31 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     return () => window.removeEventListener("keydown", escape);
   }, []);
 
-  const persist = useCallback(async (next = remixRef.current) => {
-    if (!next) return;
-    setSaveState("saving");
-    const response = await fetch(`/api/remixes/${next.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(remixState(next)) });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) { setSaveState("failed"); return; }
-    const persisted = remixFromResponse(body);
-    remixRef.current = persisted;
-    setRemix(persisted);
-    setSaveState("saved");
+  const persistedOrigins = useRef(new WeakMap<Remix, Remix>());
+  const persist = useCallback((next = remixRef.current): Promise<boolean> => {
+    if (!next) return Promise.resolve(false);
+    // Whole-arrangement saves must reach SQL in request order. A slow older
+    // response may not overwrite edits made while that request was in flight.
+    const task = saveQueue.current.catch(() => {}).then(async () => {
+      setSaveState("saving");
+      try {
+        const response = await fetch(`/api/remixes/${next.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(remixState(next)) });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) { setSaveState("failed"); return false; }
+        const current = remixRef.current;
+        // A preceding queued save may replace an unchanged edit with its
+        // server echo. Preserve that edit identity across acknowledgements,
+        // while still refusing to overwrite a genuinely newer local edit.
+        const origin = persistedOrigins.current.get(next) ?? next;
+        if (!current || (persistedOrigins.current.get(current) ?? current) !== origin) { setSaveState("unsaved"); return false; }
+        const persisted = remixFromResponse(body);
+        persistedOrigins.current.set(persisted, origin);
+        remixRef.current = persisted; setRemix(persisted); setSaveState("saved");
+        return true;
+      } catch { setSaveState("failed"); return false; }
+    });
+    saveQueue.current = task;
+    return task;
   }, []);
   const queuePersist = useCallback((next: Remix) => {
     setSaveState("unsaved");
@@ -326,7 +350,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     queuePersist(after);
   }, [queuePersist, record]);
 
-  const patchClip = (clipId: string, patch: Partial<{ gain: number; fadeInMs: number; fadeOutMs: number }>) => {
+  const patchClip = (clipId: string, patch: Partial<{ gain: number; fadeInMs: number; fadeOutMs: number; timelineStartMs: number; sourceOffsetMs: number; durationMs: number }>) => {
     changeRemix((current) => ({
       ...current,
       tracks: current.tracks.map((track) => ({
@@ -494,7 +518,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   }, [arrangementPreview, transport]);
   const toggleArrangementPreview = useCallback(() => {
     if (!remix) return;
-    if (arrangementPreview.playing) { arrangementPreview.pause(); return; }
+    if (arrangementPreview.playing || arrangementPreview.preparing) { arrangementPreview.pause(); return; }
     transport.pause();
     void arrangementPreview.play(remix, transport.position * 1000);
   }, [arrangementPreview, remix, transport]);
@@ -502,6 +526,9 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     if (!remix) return;
     const name = window.prompt("Name this remix version", `Version ${versions.length + 1}`)?.trim();
     if (!name) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    if (!await persist(remixRef.current)) return;
     const response = await fetch(`/api/remixes/${remix.id}/versions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
     const body = await response.json().catch(() => ({}));
     if (response.ok) setVersions((current) => [...current, body.version]); else setSaveState("failed");
@@ -798,8 +825,9 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
     {studioTab === "edit" && <>
       {remix && <><ProjectMusicalWorld remix={remix} stems={stems} /><ExtendedArrangementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} onApplied={async () => { await loadRemix(remix.id); }} /><MultiSourcePlacementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} stemAssetId={selected?.id ?? ""} sourceSectionId={selectedSourceSectionId} onApplied={async () => { await loadRemix(remix.id); }} /></>}
       <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
-      <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
-      <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} inserts={chainsByStem} onInserts={updateInserts} masterInserts={remix?.masterInserts ?? []} onMasterInserts={updateMasterInserts} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} remix={remix} activeClipId={selectedClipIds.length === 1 ? selectedClipIds[0] : null} onClipPatch={patchClip} onSplitClip={splitClip} onDuplicateClip={duplicateClip} onDeleteClip={deleteClip} />}</section>
+      {remix && (remix.masterInserts?.some((insert) => insert.enabled) || remix.tracks.some((track) => track.phaseInverted || track.inserts?.some((insert) => insert.enabled))) && <p role="note" className="notice">Arrangement audition and WAV export use the same track/master FX kernels and polarity (up to 5 minutes). Audition prepares the current arrangement before playback; edits rebuild it at the cursor. Delay echoes decay to −80 dB; combined FX tails are limited to 60 seconds, with longer settings rejected. Browser decoding and final WAV quantization can differ. Tempo/key-synced audition is explicitly unavailable; use WAV export for those transforms. Stem preview uses native live processors.</p>}
+      <StudioTransport transport={{ ...transport, stop: () => { arrangementPreview.stop(); transport.stop(); }, seek: (seconds) => { if (remix) arrangementPreview.seek(seconds); transport.seek(seconds); } }} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPreparing={arrangementPreview.preparing} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
+      <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} inserts={chainsByStem} onInserts={updateInserts} masterInserts={remix?.masterInserts ?? []} onMasterInserts={updateMasterInserts} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} remix={remix} activeClipId={selectedClipIds.length === 1 ? selectedClipIds[0] : null} onClipPatch={patchClip} onSplitClip={splitClip} onDuplicateClip={duplicateClip} onDeleteClip={deleteClip} />}</section>
       <SoundDesignStudio projectId={projectId} />
       <MasterStudio projectId={projectId} sourceAudioUrl={sources.length > 0 ? `/api/assets/${sources[0].id}` : null} />
       <CleanupStudio projectId={projectId} />
@@ -833,7 +861,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
           <label><input aria-label="Snap enabled" type="checkbox" checked={remix.snapEnabled} onChange={(event) => changeRemix((current) => ({ ...current, snapEnabled: event.target.checked }))} /> Snap</label>
           <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
         </div>
-        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} selectedClipIds={selectedClipIds} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onSelectedClipIds={setSelectedClipIds} onPreview={previewTimeline} onCommit={commitTimeline} onBatchCommit={batchEditClips} onAutomationEdit={editAutomation} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
+        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} selectedClipIds={selectedClipIds} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onSelectedClipIds={setSelectedClipIds} onPreview={previewTimeline} onCommit={commitTimeline} onBatchCommit={batchEditClips} onAutomationEdit={editAutomation} onChange={changeRemix} onSeek={(milliseconds) => { if (remix) arrangementPreview.seek(milliseconds / 1000); transport.seek(milliseconds / 1000); }} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
         <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} sourceAlignmentByStemId={sourceAlignmentByStemId} comparisonSource={selected ? sourceAlignmentByStemId.get(selected.id) : null} slicePrefill={slicePrefill} onAlignBeat={alignClipBeat} onClipEdit={editClip} onAutomationEdit={(operation, payload) => editAutomation(remix, operation, payload)} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}

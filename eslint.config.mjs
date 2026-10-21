@@ -12,6 +12,11 @@ export default defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    // Generated desktop distributions include compiled/vendor code. Keep
+    // linting the actual desktop sources, not copies produced by staging.
+    "desktop-package/**",
+    "desktop-release/**",
+    "desktop/dist/**",
     "next-env.d.ts",
     "luma/**",
     "mobile/**",

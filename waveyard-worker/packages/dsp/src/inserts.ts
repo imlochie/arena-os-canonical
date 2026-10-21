@@ -1,0 +1,617 @@
+/**
+ * Waveyard insert chain — real processors, real parameters.
+ *
+ * Every processor id in the registry maps to a DSP kernel in dsp.ts.
+ * There are no decorative plugins: if a processor is listed here it
+ * processes audio; if a backend doesn't exist for an operation, the
+ * operation simply isn't in the registry.
+ *
+ * Chains are plain serializable data (waveyard-inserts-v1), reorderable,
+ * bypassable, removable, and versioned. This module is the offline/bounce
+ * path and the validation authority; the live Web Audio transport applies
+ * the same chain shape through native nodes (later phase) so preview and
+ * render agree by construction.
+ */
+
+import { z } from "zod";
+
+import {
+  applyBiquad,
+  applyCompressor,
+  applyDelay,
+  applyGain,
+  applyGate,
+  applySaturation,
+  applySoftClipCeiling,
+  applyStereoWidth,
+  designBiquad,
+  dspDbToGain,
+  mixDryWet,
+  newBiquadState,
+  type StereoBuffer,
+} from "./dsp";
+import { applyDeEsser, applyMaximizer } from "./dynamics";
+import { applyDither } from "./dither";
+import { applyEq7 } from "./eq7";
+import { applyLoFi, applyRectifier } from "./lofi";
+import { applyChorus, applyFlanger, applyPhaser } from "./modulation";
+import { applyReverb } from "./reverb";
+import { clamp } from "./types";
+
+export const INSERTS_FORMAT = "waveyard-inserts-v1" as const;
+
+export type InsertProcessorId =
+  | "gain"
+  | "highpass"
+  | "lowpass"
+  | "eq-band"
+  | "notch"
+  | "compressor"
+  | "gate"
+  | "saturator"
+  | "softclip"
+  | "width"
+  | "delay"
+  | "reverb"
+  | "plate-reverb"
+  | "chorus"
+  | "flanger"
+  | "phaser"
+  | "de-esser"
+  | "maximizer"
+  | "eq7"
+  | "lofi"
+  | "rectifier"
+  | "dither";
+
+export type ParamRange = { min: number; max: number; default: number };
+
+export const INSERT_PARAM_RANGES: Record<
+  InsertProcessorId,
+  Record<string, ParamRange>
+> = {
+  gain: { gainDb: { min: -24, max: 24, default: 0 } },
+  highpass: {
+    cutoffHz: { min: 20, max: 500, default: 80 },
+    q: { min: 0.1, max: 4, default: 0.7071 },
+  },
+  lowpass: {
+    cutoffHz: { min: 500, max: 20000, default: 12000 },
+    q: { min: 0.1, max: 4, default: 0.7071 },
+  },
+  "eq-band": {
+    freqHz: { min: 40, max: 16000, default: 1000 },
+    gainDb: { min: -18, max: 18, default: 0 },
+    q: { min: 0.1, max: 8, default: 1 },
+  },
+  notch: {
+    freqHz: { min: 30, max: 8000, default: 60 },
+    q: { min: 2, max: 30, default: 12 },
+  },
+  compressor: {
+    thresholdDb: { min: -60, max: 0, default: -24 },
+    ratio: { min: 1, max: 20, default: 3 },
+    attackMs: { min: 0.1, max: 200, default: 10 },
+    releaseMs: { min: 5, max: 2000, default: 150 },
+    makeupDb: { min: -12, max: 24, default: 0 },
+  },
+  gate: {
+    thresholdDb: { min: -90, max: 0, default: -50 },
+    attackMs: { min: 0.1, max: 100, default: 1 },
+    releaseMs: { min: 5, max: 2000, default: 120 },
+    holdMs: { min: 0, max: 2000, default: 50 },
+  },
+  saturator: { drive: { min: 0.1, max: 20, default: 2 } },
+  softclip: { ceilingDb: { min: -24, max: 0, default: -1 } },
+  width: { width: { min: 0, max: 4, default: 1 } },
+  delay: {
+    delayMs: { min: 1, max: 2000, default: 250 },
+    feedback: { min: 0, max: 0.95, default: 0.3 },
+    mix: { min: 0, max: 1, default: 0.25 },
+  },
+  reverb: {
+    predelayMs: { min: 0, max: 250, default: 10 },
+    decaySeconds: { min: 0.1, max: 20, default: 1.2 },
+    sizePercent: { min: 0, max: 100, default: 50 },
+    dampingHz: { min: 1000, max: 20000, default: 6000 },
+    diffusionPercent: { min: 0, max: 100, default: 70 },
+    widthPercent: { min: 0, max: 100, default: 100 },
+    lowCutHz: { min: 20, max: 1000, default: 20 },
+    mix: { min: 0, max: 1, default: 0.25 },
+  },
+  "plate-reverb": {
+    predelayMs: { min: 0, max: 250, default: 20 },
+    decaySeconds: { min: 0.1, max: 20, default: 2.5 },
+    sizePercent: { min: 0, max: 100, default: 50 },
+    dampingHz: { min: 1000, max: 20000, default: 10000 },
+    diffusionPercent: { min: 0, max: 100, default: 85 },
+    widthPercent: { min: 0, max: 100, default: 100 },
+    lowCutHz: { min: 20, max: 1000, default: 20 },
+    mix: { min: 0, max: 1, default: 0.3 },
+  },
+  chorus: {
+    rateHz: { min: 0.05, max: 5, default: 0.8 },
+    depth: { min: 0, max: 1, default: 0.5 },
+    delayMs: { min: 5, max: 30, default: 12 },
+    feedback: { min: 0, max: 0.9, default: 0 },
+    mix: { min: 0, max: 1, default: 0.5 },
+    spread: { min: 0, max: 1, default: 1 },
+  },
+  flanger: {
+    rateHz: { min: 0.02, max: 5, default: 0.25 },
+    depth: { min: 0, max: 1, default: 0.7 },
+    delayMs: { min: 0.1, max: 10, default: 2 },
+    feedback: { min: -0.95, max: 0.95, default: 0.5 },
+    mix: { min: 0, max: 1, default: 0.5 },
+  },
+  phaser: {
+    rateHz: { min: 0.02, max: 5, default: 0.5 },
+    depth: { min: 0, max: 1, default: 0.7 },
+    stages: { min: 2, max: 12, default: 6 },
+    feedback: { min: -0.95, max: 0.95, default: 0.4 },
+    centerHz: { min: 100, max: 4000, default: 800 },
+    mix: { min: 0, max: 1, default: 0.5 },
+  },
+  "de-esser": {
+    freqHz: { min: 2000, max: 16000, default: 6000 },
+    thresholdDb: { min: -60, max: 0, default: -30 },
+    rangeDb: { min: 0, max: 40, default: 10 },
+  },
+  maximizer: {
+    thresholdDb: { min: -30, max: 0, default: 0 },
+    ceilingDb: { min: -30, max: 0, default: -0.3 },
+    releaseMs: { min: 1, max: 1000, default: 50 },
+  },
+  eq7: {
+    inputGainDb: { min: -24, max: 24, default: 0 },
+    hpfOn: { min: 0, max: 1, default: 0 },
+    hpfHz: { min: 10, max: 2000, default: 80 },
+    hpfSlope: { min: 0, max: 3, default: 1 },
+    lfHz: { min: 20, max: 1000, default: 100 },
+    lfGainDb: { min: -24, max: 24, default: 0 },
+    lfQ: { min: 0.3, max: 2, default: 0.707 },
+    lmfHz: { min: 20, max: 2000, default: 250 },
+    lmfGainDb: { min: -24, max: 24, default: 0 },
+    lmfQ: { min: 0.1, max: 10, default: 1 },
+    mfHz: { min: 100, max: 8000, default: 1000 },
+    mfGainDb: { min: -24, max: 24, default: 0 },
+    mfQ: { min: 0.1, max: 10, default: 1 },
+    hmfHz: { min: 500, max: 20000, default: 4000 },
+    hmfGainDb: { min: -24, max: 24, default: 0 },
+    hmfQ: { min: 0.1, max: 10, default: 1 },
+    hfHz: { min: 1000, max: 20000, default: 8000 },
+    hfGainDb: { min: -24, max: 24, default: 0 },
+    hfQ: { min: 0.3, max: 2, default: 0.707 },
+    lpfOn: { min: 0, max: 1, default: 0 },
+    lpfHz: { min: 1000, max: 20000, default: 18000 },
+    lpfSlope: { min: 0, max: 3, default: 1 },
+    outputGainDb: { min: -24, max: 24, default: 0 },
+  },
+  lofi: {
+    bits: { min: 1, max: 24, default: 8 },
+    sampleRateHz: { min: 500, max: 48000, default: 11025 },
+    noisePercent: { min: 0, max: 100, default: 0 },
+    mix: { min: 0, max: 1, default: 1 },
+  },
+  rectifier: {
+    mode: { min: 0, max: 1, default: 1 },
+    mix: { min: 0, max: 1, default: 1 },
+    outputDb: { min: -24, max: 12, default: 0 },
+  },
+  dither: {
+    bitDepth: { min: 16, max: 24, default: 16 },
+    noiseShaping: { min: 0, max: 1, default: 0 },
+  },
+};
+
+export const INSERT_PROCESSOR_LABELS: Record<InsertProcessorId, string> = {
+  gain: "Gain",
+  highpass: "High-pass",
+  lowpass: "Low-pass",
+  "eq-band": "EQ band",
+  notch: "Notch (de-hum)",
+  compressor: "Compressor",
+  gate: "Gate",
+  saturator: "Saturation",
+  softclip: "Soft clip",
+  width: "Stereo width",
+  delay: "Delay",
+  reverb: "Reverb (room)",
+  "plate-reverb": "Reverb (plate)",
+  chorus: "Chorus",
+  flanger: "Flanger",
+  phaser: "Phaser",
+  "de-esser": "De-esser",
+  maximizer: "Maximizer",
+  eq7: "EQ (7-band)",
+  lofi: "Lo-Fi",
+  rectifier: "Rectifier",
+  dither: "Dither",
+};
+
+export type Insert = {
+  id: string;
+  processor: InsertProcessorId;
+  enabled: boolean;
+  /** Dry/wet 0..1 (1 = fully processed). */
+  wet: number;
+  params: Record<string, number>;
+};
+
+export type InsertChain = Insert[];
+
+// ---------------------------------------------------------------------------
+// Validation (clamp numeric params into declared ranges)
+// ---------------------------------------------------------------------------
+
+export type ParamValidation = {
+  params: Record<string, number>;
+  clamped: string[];
+  invalid: string[];
+};
+
+export function validateInsertParams(
+  processor: string,
+  raw: unknown,
+): ParamValidation | null {
+  const ranges = INSERT_PARAM_RANGES[processor as InsertProcessorId];
+  if (ranges === undefined) return null;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+    return null;
+  const params: Record<string, number> = {};
+  const clamped: string[] = [];
+  const invalid: string[] = [];
+  const input = raw as Record<string, unknown>;
+
+  const seen = new Set<string>();
+  for (const [key, value] of Object.entries(input)) {
+    const range = ranges[key];
+    if (range === undefined) {
+      invalid.push(key);
+      continue;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      invalid.push(key);
+      continue;
+    }
+    seen.add(key);
+    const bounded = clamp(value, range.min, range.max);
+    if (bounded !== value) clamped.push(key);
+    params[key] = bounded;
+  }
+  for (const [key, range] of Object.entries(ranges)) {
+    if (!seen.has(key)) params[key] = range.default;
+  }
+  if (invalid.length > 0) return null;
+  return { params, clamped, invalid };
+}
+
+// ---------------------------------------------------------------------------
+// Chain operations (pure)
+// ---------------------------------------------------------------------------
+
+let insertCounter = 0;
+export function newInsertId(): string {
+  insertCounter += 1;
+  return `ins-${Date.now().toString(36)}-${insertCounter}`;
+}
+
+export function makeInsert(
+  processor: InsertProcessorId,
+  params: Record<string, number> = {},
+  options: { enabled?: boolean; wet?: number; id?: string } = {},
+): Insert | null {
+  const validation = validateInsertParams(processor, params);
+  if (validation === null) return null;
+  return {
+    id: options.id ?? newInsertId(),
+    processor,
+    enabled: options.enabled ?? true,
+    wet: clamp(options.wet ?? 1, 0, 1),
+    params: validation.params,
+  };
+}
+
+export function addInsert(chain: InsertChain, insert: Insert): InsertChain {
+  return [...chain, insert];
+}
+
+export function removeInsert(chain: InsertChain, insertId: string): InsertChain {
+  return chain.filter((insert) => insert.id !== insertId);
+}
+
+export function moveInsert(
+  chain: InsertChain,
+  fromIndex: number,
+  toIndex: number,
+): InsertChain {
+  if (fromIndex < 0 || fromIndex >= chain.length) return chain;
+  const target = clamp(toIndex, 0, chain.length - 1);
+  if (target === fromIndex) return chain;
+  const next = [...chain];
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(target, 0, moved);
+  return next;
+}
+
+export function toggleInsert(chain: InsertChain, insertId: string): InsertChain {
+  return chain.map((insert) =>
+    insert.id === insertId ? { ...insert, enabled: !insert.enabled } : insert,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Serialization
+// ---------------------------------------------------------------------------
+
+const InsertSchema = z.object({
+  id: z.string().min(1),
+  processor: z.string().min(1),
+  enabled: z.boolean(),
+  wet: z.number().min(0).max(1),
+  params: z.record(z.string(), z.number()),
+});
+
+export function serializeInserts(chain: readonly MinimalInsertLike[]): string {
+  return JSON.stringify({ format: INSERTS_FORMAT, inserts: chain });
+}
+
+/** Structural shape accepted by serializeInserts (parse revalidates on read). */
+export type MinimalInsertLike = {
+  id: string;
+  processor: string;
+  enabled: boolean;
+  wet: number;
+  params: Record<string, number>;
+};
+
+export function parseInserts(raw: unknown): InsertChain | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const parsed = z
+    .object({ format: z.literal(INSERTS_FORMAT), inserts: z.array(InsertSchema).max(32) })
+    .safeParse(raw);
+  if (!parsed.success) return null;
+  const chain: InsertChain = [];
+  for (const insert of parsed.data.inserts) {
+    const validation = validateInsertParams(insert.processor, insert.params);
+    if (validation === null || validation.clamped.length > 0) return null;
+    chain.push({
+      id: insert.id,
+      processor: insert.processor as InsertProcessorId,
+      enabled: insert.enabled,
+      wet: insert.wet,
+      params: validation.params,
+    });
+  }
+  return chain;
+}
+
+// ---------------------------------------------------------------------------
+// Processing
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a chain over a buffer. In-place kernels mutate `buffer`; delay
+ * returns a new buffer. Callers that need the original untouched pass a
+ * copy. Disabled inserts are skipped; wet < 1 mixes dry back in.
+ */
+export function processWithChain(
+  buffer: StereoBuffer,
+  chain: InsertChain,
+  sampleRate: number,
+): StereoBuffer {
+  let current = buffer;
+  for (const insert of chain) {
+    if (!insert.enabled || insert.wet === 0) continue;
+    if (insert.wet < 1) {
+      let dry = Float32Array.from(current);
+      const processed = runProcessor(current, insert, sampleRate);
+      // Processors may return a LONGER buffer (reverb tail); the dry copy is
+      // zero-padded so the tail survives the dry/wet mix instead of being
+      // truncated at the original input length.
+      if (processed.length > dry.length) {
+        const padded = new Float32Array(processed.length);
+        padded.set(dry);
+        dry = padded;
+      }
+      mixDryWet(dry, processed, insert.wet);
+      current = dry;
+    } else {
+      current = runProcessor(current, insert, sampleRate);
+    }
+  }
+  return current;
+}
+
+function runProcessor(
+  buffer: StereoBuffer,
+  insert: Insert,
+  sampleRate: number,
+): StereoBuffer {
+  const p = insert.params;
+  switch (insert.processor) {
+    case "gain":
+      applyGain(buffer, dspDbToGain(p.gainDb));
+      return buffer;
+    case "highpass":
+      applyBiquad(
+        buffer,
+        designBiquad({ type: "highpass", freqHz: p.cutoffHz, q: p.q }, sampleRate),
+        newBiquadState(),
+        newBiquadState(),
+      );
+      return buffer;
+    case "lowpass":
+      applyBiquad(
+        buffer,
+        designBiquad({ type: "lowpass", freqHz: p.cutoffHz, q: p.q }, sampleRate),
+        newBiquadState(),
+        newBiquadState(),
+      );
+      return buffer;
+    case "eq-band":
+      applyBiquad(
+        buffer,
+        designBiquad({ type: "peaking", freqHz: p.freqHz, gainDb: p.gainDb, q: p.q }, sampleRate),
+        newBiquadState(),
+        newBiquadState(),
+      );
+      return buffer;
+    case "notch":
+      applyBiquad(
+        buffer,
+        designBiquad({ type: "notch", freqHz: p.freqHz, q: p.q }, sampleRate),
+        newBiquadState(),
+        newBiquadState(),
+      );
+      return buffer;
+    case "compressor":
+      applyCompressor(buffer, {
+        thresholdDb: p.thresholdDb,
+        ratio: p.ratio,
+        attackMs: p.attackMs,
+        releaseMs: p.releaseMs,
+        makeupDb: p.makeupDb,
+        sampleRate,
+      });
+      return buffer;
+    case "gate":
+      applyGate(buffer, {
+        thresholdDb: p.thresholdDb,
+        attackMs: p.attackMs,
+        releaseMs: p.releaseMs,
+        holdMs: p.holdMs,
+        sampleRate,
+      });
+      return buffer;
+    case "saturator":
+      applySaturation(buffer, p.drive);
+      return buffer;
+    case "softclip":
+      applySoftClipCeiling(buffer, p.ceilingDb);
+      return buffer;
+    case "width":
+      applyStereoWidth(buffer, p.width);
+      return buffer;
+    case "delay":
+      return applyDelay(buffer, {
+        delayMs: p.delayMs,
+        feedback: p.feedback,
+        mix: p.mix,
+        sampleRate,
+      });
+    case "reverb":
+    case "plate-reverb":
+      return applyReverb(buffer, {
+        model: insert.processor === "plate-reverb" ? "plate" : "room",
+        predelayMs: p.predelayMs,
+        decaySeconds: p.decaySeconds,
+        sizePercent: p.sizePercent,
+        dampingHz: p.dampingHz,
+        diffusionPercent: p.diffusionPercent,
+        widthPercent: p.widthPercent,
+        lowCutHz: p.lowCutHz,
+        mix: p.mix,
+        sampleRate,
+      });
+    case "chorus":
+      return applyChorus(buffer, {
+        rateHz: p.rateHz,
+        depth: p.depth,
+        delayMs: p.delayMs,
+        feedback: p.feedback,
+        mix: p.mix,
+        spread: p.spread,
+        sampleRate,
+      });
+    case "flanger":
+      return applyFlanger(buffer, {
+        rateHz: p.rateHz,
+        depth: p.depth,
+        delayMs: p.delayMs,
+        feedback: p.feedback,
+        mix: p.mix,
+        sampleRate,
+      });
+    case "phaser":
+      return applyPhaser(buffer, {
+        rateHz: p.rateHz,
+        depth: p.depth,
+        stages: p.stages,
+        feedback: p.feedback,
+        centerHz: p.centerHz,
+        mix: p.mix,
+        sampleRate,
+      });
+    case "de-esser":
+      applyDeEsser(buffer, {
+        freqHz: p.freqHz,
+        thresholdDb: p.thresholdDb,
+        rangeDb: p.rangeDb,
+        sampleRate,
+      });
+      return buffer;
+    case "maximizer":
+      applyMaximizer(buffer, {
+        thresholdDb: p.thresholdDb,
+        ceilingDb: p.ceilingDb,
+        releaseMs: p.releaseMs,
+        sampleRate,
+      });
+      return buffer;
+    case "eq7":
+      applyEq7(buffer, {
+        inputGainDb: p.inputGainDb,
+        hpfOn: p.hpfOn,
+        hpfHz: p.hpfHz,
+        hpfSlope: p.hpfSlope,
+        lfHz: p.lfHz,
+        lfGainDb: p.lfGainDb,
+        lfQ: p.lfQ,
+        lmfHz: p.lmfHz,
+        lmfGainDb: p.lmfGainDb,
+        lmfQ: p.lmfQ,
+        mfHz: p.mfHz,
+        mfGainDb: p.mfGainDb,
+        mfQ: p.mfQ,
+        hmfHz: p.hmfHz,
+        hmfGainDb: p.hmfGainDb,
+        hmfQ: p.hmfQ,
+        hfHz: p.hfHz,
+        hfGainDb: p.hfGainDb,
+        hfQ: p.hfQ,
+        lpfOn: p.lpfOn,
+        lpfHz: p.lpfHz,
+        lpfSlope: p.lpfSlope,
+        outputGainDb: p.outputGainDb,
+        sampleRate,
+      });
+      return buffer;
+    case "lofi":
+      applyLoFi(buffer, {
+        bits: p.bits,
+        sampleRateHz: p.sampleRateHz,
+        noisePercent: p.noisePercent,
+        mix: p.mix,
+        sampleRate,
+      });
+      return buffer;
+    case "rectifier":
+      applyRectifier(buffer, {
+        mode: p.mode,
+        mix: p.mix,
+        outputDb: p.outputDb,
+        sampleRate,
+      });
+      return buffer;
+    case "dither":
+      applyDither(buffer, {
+        bitDepth: p.bitDepth,
+        noiseShaping: p.noiseShaping === 1,
+        sampleRate,
+      });
+      return buffer;
+    default:
+      throw new Error(`Unsupported insert processor: ${insert.processor}`);
+  }
+}

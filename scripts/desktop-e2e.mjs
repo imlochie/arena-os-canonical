@@ -28,7 +28,7 @@ import { repoRootFromMeta } from "./lib/repo-root.mjs";
 import { verifyStagedPackage } from "./lib/staged-identity.mjs";
 
 const root = repoRootFromMeta(import.meta.url);
-const reportPath = process.argv[2] ?? path.join(root, "desktop-e2e-report.json");
+const reportPath = process.argv.slice(2).find((arg) => arg !== "--browser") ?? path.join(root, "desktop-e2e-report.json");
 const steps = [];
 let failed = false;
 
@@ -400,6 +400,14 @@ async function main() {
   });
   const sessionItemA = addSessionTrackB.body.session?.tracks?.[0];
   const sessionItemB = addSessionTrackB.body.session?.tracks?.[1];
+  // Opt-in real browser against THIS staged app and its real embedded DB.
+  // Unlike the isolated controller fixture, no HTTP responses are mocked.
+  if (process.argv.includes("--browser")) {
+    const { exerciseSessionBrowser } = await import("./lib/session-browser-acceptance.mjs");
+    const ui = await exerciseSessionBrowser({ url, sessionId, currentId: sessionItemA.id, nextId: sessionItemB.id, screenshotPath: `${reportPath}.session.png`, ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath });
+    step("actual staged session UI: hard cut, timed fade, audio and SQL reload", true, { info: JSON.stringify(ui) });
+  }
+
 
   const patchTrack = await api(`/api/library/sessions/${sessionId}/tracks/${sessionItemA?.id}`, {
     method: "PATCH", headers: jsonHeaders,
@@ -417,10 +425,28 @@ async function main() {
     info: `status ${swapRefused.status}: ${String(swapRefused.body?.error ?? "").slice(0, 140)}`,
   });
 
-  const handoff = await api(`/api/library/sessions/${sessionId}/studio-handoff`, { method: "POST" });
+  const unconfirmed = await api(`/api/library/sessions/${sessionId}/studio-handoff`, { method: "POST" });
+  critical("session: lossy handoff requires an explicit decision", unconfirmed.status === 409 && unconfirmed.body.errorCode === "handoff_confirmation_required");
+  const handoff = await api(`/api/library/sessions/${sessionId}/studio-handoff`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ mode: "sequential" }) });
   step("session: Studio handoff binds EXISTING stems (derived, non-destructive)", handoff.status === 201 && handoff.body.handoff?.projectId !== undefined && handoff.body.handoff?.remixTrackCount === 2, {
     info: `project ${handoff.body.handoff?.projectId} · ${handoff.body.handoff?.remixTrackCount} remix tracks`,
   });
+  const derivedProjectId = handoff.body.handoff?.projectId;
+  const derivedRemixId = handoff.body.handoff?.remixSessionId;
+  const derivedWorkspace = await api(`/api/waveyard/projects/${derivedProjectId}`);
+  critical("handoff: workspace resolves both referenced audio sources", derivedWorkspace.status === 200 && derivedWorkspace.body.stems?.length === 2 && derivedWorkspace.body.sources?.length === 2);
+  const derived = await api(`/api/remixes/${derivedRemixId}`);
+  critical("handoff: editor loads actual sequential clips", derived.status === 200 && derived.body.tracks?.length === 2 && derived.body.tracks.every((track) => track.clips?.length > 0));
+  const firstLane = derived.body.tracks[0];
+  const firstStem = derivedWorkspace.body.stems.find((stem) => stem.id === firstLane.clips[0].stemAssetId);
+  const firstSource = derivedWorkspace.body.sources.find((source) => source.id === firstStem.sourceAssetId);
+  const firstBeat = firstSource.analysis?.beatGrid?.[0];
+  critical("handoff: referenced source retains an authoritative beat", Number.isSafeInteger(firstBeat));
+  const aligned = await api(`/api/remixes/${derivedRemixId}/clips/align-beat`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ clipId: firstLane.clips[0].id, sourceBeatIndex: 0, timelineTargetMs: firstBeat + 1000 }) });
+  critical("handoff: referenced audio can be aligned in the actual server", aligned.status === 200 && aligned.body.clip?.timelineStartMs === 1000, { info: describeResult(aligned) });
+  const editState = await api(`/api/remixes/${derivedRemixId}`);
+  const edited = await api(`/api/remixes/${derivedRemixId}`, { method: "PUT", headers: jsonHeaders, body: JSON.stringify({ ...editState.body.remix, tracks: editState.body.tracks, masterVolume: 0.5 }) });
+  critical("handoff: edited master and referenced clips save", edited.status === 200 && edited.body.remix?.masterVolume === 0.5, { info: describeResult(edited) });
   const trackAAfterHandoff = await api(`/api/library/tracks/${trackAId}`);
   step("session: handoff left the library track untouched", trackAAfterHandoff.status === 200 && trackAAfterHandoff.body.track?.id === trackAId);
   const sessionsListed = await api("/api/library/sessions");
@@ -461,6 +487,9 @@ async function main() {
   step("session persisted across restart (restore point intact)", sessionAfter.status === 200 && sessionAfter.body.session?.currentSessionTrackId === sessionItemB?.id && sessionAfter.body.session?.tracks?.length === 2, {
     info: `tracks after restart: ${sessionAfter.body.session?.tracks?.length}`,
   });
+
+  const derivedAfter = await api(`/api/remixes/${derivedRemixId}`);
+  step("handoff: referenced clips, alignment and master survive supervisor restart", derivedAfter.status === 200 && derivedAfter.body.remix?.masterVolume === 0.5 && derivedAfter.body.tracks?.[0]?.clips?.[0]?.timelineStartMs === 1000);
 
   await supervisor.stop();
 

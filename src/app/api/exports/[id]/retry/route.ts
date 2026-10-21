@@ -5,7 +5,7 @@ import { db } from "@/db";
 import {
   exportJobs,
 } from "@/db/waveyardSchema";
-import { enqueueExport, getExportQueue } from "@/lib/waveyard/queue";
+import { enqueueExport, getExportQueue, type QueueLike } from "@/lib/waveyard/queue";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
 
@@ -15,13 +15,12 @@ import { requireProjectRole } from "@/lib/waveyard/local-context";
 const QUEUE_SETTLE_TIMEOUT_MS = 15_000;
 const QUEUE_SETTLE_POLL_MS = 100;
 
-async function waitForFailedQueueJob(exportJobId: string) {
-  const queue = await getExportQueue();
+async function waitForFailedQueueJob(exportJobId: string, queue: QueueLike) {
   const deadline = Date.now() + QUEUE_SETTLE_TIMEOUT_MS;
   let queueJob = await queue.getJob(exportJobId);
   if (!queueJob) return undefined;
 
-  while (await queueJob.getState() !== "failed") {
+  while (!["failed", "completed"].includes(String(await queueJob.getState()))) {
     if (Date.now() >= deadline)
       throw new Response(
         "Export queue job did not reach its terminal failed state in time.",
@@ -38,6 +37,7 @@ export async function POST(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  let queue: QueueLike | undefined;
   try {
     const user = await requireUser();
     const { id } = await params;
@@ -57,7 +57,8 @@ export async function POST(
         { status: 409 },
       );
 
-    const queueJob = await waitForFailedQueueJob(job.id);
+    queue = await getExportQueue();
+    const queueJob = await waitForFailedQueueJob(job.id, queue);
     // Transition durable state before placing work back in BullMQ so a fast
     // worker can never overwrite its own processing state with stale "queued".
     // The failed predicate also serializes duplicate manual retry requests.
@@ -81,7 +82,7 @@ export async function POST(
 
     try {
       if (queueJob)
-        await queueJob.retry();
+        await queueJob.retry(await queueJob.getState() === "completed" ? "completed" : "failed");
       else
         await enqueueExport({
           exportJobId: job.id,
@@ -115,5 +116,5 @@ export async function POST(
       { error: "Export retry could not be queued." },
       { status: 503 },
     );
-  }
+  } finally { await queue?.close().catch(error => console.error("export retry connection cleanup failed", error)); }
 }

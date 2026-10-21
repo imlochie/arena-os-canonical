@@ -1,0 +1,705 @@
+
+> nextjs-postgresql-template@0.1.0 prebuild
+> node scripts/ensure-env.mjs
+
+
+> nextjs-postgresql-template@0.1.0 build
+> next build
+
+▲ Next.js 16.3.8 (Turbopack)
+- Environments: .env
+✓ Running next.config.ts took 35ms
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 3.4s
+  Running TypeScript ...
+  Finished TypeScript in 15.7s ...
+  Collecting page data using 1 worker ...
+  Generating static pages using 1 worker (0/55) ...
+  Generating static pages using 1 worker (13/55) 
+  Generating static pages using 1 worker (27/55) 
+  Generating static pages using 1 worker (41/55) 
+✓ Generating static pages using 1 worker (55/55) in 736ms
+Turbopack build encountered 11 warnings:
+./src/lib/creative/voice.ts:161:11
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m159 |[0m ...{ execFile } = [36mawait[0m [36mimport[0m([32m"node:child_process"[0m);
+  [90m160 |[0m ...[36mnew[0m [33mPromise[0m<[36mvoid[0m>((resolve, reject) =>
+[33m[1m>[0m [90m161 |[0m ...File(bin, [[32m"--version"[0m], { timeout: [35m3000[0m }, (error) => (error ? reject(error) : resolv...
+  [90m    |[0m    [33m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m162 |[0m ...
+  [90m163 |[0m ...il = [32m`[0m${bin[32m} (offline)`[0m;
+  [90m164 |[0m ...
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: child_process.execFile(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  #1 [App Route]:
+    ./src/lib/creative/voice.ts
+    ./src/app/api/creative/voice/route.ts
+
+  #2 [App Route]:
+    ./src/lib/creative/voice.ts
+    ./src/lib/toolbox/convert.ts
+    ./src/app/api/toolbox/route.ts
+
+
+./src/lib/repoMap.ts:37:40
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m35 |[0m ... [36masync[0m [36mfunction[0m buildRepoMap(repoRoot = process.cwd()): [33mPromise[0m<{ generatedAt: string; ...
+  [90m36 |[0m ...[36mt[0m paths: string[] = [];
+[33m[1m>[0m [90m37 |[0m ...([36mconst[0m root [36mof[0m [33mROOTS[0m) [36mawait[0m walk(join(repoRoot, root), paths);
+  [90m   |[0m                                     [33m[1m^^^^^^^^^^^^^^^^^^^^[0m
+  [90m38 |[0m ...[36mt[0m files: [33mRepoFile[0m[] = [];
+  [90m39 |[0m ...([36mconst[0m path [36mof[0m paths) {
+  [90m40 |[0m ...[36my[0m {
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: path.join(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  #1 [App Route]:
+    ./src/lib/repoMap.ts
+    ./src/app/api/repo-map/route.ts
+
+  #2 [App Route]:
+    ./src/lib/repoMap.ts
+    ./src/lib/toolbox/convert.ts
+    ./src/app/api/toolbox/route.ts
+
+
+./src/lib/toolbox/convert.ts:110:10
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m108 |[0m   [36mconst[0m cutoff = [33mDate[0m.now() - cutoffMs;
+  [90m109 |[0m   [36mfor[0m ([36mconst[0m dir [36mof[0m [[33mTOOLBOX_IN[0m, [33mTOOLBOX_OUT[0m]) {
+[33m[1m>[0m [90m110 |[0m     [36mif[0m (!existsSync(dir)) [36mcontinue[0m;
+  [90m    |[0m          [33m[1m^^^^^^^^^^^^^^^[0m
+  [90m111 |[0m     [36mfor[0m ([36mconst[0m entry [36mof[0m [36mawait[0m readdir(dir)) {
+  [90m112 |[0m       [36mconst[0m path = join(dir, entry);
+  [90m113 |[0m       [36mtry[0m {
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: fs.existsSync(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  App Route:
+    ./src/lib/toolbox/convert.ts
+    ./src/app/api/toolbox/route.ts
+
+  Server Component:
+    ./src/lib/toolbox/convert.ts
+    ./src/lib/mediaArchive/local.ts
+    ./src/lib/mediaArchive/sync.ts
+    ./src/lib/archive-assistant/bridge-status.ts
+    ./src/app/rooms/[roomId]/page.tsx
+
+
+./src/lib/toolbox/convert.ts:111:31
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m109 |[0m   [36mfor[0m ([36mconst[0m dir [36mof[0m [[33mTOOLBOX_IN[0m, [33mTOOLBOX_OUT[0m]) {
+  [90m110 |[0m     [36mif[0m (!existsSync(dir)) [36mcontinue[0m;
+[33m[1m>[0m [90m111 |[0m     [36mfor[0m ([36mconst[0m entry [36mof[0m [36mawait[0m readdir(dir)) {
+  [90m    |[0m                               [33m[1m^^^^^^^^^^^^[0m
+  [90m112 |[0m       [36mconst[0m path = join(dir, entry);
+  [90m113 |[0m       [36mtry[0m {
+  [90m114 |[0m         [36mconst[0m info = [36mawait[0m stat(path);
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: fs.readdir(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  App Route:
+    ./src/lib/toolbox/convert.ts
+    ./src/app/api/toolbox/route.ts
+
+  Server Component:
+    ./src/lib/toolbox/convert.ts
+    ./src/lib/mediaArchive/local.ts
+    ./src/lib/mediaArchive/sync.ts
+    ./src/lib/archive-assistant/bridge-status.ts
+    ./src/app/rooms/[roomId]/page.tsx
+
+
+./src/lib/toolbox/convert.ts:114:28
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m112 |[0m       [36mconst[0m path = join(dir, entry);
+  [90m113 |[0m       [36mtry[0m {
+[33m[1m>[0m [90m114 |[0m         [36mconst[0m info = [36mawait[0m stat(path);
+  [90m    |[0m                            [33m[1m^^^^^^^^^^[0m
+  [90m115 |[0m         [36mif[0m (info.isFile() && info.mtimeMs < cutoff) [36mawait[0m rm(path, { force: [36mtrue[0m });
+  [90m116 |[0m       } [36mcatch[0m {
+  [90m117 |[0m         [90m/* best effort */[0m
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: fs.stat(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  App Route:
+    ./src/lib/toolbox/convert.ts
+    ./src/app/api/toolbox/route.ts
+
+  Server Component:
+    ./src/lib/toolbox/convert.ts
+    ./src/lib/mediaArchive/local.ts
+    ./src/lib/mediaArchive/sync.ts
+    ./src/lib/archive-assistant/bridge-status.ts
+    ./src/app/rooms/[roomId]/page.tsx
+
+
+./src/lib/toolbox/convert.ts:112:20
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m110 |[0m     [36mif[0m (!existsSync(dir)) [36mcontinue[0m;
+  [90m111 |[0m     [36mfor[0m ([36mconst[0m entry [36mof[0m [36mawait[0m readdir(dir)) {
+[33m[1m>[0m [90m112 |[0m       [36mconst[0m path = join(dir, entry);
+  [90m    |[0m                    [33m[1m^^^^^^^^^^^^^^^^[0m
+  [90m113 |[0m       [36mtry[0m {
+  [90m114 |[0m         [36mconst[0m info = [36mawait[0m stat(path);
+  [90m115 |[0m         [36mif[0m (info.isFile() && info.mtimeMs < cutoff) [36mawait[0m rm(path, { force: [36mtrue[0m });
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: path.join(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  App Route:
+    ./src/lib/toolbox/convert.ts
+    ./src/app/api/toolbox/route.ts
+
+  Server Component:
+    ./src/lib/toolbox/convert.ts
+    ./src/lib/mediaArchive/local.ts
+    ./src/lib/mediaArchive/sync.ts
+    ./src/lib/archive-assistant/bridge-status.ts
+    ./src/app/rooms/[roomId]/page.tsx
+
+
+./src/lib/waveyard/ffmpeg.ts:80:9
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m78 |[0m   ];
+  [90m79 |[0m   [36mfor[0m ([36mconst[0m candidate [36mof[0m candidates) {
+[33m[1m>[0m [90m80 |[0m     [36mif[0m (existsSync(candidate)) [36mreturn[0m candidate;
+  [90m   |[0m         [33m[1m^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m81 |[0m   }
+  [90m82 |[0m   [36mreturn[0m [36mnull[0m;
+  [90m83 |[0m }
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: fs.existsSync(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  #1 [App Route]:
+    ./src/lib/waveyard/ffmpeg.ts
+    ./src/app/api/assets/[id]/audition/route.ts
+
+  #2 [App Route]:
+    ./src/lib/waveyard/ffmpeg.ts
+    ./src/lib/toolbox/convert.ts
+    ./src/app/api/toolbox/route.ts
+
+  #3 [Instrumentation]:
+    ./src/lib/waveyard/ffmpeg.ts
+    ./src/lib/waveyard/audio.ts
+    ./src/lib/waveyard/separation/recovery.ts
+    ./src/instrumentation.ts
+
+  #4 [Server Component]:
+    ./src/lib/waveyard/ffmpeg.ts
+    ./src/lib/toolbox/convert.ts
+    ./src/lib/mediaArchive/local.ts
+    ./src/lib/mediaArchive/sync.ts
+    ./src/lib/archive-assistant/bridge-status.ts
+    ./src/app/rooms/[roomId]/page.tsx
+
+
+./src/lib/waveyard/separation/provision-runtime.ts:459:10
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m457 |[0m   [36mfor[0m ([36mconst[0m name [36mof[0m pthFiles) {
+  [90m458 |[0m     [36mconst[0m path = join(pythonDir, name);
+[33m[1m>[0m [90m459 |[0m     [36mif[0m (!existsSync(path)) [36mcontinue[0m;
+  [90m    |[0m          [33m[1m^^^^^^^^^^^^^^^^[0m
+  [90m460 |[0m     [36mconst[0m content = [36mawait[0m readFile(path, [32m"utf8"[0m);
+  [90m461 |[0m     [36mconst[0m updated = content
+  [90m462 |[0m       .split([32m"\n"[0m)
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: fs.existsSync(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  #1 [App Route]:
+    ./src/lib/waveyard/separation/provision-runtime.ts
+    ./src/app/api/waveyard/projects/[id]/source-intake/route.ts
+
+  #2 [App Route]:
+    ./src/lib/waveyard/separation/provision-runtime.ts
+    ./src/lib/waveyard/separation/provision-store.ts
+    ./src/app/api/waveyard/separation/deep/prepare/recover/route.ts
+
+
+./src/lib/waveyard/separation/provision-runtime.ts:460:27
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m458 |[0m     [36mconst[0m path = join(pythonDir, name);
+  [90m459 |[0m     [36mif[0m (!existsSync(path)) [36mcontinue[0m;
+[33m[1m>[0m [90m460 |[0m     [36mconst[0m content = [36mawait[0m readFile(path, [32m"utf8"[0m);
+  [90m    |[0m                           [33m[1m^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m461 |[0m     [36mconst[0m updated = content
+  [90m462 |[0m       .split([32m"\n"[0m)
+  [90m463 |[0m       .map((line) => (line.trim() === [32m"#import site"[0m ? [32m"import site"[0m : line))
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: fs.readFile(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  #1 [App Route]:
+    ./src/lib/waveyard/separation/provision-runtime.ts
+    ./src/app/api/waveyard/projects/[id]/source-intake/route.ts
+
+  #2 [App Route]:
+    ./src/lib/waveyard/separation/provision-runtime.ts
+    ./src/lib/waveyard/separation/provision-store.ts
+    ./src/app/api/waveyard/separation/deep/prepare/recover/route.ts
+
+
+./src/lib/waveyard/separation/provision-runtime.ts:458:18
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m456 |[0m   [36mconst[0m pthFiles = [[32m"python311._pth"[0m, [32m"python310._pth"[0m];
+  [90m457 |[0m   [36mfor[0m ([36mconst[0m name [36mof[0m pthFiles) {
+[33m[1m>[0m [90m458 |[0m     [36mconst[0m path = join(pythonDir, name);
+  [90m    |[0m                  [33m[1m^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m459 |[0m     [36mif[0m (!existsSync(path)) [36mcontinue[0m;
+  [90m460 |[0m     [36mconst[0m content = [36mawait[0m readFile(path, [32m"utf8"[0m);
+  [90m461 |[0m     [36mconst[0m updated = content
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: path.join(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  #1 [App Route]:
+    ./src/lib/waveyard/separation/provision-runtime.ts
+    ./src/app/api/waveyard/projects/[id]/source-intake/route.ts
+
+  #2 [App Route]:
+    ./src/lib/waveyard/separation/provision-runtime.ts
+    ./src/lib/waveyard/separation/provision-store.ts
+    ./src/app/api/waveyard/separation/deep/prepare/recover/route.ts
+
+
+./src/lib/waveyard/separation/seed.ts:220:26
+Warning: Dynamic filesystem access causes tracing of the whole project
+  [90m218 |[0m       } });
+  [90m219 |[0m       [90m// Progress follows completed file writes, not merely received chunks.[0m
+[33m[1m>[0m [90m220 |[0m       [36mconst[0m file = [36mawait[0m open(p.partial, offset > [35m0[0m ? [32m"a"[0m : [32m"w"[0m);
+  [90m    |[0m                          [33m[1m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [90m221 |[0m       [36mlet[0m persisted = offset;
+  [90m222 |[0m       [36mconst[0m output = [36mnew[0m [33mWritable[0m({ write(chunk: [33mBuffer[0m, _encoding, done) {
+  [90m223 |[0m         file.writeFile(chunk).then(() => {
+
+Static analysis determined that this filesystem access causes the whole project to be traced and included in the output.
+This is usually unintentional and leads to all source files (including the public folder) to be deployed as part of the server code.
+This can slow down deployments or lead to failures when size limits are exceeded.
+To resolve this, you can
+- make sure the path is statically scoped to some subfolder, for example path.join(process.cwd(), 'data', bar), or
+- only use them in development, or
+- opt out by adding an ignore comment to the highlighted call: fs.open(/*turbopackIgnore: true*/ ...), or
+- remove them.
+
+Import traces:
+  #1 [App Route]:
+    ./src/lib/waveyard/separation/seed.ts
+    ./src/app/api/waveyard/separation/models/[id]/seed/route.ts
+
+  #2 [App Route]:
+    ./src/lib/waveyard/separation/seed.ts
+    ./src/lib/waveyard/separation/seed.ts
+    ./src/app/api/waveyard/separation/models/[id]/import/route.ts
+
+
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ƒ /api/agent-bridge
+├ ƒ /api/agent-bridge/[id]
+├ ƒ /api/arcade
+├ ƒ /api/arcade/[id]
+├ ƒ /api/arcade/attempts
+├ ƒ /api/arcade/forge
+├ ƒ /api/archive/chat
+├ ƒ /api/archive/context
+├ ƒ /api/archive/findings/[reviewItemId]/lineage
+├ ƒ /api/archive/items
+├ ƒ /api/archive/providers
+├ ƒ /api/archive/review
+├ ƒ /api/archive/scan
+├ ƒ /api/artifacts
+├ ƒ /api/artifacts/[id]
+├ ƒ /api/artifacts/[id]/history
+├ ƒ /api/artifacts/storage
+├ ƒ /api/assets/[id]
+├ ƒ /api/assets/[id]/audition
+├ ƒ /api/assets/[id]/waveform
+├ ƒ /api/assistants
+├ ƒ /api/assistants/[id]
+├ ƒ /api/battles
+├ ƒ /api/battles/[id]
+├ ƒ /api/battles/[id]/followup
+├ ƒ /api/battles/[id]/judge
+├ ƒ /api/battles/[id]/vote
+├ ƒ /api/battles/reveal
+├ ƒ /api/battles/stream
+├ ƒ /api/capabilities
+├ ƒ /api/chat
+├ ƒ /api/chats
+├ ƒ /api/chats/[id]
+├ ƒ /api/classroom
+├ ƒ /api/classroom/advance
+├ ƒ /api/classroom/respond
+├ ƒ /api/classroom/start
+├ ƒ /api/cognitive-sessions
+├ ƒ /api/collabs
+├ ƒ /api/collabs/[id]
+├ ƒ /api/collabs/[id]/crown
+├ ƒ /api/collabs/[id]/iterate
+├ ƒ /api/college/attention
+├ ƒ /api/college/audit
+├ ƒ /api/college/bootstrap
+├ ƒ /api/college/briefing
+├ ƒ /api/college/class
+├ ƒ /api/college/class-runtime
+├ ƒ /api/college/commitments
+├ ƒ /api/college/context
+├ ƒ /api/college/coordination
+├ ƒ /api/college/curriculum
+├ ƒ /api/college/decisions
+├ ƒ /api/college/deviations
+├ ƒ /api/college/devices
+├ ƒ /api/college/evidence
+├ ƒ /api/college/external
+├ ƒ /api/college/faculty
+├ ƒ /api/college/faculty-memory
+├ ƒ /api/college/goals
+├ ƒ /api/college/governance
+├ ƒ /api/college/inspector
+├ ƒ /api/college/ledger
+├ ƒ /api/college/live
+├ ƒ /api/college/members
+├ ƒ /api/college/memory
+├ ƒ /api/college/preflight
+├ ƒ /api/college/protocol
+├ ƒ /api/college/reconciliation
+├ ƒ /api/college/records
+├ ƒ /api/college/sessions
+├ ƒ /api/college/state
+├ ƒ /api/college/timetable
+├ ƒ /api/college/timetable-live
+├ ƒ /api/command
+├ ƒ /api/congress
+├ ƒ /api/congress/[id]
+├ ƒ /api/congress/[id]/advance
+├ ƒ /api/congress/[id]/lifecycle
+├ ƒ /api/council
+├ ƒ /api/council/[id]
+├ ƒ /api/council/artifacts
+├ ƒ /api/creative/captions
+├ ƒ /api/creative/podcast
+├ ƒ /api/creative/research
+├ ƒ /api/creative/shorts
+├ ƒ /api/creative/slides
+├ ƒ /api/creative/voice
+├ ƒ /api/cut
+├ ƒ /api/cut/[id]
+├ ƒ /api/deep-agent
+├ ƒ /api/desktop/diagnostics
+├ ƒ /api/device-artifacts
+├ ƒ /api/device-artifacts/[id]
+├ ƒ /api/email
+├ ƒ /api/execution-sessions/[id]
+├ ƒ /api/export
+├ ƒ /api/exports/[id]
+├ ƒ /api/exports/[id]/media
+├ ƒ /api/exports/[id]/retry
+├ ƒ /api/foundry
+├ ƒ /api/foundry/[id]/data
+├ ƒ /api/health
+├ ƒ /api/identity/authentication/options
+├ ƒ /api/identity/authentication/verify
+├ ƒ /api/internal/chat
+├ ƒ /api/jobs/[id]
+├ ƒ /api/jobs/[id]/cancel
+├ ƒ /api/jobs/[id]/recover
+├ ƒ /api/jobs/[id]/retry
+├ ƒ /api/leaderboard
+├ ƒ /api/library
+├ ƒ /api/library/catalogue
+├ ƒ /api/library/catalogue/[id]
+├ ƒ /api/library/catalogue/jobs
+├ ƒ /api/library/collections
+├ ƒ /api/library/collections/[id]
+├ ƒ /api/library/conversions
+├ ƒ /api/library/conversions/[id]/media
+├ ƒ /api/library/ingest
+├ ƒ /api/library/playback-state
+├ ƒ /api/library/playlist-imports
+├ ƒ /api/library/playlists
+├ ƒ /api/library/playlists/[id]
+├ ƒ /api/library/playlists/[id]/items
+├ ƒ /api/library/queue
+├ ƒ /api/library/queue/[id]
+├ ƒ /api/library/sessions
+├ ƒ /api/library/sessions/[id]
+├ ƒ /api/library/sessions/[id]/state
+├ ƒ /api/library/sessions/[id]/studio-handoff
+├ ƒ /api/library/sessions/[id]/swaps
+├ ƒ /api/library/sessions/[id]/tracks
+├ ƒ /api/library/sessions/[id]/tracks/[itemId]
+├ ƒ /api/library/stream/[id]
+├ ƒ /api/library/tracks
+├ ƒ /api/library/tracks/[id]
+├ ƒ /api/library/tracks/[id]/played
+├ ƒ /api/library/tracks/[id]/separation
+├ ƒ /api/library/tunepat
+├ ƒ /api/mind
+├ ƒ /api/model-hub
+├ ƒ /api/model-hub/pull
+├ ƒ /api/models
+├ ƒ /api/moderation/projects
+├ ƒ /api/moderation/projects/[id]/actions
+├ ƒ /api/orchestrator
+├ ƒ /api/orchestrator/[id]
+├ ƒ /api/orchestrator/[id]/advance
+├ ƒ /api/orchestrator/[id]/deliberate
+├ ƒ /api/orchestrator/[id]/relays
+├ ƒ /api/orchestrator/relays/[relayId]
+├ ƒ /api/orchestrator/relays/[relayId]/result
+├ ƒ /api/preferences
+├ ƒ /api/preferences/[id]
+├ ƒ /api/privacy/events
+├ ƒ /api/privacy/summary
+├ ƒ /api/privacy/wipe
+├ ƒ /api/projects
+├ ƒ /api/projects/[id]
+├ ƒ /api/projects/[id]/artifacts
+├ ƒ /api/projects/[id]/memory
+├ ƒ /api/public/projects
+├ ƒ /api/public/projects/[id]
+├ ƒ /api/public/projects/[id]/release
+├ ƒ /api/public/projects/[id]/reports
+├ ƒ /api/remix-versions/[id]/exports
+├ ƒ /api/remixes/[id]
+├ ƒ /api/remixes/[id]/automation
+├ ƒ /api/remixes/[id]/clips/align-beat
+├ ƒ /api/remixes/[id]/clips/batch-edit
+├ ƒ /api/remixes/[id]/clips/edit
+├ ƒ /api/remixes/[id]/clips/from-section
+├ ƒ /api/remixes/[id]/clips/loop
+├ ƒ /api/remixes/[id]/clips/slice
+├ ƒ /api/remixes/[id]/extensions
+├ ƒ /api/remixes/[id]/meeting-points
+├ ƒ /api/remixes/[id]/placements
+├ ƒ /api/remixes/[id]/tracks
+├ ƒ /api/remixes/[id]/versions
+├ ƒ /api/remixes/[id]/versions/[versionId]/restore
+├ ƒ /api/repo-map
+├ ƒ /api/runtime/status
+├ ƒ /api/source-analyses/[id]/retry
+├ ƒ /api/source-section-analyses/[id]/retry
+├ ƒ /api/sources/[id]/events
+├ ƒ /api/sources/[id]/harmony-analysis
+├ ƒ /api/spaces
+├ ƒ /api/spaces/[id]
+├ ƒ /api/spaces/[id]/agents
+├ ƒ /api/spaces/[id]/agents/[agentId]
+├ ƒ /api/spaces/[id]/fleet
+├ ƒ /api/spaces/[id]/mission
+├ ƒ /api/spaces/[id]/mission/outputs/[outputId]
+├ ƒ /api/spaces/[id]/run
+├ ƒ /api/spaces/approvals
+├ ƒ /api/spaces/tick
+├ ƒ /api/stats
+├ ƒ /api/stems/[id]/drum-analysis
+├ ƒ /api/stems/[id]/vocal-analysis
+├ ƒ /api/stems/passthrough
+├ ƒ /api/streaming/accounts
+├ ƒ /api/streaming/accounts/[id]
+├ ƒ /api/streaming/accounts/[id]/snapshots
+├ ƒ /api/streaming/snapshots/[id]
+├ ƒ /api/streaming/snapshots/[id]/export
+├ ƒ /api/studio/generate
+├ ƒ /api/studio/health
+├ ƒ /api/studio/jobs
+├ ƒ /api/studio/jobs/[id]
+├ ƒ /api/studio/jobs/[id]/cancel
+├ ƒ /api/studio/jobs/[id]/media
+├ ƒ /api/studio/models
+├ ƒ /api/studio/models/[type]
+├ ƒ /api/subscriptions
+├ ƒ /api/templates
+├ ƒ /api/toolbox
+├ ƒ /api/turboagent/health
+├ ƒ /api/uploads
+├ ƒ /api/waveform-jobs/[id]/browser-computed
+├ ƒ /api/waveform-jobs/[id]/retry
+├ ƒ /api/waveyard/processing-status
+├ ƒ /api/waveyard/projects
+├ ƒ /api/waveyard/projects/[id]
+├ ƒ /api/waveyard/projects/[id]/ai
+├ ƒ /api/waveyard/projects/[id]/arena-handoff
+├ ƒ /api/waveyard/projects/[id]/arrangement-layers
+├ ƒ /api/waveyard/projects/[id]/arrangement-layers/[layerId]
+├ ƒ /api/waveyard/projects/[id]/arrangement-layers/[layerId]/midi
+├ ƒ /api/waveyard/projects/[id]/automatic-remixes
+├ ƒ /api/waveyard/projects/[id]/builds
+├ ƒ /api/waveyard/projects/[id]/cleanup
+├ ƒ /api/waveyard/projects/[id]/cleanup/[audioId]
+├ ƒ /api/waveyard/projects/[id]/deep-stems
+├ ƒ /api/waveyard/projects/[id]/mashup
+├ ƒ /api/waveyard/projects/[id]/master
+├ ƒ /api/waveyard/projects/[id]/master/[audioId]
+├ ƒ /api/waveyard/projects/[id]/midi/[audioId]
+├ ƒ /api/waveyard/projects/[id]/publication
+├ ƒ /api/waveyard/projects/[id]/publication/audit
+├ ƒ /api/waveyard/projects/[id]/remixes
+├ ƒ /api/waveyard/projects/[id]/sound-design
+├ ƒ /api/waveyard/projects/[id]/sound-design/[assetId]
+├ ƒ /api/waveyard/projects/[id]/source-intake
+├ ƒ /api/waveyard/projects/[id]/stem-layers
+├ ƒ /api/waveyard/projects/[id]/vocal-chops
+├ ƒ /api/waveyard/projects/[id]/vocal-chops/[chopId]
+├ ƒ /api/waveyard/projects/[id]/vocal-chops/auto-sequence
+├ ƒ /api/waveyard/projects/[id]/vocal-chops/render
+├ ƒ /api/waveyard/separation/deep/prepare
+├ ƒ /api/waveyard/separation/deep/prepare/cancel
+├ ƒ /api/waveyard/separation/deep/prepare/import
+├ ƒ /api/waveyard/separation/deep/prepare/recover
+├ ƒ /api/waveyard/separation/models
+├ ƒ /api/waveyard/separation/models/[id]/import
+├ ƒ /api/waveyard/separation/models/[id]/seed
+├ ƒ /api/workforce
+├ ƒ /arcade
+├ ○ /archive
+├ ○ /artifacts
+├ ƒ /assistants
+├ ƒ /battles/[id]
+├ ○ /benchmark
+├ ƒ /chat
+├ ○ /classroom
+├ ƒ /collab
+├ ƒ /collabs/[id]
+├ ƒ /college
+├ ○ /college/audit
+├ ○ /college/campus
+├ ƒ /college/curriculum
+├ ○ /college/day
+├ ○ /college/devices
+├ ƒ /college/faculty
+├ ○ /college/faculty/builder
+├ ○ /college/governance
+├ ○ /college/inspector
+├ ○ /college/timetable
+├ ○ /command
+├ ƒ /congress
+├ ƒ /council
+├ ○ /creative
+├ ƒ /cut
+├ ○ /deep-agent
+├ ○ /device-security
+├ ○ /foundry
+├ ƒ /guide
+├ ○ /handoffs
+├ ○ /image
+├ ƒ /leaderboard
+├ ○ /luma
+├ ƒ /market
+├ ○ /mind
+├ ○ /model-hub
+├ ○ /orchestrator
+├ ƒ /principles
+├ ○ /privacy
+├ ○ /projects
+├ ƒ /projects/[id]
+├ ○ /rooms
+├ ƒ /rooms/[roomId]
+├ ○ /runtime
+├ ƒ /spaces
+├ ƒ /spaces/[id]
+├ ƒ /standards
+├ ƒ /studio
+├ ○ /subscriptions
+├ ○ /toolbox
+├ ƒ /watch/[id]
+├ ○ /waveyard
+├ ○ /waveyard/create
+├ ƒ /waveyard/discover
+├ ƒ /waveyard/moderation
+├ ƒ /waveyard/p/[id]
+├ ƒ /waveyard/play/[id]
+├ ƒ /waveyard/projects/[id]
+├ ƒ /waveyard/session/[id]
+└ ○ /waveyard/sessions
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

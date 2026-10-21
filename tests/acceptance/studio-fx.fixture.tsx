@@ -1,0 +1,31 @@
+import "./studio-preparation.fixture";
+import { ProjectWorkspace } from "../../src/components/waveyard/ProjectWorkspace";
+import SessionExperience from "../../src/components/waveyard/library/SessionExperience";
+import ArcadeForge from "../../src/components/ArcadeForge";
+import BattleArena from "../../src/components/BattleArena";
+import CollabLab from "../../src/components/CollabLab";
+import CouncilLab from "../../src/components/CouncilLab";
+// Actual Studio. Only the HTML mount and project/remix IDs belong to the harness.
+import { ArchiveAudioDiscovery } from "../../src/components/waveyard/ArchiveAudioDiscovery";
+import { ModelAssetImport } from "../../src/components/waveyard/ModelAssetImport";
+import { TrackPlayer } from "../../src/components/waveyard/library/TrackPlayer";
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
+import React, { useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import OrchestratorWorkbench from "../../src/components/OrchestratorWorkbench";
+import ProjectPage from "../../src/app/projects/[id]/page";
+import { PathParamsContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
+import ArtifactsPage from "../../src/app/artifacts/page";
+import { StudioCore } from "../../src/components/waveyard/StudioCore";
+function App() {
+  const [project, setProject] = useState<any>(null);
+  const ids = new URLSearchParams(location.search);
+  const projectId = ids.get("project")!;
+  useEffect(() => { void fetch(`/api/waveyard/projects/${projectId}`).then((response) => response.json()).then(setProject); }, [projectId]);
+  return project ? <StudioCore projectId={ids.get("project")!} remixSessionId={ids.get("remix")} stems={project.stems} sources={project.sources} /> : <p>Loading actual project…</p>;
+}
+const params = new URLSearchParams(location.search);
+const nativeSession = location.pathname.match(/^\/waveyard\/session\/([^/]+)$/)?.[1];
+const room = params.get("room") ?? (nativeSession ? "listening" : location.pathname === "/collab" ? "collab" : location.pathname === "/council" ? "council" : params.has("source") ? "battle" : null);
+const view = room === "separation" ? <ProjectWorkspace projectId={params.get("project")!} /> : room === "catalogue" ? <><ArchiveAudioDiscovery /><ModelAssetImport /></> : room === "player" ? <AppRouterContext.Provider value={{ push: (url: string) => { location.href=url; }, replace: (url: string) => { location.href=url; }, prefetch() {}, back() {}, forward() {}, refresh() {} } as any}><TrackPlayer trackId={params.get("track")!} /></AppRouterContext.Provider> : room === "listening" ? <SessionExperience sessionId={params.get("session") ?? decodeURIComponent(nativeSession!)} /> : room === "arcade" ? <ArcadeForge /> : room === "preparation" ? <p>Production preparation profile</p> : room === "battle" ? <BattleArena /> : room === "collab" ? <CollabLab /> : room === "council" ? <CouncilLab /> : room === "artifacts" ? <ArtifactsPage /> : room === "orchestrator" ? <OrchestratorWorkbench /> : room === "project" ? <PathParamsContext.Provider value={{ id: params.get("project")! }}><ProjectPage /></PathParamsContext.Provider> : <App />;
+createRoot(document.getElementById("root")!).render(view);

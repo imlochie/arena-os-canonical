@@ -21,7 +21,7 @@ import test from "node:test";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 
-import { runMission, type MissionAgentSpec } from "./mission";
+import { runMission as runDurableMission, type MissionAgentSpec } from "./mission";
 import type { GenerateResult } from "@/lib/runtime";
 import {
   APPROVAL_REQUIRED,
@@ -59,7 +59,7 @@ const GATED_TURN = JSON.stringify({
   thought: "write a note, then publish",
   actions: [
     { tool: "write_file", args: { path: "note.txt", content: "governance probe" } },
-    { tool: "github_publish", args: { repo: "me/probe", message: "publish me", files: [{ path: "note.txt", content: "x" }] } },
+    { tool: "github_publish", args: { repo: "me/probe", message: "publish me", files: [] } },
   ],
   done: false,
 });
@@ -144,7 +144,7 @@ test("mission gate: a gated action never executes before a human decision; the m
   assert.ok(wrote.length >= 1 && wrote.every((a) => a.ok), "ungated actions in the same turn still execute");
 });
 
-test("mission gate: approve → executes exactly once; re-emission never re-runs it", async (t) => {
+test("mission gate: approve → executes the saved request once without regenerating the model turn", async (t) => {
   const spaceId = `govtest2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   t.after(() => cleanup(spaceId));
 
@@ -161,27 +161,27 @@ test("mission gate: approve → executes exactly once; re-emission never re-runs
 
   await decideApproval(pending[0].id, "approve", "test-owner");
 
-  // Resume: the agent RE-EMITS the same gated action on its next turn (its
-  // plan says publish). The approved approval is claimed and executed ONCE;
-  // the second emission maps to the executed approval and is skipped.
+  // Resume the recorded request, not a regenerated plan. The original
+  // execution policy/turn limit stays binding despite changed options.
   const m2 = await runMission(spaceId, { goal: "approval decision probe", timeBudgetMs: 30_000, maxTurnsPerAgent: 2 },
-    { generate: scriptGenerate([GATED_TURN, GATED_TURN]) });
+    { generate: async () => { assert.fail("a pending action must not regenerate its model turn"); } });
   assert.notEqual(m2.status, "awaiting_approval", "a decided approval no longer blocks");
 
   const executedApproval = (await listApprovals(spaceId)).find((p) => p.id === pending[0].id);
   assert.ok(executedApproval && (executedApproval.status === "executed" || executedApproval.status === "failed"),
     `the approval reaches a terminal executed/failed state (no token → honest failure), got ${executedApproval?.status}`);
 
-  // The journal is cumulative across the resume: the original awaiting
-  // outcome, exactly ONE real execution, and the skipped re-emission.
+  // The journal retains the original waiting observation and one actual
+  // outcome. The earlier ungated write must not execute again.
   const gated2 = m2.journal.flatMap((s) => s.actions).filter((a) => a.tool === "github_publish");
-  assert.equal(gated2.length, 3, "awaiting + executed + skipped re-emission, all journaled");
+  assert.equal(gated2.length, 2, "awaiting + executed, without a regenerated/replayed turn");
+  assert.equal(m2.journal.flatMap((step) => step.actions).filter((action) => action.tool === "write_file").length, 1);
   assert.equal(gated2.filter((a) => /awaiting human approval/.test(a.output)).length, 1);
   const realRuns = gated2.filter((a) => !/awaiting human approval|already executed/.test(a.output));
   assert.equal(realRuns.length, 1, "the action executed exactly once across all emissions");
   assert.ok(realRuns[0].output.length > 0 && realRuns[0].output !== gated2[0].output,
     "the single execution really ran the tool (its own honest output — e.g. a no-token/no-files error — not a governance message)");
-  assert.equal(gated2.filter((a) => /already executed/.test(a.output)).length, 1, "the re-emission was skipped, not re-run");
+  assert.equal(gated2.filter((a) => /already executed/.test(a.output)).length, 0, "no synthetic re-emission was added");
   const approvalsForMission = (await listApprovals(spaceId)).filter((p) => p.signature === pending[0].signature);
   assert.equal(approvalsForMission.length, 1, "no duplicate approval was created for the same action");
 });
@@ -203,17 +203,20 @@ test("mission gate: deny → refused, terminal, never executed", async (t) => {
 
   await decideApproval(pending[0].id, "deny", "test-owner");
 
-  // The agent retries the same action on its next turn; the denial is
-  // terminal — refused without a fresh approval request, never executed.
+  // The recorded request sees the terminal denial without a new model
+  // invocation or a fresh approval request.
   const m2 = await runMission(spaceId, { goal: "denial probe", timeBudgetMs: 30_000, maxTurnsPerAgent: 2 },
-    { generate: scriptGenerate([GATED_TURN, GATED_TURN]) });
+    { generate: async () => { assert.fail("a pending action must not regenerate its model turn"); } });
   const refused = m2.journal.flatMap((s) => s.actions).filter((a) => a.tool === "github_publish");
-  assert.equal(refused.length, 3, "the original awaiting outcome + two refused retries, all journaled");
+  assert.equal(refused.length, 2, "the original awaiting outcome + recorded denial");
   assert.equal(refused.filter((a) => /awaiting human approval/.test(a.output)).length, 1);
-  assert.equal(refused.filter((a) => /denied/.test(a.output)).length, 2,
-    "every re-emission is refused, referencing the human denial");
+  assert.equal(refused.filter((a) => /denied/.test(a.output)).length, 1,
+    "the pending request is refused, referencing the human denial");
 
   const all = (await listApprovals(spaceId)).filter((p) => p.signature === pending[0].signature);
   assert.equal(all.length, 1, "the denial created no fresh approval for the same action");
   assert.equal(all[0].status, "denied", "a denied action never reaches executed");
 });
+
+// Explicitly ephemeral unless this fixture supplies real SQL.
+const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });

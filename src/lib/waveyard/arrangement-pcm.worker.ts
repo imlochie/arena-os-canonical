@@ -1,0 +1,19 @@
+/** The existing canonical PCM engine runs here, never on the UI thread. */
+import { prepareArrangementPcm, type ArrangementMixCache, type ArrangementPreviewState } from "./arrangement-pcm";
+export type PreviewSource = { key: string; sampleRate: number; channels: Float32Array[] };
+export type PreviewWork = { id: number; state: ArrangementPreviewState; sampleRate: number; sources: PreviewSource[]; retain: string[]; revision: string };
+const scope = globalThis as unknown as { onmessage: (event: MessageEvent<PreviewWork>) => void; postMessage(value: unknown, transfer?: Transferable[]): void };
+const sources = new Map<string, PreviewSource>();
+const mixCache: ArrangementMixCache = { revision: "" };
+scope.onmessage = ({ data }) => {
+  try {
+    for (const source of data.sources) sources.set(source.key, source);
+    const retain = new Set(data.retain); for (const key of sources.keys()) if (!retain.has(key)) sources.delete(key);
+    const buffers = new Map([...sources].map(([key, source]) => [key, { sampleRate: source.sampleRate, numberOfChannels: source.channels.length, length: source.channels[0].length, getChannelData: (channel: number) => source.channels[channel] }]));
+    mixCache.revision = data.revision;
+    const pcm = prepareArrangementPcm(data.state, buffers, data.sampleRate, mixCache);
+    const left = new Float32Array(pcm.length / 2), right = new Float32Array(pcm.length / 2);
+    for (let frame = 0; frame < left.length; frame++) { left[frame] = pcm[frame * 2]; right[frame] = pcm[frame * 2 + 1]; }
+    scope.postMessage({ id: data.id, left, right, stats: { mixCacheHit: !!mixCache.hit, retainedMixBytes: mixCache.pcm?.byteLength ?? 0, sourceBytes: [...sources.values()].reduce((sum, source) => sum + source.channels.reduce((bytes, channel) => bytes + channel.byteLength, 0), 0) } }, [left.buffer, right.buffer]);
+  } catch (error) { scope.postMessage({ id: data.id, error: error instanceof Error ? error.message : "Arrangement preparation failed." }); }
+};

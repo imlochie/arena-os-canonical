@@ -85,7 +85,7 @@ describe("section-aware arrangement construction", () => {
 
   it("rejects cross-project/source/stem/track reference chains before construction", () => {
     const current = {
-      remixProjectId: "project-a", sectionProjectId: "project-a", sourceProjectId: "project-a",
+      audioProjectId: "project-a", sectionProjectId: "project-a", sourceProjectId: "project-a",
       sourceAnalysisProjectId: "project-a", sectionAnalysisProjectId: "project-a", stemProjectId: "project-a",
       trackRemixSessionId: "remix-a", remixId: "remix-a",
       sectionSourceAssetId: "source-a", sourceAssetId: "source-a", analysisSourceAssetId: "source-a",

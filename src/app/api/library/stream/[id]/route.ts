@@ -1,3 +1,4 @@
+import { parseByteRange } from "@/lib/http/range";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -12,27 +13,6 @@ export const dynamic = "force-dynamic";
  * library root can ever be served (realpath-checked).
  */
 
-function parseRange(header: string | null, size: number): { start: number; end: number } | "invalid" | null {
-  if (!header) return null;
-  const match = header.match(/^bytes=(\d*)-(\d*)$/);
-  if (!match) return "invalid";
-  const [, rawStart, rawEnd] = match;
-  if (rawStart === "" && rawEnd === "") return "invalid";
-  let start: number;
-  let end: number;
-  if (rawStart === "") {
-    // suffix range: last N bytes
-    const length = Number(rawEnd);
-    if (length <= 0) return "invalid";
-    start = Math.max(0, size - length);
-    end = size - 1;
-  } else {
-    start = Number(rawStart);
-    end = rawEnd === "" ? size - 1 : Math.min(Number(rawEnd), size - 1);
-  }
-  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) return "invalid";
-  return { start, end };
-}
 
 async function serve(req: Request, idRaw: string, includeBody: boolean): Promise<Response> {
   const id = Number(idRaw);
@@ -57,7 +37,7 @@ async function serve(req: Request, idRaw: string, includeBody: boolean): Promise
   }
 
   const contentType = resolved.fromCache ? "video/mp4" : mimeForFile(resolved.path);
-  const range = parseRange(req.headers.get("range"), info.size);
+  const range = parseByteRange(req.headers.get("range"), info.size);
 
   if (range === "invalid") {
     return new Response(null, {

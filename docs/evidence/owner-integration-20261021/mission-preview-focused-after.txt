@@ -1,0 +1,23 @@
+TAP version 13
+# (node:8884) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/helpers/mission-postgres.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# [database] active connection lost: terminating connection due to administrator command
+# [database] idle connection lost: terminating connection due to administrator command
+# {"kind":"Mission-large-partial-later-real-task","before":"incomplete","after":"done","restarted":true,"freshNode":true,"draftedFromUI":true,"outputs":[{"bytes":270000,"sha256":"9618d3a6549f0f07fec2eef89d8e02677222cdc38879ff4ba138b095c2ee836a","artifactId":"63bc733f-6929-4880-a0e2-f277b72b6f3a","revisionId":"c275da6c-7ea9-460c-b3ef-b6036835e9e9"},{"bytes":240000,"sha256":"93c1f032ee90c7ae77edd4accd37e90ed58dd8cf70474f25478cc4b1d14d10e5","artifactId":"c17d9f31-5089-4a23-a265-70ca30fab573","revisionId":"e7e46c83-4b8d-404d-8285-e6848f7ca1d0"}]}
+# Subtest: large Unicode and binary partial Mission outputs are inspectable/downloadable and reused byte-exact by a later real task after overwrite and PostgreSQL restart
+ok 1 - large Unicode and binary partial Mission outputs are inspectable/downloadable and reused byte-exact by a later real task after overwrite and PostgreSQL restart
+  ---
+  duration_ms: 10242.645158
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 11767.979024

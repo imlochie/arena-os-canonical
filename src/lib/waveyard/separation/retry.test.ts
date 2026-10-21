@@ -464,3 +464,36 @@ test("server mode: a Redis that never answers is a bounded refusal — the claim
     await f.close();
   }
 });
+
+test("lost retry handoff acknowledgement never rolls back an executor's newer state or audit", async () => {
+  const f = await fixture();
+  try {
+    for (const status of ["processing", "complete", "cancelling", "cancelled", "failed"]) {
+      const job = await f.addJob();
+      const metadata = JSON.stringify({ execution: { id: randomUUID() }, recoveryHistory: [{ id: randomUUID(), state: "finished" }] });
+      const result = await retrySeparationJob(f.database, job.id, { handOff: async () => {
+        await f.database.update(processingJobs).set({ status, stage: "executor-owned", metadata, errorCode: "executor-result" }).where(eq(processingJobs.id, job.id));
+        throw new Error("lost enqueue acknowledgement");
+      } });
+      assert.equal(result.queued, false);
+      assert.equal(!result.queued && result.kind, "handoff-uncertain");
+      const [after] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, job.id));
+      assert.equal(after.status, status); assert.equal(after.stage, "executor-owned");
+      assert.equal(after.metadata, metadata); assert.equal(after.errorCode, "executor-result");
+    }
+  } finally { await f.close(); }
+});
+
+test("an older retry refusal cannot roll back a later retry of the same queued row", async () => {
+  const f = await fixture();
+  try {
+    const job = await f.addJob();
+    await retrySeparationJob(f.database, job.id, { handOff: async () => {
+      await f.database.update(processingJobs).set({ status: "failed", stage: "new-failure" }).where(eq(processingJobs.id, job.id));
+      assert.equal((await retrySeparationJob(f.database, job.id, { handOff: async () => {} })).queued, true);
+      throw new Error("old submission lost ack after a newer retry");
+    } });
+    const [after] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, job.id));
+    assert.equal(after.status, "queued"); assert.equal(after.errorCode, null);
+  } finally { await f.close(); }
+});

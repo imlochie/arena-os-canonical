@@ -30,7 +30,7 @@
  * teardown. Bind mount is read-write for the workspace directory ONLY.
  */
 
-import { spawn } from "node:child_process";
+import { runCommandProcess } from "./command-process";
 import { mkdir } from "node:fs/promises";
 import { WORKSPACE_ROOT } from "./tools";
 
@@ -70,26 +70,14 @@ export interface IsolationOpts {
 // fully unit-testable on machines without any container runtime.
 export type Runner = (command: string, args: string[], opts: { timeoutMs: number; cwd?: string }) => Promise<{ code: number; output: string }>;
 
-export const realRunner: Runner = (command, args, opts) =>
-  new Promise((resolve) => {
-    const child = spawn(command, args, {
-      cwd: opts.cwd,
-      shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(command),
-      env: { ...process.env, ARENA_MISSION_SANDBOX: "1" },
-    });
-    let output = "";
-    const timer = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs);
-    child.stdout?.on("data", (d) => (output += d.toString()));
-    child.stderr?.on("data", (d) => (output += d.toString()));
-    child.once("error", (e) => {
-      clearTimeout(timer);
-      resolve({ code: 127, output: String(e) });
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? 1, output: output.slice(0, 200_000) });
-    });
+export const realRunner: Runner = async (command, args, opts) => {
+  const result = await runCommandProcess(command, args, {
+    cwd: opts.cwd, timeoutMs: opts.timeoutMs,
+    shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(command),
+    env: { ...process.env, ARENA_MISSION_SANDBOX: "1" },
   });
+  return { code: result.code, output: result.output };
+};
 
 /** Detect the strongest available isolation runtime. Probed, never assumed. */
 export async function probeIsolation(runner: Runner = realRunner): Promise<IsolationRuntime> {
@@ -207,12 +195,12 @@ export async function runInTarget(
 ): Promise<string> {
   if (target.env === "host") {
     const r = await runner(shellCommand(), shellWrap(command), { timeoutMs });
-    return r.code === 0 ? r.output : r.output + `\n(exit ${r.code})`;
+    return r.code === 0 ? r.output : `error: command failed\n${r.output}\n(exit ${r.code})`;
   }
   const { command: bin, args } = isolatedExecArgs(target.isolation, command);
   const r = await runner(bin, args, { timeoutMs });
   const prefix = `[isolated:${target.isolation.ref} · ${target.isolation.image} · net=${target.isolation.networkMode}]`;
-  return `${prefix}\n${r.code === 0 ? r.output : r.output + `\n(exit ${r.code})`}`;
+  return `${r.code === 0 ? "" : "error: isolated command failed\n"}${prefix}\n${r.code === 0 ? r.output : r.output + `\n(exit ${r.code})`}`;
 }
 
 import { join } from "node:path";

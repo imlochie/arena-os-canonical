@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { collabs, collabContributions } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -9,6 +10,7 @@ export const maxDuration = 120;
 
 // POST → next thinking pass: new instruction → fresh parallel takes → new synthesis
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     const body = await req.json();

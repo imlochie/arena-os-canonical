@@ -1,3 +1,4 @@
+import { artifactScope } from "@/lib/arcadeStore";
 import { db } from "@/db";
 import { artifacts, projectMemory, projects } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
@@ -39,7 +40,7 @@ export async function getProjectContext(projectId?: string | null): Promise<Proj
     const arts = await db
       .select()
       .from(artifacts)
-      .where(eq(artifacts.projectId, projectId))
+      .where(artifactScope(undefined, projectId))
       .orderBy(desc(artifacts.createdAt))
       .limit(12);
 

@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { battles, battleMessages, assistants, models } from "@/db/schema";
 import { asc, eq, inArray } from "drizzle-orm";
@@ -6,7 +7,8 @@ import { logPrivacyEvent } from "@/lib/privacy";
 export const dynamic = "force-dynamic";
 
 // GET → full battle detail incl. thread (masked while unvoted)
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     const [battle] = await db.select().from(battles).where(eq(battles.id, id)).limit(1);
@@ -64,7 +66,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 }
 
 // DELETE → right to erasure for a single battle + its thread
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     await db.delete(battleMessages).where(eq(battleMessages.battleId, id));

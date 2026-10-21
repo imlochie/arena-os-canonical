@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { MDX_MODELS } from "@/lib/waveyard/separation/mdx";
-import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime } from "@/lib/waveyard/separation/deep";
+import { MDX_MODELS, SEPARATION_RECIPES } from "@/lib/waveyard/separation/mdx";
+import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime, inspectDeepRuntimeReadiness } from "@/lib/waveyard/separation/deep";
 import { deepStemsEnabled } from "@/lib/waveyard/separation/modes";
 import { getModelFileStatus, modelLabel } from "@/lib/waveyard/separation/seed";
+import { loadOrtModule } from "@/lib/waveyard/separation/session";
 import { requireUser } from "@/lib/waveyard/local-context";
 
 export const runtime = "nodejs";
@@ -22,25 +23,33 @@ export async function GET() {
         return {
           id: spec.id,
           label: modelLabel(spec),
+          file: spec.file, sourceUrl: spec.sourceUrl, sha256: spec.sha256, license: spec.license,
           primaryStem: spec.primaryStem,
+          requiredFor: [spec.id, ...(spec.id === MDX_MODELS[0].id ? ["default"] : []), ...SEPARATION_RECIPES.filter(recipe => recipe.runs.some(run => run.model === spec.id)).map(recipe => recipe.id)],
           secondaryStem: spec.secondaryStem,
           sizeBytes: spec.sizeBytes,
           present: status.present,
           verified: status.verified,
           ready: status.verified,
+          provisioning: status.provisioning,
+          acquisition: status.acquisition ?? null,
         };
       }),
     );
     const deepStatus = deepEngineStatusForThisRuntime();
+    const deepReadiness = await inspectDeepRuntimeReadiness();
+    const runtimeAvailable = (await loadOrtModule()) !== null;
     return NextResponse.json({
-      models,
+      models: models.map(model => ({ ...model, runtimeAvailable, runtimeReason: runtimeAvailable ? null : "ONNX inference runtime is unavailable; verified model files alone cannot run separation." })),
+      mdxRuntime: { available: runtimeAvailable, reason: runtimeAvailable ? null : "ONNX inference runtime is unavailable or its native binding could not load. Verified downloads alone cannot run separation." },
       deep: {
         enabled: deepStemsEnabled(),
         modelId: deepStatus.modelId,
         label: deepStatus.label,
         stems: deepStatus.stems,
-        prepared: deepStatus.prepared,
-        reason: deepStatus.prepared ? null : deepStatus.reason,
+        prepared: deepReadiness.prepared,
+        readiness: { ...deepReadiness, scope: "CLI import and upstream checkpoint checksum prefix; not inference acceptance" },
+        reason: deepReadiness.reason,
         checkpoint: { file: DEEP_CHECKPOINT_FILE, path: deepStatus.checkpointPath, present: deepStatus.checkpointPresent },
       },
     });

@@ -1,14 +1,13 @@
+import { projectAudio } from "@/lib/waveyard/project-audio";
 import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import {
   remixClips,
   remixSessions,
   remixTracks,
   sourceAnalyses,
-  sourceAssets,
-  stemAssets,
 } from "@/db/waveyardSchema";
 import {
   alignSourceBeatToTimelineMs,
@@ -60,14 +59,14 @@ export async function POST(
     const [track] = await db.select().from(remixTracks).where(eq(remixTracks.id, clip.remixTrackId)).limit(1);
     if (!track || track.remixSessionId !== remix.id)
       return NextResponse.json({ error: "Clip is outside this remix session." }, { status: 403 });
-    const [stem] = await db.select().from(stemAssets).where(and(eq(stemAssets.id, clip.stemAssetId), eq(stemAssets.projectId, remix.projectId))).limit(1);
-    if (!stem || track.stemAssetId !== stem.id)
-      return NextResponse.json({ errorCode: "cross_source_alignment_unavailable", error: "The clip stem is unavailable in this project." }, { status: 422 });
-    const [[source], [analysis]] = await Promise.all([
-      db.select().from(sourceAssets).where(and(eq(sourceAssets.id, stem.sourceAssetId), eq(sourceAssets.projectId, remix.projectId))).limit(1),
-      db.select().from(sourceAnalyses).where(and(eq(sourceAnalyses.sourceAssetId, stem.sourceAssetId), eq(sourceAnalyses.projectId, remix.projectId))).limit(1),
-    ]);
-    if (!source || !analysis || analysis.status !== "complete" || analysis.sourceChecksumSha256 !== source.checksumSha256)
+    const audio = await projectAudio(remix.projectId);
+    const stem = audio.stems.find((asset) => asset.id === clip.stemAssetId);
+    if (!stem)
+      return NextResponse.json({ errorCode: "cross_source_alignment_unavailable", error: "The clip stem is not authorised for this project." }, { status: 422 });
+    // A timed donor clip may legitimately differ from its lane's initial stem.
+    const source = audio.sources.find((asset) => asset.id === stem.sourceAssetId && asset.projectId === stem.projectId);
+    const [analysis] = await db.select().from(sourceAnalyses).where(eq(sourceAnalyses.sourceAssetId, stem.sourceAssetId)).limit(1);
+    if (!source || !analysis || analysis.projectId !== source.projectId || analysis.status !== "complete" || analysis.sourceChecksumSha256 !== source.checksumSha256)
       return NextResponse.json({ errorCode: "cross_source_alignment_unavailable", error: "A current complete source analysis is required to align a source beat." }, { status: 422 });
     const beatGrid = parsedBeatGrid(analysis.beatGrid);
     const sourceBeatMs = beatGrid?.[sourceBeatIndex];

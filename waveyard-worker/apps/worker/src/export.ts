@@ -1,7 +1,9 @@
+import { cleanupExportAttempt, exportAttemptKey, publishExport } from "../../../packages/dsp/src/export-publication";
+import { verifyFileIdentity, verifyStoredFile } from "../../../packages/dsp/src/verified-file";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { checksumFile, exec, validateAudio } from "@waveyard/audio";
 import {
   drumAnalyses,
@@ -11,6 +13,7 @@ import {
   getDb,
   harmonyAnalyses,
   harmonyEvents,
+  projects,
   remixSessions,
   remixVersions,
   sourceAnalyses,
@@ -20,11 +23,14 @@ import {
   vocalPitchFrames,
 } from "@waveyard/database";
 import { consumeTestFault } from "@waveyard/queue";
-import { getStorage, privateObjectKey } from "@waveyard/storage";
+import { getStorage } from "@waveyard/storage";
 import { AUTOMATION_PARAMETERS, drumAnalysisProvenanceReason, drumEventsToMidiNotes, harmonyAnalysisProvenanceReason, harmonyEventsToMidiNotes, MIDI_PPQ, normaliseDrumEvents, normaliseHarmonyEvents, normaliseAutomationPoints, normaliseMusicalKey, vocalAnalysisProvenanceReason, vocalFramesToMidiNotes, type ExportJobPayload, type RemixAutomationLane } from "@waveyard/types";
-import { pitchFilterChain, resolveKeySync } from "./key";
+import { isCurrentSourceAnalysis, pitchFilterChain, resolveKeySync, ffmpegFadeFilters, mixSumFilters, padToTimeline, timelineSampleCount } from "../../../packages/dsp/src/render";
+import { bounceInsertBuses, insertBounceRequired } from "../../../packages/dsp/src/bounce";
+import { INSERTS_FORMAT, parseInserts, type InsertChain } from "@waveyard/dsp";
+import { isClipFadeShape, type ClipFadeShape } from "../../../packages/dsp/src/fades";
 import { atempoFilterChain, requiredSourceDurationMs, sourceDurationFits, tempoRatio } from "./tempo";
-import { automatedTrackBusFilters } from "./automation";
+import { automatedTrackBusFilters } from "../../../packages/dsp/src/render";
 import { writeMidiFile } from "./midi";
 
 type SnapshotClip = {
@@ -35,6 +41,7 @@ type SnapshotClip = {
   gain: number;
   fadeInMs: number;
   fadeOutMs: number;
+  fadeShape: ClipFadeShape;
   tempoSyncEnabled: boolean;
   keySyncEnabled: boolean;
   beatSnapEnabled: boolean;
@@ -48,9 +55,12 @@ type SnapshotTrack = {
   muted: boolean;
   solo: boolean;
   clips: SnapshotClip[];
+  inserts: InsertChain;
+  phaseInverted: boolean;
 };
 type ExportSnapshot = {
   masterVolume: number;
+  masterInserts: InsertChain;
   tempoBpm: number;
   targetKey: string | null;
   tracks: SnapshotTrack[];
@@ -66,6 +76,14 @@ class ExportFailure extends Error {
   ) {
     super(message);
   }
+}
+
+function snapshotInserts(raw: unknown): InsertChain {
+  if (raw == null) return [];
+  if (typeof raw === "string") { try { return snapshotInserts(JSON.parse(raw)); } catch { throw new ExportFailure("invalid_snapshot", "Persisted insert chain is invalid JSON or unsupported."); } }
+  const chain = parseInserts(Array.isArray(raw) ? { format: INSERTS_FORMAT, inserts: raw } : raw);
+  if (!chain) throw new ExportFailure("invalid_snapshot", "Persisted insert chain is unsupported or malformed.");
+  return chain;
 }
 
 function finite(value: unknown, lower: number, upper: number) {
@@ -87,10 +105,13 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
   const value = parsed as Record<string, unknown>;
   if (!Array.isArray(value.tracks))
     throw new ExportFailure("invalid_snapshot", "Persisted remix tracks are missing.");
+
   const tracks = value.tracks.map((track): SnapshotTrack => {
     if (!track || typeof track !== "object")
       throw new ExportFailure("invalid_snapshot", "Persisted remix track is invalid.");
     const candidate = track as Record<string, unknown>;
+
+
     if (typeof candidate.stemAssetId !== "string" || !Array.isArray(candidate.clips))
       throw new ExportFailure("invalid_snapshot", "Persisted remix track is invalid.");
     return {
@@ -98,6 +119,8 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
       stemAssetId: candidate.stemAssetId,
       sortOrder: finite(candidate.sortOrder, 0, 99),
       volume: finite(candidate.volume, 0, 2),
+      inserts: snapshotInserts(candidate.inserts),
+      phaseInverted: candidate.phaseInverted === true,
       pan: finite(candidate.pan, -1, 1),
       muted: candidate.muted === true,
       solo: candidate.solo === true,
@@ -107,6 +130,7 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
         const item = clip as Record<string, unknown>;
         if (typeof item.stemAssetId !== "string")
           throw new ExportFailure("invalid_snapshot", "Persisted remix clip is invalid.");
+        if (item.fadeShape !== undefined && !isClipFadeShape(item.fadeShape)) throw new ExportFailure("invalid_snapshot", "Invalid clip fade shape.");
         const durationMs = finite(item.durationMs, 1, 86_400_000);
         const fadeInMs = item.fadeInMs === undefined
           ? 0
@@ -124,6 +148,7 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
           gain: finite(item.gain, 0, 4),
           fadeInMs,
           fadeOutMs,
+          fadeShape: item.fadeShape === undefined ? "linear" : item.fadeShape as ClipFadeShape,
           // Historical versions are intentionally rendered without a transform.
           tempoSyncEnabled: item.tempoSyncEnabled === true,
           // Historical versions are intentionally rendered without a transform.
@@ -161,6 +186,7 @@ export function parseExportSnapshot(raw: string): ExportSnapshot {
   }
   return {
     masterVolume: finite(value.masterVolume, 0, 2),
+    masterInserts: snapshotInserts(value.masterInserts),
     tempoBpm: finite(value.tempoBpm ?? 120, 20, 300),
     targetKey: normaliseMusicalKey(value.targetKey),
     tracks,
@@ -198,11 +224,13 @@ function panGains(pan: number) {
 async function updateJob(
   id: string,
   patch: Partial<typeof exportJobs.$inferInsert>,
+  integrityFailure = false,
 ) {
-  await getDb()
+  const updated = await getDb()
     .update(exportJobs)
     .set({ ...patch, updatedAt: new Date() })
-    .where(eq(exportJobs.id, id));
+    .where(and(eq(exportJobs.id, id), ...(integrityFailure ? [] : [ne(exportJobs.status, "complete"), ne(exportJobs.status, "cancelled")]))).returning({ id: exportJobs.id });
+  return updated.length > 0;
 }
 
 async function processMidiExport(
@@ -226,7 +254,7 @@ async function processMidiExport(
   const [sourceAnalysis] = await db.select().from(sourceAnalyses).where(eq(sourceAnalyses.sourceAssetId, source.id)).limit(1);
   if (!sourceAnalysis || sourceAnalysis.projectId !== job.projectId || sourceAnalysis.status !== "complete" || !Number.isFinite(sourceAnalysis.bpm) || sourceAnalysis.bpm! < 40 || sourceAnalysis.bpm! > 300)
     throw new ExportFailure("midi_tempo_missing", "Source-relative MIDI export requires complete source BPM analysis.");
-  await updateJob(job.id, { status: "preparing", stage: "resolving-analysis", attempts: job.attempts + 1, startedAt: new Date(), completedAt: null, errorCode: null, errorMessage: null });
+  if (!await updateJob(job.id, { status: "preparing", stage: "resolving-analysis", attempts: job.attempts + 1, startedAt: new Date(), completedAt: null, errorCode: null, errorMessage: null })) return;
   await reportStage("resolving-analysis");
   let notes;
   if (job.midiKind === "vocal" || job.midiKind === "drums") {
@@ -287,9 +315,9 @@ async function processMidiExport(
     await writeMidiFile(outputPath, notes, sourceAnalysis.bpm!);
     const checksumSha256 = await checksumFile(outputPath);
     const metadata = await stat(outputPath);
-    storedKey = privateObjectKey(job.projectId, "export", "mid");
+    storedKey = exportAttemptKey(job.projectId, job.id, "mid");
     await storage.putFile(storedKey, outputPath, "audio/midi");
-    await db.transaction(async (tx) => {
+    complete = await publishExport(db, job.id, async (tx) => {
       await tx.insert(exportAssets).values({
         projectId: job.projectId, exportJobId: job.id, remixVersionId: version.id, storageKey: storedKey!,
         filename: `${job.midiKind}-${version.id}.mid`, checksumSha256,
@@ -298,14 +326,16 @@ async function processMidiExport(
       });
       await tx.update(exportJobs).set({ status: "complete", stage: "complete", completedAt: new Date(), updatedAt: new Date() }).where(eq(exportJobs.id, job.id));
     });
-    complete = true;
-    await reportStage("complete");
+    if (complete) await reportStage("complete");
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown MIDI export failure.";
     await updateJob(job.id, { status: "failed", stage: "failed", errorCode: error instanceof ExportFailure ? error.code : "midi_export_failed", errorMessage: message, completedAt: new Date() });
     throw error;
   } finally {
-    if (!complete && storedKey) await storage.delete(storedKey).catch(() => undefined);
+    if (!complete && storedKey && await cleanupExportAttempt(db, storage, job.id, storedKey) === "unknown") {
+      console.warn("Export output retained for reconciliation", { exportJobId: job.id, storageKey: storedKey });
+      await updateJob(job.id, { stage: "reconciliation_required", errorCode: "publication_unknown", errorMessage: "Export publication or cleanup could not be verified. Output was retained in this job's private export directory. Retry to reconcile a committed asset; do not manually delete unknown output." }).catch(() => undefined);
+    }
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 }
@@ -321,21 +351,7 @@ export async function processExport(
     .from(exportJobs)
     .where(eq(exportJobs.id, payload.exportJobId))
     .limit(1);
-  if (!job || job.status === "complete" || job.status === "cancelled") return;
-
-  const [existingAsset] = await db
-    .select()
-    .from(exportAssets)
-    .where(eq(exportAssets.exportJobId, job.id))
-    .limit(1);
-  if (existingAsset) {
-    await updateJob(job.id, {
-      status: "complete",
-      stage: "complete",
-      completedAt: job.completedAt ?? new Date(),
-    });
-    return;
-  }
+  if (!job || job.status === "cancelled") return;
 
   const invalidPayload =
     job.projectId !== payload.projectId ||
@@ -352,6 +368,30 @@ export async function processExport(
     });
     throw new Error("Export payload does not match its durable job target.");
   }
+
+  const [existingAsset] = await db
+    .select()
+    .from(exportAssets)
+    .where(eq(exportAssets.exportJobId, job.id))
+    .limit(1);
+  if (existingAsset) {
+    try {
+      if (existingAsset.projectId !== job.projectId || existingAsset.remixVersionId !== job.remixVersionId || existingAsset.format !== job.format) throw new Error("Published export provenance does not match its immutable job.");
+      await verifyStoredFile(getStorage(), existingAsset);
+    } catch (error) {
+      await updateJob(job.id, { status: "failed", stage: "failed", errorCode: "published_output_invalid", errorMessage: error instanceof Error ? error.message : "Published output unavailable; restore storage before retrying.", completedAt: new Date() }, true);
+      throw error;
+    }
+    await updateJob(job.id, {
+      status: "complete",
+      stage: "complete",
+      completedAt: job.completedAt ?? new Date(),
+    });
+    await reportStage("complete");
+    return;
+  }
+
+  if (job.status === "complete") { await updateJob(job.id, { status: "failed", stage: "failed", errorCode: "published_output_missing", errorMessage: "Completed export has no retained asset; completion was invalidated.", completedAt: new Date() }, true); throw new Error("Completed export has no retained asset."); }
 
   const [version] = await db
     .select()
@@ -396,7 +436,7 @@ export async function processExport(
   let storedKey: string | undefined;
   let complete = false;
   try {
-    await updateJob(job.id, {
+    if (!await updateJob(job.id, {
       status: "preparing",
       stage: "resolving-remix",
       attempts: (job.attempts ?? 0) + 1,
@@ -404,7 +444,7 @@ export async function processExport(
       completedAt: null,
       errorCode: null,
       errorMessage: null,
-    });
+    })) return;
     await reportStage("resolving-remix");
 
     const snapshot = parseExportSnapshot(version.snapshot);
@@ -427,11 +467,23 @@ export async function processExport(
       .select()
       .from(stemAssets)
       .where(inArray(stemAssets.id, stemIds));
-    if (stems.length !== stemIds.length || stems.some((stem) => stem.projectId !== job.projectId))
+    if (stems.length !== stemIds.length)
       throw new ExportFailure(
         "asset_missing",
         "The persisted remix references an unavailable project stem.",
       );
+    // Session→Studio handoff deliberately references existing library audio;
+    // project-id equality is not its ownership boundary. The immutable version
+    // grants these exact IDs, but both stem AND source projects must still be
+    // owned by the destination owner before any bytes are read.
+    const [destination] = await db.select({ ownerId: projects.ownerId }).from(projects).where(eq(projects.id, job.projectId)).limit(1);
+    const sourceIds = [...new Set(stems.map(stem => stem.sourceAssetId))];
+    const referencedSources = await db.select().from(sourceAssets).where(inArray(sourceAssets.id, sourceIds));
+    const requiredProjects = [...new Set([...stems.map(stem => stem.projectId), ...referencedSources.map(source => source.projectId)])];
+    const permittedProjects = destination ? await db.select({ id: projects.id }).from(projects)
+      .where(and(inArray(projects.id, requiredProjects), eq(projects.ownerId, destination.ownerId))) : [];
+    if (!destination || referencedSources.length !== sourceIds.length || permittedProjects.length !== requiredProjects.length)
+      throw new ExportFailure("asset_missing", "The persisted remix references unavailable audio or audio not owned by this project's owner.");
     const stemById = new Map(stems.map((stem) => [stem.id, stem]));
     const transformedSourceIds = [...new Set(clips
       .filter((clip) => clip.tempoSyncEnabled || clip.keySyncEnabled)
@@ -440,6 +492,7 @@ export async function processExport(
       ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, transformedSourceIds))
       : [];
     const analysisBySourceId = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
+    const syncSourceById = new Map(referencedSources.map(source => [source.id, source]));
     const tempoByClip = new Map<number, { ratio: number; sourceDurationMs: number }>();
     const keyShiftByClip = new Map<number, number>();
     for (const [index, clip] of clips.entries()) {
@@ -447,18 +500,18 @@ export async function processExport(
       let sourceDurationMs = clip.durationMs;
       if (clip.tempoSyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
-        if (!analysis || analysis.projectId !== job.projectId || analysis.status !== "complete")
+        if (!isCurrentSourceAnalysis(analysis, syncSourceById.get(stem.sourceAssetId)))
           throw new ExportFailure("tempo_sync_analysis_missing", "Tempo sync requires complete source BPM analysis.");
-        if (!Number.isFinite(analysis.bpm) || analysis.bpm! < 40 || analysis.bpm! > 300)
+        if (!Number.isFinite(analysis?.bpm) || analysis!.bpm! < 40 || analysis!.bpm! > 300)
           throw new ExportFailure("tempo_sync_bpm_unavailable", "Tempo sync requires a usable source BPM.");
-        const ratio = tempoRatio(snapshot.tempoBpm, analysis.bpm!);
+        const ratio = tempoRatio(snapshot.tempoBpm, analysis!.bpm!);
         sourceDurationMs = requiredSourceDurationMs(clip.durationMs, ratio);
         tempoByClip.set(index, { ratio, sourceDurationMs });
       }
       if (clip.keySyncEnabled) {
         const analysis = analysisBySourceId.get(stem.sourceAssetId);
         const resolution = resolveKeySync(
-          analysis?.projectId === job.projectId ? analysis.status : undefined,
+          isCurrentSourceAnalysis(analysis, syncSourceById.get(stem.sourceAssetId)) ? "complete" : undefined,
           normaliseMusicalKey(analysis?.musicalKey),
           snapshot.targetKey,
         );
@@ -489,84 +542,100 @@ export async function processExport(
     for (const [index, stem] of stems.entries()) {
       const inputPath = join(temporaryDirectory, `stem-${index}.wav`);
       await storage.getToFile(stem.storageKey, inputPath);
+      // Verify the exact private copy FFmpeg will consume, not merely a DB
+      // identity or the remote/local object before a potentially faulty copy.
+      try { await verifyFileIdentity(inputPath, stem, "Export source copy"); }
+      catch (error) { throw new ExportFailure("source_identity_unverified", `Export source audio identity could not be verified. ${error instanceof Error ? error.message : "Restore the original stem and retry."} No substitute audio was rendered.`); }
       inputPaths.set(stem.id, inputPath);
     }
 
-    await updateJob(job.id, { status: "processing", stage: "rendering" });
+    if (!await updateJob(job.id, { status: "processing", stage: "rendering" })) return;
     await reportStage("rendering");
     if (await consumeTestFault("export-render"))
       throw new ExportFailure("render_failed", "Injected export render failure.");
 
     const inputIndex = new Map(stems.map((stem, index) => [stem.id, index]));
-    const automationByTrackId = new Map(snapshot.automation.map((lane) => [
-      `${lane.remixTrackId}:${lane.parameter}`,
-      lane.points,
-    ]));
+    const automationByTrackId = new Map(snapshot.automation.map((lane) => [`${lane.remixTrackId}:${lane.parameter}`, lane.points]));
     const automatedTrackIds = new Set(snapshot.automation.map((lane) => lane.remixTrackId));
     const automatedTrackIndex = new Map(activeTracks.map((track, index) => [track.id, index]));
+    // Desktop mix strategy (docs/desktop-runtime-plan.md): the bundled GPL
+    // ffmpeg 4.1 predates `amix normalize`, so clips are apad'd to the
+    // timeline and summed explicitly (amerge+pan) — mathematically identical
+    // to the worker's `amix ... normalize=0 duration=longest`.
+    const timelineSamples = timelineSampleCount(clips, job.sampleRate);
     const filters = clips.map((clip, index) => {
       const delay = Math.round(clip.timelineStartMs);
       const tempo = tempoByClip.get(index);
       const keyShift = keyShiftByClip.get(index);
-      const fades = [
-        clip.fadeInMs > 0 ? `afade=t=in:st=0:d=${seconds(clip.fadeInMs)}` : "",
-        clip.fadeOutMs > 0
-          ? `afade=t=out:st=${seconds(clip.durationMs - clip.fadeOutMs)}:d=${seconds(clip.fadeOutMs)}`
-          : "",
-      ].filter(Boolean).join(",");
+      const fades = ffmpegFadeFilters(clip);
       const fadeSegment = fades ? `,${fades}` : "";
+      const padSegment = `,${padToTimeline(job.sampleRate, timelineSamples, clip.timelineStartMs + clip.durationMs)}`;
       const automated = Boolean(clip.track.id && automatedTrackIds.has(clip.track.id));
       if (automated) {
-        // Clip-local transform/gain/fades/delay precede one combined track bus.
-        const tempoSegment = tempo
-          ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}`
-          : "";
+        const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}` : "";
         if (keyShift === undefined)
-          return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
+          return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
         const keyTempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)}` : "";
-        return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${keyTempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
+        return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${keyTempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},volume=${clip.gain.toFixed(6)}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
       }
       const gains = panGains(clip.track.pan);
       const volume = (clip.track.volume * clip.gain).toFixed(6);
-      // No-automation clips retain the established Phase 6 filter order.
       if (keyShift === undefined) {
-        const tempoSegment = tempo
-          ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}`
-          : "";
-        return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
+        const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)},atrim=duration=${seconds(clip.durationMs)}` : "";
+        return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
       }
       const tempoSegment = tempo ? `,${atempoFilterChain(tempo.ratio)}` : "";
-      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}[clip${index}]`;
+      return `[${inputIndex.get(clip.stemAssetId)}:a]atrim=start=${seconds(clip.sourceOffsetMs)}:duration=${seconds(tempo?.sourceDurationMs ?? clip.durationMs)},asetpts=PTS-STARTPTS${tempoSegment},aformat=sample_rates=${job.sampleRate}:channel_layouts=stereo,${pitchFilterChain(keyShift, job.sampleRate)},atrim=duration=${seconds(clip.durationMs)},pan=stereo|c0=${gains.left}*c0|c1=${gains.right}*c1,volume=${volume}${fadeSegment},adelay=${delay}|${delay}${padSegment}[clip${index}]`;
     });
     const trackBusLabels = new Map<string, string>();
     for (const [trackId, trackIndex] of automatedTrackIndex) {
       if (!trackId || !automatedTrackIds.has(trackId)) continue;
       const track = activeTracks[trackIndex];
-      const clipLabels = clips.flatMap((clip, clipIndex) => clip.track.id === trackId ? [`[clip${clipIndex}]`] : []);
+      const clipLabels = clips.flatMap((clip, clipIndex) => (clip.track.id === trackId ? [`[clip${clipIndex}]`] : []));
       if (!clipLabels.length) continue;
       const trackLabel = `track${trackIndex}`;
-      filters.push(...automatedTrackBusFilters(
-        clipLabels,
-        trackLabel,
-        automationByTrackId.get(`${trackId}:volume`) ?? [],
-        automationByTrackId.get(`${trackId}:pan`) ?? [],
-        track.volume,
-        track.pan,
-      ));
+      filters.push(
+        ...automatedTrackBusFilters(
+          clipLabels,
+          trackLabel,
+          automationByTrackId.get(`${trackId}:volume`) ?? [],
+          automationByTrackId.get(`${trackId}:pan`) ?? [],
+          track.volume,
+          track.pan,
+        ),
+      );
       trackBusLabels.set(trackId, `[${trackLabel}]`);
     }
-    const labels = clips.flatMap((clip, index) => {
-      if (clip.track.id && trackBusLabels.has(clip.track.id)) {
-        const label = trackBusLabels.get(clip.track.id)!;
-        trackBusLabels.delete(clip.track.id);
-        return [label];
-      }
-      return clip.track.id && automatedTrackIds.has(clip.track.id) ? [] : [`[clip${index}]`];
-    }).join("");
-    filters.push(
-      `${labels}amix=inputs=${labels.match(/\[/g)?.length ?? 0}:duration=longest:dropout_transition=0:normalize=0,volume=${snapshot.masterVolume.toFixed(6)}[mix]`,
-    );
     const outputPath = join(temporaryDirectory, "export.wav");
+    const ffmpeg = { path: "ffmpeg" };
+    if (insertBounceRequired(activeTracks, snapshot.masterInserts)) {
+      const buses = activeTracks.flatMap((track, index) => {
+        const labels = clips.flatMap((clip, clipIndex) => clip.track === track ? [`[clip${clipIndex}]`] : []);
+        if (!labels.length) return [];
+        let label = track.id ? trackBusLabels.get(track.id) : undefined;
+        if (!label) { label = `[fxbus${index}]`; filters.push(...mixSumFilters(labels, `fxbus${index}`)); }
+        return [{ label, inserts: track.inserts, phaseInverted: track.phaseInverted }];
+      });
+      await updateJob(job.id, { stage: "rendering-insert-buses" });
+      await bounceInsertBuses({ exec, ffmpeg: ffmpeg.path, directory: temporaryDirectory, inputs: stems.flatMap((stem) => ["-i", inputPaths.get(stem.id)!]), filters, buses, masterVolume: snapshot.masterVolume, masterInserts: snapshot.masterInserts, sampleRate: job.sampleRate, timelineSamples, outputPath });
+    } else {
+    const labels = clips
+      .flatMap((clip, index) => {
+        if (clip.track.id && trackBusLabels.has(clip.track.id)) {
+          const label = trackBusLabels.get(clip.track.id)!;
+          trackBusLabels.delete(clip.track.id);
+          return [label];
+        }
+        return clip.track.id && automatedTrackIds.has(clip.track.id) ? [] : [`[clip${index}]`];
+      })
+      .join("");
+    const topLabels = labels.match(/\[[^\]]+\]/g) ?? [];
+    filters.push(...mixSumFilters(topLabels, "premaster"));
+    // The mix runs in float; convert to the encoder's 16-bit format inside
+    // the graph so the requantization applies high-pass-shaped TPDF dither
+    // (aresample) instead of truncating.
+    filters.push(`[premaster]volume=${snapshot.masterVolume.toFixed(6)},aresample=out_sample_fmt=s16:dither_method=triangular_hp[mix]`);
+
     const args = [
       "-y",
       ...stems.flatMap((stem) => ["-i", inputPaths.get(stem.id)!]),
@@ -583,16 +652,22 @@ export async function processExport(
       String(job.channels),
       outputPath,
     ];
-    await exec("ffmpeg", args, { cwd: temporaryDirectory });
+    await exec(ffmpeg.path, args, { cwd: temporaryDirectory });
 
-    await updateJob(job.id, { status: "finalizing", stage: "validating" });
+    }
+
+    if (!await updateJob(job.id, { status: "finalizing", stage: "validating" })) return;
     await reportStage("validating");
     const metadata = await validateAudio(outputPath);
     const checksumSha256 = await checksumFile(outputPath);
-    storedKey = privateObjectKey(job.projectId, "export", "wav");
+    if (!await updateJob(job.id, { stage: "publishing" })) return;
+    await reportStage("publishing");
+    storedKey = exportAttemptKey(job.projectId, job.id, "wav");
     await storage.putFile(storedKey, outputPath, "audio/wav");
+    if (!await updateJob(job.id, { stage: "committing" })) return;
+    await reportStage("committing");
 
-    await db.transaction(async (tx) => {
+    complete = await publishExport(db, job.id, async (tx) => {
       await tx.insert(exportAssets).values({
         projectId: job.projectId,
         exportJobId: job.id,
@@ -617,8 +692,7 @@ export async function processExport(
         })
         .where(eq(exportJobs.id, job.id));
     });
-    complete = true;
-    await reportStage("complete");
+    if (complete) await reportStage("complete");
   } catch (error) {
     const message =
       error instanceof Error ? error.message.slice(0, 1800) : "Unknown export failure.";
@@ -631,7 +705,10 @@ export async function processExport(
     });
     throw error;
   } finally {
-    if (!complete && storedKey) await storage.delete(storedKey).catch(() => undefined);
+    if (!complete && storedKey && await cleanupExportAttempt(db, storage, job.id, storedKey) === "unknown") {
+      console.warn("Export output retained for reconciliation", { exportJobId: job.id, storageKey: storedKey });
+      await updateJob(job.id, { stage: "reconciliation_required", errorCode: "publication_unknown", errorMessage: "Export publication or cleanup could not be verified. Output was retained in this job's private export directory. Retry to reconcile a committed asset; do not manually delete unknown output." }).catch(() => undefined);
+    }
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 }

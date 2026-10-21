@@ -27,6 +27,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 COPY package.json package-lock.json ./
 COPY apps/worker/package.json apps/worker/package.json
 COPY packages/audio/package.json packages/audio/package.json
+COPY packages/dsp/package.json packages/dsp/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/queue/package.json packages/queue/package.json
 COPY packages/storage/package.json packages/storage/package.json

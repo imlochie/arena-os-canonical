@@ -1,0 +1,33 @@
+TAP version 13
+# (node:4277) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/helpers/mission-postgres.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:4277) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/verified-file.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:4277) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: batch archive is all-or-nothing for ownership, state, corruption, missing files and unsafe aliases
+ok 1 - batch archive is all-or-nothing for ownership, state, corruption, missing files and unsafe aliases
+  ---
+  duration_ms: 2986.417715
+  type: 'test'
+  ...
+# {"scope":"Actual ConversionWorkbench browser upload/review/native conversion/private publication/history/selection/download, Python zipfile CRC/extraction, SHA256 and FFmpeg full decode. No genuine inference, Electron, Windows or subjective listening claim.","sourceSha256":"4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507","outputs":[{"path":"Steven M Bryant _ CSoul _ AlexBeroza _ Robert Siekawitch/Slow Motion Dream — CC BY 3.0/01 - Slow Motion Dream — archive 1 - 8cde9cc6.flac","conversionId":"8cde9cc6-8561-4dbf-8d00-64be8e0f62ea","sourceTrackId":"cdc89504-50ac-4144-a268-117cb6aec4f9","outputTrackId":"84e52bbe-7cf3-4b6f-b51a-47a92f05e79c","sourceSha256":"4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507","outputSha256":"5244e77e53905c44d75590b41f8dfa99f841fdb5d0ee3d75edaf71104e703929","bytes":2290308,"settings":{"format":"flac","bitrate":192,"pcmBits":24,"compression":5,"template":"{artist}/{album}/{track} - {title}"},"fullyDecoded":true,"tags":{"title":"Slow Motion Dream — archive 1","artist":"Steven M Bryant / CSoul / AlexBeroza / Robert Siekawitch","album":"Slow Motion Dream — CC BY 3.0","track":"1","date":"2013","lyrics":"Slow Motion Dream — Steven M Bryant © 2011 / CSoul / AlexBeroza / Robert Siekawitch. CC BY 3.0 https://creativecommons.org/licenses/by/3.0/ . Publisher evidence: https://github.com/deezer/spleeter/blob/c8854001ac8acad34a9bc2bd15f28475541828b1/README.md\#note . Modifications: native FLAC conversion, packaging; no endorsement. This is genuine music, not inference/separation acceptance."},"durationSeconds":10.881,"independentFullDecode":true},{"path":"Steven M Bryant _ CSoul _ AlexBeroza _ Robert Siekawitch/Slow Motion Dream — CC BY 3.0/02 - Slow Motion Dream — archive 2 - 73604112.flac","conversionId":"73604112-bfe8-4e16-83ae-05659aa4b937","sourceTrackId":"cdc89504-50ac-4144-a268-117cb6aec4f9","outputTrackId":"71c7e6d1-4444-4b6a-aaea-e9af4dcf8ccf","sourceSha256":"4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507","outputSha256":"1039171213cb6995a640e3c28682b255bcf712a398b5fd3034abb3341f4faf20","bytes":2290308,"settings":{"format":"flac","bitrate":192,"pcmBits":24,"compression":5,"template":"{artist}/{album}/{track} - {title}"},"fullyDecoded":true,"tags":{"title":"Slow Motion Dream — archive 2","artist":"Steven M Bryant / CSoul / AlexBeroza / Robert Siekawitch","album":"Slow Motion Dream — CC BY 3.0","track":"2","date":"2013","lyrics":"Slow Motion Dream — Steven M Bryant © 2011 / CSoul / AlexBeroza / Robert Siekawitch. CC BY 3.0 https://creativecommons.org/licenses/by/3.0/ . Publisher evidence: https://github.com/deezer/spleeter/blob/c8854001ac8acad34a9bc2bd15f28475541828b1/README.md\#note . Modifications: native FLAC conversion, packaging; no endorsement. This is genuine music, not inference/separation acceptance."},"durationSeconds":10.881,"independentFullDecode":true}],"zipSha256":"468e0328b88c210d7443e15c8ad2062d90156cc8278a37896a041b7e6c3746ad","originalUnchanged":true,"browserErrors":[]}
+# Subtest: genuine music browser import → converted batch → ZIP download → independent extraction, metadata and full decode
+ok 2 - genuine music browser import → converted batch → ZIP download → independent extraction, metadata and full decode
+  ---
+  duration_ms: 4596.563839
+  type: 'test'
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 8618.518737

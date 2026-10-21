@@ -1,3 +1,7 @@
+import { parseByteRange } from "@/lib/http/range";
+import { createExportBundle } from "@/lib/waveyard/export-bundle";
+import { ArchiveInputError } from "@/lib/waveyard/conversion/archive";
+import { verifyStoredFile, PublishedFileError } from "../../../../../../waveyard-worker/packages/dsp/src/verified-file";
 import { isUuid } from "@/lib/api/ids";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -8,6 +12,7 @@ import { db } from "@/db";
 import {
   exportAssets,
   exportJobs,
+  remixVersions,
 } from "@/db/waveyardSchema";
 import { getStorage } from "@/lib/waveyard/storage";
 import { requireUser } from "@/lib/waveyard/local-context";
@@ -19,6 +24,7 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  let archive: Awaited<ReturnType<typeof createExportBundle>> | undefined;
   try {
     const user = await requireUser();
     const { id } = await params;
@@ -45,10 +51,27 @@ export async function GET(
 
     const download = new URL(request.url).searchParams.get("download") === "1";
     const storage = getStorage();
+    try { await verifyStoredFile(storage, asset); }
+    catch (error) {
+      if (error instanceof PublishedFileError && error.status !== 503) await db.update(exportJobs).set({ status: "failed", stage: "failed", errorCode: "published_output_invalid", errorMessage: error.message, updatedAt: new Date() }).where(eq(exportJobs.id, job.id));
+      throw error;
+    }
+    if (download) {
+      const [version] = await db.select().from(remixVersions).where(eq(remixVersions.id, job.remixVersionId)).limit(1);
+      if (!version) return NextResponse.json({ error: "Saved export version is unavailable." }, { status: 409 });
+      archive = await createExportBundle({ job, asset, version, storage, signal: request.signal });
+      const stream = createReadStream(archive.path, { signal: request.signal });
+      const cleanup = archive.dispose;
+      stream.once("close", () => { void cleanup().catch(() => undefined); });
+      return new Response(Readable.toWeb(stream) as ReadableStream, { headers: {
+        "Content-Type": "application/zip", "Content-Length": String(archive.bytes),
+        "Content-Disposition": 'attachment; filename="waveyard-studio-export.zip"',
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+      } });
+    }
     const signed = await storage.createDownloadUrl(
       asset.storageKey,
       60,
-      download ? asset.filename : undefined,
     );
     if (signed) return NextResponse.redirect(signed);
 
@@ -59,28 +82,11 @@ export async function GET(
         { status: 500 },
       );
     const file = await stat(localPath);
-    const range = request.headers.get("range");
+    const range = parseByteRange(request.headers.get("range"), file.size);
     const contentType = asset.format === "midi" ? "audio/midi" : "audio/wav";
-    const disposition: Record<string, string> = download
-      ? {
-          "Content-Disposition": `attachment; filename="${asset.filename.replace(/[\\"\r\n]/g, "_")}"`,
-        }
-      : {};
+    if (range === "invalid") return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.size}`, "Accept-Ranges": "bytes" } });
     if (range) {
-      const [startRaw, endRaw] = range.replace(/bytes=/, "").split("-");
-      const start = Number(startRaw);
-      const end = endRaw ? Number(endRaw) : file.size - 1;
-      if (
-        !Number.isInteger(start) ||
-        !Number.isInteger(end) ||
-        start < 0 ||
-        end >= file.size ||
-        start > end
-      )
-        return new Response(null, {
-          status: 416,
-          headers: { "Content-Range": `bytes */${file.size}` },
-        });
+      const { start, end } = range;
       return new Response(
         Readable.toWeb(createReadStream(localPath, { start, end })) as ReadableStream,
         {
@@ -91,7 +97,6 @@ export async function GET(
             "Content-Range": `bytes ${start}-${end}/${file.size}`,
             "Accept-Ranges": "bytes",
             "Cache-Control": "private, no-store",
-            ...disposition,
           },
         },
       );
@@ -102,10 +107,12 @@ export async function GET(
         "Content-Length": String(file.size),
         "Accept-Ranges": "bytes",
         "Cache-Control": "private, no-store",
-        ...disposition,
       },
     });
   } catch (error) {
+    await archive?.dispose();
+    if (error instanceof ArchiveInputError) return NextResponse.json({ error: error.message }, { status: error.status });
+    if (error instanceof PublishedFileError) return NextResponse.json({ error: error.message }, { status: error.status });
     if (error instanceof Response) return error;
     console.error("export stream failed", error);
     return NextResponse.json(

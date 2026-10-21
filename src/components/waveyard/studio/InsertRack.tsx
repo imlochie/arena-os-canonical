@@ -22,7 +22,8 @@ import {
 } from "@/lib/waveyard/mixer/inserts";
 import { MIX_PRESETS } from "@/lib/waveyard/mixer/presets";
 
-const RENDER_ONLY = new Set<InsertProcessorId>(["gate"]);
+const LIVE_NATIVE = new Set<InsertProcessorId>(["gain", "highpass", "lowpass", "notch", "eq-band", "compressor", "saturator", "softclip", "width", "delay"]);
+const RENDER_ONLY = new Set((Object.keys(INSERT_PARAM_RANGES) as InsertProcessorId[]).filter((processor) => !LIVE_NATIVE.has(processor)));
 
 export function InsertRack({
   channelLabel,
