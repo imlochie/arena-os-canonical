@@ -151,3 +151,27 @@ child, not the app, and never changes expected filename/checksums to hide failur
 Original diagnostics remain under .data/reliability-continuation/before/.
 The reusable draft passed1 scenario/10 checks; not ten unique tests. Final
 committed-head acceptance/build/source evidence follows separately.
+
+## Preparation-failure observability, without disguising failed installs
+
+Hosted connected run39538862470 failed its npm ci step in41 seconds, with all
+product-execution steps skipped. GitHub job metadata/annotations are retained in
+.data/reliability-continuation/connected-hosted-*.json. The signed results log host
+returns EOF in this sandbox, so the exact original install cause remains unknown.
+Six companion workflows on38d5fbb passed; local connected processing passed. None
+of that relabels the failed dependency preparation a successful workflow.
+
+Owner connected CI now tees npm ci to its existing retained receipts directory,
+leaving bash pipefail authoritative. A controlled exit17|tee regression retains
+exit17. On install failure a Checks notice exposes only allowlisted error/transport
+classes and package names from the COMMITTED lockfile, not raw commands, URLs,
+credentials, paths or prompt bodies. Unknown diagnostic values remain unknown.
+This does not retry/skip npm scripts, alter dependencies, relax checkpoint hashes,
+or claim to have fixed the unidentified historical installation failure.
+Existing TAP publishing behavior is retained. Parser/privacy regression plus
+existing annotation regressions:5 pass/0 fail. YAML syntax parsed successfully.
+
+The same owner workflow builds Next and runs the new actual HTTP/browser media
+scenario after connected processing; failures also get existing bounded TAP
+annotations. No dedicated Agent B workflow or branch changed. Final broad gates
+are rerun on the subsequent committed identity; prior38d5fbb receipts are retained.

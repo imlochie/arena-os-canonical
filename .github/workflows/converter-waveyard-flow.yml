@@ -39,7 +39,12 @@ jobs:
         with:
           node-version: 22.22.3
           cache: npm
-      - run: npm ci
+      - name: Install locked dependencies and retain preparation diagnostics
+        id: install
+        run: npm ci 2>&1 | tee .data/converter-waveyard/receipts/npm-ci.log
+      - name: Publish safe dependency failure metadata when tests cannot start
+        if: failure() && steps.install.outcome == 'failure'
+        run: node scripts/ci-test-summary.mjs .data/converter-waveyard/receipts/npm-ci.log --install
       - name: Install native media tools and browser
         run: |
           sudo apt-get update -qq
@@ -69,6 +74,16 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/node_modules/@embedded-postgres/linux-x64/native/lib:${LD_LIBRARY_PATH:-}"
           export ARENA_CONVERSION_REAL_INPUT="$RUNNER_TEMP/Slow Motion Dream.mp3"
           node --import ./scripts/register-src-loader.mjs --test tests/acceptance/converter-waveyard.test.mjs 2>&1 | tee .data/converter-waveyard/receipts/tests.tap
+      - name: Build production server and exercise real HTTP delivery and Unicode browser downloads
+        env:
+          ARENA_MEDIA_DELIVERY_EVIDENCE_DIR: .data/converter-waveyard/receipts/media-delivery
+        run: |
+          npm run build
+          export LD_LIBRARY_PATH="$PWD/node_modules/@embedded-postgres/linux-x64/native/lib:${LD_LIBRARY_PATH:-}"
+          node --import ./scripts/register-src-loader.mjs --test tests/acceptance/media-delivery.test.mjs 2>&1 | tee .data/converter-waveyard/receipts/media-delivery.tap
+      - name: Publish media delivery failures through Checks when signed logs are unavailable
+        if: always()
+        run: node scripts/ci-test-summary.mjs .data/converter-waveyard/receipts/media-delivery.tap --details
       - name: Publish integrated connected-journey measurements
         if: always()
         run: node scripts/publish-converter-acceptance.mjs .data/converter-waveyard/receipts/receipt.json
