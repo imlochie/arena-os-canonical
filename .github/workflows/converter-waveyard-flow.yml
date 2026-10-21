@@ -3,6 +3,12 @@ on:
   push:
     branches: ["product/converter-waveyard-flow", "arena/331aa502-arena-os-canonical"]
   workflow_dispatch:
+    inputs:
+      owner_snapshot:
+        description: Exact owner-branch commit to compose for validation.
+        required: true
+        type: string
+        default: 93c497173e241499f10c855c421b6b8c6be9be8b
 permissions:
   contents: read
   actions: read
@@ -14,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      OWNER_SNAPSHOT: ${{ github.ref_name == 'arena/331aa502-arena-os-canonical' && github.sha || '794be8ce3e3d5c3d6fe84adff9646467f99bb2be' }}
+      OWNER_SNAPSHOT: ${{ github.ref_name == 'arena/331aa502-arena-os-canonical' && github.sha || github.event.inputs.owner_snapshot || '794be8ce3e3d5c3d6fe84adff9646467f99bb2be' }}
       ARENA_CONVERTER_FLOW_EVIDENCE_DIR: ${{ github.workspace }}/.data/converter-waveyard
     steps:
       - uses: actions/checkout@v4

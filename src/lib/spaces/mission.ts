@@ -28,19 +28,16 @@ import { db } from "@/db";
 import { spaceMissions, spaces, spaceActionApprovals } from "@/db/schema";
 import { generate } from "@/lib/ai";
 import type { GenerateResult } from "@/lib/runtime";
-import { listAgents } from "@/lib/spaces";
+import { listAgents, listAgentsForMission } from "@/lib/spaces";
 import { captureMissionOutput, type MissionOutput } from "./mission-outputs";
 import { readMissionMemory } from "./mission-memory";
 import { executeTool, ensureWorkspace, toolListFiles, workspaceDir as wsDir, type ToolOutcome } from "./tools";
 import { actionSignature, classifyToolAction, approvalRequired, claimExecution, completeExecution, findLatestBySignature, requestApproval } from "./governance";
 import { ensureIsolatedWorkspace, teardownIsolatedWorkspace, type ExecTarget } from "./workspace-isolation";
+import { selectMissionPlan, type MissionAgentSelection } from "./mission-plan";
+import { observeMissionRuntime, type MissionRuntimeObservation } from "./mission-runtime";
 
-export interface MissionAgentSpec {
-  name: string;
-  role: string;
-  modelId: string;
-  systemPrompt?: string;
-}
+export type MissionAgentSpec = MissionAgentSelection;
 
 export interface MissionRequest {
   id: string;
@@ -74,7 +71,7 @@ export interface MissionStep {
   handoff: string;
   done: boolean;
   thought: string;
-  runtime?: { backend?: string; modelId?: string; fallback?: boolean };
+  runtime?: MissionRuntimeObservation;
   ms: number;
 }
 
@@ -175,14 +172,6 @@ Respond with ONE JSON object only, no prose outside it:
  "handoff":"context the NEXT agent needs if you're finishing or out of time",
  "done":true|false}
 done=true means your role is complete. Use at most 4 actions per turn.`;
-
-function defaultPlan(spaceModel: string): MissionAgentSpec[] {
-  return [
-    { name: "Planner", role: "plan the work into concrete file-level steps", modelId: spaceModel },
-    { name: "Builder", role: "implement the files and commands", modelId: spaceModel },
-    { name: "Reviewer", role: "verify the result with read/commands and finish or hand back", modelId: spaceModel },
-  ];
-}
 
 /** Extract the first JSON object from a model response (fences tolerated). */
 export function parseAgentJson(text: string): { thought?: string; actions?: { tool: string; args: Record<string, any> }[]; handoff?: string; done?: boolean } | null {
@@ -300,15 +289,20 @@ async function runMissionInner(spaceId: string, opts: MissionOpts, deps: Mission
   const resumingPlan = resuming && existing!.agentPlan.length ? existing!.agentPlan : undefined;
 
   // Plan: explicit > the space's fleet > default three-role pipeline.
-  const fleet = resumingPlan?.length || opts.agentPlan?.length ? [] : await listAgents(spaceId).catch(() => []);
-  const plan: MissionAgentSpec[] =
-    resumingPlan?.length
-      ? resumingPlan
-      : opts.agentPlan?.length
-        ? opts.agentPlan
-        : fleet.length
-        ? fleet.map((a: { name: string; role: string; modelId: string; systemPrompt: string }) => ({ name: a.name, role: a.role, modelId: a.modelId, systemPrompt: a.systemPrompt }))
-        : defaultPlan("openai"); // any text alias: routes via Groq/OpenRouter key when sent, else keyless pollinations, else honest local fallback
+  const fleet = resumingPlan?.length || opts.agentPlan?.length
+    ? []
+    : deps.memoryOnly
+      ? await listAgents(spaceId)
+      : await listAgentsForMission(spaceId, database);
+  const [space] = !resumingPlan?.length && !opts.agentPlan?.length && !fleet.length && !deps.memoryOnly
+    ? await database.select({ modelId: spaces.modelId }).from(spaces).where(eq(spaces.id, spaceId)).limit(1)
+    : [];
+  const plan = selectMissionPlan({
+    resumingPlan,
+    explicitPlan: opts.agentPlan,
+    fleet: fleet.map((a: { name: string; role: string; modelId: string; systemPrompt: string }) => ({ name: a.name, role: a.role, modelId: a.modelId, systemPrompt: a.systemPrompt })),
+    spaceModel: space?.modelId,
+  }); // A fresh default mission honors the selected space model; older checkpoints keep their stored plan.
 
   await ensureWorkspace(spaceId);
   const policy: MissionControl["policy"] = {
@@ -511,18 +505,26 @@ async function runMissionInner(spaceId: string, opts: MissionOpts, deps: Mission
         steps.push(step); control.activeStepId = step.id;
       }
       if (step.modelState !== "received") {
+        const modelRequest = step.modelRequest;
+        if (!modelRequest) {
+          step.thought = "Saved model request is missing; refusing to call a provider without the selected model and prompt.";
+          status = "failed";
+          statusDetail = `${agent.name}'s saved model request is missing; mission stopped before model execution`;
+          await save({ status, statusDetail, handoff });
+          break agentLoop;
+        }
         step.modelAttempts = (step.modelAttempts ?? 0) + 1;
         await save({ status: "running", handoff }); await checkpoint("model_requested");
         let result: GenerateResult;
         try {
-          result = await boundedModel(() => gen({ modelId: step.modelRequest!.modelId, messages: [{ role: "user", content: step.modelRequest!.context }], system: step.modelRequest!.system, temperature: 0.3, maxTokens: 8_000, keys: opts.localOnly ? undefined : opts.keys, localOnly: opts.localOnly }), Math.max(1, deadline - Date.now()), abort.signal);
+          result = await boundedModel(() => gen({ modelId: modelRequest.modelId, messages: [{ role: "user", content: modelRequest.context }], system: modelRequest.system, temperature: 0.3, maxTokens: 8_000, keys: opts.localOnly ? undefined : opts.keys, localOnly: opts.localOnly }), Math.max(1, deadline - Date.now()), abort.signal);
         } catch (error) {
           step.thought = `model call failed: ${error instanceof Error ? error.message : "error"}`;
           status = "failed"; statusDetail = `${agent.name}'s model call failed`; break agentLoop;
         }
         const parsed = parseAgentJson(result.text);
         step.thought = String(parsed?.thought ?? result.text.slice(0, 200)).slice(0, 500);
-        step.runtime = { backend: result.backend, modelId: result.modelId, fallback: result.fallback };
+        step.runtime = observeMissionRuntime(result, modelRequest.modelId);
         step.modelResponse = { text: result.text.slice(0, 64000), via: result.via, truncated: result.text.length > 64000 };
         const proposed = parsed?.actions ?? [];
         step.contractError = !parsed ? "Model did not return the required JSON action contract." : !Array.isArray(proposed) ? "Model actions must be an array." : proposed.length > maxActions ? `Model requested ${proposed.length} actions, exceeding this mission's limit ${maxActions}. No actions from this turn were dispatched.` : proposed.some((action: unknown) => !action || typeof action !== "object" || !("tool" in action) || typeof action.tool !== "string" || !action.tool.trim() || ("args" in action && (action.args === null || typeof action.args !== "object" || Array.isArray(action.args)))) ? "Malformed tool request: each action needs a tool name and object arguments. No actions from this turn were dispatched." : undefined;
