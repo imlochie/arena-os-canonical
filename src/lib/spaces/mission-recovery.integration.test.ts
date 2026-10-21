@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { spaces, spaceActionApprovals } from "@/db/schema";
+import { spaces, spaceActionApprovals, spaceMissions } from "@/db/schema";
 import { ensureWorkspace } from "./tools";
 import { getLatestMission, runMission, reconcileMission, cancelMission, MissionBusyError } from "./mission";
 import { eq } from "drizzle-orm";
@@ -97,6 +97,37 @@ test("a killed runtime resumes its recorded next agent without duplicating a com
   assert.equal(recovered.id, interrupted!.id, "restart must not create a new mission over unfinished work");
   assert.equal(recovered.status, "done"); assert.equal(await readFile(path.join(root, "count"), "utf8"), "1");
   assert.equal(recovered.journal.length, 2); assert.equal(recovered.journal[0].actions[0].ok, true);
+});
+test("a resumed step without its saved model request fails closed before provider execution", async (t) => {
+  const { id } = await setup(t);
+  crash(id, "model_requested"); await expired();
+  const interrupted = await getLatestMission(id, f.database);
+  assert.ok(interrupted);
+  const steps = interrupted.journal.map((step, index) => {
+    if (index !== 0) return step;
+    const { modelRequest: _missing, ...withoutRequest } = step;
+    return withoutRequest;
+  });
+  await f.database.update(spaceMissions)
+    .set({ journal: { steps, control: interrupted.checkpoint } })
+    .where(eq(spaceMissions.id, interrupted.id));
+  const missingRequestState = await getLatestMission(id, f.database);
+  assert.equal(missingRequestState?.journal[0]?.modelState, "requesting");
+  assert.equal(missingRequestState?.journal[0]?.modelRequest, undefined);
+  assert.equal(missingRequestState?.checkpoint?.activeStepId, missingRequestState?.journal[0]?.id);
+  let providerCalls = 0;
+  const resumed = await runMission(id, { goal: interrupted.goal }, {
+    database: f.database,
+    generate: async () => {
+      providerCalls++;
+      return result([]);
+    },
+  });
+  assert.equal(resumed.id, interrupted.id);
+  assert.equal(providerCalls, 0, "a missing saved request must never become a new provider call");
+  assert.equal(resumed.status, "failed");
+  assert.match(resumed.statusDetail, /saved model request is missing/i);
+  assert.match(resumed.journal[0].thought, /refusing to call a provider/i);
 });
 
 const increment = { tool: "run_command", args: { command: "node increment.cjs" } };

@@ -501,18 +501,26 @@ async function runMissionInner(spaceId: string, opts: MissionOpts, deps: Mission
         steps.push(step); control.activeStepId = step.id;
       }
       if (step.modelState !== "received") {
+        const modelRequest = step.modelRequest;
+        if (!modelRequest) {
+          step.thought = "Saved model request is missing; refusing to call a provider without the selected model and prompt.";
+          status = "failed";
+          statusDetail = `${agent.name}'s saved model request is missing; mission stopped before model execution`;
+          await save({ status, statusDetail, handoff });
+          break agentLoop;
+        }
         step.modelAttempts = (step.modelAttempts ?? 0) + 1;
         await save({ status: "running", handoff }); await checkpoint("model_requested");
         let result: GenerateResult;
         try {
-          result = await boundedModel(() => gen({ modelId: step.modelRequest!.modelId, messages: [{ role: "user", content: step.modelRequest!.context }], system: step.modelRequest!.system, temperature: 0.3, maxTokens: 8_000, keys: opts.localOnly ? undefined : opts.keys, localOnly: opts.localOnly }), Math.max(1, deadline - Date.now()), abort.signal);
+          result = await boundedModel(() => gen({ modelId: modelRequest.modelId, messages: [{ role: "user", content: modelRequest.context }], system: modelRequest.system, temperature: 0.3, maxTokens: 8_000, keys: opts.localOnly ? undefined : opts.keys, localOnly: opts.localOnly }), Math.max(1, deadline - Date.now()), abort.signal);
         } catch (error) {
           step.thought = `model call failed: ${error instanceof Error ? error.message : "error"}`;
           status = "failed"; statusDetail = `${agent.name}'s model call failed`; break agentLoop;
         }
         const parsed = parseAgentJson(result.text);
         step.thought = String(parsed?.thought ?? result.text.slice(0, 200)).slice(0, 500);
-        step.runtime = observeMissionRuntime(result, step.modelRequest!.modelId);
+        step.runtime = observeMissionRuntime(result, modelRequest.modelId);
         step.modelResponse = { text: result.text.slice(0, 64000), via: result.via, truncated: result.text.length > 64000 };
         const proposed = parsed?.actions ?? [];
         step.contractError = !parsed ? "Model did not return the required JSON action contract." : !Array.isArray(proposed) ? "Model actions must be an array." : proposed.length > maxActions ? `Model requested ${proposed.length} actions, exceeding this mission's limit ${maxActions}. No actions from this turn were dispatched.` : proposed.some((action: unknown) => !action || typeof action !== "object" || !("tool" in action) || typeof action.tool !== "string" || !action.tool.trim() || ("args" in action && (action.args === null || typeof action.args !== "object" || Array.isArray(action.args)))) ? "Malformed tool request: each action needs a tool name and object arguments. No actions from this turn were dispatched." : undefined;
