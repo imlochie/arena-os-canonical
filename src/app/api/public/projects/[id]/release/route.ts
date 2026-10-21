@@ -1,3 +1,4 @@
+import { attachmentDisposition } from "@/lib/http/download";
 import { verifyStoredFile, PublishedFileError } from "../../../../../../../waveyard-worker/packages/dsp/src/verified-file";
 import { parseByteRange } from "@/lib/http/range";
 import { Readable } from "node:stream";
@@ -39,7 +40,7 @@ export async function GET(
     };
     if (range) headers["Content-Range"] = `bytes ${range.start}-${range.end}/${read.size}`;
     if (wantsDownload)
-      headers["Content-Disposition"] = `attachment; filename="${asset.filename.replace(/[\\"\r\n]/g, "_")}"`;
+      headers["Content-Disposition"] = attachmentDisposition(asset.filename);
     return new Response(Readable.toWeb(read.stream) as ReadableStream, {
       status: range ? 206 : 200,
       headers,

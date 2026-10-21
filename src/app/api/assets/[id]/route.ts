@@ -1,3 +1,4 @@
+import { attachmentDisposition } from "@/lib/http/download";
 import { parseByteRange } from "@/lib/http/range";
 import { isUuid } from "@/lib/api/ids";
 import { createReadStream } from "node:fs";
@@ -35,8 +36,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (range === "invalid") return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.size}`, "Accept-Ranges": "bytes" } });
     if (range) {
       const { start, end } = range;
-      return new Response(Readable.toWeb(createReadStream(localPath, { start, end })) as ReadableStream, { status: 206, headers: { "Content-Type": contentType, "Content-Length": String(end - start + 1), "Content-Range": `bytes ${start}-${end}/${file.size}`, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", ...(download ? { "Content-Disposition": `attachment; filename="${downloadName.replace(/[\\"\r\n]/g, "_")}"` } : {}) } });
+      return new Response(Readable.toWeb(createReadStream(localPath, { start, end })) as ReadableStream, { status: 206, headers: { "Content-Type": contentType, "Content-Length": String(end - start + 1), "Content-Range": `bytes ${start}-${end}/${file.size}`, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", ...(download ? { "Content-Disposition": attachmentDisposition(downloadName) } : {}) } });
     }
-    return new Response(Readable.toWeb(createReadStream(localPath)) as ReadableStream, { headers: { "Content-Type": contentType, "Content-Length": String(file.size), "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", ...(download ? { "Content-Disposition": `attachment; filename="${downloadName.replace(/[\\"\r\n]/g, "_")}"` } : {}) } });
+    return new Response(Readable.toWeb(createReadStream(localPath)) as ReadableStream, { headers: { "Content-Type": contentType, "Content-Length": String(file.size), "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", ...(download ? { "Content-Disposition": attachmentDisposition(downloadName) } : {}) } });
   } catch (error) { if (error instanceof Response) return error; console.error("asset stream failed", error); return NextResponse.json({ error: "Audio could not be read." }, { status: 500 }); }
 }

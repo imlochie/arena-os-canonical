@@ -85,3 +85,20 @@ regression confirms exact private bytes and audio/midi type remain retrievable.
 Combined range/publication/export regressions: 71 pass/0 fail in
 `midi-publication-after.tap`. Typecheck/focused ESLint pass. No MIDI analysis,
 rendering or Waveyard preparation/PCM ownership code changed.
+
+## P1: international filenames made valid downloads fail HTTP500
+
+Real source/public release full and ranged downloads with `夜の演奏 🎵.wav`
+reproduced four HTTP500s. Node Headers rejected the raw Unicode Content-Disposition
+value as a non-ByteString. `unicode-download-before.tap`: 51 pass/6 failures
+including two containers. Previously stored audio remained valid but inaccessible
+as a download. No filename fixture was changed to ASCII to hide the problem.
+
+Fix emits RFC6266/RFC8187 ASCII fallback plus filename*=UTF-8 encoded portable
+name, stripping control/path characters in both, preserving international names.
+Malformed UTF-16 is made well-formed rather than throwing while encoding.
+Only Waveyard source and public release headers use the shared helper here;
+Agent B/device-artifact/Spaces implementations are untouched. Regression verifies
+header construction, decoded international names, injection controls and EXACT
+full/suffix audio bytes. Combined focused regressions: 78 pass/0 fail in
+`unicode-download-after.tap`. Typecheck and focused ESLint pass.

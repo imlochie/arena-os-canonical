@@ -187,6 +187,25 @@ test("Studio downloads automatically bundle exact media, frozen source notices a
       });
     }
   });
+  await t.test("Unicode source and release downloads preserve the filename and exact bytes", async t => {
+    const name = "夜の演奏 🎵.wav";
+    await database.db.update(schema.sourceAssets).set({ originalFilename: name }).where(eq(schema.sourceAssets.id, source.id));
+    await database.db.update(schema.exportAssets).set({ filename: name }).where(eq(schema.exportAssets.id, asset.id));
+    const assets = await import("../../app/api/assets/[id]/route");
+    const release = await import("../../app/api/public/projects/[id]/release/route");
+    await database.db.update(schema.projects).set({ downloadPermission: "public" }).where(eq(schema.projects.id, project.id));
+    for (const [label, handler, id] of [["source", assets.GET, source.id], ["public", release.GET, project.id]] as const) {
+      for (const range of [undefined, "bytes=-100"]) await t.test(`${label} ${range ?? "full"}`, async () => {
+        const response = await handler(new Request("http://arena/media?download=1", { headers: range ? { Range: range } : {} }), { params: Promise.resolve({ id }) });
+        const bytes = Buffer.from(await response.arrayBuffer());
+        assert.equal(response.status, range ? 206 : 200);
+        const disposition = response.headers.get("content-disposition") ?? "";
+        assert.match(disposition, /^attachment; filename="[\x20-\x7e]+"; filename\*=UTF-8''/);
+        assert.equal(decodeURIComponent(disposition.split("filename*=UTF-8''")[1]), name);
+        assert.deepEqual(bytes, range ? Buffer.from(media).subarray(-100) : Buffer.from(media));
+      });
+    }
+  });
   // Streaming/preview is still the original WAV, not a ZIP or a re-render.
   const raw = await route.GET(new Request(`http://arena/api/exports/${job.id}/media`), { params: Promise.resolve({ id: job.id }) });
   assert.equal(raw.headers.get("content-type"), "audio/wav"); assert.deepEqual(Buffer.from(await raw.arrayBuffer()), Buffer.from(media));
