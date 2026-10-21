@@ -1,7 +1,7 @@
 name: Spaces real workshop and recovery acceptance
 on:
   push:
-    branches: [product/spaces-workshop-proof, product/arcade-spaces-capabilities, "arena/331aa502-arena-os-canonical"]
+    branches: [product/spaces-workshop-proof, product/arcade-spaces-capabilities, product/arcade-rule-save-reopen, "arena/331aa502-arena-os-canonical"]
   workflow_dispatch:
 permissions:
   contents: read

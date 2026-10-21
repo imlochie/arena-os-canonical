@@ -1011,12 +1011,21 @@ test("native separation UI: request stop → reload while stopping → acknowled
   assert.equal((await api(`/api/waveyard/projects/${input.projectId}`)).stems.length, previousIds.length);
   releaseStop(); assert.equal(await broker.drain(30000), true);
   await expect(page.getByRole("button", { name: "Restart separation", exact: true })).toBeVisible({ timeout: 10000 });
+  // A click completes input dispatch, not the asynchronous fetch/queue handoff.
+  // Wait for and inspect the real response BEFORE observing an empty broker.
+  // A rejected restart remains a failure, now with the actual server receipt.
+  const restartResponse = page.waitForResponse(response => response.url() === `${origin}/api/jobs/${job.id}/retry` && response.request().method() === "POST");
   await page.getByRole("button", { name: "Restart separation", exact: true }).click();
+  const restartedHttp = await restartResponse, restarted = await restartedHttp.json();
+  assert.equal(restartedHttp.status(), 200, JSON.stringify(restarted));
+  assert.ok(restarted.job?.id, JSON.stringify(restarted));
+  assert.notEqual(restarted.job.id, job.id, "cancelled history is retained; restart must use a fresh job");
   assert.equal(await broker.drain(30000), true);
   const result = await api(`/api/waveyard/projects/${input.projectId}`);
   assert.equal(result.jobs.find(value => value.id === job.id).status, "cancelled");
   const fresh = result.jobs.find(value => value.id !== job.id && value.model === job.model);
   assert.ok(fresh); assert.equal(fresh.status, "complete");
+  assert.equal(fresh.id, restarted.job.id, "the exact acknowledged restart, not a different job, completed");
   assert.equal(result.stems.filter(stem => stem.separationJobId === fresh.id).length, 6);
   for (const id of previousIds) assert.ok(result.stems.some(stem => stem.id === id));
   for (const stem of result.stems.filter(stem => stem.separationJobId === fresh.id)) {

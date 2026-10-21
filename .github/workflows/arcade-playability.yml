@@ -1,7 +1,7 @@
 name: Arcade browser publication and actual-page acceptance
 on:
   push:
-    branches: [product/arcade-runtime-validation, product/arcade-spaces-capabilities, "arena/331aa502-arena-os-canonical"]
+    branches: [product/arcade-runtime-validation, product/arcade-spaces-capabilities, product/arcade-rule-save-reopen, "arena/331aa502-arena-os-canonical"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -40,7 +40,7 @@ jobs:
       - name: Typecheck and focused lint
         run: |
           npm run typecheck 2>&1 | tee .data/arcade-acceptance/typecheck.txt
-          npx eslint src/lib/games/sandbox.ts src/lib/games/runtime-validation.ts src/lib/games/runtime-contract.test.ts src/lib/games/gameplay-contract.ts src/lib/games/gameplay-contract.test.ts src/lib/games/source-2048.ts src/lib/games/source-2048.test.ts src/app/api/arcade/source/route.ts src/components/ArcadeSourceWorkshop.tsx next.config.ts 2>&1 | tee .data/arcade-acceptance/lint.txt
+          npx eslint src/lib/games/sandbox.ts src/lib/games/runtime-validation.ts src/lib/games/runtime-contract.test.ts src/lib/games/gameplay-contract.ts src/lib/games/gameplay-contract.test.ts src/lib/games/source-2048.ts src/lib/games/source-2048.test.ts src/lib/games/source-rule-validation.ts src/app/api/arcade/source/route.ts src/components/ArcadeSourceWorkshop.tsx next.config.ts 2>&1 | tee .data/arcade-acceptance/lint.txt
       - name: Focused game contracts and durable attempt regressions
         run: |
           node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 src/lib/games/*.test.ts tests/acceptance/arcade-attempts.test.mjs 2>&1 | tee .data/arcade-acceptance/focused.tap
@@ -56,6 +56,8 @@ jobs:
         run: node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 tests/acceptance/arcade-gameplay.test.mjs 2>&1 | tee .data/arcade-acceptance/gameplay.tap
       - name: Genuine MIT source acquisition, patch replay and original/modded browser execution
         run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/arcade-source.test.mjs 2>&1 | tee .data/arcade-acceptance/source-adapter.tap
+      - name: Actual gameplay-rule modification, immutable save and reopened-game execution
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/arcade-rule-reopen.test.mjs 2>&1 | tee .data/arcade-acceptance/rule-reopen.tap
       - name: Complete isolated source suite, unchanged gates
         run: npm test 2>&1 | tee .data/arcade-acceptance/source-suite.tap
       - name: Preserve machine-readable evidence and failures
@@ -80,4 +82,5 @@ jobs:
             .data/arcade-acceptance/*.png
             .data/arcade-acceptance/*.zip
             .data/arcade-source/*.png
+            .data/arcade-source/*.zip
           retention-days: 90
