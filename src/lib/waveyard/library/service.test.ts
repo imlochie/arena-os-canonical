@@ -1322,3 +1322,40 @@ test("session save retry after a lost SQL acknowledgement preserves audio and la
   assert.equal(reopened.tracks[0].track.id, intake.track.id);
   assert.deepEqual(readFileSync(filePath), originalBytes, "input bytes retained");
 });
+
+test("restore point survives a lost PUT acknowledgement, explicit latest retry and actual application SIGKILL", async () => {
+  const filePath = path.join(root!, "cursor-recovery.wav"); writeWav(filePath, 2);
+  const intake = await service.addTrackFromAudioFile({ ownerId: OWNER, filePath, filename: "cursor-recovery.wav", mimeType: "audio/wav" });
+  const created = await sessions.createSession(OWNER, "Cursor kill after acknowledged retry");
+  const added = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: intake.track.id });
+  const id = added.tracks[0].id;
+  const script = `
+    import assert from 'node:assert/strict';
+    import { writeSync } from 'node:fs';
+    import { SessionSaveQueue } from './src/lib/waveyard/library/session-save-queue.ts';
+    import { PUT } from './src/app/api/library/sessions/[id]/state/route.ts';
+    let attempts = 0;
+    const queue = new SessionSaveQueue(async (_url, body) => {
+      const response = await PUT(new Request('http://arena.test/state', { method: 'PUT', headers: {'content-type':'application/json'}, body }), {params:Promise.resolve({id:'${created.id}'})});
+      assert.equal(response.status, 200);
+      if (++attempts === 1) throw new Error('injected lost response AFTER real cursor SQL commit');
+    }, () => {}, 60000);
+    const body = positionSeconds => JSON.stringify({currentSessionTrackId:'${id}', positionSeconds});
+    queue.enqueue('state', body(.25)); assert.equal(await queue.flush(), false);
+    queue.enqueue('state', body(1.25)); assert.equal(await queue.flush(), false); assert.equal(attempts, 1);
+    assert.equal(await queue.flush(true), true);
+    writeSync(1, JSON.stringify({acknowledged:true,positionSeconds:1.25,attempts,scope:'injected lost PUT ACK then actual SIGKILL after acknowledged latest retry; DB remains running'})+'\\n');
+    process.kill(process.pid, 'SIGKILL');
+  `;
+  const killed = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });
+  assert.equal(killed.signal, "SIGKILL", killed.stderr);
+  assert.equal(JSON.parse(killed.stdout.trim()).acknowledged, true);
+  const reopen = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { console.log(JSON.stringify(await getSession('${OWNER}', '${created.id}'))); } finally { await pool.end(); }`;
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", reopen], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });
+  assert.equal(child.status, 0, child.stderr);
+  const restored = JSON.parse(child.stdout.trim());
+  assert.equal(restored.currentSessionTrackId, id);
+  assert.equal(restored.positionSeconds, 1.25);
+  assert.equal(restored.tracks[0].track.id, intake.track.id);
+  console.log(JSON.stringify({ kind: "cursor-route-process-recovery", signal: killed.signal, acknowledgement: JSON.parse(killed.stdout.trim()), reopened: { currentSessionTrackId: restored.currentSessionTrackId, positionSeconds: restored.positionSeconds }, scope: "real PUT/SQL; handler process SIGKILL after acknowledged retry; database stays running, not Electron/OS-kill/in-flight or unsaved recovery" }));
+});

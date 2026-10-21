@@ -299,7 +299,22 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   const [library, setLibrary] = useState<LibraryTrackOption[]>([]);
   const [addTrackId, setAddTrackId] = useState("");
   const [status, setStatus] = useState<string | null>(null);
-  const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
+  const [saveState, setSaveState] = useState<SessionSaveStatus>("saved");
+  const [cursorSaveError, setCursorSaveError] = useState<string | null>(null);
+  const cursorSnapshots = useRef(new Map<string, string>());
+  const [cursorSaves] = useState(() => new SessionSaveQueue(async (url, body) => {
+    try {
+      const response = await fetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body, keepalive: true });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        throw new Error(`HTTP ${response.status}${typeof detail?.error === "string" ? `: ${detail.error.slice(0, 240)}` : ""}`);
+      }
+      setCursorSaveError(null);
+    } catch (error) {
+      setCursorSaveError(error instanceof Error ? error.message : "Network request failed");
+      throw error;
+    }
+  }, setSaveState));
   const [editSaveState, setEditSaveState] = useState<SessionSaveStatus>("saved");
   const [editSaveError, setEditSaveError] = useState<string | null>(null);
   const [editSaves] = useState(() => new SessionSaveQueue(async (url, body) => {
@@ -390,6 +405,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           return;
         }
         const detail = (await sessionResponse.json()).session as SessionDetail;
+        cursorSnapshots.current.set(`/api/library/sessions/${detail.id}/state`, JSON.stringify({ currentSessionTrackId: detail.currentSessionTrackId, positionSeconds: detail.positionSeconds }));
         setSession(detail);
         // Restore the saved point: which track was current, and where.
         const restoredCurrent =
@@ -530,18 +546,14 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     if (s === null) return;
     const deck = decksRef.current[activeDeckRef.current];
     const position = deck?.transport.currentPosition() ?? 0;
-    setSaveState("saving");
-    try {
-      const response = await fetch(`/api/library/sessions/${s.id}/state`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ currentSessionTrackId: id, positionSeconds: position }),
-      });
-      setSaveState(response.ok ? "saved" : "error");
-    } catch {
-      setSaveState("error");
+    const url = `/api/library/sessions/${s.id}/state`;
+    const body = JSON.stringify({ currentSessionTrackId: id, positionSeconds: position });
+    if (cursorSnapshots.current.get(url) !== body) {
+      cursorSnapshots.current.set(url, body);
+      cursorSaves.enqueue(url, body);
     }
-  }, []);
+    return cursorSaves.flush();
+  }, [cursorSaves]);
 
   // Throttled save while playing + on unload. Live transport never waits on it.
   const persistStateRef = useRef(persistState);
@@ -552,12 +564,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     const interval = window.setInterval(() => {
       void persistStateRef.current();
     }, 10000);
-    const onUnload = () => void persistStateRef.current();
-    window.addEventListener("beforeunload", onUnload);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("beforeunload", onUnload);
-    };
+    return () => window.clearInterval(interval);
   }, []);
 
   // Snapshot every membership, not only the current deck: changing tracks
@@ -574,9 +581,15 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   }, [session, mixes, transitions, editSaves]);
 
   useEffect(() => {
-    const flushHidden = () => { if (document.visibilityState === "hidden") void editSaves.flush(); };
+    const flushHidden = () => {
+      if (document.visibilityState === "hidden") {
+        void persistStateRef.current();
+        void editSaves.flush();
+      }
+    };
     const warnUnsaved = (event: BeforeUnloadEvent) => {
-      if (!editSaves.unsaved) return;
+      void persistStateRef.current();
+      if (!editSaves.unsaved && !cursorSaves.unsaved) return;
       void editSaves.flush();
       event.preventDefault();
       event.returnValue = "";
@@ -587,8 +600,9 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       document.removeEventListener("visibilitychange", flushHidden);
       window.removeEventListener("beforeunload", warnUnsaved);
       void editSaves.flush();
+      void cursorSaves.flush();
     };
-  }, [editSaves]);
+  }, [editSaves, cursorSaves]);
 
   // Apply the current mix to the active deck whenever it changes (and to the
   // standby deck so a transition fades in what you hear while setting it up).
@@ -1183,7 +1197,8 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           <h1>{session.name}</h1>
           <p className="sess-header-sub">
             {session.tracks.length} track{session.tracks.length === 1 ? "" : "s"}
-            {` · restore point ${saveState === "saved" ? "saved" : saveState === "saving" ? "saving…" : "save failed"}`}
+            {" · "}<span role="status" aria-label="Restore point save status">{`restore point ${saveState === "saved" ? "saved" : saveState === "saving" ? "saving…" : saveState === "pending" ? "not saved yet" : "save failed"}`}</span>
+            {saveState === "error" && <><span role="alert"> {cursorSaveError}</span><button type="button" onClick={() => void cursorSaves.flush(true)}>Retry saving restore point</button></>}
             <span role="status" aria-label="Session edit save status">{` · mix/settings ${editSaveState === "saved" ? "saved" : editSaveState === "error" ? "save failed — edits remain in this page" : editSaveState === "pending" ? "not saved yet" : "saving…"}`}</span>
             {editSaveState === "error" && <><span role="alert"> {editSaveError}</span><button type="button" onClick={() => void editSaves.flush(true)}>Retry saving edits</button></>}
           </p>

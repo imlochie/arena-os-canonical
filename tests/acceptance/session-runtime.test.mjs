@@ -10,6 +10,7 @@ import { expect } from "@playwright/test";
 let server, browser, origin;
 const sessions = new Map();
 const handoffRequests = new Map();
+const evidenceDir = process.env.ARENA_SESSION_EVIDENCE_DIR ?? `.data/acceptance/session-runtime/${Date.now()}-${process.pid}`;
 function session(id) {
   if (!sessions.has(id)) sessions.set(id, {
     id, name: "Actual session UI acceptance", currentSessionTrackId: "a", positionSeconds: 0, swaps: [],
@@ -411,8 +412,10 @@ test("quantised mute changes real audio only at the measured beat; persisted res
     });
     return samples;
   }, target);
-  await mkdir(".data/waveyard-performance", { recursive: true });
-  await writeFile(".data/waveyard-performance/quantised-audio.json", JSON.stringify({ scope: "Actual SessionExperience/useStemTransport, synthetic PCM and controlled HTTP persistence; NOT trained inference, database or native GUI", targetSourceSeconds: target, inputSha256: createHash("sha256").update(tones.get("a")).digest("hex"), observations }, null, 2));
+  const evidence = { kind: "quantised-source-clock", scope: "Actual SessionExperience/useStemTransport, synthetic PCM and controlled HTTP persistence; NOT trained inference, database or native GUI", targetSourceSeconds: target, inputSha256: createHash("sha256").update(tones.get("a")).digest("hex"), observations };
+  await mkdir(evidenceDir, { recursive: true });
+  await writeFile(`${evidenceDir}/quantised-audio.json`, JSON.stringify(evidence, null, 2));
+  console.log(JSON.stringify(evidence));
   assert.ok(observations.some(x => x.position < target - .1 && x.rms > .06), "remains audible before scheduled beat");
   assert.ok(observations.filter(x => x.position < target - .08).every(x => x.rms > .04), "no premature mute");
   assert.ok(observations.some(x => x.position >= target && x.position < target + .15 && x.rms < .001), "actual audio muted near source beat");
@@ -558,4 +561,53 @@ test("acknowledged removal while saving cannot strand later deck edits behind a 
   await expect(page.getByLabel("Session edit save status")).toContainText("settings saved");
   assert.equal(session("save-remove").tracks.some(item => item.id === "a"), false);
   assert.equal(session("save-remove").tracks[0].stemMix.drums, 0);
+});
+
+test("restore-point writes serialize a delayed seek before the latest stop and survive reload", { timeout: 15000 }, async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const writes = [];
+  const page = await pageFor(t, "cursor-order", async page => {
+    await page.route("**/api/library/sessions/cursor-order/state", async route => {
+      writes.push(route.request().postDataJSON());
+      if (writes.length === 1) await gate;
+      await route.continue();
+    });
+  });
+  t.after(() => release());
+  await page.getByLabel("Session position", { exact: true }).fill("4");
+  await expect.poll(() => writes.length).toBe(1);
+  await page.getByLabel("Session position", { exact: true }).fill("9");
+  await page.getByTestId("session-stop").click();
+  await page.waitForTimeout(250);
+  assert.equal(writes.length, 1, "later cursor writes must wait for the unacknowledged predecessor");
+  release();
+  await expect(page.getByLabel("Restore point save status")).toHaveText("restore point saved");
+  await expect.poll(() => session("cursor-order").positionSeconds).toBe(0);
+  assert.equal(writes.at(-1).positionSeconds, 0);
+  await page.reload();
+  await expect(page.getByLabel("Session position", { exact: true })).toHaveValue("0");
+});
+
+test("restore-point rejection keeps the latest cursor for explicit retry and fresh page reopen", { timeout: 15000 }, async t => {
+  let reject = true, attempts = 0;
+  const page = await pageFor(t, "cursor-retry", async page => {
+    await page.route("**/api/library/sessions/cursor-retry/state", async route => {
+      attempts++;
+      if (reject) await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"cursor storage unavailable"}' });
+      else await route.continue();
+    });
+  });
+  await page.getByLabel("Session position", { exact: true }).fill("8");
+  await expect(page.getByLabel("Restore point save status")).toContainText("save failed");
+  await expect(page.getByRole("alert")).toContainText("HTTP 503: cursor storage unavailable");
+  await page.getByLabel("Session position", { exact: true }).fill("11");
+  assert.equal(session("cursor-retry").positionSeconds, 0);
+  assert.equal(attempts, 1);
+  reject = false;
+  await page.getByRole("button", { name: "Retry saving restore point", exact: true }).click();
+  await expect(page.getByLabel("Restore point save status")).toHaveText("restore point saved");
+  assert.equal(session("cursor-retry").positionSeconds, 11);
+  await page.reload();
+  await expect(page.getByLabel("Session position", { exact: true })).toHaveValue("11");
 });
