@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { spaces, spaceActionApprovals, spaceMissions } from "@/db/schema";
+import { spaces, spaceActionApprovals, spaceAgents, spaceMissions } from "@/db/schema";
 import { ensureWorkspace } from "./tools";
 import { getLatestMission, runMission, reconcileMission, cancelMission, MissionBusyError } from "./mission";
 import { eq } from "drizzle-orm";
@@ -14,6 +14,32 @@ import { missionPostgres } from "../../../tests/helpers/mission-postgres";
 let f: Awaited<ReturnType<typeof missionPostgres>>;
 before(async () => { f = await missionPostgres(); });
 after(async () => { await f?.close(); });
+function failSpaceAgentReads<T extends object>(database: T, failure: Error): T {
+  return new Proxy(database, {
+    get(target, property) {
+      const original = Reflect.get(target, property, target);
+      if (property === "select" && typeof original === "function") {
+        return (...args: unknown[]) => {
+          const query = original.apply(target, args) as object;
+          return new Proxy(query, {
+            get(queryTarget, queryProperty) {
+              if (queryProperty === "from") {
+                return (table: unknown) => {
+                  if (table === spaceAgents) throw failure;
+                  const from = Reflect.get(queryTarget, "from", queryTarget) as (table: unknown) => unknown;
+                  return from.call(queryTarget, table);
+                };
+              }
+              const value = Reflect.get(queryTarget, queryProperty, queryTarget);
+              return typeof value === "function" ? value.bind(queryTarget) : value;
+            },
+          });
+        };
+      }
+      return typeof original === "function" ? original.bind(target) : original;
+    },
+  });
+}
 test("a fresh default mission routes every role through its selected Space model and records actual execution", async () => {
   const id = randomUUID();
   const selectedModel = "groq/llama-3.3-70b-versatile";
@@ -81,6 +107,51 @@ test("a fresh default mission routes every role through its selected Space model
   assert.deepEqual(explicitRequests, [explicitModel]);
   assert.equal(overridden.journal[0]?.runtime?.modelId, "user-selected-model");
   assert.equal(overridden.journal[0]?.runtime?.fallback, false);
+});
+test("a fresh mission honors its configured Space fleet from the injected PostgreSQL database", async () => {
+  const id = randomUUID();
+  const selectedModel = "space-default/unused-when-fleet-configured";
+  const fleet = [
+    { name: "Planner", role: "plan", modelId: "groq/planner" },
+    { name: "Builder", role: "implement", modelId: "openrouter/builder" },
+    { name: "Reviewer", role: "verify", modelId: "gemini/reviewer" },
+  ];
+  await f.database.insert(spaces).values({ id, prompt: "Injected fleet routing fixture", modelId: selectedModel });
+  await f.database.insert(spaceAgents).values(fleet.map((agent, index) => ({
+    spaceId: id,
+    ...agent,
+    systemPrompt: `role ${agent.role}`,
+    createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
+  })));
+  const routed: string[] = [];
+  const mission = await runMission(id, { goal: "Exercise the configured Space fleet", isolation: "host" }, {
+    database: f.database,
+    generate: async (input) => {
+      routed.push(input.modelId);
+      return result([{ tool: "list_files", args: {} }]);
+    },
+  });
+  assert.equal(mission.status, "done");
+  assert.deepEqual(mission.agentPlan.map((agent) => agent.modelId), fleet.map((agent) => agent.modelId));
+  assert.deepEqual(routed, fleet.map((agent) => agent.modelId));
+});
+test("a failed fleet read stops before mission creation or provider dispatch", async () => {
+  const id = randomUUID();
+  await f.database.insert(spaces).values({ id, prompt: "Fleet read failure fixture", modelId: "space-default/unused" });
+  let providerCalls = 0;
+  const failedDatabase = failSpaceAgentReads(f.database, new Error("configured fleet could not be read"));
+  await assert.rejects(
+    runMission(id, { goal: "Do not silently replace a configured fleet", isolation: "host" }, {
+      database: failedDatabase,
+      generate: async () => {
+        providerCalls += 1;
+        return result([{ tool: "list_files", args: {} }]);
+      },
+    }),
+    /configured fleet could not be read/,
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(await getLatestMission(id, f.database), null);
 });
 test("a killed runtime resumes its recorded next agent without duplicating a committed command", async (t) => {
   const id = randomUUID(); await f.database.insert(spaces).values({ id, prompt: "Crash recovery fixture" });
