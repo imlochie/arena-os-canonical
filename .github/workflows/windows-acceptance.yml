@@ -192,15 +192,6 @@ jobs:
       - name: Stage server, binaries, migrations and models
         run: node scripts/windows-step.mjs "desktop:prepare-server" "$EVIDENCE/prepare-server.log" -- npm run desktop:prepare-server
 
-      - name: Packaging audit of the staged tree (informational)
-        # The audit targets an INSTALLED tree (bin/ beside app/); on the staged
-        # tree it reports the media binaries as missing. It still proves the
-        # auditor runs on Windows, and the real install-tree audit happens in
-        # the installed job — so a staged-tree failure must not block packaging.
-        if: always()
-        continue-on-error: true
-        run: node scripts/windows-step.mjs "staged packaging audit (informational)" "$EVIDENCE/staged-audit.log" -- node scripts/windows-acceptance.mjs --audit-only desktop-package
-
       - name: Staged-runtime acceptance (embedded PostgreSQL, worker, FFmpeg export, restart)
         # De-elevated: PostgreSQL refuses to run under an administrator token,
         # and a hosted runner executes as one. A real per-user install is
@@ -209,6 +200,25 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/windows-deelevated-step.mjs "staged runtime acceptance" "$EVIDENCE/desktop-acceptance-headless.log" 2400000 -- node --import ./scripts/register-src-loader.mjs scripts/desktop-acceptance-headless.mjs
+
+      - name: Packaging audit of the staged tree (informational)
+        # Runs AFTER the acceptance on purpose: the auditor writes
+        # desktop-windows-acceptance-report.json into the repo root, which is an
+        # untracked file, and the staged-tree identity check hashes untracked
+        # files — running it between staging and verification invalidated the
+        # package ("tracked files changed since staging"). The report is removed
+        # again so later steps see the tree the acceptance verified.
+        #
+        # The auditor targets an INSTALLED tree (bin/ beside app/), so on
+        # desktop-package/ it reports the media binaries as missing. The
+        # authoritative install-tree audit runs in the installed job.
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node scripts/windows-step.mjs "staged packaging audit (informational)" "$EVIDENCE/staged-audit.log" -- node scripts/windows-acceptance.mjs --audit-only desktop-package || true
+          cp desktop-windows-acceptance-report.json "$EVIDENCE/staged-audit-report.json" 2>/dev/null || true
+          rm -f desktop-windows-acceptance-report.json
 
       - name: Build the NSIS installer
         run: node scripts/windows-step.mjs "desktop:dist (NSIS)" "$EVIDENCE/desktop-dist.log" -- npm run desktop:dist
