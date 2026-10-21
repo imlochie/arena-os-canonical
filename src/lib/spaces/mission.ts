@@ -28,7 +28,7 @@ import { db } from "@/db";
 import { spaceMissions, spaces, spaceActionApprovals } from "@/db/schema";
 import { generate } from "@/lib/ai";
 import type { GenerateResult } from "@/lib/runtime";
-import { listAgents } from "@/lib/spaces";
+import { listAgents, listAgentsForMission } from "@/lib/spaces";
 import { captureMissionOutput, type MissionOutput } from "./mission-outputs";
 import { readMissionMemory } from "./mission-memory";
 import { executeTool, ensureWorkspace, toolListFiles, workspaceDir as wsDir, type ToolOutcome } from "./tools";
@@ -289,7 +289,11 @@ async function runMissionInner(spaceId: string, opts: MissionOpts, deps: Mission
   const resumingPlan = resuming && existing!.agentPlan.length ? existing!.agentPlan : undefined;
 
   // Plan: explicit > the space's fleet > default three-role pipeline.
-  const fleet = resumingPlan?.length || opts.agentPlan?.length ? [] : await listAgents(spaceId).catch(() => []);
+  const fleet = resumingPlan?.length || opts.agentPlan?.length
+    ? []
+    : deps.memoryOnly
+      ? await listAgents(spaceId)
+      : await listAgentsForMission(spaceId, database);
   const [space] = !resumingPlan?.length && !opts.agentPlan?.length && !fleet.length && !deps.memoryOnly
     ? await database.select({ modelId: spaces.modelId }).from(spaces).where(eq(spaces.id, spaceId)).limit(1)
     : [];
