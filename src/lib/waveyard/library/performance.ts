@@ -1,5 +1,5 @@
 /** Source-clock performance controls. Deterministic, not inference or a sample clock. */
-export const PERFORMANCE_SNAPS = ["off", "quarter", "half", "beat", "four-beats"] as const;
+export const PERFORMANCE_SNAPS = ["off", "quarter", "half", "beat", "bar", "four-beats"] as const;
 export type PerformanceSnap = typeof PERFORMANCE_SNAPS[number];
 export type Levels = Record<string, number>;
 export type PerformanceSettings = {
@@ -50,9 +50,11 @@ export function performMix(mix: Levels, settings: PerformanceSettings, action: P
 /** Strictly future boundary, only within measured grid; never extrapolate BPM.
  * four-beats is anchored to the first analyzed beat, NOT a detected downbeat.
  */
-export function nextPerformanceBoundary(positionSeconds: number, grid: unknown, snap: PerformanceSnap): number | null {
+export function nextPerformanceBoundary(positionSeconds: number, grid: unknown, snap: PerformanceSnap, downbeats?: unknown): number | null {
   if (!Number.isFinite(positionSeconds) || positionSeconds < 0) return null;
   if (snap === "off") return positionSeconds;
+  // Bar requires separately supplied downbeat evidence, never grid index % 4.
+  if (snap === "bar") return nextPerformanceBoundary(positionSeconds, downbeats, "beat");
   if (!Array.isArray(grid) || grid.length < 2 || grid.some((v, i) => !Number.isSafeInteger(v) || v < 0 || (i > 0 && v <= grid[i - 1]))) return null;
   const ms = positionSeconds * 1000;
   let lo = 0, hi = grid.length;

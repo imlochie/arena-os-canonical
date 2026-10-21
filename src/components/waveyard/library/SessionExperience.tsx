@@ -10,7 +10,7 @@ import type { StudioHandoffResult } from "@/lib/waveyard/library/session-service
 
 import Link from "next/link";
 import { laneDisplayName } from "@/lib/waveyard/separation/stem-display";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStemTransport, type ChannelMeter, type MixerValues } from "@/lib/waveyard/useStemTransport";
 import { useHardwareMediaKeys } from "@/lib/waveyard/stem2";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
@@ -28,6 +28,8 @@ import {
 } from "@/lib/waveyard/library/session-logic";
 
 // ---------------------------------------------------------------------------
+type LivePerformanceAction = PerformanceAction | { kind: "hold-start"; stem: string; token: symbol } | { kind: "hold-end"; token: symbol };
+
 // Types mirrored from the session API payload (server is the source of truth;
 // these are the reading shapes, not a second domain model).
 // ---------------------------------------------------------------------------
@@ -91,24 +93,18 @@ function formatClock(seconds: number): string {
 // replace it.
 // ---------------------------------------------------------------------------
 
-/** Preserve the media element / Web Audio graph across donor changes. Only
- * this lane rejoins the deck clock after the new URL's real metadata arrives. */
-function SessionStemAudio({ assetId, src, label, register, synchronizeSource, onEnded }: {
+/** Stable original/clock element; donor audio enters the same canonical lane
+ * through prepared WebAudio input gates, without reloading this element. */
+function SessionStemAudio({ assetId, sourceId, src, label, register, onEnded }: {
   assetId: string;
+  sourceId: string;
   src: string;
   label: string;
   register: ReturnType<typeof useStemTransport>["register"];
-  synchronizeSource: ReturnType<typeof useStemTransport>["synchronizeSource"];
   onEnded: () => void;
 }) {
-  const previousSource = useRef(src);
   const mediaRef = useCallback((element: HTMLAudioElement | null) => register(assetId, element), [assetId, register]);
-  useLayoutEffect(() => {
-    if (previousSource.current === src) return;
-    previousSource.current = src;
-    return synchronizeSource(assetId);
-  }, [assetId, src, synchronizeSource]);
-  return <audio aria-label={label} ref={mediaRef} src={src} preload="auto" onEnded={onEnded} />;
+  return <audio aria-label={label} data-active-source={sourceId} data-role="lane-clock-and-original" ref={mediaRef} src={src} preload="auto" onEnded={onEnded} />;
 }
 
 function SessionDeck({
@@ -120,6 +116,7 @@ function SessionDeck({
   onApi,
   onPlaying,
   onPosition,
+  onSources,
   onEnded,
   testId,
 }: {
@@ -132,6 +129,7 @@ function SessionDeck({
   swaps: Record<string, string>;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
   onPlaying: (deckIndex: number, playing: boolean) => void;
+  onSources: (itemId: string, sources: Record<string, string>) => void;
   onPosition: (deckIndex: number, seconds: number) => void;
   onEnded: (deckIndex: number) => void;
   testId: string;
@@ -196,6 +194,23 @@ function SessionDeck({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run only when this deck's track changes
   }, [item?.id]);
 
+  const [sourceError, setSourceError] = useState<string | null>(null);
+  const selectionKey = JSON.stringify(swaps);
+  useEffect(() => {
+    const selected = JSON.parse(selectionKey) as Record<string, string>;
+    for (const stem of item?.stems ?? []) {
+      const desired = selected[stem.stemType] ?? stem.id;
+      if ((transport.sourceSelections[stem.id] ?? stem.id) === desired) continue;
+      void transport.replaceSource(stem.id, desired).then(() => setSourceError(null), error => {
+        if (error instanceof Error && error.name !== "AbortError") setSourceError(`Saved source unavailable: ${error.message} The previous lane is retained.`);
+      });
+    }
+    // Routing changes are driven by the persisted/local intent key, never a
+    // render/clock tick. A just-committed local selection wins over older ACKs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id, selectionKey, transport.replaceSource]);
+  useEffect(() => { if (item) onSources(item.id, transport.sourceSelections); }, [item, transport.sourceSelections, onSources]);
+
   // Real meters while THIS deck is the audible, playing one.
   const [meters, setMeters] = useState<Record<string, ChannelMeter> | null>(null);
   useEffect(() => {
@@ -231,19 +246,18 @@ function SessionDeck({
         </p>
       ) : (
         <>
-          {/* Real audio elements. A swapped layer's element plays the DONOR
-              track's real stem asset while following this deck's clock. */}
+          {/* Original elements keep the source clock. Prepared donor voices feed these SAME mixer lanes. */}
           {assetIds.map((assetId) => {
             const stemType = stemTypeByAsset.get(assetId) ?? "source";
-            const donorAssetId = swaps[stemType];
-            const src = donorAssetId ?? assetId;
+            const src = assetId;
+            const selectedSource = transport.sourceSelections[assetId] ?? assetId;
             return (
               <SessionStemAudio
                 key={assetId}
                 assetId={assetId}
-                label={`${stemType} audio${donorAssetId ? " (swapped layer)" : ""}`}
+                sourceId={selectedSource}
+                label={`${stemType} audio${selectedSource !== assetId ? " (swapped layer)" : ""}`}
                 register={transport.register}
-                synchronizeSource={transport.synchronizeSource}
                 src={`/api/assets/${src}`}
                 onEnded={() => onEnded(deckIndex)}
               />
@@ -259,6 +273,8 @@ function SessionDeck({
               {item.analysis === null ? " · analysis pending" : ""}
             </p>
           </div>
+          {item.stems.filter(stem => transport.endedSources[stem.id]).map(stem => <p role="status" key={stem.id}>{stem.stemType} donor ended; that lane is silent. Other lanes continue. Choose A or another source to resume this category; no implicit loop or substitute was selected.</p>)}
+          {sourceError && item?.stems.some(stem => (transport.sourceSelections[stem.id] ?? stem.id) !== (swaps[stem.stemType] ?? stem.id)) && <p role="alert">{sourceError}</p>}
           {transport.error !== null && <div role="alert"><p>{transport.error}</p>{!separated && <p>Browser codec support varies. <Link href={`/waveyard?convertTrack=${item.track.id}`}>Review browser-compatible conversion</Link> to explicitly create a compatible derivative. The original and saved session stay unchanged; choose any replacement yourself.</p>}</div>}
           <div className="sess-deck-progress" aria-hidden="true">
             <div className="sess-deck-progress-fill" style={{ width: `${duration > 0 ? Math.min(100, (transport.position / duration) * 100) : 0}%` }} />
@@ -330,6 +346,28 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       throw error;
     }
   }, setEditSaveState));
+  const [swapSaveState, setSwapSaveState] = useState<SessionSaveStatus>("saved");
+  const [swapSaveError, setSwapSaveError] = useState<string | null>(null);
+  const [swapSaves] = useState(() => new SessionSaveQueue(async (url, body) => {
+    try {
+      const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body, keepalive: true });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${result?.error ?? "Selection save rejected"}`);
+      if (!result?.session || !Array.isArray(result.session.swaps)) throw new Error("Selection response was not a session acknowledgement.");
+      setSession(previous => previous && previous.id === result.session.id ? { ...previous, swaps: result.session.swaps } : previous);
+      setSwapSaveError(null);
+    } catch (error) { setSwapSaveError(error instanceof Error ? error.message : "Network failure"); throw error; }
+  }, setSwapSaveState));
+  const swapMemberships = useRef(new Map<string, string>());
+  const swapIntents = useRef(new Map<string, symbol>());
+  const clearingSwapHistory = useRef(false);
+  const [clearingSwaps, setClearingSwaps] = useState(false);
+  const [clearSwapsFor, setClearSwapsFor] = useState<string | null>(null);
+  const [liveDonors, setLiveDonors] = useState<Record<string, Record<string, string>>>({});
+  const [actualSources, setActualSources] = useState<Record<string, Record<string, string>>>({});
+  const handleSources = useCallback((itemId: string, sources: Record<string, string>) => {
+    setActualSources(previous => JSON.stringify(previous[itemId] ?? {}) === JSON.stringify(sources) ? previous : { ...previous, [itemId]: sources });
+  }, []);
   const editSnapshots = useRef(new Map<string, string>());
   const [handoffConfirm, setHandoffConfirm] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
@@ -459,8 +497,8 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       if (swap.sessionTrackId !== currentItem.id) continue;
       if (swap.toStemAssetId) map[swap.stemType] = swap.toStemAssetId;
     }
-    return map;
-  }, [session, currentItem]);
+    return { ...map, ...liveDonors[currentItem.id] };
+  }, [session, currentItem, liveDonors]);
 
   const handleDeckApi = useCallback((deckIndex: number, api: DeckApi | null) => {
     decksRef.current[deckIndex] = api;
@@ -481,38 +519,60 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
 
   // Performance uses the existing media source clock and mix/transition storage.
   // Pending intent is deliberately NOT persisted or replayed after reload.
-  const pendingPerformance = useRef<{ target: number; previous: number; trackId: string; deck: 0 | 1; actions: PerformanceAction[] } | null>(null);
+  const pendingPerformance = useRef<{ target: number; previous: number; trackId: string; deck: 0 | 1; actions: LivePerformanceAction[] } | null>(null);
   const [pendingLabel, setPendingLabel] = useState<string | null>(null);
   const performanceState = useRef({ currentItem, mixes, transitions, phase });
   useEffect(() => { performanceState.current = { currentItem, mixes, transitions, phase }; }, [currentItem, mixes, transitions, phase]);
-  const cancelPerformance = useCallback(() => { pendingPerformance.current = null; setPendingLabel(null); }, []);
-  const applyPerformance = useCallback((actions: PerformanceAction[]) => {
+  const heldGesture = useRef<{ token: symbol; released: boolean; started: boolean; pointerId: number | null } | null>(null);
+  const cancelPerformance = useCallback((restoreHold = true) => {
+    pendingPerformance.current = null; setPendingLabel(null);
+    if (restoreHold) {
+      heldGesture.current = null;
+      for (const deck of decksRef.current) deck?.transport.setTemporaryIsolation(null);
+    }
+  }, []);
+  const applyPerformance = useCallback((actions: LivePerformanceAction[]) => {
     const live = performanceState.current, item = live.currentItem;
     if (!item) return;
     let levels = live.mixes[item.id] ?? item.stemMix;
     let settings = (live.transitions[item.id] ?? item.transition).performance ?? defaultPerformance();
+    let changed = false;
     for (const action of actions) {
+      if (action.kind === "hold-start" || action.kind === "hold-end") {
+        const gesture = heldGesture.current;
+        if (!gesture || gesture.token !== action.token) continue;
+        const transport = decksRef.current[activeDeckRef.current]?.transport;
+        if (action.kind === "hold-end") {
+          transport?.setTemporaryIsolation(null); heldGesture.current = null;
+        } else if (!gesture.released) {
+          const stem = item.stems.find(stem => stem.stemType === action.stem);
+          if (stem) { transport?.setTemporaryIsolation(stem.id, settings.recall[action.stem] ?? 1); gesture.started = true; }
+        }
+        continue;
+      }
+      changed = true;
       const next = performMix(levels, settings, action, item.stems.map(stem => stem.stemType));
       levels = next.mix; settings = next.performance;
     }
+    if (!changed) return; // Held monitoring never writes a temporary mix to storage.
     const config = { ...(live.transitions[item.id] ?? item.transition), performance: settings };
     performanceState.current = { ...live, mixes: { ...live.mixes, [item.id]: levels }, transitions: { ...live.transitions, [item.id]: config } };
     decksRef.current[activeDeckRef.current]?.applyStemVolumes(levels);
     setMixes(prev => ({ ...prev, [item.id]: levels }));
     setTransitions(prev => ({ ...prev, [item.id]: config }));
   }, []);
-  const requestPerformance = useCallback((action: PerformanceAction) => {
+  const requestPerformance = useCallback((action: LivePerformanceAction) => {
     const live = performanceState.current, item = live.currentItem;
     if (!item || live.phase !== "idle") return;
     const deck = decksRef.current[activeDeckRef.current];
     if (!deck) return;
     const settings = (live.transitions[item.id] ?? item.transition).performance ?? defaultPerformance();
-    const restoring = action.kind === "restore" || (action.kind === "isolate" && settings.isolatedStem === action.stem);
+    const restoring = action.kind === "hold-end" || action.kind === "restore" || (action.kind === "isolate" && settings.isolatedStem === action.stem);
     const immediate = !deck.transport.playing || settings.snap === "off" || (restoring && settings.instantRestore);
-    if (immediate) { cancelPerformance(); applyPerformance([action]); return; }
+    if (immediate) { cancelPerformance(false); applyPerformance([action]); return; }
     const position = deck.transport.currentPosition();
     const target = nextPerformanceBoundary(position, item.analysis?.beatGridMs, settings.snap);
-    if (target === null) { setStatus("Cannot quantise: a strictly ordered measured beat grid covering the next boundary is required. Choose Off to change immediately."); return; }
+    if (target === null) { if (action.kind === "hold-end") cancelPerformance(); setStatus(settings.snap === "bar" ? "Bar snapping unavailable: this track has no verified downbeat grid. Choose Beat or Off." : "Cannot quantise: a strictly ordered measured beat grid covering the next boundary is required. Choose Off to change immediately."); return; }
     const previous = pendingPerformance.current?.trackId === item.id && pendingPerformance.current.deck === activeDeckRef.current ? pendingPerformance.current : null;
     if (previous && previous.actions.length >= 64) { setStatus("Pending performance queue is full. Cancel or wait for its beat."); return; }
     pendingPerformance.current = { target: previous?.target ?? target, previous: position, trackId: item.id, deck: activeDeckRef.current, actions: [...(previous?.actions ?? []), action] };
@@ -528,7 +588,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         const verdict = live.currentItem?.id !== pending.trackId || currentIdRef.current !== pending.trackId || activeDeckRef.current !== pending.deck || live.phase !== "idle" ? "cancel" : performanceTick(pending.target, pending.previous, position, deck?.transport.playing ?? false);
         pending.previous = position;
         if (verdict !== "wait") {
-          cancelPerformance();
+          cancelPerformance(verdict !== "apply");
           if (verdict === "apply") applyPerformance(pending.actions);
           else setStatus("Pending stem changes cancelled: playback changed or the beat deadline was missed. Nothing was applied late.");
         }
@@ -538,6 +598,46 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [applyPerformance, cancelPerformance]);
+
+  const beginHold = useCallback((stem: string, pointerId: number | null = null) => {
+    if (heldGesture.current && !heldGesture.current.released) return;
+    cancelPerformance();
+    const token = Symbol(stem);
+    heldGesture.current = { token, released: false, started: false, pointerId };
+    requestPerformance({ kind: "hold-start", stem, token });
+  }, [cancelPerformance, requestPerformance]);
+  const releaseHold = useCallback((event?: { pointerId?: number }) => {
+    const gesture = heldGesture.current;
+    if (!gesture || gesture.released) return;
+    if (event?.pointerId !== undefined && event.pointerId !== gesture.pointerId) return;
+    gesture.released = true;
+    if (!gesture.started) {
+      // A short press released before its boundary must never isolate later.
+      const pending = pendingPerformance.current;
+      if (pending) {
+        pending.actions = pending.actions.filter(action => !("token" in action && action.token === gesture.token));
+        if (!pending.actions.length) cancelPerformance(false);
+      }
+      heldGesture.current = null;
+      return;
+    }
+    requestPerformance({ kind: "hold-end", token: gesture.token });
+  }, [cancelPerformance, requestPerformance]);
+  useEffect(() => {
+    const interrupt = () => { cancelPerformance(); for (const deck of decksRef.current) deck?.transport.cancelReplacements(); };
+    const hidden = () => { if (document.hidden) interrupt(); };
+    window.addEventListener("pointerup", releaseHold);
+    window.addEventListener("pointercancel", interrupt);
+    window.addEventListener("blur", interrupt);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("pointerup", releaseHold);
+      window.removeEventListener("pointercancel", interrupt);
+      window.removeEventListener("blur", interrupt);
+      document.removeEventListener("visibilitychange", hidden);
+      interrupt();
+    };
+  }, [releaseHold, cancelPerformance, currentItem?.id, activeDeck, sessionId]);
 
   // ------------------------------------------------------------ persistence
   const persistState = useCallback(async () => {
@@ -584,12 +684,14 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     const flushHidden = () => {
       if (document.visibilityState === "hidden") {
         void persistStateRef.current();
+        void swapSaves.flush();
         void editSaves.flush();
       }
     };
     const warnUnsaved = (event: BeforeUnloadEvent) => {
       void persistStateRef.current();
-      if (!editSaves.unsaved && !cursorSaves.unsaved) return;
+      if (!editSaves.unsaved && !cursorSaves.unsaved && !swapSaves.unsaved) return;
+      void swapSaves.flush();
       void editSaves.flush();
       event.preventDefault();
       event.returnValue = "";
@@ -599,10 +701,11 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     return () => {
       document.removeEventListener("visibilitychange", flushHidden);
       window.removeEventListener("beforeunload", warnUnsaved);
+      void swapSaves.flush();
       void editSaves.flush();
       void cursorSaves.flush();
     };
-  }, [editSaves, cursorSaves]);
+  }, [editSaves, cursorSaves, swapSaves]);
 
   // Apply the current mix to the active deck whenever it changes (and to the
   // standby deck so a transition fades in what you hear while setting it up).
@@ -949,57 +1052,86 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           const url = `/api/library/sessions/${session.id}/tracks/${itemId}`;
           editSnapshots.current.delete(url);
           editSaves.forget(url);
+          for (const [swapUrl, member] of swapMemberships.current) if (member === itemId) { swapSaves.forget(swapUrl); swapMemberships.current.delete(swapUrl); }
+          for (const deck of decksRef.current) if (deck?.itemId === itemId) deck.transport.cancelReplacements();
           if (currentIdRef.current === itemId) {
             setCurrentId(detail.tracks[0]?.id ?? null);
           }
         },
       );
     },
-    [session, mutate, editSaves],
+    [session, mutate, editSaves, swapSaves],
   );
 
   // ------------------------------------------------------------------ swaps
-  const requestSwap = useCallback(
-    (stemType: string) => {
-      if (session === null || currentItem === null || nextItem === null) return;
-      const validation = validateStemSwap(currentItem.stems, nextItem.stems, stemType);
-      if (!validation.ok) {
-        setStatus(validation.reason);
-        return;
-      }
-      void mutate(
-        `/api/library/sessions/${session.id}/swaps`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            sessionTrackId: currentItem.id,
-            stemType,
-            toTrackId: nextItem.track.id,
-            toStemAssetId: nextItem.stems.find(stem => stem.stemType === stemType)?.id,
-            atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
-          }),
-        },
-        () =>
-          setStatus(
-            `Swap saved: “${stemType}” from “${nextItem.track.title}” joins the deck clock when its audio is ready. A failed load is reported on the deck.`,
-          ),
-      );
-    },
-    [session, currentItem, nextItem, mutate, activeDeck],
-  );
+  // Donor preparation/clock commit precedes persistence. Only committed
+  // selections enter the same acknowledged/coalescing writer primitive.
+  const requestSource = useCallback(async (stemType: string, donor: boolean) => {
+    const live = performanceState.current, item = live.currentItem;
+    const s = sessionRef.current, index = activeDeckRef.current, deck = decksRef.current[index];
+    if (!s || !item || !deck || live.phase !== "idle" || clearingSwapHistory.current) return;
+    const other = s.tracks.find((track, i) => s.tracks[i - 1]?.id === item.id);
+    const source = donor ? other : item;
+    if (!source) return;
+    if (item.selectionRequired || source.selectionRequired) { setStatus(item.selectionRequired || source.selectionRequired || "Choose explicit audio assets first."); return; }
+    const validation = validateStemSwap(item.stems, source.stems, stemType);
+    if (!validation.ok) { setStatus(validation.reason); return; }
+    const lane = item.stems.find(stem => stem.stemType === stemType)!;
+    const asset = source.stems.find(stem => stem.stemType === stemType)!;
+    const settings = (live.transitions[item.id] ?? item.transition).performance ?? defaultPerformance();
+    let target: number | null = null;
+    if (deck.transport.isPlaying() && settings.snap !== "off") {
+      target = nextPerformanceBoundary(deck.transport.currentPosition(), item.analysis?.beatGridMs, settings.snap);
+      if (target === null) { setStatus(settings.snap === "bar" ? "Bar snapping unavailable: no verified downbeat grid. Choose Beat or Off." : "Cannot swap on a boundary without a measured beat grid covering it. Choose Off."); return; }
+    }
+    const token = Symbol(stemType), key = `${item.id}:${stemType}`;
+    swapIntents.current.set(key, token);
+    setStatus(`Preparing ${stemType} from “${source.track.title}”; the current source remains active. Nothing saved yet.`);
+    try {
+      const previousSource = deck.transport.sourceSelections[lane.id] ?? lane.id;
+      await deck.transport.replaceSource(lane.id, asset.id, target, boundary => {
+        if (swapIntents.current.get(key) === token && currentIdRef.current === item.id) setStatus(`Prepared ${stemType} from “${source.track.title}”; ${boundary === null ? "committing immediately when playing" : `scheduled at source ${boundary.toFixed(3)}s`}. The previous selection remains active until commit; nothing saved yet.`);
+      });
+      if (swapIntents.current.get(key) !== token || currentIdRef.current !== item.id || activeDeckRef.current !== index || sessionRef.current?.id !== s.id) return;
+      setLiveDonors(previous => ({ ...previous, [item.id]: { ...previous[item.id], [stemType]: asset.id } }));
+      const savedSource = sessionRef.current?.swaps.filter(swap => swap.sessionTrackId === item.id && swap.stemType === stemType).at(-1)?.toStemAssetId ?? lane.id;
+      if (previousSource === asset.id && savedSource === asset.id && !swapSaves.unsaved) { setStatus(`${stemType}: “${source.track.title}” remains selected; no new save was needed.`); return; }
+      const url = `/api/library/sessions/${s.id}/swaps?sessionTrackId=${encodeURIComponent(item.id)}&stemType=${encodeURIComponent(stemType)}`;
+      swapMemberships.current.set(url, item.id);
+      swapSaves.enqueue(url, JSON.stringify({ sessionTrackId: item.id, stemType, fromStemAssetId: lane.id, toTrackId: source.track.id, toStemAssetId: asset.id, atSeconds: target ?? deck.transport.currentPosition() }));
+      setStatus(`${stemType}: “${source.track.title}” ${deck.transport.isPlaying() ? "is now audible through its existing lane" : "is prepared for playback"}. Selection not saved until acknowledged below.`);
+    } catch (error) {
+      if (swapIntents.current.get(key) !== token) return;
+      setStatus(error instanceof Error ? error.message : "Donor preparation failed. The working mix was retained.");
+    }
+  }, [swapSaves]);
+  const requestSwap = useCallback((stemType: string) => { void requestSource(stemType, true); }, [requestSource]);
+  const revertSwap = useCallback((swapId: string) => {
+    const swap = sessionRef.current?.swaps.find(swap => swap.id === swapId);
+    if (swap?.toStemAssetId) { void requestSource(swap.stemType, false); return; }
+    if (session) void mutate(`/api/library/sessions/${session.id}/swaps?swapId=${encodeURIComponent(swapId)}`, { method: "DELETE" }, () => setStatus("Unresolved legacy swap removed."));
+  }, [requestSource, session, mutate]);
 
-  const revertSwap = useCallback(
-    (swapId: string) => {
-      if (session === null) return;
-      void mutate(
-        `/api/library/sessions/${session.id}/swaps?swapId=${swapId}`,
-        { method: "DELETE" },
-        () => setStatus("Swap reverted — the original stem layer is back."),
-      );
-    },
-    [session, mutate],
-  );
+  const clearSavedSwaps = useCallback(async (itemId: string) => {
+    const s = sessionRef.current, item = s?.tracks.find(item => item.id === itemId);
+    if (!s || !item || clearingSwapHistory.current) return;
+    clearingSwapHistory.current = true; setClearingSwaps(true);
+    try {
+      for (const deck of decksRef.current) if (deck?.itemId === itemId) deck.transport.pause();
+      for (const key of swapIntents.current.keys()) if (key.startsWith(`${itemId}:`)) swapIntents.current.delete(key);
+      if (!await swapSaves.flush(true)) { setStatus("Resolve the failed selection save before clearing its records."); return; }
+      for (const deck of decksRef.current) if (deck?.itemId === itemId) for (const stem of item.stems) await deck.transport.replaceSource(stem.id, stem.id);
+      setLiveDonors(previous => ({ ...previous, [itemId]: Object.fromEntries(item.stems.map(stem => [stem.stemType, stem.id])) }));
+      for (const swap of sessionRef.current?.swaps.filter(swap => swap.sessionTrackId === itemId) ?? []) {
+        const response = await fetch(`/api/library/sessions/${s.id}/swaps?swapId=${encodeURIComponent(swap.id)}`, { method: "DELETE" });
+        const result = await response.json();
+        if (!response.ok || !Array.isArray(result?.session?.swaps)) throw new Error(result?.error ?? "Saved swap removal was not acknowledged.");
+        setSession(previous => previous?.id === s.id ? { ...previous, swaps: result.session.swaps } : previous);
+      }
+      setClearSwapsFor(null); setStatus("Saved swap records explicitly cleared. Audio assets, levels and cues retained; original sources prepared, playback paused.");
+    } catch (error) { setStatus(`Saved swap removal incomplete: ${error instanceof Error ? error.message : "request failed"}. Reload may recall remaining records; review before changing banks.`); }
+    finally { clearingSwapHistory.current = false; setClearingSwaps(false); }
+  }, [swapSaves]);
 
   // -------------------------------------------------------- studio handoff
   const sendToStudio = useCallback((mode: "transitions" | "sequential" = "transitions") => {
@@ -1009,7 +1141,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     void (async () => {
       try {
         await cueSave.current;
-        if (!await editSaves.flush(true)) {
+        if (!await swapSaves.flush(true) || !await editSaves.flush(true)) {
           setStatus("Session edits could not be saved. Retry saving edits before sending to Studio.");
           return;
         }
@@ -1035,7 +1167,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         setHandoffBusy(false);
       }
     })();
-  }, [session, mixes, transitions, editSaves]);
+  }, [session, mixes, transitions, editSaves, swapSaves]);
 
   // ------------------------------------- hardware media keys (P4, standard path)
   // The same OS/hardware media commands as the player, driving the session's
@@ -1140,24 +1272,26 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   const mixControls = currentItem !== null && currentItem.stems.length > 0 && (
             <div className="sess-mix">
               <h4 className="library-panel-title">Stem mix — current track</h4>
-              <label>Snap stem changes <select aria-label="Snap stem changes" value={transition?.performance?.snap ?? "off"} disabled={phase !== "idle"} onChange={event => { cancelPerformance(); setTransition({ performance: { ...(transition?.performance ?? defaultPerformance()), snap: event.target.value as PerformanceSnap } }); }}>
-                <option value="off">Off</option><option value="quarter">¼ beat</option><option value="half">½ beat</option><option value="beat">Beat</option><option value="four-beats">4 beats (grid origin, not detected downbeat)</option>
+              <label>Snap stem changes <select aria-label="Snap stem changes" value={transition?.performance?.snap ?? "off"} disabled={phase !== "idle"} onChange={event => { cancelPerformance(); for (const deck of decksRef.current) deck?.transport.cancelReplacements(); setTransition({ performance: { ...(transition?.performance ?? defaultPerformance()), snap: event.target.value as PerformanceSnap } }); }}>
+                <option value="off">Off</option><option value="quarter">¼ beat</option><option value="half">½ beat</option><option value="beat">Beat</option><option value="bar">Bar (requires verified downbeats)</option><option value="four-beats">4 beats (grid origin, not detected downbeat)</option>
               </select></label>
               <label><input type="checkbox" aria-label="Instant Restore" checked={transition?.performance?.instantRestore ?? true} onChange={event => setTransition({ performance: { ...(transition?.performance ?? defaultPerformance()), instantRestore: event.target.checked } })} />Instant Restore</label>
               <button type="button" disabled={phase !== "idle"} onClick={() => requestPerformance({ kind: "restore" })}>Restore stem mix</button>
-              {pendingLabel && <p role="status">{pendingLabel} <button type="button" onClick={cancelPerformance}>Cancel pending stem changes</button></p>}
-              <small>Mute/isolate use the measured source beat grid; faders remain immediate. Browser-clock timing is not sample-locked. Four-beat groups are not verified musical bars. Pending gestures are cancelled on pause, seek, track/transition change or missed deadline, not replayed after reopening.</small>
+              {pendingLabel && <p role="status">{pendingLabel} <button type="button" onClick={() => cancelPerformance()}>Cancel pending stem changes</button></p>}
+              <small>Swaps prepare real donor audio, then schedule a 5ms source crossfade in the existing AudioContext; missed preparation is refused, not silently rebased. Mute/held-monitor gestures use the measured source clock with an 80ms late-frame rejection, not sample-locked dispatch. Faders remain immediate. Bar needs verified downbeats (currently unavailable); four-beat groups are not bars. Pending gestures are cancelled on interruption and never replayed after reopening.</small>
 
               {currentItem.stems.map((stem) => {
-                const swap = session.swaps.find(
+                const swap = session.swaps.filter(
                   (s) => s.sessionTrackId === currentItem.id && s.stemType === stem.stemType,
-                );
+                ).at(-1);
+                const actualSource = actualSources[currentItem.id]?.[stem.id] ?? stem.id;
+                const swapped = actualSource !== stem.id;
                 const swapReady = validateStemSwap(currentItem.stems, nextItem?.stems ?? [], stem.stemType);
                 return (
                   <div key={stem.id} className="sess-mix-row">
                     <label className="sess-mix-label" htmlFor={`sess-mix-${stem.id}`}>
                       {laneDisplayName(stem, currentItem.stems)}
-                      {swap !== undefined ? " (swapped)" : ""}
+                      {swapped ? " (swapped)" : ""}
                     </label>
                     <input
                       id={`sess-mix-${stem.id}`}
@@ -1171,16 +1305,32 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
                     <span className="sess-mix-value">{(mix[stem.stemType] ?? 1).toFixed(2)}</span>
                     <button type="button" aria-label={`Mute ${stem.stemType}`} aria-pressed={(mix[stem.stemType] ?? 1) === 0} disabled={phase !== "idle"} onClick={() => requestPerformance({ kind: "mute", stem: stem.stemType })}>{(mix[stem.stemType] ?? 1) === 0 ? "Unmute" : "Mute"}</button>
                     <button type="button" aria-label={`Isolate ${stem.stemType}`} aria-pressed={transition?.performance?.isolatedStem === stem.stemType} disabled={phase !== "idle"} onClick={() => requestPerformance({ kind: "isolate", stem: stem.stemType })}>Isolate</button>
+                    <button type="button" aria-label={`Hold to isolate ${stem.stemType}`} disabled={phase !== "idle" || clearingSwaps}
+                      style={{ touchAction: "none" }}
+                      onPointerDown={event => { if (event.button !== 0 || !event.isPrimary) return; event.preventDefault(); try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Window pointerup/blur remains the release fallback. */ } beginHold(stem.stemType, event.pointerId); }}
+                      onPointerUp={releaseHold}
+                      onPointerCancel={() => cancelPerformance()}
+                      onLostPointerCapture={() => { if (heldGesture.current && !heldGesture.current.released) cancelPerformance(); }}
+                      onKeyDown={event => { if ((event.key === " " || event.key === "Enter") && !event.repeat) { event.preventDefault(); beginHold(stem.stemType); } }}
+                      onKeyUp={event => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); releaseHold(); } }}
+                      onBlur={() => { if (heldGesture.current && !heldGesture.current.released) cancelPerformance(); }}
+                    >Hold to isolate</button>
+                    <div role="group" aria-label={`Source for ${stem.stemType}`}>
+                      <button type="button" aria-pressed={actualSource === stem.id} disabled={clearingSwaps || phase !== "idle"} onClick={() => void requestSource(stem.stemType, false)}>A · {currentItem.track.title}</button>
+                      {nextItem && <button type="button" aria-pressed={actualSource === nextItem.stems.find(s => s.stemType === stem.stemType)?.id} disabled={!swapReady.ok || clearingSwaps || phase !== "idle"} title={swapReady.ok ? "Prepared replacement, not layering" : swapReady.reason} onClick={() => void requestSource(stem.stemType, true)}>B · {nextItem.track.title}</button>}
+                      <small>{swap?.toStemAssetId && swap.toStemAssetId !== stem.id ? `Saved donor: ${swap.toStemAssetId}` : "Saved source: A"}</small>
+                    </div>
                     {nextItem !== null && (
                       <button
                         type="button"
                         className="button tiny"
+                        disabled={clearingSwaps || phase !== "idle"}
                         onClick={() =>
-                          swap !== undefined ? revertSwap(swap.id) : swapReady.ok ? requestSwap(stem.stemType) : setStatus(swapReady.reason)
+                          swapped ? void requestSource(stem.stemType, false) : swapReady.ok ? requestSwap(stem.stemType) : setStatus(swapReady.reason)
                         }
                         title={swapReady.ok ? `Swap this layer with “${nextItem.track.title}”` : swapReady.reason}
                       >
-                        {swap !== undefined ? "Revert" : "Swap"}
+                        {swapped ? "Revert" : "Swap"}
                       </button>
                     )}
                   </div>
@@ -1199,12 +1349,14 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
             {session.tracks.length} track{session.tracks.length === 1 ? "" : "s"}
             {" · "}<span role="status" aria-label="Restore point save status">{`restore point ${saveState === "saved" ? "saved" : saveState === "saving" ? "saving…" : saveState === "pending" ? "not saved yet" : "save failed"}`}</span>
             {saveState === "error" && <><span role="alert"> {cursorSaveError}</span><button type="button" onClick={() => void cursorSaves.flush(true)}>Retry saving restore point</button></>}
+            <span role="status" aria-label="Stem selection save status">{` · stem selections ${swapSaveState}`}</span>
+            {swapSaveState === "error" && <><span role="alert">{swapSaveError} Audio remains selected in this page; reload restores the last acknowledged selection.</span><button type="button" onClick={() => void swapSaves.flush(true)}>Retry saving stem selections</button></>}
             <span role="status" aria-label="Session edit save status">{` · mix/settings ${editSaveState === "saved" ? "saved" : editSaveState === "error" ? "save failed — edits remain in this page" : editSaveState === "pending" ? "not saved yet" : "saving…"}`}</span>
             {editSaveState === "error" && <><span role="alert"> {editSaveError}</span><button type="button" onClick={() => void editSaves.flush(true)}>Retry saving edits</button></>}
           </p>
         </div>
         <div className="sess-header-actions">
-          <button type="button" className="button" onClick={() => void togglePlay()} data-testid="session-play">
+          <button type="button" className="button" disabled={clearingSwaps} onClick={() => void togglePlay()} data-testid="session-play">
             {playing ? "Pause" : "Play"}
           </button>
           <button type="button" className="button secondary" onClick={stopSession} data-testid="session-stop">Stop</button>
@@ -1246,11 +1398,19 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       <section aria-label="Saved audio identity">
         <h3>Audio banks — exact saved assets</h3>
         {session.tracks.map(item => <div key={item.id}>
-          <label>{item.track.title} bank<select aria-label={`Bank for ${item.id}`} value="" onChange={event => {
+          <label>{item.track.title} bank<select aria-label={`Bank for ${item.id}`} disabled={clearingSwaps} value="" onChange={event => {
             if (!event.target.value) return;
-            void mutate(`/api/library/sessions/${session.id}/tracks/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ bankId: event.target.value === "source" ? null : event.target.value }) }, () => setStatus("Audio choice saved. Levels and transition cues retained; press Play to resume."));
+            const bankId = event.target.value === "source" ? null : event.target.value;
+            for (const deck of decksRef.current) if (deck?.itemId === item.id) deck.transport.pause();
+            for (const key of swapIntents.current.keys()) if (key.startsWith(`${item.id}:`)) swapIntents.current.delete(key);
+            void (async () => {
+              if (!await swapSaves.flush()) { setStatus("Resolve selection-save errors before changing this item's source bank."); return; }
+              await mutate(`/api/library/sessions/${session.id}/tracks/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ bankId }) }, () => { setLiveDonors(previous => ({ ...previous, [item.id]: {} })); setStatus("Audio choice saved. Levels and transition cues retained; press Play to resume."); });
+            })();
           }}><option value="">{item.selectionRequired ? "Selection required" : "Keep saved assets"}</option><option value="source">Original unseparated source</option>{item.banks?.map(bank => <option key={bank.id} value={bank.id}>{bank.model} · {bank.stems.map(stem => stem.stemType).join(", ")} · {bank.createdAt} · {bank.id}</option>)}</select></label>
           {item.selectionRequired && <p role="alert">{item.selectionRequired}</p>}
+          {session.swaps.some(swap => swap.sessionTrackId === item.id) && <button type="button" onClick={() => setClearSwapsFor(item.id)}>Review removal of saved swaps for {item.track.title}</button>}
+          {clearSwapsFor === item.id && <div role="group" aria-label={`Confirm clearing swaps for ${item.track.title}`}><p>Discard this item’s saved swap provenance and its derived Studio source ranges? Playback will pause and return to original sources. Audio assets, mix levels and cues are not deleted. This cannot be undone.</p><button type="button" disabled={clearingSwaps} onClick={() => void clearSavedSwaps(item.id)}>Clear saved swap records</button><button type="button" onClick={() => setClearSwapsFor(null)}>Keep saved swap records</button></div>}
         </div>)}
         {session.swaps.filter(swap => !swap.toStemAssetId || !swap.fromStemAssetId).map(swap => <p key={swap.id}>Legacy {swap.stemType} swap: exact donor unknown. <button type="button" onClick={() => revertSwap(swap.id)}>Remove unresolved swap explicitly</button></p>)}
       </section>
@@ -1259,7 +1419,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           <div key={index} className={`sess-deck-slot${index === activeDeck ? " sess-deck-slot-active" : ""}`} style={{ order: index === activeDeck ? 0 : 2 }}>
             <SessionDeck deckIndex={index} item={deckItems[index]} active={index === activeDeck}
               startAt={index === activeDeck ? startAtFor(index) : 0} swaps={index === activeDeck ? activeSwaps : {}}
-              onApi={handleDeckApi} onPlaying={handleDeckPlaying} onPosition={handleDeckPosition} onEnded={handleDeckEnded}
+              onSources={handleSources} onApi={handleDeckApi} onPlaying={handleDeckPlaying} onPosition={handleDeckPosition} onEnded={handleDeckEnded}
               testId={index === activeDeck ? "session-deck-current" : "session-deck-next"} />
             {index === activeDeck ? mixControls : null}
           </div>

@@ -47,3 +47,14 @@ test("source-clock queue rejects pause, backwards seek and late/backgrounded cal
   assert.equal(performanceTick(2, 1.9, 1, true), "cancel");
   assert.equal(performanceTick(2, 1.9, 4, true), "cancel");
 });
+
+
+test("bar requires separate trustworthy downbeats, not the first or an arbitrary fourth measured beat", () => {
+  const beats = [125, 625, 1125, 1625, 2125, 2625, 3125, 3625, 4125];
+  assert.equal(nextPerformanceBoundary(.7, beats, "bar"), null);
+  assert.equal(nextPerformanceBoundary(.7, beats, "four-beats"), 2.125);
+  assert.equal(nextPerformanceBoundary(.7, beats, "bar", [625, 2625, 4625]), 2.625);
+  assert.equal(nextPerformanceBoundary(4.7, beats, "bar", [625, 2625, 4625]), null);
+  assert.equal(nextPerformanceBoundary(.7, beats, "bar", [625, 625]), null);
+  assert.equal(normalizePerformance({ ...defaultPerformance(), snap: "bar" })?.snap, "bar");
+});

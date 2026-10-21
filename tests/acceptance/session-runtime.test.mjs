@@ -60,7 +60,7 @@ before(async () => {
         const body = JSON.parse(raw || "{}");
         if (parts[5] === "swaps") {
           if (req.method === "DELETE") state.swaps = state.swaps.filter(swap => swap.id !== url.searchParams.get("swapId"));
-          else state.swaps.push({ id: "swap-drums", fromStemAssetId: "a", toStemAssetId: body.toStemAssetId ?? "b", sessionTrackId: body.sessionTrackId, stemType: body.stemType, toTrackId: body.toTrackId, atSeconds: body.atSeconds });
+          else state.swaps.push({ id: `swap-${state.swaps.length}`, fromStemAssetId: state.tracks.find(track => track.id === body.sessionTrackId)?.stems.find(stem => stem.stemType === body.stemType)?.id, toStemAssetId: body.toStemAssetId ?? "b", sessionTrackId: body.sessionTrackId, stemType: body.stemType, toTrackId: body.toTrackId, atSeconds: body.atSeconds });
         }
         if (parts[5] === "state") { if (process.env.DEBUG_SESSION) console.log(parts[4], body); Object.assign(state, body); }
         if (req.method === "DELETE" && parts[5] === "tracks") state.tracks = state.tracks.filter((track) => track.id !== url.searchParams.get("sessionTrackId"));
@@ -306,7 +306,8 @@ test("live donor replacement and revert keep the other lane running and resume t
   const before = await deck.locator("audio").first().evaluate(el => el.currentTime);
   await page.getByRole("button", { name: "Swap", exact: true }).first().click();
   const donor = deck.locator('audio[aria-label="drums audio (swapped layer)"]');
-  await expect(donor).toHaveAttribute("src", "/api/assets/b");
+  await expect(donor).toHaveAttribute("data-active-source", "b");
+  await expect(donor).toHaveAttribute("src", "/api/assets/a"); // Original media stays the clock; real donor feeds the same analysed lane.
   await expect.poll(() => donor.evaluate(el => !el.paused && el.currentTime > 6.9), { timeout: 5000 }).toBe(true);
   const clocks = await deck.locator("audio").evaluateAll(els => els.map(el => el.currentTime));
   assert.ok(Math.abs(clocks[0] - clocks[1]) < 0.12, `donor synchronized to unaffected clock: ${clocks}`);
@@ -334,7 +335,7 @@ test("a slow single-lane donor retains the real cursor and cannot auto-resume af
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   t.after(() => release());
-  await page.route("**/api/assets/b", async route => { await gate; await route.continue(); });
+  await page.route("**/api/assets/b", async route => { await gate; await route.continue().catch(() => {}); });
   const requested = page.waitForRequest("**/api/assets/b");
   await page.getByRole("button", { name: "Swap", exact: true }).click();
   await requested;
@@ -345,7 +346,9 @@ test("a slow single-lane donor retains the real cursor and cannot auto-resume af
   assert.equal(await audio.evaluate(el => el.paused), true);
   await expect.poll(() => audio.evaluate(el => el.currentTime > 6.9)).toBe(true);
   await page.getByTestId("session-play").click();
-  await audible(page, 440);
+  await audible(page, 220); // Pause cancelled the uncommitted donor; resuming must NOT silently replay it.
+  await expect(audio).toHaveAttribute("data-active-source", "a");
+  assert.deepEqual(session("slow-donor").swaps, []);
   assert.ok(await audio.evaluate(el => el.currentTime) > 6.9);
   console.log(JSON.stringify({ kind: "single-lane-delayed-donor", retainedSeconds: await audio.evaluate(el => el.currentTime), savedPosition, scope: "real browser audio, controlled delayed HTTP, not inference/persistence" }));
 });
@@ -358,17 +361,15 @@ test("revert fences a pending donor load; a missing donor reports failure and re
   await page.route("**/api/assets/b", async route => { await gate; await route.continue().catch(() => {}); });
   const requested = page.waitForRequest("**/api/assets/b");
   await page.getByRole("button", { name: "Swap", exact: true }).click(); await requested;
-  await page.getByRole("button", { name: "Revert", exact: true }).click();
+  await page.getByRole("group", { name: "Source for drums" }).getByRole("button", { name: "A · Song A", exact: true }).click();
   await audible(page, 220);
   release();
   await expect.poll(() => page.getByTestId("session-deck-current").locator("audio").evaluate(el => !el.paused && el.src.endsWith("/a"))).toBe(true);
   await page.unroute("**/api/assets/b");
   await page.route("**/api/assets/b", route => route.fulfill({ status: 404, body: "Missing retained audio" }));
   await page.getByRole("button", { name: "Swap", exact: true }).click();
-  await expect(page.getByTestId("session-deck-current").getByRole("alert")).toBeVisible();
-  await expect.poll(() => page.getByTestId("session-deck-current").locator("audio").evaluate(el => el.paused)).toBe(true);
-  await page.getByRole("button", { name: "Revert", exact: true }).click();
-  await page.getByTestId("session-play").click();
+  await expect(page.getByTestId("session-status")).toContainText("HTTP 404");
+  assert.equal(await page.getByTestId("session-deck-current").locator("audio").evaluate(el => el.paused), false, "failed preparation does not pause the working mix");
   await audible(page, 220);
   assert.equal(session("fenced-donor").tracks.length, 3);
   assert.deepEqual(session("fenced-donor").swaps, []);
@@ -610,4 +611,389 @@ test("restore-point rejection keeps the latest cursor for explicit retry and fre
   assert.equal(session("cursor-retry").positionSeconds, 11);
   await page.reload();
   await expect(page.getByLabel("Session position", { exact: true })).toHaveValue("11");
+});
+
+const categories = ["vocals", "drums", "bass", "instruments"];
+const sourceHz = { a: [220, 440, 660, 880], b: [1100, 1320, 1540, 1760] };
+function fourSongSession(id, levels = [.73, .41, .62, .91]) {
+  const state = session(id); state.tracks = state.tracks.slice(0, 2);
+  for (const [index, track] of state.tracks.entries()) {
+    const song = index ? "b" : "a";
+    track.stems = categories.map((stemType, i) => {
+      const asset = `four-${song}-${stemType}`;
+      if (!tones.has(asset)) tones.set(asset, tone(sourceHz[song][i]));
+      return { id: asset, stemType, engine: "synthetic-fixture" };
+    });
+    track.playback.assetIds = track.stems.map(stem => stem.id);
+    track.stemMix = Object.fromEntries(categories.map((name, i) => [name, levels[i]]));
+  }
+  return state;
+}
+async function laneSignals(page) {
+  return page.evaluate(({ categories, sourceHz }) => Object.fromEntries(window.observedAudio.flatMap(({ context, stems }) => stems.filter(({ element }) => element.getAttribute("src")?.startsWith("/api/assets/four-a-")).map(({ node, element }) => {
+    const category = element.getAttribute("src").split("four-a-")[1], index = categories.indexOf(category);
+    const pcm = new Float32Array(node.fftSize); node.getFloatTimeDomainData(pcm);
+    const amplitude = hz => { let re = 0, im = 0; for (let i = 0; i < pcm.length; i++) { const phase = 2 * Math.PI * hz * i / context.sampleRate; re += pcm[i] * Math.cos(phase); im += pcm[i] * Math.sin(phase); } return 2 * Math.hypot(re, im) / pcm.length; };
+    return [category, { a: amplitude(sourceHz.a[index]), b: amplitude(sourceHz.b[index]), rms: Math.sqrt(pcm.reduce((sum, x) => sum + x*x, 0) / pcm.length), position: element.currentTime }];
+  }))), { categories, sourceHz });
+}
+async function assertFourSources(page, selection, levels = [.73, .41, .62, .91]) {
+  await expect.poll(async () => {
+    const signals = await laneSignals(page);
+    if (process.env.DEBUG_SESSION) console.log("four-lane-probe", JSON.stringify(signals));
+    return categories.every((category, i) => {
+      const signal = signals[category], selected = selection[category] ?? "a", other = selected === "a" ? "b" : "a";
+      return signal && (levels[i] === 0 ? signal.rms < .001 : Math.abs(signal[selected] - .25 * Math.SQRT1_2 * levels[i]) < .01 && signal[other] < .015);
+    });
+  }, { intervals: [10] }).toBe(true);
+}
+
+test("four independent lane signals prove repeated A/B replacements in every category, unchanged levels, and saved recall", { timeout: 35000 }, async t => {
+  const state = fourSongSession("four-sources");
+  const page = await pageFor(t, "four-sources");
+  await page.getByTestId("session-play").click();
+  const selected = {};
+  await assertFourSources(page, selected);
+  await page.getByRole("button", { name: "Mute bass", exact: true }).click();
+  await page.getByRole("group", { name: "Source for vocals", exact: true }).getByRole("button", { name: "B · Song B", exact: true }).click();
+  await assertFourSources(page, { vocals: "b" }, [.73, .41, 0, .91]);
+  await page.getByRole("button", { name: "Mute bass", exact: true }).click();
+  await page.getByRole("group", { name: "Source for vocals", exact: true }).getByRole("button", { name: "A · Song A", exact: true }).click();
+  await assertFourSources(page, {});
+  const observations = [];
+  for (let repeat = 0; repeat < 2; repeat++) for (const category of categories) for (const song of ["b", "a"]) {
+    const before = await laneSignals(page);
+    await page.getByRole("group", { name: `Source for ${category}`, exact: true }).getByRole("button", { name: `${song.toUpperCase()} · Song ${song.toUpperCase()}`, exact: true }).click();
+    selected[category] = song;
+    await assertFourSources(page, selected);
+    const after = await laneSignals(page);
+    for (const other of categories.filter(name => name !== category)) assert.ok(Math.abs(before[other][selected[other] ?? "a"] - after[other][selected[other] ?? "a"]) < .02, `${other} signal unchanged by ${category}`);
+    observations.push({ category, song, repeat, before, after });
+  }
+  await page.getByRole("group", { name: "Source for vocals", exact: true }).getByRole("button", { name: "B · Song B", exact: true }).click();
+  await assertFourSources(page, { vocals: "b" });
+  await expect(page.getByLabel("Stem selection save status")).toContainText("saved");
+  assert.equal(state.swaps.filter(swap => swap.stemType === "vocals").at(-1).toStemAssetId, "four-b-vocals");
+  await page.reload(); await page.getByTestId("session-play").click();
+  await assertFourSources(page, { vocals: "b" });
+  console.log(JSON.stringify({ kind: "four-category-independent-lane-signals", scope: "real UI/WebAudio, synthetic distinguishable PCM, controlled HTTP not SQL or inference", observations }));
+});
+
+test("true held isolation restores exact non-unity/pre-muted mix on outside release, cancellation, blur, seek and touch release", { timeout: 25000 }, async t => {
+  const levels = [.73, .41, 0, .91], state = fourSongSession("held-four", levels), original = { ...state.tracks[0].stemMix };
+  const page = await pageFor(t, "held-four"); await page.getByTestId("session-play").click();
+  await assertFourSources(page, {}, levels);
+  const hold = page.getByRole("button", { name: "Hold to isolate bass", exact: true });
+  const held = async () => expect.poll(async () => { const signals = await laneSignals(page); return Math.abs((signals.bass?.a ?? 0) - .25 * Math.SQRT1_2) < .01 && categories.filter(name => name !== "bass").every(name => signals[name]?.rms < .001); }).toBe(true);
+  for (const interruption of ["outside-release", "pointercancel", "lostcapture", "blur", "seek"]) {
+    await hold.hover(); await page.mouse.down(); await held();
+    if (interruption === "outside-release") { await page.mouse.move(1, 1); await page.mouse.up(); }
+    if (interruption === "pointercancel") { await hold.dispatchEvent("pointercancel", { pointerId: 1 }); await page.mouse.up(); }
+    if (interruption === "lostcapture") { await hold.dispatchEvent("lostpointercapture", { pointerId: 1 }); await page.mouse.up(); }
+    if (interruption === "blur") { await page.evaluate(() => window.dispatchEvent(new Event("blur"))); await page.mouse.up(); }
+    if (interruption === "seek") { await page.getByLabel("Session position", { exact: true }).fill("5"); await page.mouse.up(); }
+    await assertFourSources(page, {}, levels);
+    assert.deepEqual(state.tracks[0].stemMix, original, "temporary monitoring never persisted as a new mix");
+  }
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  await hold.scrollIntoViewIfNeeded();
+  const box = await hold.boundingBox();
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width/2, y: box.y + box.height/2 }] });
+  await held();
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await assertFourSources(page, {}, levels);
+  assert.deepEqual(state.tracks[0].stemMix, original);
+});
+
+test("held quantised start/release and persisted Instant Restore use actual source clock; a short hold cannot stick later", { timeout: 25000 }, async t => {
+  const state = fourSongSession("held-boundaries");
+  state.tracks[0].analysis = { bpm: 30, musicalKey: null, beatGridMs: Array.from({ length: 16 }, (_, i) => i*2000) };
+  state.tracks[0].transition.performance = { snap: "beat", instantRestore: false, recall: {}, isolatedStem: null, beforeIsolation: null };
+  const page = await pageFor(t, "held-boundaries"); await page.getByTestId("session-play").click();
+  const audio = page.getByTestId("session-deck-current").locator("audio").first();
+  const hold = page.getByRole("button", { name: "Hold to isolate vocals", exact: true });
+  await hold.hover(); await page.mouse.down(); await page.mouse.up();
+  await expect.poll(() => audio.evaluate(el => el.currentTime > 2.15)).toBe(true);
+  await assertFourSources(page, {});
+  await hold.hover(); await page.mouse.down();
+  await expect.poll(async () => (await laneSignals(page)).drums?.rms < .001, { intervals: [10] }).toBe(true);
+  const startAt = await audio.evaluate(el => el.currentTime); assert.ok(startAt >= 4 && startAt < 4.15, `held start at measured 4s: ${startAt}`);
+  await page.mouse.up();
+  await expect(page.getByRole("status", { name: "", exact: true }).filter({ hasText: "Pending stem changes" })).toBeVisible();
+  assert.ok((await laneSignals(page)).drums.rms < .001, "Instant Restore off keeps the actual isolation until the next beat");
+  await assertFourSources(page, {});
+  const restoredAt = await audio.evaluate(el => el.currentTime); assert.ok(restoredAt >= 6 && restoredAt < 6.15, `held restore at 6s: ${restoredAt}`);
+  await page.getByLabel("Instant Restore", { exact: true }).check();
+  await hold.hover(); await page.mouse.down();
+  await expect.poll(async () => (await laneSignals(page)).drums?.rms < .001, { intervals: [10] }).toBe(true);
+  await page.mouse.up(); await assertFourSources(page, {});
+  assert.ok(await audio.evaluate(el => el.currentTime) < 9, "Instant Restore on audibly restores without waiting for beat 10");
+  await expect(page.getByLabel("Session edit save status")).toContainText("saved");
+  assert.equal(state.tracks[0].transition.performance.instantRestore, true);
+});
+
+for (const [snap, bpm, rate] of [["off", 80, 1], ["quarter", 80, 1], ["half", 137, 1], ["beat", 80, 1.25], ["quarter", 137, 1.25]]) {
+  test(`prepared ${snap} swap: audible measured boundary at ${bpm} BPM, nonzero origin/offset, rate ${rate}`, { timeout: 15000 }, async t => {
+    const id = `prepared-${snap}-${bpm}-${rate}`, state = session(id), grid = Array.from({ length: 50 }, (_, i) => Math.round(125 + i * 60000 / bpm));
+    state.tracks[0].analysis = { bpm, musicalKey: null, beatGridMs: grid };
+    state.tracks[0].transition.performance = { snap: "off", instantRestore: true, recall: {}, isolatedStem: null, beforeIsolation: null };
+    const page = await pageFor(t, id, async candidate => candidate.addInitScript(() => {
+      window.bufferStarts = [];
+      const nativeStart = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function(when, offset, ...rest) {
+        window.bufferStarts.push({ when, offset, contextTime: this.context.currentTime, rate: this.playbackRate.value });
+        return nativeStart.call(this, when, offset, ...rest);
+      };
+    }));
+    await start(page);
+    // Exercise preparation separately: the measured gesture below switches an
+    // already validated/decoded donor. Cold/missed preparation is tested below.
+    await page.getByRole("button", { name: "Swap", exact: true }).click(); await audible(page, 440);
+    await page.getByRole("button", { name: "Revert", exact: true }).click(); await audible(page, 220);
+    await page.getByLabel("Snap stem changes", { exact: true }).selectOption(snap);
+    await page.evaluate(() => { window.bufferStarts = []; });
+    await page.getByTestId("session-deck-current").locator("audio").evaluate((audio, rate) => { audio.playbackRate = rate; audio.preservesPitch = false; }, rate);
+    await audible(page, 220*rate);
+    const divisions = snap === "quarter" ? 4 : snap === "half" ? 2 : 1;
+    const target = (grid[8] + (grid[9] - grid[8]) * (divisions === 4 ? .75 : divisions === 2 ? .5 : 1)) / 1000;
+    const result = await page.evaluate(async ({ target, rate, snap }) => {
+      const deck = document.querySelector('[data-testid="session-deck-current"]'), audio = deck.querySelector("audio");
+      // Playback rate was settled before this measured, nonzero-offset seek.
+      await new Promise(resolve => { audio.addEventListener("seeked", resolve, { once: true }); audio.currentTime = target - .065 * rate; });
+      await new Promise(requestAnimationFrame);
+      const before = audio.currentTime;
+      const measured = [];
+      const sample = () => {
+        const raw = window.observedAudio.filter(({ context }) => context.state === "running").map(({ context, analysers }) => {
+          const pcm = new Float32Array(analysers[0].fftSize); analysers[0].getFloatTimeDomainData(pcm);
+          const amplitude = hz => { let re = 0, im = 0; for (let i = 0; i < pcm.length; i++) { const phase = 2*Math.PI*hz*i/context.sampleRate; re += pcm[i]*Math.cos(phase); im += pcm[i]*Math.sin(phase); } return 2*Math.hypot(re, im)/pcm.length; };
+          return { a: amplitude(220*rate), b: amplitude(440*rate) };
+        });
+        measured.push({ sourceSeconds: audio.currentTime, signals: window.audioSnapshot(), raw });
+      };
+      sample();
+      document.querySelector('[role="group"][aria-label="Source for drums"]').querySelectorAll("button")[1].click();
+      while (audio.currentTime < target + .16) { await new Promise(requestAnimationFrame); sample(); }
+      return { before, measured, starts: window.bufferStarts, status: document.querySelector('[data-testid="session-status"]').textContent };
+    }, { target, rate, snap });
+    assert.equal(result.starts.length, 1, JSON.stringify(result));
+    if (snap !== "off") assert.ok(Math.abs(result.starts[0].offset - target) < 1e-6, `prepared source offset equals measured boundary: ${JSON.stringify(result.starts)}`);
+    assert.equal(result.starts[0].rate, rate);
+    const expected = snap === "off" ? result.before : target;
+    const firstDonor = result.measured.find(sample => sample.raw.some(signal => signal.b > .025));
+    assert.ok(firstDonor, JSON.stringify(result));
+    assert.ok(firstDonor.sourceSeconds >= expected - .025 && firstDonor.sourceSeconds <= expected + .08, JSON.stringify({ expected, firstDonor, result }));
+    for (const sample of result.measured.filter(sample => sample.sourceSeconds < expected - .025)) assert.ok(sample.signals.some(signal => signal.rms > .08 && Math.abs(signal.hz - 220*rate) < 30), `original remains audible until its boundary: ${JSON.stringify(result)}`);
+    console.log(JSON.stringify({ kind: "prepared-audible-source-boundary", snap, bpm, rate, target: expected, result, scope: "real UI/WebAudio and independent actual signal, synthetic PCM/controlled HTTP, no trained/key-match claim" }));
+  });
+}
+
+test("missed donor preparation, decode error, rapid supersession, pause/seek, and unavailable bar never save a pending success", { timeout: 20000 }, async t => {
+  const state = session("prepared-fences");
+  state.tracks[0].analysis = { bpm: 120, musicalKey: null, beatGridMs: Array.from({ length: 61 }, (_, i) => i*500) };
+  state.tracks[0].transition.performance = { snap: "beat", instantRestore: true, recall: {}, isolatedStem: null, beforeIsolation: null };
+  const page = await pageFor(t, "prepared-fences"); await start(page);
+  let release; const gate = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  await page.route("**/api/assets/b", async route => { await gate; await route.continue().catch(() => {}); });
+  const audio = page.getByTestId("session-deck-current").locator("audio").first();
+  const requested = page.waitForRequest("**/api/assets/b");
+  await page.getByRole("button", { name: "Swap", exact: true }).click(); await requested;
+  await expect.poll(() => audio.evaluate(el => el.currentTime > 1.2)).toBe(true);
+  release(); await expect(page.getByTestId("session-status")).toContainText("missed");
+  await audible(page, 220); assert.deepEqual(state.swaps, []);
+  await page.getByLabel("Snap stem changes", { exact: true }).selectOption("bar");
+  await page.getByRole("button", { name: "Swap", exact: true }).click();
+  await expect(page.getByTestId("session-status")).toContainText("no verified downbeat");
+  assert.deepEqual(state.swaps, []); await audible(page, 220);
+  await page.getByLabel("Snap stem changes", { exact: true }).selectOption("off");
+  // Use a fresh asset identity so the deliberately decoded-but-late donor
+  // cache cannot disguise the following corrupt response.
+  state.tracks[1].stems[0].id = "corrupt-donor"; state.tracks[1].playback.assetIds = ["corrupt-donor"];
+  tones.set("corrupt-donor", Buffer.from("not audio"));
+  await page.reload(); await start(page);
+  await page.getByRole("button", { name: "Swap", exact: true }).click();
+  await expect(page.getByTestId("session-status")).toContainText(/decod|audio/i);
+  await audible(page, 220); assert.deepEqual(state.swaps, []);
+});
+
+test("audible selection survives failed saves; acknowledged serial retry saves latest rapid A/B intent and reloads it", { timeout: 20000 }, async t => {
+  const state = fourSongSession("selection-save"); const page = await pageFor(t, "selection-save");
+  await page.getByTestId("session-play").click(); await assertFourSources(page, {});
+  const source = page.getByRole("group", { name: "Source for vocals", exact: true });
+  let posts = 0, release; const gate = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  await page.route("**/api/library/sessions/selection-save/swaps?*", async route => {
+    posts++;
+    if (posts === 1) { await gate; await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Controlled selection rejection" }) }); }
+    else await route.continue();
+  });
+  await source.getByRole("button", { name: "B · Song B", exact: true }).click(); await assertFourSources(page, { vocals: "b" });
+  await expect.poll(() => posts).toBe(1);
+  await source.getByRole("button", { name: "A · Song A", exact: true }).click(); await assertFourSources(page, {});
+  await source.getByRole("button", { name: "B · Song B", exact: true }).click(); await assertFourSources(page, { vocals: "b" });
+  assert.equal(posts, 1, "latest selections cannot race a withheld predecessor ACK");
+  release(); await expect(page.getByLabel("Stem selection save status")).toContainText("error");
+  await assertFourSources(page, { vocals: "b" }); assert.deepEqual(state.swaps, [], "HTTP failure was not a saved selection");
+  await page.getByRole("button", { name: "Retry saving stem selections", exact: true }).click();
+  await expect(page.getByLabel("Stem selection save status")).toContainText("saved");
+  assert.equal(posts, 2); assert.equal(state.swaps.at(-1).toStemAssetId, "four-b-vocals");
+  await page.reload(); await page.getByTestId("session-play").click(); await assertFourSources(page, { vocals: "b" });
+});
+
+test("held isolation cannot stick across AudioContext interruption and committed donor resumes after seek/pause", { timeout: 15000 }, async t => {
+  fourSongSession("context-hold"); const page = await pageFor(t, "context-hold");
+  await page.getByTestId("session-play").click(); await assertFourSources(page, {});
+  await page.getByRole("group", { name: "Source for drums", exact: true }).getByRole("button", { name: "B · Song B", exact: true }).click();
+  await assertFourSources(page, { drums: "b" });
+  const hold = page.getByRole("button", { name: "Hold to isolate vocals", exact: true });
+  await hold.hover(); await page.mouse.down();
+  await expect.poll(async () => (await laneSignals(page)).drums?.rms < .001).toBe(true);
+  await page.evaluate(async () => { await Promise.all(window.observedAudio.filter(({ context }) => context.state === "running").map(({ context }) => context.suspend())); });
+  await expect(page.getByTestId("session-play")).toHaveText("Play");
+  await page.mouse.up(); await page.getByTestId("session-play").click(); await assertFourSources(page, { drums: "b" });
+  await page.getByLabel("Session position", { exact: true }).fill("8"); await assertFourSources(page, { drums: "b" });
+  await page.getByTestId("session-play").click(); await page.getByTestId("session-play").click(); await assertFourSources(page, { drums: "b" });
+});
+
+test("prepared start failure preserves audio; scheduled swaps are fenced by seek and playback-rate changes", { timeout: 20000 }, async t => {
+  const state = session("start-and-schedule-fences");
+  state.tracks[0].analysis = { bpm: 30, musicalKey: null, beatGridMs: Array.from({ length: 16 }, (_, i) => i*2000) };
+  const page = await pageFor(t, "start-and-schedule-fences", candidate => candidate.addInitScript(() => {
+    const native = AudioBufferSourceNode.prototype.start;
+    window.rejectDonorStart = true;
+    AudioBufferSourceNode.prototype.start = function(...args) { if (window.rejectDonorStart) throw new DOMException("Controlled donor start rejection", "NotSupportedError"); return native.apply(this, args); };
+  }));
+  await start(page);
+  await page.getByRole("button", { name: "Swap", exact: true }).click();
+  await expect(page.getByTestId("session-status")).toContainText("could not start");
+  await audible(page, 220); assert.deepEqual(state.swaps, []);
+  await page.evaluate(() => { window.rejectDonorStart = false; });
+  await page.getByRole("button", { name: "Swap", exact: true }).click(); await audible(page, 440);
+  await page.getByRole("button", { name: "Revert", exact: true }).click(); await audible(page, 220);
+  await expect(page.getByLabel("Stem selection save status")).toContainText("saved");
+  const committed = state.swaps.length;
+  await page.getByLabel("Snap stem changes", { exact: true }).selectOption("beat");
+  await page.getByRole("button", { name: "Swap", exact: true }).click();
+  await expect(page.getByTestId("session-status")).toContainText("scheduled at source");
+  await page.getByLabel("Session position", { exact: true }).fill("5");
+  await audible(page, 220); await expect(page.getByTestId("session-status")).toContainText("cancelled");
+  assert.equal(state.swaps.length, committed);
+  await page.getByRole("button", { name: "Swap", exact: true }).click();
+  await expect(page.getByTestId("session-status")).toContainText("scheduled at source");
+  await page.getByTestId("session-deck-current").locator("audio").evaluate(audio => { audio.playbackRate = 1.25; });
+  await expect(page.getByTestId("session-status")).toContainText("cancelled");
+  await audible(page, 220); assert.equal(state.swaps.length, committed);
+});
+
+test("removing a membership forgets only its acknowledged selection writes and cannot poison a later donor save", { timeout: 20000 }, async t => {
+  const state = session("selection-removal"); const page = await pageFor(t, "selection-removal"); await start(page);
+  let release, posts = 0; const gate = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  await page.route("**/api/library/sessions/selection-removal/swaps?*", async route => {
+    posts++;
+    if (posts === 1) { await gate; await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "Membership removed after this write started" }) }); }
+    else await route.continue();
+  });
+  await page.getByRole("button", { name: "Swap", exact: true }).click(); await audible(page, 440);
+  await expect.poll(() => posts).toBe(1);
+  await page.getByRole("button", { name: "Remove Song A", exact: true }).click(); await current(page, "Song B");
+  await page.getByTestId("session-play").click(); await audible(page, 440);
+  await page.getByRole("button", { name: "Swap", exact: true }).click(); await audible(page, 880);
+  release(); await expect(page.getByLabel("Stem selection save status")).toContainText("saved");
+  assert.equal(posts, 2); assert.equal(state.swaps.at(-1).sessionTrackId, "b"); assert.equal(state.swaps.at(-1).toStemAssetId, "c");
+});
+
+function fixtureBoundary(seconds, grid, snap) {
+  const divisions = snap === "quarter" ? 4 : snap === "half" ? 2 : 1;
+  for (let i = 0; i < grid.length - 1; i++) for (let part = 0; part < divisions; part++) {
+    const boundary = (grid[i] + (grid[i+1] - grid[i])*part/divisions)/1000;
+    if (boundary > seconds + .000001) return boundary;
+  }
+  throw new Error("Fixture grid exhausted");
+}
+async function waitForMonitorGestureLead(page, grid, snap) {
+  // Keep this positive full-window observation case away from DOM locator
+  // races at very short subdivisions. Near-boundary swaps have separate raw
+  // waveform tests; this does not relax an audio assertion or a deadline.
+  await page.evaluate(async ({ grid, divisions }) => {
+    const audio = document.querySelector('[data-testid="session-deck-current"] audio');
+    for (;;) {
+      const now = audio.currentTime;
+      let next = null;
+      for (let i = 0; i < grid.length-1 && next === null; i++) for (let part = 0; part < divisions; part++) {
+        const boundary = (grid[i] + (grid[i+1]-grid[i])*part/divisions)/1000;
+        if (boundary > now + .000001) { next = boundary; break; }
+      }
+      if (next === null) throw new Error("Fixture beat grid exhausted");
+      if (next-now > .16) return;
+      await new Promise(requestAnimationFrame);
+    }
+  }, { grid, divisions: snap === "quarter" ? 4 : snap === "half" ? 2 : 1 });
+}
+async function recordDrumsThrough(page, target) {
+  return page.evaluate(async target => {
+    const observed = window.observedAudio.flatMap(({ stems }) => stems).find(({ element }) => element.getAttribute("src") === "/api/assets/four-a-drums");
+    const observations = [];
+    do {
+      await new Promise(requestAnimationFrame);
+      const pcm = new Float32Array(observed.node.fftSize); observed.node.getFloatTimeDomainData(pcm);
+      observations.push({ sourceSeconds: observed.element.currentTime, rms: Math.sqrt(pcm.reduce((s,x) => s+x*x, 0)/pcm.length) });
+    } while (observed.element.currentTime < target + .15);
+    return observations;
+  }, target);
+}
+for (const [snap, bpm] of [["quarter", 80], ["half", 137], ["beat", 120]]) {
+  test(`${snap} mute and true held start/release audibly follow measured ${bpm} BPM boundaries with nonzero offset`, { timeout: 20000 }, async t => {
+    const id = `monitor-${snap}-${bpm}`, state = fourSongSession(id), grid = Array.from({ length: 65 }, (_, i) => Math.round(125 + i*60000/bpm));
+    state.tracks[0].analysis = { bpm, musicalKey: null, beatGridMs: grid };
+    state.tracks[0].transition.performance = { snap, instantRestore: false, recall: {}, isolatedStem: null, beforeIsolation: null };
+    state.positionSeconds = 3.2;
+    const page = await pageFor(t, id); await page.getByTestId("session-play").click(); await assertFourSources(page, {});
+    const audio = page.getByTestId("session-deck-current").locator("audio").first();
+    const records = [];
+    for (const muted of [true, false]) {
+      await waitForMonitorGestureLead(page, grid, snap);
+      const before = await audio.evaluate(el => el.currentTime);
+      await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+      const after = await audio.evaluate(el => el.currentTime);
+      const pending = page.getByRole("status").filter({ hasText: /^Pending stem changes/ });
+      const match = (await pending.innerText()).match(/source ([\d.]+)s/); assert.ok(match);
+      const target = Number(match[1]);
+      assert.ok([fixtureBoundary(before, grid, snap), fixtureBoundary(after, grid, snap)].some(value => Math.abs(value-target) < .0011), "target is the next measured subdivision of the actual gesture, not a wall clock");
+      const samples = await recordDrumsThrough(page, target);
+      for (const sample of samples.filter(sample => sample.sourceSeconds < target-.005)) assert.ok(muted ? sample.rms > .04 : sample.rms < .001, "no premature audible mute/unmute");
+      assert.ok(samples.some(sample => sample.sourceSeconds >= target && sample.sourceSeconds <= target+.15 && (muted ? sample.rms < .001 : sample.rms > .04)), JSON.stringify(samples));
+      records.push({ action: muted ? "mute" : "unmute", before, after, target, samples });
+    }
+    const hold = page.getByRole("button", { name: "Hold to isolate vocals", exact: true }); await hold.hover();
+    for (const starting of [true, false]) {
+      await waitForMonitorGestureLead(page, grid, snap);
+      const before = await audio.evaluate(el => el.currentTime);
+      if (starting) await page.mouse.down(); else await page.mouse.up();
+      const after = await audio.evaluate(el => el.currentTime);
+      const pending = page.getByRole("status").filter({ hasText: /^Pending stem changes/ });
+      const match = (await pending.innerText()).match(/source ([\d.]+)s/); assert.ok(match);
+      const target = Number(match[1]);
+      assert.ok([fixtureBoundary(before, grid, snap), fixtureBoundary(after, grid, snap)].some(value => Math.abs(value-target) < .0011));
+      const samples = await recordDrumsThrough(page, target);
+      for (const sample of samples.filter(sample => sample.sourceSeconds < target-.005)) assert.ok(starting ? sample.rms > .04 : sample.rms < .001, "held isolation/release never applies early");
+      assert.ok(samples.some(sample => sample.sourceSeconds >= target && sample.sourceSeconds <= target+.15 && (starting ? sample.rms < .001 : sample.rms > .04)), JSON.stringify(samples));
+      records.push({ action: starting ? "hold-start" : "hold-release", before, after, target, samples });
+    }
+    await assertFourSources(page, {});
+    console.log(JSON.stringify({ kind: "source-clock-monitor-boundaries", snap, bpm, records, scope: "raw independent drums lane PCM; controlled HTTP/synthetic input, 150ms full-window settle bound, existing 80ms dispatch guard unchanged" }));
+  });
+}
+
+test("a shorter committed donor ends only its lane, reports silence honestly, and returns to A without stopping other categories", { timeout: 15000 }, async t => {
+  const state = fourSongSession("donor-end");
+  const short = Buffer.from(tones.get("four-b-drums").subarray(0, 44+44100*2)); short.writeUInt32LE(short.length-8,4); short.writeUInt32LE(short.length-44,40);
+  tones.set("short-donor", short); state.tracks[1].stems[1].id = "short-donor"; state.tracks[1].playback.assetIds[1] = "short-donor";
+  const page = await pageFor(t, "donor-end"); await page.getByTestId("session-play").click(); await assertFourSources(page, {});
+  const source = page.getByRole("group", { name: "Source for drums", exact: true });
+  await source.getByRole("button", { name: "B · Song B", exact: true }).click(); await assertFourSources(page, { drums: "b" });
+  await expect(page.getByRole("status").filter({ hasText: "drums donor ended" })).toBeVisible();
+  assert.equal(await page.getByTestId("session-deck-current").locator("audio").first().evaluate(el => el.paused), false);
+  await assertFourSources(page, {}, [.73, 0, .62, .91]);
+  await source.getByRole("button", { name: "A · Song A", exact: true }).click(); await assertFourSources(page, {});
+  await expect(page.getByRole("status").filter({ hasText: "drums donor ended" })).toHaveCount(0);
 });

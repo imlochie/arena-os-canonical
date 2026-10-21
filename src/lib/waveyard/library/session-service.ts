@@ -493,6 +493,7 @@ export async function recordStemSwap(input: {
   toTrackId: string;
   atSeconds: number;
   toStemAssetId?: string;
+  fromStemAssetId?: string;
 }): Promise<SessionDetailPayload> {
   await ownedSession(input.ownerId, input.sessionId);
 
@@ -522,15 +523,26 @@ export async function recordStemSwap(input: {
   const validation = validateStemSwap(currentDetail.stems, [donorStem], input.stemType);
   if (!validation.ok) throw new StemSwapRefusedError(validation.reason);
 
-  await db.insert(listenSessionSwaps).values({
-    sessionId: input.sessionId,
-    sessionTrackId: input.sessionTrackId,
-    stemType: input.stemType,
-    fromStemAssetId: currentDetail.stems.find(stem => stem.stemType === input.stemType)!.id,
-    toStemAssetId: donorStem.id,
-    fromTrackId: sessionTrack.trackId,
-    toTrackId: input.toTrackId,
-    atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
+  await db.transaction(async tx => {
+    // Preserve the existing provenance/Studio ranges. The last acknowledged
+    // selection per category is active, including an explicit return to A.
+    // This is not a complete recording/replay of performed gestures.
+    const [member] = await tx.select({ id: listenSessionTracks.id, assetSelection: listenSessionTracks.assetSelection }).from(listenSessionTracks)
+      .where(and(eq(listenSessionTracks.id, input.sessionTrackId), eq(listenSessionTracks.sessionId, input.sessionId))).for("update");
+    if (!member) throw new SessionTrackNotFoundError();
+    let lockedAssets: unknown = null;
+    try { lockedAssets = member.assetSelection ? JSON.parse(member.assetSelection).assetIds : null; } catch { /* Invalid saved identity is refused below, never guessed. */ }
+    if (input.fromStemAssetId && (currentDetail.stems.find(stem => stem.stemType === input.stemType)?.id !== input.fromStemAssetId || (member.assetSelection && (!Array.isArray(lockedAssets) || !lockedAssets.includes(input.fromStemAssetId))))) throw new StemSwapRefusedError("The target source bank changed. The old selection was not saved; reopen the current bank and choose again.");
+    await tx.insert(listenSessionSwaps).values({
+      sessionId: input.sessionId,
+      sessionTrackId: input.sessionTrackId,
+      stemType: input.stemType,
+      fromStemAssetId: currentDetail.stems.find(stem => stem.stemType === input.stemType)!.id,
+      toStemAssetId: donorStem.id,
+      fromTrackId: sessionTrack.trackId,
+      toTrackId: input.toTrackId,
+      atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
+    });
   });
   await touchSession(input.sessionId);
   return sessionPayload(input.sessionId);

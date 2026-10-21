@@ -91,6 +91,7 @@ jobs:
         env:
           WAVEYARD_ACCEPTANCE_ARTIFACT_DIR: .data/acceptance/waveyard-handoff
           ARENA_TRANSITION_EVIDENCE_DIR: .data/acceptance/waveyard-handoff/transitions
+          ARENA_LIVE_STEM_EVIDENCE_DIR: .data/acceptance/waveyard-handoff/live-stems
         run: |
           mkdir -p .data/acceptance/waveyard-handoff
           set -o pipefail

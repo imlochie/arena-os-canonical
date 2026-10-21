@@ -622,11 +622,15 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
     () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "vocals", toTrackId: trackA.id, atSeconds: 1 }),
     (error: Error) => error instanceof sessions.StemSwapRefusedError && /current track has no real/i.test(error.message),
   );
-  // Refusal: donor A has no "piano" stem.
-  await assert.rejects(
-    () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "drums", toTrackId: trackA.id === trackA.id ? trackA.id : trackA.id, atSeconds: 1 }),
-    /donor/i,
-  ).catch(() => undefined); // (A DOES have drums — this call succeeds; the real refusal case is below)
+  // Repeated selections retain provenance/Studio ranges, but the latest exact
+  // asset alone is active. Returning A must be representable without deleting
+  // an older row and accidentally revealing an even older donor on reload.
+  const repeated = await sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "drums", toTrackId: trackA.id, atSeconds: 13 });
+  assert.equal(repeated.swaps.length, 2);
+  const originalAsset = detail.tracks[0].stems.find(stem => stem.stemType === "drums")!.id;
+  const restored = await sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "drums", toTrackId: trackB.id, toStemAssetId: originalAsset, atSeconds: 14 });
+  assert.equal(restored.swaps.length, 3);
+  assert.equal(restored.swaps.at(-1)!.toStemAssetId, originalAsset);
   await sessions.deleteSession(OWNER, created.id);
 });
 

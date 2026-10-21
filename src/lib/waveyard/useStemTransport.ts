@@ -12,8 +12,11 @@ export type MixerValues = {
   /** Mono monitoring (explicit downmix to 1 channel, then back up). */
   monoMonitor?: boolean;
 };
+type PreparedVoice = { sourceId: string; buffer: AudioBuffer; node?: AudioBufferSourceNode; gate?: GainNode; ended?: boolean };
+type ReplacementJob = { abort: AbortController; cancel?: () => void; settled?: Promise<void> };
 type AudioGraph = {
   source: MediaElementAudioSourceNode;
+  originalGate: GainNode;
   gain: GainNode;
   pan: StereoPannerNode | null;
   /** Explicit-channel-count downmix node: 1 = mono monitor, 2 = stereo. */
@@ -28,6 +31,7 @@ type AudioGraph = {
 function disconnectGraph(graph: AudioGraph) {
   graph.source.mediaElement.pause();
   graph.source.disconnect();
+  graph.originalGate.disconnect();
   graph.gain.disconnect();
   graph.pan?.disconnect();
   graph.mono.disconnect();
@@ -216,6 +220,14 @@ export function useStemTransport(assetIds: string[], duration: number) {
   const media = useRef<Record<string, HTMLAudioElement | null>>({});
   const graphs = useRef<Record<string, AudioGraph>>({});
   const context = useRef<AudioContext | null>(null);
+  const temporarySolo = useRef<{ id: string; gain: number } | null>(null);
+  const committedSources = useRef(new Map<string, PreparedVoice>());
+  const decodedDonors = useRef(new Map<string, AudioBuffer>());
+  const replacementJobs = useRef(new Map<string, ReplacementJob>());
+  const interruptContext = useRef(() => {});
+  const [sourceSelections, setSourceSelections] = useState<Record<string, string>>({});
+  const [endedSources, setEndedSources] = useState<Record<string, boolean>>({});
+
   const masterGain = useRef<GainNode | null>(null);
   const masterAnalyser = useRef<AnalyserNode | null>(null);
   const insertChains = useRef<Record<string, InsertChain>>({});
@@ -253,6 +265,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
       context.current = new AudioContext();
       masterGain.current = context.current.createGain();
       const ctx = context.current;
+      ctx.onstatechange = () => { if (ctx.state === "suspended" || (ctx.state as string) === "interrupted") interruptContext.current(); };
       masterAnalyser.current = ctx.createAnalyser();
       masterAnalyser.current.fftSize = 2048;
       const splitter = ctx.createChannelSplitter(2);
@@ -274,6 +287,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
     if (!graphs.current[id]) {
       const ctx = context.current;
       const source = ctx.createMediaElementSource(element);
+      const originalGate = ctx.createGain();
       const gain = ctx.createGain();
       const pan =
         "createStereoPanner" in ctx ? ctx.createStereoPanner() : null;
@@ -283,7 +297,8 @@ export function useStemTransport(assetIds: string[], duration: number) {
       mono.channelInterpretation = "speakers";
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
-      source.connect(gain);
+      source.connect(originalGate);
+      originalGate.connect(gain);
       const tail: AudioNode = pan ?? gain;
       if (pan) gain.connect(pan);
       let insertSubgraph: InsertSubgraph | null = null;
@@ -297,7 +312,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
       }
       mono.connect(analyser);
       analyser.connect(masterGain.current!);
-      graphs.current[id] = { source, gain, pan, mono, analyser, inserts: insertSubgraph, tail };
+      graphs.current[id] = { source, originalGate, gain, pan, mono, analyser, inserts: insertSubgraph, tail };
     }
     return graphs.current[id];
   }, []);
@@ -308,6 +323,141 @@ export function useStemTransport(assetIds: string[], duration: number) {
     },
     [],
   );
+  // Prepared voices feed the EXISTING lane gain/pan/inserts/analyser. The
+  // original media element remains the deck clock; its input gate is silent
+  // while a donor is active. No second mixer, player, or persisted session.
+  const stopVoice = useCallback((entry: PreparedVoice) => {
+    const node = entry.node, gate = entry.gate;
+    entry.node = undefined; entry.gate = undefined;
+    if (node) { node.onended = null; try { node.stop(); } catch { /* already ended */ } node.disconnect(); }
+    gate?.disconnect();
+  }, []);
+  const cancelReplacements = useCallback(() => {
+    for (const job of replacementJobs.current.values()) { job.abort.abort(); job.cancel?.(); }
+    replacementJobs.current.clear();
+  }, []);
+  const startVoice = useCallback((id: string, entry: PreparedVoice, when: number, offset: number, initialGain = 1) => {
+    const ctx = context.current!, graph = ensureGraph(id);
+    if (!graph || !entry.buffer || offset >= entry.buffer.duration) throw new Error("The donor does not cover this source position. The working mix was retained.");
+    const node = ctx.createBufferSource(), gate = ctx.createGain();
+    node.buffer = entry.buffer;
+    node.playbackRate.value = media.current[id]?.playbackRate ?? 1;
+    gate.gain.value = initialGain;
+    node.connect(gate); gate.connect(graph.gain);
+    entry.node = node; entry.gate = gate; entry.ended = false;
+    node.onended = () => {
+      entry.ended = true;
+      if (committedSources.current.get(id) !== entry || entry.node !== node) return;
+      setEndedSources(previous => ({ ...previous, [id]: true }));
+    };
+    try { node.start(when, Math.max(0, offset)); }
+    catch (cause) { entry.node = undefined; entry.gate = undefined; node.onended = null; node.disconnect(); gate.disconnect(); throw new Error(`Prepared donor could not start; the working mix was retained. ${cause instanceof Error ? cause.message : "Audio start failed"}`); }
+  }, [ensureGraph]);
+  const restartVoices = useCallback((offset: number) => {
+    for (const [id, entry] of committedSources.current) {
+      stopVoice(entry);
+      const graph = graphs.current[id];
+      if (graph) { graph.originalGate.gain.cancelScheduledValues(0); graph.originalGate.gain.value = 0; }
+      if (context.current?.state === "running" && !media.current[id]?.paused) { startVoice(id, entry, context.current.currentTime, offset); setEndedSources(previous => previous[id] ? { ...previous, [id]: false } : previous); }
+    }
+  }, [startVoice, stopVoice]);
+  const replaceSource = useCallback(async (id: string, sourceId: string, target: number | null = null, onPrepared?: (target: number | null) => void) => {
+    replacementJobs.current.get(id)?.abort.abort();
+    replacementJobs.current.get(id)?.cancel?.();
+    if ((committedSources.current.get(id)?.sourceId ?? id) === sourceId) return;
+    const abort = new AbortController();
+    let settled!: () => void;
+    const job: ReplacementJob = { abort, settled: new Promise<void>(resolve => { settled = resolve; }) };
+    replacementJobs.current.set(id, job);
+    const current = () => replacementJobs.current.get(id) === job && !abort.signal.aborted;
+    const cancelled = () => new DOMException("Stem change cancelled because its intent or transport changed.", "AbortError");
+    try {
+      const graph = ensureGraph(id), element = media.current[id], ctx = context.current;
+      if (!graph || !element || !ctx) throw new Error("The target stem lane is not ready.");
+      const requestedRate = element.playbackRate;
+      let buffer: AudioBuffer | undefined;
+      if (sourceId !== id) {
+        buffer = decodedDonors.current.get(sourceId);
+        if (!buffer) {
+          const response = await fetch(`/api/assets/${encodeURIComponent(sourceId)}`, { signal: abort.signal });
+          if (!response.ok) throw new Error(`Donor audio could not be prepared (HTTP ${response.status}). The working mix was retained.`);
+          const bytes = await response.arrayBuffer();
+          if (!current()) throw cancelled();
+          buffer = await ctx.decodeAudioData(bytes);
+          if (!buffer.length || !buffer.numberOfChannels) throw new Error("Donor audio decoded to an empty signal.");
+          if (!current()) throw cancelled();
+          decodedDonors.current.set(sourceId, buffer);
+          while (decodedDonors.current.size > 8) decodedDonors.current.delete(decodedDonors.current.keys().next().value!);
+        }
+      }
+      if (!current()) throw cancelled();
+      if (element.playbackRate !== requestedRate) throw cancelled();
+      const offset = element.currentTime;
+      if (buffer && offset >= buffer.duration) throw new Error("The donor does not cover this source position. The working mix was retained.");
+      const old = committedSources.current.get(id);
+      const next: PreparedVoice | undefined = buffer ? { sourceId, buffer } : undefined;
+      const finish = () => {
+        if (old) stopVoice(old);
+        if (next) committedSources.current.set(id, next); else committedSources.current.delete(id);
+        setSourceSelections(previous => ({ ...previous, [id]: sourceId }));
+        setEndedSources(previous => previous[id] ? { ...previous, [id]: false } : previous);
+      };
+      if (element.paused) {
+        if (target !== null) throw cancelled();
+        onPrepared?.(null);
+        graph.originalGate.gain.cancelScheduledValues(0);
+        graph.originalGate.gain.value = next ? 0 : 1;
+        finish();
+        return;
+      }
+      if (ctx.state !== "running") throw new Error("Audio context is interrupted. The working mix was retained; resume playback and retry.");
+      const rate = element.playbackRate;
+      if (!Number.isFinite(rate) || rate <= 0) throw new Error("Unsupported source playback rate.");
+      // A boundary is chosen BEFORE preparation. Never quietly rebase a missed
+      // target after network/decode latency. Immediate changes use a 10ms lead.
+      if (target !== null && target - offset < .025 * rate) throw new Error("Donor preparation missed its source-clock boundary. Nothing was swapped or saved; retry to choose a new boundary.");
+      const when = ctx.currentTime + (target === null ? .01 : (target - offset) / rate);
+      const sourceOffset = target ?? offset + .01 * rate;
+      if (buffer && sourceOffset + .005 * rate >= buffer.duration) throw new Error("The donor does not cover the requested boundary.");
+      onPrepared?.(target === null ? null : sourceOffset);
+      const oldGate = old?.gate ?? graph.originalGate;
+      const newGate = next ? (startVoice(id, next, when, sourceOffset, 0), next.gate!) : graph.originalGate;
+      oldGate.gain.cancelScheduledValues(ctx.currentTime);
+      oldGate.gain.setValueAtTime(1, when); oldGate.gain.linearRampToValueAtTime(0, when + .005);
+      newGate.gain.cancelScheduledValues(ctx.currentTime);
+      newGate.gain.setValueAtTime(0, when); newGate.gain.linearRampToValueAtTime(1, when + .005);
+      await new Promise<void>((resolve, reject) => {
+        let frame = 0, done = false;
+        const rollback = () => {
+          if (done) return; done = true; cancelAnimationFrame(frame);
+          if (next) stopVoice(next);
+          oldGate.gain.cancelScheduledValues(0); oldGate.gain.value = 1;
+          if (!old) graph.originalGate.gain.value = 1;
+          else { graph.originalGate.gain.cancelScheduledValues(0); graph.originalGate.gain.value = 0; }
+          reject(cancelled());
+        };
+        job.cancel = rollback;
+        const tick = () => {
+          if (!current() || element.paused || element.playbackRate !== rate || ctx.state !== "running" || next?.ended) { rollback(); return; }
+          // Reject a changed/seeked source clock BEFORE the scheduled start.
+          const predicted = sourceOffset + (ctx.currentTime - when) * rate;
+          if (Math.abs(element.currentTime - predicted) > .08) { rollback(); return; }
+          if (ctx.currentTime >= when + .005) {
+            done = true; job.cancel = undefined; finish(); resolve(); return;
+          }
+          frame = requestAnimationFrame(tick);
+        };
+        frame = requestAnimationFrame(tick);
+      });
+    } catch (cause) {
+      if (!current()) throw cancelled();
+      throw cause;
+    } finally {
+      settled();
+      if (replacementJobs.current.get(id) === job) replacementJobs.current.delete(id);
+    }
+  }, [ensureGraph, startVoice, stopVoice]);
+
   const seek = useCallback(
     (seconds: number) => {
       if (!Number.isFinite(seconds)) return;
@@ -315,15 +465,20 @@ export function useStemTransport(assetIds: string[], duration: number) {
         duration || Number.MAX_SAFE_INTEGER,
         Math.max(0, seconds),
       );
+      cancelReplacements();
+      if ([...committedSources.current.values()].some(entry => next >= entry.buffer.duration)) {
+        setError("Seek refused: a selected donor does not cover that source position."); return;
+      }
       for (const id of ids) {
         const element = media.current[id];
         if (element && Math.abs(element.currentTime - next) > 0.015)
           element.currentTime = next;
       }
       positionRef.current = next;
+      restartVoices(next);
       setPosition(next);
     },
-    [duration, ids],
+    [duration, ids, cancelReplacements, restartVoices],
   );
 
   /** Apply insert chains (live): rebuilds the subgraph of every playing graph. */
@@ -389,7 +544,9 @@ export function useStemTransport(assetIds: string[], duration: number) {
         const control = values[id] ?? { volume: 1, pan: 0, muted: false, solo: false };
         if (!graph) continue;
         // Phase inversion is a real polarity flip (negative gain), not a flag.
-        const magnitude = isEffectivelyMuted(control, anySolo) ? 0 : control.volume;
+        const magnitude = temporarySolo.current
+          ? id === temporarySolo.current.id ? (isEffectivelyMuted(control, anySolo) || control.volume === 0 ? temporarySolo.current.gain : control.volume) : 0
+          : isEffectivelyMuted(control, anySolo) ? 0 : control.volume;
         graph.gain.gain.value = control.phaseInvert ? -magnitude : magnitude;
         if (graph.pan) graph.pan.pan.value = control.pan;
         // Mono monitoring: explicit 1-channel downmix (speakers interpretation
@@ -400,6 +557,11 @@ export function useStemTransport(assetIds: string[], duration: number) {
     [ids],
   );
 
+  const setTemporaryIsolation = useCallback((id: string | null, gain = 1) => {
+    temporarySolo.current = id === null ? null : { id, gain };
+    applyMix(mixValues.current);
+  }, [applyMix]);
+
   const stopClock = useCallback(() => {
     if (clockId.current) cancelAnimationFrame(clockId.current);
     clockId.current = null;
@@ -407,10 +569,14 @@ export function useStemTransport(assetIds: string[], duration: number) {
   const pause = useCallback(() => {
     playRequest.current += 1;
     wantsPlayback.current = false;
+    cancelReplacements();
+    for (const entry of committedSources.current.values()) stopVoice(entry);
+    setTemporaryIsolation(null);
     for (const element of Object.values(media.current)) element?.pause();
     stopClock();
     setPlaying(false);
-  }, [stopClock]);
+  }, [stopClock, setTemporaryIsolation, cancelReplacements, stopVoice]);
+  useEffect(() => { interruptContext.current = pause; }, [pause]);
   const stop = useCallback(() => {
     pause();
     seek(0);
@@ -421,6 +587,8 @@ export function useStemTransport(assetIds: string[], duration: number) {
     wantsPlayback.current = true;
     try {
       setError(null);
+      await Promise.all([...replacementJobs.current.values()].map(job => job.settled));
+      if (request !== playRequest.current) return false;
       if (!ids.length) throw new Error("No audio is ready. Import audio or wait for processing to finish.");
       const elements = ids.map((id) => {
         const element = media.current[id];
@@ -449,6 +617,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
       if (results.some((result) => result.status === "rejected")) {
         throw new Error("One or more stems could not play. Check the audio files and retry.");
       }
+      restartVoices(start);
       setPlaying(true);
       return true;
     } catch (cause) {
@@ -457,12 +626,13 @@ export function useStemTransport(assetIds: string[], duration: number) {
       pause();
       return false;
     }
-  }, [applyInserts, applyMix, duration, ensureGraph, ids, pause]);
+  }, [applyInserts, applyMix, duration, ensureGraph, ids, pause, restartVoices]);
 
   /** Rejoin a changed URL on the SAME registered media element. Keep its graph,
    * mixer and inserts, and leave every unaffected lane playing. The caller must
    * dispose this operation when that URL changes again or the element unmounts. */
   const synchronizeSource = useCallback((id: string) => {
+    cancelReplacements();
     const element = media.current[id];
     if (!element) return () => {};
     const source = element.src;
@@ -506,19 +676,24 @@ export function useStemTransport(assetIds: string[], duration: number) {
     element.addEventListener("error", failed);
     if (element.readyState >= 1 && element.currentSrc === source) void ready();
     return dispose;
-  }, [ids, pause]);
+  }, [ids, pause, cancelReplacements]);
 
   // An actual asset change stops the old deck, but does not poison the shared
   // context. Equal ID lists from project polling do not enter this effect.
   useEffect(() => {
+    // Existing asset-load reset also tears down voices belonging to old lanes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     pause();
     for (const [id, graph] of Object.entries(graphs.current)) {
       if (ids.includes(id)) continue;
+      const entry = committedSources.current.get(id);
+      if (entry) stopVoice(entry);
+      committedSources.current.delete(id);
       disconnectGraph(graph);
       delete graphs.current[id];
       delete media.current[id];
     }
-  }, [ids, pause]);
+  }, [ids, pause, stopVoice]);
 
   useEffect(() => {
     if (!playing) return;
@@ -550,7 +725,10 @@ export function useStemTransport(assetIds: string[], duration: number) {
         // media element ended before the animation clock saw the boundary.
         if (ids.some((id) => media.current[id]?.paused)) void play();
       } else if (ids.every((id) => media.current[id]?.ended)) {
-        positionRef.current = current;
+        for (const [id, entry] of committedSources.current) {
+        if (entry.node) entry.node.playbackRate.value = media.current[id]?.playbackRate ?? 1;
+      }
+      positionRef.current = current;
         setPosition(current);
         pause();
         return;
@@ -583,9 +761,12 @@ export function useStemTransport(assetIds: string[], duration: number) {
       wantsPlayback.current = false;
       stopClock();
       for (const element of Object.values(media.current)) element?.pause();
+      cancelReplacements();
+      for (const entry of committedSources.current.values()) stopVoice(entry);
+      decodedDonors.current.clear();
       context.current?.close().catch(() => undefined);
     },
-    [stopClock],
+    [stopClock, cancelReplacements, stopVoice],
   );
   /**
    * Frequency-domain tap for one stem (post gain/pan/inserts — the signal
@@ -696,6 +877,11 @@ export function useStemTransport(assetIds: string[], duration: number) {
 
   return {
     register,
+    setTemporaryIsolation,
+    replaceSource,
+    cancelReplacements,
+    sourceSelections,
+    endedSources,
     synchronizeSource,
     readSpectrum,
     readMasterSpectrum,
@@ -707,7 +893,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
     applyInserts,
     playing,
     position,
-    currentPosition: () => positionRef.current,
+    currentPosition: () => ids.map(id => media.current[id]).find(element => element && !element.paused)?.currentTime ?? positionRef.current,
     isPlaying: () => wantsPlayback.current && ids.length > 0 && ids.every((id) => media.current[id] && !media.current[id]!.paused && !media.current[id]!.ended),
     duration,
     masterVolume,
