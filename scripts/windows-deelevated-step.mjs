@@ -30,7 +30,14 @@ if (label === undefined || logFile === undefined || dashdash !== "--" || rest.le
 }
 const timeoutMs = timeoutRaw !== undefined && timeoutRaw !== "--" ? Number(timeoutRaw) : 30 * 60_000;
 const args = timeoutRaw === "--" ? [timeoutRaw, ...rest] : rest;
-const [program, ...programArgs] = args;
+let [program, ...programArgs] = args;
+
+// A restricted token does not inherit the job's PATH additions, so a bare
+// "node"/"npm" resolves to nothing and the de-elevated command dies with an
+// empty log. Pin both to the runtime that is executing this script.
+const nodeDir = path.dirname(process.execPath);
+if (program === "node") program = process.execPath;
+if (program === "npm") program = path.join(nodeDir, "npm.cmd");
 
 const workDir = path.resolve("windows-evidence");
 mkdirSync(workDir, { recursive: true });
@@ -47,6 +54,7 @@ writeFileSync(
     "@echo off",
     "setlocal",
     `cd /d "${process.cwd()}"`,
+    `set "PATH=${nodeDir};%PATH%"`,
     `${commandLine} > "${log}" 2>&1`,
     // %ERRORLEVEL% is unset in a fresh cmd.exe (it expanded to nothing, so the
     // sentinel read "ECHO is off."). Capture it explicitly instead.
@@ -108,7 +116,9 @@ if (status === undefined) {
   process.exit(1);
 }
 if (status !== "0") {
-  const lines = output.split(/\r?\n/).filter((line) => /fatal|error|fail|refus|denied|could not/i.test(line)).slice(0, 6).join(" | ");
+  const errorLines = output.split(/\r?\n/).filter((line) => /fatal|error|fail|refus|denied|could not|not recognized/i.test(line)).slice(0, 6);
+  const fallback = output.split(/\r?\n/).filter(Boolean).slice(-3);
+  const lines = (errorLines.length > 0 ? errorLines : fallback).join(" | ");
   console.log(`[deelevated] ${label}: FAIL (exit=${status})`);
   console.log(`::error title=${label}::de-elevated exit ${status} — ${lines.slice(0, 900) || "no error lines"}`);
   process.exit(Number(status) || 1);
