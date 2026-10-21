@@ -119,7 +119,7 @@ Fleet: Planner `turboagent-32b` (`Qwen/Qwen2.5-32B-Instruct`), Builder/Reviewer 
 ## 7. Limitations (why this is not a clean PASS)
 
 1. **Waveyard audio is a controlled fixture.** Stems are 90 s synthesised PCM sine tracks written by `tools/seed-waveyard-live.mjs` — this exercises transport, routing, isolation, persistence and failure handling, **not** separation quality, inference, or musical quality. Audibility is graph-level (analyser taps in the page's real `AudioContext`), not a human listening test.
-2. **Bar snapping unexercised** — no trustworthy downbeat data in the fixture.
+2. **Bar snapping unexercised** — the fixture carries no trustworthy downbeat data, and the UI correspondingly states "bar snapping is unavailable" (captured in `runs/waveyard/waveyard-live-results.json`); it is untested here, not shown to be implemented.
 3. **Spaces intelligence is scripted.** The OpenAI-compatible endpoint was a deterministic script; routing/provenance are real, model intelligence is not. Invalid-model abort was not exercised.
 4. **Desktop/Electron shell not exercised** — the web runtime was validated in desktop-trust mode; packaging, auto-update and native audio devices were out of scope. The sandbox reports no audio output devices, which the UI states honestly.
 5. **Acquisition used a local pinned mirror** because `raw.githubusercontent.com` is unreachable here; hashes matched the app's pins, but the network path itself was substituted.
