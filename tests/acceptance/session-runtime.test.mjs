@@ -85,11 +85,22 @@ async function pageFor(t, id, prepare) {
     const Native = window.AudioContext;
     window.AudioContext = class extends Native {
       constructor(...args) {
-        super(...args); const analysers = [], original = this.createAnalyser.bind(this);
-        this.createAnalyser = () => { const node = original(); analysers.push(node); return node; };
-        window.observedAudio.push({ context: this, analysers });
+        super(...args); const analysers = [], stems = [], original = this.createAnalyser.bind(this);
+        const nativeSource = this.createMediaElementSource.bind(this);
+        let source = null;
+        this.createMediaElementSource = element => { source = element; return nativeSource(element); };
+        this.createAnalyser = () => {
+          const node = original(); analysers.push(node);
+          if (source) { stems.push({ node, element: source }); source = null; }
+          return node;
+        };
+        window.observedAudio.push({ context: this, analysers, stems });
       }
     };
+    window.stemAudioSnapshot = () => window.observedAudio.flatMap(({ context, stems }) => stems.map(({ node, element }) => {
+      const pcm = new Float32Array(node.fftSize); node.getFloatTimeDomainData(pcm);
+      return { label: element.getAttribute("aria-label"), src: element.currentSrc, rms: context.state === "closed" ? 0 : Math.sqrt(pcm.reduce((sum, x) => sum + x * x, 0) / pcm.length) };
+    }));
     window.audioSnapshot = () => window.observedAudio.map(({ context, analysers }) => {
       const node = analysers[0]; if (!node || context.state === "closed") return { rms: 0, hz: 0 };
       const pcm = new Float32Array(node.fftSize); node.getFloatTimeDomainData(pcm);
@@ -456,11 +467,12 @@ test("isolate preserves the previous mix including a muted lane; Instant Restore
   await expect.poll(() => state.tracks[0].stemMix.drums).toBe(0);
   await page.reload();
   await page.getByTestId("session-play").click();
-  await expect.poll(() => page.evaluate(() => window.audioSnapshot()[0]?.rms ?? 1)).toBeLessThan(.001);
+  await expect.poll(() => page.evaluate(() => window.stemAudioSnapshot().find(x => x.label === "bass audio")?.rms ?? 0)).toBeGreaterThan(.04);
+  await expect.poll(() => page.evaluate(() => window.stemAudioSnapshot().find(x => x.label === "drums audio")?.rms ?? 1)).toBeLessThan(.001);
   await page.getByLabel("Snap stem changes").selectOption("four-beats");
   await page.getByRole("button", { name: "Isolate bass", exact: true }).click();
   await expect(page.getByText(/Pending stem changes at source/)).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => window.audioSnapshot()[0]?.rms ?? 0)).toBeGreaterThan(.06);
+  await expect.poll(() => page.evaluate(() => window.stemAudioSnapshot().find(x => x.label === "drums audio")?.rms ?? 0)).toBeGreaterThan(.06);
   await expect.poll(() => state.tracks[0].stemMix.drums).toBe(.7);
   assert.equal(state.tracks[0].stemMix.bass, .4);
 });
