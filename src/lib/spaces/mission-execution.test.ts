@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -96,3 +96,17 @@ test("real dispatcher feedback can investigate, patch source (not its invariant)
 
 // Ephemeral cases opt in; the persistence case supplies its real SQL adapter.
 const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });
+
+test("automatic mission memory cannot follow a workspace note symlink into host files", async t => {
+  const f = await workspace(t), outside = await mkdtemp(path.join(tmpdir(), "arena-outside-note-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const file = path.join(outside, "private-fixture.txt"); await writeFile(file, "PRIVATE_OUTSIDE_NOTE_FIXTURE");
+  await symlink(file, path.join(f.root, "AGENT_NOTES.md"));
+  let calls = 0;
+  const mission = await runMission(f.id, { goal: "Inspect workspace", isolation: "host", agentPlan: plan }, { generate: async input => {
+    calls++; assert.doesNotMatch(input.messages[0].content, /PRIVATE_OUTSIDE_NOTE_FIXTURE/);
+    assert.match(input.messages[0].content, /notes not loaded/);
+    return reply([{ tool: "list_files", args: {} }]);
+  } });
+  assert.equal(calls, 1); assert.equal(mission.status, "done");
+});
