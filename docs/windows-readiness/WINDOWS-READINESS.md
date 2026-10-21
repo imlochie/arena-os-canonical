@@ -43,13 +43,14 @@ rather than a human at a desktop with audio hardware.
 | Tree | `1e64ebdb9260e695a6721dc4819e98ed614c2798` |
 | Source digest | `sha256(git archive a5d2d58)` = `4918f69f5e0cd64691ab43e48788d967a308702854b4d5e501fdbda4e668dabd` |
 | Base commit | `13638fe8a5c280e6b47ecf97fb6e6cf414163a12` |
-| Windows run | [39650513338](https://github.com/imlochie/arena-os-canonical/actions/runs/39650513338) (repeat of [39648109209](https://github.com/imlochie/arena-os-canonical/actions/runs/39648109209) with identical section results) |
+| Windows runs | [39648109209](https://github.com/imlochie/arena-os-canonical/actions/runs/39648109209) (`e889f4a`), [39650513338](https://github.com/imlochie/arena-os-canonical/actions/runs/39650513338) (`a5d2d58`), [39659983653](https://github.com/imlochie/arena-os-canonical/actions/runs/39659983653) (`ce181f9`) — the installed-app acceptance passed with identical section results in all three, on three different commits |
 | Installer | `Arena Setup 0.1.0.exe`, 621.1 MB; SHA-256 in `installer-sha256.txt` inside the `windows-package-<sha>` artifact |
 
 Every Windows job prints `commit`, `tree` and `digest` in its first step, so an
-artifact can be tied to the source that produced it. Commits after `a5d2d58`
-change documentation and workflow text only; no application, packaging or test
-code differs from the evidence commit.
+artifact can be tied to the source that produced it. The installed acceptance
+was reproduced on `e889f4a`, `a5d2d58` and `ce181f9`; commits after `ce181f9`
+change documentation only, and no application, packaging or test code differs
+from the last evidence commit.
 
 ## 3. What this branch changes
 
