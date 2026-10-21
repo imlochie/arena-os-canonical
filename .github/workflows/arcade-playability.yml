@@ -1,7 +1,7 @@
 name: Arcade browser publication and actual-page acceptance
 on:
   push:
-    branches: [product/arcade-runtime-validation, "arena/331aa502-arena-os-canonical"]
+    branches: [product/arcade-runtime-validation, product/arcade-spaces-capabilities, "arena/331aa502-arena-os-canonical"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -40,7 +40,7 @@ jobs:
       - name: Typecheck and focused lint
         run: |
           npm run typecheck 2>&1 | tee .data/arcade-acceptance/typecheck.txt
-          npx eslint src/lib/games/sandbox.ts src/lib/games/runtime-validation.ts src/lib/games/runtime-contract.test.ts next.config.ts 2>&1 | tee .data/arcade-acceptance/lint.txt
+          npx eslint src/lib/games/sandbox.ts src/lib/games/runtime-validation.ts src/lib/games/runtime-contract.test.ts src/lib/games/gameplay-contract.ts src/lib/games/gameplay-contract.test.ts next.config.ts 2>&1 | tee .data/arcade-acceptance/lint.txt
       - name: Focused game contracts and durable attempt regressions
         run: |
           node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 src/lib/games/*.test.ts tests/acceptance/arcade-attempts.test.mjs 2>&1 | tee .data/arcade-acceptance/focused.tap
@@ -50,6 +50,8 @@ jobs:
         run: npm run build 2>&1 | tee .data/arcade-acceptance/build.txt
       - name: Real browser contract and actual Next Arcade page
         run: node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 tests/acceptance/arcade-playability.test.mjs 2>&1 | tee .data/arcade-acceptance/browser.tap
+      - name: Diverse declared mechanics and adversarial controls through production browser validator
+        run: node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 tests/acceptance/arcade-gameplay.test.mjs 2>&1 | tee .data/arcade-acceptance/gameplay.tap
       - name: Complete isolated source suite, unchanged gates
         run: npm test 2>&1 | tee .data/arcade-acceptance/source-suite.tap
       - name: Preserve machine-readable evidence and failures
@@ -62,6 +64,7 @@ jobs:
             .data/arcade-acceptance/*.txt
             .data/arcade-acceptance/*.tap
             .data/acceptance/source-suite/*.json
+            .data/arcade-gameplay/*.json
           retention-days: 90
       - name: Preserve screenshots and browser trace
         if: always()

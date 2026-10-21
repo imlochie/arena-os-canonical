@@ -18,6 +18,7 @@ export interface GameRuntimeReport {
   scope: string;
   issues: string[];
   browser?: string;
+  gameplay?: import("./gameplay-contract").GameplayReport;
   observations?: {
     rendered: boolean;
     visualChange: boolean;

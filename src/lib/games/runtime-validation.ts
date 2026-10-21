@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { ARCADE_HOST_CSP, sandboxGameDocument, type GameRuntimeReport } from "./sandbox";
 import { validateGameCode } from "./index";
 import type { Browser, Page } from "playwright-core";
+import { exerciseGameplay, parseGameplayContract } from "./gameplay-contract";
 
 const scope = "2D canvas browser smoke: render, visual change, exercised keyboard/pointer, runtime errors and denied egress. Prompt fidelity, causal input semantics, pause/win/loss and fun require targeted gameplay acceptance.";
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -19,15 +20,19 @@ export function consumeFreshRuntimeCheck(code: string, report?: GameRuntimeRepor
   return Boolean(checked && checked.hash === digest(code) && checked.expires > Date.now());
 }
 
-export async function validateGameRuntime(code: string): Promise<GameRuntimeReport> {
+export async function validateGameRuntime(code: string, options: { requireGameplay?: boolean } = {}): Promise<GameRuntimeReport> {
   const base = { policyVersion: 1 as const, codeSha256: digest(code), scope };
   const staticCheck = validateGameCode(code);
   if (!staticCheck.ok) return { ...base, ok: false, status: "failed", issues: staticCheck.issues };
+  let contract;
+  try { contract = parseGameplayContract(code, options.requireGameplay); }
+  catch (e) { return { ...base, ok: false, status: "failed", issues: [e instanceof Error ? e.message : "Invalid gameplay contract."] }; }
   if (active >= 2) return { ...base, ok: false, status: "unavailable", issues: ["Browser verification busy; draft retained, retry later."] };
   active++;
   let browser: Browser | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   let observedPage: Page | undefined;
   const observedIssues: string[] = [];
+  let phase = "browser launch";
   try {
     const work = async (): Promise<GameRuntimeReport> => {
       const { chromium } = await import("playwright-core");
@@ -71,6 +76,7 @@ export async function validateGameRuntime(code: string): Promise<GameRuntimeRepo
       const frame = await (await element.elementHandle())!.contentFrame();
       if (!frame) throw new Error("Game iframe failed to load.");
       const canvas = frame.locator("canvas").first();
+      phase = "smoke canvas observation";
       await canvas.waitFor({ state: "visible", timeout: 2500 });
       const start = frame.getByRole("button", { name: /\b(start|play|begin)\b/i }).first();
       if (await start.isVisible()) await start.click();
@@ -99,16 +105,31 @@ export async function validateGameRuntime(code: string): Promise<GameRuntimeRepo
       if (!visualChange) issues.push("Game canvas remained inert during observation and exercised inputs.");
       if (blockedRequests) issues.push("Game attempted an unauthorized request.");
       if (page.url() !== "http://arena-arcade.invalid/" || frame.url() !== "about:srcdoc") issues.push("Game attempted to navigate outside its sandbox document.");
+      const gameplay = contract && issues.length === 0 ? await exerciseGameplay(contract, async () => {
+        // Fresh opaque document for each scenario; never mutate game internals.
+        await element.evaluate((node, html) => new Promise<void>(resolve => {
+          node.addEventListener("load", () => resolve(), { once: true });
+          (node as HTMLIFrameElement).srcdoc = html;
+        }), sandboxGameDocument(code));
+        const fresh = await (await element.elementHandle())!.contentFrame();
+        if (!fresh) throw new Error("Gameplay frame unavailable.");
+        await fresh.locator("canvas").first().waitFor({ state: "visible" });
+        const begin = fresh.getByRole("button", { name: /\b(start|play|begin)\b/i }).first();
+        if (await begin.isVisible()) await begin.click();
+        await page.waitForTimeout(40);
+        return fresh;
+      }, value => { phase = `gameplay ${value}`; }) : undefined;
+      if (gameplay?.status === "failed") issues.push(...gameplay.scenarios.flatMap(s => s.issues.map(issue => `${s.kind}/${s.name}: ${issue}`)));
       return {
         ...base, ok: issues.length === 0, status: issues.length ? "failed" : "passed",
-        issues: [...new Set(issues)].slice(0, 12), browser: browser.version(),
+        issues: [...new Set(issues)].slice(0, 12), browser: browser.version(), gameplay,
         observations: { rendered, visualChange, keyboardInputs: keys, pointerInput: true, blockedRequests, canvasHashes: hashes },
       };
     };
     const report = await Promise.race([
       work(),
       new Promise<GameRuntimeReport>(resolve => {
-        timer = setTimeout(() => resolve({ ...base, ok: false, status: browser ? "failed" : "unavailable", issues: ["Browser verification exceeded its 10-second budget; game was not published."] }), 10000);
+        timer = setTimeout(() => resolve({ ...base, ok: false, status: browser ? "failed" : "unavailable", issues: [`Browser verification exceeded its 10-second budget during ${phase}; game was not published.`] }), 10000);
       }),
     ]);
     if (report.ok) freshChecks.set(report, { hash: base.codeSha256, expires: Date.now() + 30000 });
