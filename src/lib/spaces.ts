@@ -539,10 +539,20 @@ function publicAgent(row: typeof spaceAgents.$inferSelect): SpaceAgent {
   };
 }
 
+/**
+ * Read the durable fleet using the same database connection as the caller.
+ * Mission planning uses this strict variant: a failed roster read must not
+ * turn a configured fleet into an apparently empty one and silently select a
+ * different plan.
+ */
+export async function listAgentsForMission(spaceId: string, database: typeof db = db): Promise<SpaceAgent[]> {
+  const rows = await database.select().from(spaceAgents).where(eq(spaceAgents.spaceId, spaceId)).orderBy(asc(spaceAgents.createdAt));
+  return rows.map(publicAgent);
+}
+
 export async function listAgents(spaceId: string): Promise<SpaceAgent[]> {
   try {
-    const rows = await db.select().from(spaceAgents).where(eq(spaceAgents.spaceId, spaceId)).orderBy(asc(spaceAgents.createdAt));
-    return rows.map(publicAgent);
+    return await listAgentsForMission(spaceId);
   } catch {
     dbHealthy = false;
     return [];
