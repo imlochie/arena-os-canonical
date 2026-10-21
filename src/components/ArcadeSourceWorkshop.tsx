@@ -6,7 +6,7 @@ type Package = { modification: { patch: string; modifiedSha256: string }; revisi
 export default function ArcadeSourceWorkshop() {
   const privacy = usePrivacySettings();
   const [count, setCount] = useState(3), [busy, setBusy] = useState(false), [error, setError] = useState("");
-  const [result, setResult] = useState<{ bundle: Package; preview: string; artifactId?: string; persistenceError?: string } | null>(null);
+  const [result, setResult] = useState<{ bundle: Package; preview: string; artifactId?: string; artifactDownloadUrl?: string; persistenceError?: string } | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   async function acquire() {
     setBusy(true); setError(""); setPreviewOpen(false);
@@ -34,6 +34,7 @@ export default function ArcadeSourceWorkshop() {
       <p className="mt-1 text-amber-200">{result.bundle.verification.runtime}</p>
       <pre className="my-2 overflow-auto rounded bg-black/30 p-2">{result.bundle.modification.patch}</pre>
       <div className="flex flex-wrap gap-3">
+        {result.artifactDownloadUrl && <a className="underline" href={result.artifactDownloadUrl}>Download saved immutable Artifact revision</a>}
         <button onClick={() => download(JSON.stringify(result.bundle, null, 2), "2048-source-package.json", "application/json")}>Download source/evidence package</button>
         <button onClick={() => download(result.bundle.modification.patch, "2048-initial-tiles.patch", "text/plain")}>Download patch</button>
         <button onClick={() => download(result.preview, "2048-arena-preview.html", "text/html")}>Download offline preview (not runtime-verified)</button>
