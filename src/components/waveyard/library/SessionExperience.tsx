@@ -932,13 +932,16 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         `/api/library/sessions/${session.id}/tracks?sessionTrackId=${itemId}`,
         { method: "DELETE" },
         (detail) => {
+          const url = `/api/library/sessions/${session.id}/tracks/${itemId}`;
+          editSnapshots.current.delete(url);
+          editSaves.forget(url);
           if (currentIdRef.current === itemId) {
             setCurrentId(detail.tracks[0]?.id ?? null);
           }
         },
       );
     },
-    [session, mutate],
+    [session, mutate, editSaves],
   );
 
   // ------------------------------------------------------------------ swaps

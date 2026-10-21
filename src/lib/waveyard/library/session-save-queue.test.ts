@@ -33,3 +33,17 @@ test("lost acknowledgement retains latest edits and requires explicit retry, not
   assert.equal(committed, "new"); assert.equal(queue.unsaved, false);
   assert.equal(states.at(-1), "saved");
 });
+
+test("acknowledged removal drops only that membership and an in-flight 404 cannot block other edits", async () => {
+  let reject!: () => void;
+  const writes: string[] = [];
+  const queue = new SessionSaveQueue(async (url) => {
+    writes.push(url);
+    if (url === "removed") await new Promise<void>((_resolve, fail) => { reject = () => fail(new Error("404 after deletion")); });
+  }, () => {}, 60000);
+  queue.enqueue("removed", "old"); const flushing = queue.flush();
+  queue.enqueue("retained", "new"); queue.forget("removed");
+  reject(); assert.equal(await flushing, true);
+  assert.deepEqual(writes, ["removed", "retained"]); assert.equal(queue.unsaved, false);
+  await queue.flush();
+});

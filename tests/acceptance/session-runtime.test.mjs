@@ -526,3 +526,24 @@ test("reload warns about an unacknowledged edit and flushes it without waiting f
   await expect(page.getByRole("button", { name: "Mute drums", exact: true })).toHaveAttribute("aria-pressed", "true");
   assert.equal(session("save-close").tracks[0].stemMix.drums, 0);
 });
+
+test("acknowledged removal while saving cannot strand later deck edits behind a stale 404", { timeout: 15000 }, async t => {
+  let release, started = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  const page = await pageFor(t, "save-remove", async page => {
+    await page.route("**/api/library/sessions/save-remove/tracks/a", async route => {
+      started = true; await gate;
+      await route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"membership removed"}' });
+    });
+  });
+  t.after(() => release());
+  await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+  await expect.poll(() => started).toBe(true);
+  await page.getByRole("button", { name: "Remove Song A", exact: true }).click();
+  await current(page, "Song B");
+  await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+  release();
+  await expect(page.getByLabel("Session edit save status")).toContainText("settings saved");
+  assert.equal(session("save-remove").tracks.some(item => item.id === "a"), false);
+  assert.equal(session("save-remove").tracks[0].stemMix.drums, 0);
+});

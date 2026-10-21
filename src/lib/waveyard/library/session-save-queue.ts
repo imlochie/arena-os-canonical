@@ -4,7 +4,7 @@ export class SessionSaveQueue {
   private pending = new Map<string, string>();
   private running: Promise<boolean> | null = null;
   private timer: ReturnType<typeof setTimeout> | undefined;
-  private failed = false;
+  private failed: string | null = null;
   private write: (url: string, body: string) => Promise<void>;
   private notify: (status: SessionSaveStatus) => void;
   private delay: number;
@@ -19,15 +19,22 @@ export class SessionSaveQueue {
     this.timer = setTimeout(() => { void this.flush(); }, this.delay);
   }
 
+  /** Only call after the server acknowledges removal of this membership. */
+  forget(url: string) {
+    if (!this.pending.delete(url)) return;
+    if (this.failed === url) this.failed = null;
+    if (!this.failed) void this.flush();
+  }
+
   get unsaved() { return this.pending.size > 0 || this.running !== null; }
 
   flush(retry = false): Promise<boolean> {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    if (retry) this.failed = false;
+    if (retry) this.failed = null;
     if (this.running) return this.running;
     if (this.failed) return Promise.resolve(false);
-    if (!this.pending.size) return Promise.resolve(true);
+    if (!this.pending.size) { this.notify("saved"); return Promise.resolve(true); }
     this.notify("saving");
     this.running = this.drain().finally(() => { this.running = null; });
     return this.running;
@@ -39,7 +46,8 @@ export class SessionSaveQueue {
       try { await this.write(url, body); }
       catch {
         // Keep the latest body (which may have changed during the request).
-        this.failed = true;
+        if (!this.pending.has(url)) continue;
+        this.failed = url;
         this.notify("error");
         return false;
       }
