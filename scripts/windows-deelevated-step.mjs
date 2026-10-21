@@ -48,7 +48,10 @@ writeFileSync(
     "setlocal",
     `cd /d "${process.cwd()}"`,
     `${commandLine} > "${log}" 2>&1`,
-    `echo %ERRORLEVEL%> "${statusFile}"`,
+    // %ERRORLEVEL% is unset in a fresh cmd.exe (it expanded to nothing, so the
+    // sentinel read "ECHO is off."). Capture it explicitly instead.
+    `set "RC=%ERRORLEVEL%"`,
+    `> "${statusFile}" echo %RC%`,
     "endlocal",
     "",
   ].join("\r\n"),
@@ -110,4 +113,6 @@ if (status !== "0") {
   console.log(`::error title=${label}::de-elevated exit ${status} — ${lines.slice(0, 900) || "no error lines"}`);
   process.exit(Number(status) || 1);
 }
+const firstLines = output.split(/\r?\n/).slice(0, 3).join(" | ").slice(0, 400);
 console.log(`[deelevated] ${label}: PASS`);
+console.log(`::warning title=${label} verified::de-elevated exit 0 :: ${firstLines}`);
