@@ -106,10 +106,17 @@ jobs:
         run: node scripts/windows-step.mjs "typecheck" "$EVIDENCE/typecheck.log" -- npm run typecheck
 
       - name: Desktop contract and runtime tests
-        run: node scripts/windows-step.mjs "desktop contract tests" "$EVIDENCE/desktop-tests.log" -- npm run test:desktop
+        # De-elevated for the same reason as the runtime acceptance: these
+        # include real-cluster tests that start PostgreSQL, which refuses an
+        # administrator token (the hosted runner's default).
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "desktop contract tests" "$EVIDENCE/desktop-tests.log" 2400000 -- npm run test:desktop
 
       - name: Full source suite on Windows
-        run: node scripts/windows-step.mjs "full source suite" "$EVIDENCE/source-suite.log" -- npm test
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 5400000 -- npm test
 
       - name: Gate summary
         if: always()
@@ -117,8 +124,12 @@ jobs:
           set -euo pipefail
           grep -hE "^# (tests|pass|fail)" "$EVIDENCE"/*.log 2>/dev/null | tee "$EVIDENCE/suite-counts.txt" || true
           grep -hE "^not ok" "$EVIDENCE"/*.log 2>/dev/null | tee "$EVIDENCE/failing-tests.txt" | head -30 || true
+          grep -hE "^  error:|^  code:|root.execution|not permitted" "$EVIDENCE"/*.log 2>/dev/null | head -20 | tee "$EVIDENCE/failure-detail.txt" || true
           if [ -s "$EVIDENCE/failing-tests.txt" ]; then
-            echo "::error title=Windows test failures::$(head -3 "$EVIDENCE/failing-tests.txt" | tr '\n' ' ' | cut -c1-900)"
+            while IFS= read -r line; do echo "::error title=Windows test failure::$line"; done < <(head -5 "$EVIDENCE/failing-tests.txt")
+          fi
+          if [ -s "$EVIDENCE/failure-detail.txt" ]; then
+            echo "::error title=Windows failure detail::$(head -4 "$EVIDENCE/failure-detail.txt" | tr '\n' ' ' | cut -c1-900)"
           fi
 
       - name: Upload gate evidence
