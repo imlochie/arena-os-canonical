@@ -116,8 +116,9 @@ per-user NSIS uninstaller.
 | --- | --- | --- |
 | `npm ci` | **PASS** | PASS |
 | `npm run typecheck` | **PASS** | **PASS** (exit 0) |
-| `npm run test:desktop` | **BLOCKED** — 60-minute step budget exceeded after de-elevation; no result produced | **PASS** — 168/168 |
-| `npm test` (full source suite) | **NOT RUN** — moved to its own job; the suite did not complete within this session's time budget | **PASS** — 1642/1642 at `13638fe` (previous session) |
+| `npm run test:desktop` | **168/168 tests PASS, gate BLOCKED**: the de-elevated run prints `# tests 168 · # pass 168 · # fail 0` in 429.9 s and then **never exits**, so no clean status can be recorded | **PASS** — 168/168 (clean exit) |
+| `npm run test:desktop`, elevated control | 158/162 pass, **3 fail**, 1 cancelled, 473 s — the three real-cluster tests cannot start PostgreSQL under an administrator token (expected, environmental) | n/a |
+| `npm test` (full source suite) | **NOT RUN** — the suite job had not completed at the time of writing; it is retained as its own job with a 200-minute budget | **PASS** — 1642/1642 at `13638fe` (previous session) |
 | Staging identity guard | **PASS** — correctly refused packages while the tree was genuinely dirty (§5) | PASS |
 
 A skipped, timed-out or environment-blocked gate is **not** a pass and is not
@@ -162,14 +163,24 @@ worked around by weakening a check.
 7. **`desktop:dist` failed: local Electron distribution missing.** electron 44
    hydrates lazily (documented in `docs/windows-acceptance.md`); the workflow
    now runs `node node_modules/electron/install.js` first.
-8. **Desktop contract tests hang when de-elevated** (open). After the token fix
-   the job ran 50+ minutes without producing a result, where the elevated run
-   had finished in 450 s. Not diagnosed: the job log is served from a host this
-   environment cannot reach, and annotations only carry what a step publishes.
-   The step now has an explicit budget so this becomes a recorded failure rather
-   than a hung job, and the suite runs in its own job. Root cause still unknown;
-   the suspicion is a test that blocks on a child process or console under a
-   restricted token.
+8. **The de-elevated test process does not exit** (open, narrowed). A bounded
+   diagnostic run (`desktop-diagnostics` job, run 39659983653) produced:
+   `# tests 168 · # pass 168 · # fail 0 · # cancelled 0 · # duration_ms 429905`
+   and then no completion sentinel — the TAP summary is complete, so every test
+   passed, but the process (and therefore `npm`) never returned. The elevated
+   control in the same job finished in 473 s with the three real-cluster tests
+   failing and one cancelled, as expected under an administrator token.
+
+   So the Windows test *content* is green when the token is right; what breaks
+   is process teardown. The three real-cluster tests boot an embedded
+   PostgreSQL cluster, so the most likely lingering handle is the postmaster (or
+   a worker child) that survives `pg_ctl stop` under a restricted token. Not yet
+   proven: the job log is served from a host this environment cannot reach, and
+   the run only carries annotations. Next step is to capture the surviving
+   child PIDs at the end of the run and kill/verify them explicitly
+   (`desktop/runtime/embedded-postgres.ts` `stop()` path, and the
+   `processCleanup` assertions already used by the installed acceptance, which
+   does pass).
 
 ## 6. What the Windows run actually proves
 
@@ -185,9 +196,10 @@ What it does **not** prove is listed next.
 
 ## 7. Limitations (explicit, each with its evidence)
 
-1. **Windows test jobs are not green.** `test:desktop` timed out at 60 minutes
-   de-elevated (open investigation, §5.8); the full source suite did not finish
-   in this session. Neither is reported as passing.
+1. **The Windows test gate cannot record a clean exit.** All 168 desktop tests
+   pass de-elevated, but the process never returns (§5.8), so the gate is
+   BLOCKED, not PASS. The full source suite did not finish within this session.
+   Neither is reported as passing.
 2. **The installed acceptance is API-level.** It drives the real server, real
    database, real worker and real export, but no human saw the window, played
    audio through a device, or moved a mixer. The GUI checklist in
