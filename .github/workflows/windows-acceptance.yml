@@ -310,6 +310,11 @@ jobs:
             }
             for (const l of r.KNOWN_LIMITATIONS ?? []) console.log(`LIMITATION: ${l}`);
           ' | tee "$EVIDENCE/installed-report-summary.txt"
+          # Publish every mandated line as an annotation: the job-log blob host
+          # is not reachable from every reviewer, annotations are.
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::warning title=windows-report::$line"
+          done < "$EVIDENCE/installed-report-summary.txt"
           if grep -q ": FAIL" "$EVIDENCE/installed-report-summary.txt"; then
             echo "::error title=installed acceptance::$(grep ': FAIL' "$EVIDENCE/installed-report-summary.txt" | tr '\n' ' ' | cut -c1-900)"
           fi
