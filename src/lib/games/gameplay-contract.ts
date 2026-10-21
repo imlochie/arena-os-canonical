@@ -121,6 +121,7 @@ export async function exerciseGameplay(contract: GameplayContract, reset: () => 
         if (!ok) report.issues.push(`${check.selector} ${check.mode}: observed ${JSON.stringify(a)} → ${JSON.stringify(b)}${check.mode === "equals" ? `; expected ${JSON.stringify(check.value)}` : ""}.`);
       }
       if (scenario.kind === "controls" && !report.canvasChanged) report.issues.push("Controls changed no observed canvas content.");
+      if (scenario.kind === "terminal" && !report.after.some((value, i) => value !== report.before[i])) report.issues.push("Terminal scenario reached no changed observable state.");
       if (scenario.kind === "restart" && !changedBeforeRestart) report.issues.push("Restart did not first exercise a changed game state.");
       report.ok = report.issues.length === 0;
     } catch (e) { report.issues.push(e instanceof Error ? e.message.slice(0, 300) : "Gameplay observation failed."); }
