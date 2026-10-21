@@ -202,7 +202,7 @@ export default function ArcadeForge() {
     setGame({ prompt: p, gameType: "custom", ...(body.game ?? {}), code: body.code, engine: "ai-codegen", genMs: rt.ms });
     fetchHistory();
     setNotice(
-      `${body.game?.ephemeral ? "Ephemeral — not saved. " : body.game ? "Saved. " : "Not saved — download this game before leaving. "}✨ ${body.title} built by AI (${rt.backend ?? "?"} / ${rt.modelId ?? "unreported model"}${rt.fallback ? " · fallback" : ""}) — browser smoke passed${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. Prompt fidelity and game quality still need playtesting.`
+      `${body.game?.ephemeral ? "Ephemeral — not saved. " : body.game ? "Saved. " : "Not saved — download this game before leaving. "}✨ ${body.title} built by AI (${rt.backend ?? "?"} / ${rt.modelId ?? "unreported model"}${rt.fallback ? " · fallback" : ""}) — browser smoke${body.runtimeValidation?.gameplay?.status === "passed" ? " and declared gameplay scenarios" : ""} passed${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. Prompt fidelity and game quality still need playtesting.`
     );
   }
 
