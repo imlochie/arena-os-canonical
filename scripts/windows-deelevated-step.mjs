@@ -55,8 +55,9 @@ writeFileSync(
   "utf8",
 );
 
-const quote = (value) => `"${value.replaceAll('"', '\\"')}"`;
-const runas = spawnSync("cmd.exe", ["/c", "runas", "/trustlevel:0x20000", quote(`cmd.exe /c ${quote(bat)}`)], {
+// Let Node do the argument quoting. Hand-rolling it produced a nested-quote
+// form that cmd.exe mis-parsed (runas exited 1 with no output on the runner).
+const runas = spawnSync("runas", ["/trustlevel:0x20000", `cmd.exe /c ${bat}`], {
   stdio: ["ignore", "pipe", "pipe"],
   encoding: "utf8",
 });

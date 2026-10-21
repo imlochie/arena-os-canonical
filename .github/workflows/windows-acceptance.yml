@@ -56,10 +56,20 @@ jobs:
           if [ -z "$BIN" ]; then echo "platform package not installed in this job" | tee "$EVIDENCE/pg-elevation.txt"; exit 0; fi
           "$BIN/postgres" --version | tee "$EVIDENCE/pg-elevation.txt"
 
-      - name: Non-elevated execution works
+      - name: Non-elevated execution works (cmd builtin)
         run: |
           set -euo pipefail
-          node scripts/windows-step.mjs "start" "$EVIDENCE/deelevated-smoke.log" -- node scripts/windows-deelevated-step.mjs de-elevation-probe "$EVIDENCE/deelevated-probe.log" 300000 -- cmd /c "echo DEELEVATED_OK && whoami /groups | findstr /i administrators || echo NO_ADMIN_GROUP"
+          node scripts/windows-deelevated-step.mjs de-elevation-cmd "$EVIDENCE/deelevated-cmd.log" 300000 -- cmd /c "echo DEELEVATED_OK && whoami /groups | findstr /i administrators || echo NO_ADMIN_GROUP"
+
+      - name: Non-elevated execution works (node, the shape the acceptance uses)
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs de-elevation-node "$EVIDENCE/deelevated-node.log" 300000 -- node -e "console.log('NODE_DEELEVATED_OK', process.getuid === undefined ? 'win32' : process.getuid())"
+
+      - name: Non-elevated npm script works (the shape the gates use)
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs de-elevation-npm "$EVIDENCE/deelevated-npm.log" 900000 -- npm run --silent typecheck
 
       - name: Upload probe evidence
         if: always()
