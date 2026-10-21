@@ -158,6 +158,35 @@ test("Studio downloads automatically bundle exact media, frozen source notices a
       assert.equal((await database.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, attempt.id)))[0].status, "complete");
     });
   });
+  await t.test("private source, stem and export seek requests deliver exact suffix/clamped bytes", async t => {
+    const assets = await import("../../app/api/assets/[id]/route");
+    const release = await import("../../app/api/public/projects/[id]/release/route");
+    await database.db.update(schema.projects).set({ visibility: "public", publicationStatus: "published", moderationStatus: "active", publishedExportAssetId: asset.id }).where(eq(schema.projects.id, project.id));
+    for (const [label, handler, id] of [
+      ["source", assets.GET, source.id], ["stem", assets.GET, stem.id], ["export", route.GET, job.id], ["public", release.GET, project.id],
+    ] as const) {
+      for (const [range, start, end] of [
+        ["bytes=-100", media.length - 100, media.length - 1],
+        ["bytes=100-", 100, media.length - 1],
+        [`bytes=100-${media.length + 999}`, 100, media.length - 1],
+        ["bytes=-99999999999999999999999999", 0, media.length - 1],
+        ["BYTES=1-2", 1, 2],
+      ] as const) await t.test(`${label}: ${range}`, async () => {
+        const response = await handler(new Request("http://arena/media", { headers: { Range: range } }), { params: Promise.resolve({ id }) });
+        const bytes = Buffer.from(await response.arrayBuffer());
+        assert.equal(response.status, 206);
+        assert.equal(response.headers.get("content-range"), `bytes ${start}-${end}/${media.length}`);
+        assert.equal(response.headers.get("content-length"), String(end - start + 1));
+        assert.deepEqual(bytes, Buffer.from(media).subarray(start, end + 1));
+      });
+      for (const range of ["bytes=-0", `bytes=${media.length}-`, "bytes=2-1", "bytes=0-1,2-3", "bytes=-"]) await t.test(`${label}: invalid ${range}`, async () => {
+        const response = await handler(new Request("http://arena/media", { headers: { Range: range } }), { params: Promise.resolve({ id }) });
+        assert.equal(response.status, 416);
+        assert.equal(response.headers.get("content-range"), `bytes */${media.length}`);
+        assert.equal((await response.arrayBuffer()).byteLength, 0);
+      });
+    }
+  });
   // Streaming/preview is still the original WAV, not a ZIP or a re-render.
   const raw = await route.GET(new Request(`http://arena/api/exports/${job.id}/media`), { params: Promise.resolve({ id: job.id }) });
   assert.equal(raw.headers.get("content-type"), "audio/wav"); assert.deepEqual(Buffer.from(await raw.arrayBuffer()), Buffer.from(media));

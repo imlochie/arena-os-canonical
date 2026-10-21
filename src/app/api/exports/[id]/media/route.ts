@@ -1,3 +1,4 @@
+import { parseByteRange } from "@/lib/http/range";
 import { createExportBundle } from "@/lib/waveyard/export-bundle";
 import { ArchiveInputError } from "@/lib/waveyard/conversion/archive";
 import { verifyStoredFile, PublishedFileError } from "../../../../../../waveyard-worker/packages/dsp/src/verified-file";
@@ -81,23 +82,11 @@ export async function GET(
         { status: 500 },
       );
     const file = await stat(localPath);
-    const range = request.headers.get("range");
+    const range = parseByteRange(request.headers.get("range"), file.size);
     const contentType = asset.format === "midi" ? "audio/midi" : "audio/wav";
+    if (range === "invalid") return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.size}`, "Accept-Ranges": "bytes" } });
     if (range) {
-      const [startRaw, endRaw] = range.replace(/bytes=/, "").split("-");
-      const start = Number(startRaw);
-      const end = endRaw ? Number(endRaw) : file.size - 1;
-      if (
-        !Number.isInteger(start) ||
-        !Number.isInteger(end) ||
-        start < 0 ||
-        end >= file.size ||
-        start > end
-      )
-        return new Response(null, {
-          status: 416,
-          headers: { "Content-Range": `bytes */${file.size}` },
-        });
+      const { start, end } = range;
       return new Response(
         Readable.toWeb(createReadStream(localPath, { start, end })) as ReadableStream,
         {

@@ -1,3 +1,4 @@
+import { parseByteRange } from "@/lib/http/range";
 import { isUuid } from "@/lib/api/ids";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -30,10 +31,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (signed) return NextResponse.redirect(signed);
     const localPath = storage.getLocalPath(asset.storageKey);
     if (!localPath) return NextResponse.json({ error: "Storage cannot serve this asset." }, { status: 500 });
-    const file = await stat(localPath); const range = request.headers.get("range"); const contentType = stem ? (stem.engine === "passthrough-unseparated" ? stem.format : "audio/wav") : (source?.mimeType ?? "application/octet-stream");
+    const file = await stat(localPath); const range = parseByteRange(request.headers.get("range"), file.size); const contentType = stem ? (stem.engine === "passthrough-unseparated" ? stem.format : "audio/wav") : (source?.mimeType ?? "application/octet-stream");
+    if (range === "invalid") return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.size}`, "Accept-Ranges": "bytes" } });
     if (range) {
-      const [startRaw, endRaw] = range.replace(/bytes=/, "").split("-"); const start = Number(startRaw); const end = endRaw ? Number(endRaw) : file.size - 1;
-      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end >= file.size || start > end) return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${file.size}` } });
+      const { start, end } = range;
       return new Response(Readable.toWeb(createReadStream(localPath, { start, end })) as ReadableStream, { status: 206, headers: { "Content-Type": contentType, "Content-Length": String(end - start + 1), "Content-Range": `bytes ${start}-${end}/${file.size}`, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", ...(download ? { "Content-Disposition": `attachment; filename="${downloadName.replace(/[\\"\r\n]/g, "_")}"` } : {}) } });
     }
     return new Response(Readable.toWeb(createReadStream(localPath)) as ReadableStream, { headers: { "Content-Type": contentType, "Content-Length": String(file.size), "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", ...(download ? { "Content-Disposition": `attachment; filename="${downloadName.replace(/[\\"\r\n]/g, "_")}"` } : {}) } });

@@ -1,0 +1,2 @@
+# Preserve raw Node TAP diagnostics, including whitespace in assertion output.
+*.tap -whitespace

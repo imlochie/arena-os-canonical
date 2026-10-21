@@ -1,3 +1,4 @@
+import { parseByteRange } from "@/lib/http/range";
 import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import { getStorage } from "@/lib/waveyard/storage";
@@ -5,16 +6,6 @@ import { publicProjectResolution } from "@/lib/waveyard/publication";
 
 export const runtime = "nodejs";
 
-function parseRange(value: string | null, size: number) {
-  if (!value) return null;
-  const match = /^bytes=(\d+)-(\d*)$/.exec(value);
-  if (!match) return undefined;
-  const start = Number(match[1]);
-  const end = match[2] ? Number(match[2]) : size - 1;
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= size)
-    return undefined;
-  return { start, end };
-}
 
 export async function GET(
   request: Request,
@@ -26,8 +17,8 @@ export async function GET(
     const wantsDownload = new URL(request.url).searchParams.get("download") === "1";
     if (wantsDownload && project.downloadPermission !== "public")
       return NextResponse.json({ error: "Public download is not enabled for this release." }, { status: 403 });
-    const range = parseRange(request.headers.get("range"), asset.fileSizeBytes);
-    if (range === undefined)
+    const range = parseByteRange(request.headers.get("range"), asset.fileSizeBytes);
+    if (range === "invalid")
       return new Response(null, {
         status: 416,
         headers: { "Content-Range": `bytes */${asset.fileSizeBytes}` },
