@@ -2,7 +2,7 @@ import { requireApiAccess } from "@/lib/security/api-access";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { create2048Mod, preview2048Mod } from "@/lib/games/source-2048";
 import { sandboxGameDocument } from "@/lib/games/sandbox";
-import { writeArtifactObject } from "@/lib/artifact-objects";
+import { artifactObjectSummary, writeArtifactObject } from "@/lib/artifact-objects";
 import { insertArtifact } from "@/lib/arcadeStore";
 import { db } from "@/db";
 import { isEphemeralBody, isLocalOnlyBody, logPrivacyEvent } from "@/lib/privacy";
@@ -18,15 +18,16 @@ export async function POST(request: Request) {
   try {
     const bundle = await create2048Mod(input.initialTiles);
     if (!isEphemeralBody(input)) await logPrivacyEvent("arcade.source.acquire", `2048 revision ${bundle.revision}; four integrity pins`);
-    let artifactId: string | undefined, persistenceError: string | undefined;
+    let artifactId: string | undefined, artifactDownloadUrl: string | undefined, persistenceError: string | undefined;
     if (!isEphemeralBody(input)) {
       try {
         const body = JSON.stringify(bundle, null, 2), object = await writeArtifactObject(user.id, body, "application/json");
-        const artifact = await insertArtifact(db, { ownerId: user.id, kind: "source-patch", title: `2048 source mod: ${input.initialTiles} initial tiles`, sourceType: "arcade-source", sourceId: bundle.revision, body, contentObject: object });
+        const artifact = await insertArtifact(db, { ownerId: user.id, kind: "source-patch", title: `2048 source mod: ${input.initialTiles} initial tiles`, sourceType: "arcade-source", sourceId: bundle.revision, body: artifactObjectSummary(object), contentObject: object });
         artifactId = artifact.id;
+        artifactDownloadUrl = `/api/artifacts/${artifact.id}?revision=${artifact.currentRevisionId}&download=1`;
       } catch { persistenceError = "Source package generated but not saved; download it before leaving."; }
     }
-    return Response.json({ bundle, preview: sandboxGameDocument(preview2048Mod(bundle)), artifactId, persistenceError, scope: "One hash-pinned MIT upstream and one supported constructor modification. No arbitrary mod ecosystem, official UI, installation or per-output runtime-pass claim." });
+    return Response.json({ bundle, preview: sandboxGameDocument(preview2048Mod(bundle)), artifactId, artifactDownloadUrl, persistenceError, scope: "One hash-pinned MIT upstream and one supported constructor modification. No arbitrary mod ecosystem, official UI, installation or per-output runtime-pass claim." });
   } catch {
     return Response.json({ error: "Pinned upstream acquisition/integrity check failed. No package was acknowledged; check network access and retry. The pin was not changed." }, { status: 502 });
   }

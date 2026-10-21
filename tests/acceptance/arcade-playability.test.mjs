@@ -163,6 +163,10 @@ test("actual /arcade page generates, browser-repairs, plays, retains failed revi
     const acquiredHttp = await acquiredResponse, acquired = await acquiredHttp.json();
     assert.equal(acquiredHttp.status(), 200, acquired.error);
     assert.ok(acquired.artifactId); assert.equal(acquired.persistenceError, undefined);
+    assert.ok(JSON.stringify(acquired.bundle, null, 2).length > 20000, "exercise the actual large-object storage boundary, not a shortened fixture");
+    const immutableDownload = await page.request.get(`${origin}${acquired.artifactDownloadUrl}`);
+    assert.equal(immutableDownload.status(), 200);
+    assert.deepEqual(await immutableDownload.json(), acquired.bundle, "saved immutable revision retains the entire source/license/patch package");
     assert.equal(acquired.bundle.revision, "478b6ec346e3787f589e4af751378d06ded4cbbc");
     assert.equal(acquired.bundle.license.spdx, "MIT");
     assert.match(acquired.bundle.verification.runtime, /not run/);
