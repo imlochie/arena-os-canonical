@@ -111,7 +111,11 @@ if (builderEntry === null || !existsSync(builderEntry)) {
 }
 const build = spawnSync(
   process.execPath,
-  [builderEntry, "--win", "--config", "electron-builder.yml", `--config.electronDist=${distDir}`],
+  // --publish never: this build produces a local installer for acceptance.
+  // Without it electron-builder resolves the GitHub remote and demands
+  // GH_TOKEN even though nothing should be published (it failed exactly that
+  // way on the first Windows CI run).
+  [builderEntry, "--win", "--publish", "never", "--config", "electron-builder.yml", `--config.electronDist=${distDir}`],
   { cwd: root, stdio: "inherit" },
 );
 if (build.error !== undefined) {

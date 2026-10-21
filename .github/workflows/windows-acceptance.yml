@@ -31,6 +31,9 @@ defaults:
 env:
   # Evidence lands in one directory per job so uploads are unconditional.
   EVIDENCE: windows-evidence
+  # Never look for a signing certificate on a hosted runner: the acceptance
+  # build is unsigned by design, and auto-discovery adds minutes and warnings.
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
 jobs:
   elevation-probe:
