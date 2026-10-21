@@ -1,7 +1,7 @@
 import { before, after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { build } from "esbuild";
 import { chromium } from "playwright-core";
@@ -371,4 +371,96 @@ test("actual session labels distinguish six-stem residual from four-stem melody 
     await expect(page.getByLabel(expected, { exact: true })).toBeVisible();
     await expect(page.getByLabel(expected === "Other" ? "Melody" : "Other", { exact: true })).toHaveCount(0);
   }
+});
+
+test("quantised mute changes real audio only at the measured beat; persisted restore gain/settings survive reload", { timeout: 20000 }, async t => {
+  const state = session("performance");
+  state.tracks[0].analysis = { bpm: 30, musicalKey: null, beatGridMs: Array.from({ length: 16 }, (_, i) => i * 2000) };
+  state.tracks[0].stemMix = { drums: .7 };
+  state.tracks[0].transition.cue = { toSessionTrackId: "b", fromDeck: 0, toDeck: 1, fromSeconds: 10, incomingSeconds: 0 };
+  const page = await pageFor(t, "performance");
+  await page.getByLabel("Snap stem changes").selectOption("beat");
+  await page.getByTestId("session-play").click();
+  await expect.poll(() => page.evaluate(() => window.audioSnapshot().some(x => x.rms > .06))).toBe(true);
+  await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+  await expect(page.getByText(/Pending stem changes at source/)).toBeVisible();
+  const target = Number((await page.getByText(/Pending stem changes at source/).innerText()).match(/source ([\d.]+)s/)[1]);
+  // Observe the actual analyser and HTML source clock in the same renderer turn.
+  const observations = await page.evaluate(async target => {
+    const samples = [];
+    await new Promise(resolve => {
+      function sample() {
+        const audio = [...document.querySelectorAll('audio')].find(a => !a.paused);
+        if (!audio) return resolve();
+        const rms = window.audioSnapshot()[0].rms;
+        samples.push({ position: audio.currentTime, rms });
+        if (audio.currentTime > target + .18) resolve(); else requestAnimationFrame(sample);
+      }
+      sample();
+    });
+    return samples;
+  }, target);
+  await mkdir(".data/waveyard-performance", { recursive: true });
+  await writeFile(".data/waveyard-performance/quantised-audio.json", JSON.stringify({ scope: "Actual SessionExperience/useStemTransport, synthetic PCM and controlled HTTP persistence; NOT trained inference, database or native GUI", targetSourceSeconds: target, inputSha256: createHash("sha256").update(tones.get("a")).digest("hex"), observations }, null, 2));
+  assert.ok(observations.some(x => x.position < target - .1 && x.rms > .06), "remains audible before scheduled beat");
+  assert.ok(observations.filter(x => x.position < target - .08).every(x => x.rms > .04), "no premature mute");
+  assert.ok(observations.some(x => x.position >= target && x.position < target + .15 && x.rms < .001), "actual audio muted near source beat");
+  await expect.poll(() => state.tracks[0].stemMix.drums).toBe(0);
+  assert.equal(state.tracks[0].transition.performance.recall.drums, .7);
+  assert.equal(state.tracks[0].transition.cue.toSessionTrackId, "b", "performance preferences preserve completed transition cues");
+  await page.getByTestId("session-play").click();
+  await page.reload();
+  await expect(page.getByLabel("Snap stem changes")).toHaveValue("beat");
+  await page.getByRole("button", { name: "Restore stem mix", exact: true }).click();
+  await expect.poll(() => state.tracks[0].stemMix.drums).toBe(.7);
+  await page.getByTestId("session-play").click();
+  await expect.poll(() => page.evaluate(() => window.audioSnapshot().some(x => x.rms > .06))).toBe(true);
+});
+
+test("queued performance is cancelled by pause and seek; unknown beat evidence cannot claim quantisation", { timeout: 20000 }, async t => {
+  const state = session("performance-cancel");
+  state.tracks[0].analysis = { bpm: 15, musicalKey: null, beatGridMs: [0, 4000, 8000, 12000, 16000, 20000, 24000, 28000] };
+  const page = await pageFor(t, "performance-cancel");
+  await page.getByLabel("Snap stem changes").selectOption("beat");
+  await start(page);
+  await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+  await expect(page.getByText(/Pending stem changes at source/)).toBeVisible();
+  await page.getByTestId("session-play").click();
+  await expect(page.getByText(/Pending stem changes at source/)).toHaveCount(0);
+  assert.equal(state.tracks[0].stemMix.drums, 1);
+  await page.getByTestId("session-play").click();
+  await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+  await page.getByLabel("Session position").fill("6");
+  await expect(page.getByText(/Pending stem changes at source/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel pending stem changes" }).click();
+  await expect(page.getByText(/Pending stem changes at source/)).toHaveCount(0);
+  await audible(page, 220);
+  const missing = await pageFor(t, "performance-missing-grid");
+  await missing.getByLabel("Snap stem changes").selectOption("half");
+  await start(missing);
+  await missing.getByRole("button", { name: "Mute drums", exact: true }).click();
+  await expect(missing.getByTestId("session-status")).toContainText("Cannot quantise");
+  await audible(missing, 220);
+});
+
+
+test("isolate preserves the previous mix including a muted lane; Instant Restore bypasses beat delay", { timeout: 20000 }, async t => {
+  const state = session("performance-isolate");
+  state.tracks[0].stems.push({ id: "bass-a", stemType: "bass", engine: "synthetic-fixture" });
+  state.tracks[0].playback.assetIds.push("bass-a");
+  state.tracks[0].stemMix = { drums: .7, bass: .4 };
+  state.tracks[0].analysis = { bpm: 30, musicalKey: null, beatGridMs: Array.from({ length: 16 }, (_, i) => i * 2000) };
+  const page = await pageFor(t, "performance-isolate");
+  await page.getByRole("button", { name: "Isolate bass", exact: true }).click();
+  await expect.poll(() => state.tracks[0].stemMix.drums).toBe(0);
+  await page.reload();
+  await page.getByTestId("session-play").click();
+  await expect.poll(() => page.evaluate(() => window.audioSnapshot()[0]?.rms ?? 1)).toBeLessThan(.001);
+  await page.getByLabel("Snap stem changes").selectOption("four-beats");
+  await page.getByRole("button", { name: "Isolate bass", exact: true }).click();
+  await expect(page.getByText(/Pending stem changes at source/)).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.audioSnapshot()[0]?.rms ?? 0)).toBeGreaterThan(.06);
+  await expect.poll(() => state.tracks[0].stemMix.drums).toBe(.7);
+  assert.equal(state.tracks[0].stemMix.bass, .4);
 });

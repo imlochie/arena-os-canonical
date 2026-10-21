@@ -1,3 +1,4 @@
+import { normalizePerformance, type PerformanceSettings } from "./performance";
 /**
  * Session-layer pure logic (docs/waveyard-evolution-plan.md P3).
  *
@@ -27,6 +28,7 @@ export type TransitionMode = (typeof TRANSITION_MODES)[number];
 
 export interface TransitionConfig {
   mode: TransitionMode;
+  performance?: PerformanceSettings;
   /** Last successfully completed transition. Source-clock positions, not a
    * playing flag or wall clock. Kept in the existing transition JSON. */
   cue?: { toSessionTrackId: string; fromDeck: 0 | 1; toDeck: 0 | 1; fromSeconds: number; incomingSeconds: number };
@@ -49,6 +51,8 @@ export function normalizeTransitionConfig(raw: unknown): TransitionConfig | null
   const keepStems = Array.isArray(value.keepStems)
     ? [...new Set(value.keepStems.filter((stem): stem is string => typeof stem === "string" && stem.length > 0 && stem.length <= 64))]
     : [];
+  const performance = value.performance === undefined ? undefined : normalizePerformance(value.performance);
+  if (performance === null) return null;
   let cue: TransitionConfig["cue"];
   if (value.cue !== undefined) {
     if (!value.cue || typeof value.cue !== "object") return null;
@@ -59,7 +63,7 @@ export function normalizeTransitionConfig(raw: unknown): TransitionConfig | null
       || typeof c.incomingSeconds !== "number" || !Number.isFinite(c.incomingSeconds) || c.incomingSeconds < 0 || c.incomingSeconds > 86400) return null;
     cue = { toSessionTrackId: c.toSessionTrackId, fromDeck: c.fromDeck, toDeck: c.toDeck, fromSeconds: c.fromSeconds, incomingSeconds: c.incomingSeconds };
   }
-  return { mode, crossfadeSeconds: seconds, keepStems, ...(cue ? { cue } : {}) };
+  return { mode, ...(performance ? { performance } : {}), crossfadeSeconds: seconds, keepStems, ...(cue ? { cue } : {}) };
 }
 
 export function defaultTransitionConfig(): TransitionConfig {

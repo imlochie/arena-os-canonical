@@ -1,5 +1,7 @@
 "use client";
 
+import { defaultPerformance, nextPerformanceBoundary, performanceTick, performMix, type PerformanceAction, type PerformanceSnap } from "@/lib/waveyard/library/performance";
+
 import type { TrackSummary } from "@/lib/waveyard/library/service";
 
 import type { StudioHandoffResult } from "@/lib/waveyard/library/session-service";
@@ -443,6 +445,66 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     setPositionsByDeck((previous) => previous[index] === seconds ? previous : index === 0 ? [seconds, previous[1]] : [previous[0], seconds]);
   }, []);
 
+  // Performance uses the existing media source clock and mix/transition storage.
+  // Pending intent is deliberately NOT persisted or replayed after reload.
+  const pendingPerformance = useRef<{ target: number; previous: number; trackId: string; deck: 0 | 1; actions: PerformanceAction[] } | null>(null);
+  const [pendingLabel, setPendingLabel] = useState<string | null>(null);
+  const performanceState = useRef({ currentItem, mixes, transitions, phase });
+  useEffect(() => { performanceState.current = { currentItem, mixes, transitions, phase }; }, [currentItem, mixes, transitions, phase]);
+  const cancelPerformance = useCallback(() => { pendingPerformance.current = null; setPendingLabel(null); }, []);
+  const applyPerformance = useCallback((actions: PerformanceAction[]) => {
+    const live = performanceState.current, item = live.currentItem;
+    if (!item) return;
+    let levels = live.mixes[item.id] ?? item.stemMix;
+    let settings = (live.transitions[item.id] ?? item.transition).performance ?? defaultPerformance();
+    for (const action of actions) {
+      const next = performMix(levels, settings, action, item.stems.map(stem => stem.stemType));
+      levels = next.mix; settings = next.performance;
+    }
+    const config = { ...(live.transitions[item.id] ?? item.transition), performance: settings };
+    performanceState.current = { ...live, mixes: { ...live.mixes, [item.id]: levels }, transitions: { ...live.transitions, [item.id]: config } };
+    decksRef.current[activeDeckRef.current]?.applyStemVolumes(levels);
+    setMixes(prev => ({ ...prev, [item.id]: levels }));
+    setTransitions(prev => ({ ...prev, [item.id]: config }));
+  }, []);
+  const requestPerformance = useCallback((action: PerformanceAction) => {
+    const live = performanceState.current, item = live.currentItem;
+    if (!item || live.phase !== "idle") return;
+    const deck = decksRef.current[activeDeckRef.current];
+    if (!deck) return;
+    const settings = (live.transitions[item.id] ?? item.transition).performance ?? defaultPerformance();
+    const restoring = action.kind === "restore" || (action.kind === "isolate" && settings.isolatedStem === action.stem);
+    const immediate = !deck.transport.playing || settings.snap === "off" || (restoring && settings.instantRestore);
+    if (immediate) { cancelPerformance(); applyPerformance([action]); return; }
+    const position = deck.transport.currentPosition();
+    const target = nextPerformanceBoundary(position, item.analysis?.beatGridMs, settings.snap);
+    if (target === null) { setStatus("Cannot quantise: a strictly ordered measured beat grid covering the next boundary is required. Choose Off to change immediately."); return; }
+    const previous = pendingPerformance.current?.trackId === item.id && pendingPerformance.current.deck === activeDeckRef.current ? pendingPerformance.current : null;
+    if (previous && previous.actions.length >= 64) { setStatus("Pending performance queue is full. Cancel or wait for its beat."); return; }
+    pendingPerformance.current = { target: previous?.target ?? target, previous: position, trackId: item.id, deck: activeDeckRef.current, actions: [...(previous?.actions ?? []), action] };
+    setPendingLabel(`Pending stem changes at source ${pendingPerformance.current.target.toFixed(3)}s`);
+  }, [applyPerformance, cancelPerformance]);
+  useEffect(() => {
+    let raf: number;
+    const tick = () => {
+      const pending = pendingPerformance.current;
+      if (pending) {
+        const live = performanceState.current, deck = decksRef.current[pending.deck];
+        const position = deck?.transport.currentPosition() ?? NaN;
+        const verdict = live.currentItem?.id !== pending.trackId || currentIdRef.current !== pending.trackId || activeDeckRef.current !== pending.deck || live.phase !== "idle" ? "cancel" : performanceTick(pending.target, pending.previous, position, deck?.transport.playing ?? false);
+        pending.previous = position;
+        if (verdict !== "wait") {
+          cancelPerformance();
+          if (verdict === "apply") applyPerformance(pending.actions);
+          else setStatus("Pending stem changes cancelled: playback changed or the beat deadline was missed. Nothing was applied late.");
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [applyPerformance, cancelPerformance]);
+
   // ------------------------------------------------------------ persistence
   const persistState = useCallback(async () => {
     const s = sessionRef.current;
@@ -510,6 +572,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
 
   // -------------------------------------------------------- transition core
   const abortTransition = useCallback((message: string) => {
+    cancelPerformance();
     transitionRequest.current += 1;
     startingRef.current = false;
     startingIdentity.current = null;
@@ -522,7 +585,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     for (const deck of decksRef.current) { deck?.transport.pause(); deck?.transport.setMasterVolume(1); }
     setPhase("idle");
     setStatus(message);
-  }, []);
+  }, [cancelPerformance]);
 
   const finishTransition = useCallback((cut?: TransitionIdentity, naturalCompletion = false) => {
     const fade = fadeRef.current;
@@ -708,6 +771,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   }, [abortTransition]);
 
   const togglePlay = useCallback(async () => {
+    cancelPerformance();
     if (phase !== "idle") {
       abortTransition("Transition paused. Press Play to recover the current track.");
       void persistStateRef.current();
@@ -724,7 +788,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
       api.applyStemVolumes(mixes[currentIdRef.current ?? ""] ?? {});
       await api.transport.play();
     }
-  }, [activeDeck, phase, abortTransition, mixes]);
+  }, [activeDeck, phase, abortTransition, mixes, cancelPerformance]);
 
   const handleDeckEnded = useCallback((deckIndex: number) => {
     if (phase !== "idle" || startingRef.current || deckIndex !== activeDeckRef.current) return;
@@ -751,6 +815,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   }, []);
 
   const seekCurrent = useCallback((seconds: number) => {
+    cancelPerformance();
     if (phase !== "idle") abortTransition("Transition cancelled for seeking. Press Play to resume.");
     const index = activeDeckRef.current;
     const api = decksRef.current[index];
@@ -759,12 +824,13 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     // child's transport effect reports its next position to the parent.
     handleDeckPosition(index, api?.transport.currentPosition() ?? 0);
     void persistStateRef.current();
-  }, [phase, abortTransition, handleDeckPosition]);
+  }, [phase, abortTransition, handleDeckPosition, cancelPerformance]);
   const stopSession = useCallback(() => {
+    cancelPerformance();
     abortTransition("Session stopped. Press Play to restart the current track.");
     for (const deck of decksRef.current) deck?.transport.stop();
     void persistStateRef.current();
-  }, [abortTransition]);
+  }, [abortTransition, cancelPerformance]);
 
   // ----------------------------------------------------------- queue edits
   const mutate = useCallback(async (input: RequestInfo, init: RequestInit, apply: (s: SessionDetail) => void) => {
@@ -994,6 +1060,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
 
   const setMixValue = (stemType: string, value: number) => {
     if (currentItem === null) return;
+    cancelPerformance();
     setMixes((prev) => ({ ...prev, [currentItem.id]: { ...prev[currentItem.id], [stemType]: value } }));
   };
   const toggleKeep = (stemType: string) => {
@@ -1010,13 +1077,22 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     if (currentItem === null) return;
     setTransitions((prev) => {
       const cfg = prev[currentItem.id] ?? currentItem.transition;
-      return { ...prev, [currentItem.id]: { ...cfg, cue: undefined, ...patch } };
+      // Performance preferences do not change completed transition geometry.
+      return { ...prev, [currentItem.id]: { ...cfg, ...(Object.keys(patch).every(key => key === "performance") ? {} : { cue: undefined }), ...patch } };
     });
   };
 
   const mixControls = currentItem !== null && currentItem.stems.length > 0 && (
             <div className="sess-mix">
               <h4 className="library-panel-title">Stem mix — current track</h4>
+              <label>Snap stem changes <select aria-label="Snap stem changes" value={transition?.performance?.snap ?? "off"} disabled={phase !== "idle"} onChange={event => { cancelPerformance(); setTransition({ performance: { ...(transition?.performance ?? defaultPerformance()), snap: event.target.value as PerformanceSnap } }); }}>
+                <option value="off">Off</option><option value="quarter">¼ beat</option><option value="half">½ beat</option><option value="beat">Beat</option><option value="four-beats">4 beats (grid origin, not detected downbeat)</option>
+              </select></label>
+              <label><input type="checkbox" aria-label="Instant Restore" checked={transition?.performance?.instantRestore ?? true} onChange={event => setTransition({ performance: { ...(transition?.performance ?? defaultPerformance()), instantRestore: event.target.checked } })} />Instant Restore</label>
+              <button type="button" disabled={phase !== "idle"} onClick={() => requestPerformance({ kind: "restore" })}>Restore stem mix</button>
+              {pendingLabel && <p role="status">{pendingLabel} <button type="button" onClick={cancelPerformance}>Cancel pending stem changes</button></p>}
+              <small>Mute/isolate use the measured source beat grid; faders remain immediate. Browser-clock timing is not sample-locked. Four-beat groups are not verified musical bars. Pending gestures are cancelled on pause, seek, track/transition change or missed deadline, not replayed after reopening.</small>
+
               {currentItem.stems.map((stem) => {
                 const swap = session.swaps.find(
                   (s) => s.sessionTrackId === currentItem.id && s.stemType === stem.stemType,
@@ -1038,6 +1114,8 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
                       onChange={(event) => setMixValue(stem.stemType, Number(event.target.value))}
                     />
                     <span className="sess-mix-value">{(mix[stem.stemType] ?? 1).toFixed(2)}</span>
+                    <button type="button" aria-label={`Mute ${stem.stemType}`} aria-pressed={(mix[stem.stemType] ?? 1) === 0} disabled={phase !== "idle"} onClick={() => requestPerformance({ kind: "mute", stem: stem.stemType })}>{(mix[stem.stemType] ?? 1) === 0 ? "Unmute" : "Mute"}</button>
+                    <button type="button" aria-label={`Isolate ${stem.stemType}`} aria-pressed={transition?.performance?.isolatedStem === stem.stemType} disabled={phase !== "idle"} onClick={() => requestPerformance({ kind: "isolate", stem: stem.stemType })}>Isolate</button>
                     {nextItem !== null && (
                       <button
                         type="button"

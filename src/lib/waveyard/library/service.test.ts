@@ -1267,3 +1267,28 @@ test("decoded bank duration overrides compressed-container padding through sessi
   } finally { if (priorWorker === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = priorWorker; }
   const [unchanged] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, track.id)); assert.equal(unchanged.durationSeconds, exact + .039);
 });
+
+
+test("performance settings and exact muted fader recall persist through actual route, SQL and a fresh application process", async () => {
+  const filePath = path.join(root!, "performance.wav"); writeWav(filePath, 2);
+  const intake = await service.addTrackFromAudioFile({ ownerId: OWNER, filePath, filename: "performance.wav", mimeType: "audio/wav" });
+  const created = await sessions.createSession(OWNER, "Performance recall persistence");
+  const added = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: intake.track.id });
+  const item = added.tracks[0];
+  const { defaultPerformance, performMix } = await import("./performance");
+  const muted = performMix({ drums: .37, vocals: .8 }, { ...defaultPerformance(), snap: "quarter", instantRestore: false }, { kind: "mute", stem: "drums" }, ["drums", "vocals"]);
+  const route = await import("@/app/api/library/sessions/[id]/tracks/[itemId]/route");
+  const params = { params: Promise.resolve({ id: created.id, itemId: item.id }) };
+  const response = await route.PATCH(new Request("http://arena.test/performance", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ stemMix: muted.mix, transition: { ...item.transition, performance: muted.performance } }) }), params);
+  assert.equal(response.status, 200);
+  const script = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { const s = await getSession('${OWNER}', '${created.id}'); console.log(JSON.stringify(s.tracks[0])); } finally { await pool.end(); }`;
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });
+  assert.equal(child.status, 0, child.stderr);
+  const reopened = JSON.parse(child.stdout.trim());
+  assert.equal(reopened.stemMix.drums, 0);
+  assert.deepEqual(reopened.transition.performance, muted.performance);
+  assert.equal(performMix(reopened.stemMix, reopened.transition.performance, { kind: "mute", stem: "drums" }, ["drums", "vocals"]).mix.drums, .37);
+  const invalid = await route.PATCH(new Request("http://arena.test/performance", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ transition: { ...item.transition, performance: { ...muted.performance, recall: { drums: -5 } } } }) }), params);
+  assert.equal(invalid.status, 400);
+  assert.deepEqual((await sessions.getSession(OWNER, created.id)).tracks[0].transition.performance, muted.performance, "failed patch cannot overwrite persisted recall");
+});
