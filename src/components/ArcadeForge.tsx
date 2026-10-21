@@ -5,6 +5,7 @@ import PrivacyControls from "./PrivacyControls";
 import { privacyFlags, usePrivacySettings } from "@/lib/privacyClient";
 import { loadKeys } from "./KeysBar";
 import BrainCard from "@/components/BrainCard";
+import ArcadeSourceWorkshop from "@/components/ArcadeSourceWorkshop";
 import {
   GAME_TYPES,
   detectGameType,
@@ -147,7 +148,7 @@ export default function ArcadeForge() {
         if (j.draft && typeof j.draft.code === "string") setFailedDraft(j.draft);
         throw new Error(j.error ?? "save failed");
       }
-      return j.game;
+      return { ...j.game, verificationReport: j.runtimeValidation };
     });
   }
 
@@ -199,7 +200,7 @@ export default function ArcadeForge() {
     const rt = body.runtime ?? {};
     if(body.persistenceError || !body.game) { setFailedDraft({code:body.code,validation:body.validation,runtime:rt}); throw new Error(body.persistenceError ?? "Generated code was not saved. Previous playable game unchanged; inspect the retained attempt and retry saving."); }
     setFailedDraft(null);
-    setGame({ prompt: p, gameType: "custom", ...(body.game ?? {}), code: body.code, engine: "ai-codegen", genMs: rt.ms });
+    setGame({ prompt: p, gameType: "custom", ...(body.game ?? {}), code: body.code, engine: "ai-codegen", genMs: rt.ms, verificationReport: body.runtimeValidation });
     fetchHistory();
     setNotice(
       `${body.game?.ephemeral ? "Ephemeral — not saved. " : body.game ? "Saved. " : "Not saved — download this game before leaving. "}✨ ${body.title} built by AI (${rt.backend ?? "?"} / ${rt.modelId ?? "unreported model"}${rt.fallback ? " · fallback" : ""}) — browser smoke${body.runtimeValidation?.gameplay?.status === "passed" ? " and declared gameplay scenarios" : ""} passed${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. Prompt fidelity and game quality still need playtesting.`
@@ -380,6 +381,7 @@ export default function ArcadeForge() {
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
       <div className="min-w-0">
+        <ArcadeSourceWorkshop />
         {/* Engine status */}
         <div className="glass rounded-2xl p-4">
           <div className="flex flex-wrap items-center gap-2">
@@ -582,7 +584,7 @@ export default function ArcadeForge() {
                 </button>
               </div>
               <span className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 ring-1 ring-white/10">
-                {game.engine === "retained-code" ? "Recovered validated code · origin recorded, not newly verified inference" : game.engine === "ai-codegen" ? "✨ AI-generated" : game.engine === "on-device-ai" ? "🧠 on-device AI" : game.engine === "remix" ? "⚡ remix" : "⚡ verified core"}
+                {game.engine === "retained-code" ? "Recovered code · origin recorded, not newly verified inference" : game.engine === "ai-codegen" ? "✨ AI-generated" : game.engine === "on-device-ai" ? "🧠 on-device AI" : game.engine === "remix" ? "⚡ remix" : "⚡ offline template"}
                 {game.genMs !== undefined && game.engine !== "on-device-ai" ? ` · ${game.genMs}ms` : ""}
                 {game.tokps ? ` · ${game.tokps} tok/s` : ""} · {(game.code.length / 1024).toFixed(1)}KB
               </span>
@@ -592,6 +594,14 @@ export default function ArcadeForge() {
               </div>
             </div>
             <p className="mt-2 text-center text-sm font-semibold text-slate-300">“{game.prompt}”</p>
+            <p className="mt-2 text-xs text-slate-400" role="status">
+              {game.verificationReport?.gameplay?.status === "passed"
+                ? "This generation passed browser smoke and declared controls/progress/terminal/restart scenarios. Model-declared checks do not prove arbitrary prompt fidelity or game quality."
+                : game.verificationReport?.ok
+                  ? "Browser smoke passed. No declared gameplay pass is loaded; this is not a mechanic-completeness or creative-quality result."
+                  : "No current gameplay receipt loaded for this reopened/retained game. Playing saved code is not fresh verification or inference."}
+              {" "}<a href="/runtime" className="underline">Inspect existing model/runtime availability</a>
+            </p>
             {tab === "play" ? (
               <div className="glass mt-2 overflow-hidden rounded-2xl">
                 <iframe
