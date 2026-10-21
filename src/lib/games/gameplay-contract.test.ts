@@ -30,8 +30,7 @@ test("arbitrary selectors, excessive waits and navigation actions are rejected",
   assert.throws(() => parseGameplayContract(document(nav)), /Unsupported/);
 });
 test("vacuous controls and progress checks cannot claim mechanic coverage", () => {
-  const value = example(); value.scenarios[0].checks[0].mode = "equals";
-  value.scenarios[0].checks[0].value = "0";
+  const value = example(); Object.assign(value.scenarios[0].checks[0], { mode: "equals", value: "0" });
   assert.throws(() => parseGameplayContract(document(value)), /Controls/);
   const progress = example(); progress.scenarios[1].checks[0].mode = "change";
   assert.throws(() => parseGameplayContract(document(progress)), /numeric/);
