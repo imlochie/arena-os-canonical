@@ -26,6 +26,10 @@ test("diverse real mechanics, negative controls, bounded browser-informed repair
       const result = await run(name, mutate(games.puzzle));
       assert.equal(result.ok, false); assert.equal(result.gameplay.status, "failed");
     }
+    const vacuousTerminal = brokenTerminal(games.puzzle).replace('"value":"won"', '"value":"playing"');
+    const vacuous = await run("vacuous-terminal-rejected", vacuousTerminal);
+    assert.equal(vacuous.ok, false);
+    assert.ok(vacuous.gameplay.scenarios.find(s => s.kind === "terminal").issues.some(issue => issue.includes("no changed observable")));
     let calls = 0, failedRetained = false;
     const repaired = await forgeGameWithAI("A key maze with an exit behind a wall", {
       validateRuntime: code => validateGameRuntime(code, { requireGameplay: true }),
