@@ -21,6 +21,10 @@
 
 PR #15, #22, #23, #24 and #25 were not modified, retargeted, merged or closed. The six hosted workflows that passed on `13638fe` are **inherited evidence only** and are not used as proof here; every result below was produced locally against the exact commit above.
 
+### Live preview of this session
+
+The runtime is up on `127.0.0.1:3000`. Arena's desktop guard answers **403** to any non-loopback Host ("Arena desktop only serves loopback hosts"), so the sandbox preview URL cannot hit it directly. `tools/preview-proxy.mjs` (a shim, **not** part of the app) forwards a public port to the loopback runtime and rewrites only the `Host` header, which makes the running build browsable at the sandbox preview URL. Trade-off, stated plainly: that URL then inherits the owner's local-trust view of this sandbox (acceptance data only, no credentials) and bypasses the LAN/DNS-rebinding protection the app implements on purpose. It is a demo convenience, not a deployment pattern, and **no acceptance evidence was collected through it** — every result below came from direct loopback requests.
+
 ## 2. Environment and startup
 
 Node 22.22.3 / npm 10.9.8, PostgreSQL 16 (npm-hosted `@embedded-postgres/linux-x64`) on `127.0.0.1:5432`, Chromium **153.0.8010.0** (npm-hosted `@sparticuz/chromium`) driven by `playwright-core`. Sandbox has no Docker, no audio device, no apt/Playwright CDN access.
@@ -120,7 +124,8 @@ Fleet: Planner `turboagent-32b` (`Qwen/Qwen2.5-32B-Instruct`), Builder/Reviewer 
 4. **Desktop/Electron shell not exercised** — the web runtime was validated in desktop-trust mode; packaging, auto-update and native audio devices were out of scope. The sandbox reports no audio output devices, which the UI states honestly.
 5. **Acquisition used a local pinned mirror** because `raw.githubusercontent.com` is unreachable here; hashes matched the app's pins, but the network path itself was substituted.
 6. **Chromium ran with `--no-sandbox`** in this container (environmental).
-7. Not proven: arbitrary prompt-to-game quality, general reverse engineering, a complete mod ecosystem, production readiness.
+7. **The live preview goes through a Host-rewriting shim** (see §1); the app itself is unchanged, but that browsing path is not evidence and would be unacceptable outside a private sandbox.
+8. Not proven: arbitrary prompt-to-game quality, general reverse engineering, a complete mod ecosystem, production readiness.
 
 ## 8. Un-run cases
 
@@ -143,5 +148,5 @@ runs/cross-app/cross-app-results.json + 8 screenshots
 runs/spaces-mission.json              mission record (scripted model)
 runs/spaces-ui-mission/               mission dispatched from the workbench UI + screenshot
 runs/ui-*.png                         manual probe screenshots (Spaces fleet/history, Arcade, sessions)
-tools/                                seeder, four acceptance drivers, scripted model server, pinned mirror
+tools/                                seeder, four acceptance drivers, scripted model server, pinned mirror, preview shim
 ```
