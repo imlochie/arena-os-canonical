@@ -18,7 +18,7 @@
  * completion sentinel, then replays the child's output and exits with the
  * child's own status. A missing sentinel is a failure, never a pass.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -55,15 +55,32 @@ writeFileSync(
   "utf8",
 );
 
-// Let Node do the argument quoting. Hand-rolling it produced a nested-quote
-// form that cmd.exe mis-parsed (runas exited 1 with no output on the runner).
-const runas = spawnSync("runas", ["/trustlevel:0x20000", `cmd.exe /c ${bat}`], {
-  stdio: ["ignore", "pipe", "pipe"],
-  encoding: "utf8",
+// Launch runas asynchronously with a hard time limit: a prompt or an
+// inherited pipe must never wedge the whole CI job (the first attempt did).
+const runasResult = await new Promise((resolve) => {
+  const child = spawn("runas", ["/trustlevel:0x20000", `cmd.exe /c ${bat}`], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (chunk) => (stdout += String(chunk)));
+  child.stderr.on("data", (chunk) => (stderr += String(chunk)));
+  const timer = setTimeout(() => {
+    child.kill();
+    resolve({ status: "timeout", stdout, stderr });
+  }, 60_000);
+  child.once("error", (error) => {
+    clearTimeout(timer);
+    resolve({ status: "error", stdout, stderr: `${stderr}${error.message}` });
+  });
+  child.once("exit", (code) => {
+    clearTimeout(timer);
+    resolve({ status: code, stdout, stderr });
+  });
 });
-console.log(`[deelevated] runas: exit=${String(runas.status)} ${(runas.stdout ?? "").trim()} ${(runas.stderr ?? "").trim()}`.trim());
-if (runas.status !== 0) {
-  console.log(`::error title=${label}::runas /trustlevel failed (${String(runas.status)}) ${(runas.stderr ?? "").trim()}`);
+console.log(`[deelevated] runas: exit=${String(runasResult.status)} ${runasResult.stdout.trim()} ${runasResult.stderr.trim()}`.trim());
+if (runasResult.status !== 0) {
+  console.log(`::error title=${label}::runas /trustlevel could not launch the de-elevated command (${String(runasResult.status)}) ${runasResult.stderr.trim().slice(0, 500)}`);
   process.exit(1);
 }
 
@@ -74,7 +91,7 @@ while (Date.now() < deadline) {
     status = readFileSync(statusFile, "utf8").trim();
     break;
   }
-  spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 2000)"], { stdio: "ignore" });
+  await new Promise((resolve) => setTimeout(resolve, 2000));
 }
 
 const output = existsSync(log) ? readFileSync(log, "utf8") : "";

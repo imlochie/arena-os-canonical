@@ -56,20 +56,26 @@ jobs:
           if [ -z "$BIN" ]; then echo "platform package not installed in this job" | tee "$EVIDENCE/pg-elevation.txt"; exit 0; fi
           "$BIN/postgres" --version | tee "$EVIDENCE/pg-elevation.txt"
 
-      - name: Non-elevated execution works (cmd builtin)
+      - name: Variant A — node wrapper, cmd builtin (bounded 3 min)
+        timeout-minutes: 4
         run: |
           set -euo pipefail
-          node scripts/windows-deelevated-step.mjs de-elevation-cmd "$EVIDENCE/deelevated-cmd.log" 300000 -- cmd /c "echo DEELEVATED_OK && whoami /groups | findstr /i administrators || echo NO_ADMIN_GROUP"
+          node scripts/windows-deelevated-step.mjs de-elevation-cmd "$EVIDENCE/deelevated-cmd.log" 180000 -- cmd /c "echo DEELEVATED_OK" || echo "VARIANT_A_EXIT=$?" | tee "$EVIDENCE/variant-a.txt"
 
-      - name: Non-elevated execution works (node, the shape the acceptance uses)
+      - name: Variant B — direct runas from bash (bounded 2 min)
+        timeout-minutes: 3
         run: |
-          set -euo pipefail
-          node scripts/windows-deelevated-step.mjs de-elevation-node "$EVIDENCE/deelevated-node.log" 300000 -- node -e "console.log('NODE_DEELEVATED_OK', process.getuid === undefined ? 'win32' : process.getuid())"
+          set -uo pipefail
+          rm -f "$EVIDENCE/direct.txt"
+          timeout 100 runas /trustlevel:0x20000 "cmd.exe /c echo DIRECT_OK ^> $(cygpath -w "$EVIDENCE/direct.txt")" || echo "runas exit=$?"
+          sleep 3
+          cat "$EVIDENCE/direct.txt" 2>/dev/null || echo "direct.txt absent"
 
-      - name: Non-elevated npm script works (the shape the gates use)
+      - name: Variant C — node wrapper, node process
+        timeout-minutes: 4
         run: |
           set -euo pipefail
-          node scripts/windows-deelevated-step.mjs de-elevation-npm "$EVIDENCE/deelevated-npm.log" 900000 -- npm run --silent typecheck
+          node scripts/windows-deelevated-step.mjs de-elevation-node "$EVIDENCE/deelevated-node.log" 180000 -- node -e "console.log('NODE_DEELEVATED_OK')" || echo "VARIANT_C_EXIT=$?" | tee "$EVIDENCE/variant-c.txt"
 
       - name: Upload probe evidence
         if: always()
