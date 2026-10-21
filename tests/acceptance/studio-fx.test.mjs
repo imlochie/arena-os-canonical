@@ -782,17 +782,45 @@ test("P0 bank gate: actual separation publication, pinned session/donor playback
   await handleSeparationJob(first.payload, first.deps); // terminal retry cannot replace assets
   assert.deepEqual((await sessions.getSession(owner, session.id)).tracks[0].playback.assetIds, ids[0]);
   const page = await browser.newPage(); t.after(() => page.close()); const errors = []; page.on("pageerror", e => errors.push(e.message));
+  const originalDrums = reread.tracks[0].stems.find(stem => stem.stemType === "drums");
+  const [pinned] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, donorStem.id));
+  const pinnedPcm = synth.decodeWav16(new Uint8Array(await readFile(getStorage().getLocalPath(pinned.storageKey))));
+  const n = 2048, from = 22050; let real = 0, imag = 0;
+  for (let i = 0; i < n; i++) { const value = pinnedPcm.samples[(from + i) * pinnedPcm.channels], phase = 2 * Math.PI * 1601 * i / 44100; real += value * Math.cos(phase); imag += value * Math.sin(phase); }
+  const expectedDonorAmplitude = 2 * Math.hypot(real, imag) / n * (pinnedPcm.channels === 1 ? Math.SQRT1_2 : 1);
+  assert.ok(expectedDonorAmplitude > .001, "the pinned donor must contain real non-silent signal");
+  await page.addInitScript(() => {
+    const Native = AudioContext; window.pinnedLaneContexts = [];
+    window.AudioContext = class extends Native { constructor(...args) {
+      super(...args); let element = null; const source = this.createMediaElementSource.bind(this), analyser = this.createAnalyser.bind(this);
+      this.createMediaElementSource = lane => { element = lane; return source(lane); };
+      this.createAnalyser = () => { const node = analyser(); if (element) { window.pinnedLaneContexts.push({ context: this, element, node }); element = null; } return node; };
+    } };
+  });
+  const pinnedSignals = () => page.evaluate(id => window.pinnedLaneContexts.filter(({ context, element }) => context.state === "running" && element.getAttribute("src") === `/api/assets/${id}`).map(({ context, node }) => {
+    const samples = new Float32Array(node.fftSize); node.getFloatTimeDomainData(samples);
+    return [1009, 1601].map(hz => { let re = 0, im = 0; for (let i = 0; i < samples.length; i++) { const phase = 2 * Math.PI * hz * i / context.sampleRate; re += samples[i] * Math.cos(phase); im += samples[i] * Math.sin(phase); } return 2 * Math.hypot(re, im) / samples.length; });
+  }), originalDrums.id);
+  const assertPinnedSignal = () => expect.poll(async () => (await pinnedSignals()).some(([original, donor]) => original < expectedDonorAmplitude * .03 + .0001 && Math.abs(donor - expectedDonorAmplitude) < expectedDonorAmplitude * .1)).toBe(true);
+
   await page.goto(`${origin}/?room=listening&session=${session.id}`);
   const deck = page.getByTestId("session-deck-current");
   await expect(deck.locator("audio")).toHaveCount(4);
   await page.getByTestId("session-play").click();
   await expect.poll(() => deck.locator("audio").evaluateAll(els => els.every(el => !el.paused && el.currentTime > .1))).toBe(true);
-  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("src", `/api/assets/${donorStem.id}`);
+  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("src", `/api/assets/${originalDrums.id}`);
+  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("data-active-source", donorStem.id);
+  await assertPinnedSignal();
+  const beforeRestartSignal = await pinnedSignals();
   await page.getByTestId("session-play").click();
   await page.goto(`${origin}/?room=preparation`); await f.stop(); await f.start();
   await page.goto(`${origin}/?room=listening&session=${session.id}`);
   await expect(deck.locator("audio")).toHaveCount(4);
-  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("src", `/api/assets/${donorStem.id}`);
+  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("src", `/api/assets/${originalDrums.id}`);
+  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("data-active-source", donorStem.id);
+  await page.getByTestId("session-play").click(); await assertPinnedSignal();
+  const afterRestartSignal = await pinnedSignals();
+  await page.getByTestId("session-play").click();
   const handoff = await sessions.sendSessionToStudio(owner, session.id);
   assert.equal(handoff.remixTrackCount, 8, "two explicit four-lane session items, not eight lanes per item");
   const arrangement = await api(`/api/remixes/${handoff.remixSessionId}`);
@@ -818,7 +846,7 @@ test("P0 bank gate: actual separation publication, pinned session/donor playback
   await sessions.updateSessionTrack(owner, legacy.id, item.id, {bankId:first.job.id});
   const repaired = await sessions.getSession(owner, legacy.id); assert.deepEqual(repaired.tracks[0].playback.assetIds, ids[0]); assert.equal(repaired.tracks[0].stemMix.drums,.37);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({kind:"bank-identity-connected-gate", banks:3, lanesPerItem:4, pinnedDonor:donorStem.id, maximumExportError:maximumError, frames:output.decoded.samples.length/output.decoded.channels, scope:"actual processing/publication/PG/browser playback/restart/Studio/FFmpeg; controlled spectral inference seam, NOT genuine inference"}));
+  console.log(JSON.stringify({kind:"bank-identity-connected-gate", banks:3, lanesPerItem:4, pinnedDonor:donorStem.id, expectedDonorAmplitude, beforeRestartSignal, afterRestartSignal, maximumExportError:maximumError, frames:output.decoded.samples.length/output.decoded.channels, scope:"actual processing/publication/PG/browser playback/restart/Studio/FFmpeg; controlled spectral inference seam, NOT genuine inference"}));
 });
 
 // Generated owned PCM + controlled public-provider transport. These assertions
