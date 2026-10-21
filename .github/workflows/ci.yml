@@ -196,6 +196,10 @@ jobs:
     # No model/credentials/database required. This does not establish Electron
     # or source-to-separated-stems acceptance.
     name: Waveyard browser audio acceptance
+    # These durable workflows also publish Arcade games through the new gate.
+    # The production validator permits no-sandbox ONLY with CI=true as well.
+    env:
+      ARENA_ARCADE_CI_NO_SANDBOX: "1"
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

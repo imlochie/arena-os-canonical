@@ -1,7 +1,7 @@
 name: Spaces real workshop and recovery acceptance
 on:
   push:
-    branches: [product/spaces-workshop-proof]
+    branches: [product/spaces-workshop-proof, "arena/331aa502-arena-os-canonical"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 45
     env:
       NEXT_TELEMETRY_DISABLED: "1"
+      # Combined source suite also exercises Arcade publication; explicit CI only.
+      ARENA_ARCADE_CI_NO_SANDBOX: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

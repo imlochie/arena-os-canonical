@@ -1,7 +1,7 @@
 name: Arcade browser publication and actual-page acceptance
 on:
   push:
-    branches: [product/arcade-runtime-validation]
+    branches: [product/arcade-runtime-validation, "arena/331aa502-arena-os-canonical"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -34,7 +34,7 @@ jobs:
             git rev-parse HEAD
             git status --short
             node --version
-            echo "Isolated follow-on base ba5cfa731712b8f4759416830ed66b9cb50b9d84"
+            echo "Donor PR19 base ba5cfa731712b8f4759416830ed66b9cb50b9d84; tested HEAD above is authoritative"
             echo "Controlled model replies; no live model quality or Electron claim."
           } > .data/arcade-acceptance/source-manifest.txt
       - name: Typecheck and focused lint

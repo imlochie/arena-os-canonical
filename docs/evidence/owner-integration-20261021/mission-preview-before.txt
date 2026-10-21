@@ -1,0 +1,108 @@
+TAP version 13
+# (node:8071) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/spaces/mission-evidence.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: model completion or command success is not passing tests
+ok 1 - model completion or command success is not passing tests
+  ---
+  duration_ms: 1.683959
+  type: 'test'
+  ...
+# Subtest: only qualified machine test outcomes count, not human review, legacy observations or uncertainty
+ok 2 - only qualified machine test outcomes count, not human review, legacy observations or uncertainty
+  ---
+  duration_ms: 0.407816
+  type: 'test'
+  ...
+# Subtest: repeat observations of the same request do not double-count a recovered outcome
+ok 3 - repeat observations of the same request do not double-count a recovered outcome
+  ---
+  duration_ms: 0.252982
+  type: 'test'
+  ...
+# Subtest: an output path or claimed success is not an immutable deliverable
+ok 4 - an output path or claimed success is not an immutable deliverable
+  ---
+  duration_ms: 0.596066
+  type: 'test'
+  ...
+# (node:8086) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/helpers/mission-postgres.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: review in the real panel → actual HTTP/SQL audit → explicit resume → useful retained file, without duplicated command
+ok 5 - review in the real panel → actual HTTP/SQL audit → explicit resume → useful retained file, without duplicated command
+  ---
+  duration_ms: 4537.273561
+  type: 'test'
+  ...
+# Subtest: active SQL lease yields actionable HTTP 409; panel can cancel the same persisted mission
+ok 6 - active SQL lease yields actionable HTTP 409; panel can cancel the same persisted mission
+  ---
+  duration_ms: 1403.938871
+  type: 'test'
+  ...
+# [database] active connection lost: terminating connection due to administrator command
+# [database] idle connection lost: terminating connection due to administrator command
+# Subtest: real database outage is visible, not empty/success; the panel recovers persisted work after SQL restart
+ok 7 - real database outage is visible, not empty/success; the panel recovers persisted work after SQL restart
+  ---
+  duration_ms: 5748.715662
+  type: 'test'
+  ...
+# Subtest: approval decisions reconnect to PostgreSQL after an outage instead of staying on an empty memory ledger
+ok 8 - approval decisions reconnect to PostgreSQL after an outage instead of staying on an empty memory ledger
+  ---
+  duration_ms: 339.468542
+  type: 'test'
+  ...
+# [database] active connection lost: terminating connection due to administrator command
+# [database] idle connection lost: terminating connection due to administrator command
+# Subtest: mission panel retrieves immutable outputs after SQL restart and later edits, checks downloads, and reuses pinned content
+ok 9 - mission panel retrieves immutable outputs after SQL restart and later edits, checks downloads, and reuses pinned content
+  ---
+  duration_ms: 1257.444643
+  type: 'test'
+  ...
+# Subtest: SIGKILL after immutable output capture before mission advancement recovers one original revision without rewriting the file
+ok 10 - SIGKILL after immutable output capture before mission advancement recovers one original revision without rewriting the file
+  ---
+  duration_ms: 1359.045167
+  type: 'test'
+  ...
+# Subtest: large Unicode and binary partial Mission outputs are inspectable/downloadable and reused byte-exact by a later real task after overwrite and PostgreSQL restart
+not ok 11 - large Unicode and binary partial Mission outputs are inspectable/downloadable and reused byte-exact by a later real task after overwrite and PostgreSQL restart
+  ---
+  duration_ms: 5465.521961
+  type: 'test'
+  location: '/home/user/arena-os-canonical/tests/acceptance/mission-recovery.test.mjs:158:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    expect(locator).toBeVisible() failed
+    
+    Locator: getByRole('region', { name: 'Mission outputs' }).locator('pre')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+    
+    Call log:
+      - Expect "toBeVisible" getByRole('region', { name: 'Mission outputs' }).locator('pre') with timeout 5000ms
+      - waiting for getByRole('region', { name: 'Mission outputs' }).locator('pre')
+    
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    captureRawStack (/home/user/arena-os-canonical/node_modules/playwright-core/lib/coreBundle.js:9282:17)
+    callMatcherAsStep (/home/user/arena-os-canonical/node_modules/playwright/lib/matchers/expect.js:13316:57)
+    Object.toBeVisible (/home/user/arena-os-canonical/node_modules/playwright/lib/matchers/expect.js:13308:23)
+    TestContext.<anonymous> (/home/user/arena-os-canonical/tests/acceptance/mission-recovery.test.mjs:172:86)
+  ...
+1..11
+# tests 11
+# suites 0
+# pass 10
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 22451.496301

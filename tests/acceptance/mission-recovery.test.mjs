@@ -168,7 +168,15 @@ test("large Unicode and binary partial Mission outputs are inspectable/downloada
   assert.equal(first.status, "incomplete");
   const outputs = first.artifacts.filter((output) => ["large.txt", "large.bin"].includes(output.path)); assert.equal(outputs.length, 2); assert.ok(outputs.every((output) => output.state === "complete" && output.artifactId && output.revisionId));
   const page = await browser.newPage(); page.setDefaultTimeout(7000); t.after(() => page.close()); await page.goto(`${origin}/?space=${id}`);
+  // Observe the actual asynchronous preview request, including its complete
+  // immutable bytes, before inspecting the large Unicode render. No sleeps or
+  // longer assertion deadline; preserve visibility and byte-exact UI checks.
+  const textOutput = outputs.find(output => output.path === "large.txt");
+  const previewResponse = page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/mission/outputs/${textOutput.id}`) && new URL(response.url()).searchParams.get("view") === "1");
   await page.getByRole("button", { name: "View large.txt", exact: true }).click();
+  const preview = await previewResponse;
+  assert.equal(preview.status(), 200);
+  assert.deepEqual(await preview.body(), text);
   await expect(page.getByRole("region", { name: "Mission outputs" }).locator("pre")).toBeVisible();
   assert.equal(await page.getByRole("region", { name: "Mission outputs" }).locator("pre").textContent(), text.toString("utf8"));
   await expect(page.getByRole("button", { name: "View large.bin", exact: true })).toHaveCount(0);
