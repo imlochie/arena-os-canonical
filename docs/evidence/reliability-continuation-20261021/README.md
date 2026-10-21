@@ -35,3 +35,34 @@ Final committed-head broad/build/connected checks are recorded subsequently.
 
 Scope: actual PG/handler/storage bytes and controlled audio, not learned inference
 or full Next browser acceptance by themselves. Prior failures remain recorded.
+
+## P1: false successful publication and corrupt public audio delivery
+
+The publication PUT checked only a candidate's complete database status; it never
+opened its object. Public release GET bypassed the verification already enforced
+by private export GET. Same-size corrupt bytes could be published with HTTP200,
+then publicly streamed with HTTP200/206. Missing media was also successfully
+published; playback returned generic500. Injected storage unavailability was
+ignored by preflight/public serving. `publication-before.tap`: 9 leaf failures,
+4 failed containers (0 pass/13 fail); these are not 13 distinct product bugs.
+
+Fix reuses verifyStoredFile before the publication/audit transaction and before
+public full/ranged delivery. Exact checksum/size failures yield422, missing410,
+and unacknowledged storage503. The helper now wraps failures obtaining the local
+storage path as503, as it already did for failed copies/reads. No invalid-read
+cleanup, job-status rewriting, asset deletion or publication metadata mutation.
+Restoring the SAME exact object allows the SAME job/asset to publish/play again.
+
+New real PG/storage/production-handler regression covers unchanged project/audit
+state on failed publish, full/ranged fail-closed public reads, preservation of
+complete owner jobs, and byte-for-byte repair/reuse. Combined command:
+`node --import ./scripts/register-src-loader.mjs --test src/lib/waveyard/publication-integrity.test.ts src/lib/waveyard/export-bundle.test.ts`
+65 pass/0 fail; `npm run typecheck` and focused ESLint pass. Initial fixture setup
+used a fractional duration unsupported by the integer DB column, then an initial
+nested subtest used its parent's context and was stopped; both harness failures
+are retained under `.data/reliability-continuation/before/`, NOT product evidence.
+The actual before/after runs use identical valid one-second owned WAV bytes.
+
+Verification is at request preflight, not a claim of transactional locking against
+an external privileged writer mutating storage after verification. This change
+does not add content-hash caches or bypass existing private-export checks.

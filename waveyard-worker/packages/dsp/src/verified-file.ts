@@ -73,7 +73,9 @@ export async function verifyStoredFile(
   },
   asset: { storageKey: string; checksumSha256: string; fileSizeBytes: number },
 ) {
-  const local = storage.getLocalPath(asset.storageKey);
+  let local: string | null;
+  try { local = storage.getLocalPath(asset.storageKey); }
+  catch { throw new PublishedFileError("Published output storage unavailable; verification was not acknowledged.", 503); }
   if (local) return verifyFileIdentity(local, asset);
   const temporary = await mkdtemp(join(tmpdir(), "arena-publication-verify-"));
   try {

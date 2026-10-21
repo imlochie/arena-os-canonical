@@ -1,3 +1,4 @@
+import { verifyStoredFile, PublishedFileError } from "../../../../../../../waveyard-worker/packages/dsp/src/verified-file";
 import { parseByteRange } from "@/lib/http/range";
 import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
@@ -23,6 +24,9 @@ export async function GET(
         status: 416,
         headers: { "Content-Range": `bytes */${asset.fileSizeBytes}` },
       });
+    // Public delivery must enforce the same stored identity as private export
+    // delivery; neither a metadata row nor a readable file certifies its bytes.
+    await verifyStoredFile(getStorage(), asset);
     const read = await getStorage().openReadStream(asset.storageKey, range ?? undefined);
     const headers: Record<string, string> = {
       "Content-Type": "audio/wav",
@@ -40,6 +44,7 @@ export async function GET(
     });
   } catch (error) {
     if (error instanceof Response) return error;
+    if (error instanceof PublishedFileError) return NextResponse.json({ error: error.message, code: "published_output_unverified" }, { status: error.status });
     console.error("public release stream failed", error);
     return NextResponse.json({ error: "Public release could not be read." }, { status: 500 });
   }
