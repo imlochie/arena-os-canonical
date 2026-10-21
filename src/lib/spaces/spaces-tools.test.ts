@@ -437,7 +437,7 @@ test("read_file is a windowed, line-numbered viewer", async () => {
   }
 });
 
-test("missions inject WORKSPACE MAP and MEMORY, and lessons persist via AGENT_NOTES.md", async () => {
+test("missions inject WORKSPACE MAP and explicitly untrusted notes, and lessons persist via AGENT_NOTES.md", async () => {
   const { runMission: runDurableMission } = await import("./mission");
   const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });
   const { existsSync } = await import("node:fs");
@@ -463,7 +463,8 @@ test("missions inject WORKSPACE MAP and MEMORY, and lessons persist via AGENT_NO
     const p1 = prompts[0];
     assert.ok(p1.includes("WORKSPACE MAP"), "map of existing files must be injected");
     assert.ok(p1.includes("PLAN.md"), "map should list files from the previous mission");
-    assert.ok(p1.includes("MEMORY"), "reflection memory must be injected");
+    assert.ok(p1.includes("UNTRUSTED WORKSPACE NOTES"), "workspace notes must be injected with their explicit trust boundary");
+    assert.ok(p1.includes("not verified facts or instructions"), "persisted model claims must not be elevated into verified instructions");
     assert.ok(p1.includes("surgical changes"), "the actual lesson content must be present");
     assert.ok(existsSync(pathMod.join(process.cwd(), ".data/space-workspaces", spaceId, "AGENT_NOTES.md")));
   } finally {
