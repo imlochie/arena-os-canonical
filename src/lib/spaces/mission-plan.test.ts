@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { selectMissionPlan } from "./mission-plan.ts";
+import { selectMissionPlan } from "./mission-plan";
 
 const agent = (name: string, modelId: string) => ({ name, role: "worker", modelId });
 

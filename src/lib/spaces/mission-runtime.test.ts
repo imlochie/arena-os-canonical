@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { GenerateResult } from "@/lib/runtime";
-import { observeMissionRuntime } from "./mission-runtime.ts";
+import { observeMissionRuntime } from "./mission-runtime";
 
 test("mission records the actual provider/model and preserves fallback provenance", () => {
   const result: GenerateResult = {

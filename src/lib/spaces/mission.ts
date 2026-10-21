@@ -512,7 +512,7 @@ async function runMissionInner(spaceId: string, opts: MissionOpts, deps: Mission
         }
         const parsed = parseAgentJson(result.text);
         step.thought = String(parsed?.thought ?? result.text.slice(0, 200)).slice(0, 500);
-        step.runtime = observeMissionRuntime(result, step.modelRequest.modelId);
+        step.runtime = observeMissionRuntime(result, step.modelRequest!.modelId);
         step.modelResponse = { text: result.text.slice(0, 64000), via: result.via, truncated: result.text.length > 64000 };
         const proposed = parsed?.actions ?? [];
         step.contractError = !parsed ? "Model did not return the required JSON action contract." : !Array.isArray(proposed) ? "Model actions must be an array." : proposed.length > maxActions ? `Model requested ${proposed.length} actions, exceeding this mission's limit ${maxActions}. No actions from this turn were dispatched.` : proposed.some((action: unknown) => !action || typeof action !== "object" || !("tool" in action) || typeof action.tool !== "string" || !action.tool.trim() || ("args" in action && (action.args === null || typeof action.args !== "object" || Array.isArray(action.args)))) ? "Malformed tool request: each action needs a tool name and object arguments. No actions from this turn were dispatched." : undefined;
