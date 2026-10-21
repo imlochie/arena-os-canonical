@@ -1,16 +1,17 @@
 # Windows acceptance — the real Windows product path.
 #
 # Provenance: the repository already ships the Windows acceptance contract
-# (scripts/windows-acceptance.mjs, docs/windows-acceptance.md, Gate D1-D10 in
-# docs/evidence). Until now nothing executed any of it on Windows: every
-# workflow ran on ubuntu-24.04 only, so "Windows ready" was a claim without a
-# host. This workflow runs the same contract on windows-latest and keeps every
-# log/receipt, including failures.
+# (scripts/windows-acceptance.mjs, docs/windows-acceptance.md, the Gate D
+# evidence under docs/evidence). Until this workflow existed nothing executed
+# any of it on Windows: every workflow ran on ubuntu-24.04 only, so "Windows
+# ready" was a claim without a host. This runs the same contract on
+# windows-latest and keeps every log and receipt, including failures.
 #
 # Jobs are separate on purpose: a failing gate must not hide packaging
 # evidence, and a packaging failure must not hide the installed-app result.
-# Each job exits non-zero when its own acceptance fails — no pipe or log
-# wrapper may convert a failure into a green step.
+# Every command goes through scripts/windows-step.mjs, which propagates the
+# child exit status verbatim and publishes a failure annotation that is
+# readable without access to the job-log blob host.
 name: Windows acceptance
 
 on:
@@ -23,9 +24,13 @@ permissions:
 
 defaults:
   run:
-    # Git-bash on the Windows runner: pipefail makes `tee` unable to swallow a
-    # failing acceptance command (the CI workflow documents the same rule).
+    # Git-bash on the Windows runner; pipefail stops `tee` from hiding a
+    # failing acceptance command (the same rule the Linux CI documents).
     shell: bash
+
+env:
+  # Evidence lands in one directory per job so uploads are unconditional.
+  EVIDENCE: windows-evidence
 
 jobs:
   gates:
@@ -44,40 +49,40 @@ jobs:
       - name: Source identity (start)
         run: |
           set -euo pipefail
-          mkdir -p windows-evidence
+          mkdir -p "$EVIDENCE"
           {
             echo "commit=$(git rev-parse HEAD)"
             echo "tree=$(git rev-parse HEAD^{tree})"
             echo "digest=$(git archive HEAD | sha256sum | cut -d' ' -f1)"
             echo "node=$(node -v)"
             echo "npm=$(npm -v)"
-            echo "runner=$RUNNER_OS/$RUNNER_ARCH $ImageOS"
-          } | tee windows-evidence/identity-start.txt
+            echo "os=$RUNNER_OS/$RUNNER_ARCH $ImageOS"
+          } | tee "$EVIDENCE/identity-start.txt"
 
       - name: Clean dependency install
-        run: |
-          set -euo pipefail
-          npm ci 2>&1 | tee windows-evidence/npm-ci.log
+        run: node scripts/windows-step.mjs "npm ci (clean install)" "$EVIDENCE/npm-ci.log" -- npm ci
 
       - name: Windows platform packages present
-        run: |
-          set -euo pipefail
-          node scripts/windows-platform-check.mjs 2>&1 | tee windows-evidence/platform-packages.log
+        run: node scripts/windows-step.mjs "Windows platform packages" "$EVIDENCE/platform-packages.log" -- node scripts/windows-platform-check.mjs
 
       - name: Typecheck
-        run: |
-          set -euo pipefail
-          npm run typecheck 2>&1 | tee windows-evidence/typecheck.log
+        run: node scripts/windows-step.mjs "typecheck" "$EVIDENCE/typecheck.log" -- npm run typecheck
 
       - name: Desktop contract and runtime tests
-        run: |
-          set -euo pipefail
-          npm run test:desktop 2>&1 | tee windows-evidence/desktop-tests.log
+        run: node scripts/windows-step.mjs "desktop contract tests" "$EVIDENCE/desktop-tests.log" -- npm run test:desktop
 
       - name: Full source suite on Windows
+        run: node scripts/windows-step.mjs "full source suite" "$EVIDENCE/source-suite.log" -- npm test
+
+      - name: Gate summary
+        if: always()
         run: |
           set -euo pipefail
-          npm test 2>&1 | tee windows-evidence/source-suite.log
+          grep -hE "^# (tests|pass|fail)" "$EVIDENCE"/*.log 2>/dev/null | tee "$EVIDENCE/suite-counts.txt" || true
+          grep -hE "^not ok" "$EVIDENCE"/*.log 2>/dev/null | tee "$EVIDENCE/failing-tests.txt" | head -30 || true
+          if [ -s "$EVIDENCE/failing-tests.txt" ]; then
+            echo "::error title=Windows test failures::$(head -3 "$EVIDENCE/failing-tests.txt" | tr '\n' ' ' | cut -c1-900)"
+          fi
 
       - name: Upload gate evidence
         if: always()
@@ -91,7 +96,7 @@ jobs:
   package:
     name: Windows installer build + staged-runtime acceptance
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -104,51 +109,40 @@ jobs:
       - name: Source identity (start)
         run: |
           set -euo pipefail
-          mkdir -p windows-evidence
+          mkdir -p "$EVIDENCE"
           {
             echo "commit=$(git rev-parse HEAD)"
             echo "tree=$(git rev-parse HEAD^{tree})"
             echo "digest=$(git archive HEAD | sha256sum | cut -d' ' -f1)"
-          } | tee windows-evidence/identity-start.txt
+          } | tee "$EVIDENCE/identity-start.txt"
 
       - name: Clean dependency install
-        run: |
-          set -euo pipefail
-          npm ci 2>&1 | tee windows-evidence/npm-ci.log
+        run: node scripts/windows-step.mjs "npm ci (package job)" "$EVIDENCE/npm-ci.log" -- npm ci
 
-      - name: Stage the packaged server, binaries and migrations
-        run: |
-          set -euo pipefail
-          npm run desktop:compile 2>&1 | tee windows-evidence/desktop-compile.log
-          npm run desktop:prepare-server 2>&1 | tee windows-evidence/prepare-server.log
+      - name: Windows platform packages present
+        run: node scripts/windows-step.mjs "Windows platform packages (package job)" "$EVIDENCE/platform-packages.log" -- node scripts/windows-platform-check.mjs
+
+      - name: Compile the desktop shell
+        run: node scripts/windows-step.mjs "desktop:compile" "$EVIDENCE/desktop-compile.log" -- npm run desktop:compile
+
+      - name: Stage server, binaries, migrations and models
+        run: node scripts/windows-step.mjs "desktop:prepare-server" "$EVIDENCE/prepare-server.log" -- npm run desktop:prepare-server
 
       - name: Packaging audit of the staged tree
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          node scripts/windows-acceptance.mjs --audit-only desktop-package 2>&1 | tee windows-evidence/staged-audit.log
+        if: always()
+        run: node scripts/windows-step.mjs "staged packaging audit" "$EVIDENCE/staged-audit.log" -- node scripts/windows-acceptance.mjs --audit-only desktop-package
 
       - name: Staged-runtime acceptance (embedded PostgreSQL, worker, FFmpeg export, restart)
-        run: |
-          set -euo pipefail
-          npm run desktop:acceptance-headless 2>&1 | tee windows-evidence/desktop-acceptance-headless.log
+        run: node scripts/windows-step.mjs "staged runtime acceptance" "$EVIDENCE/desktop-acceptance-headless.log" -- npm run desktop:acceptance-headless
 
       - name: Build the NSIS installer
-        run: |
-          set -euo pipefail
-          npm run desktop:dist 2>&1 | tee windows-evidence/desktop-dist.log
+        run: node scripts/windows-step.mjs "desktop:dist (NSIS)" "$EVIDENCE/desktop-dist.log" -- npm run desktop:dist
 
       - name: Installer identity and hash
         run: |
           set -euo pipefail
-          ls -l desktop-release | tee windows-evidence/installer-listing.txt
-          sha256sum desktop-release/*.exe | tee windows-evidence/installer-sha256.txt
-
-      - name: Packaging audit of the built installer tree
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          node scripts/windows-acceptance.mjs --audit-only desktop-package 2>&1 | tee windows-evidence/installer-audit.log || true
+          ls -l desktop-release | tee "$EVIDENCE/installer-listing.txt"
+          sha256sum desktop-release/*.exe | tee "$EVIDENCE/installer-sha256.txt"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -171,7 +165,7 @@ jobs:
           retention-days: 30
 
   installed:
-    name: Installed application acceptance (install, launch, restart, uninstall)
+    name: Installed application acceptance (install, launch, restart, recovery, uninstall)
     needs: package
     runs-on: windows-latest
     timeout-minutes: 120
@@ -193,31 +187,33 @@ jobs:
       - name: Clean dependency install (orchestrator only)
         run: |
           set -euo pipefail
-          mkdir -p windows-evidence
-          npm ci 2>&1 | tee windows-evidence/npm-ci.log
+          mkdir -p "$EVIDENCE"
+          node scripts/windows-step.mjs "npm ci (installed job)" "$EVIDENCE/npm-ci.log" -- npm ci
 
       - name: Silent install + installed-app acceptance
-        # The orchestrator installs the real NSIS package, launches the
-        # INSTALLED Arena.exe with ARENA_DESKTOP_ACCEPTANCE, checks restart
-        # persistence and orphan processes, then force-kills mid-run and proves
-        # recovery. It writes desktop-windows-acceptance-report.json either way.
-        run: |
-          set -euo pipefail
-          node scripts/windows-acceptance.mjs 2>&1 | tee windows-evidence/installed-acceptance.log
+        # Installs the real NSIS package, launches the INSTALLED Arena.exe with
+        # ARENA_DESKTOP_ACCEPTANCE, checks first launch, paths, the Waveyard
+        # workflow, export via bundled ffprobe, restart persistence, process
+        # cleanup, then force-kills mid-run and proves recovery. The mandated
+        # report is written either way.
+        run: node scripts/windows-step.mjs "installed acceptance" "$EVIDENCE/installed-acceptance.log" -- node scripts/windows-acceptance.mjs
 
       - name: Mandated PASS/FAIL summary
         if: always()
         run: |
           set -euo pipefail
-          test -f desktop-windows-acceptance-report.json || { echo "NO REPORT WRITTEN"; exit 1; }
+          if [ ! -f desktop-windows-acceptance-report.json ]; then echo "NO REPORT WRITTEN"; exit 1; fi
           node -e '
             const r = require("./desktop-windows-acceptance-report.json");
             for (const [k, v] of Object.entries(r)) {
               if (["detail", "KNOWN_LIMITATIONS"].includes(k)) continue;
-              console.log(`${k}: ${v}`);
+              console.log(`${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`);
             }
             for (const l of r.KNOWN_LIMITATIONS ?? []) console.log(`LIMITATION: ${l}`);
-          ' | tee windows-evidence/installed-report-summary.txt
+          ' | tee "$EVIDENCE/installed-report-summary.txt"
+          if grep -q ": FAIL" "$EVIDENCE/installed-report-summary.txt"; then
+            echo "::error title=installed acceptance::$(grep ': FAIL' "$EVIDENCE/installed-report-summary.txt" | tr '\n' ' ' | cut -c1-900)"
+          fi
 
       - name: Uninstall the application (per-user NSIS uninstaller)
         if: always()
@@ -225,14 +221,15 @@ jobs:
         run: |
           set -euo pipefail
           uninstaller=$(find "$LOCALAPPDATA/Programs" -maxdepth 3 -iname "*ninstall*.exe" 2>/dev/null | head -n 1)
-          if [ -z "$uninstaller" ]; then echo "no uninstaller found under $LOCALAPPDATA/Programs" | tee windows-evidence/uninstall.log; exit 0; fi
-          echo "uninstaller: $uninstaller" | tee windows-evidence/uninstall.log
+          if [ -z "$uninstaller" ]; then echo "no uninstaller found under $LOCALAPPDATA/Programs" | tee "$EVIDENCE/uninstall.log"; exit 0; fi
+          echo "uninstaller: $uninstaller" | tee "$EVIDENCE/uninstall.log"
           "$uninstaller" /S
           sleep 5
-          if [ -d "$(dirname "$uninstaller")" ] && [ -n "$(ls -A "$(dirname "$uninstaller")" 2>/dev/null)" ]; then
-            echo "install directory still populated after /S uninstall" | tee -a windows-evidence/uninstall.log
+          dir=$(dirname "$uninstaller")
+          if [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+            echo "install directory still populated after /S uninstall: $dir" | tee -a "$EVIDENCE/uninstall.log"
           else
-            echo "install directory removed" | tee -a windows-evidence/uninstall.log
+            echo "install directory removed: $dir" | tee -a "$EVIDENCE/uninstall.log"
           fi
 
       - name: Upload installed-acceptance evidence
