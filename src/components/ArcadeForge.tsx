@@ -148,6 +148,7 @@ export default function ArcadeForge() {
         if (j.draft && typeof j.draft.code === "string") setFailedDraft(j.draft);
         throw new Error(j.error ?? "save failed");
       }
+      if (!j.game || typeof j.game.code !== "string") throw new Error("Save reply lacked a game; no saved result was acknowledged.");
       return { ...j.game, verificationReport: j.runtimeValidation };
     });
   }
