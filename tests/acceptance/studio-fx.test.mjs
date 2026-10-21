@@ -769,6 +769,8 @@ test("P0 bank gate: actual separation publication, pinned session/donor playback
   await api(`/api/library/sessions/${session.id}/tracks`, "POST", { trackId: a.trackId, bankId: first.job.id });
   const added = await api(`/api/library/sessions/${session.id}/tracks`, "POST", { trackId: a.trackId, bankId: second.job.id });
   assert.equal(added.session.tracks[0].stems.length, 4); assert.equal(added.session.tracks[1].stems.length, 4);
+  const originalDrumAssetId = added.session.tracks[0].stems.find(stem => stem.stemType === "drums")?.id;
+  assert.ok(originalDrumAssetId, "the pinned source bank exposes its original drums lane");
   const ids = added.session.tracks.map(item => item.playback.assetIds);
   assert.equal(new Set(ids.flat()).size, 8);
   const donorDetail = await library.getTrack(owner, b.trackId, { bankId: donor.job.id });
@@ -787,12 +789,15 @@ test("P0 bank gate: actual separation publication, pinned session/donor playback
   await expect(deck.locator("audio")).toHaveCount(4);
   await page.getByTestId("session-play").click();
   await expect.poll(() => deck.locator("audio").evaluateAll(els => els.every(el => !el.paused && el.currentTime > .1))).toBe(true);
-  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("src", `/api/assets/${donorStem.id}`);
+  const swappedDrum = deck.locator('audio[aria-label="drums audio (swapped layer)"]');
+   await expect(swappedDrum).toHaveAttribute("data-active-source", donorStem.id);
+   await expect(swappedDrum).toHaveAttribute("src", `/api/assets/${originalDrumAssetId}`);
   await page.getByTestId("session-play").click();
   await page.goto(`${origin}/?room=preparation`); await f.stop(); await f.start();
   await page.goto(`${origin}/?room=listening&session=${session.id}`);
   await expect(deck.locator("audio")).toHaveCount(4);
-  await expect(deck.locator('audio[aria-label="drums audio (swapped layer)"]')).toHaveAttribute("src", `/api/assets/${donorStem.id}`);
+  await expect(swappedDrum).toHaveAttribute("data-active-source", donorStem.id);
+   await expect(swappedDrum).toHaveAttribute("src", `/api/assets/${originalDrumAssetId}`);
   const handoff = await sessions.sendSessionToStudio(owner, session.id);
   assert.equal(handoff.remixTrackCount, 8, "two explicit four-lane session items, not eight lanes per item");
   const arrangement = await api(`/api/remixes/${handoff.remixSessionId}`);
