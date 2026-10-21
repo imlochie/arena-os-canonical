@@ -3,7 +3,7 @@
 Start: owner a6f385523539cf89c232abf4c2ad3c180afa83d2, clean, remote/PR15
 same. All seven exact-head hosted checks completed SUCCESS. PR18 bca22c5 is
 already an ancestor: complete live diff (524 lines) contains acceptance harness,
-workflow, independent decoded-frame audit and documentation, not missing media
+workflow, independent decoded-frame audit and inline comments, not missing media
 production code. Dependencies/archive and attribution packaging already present.
 Donor heads PR14 536c940 / PR16 622b78a / PR19 16a6e0b / PR20 04ea4bd unchanged.
 No new merges/retargets/donor edits. Session branch is fixed by Arena; continue
@@ -122,3 +122,32 @@ or hash cache was introduced; verification uses streaming reads but adds a full
 identity-read preflight to each request, as private export media already did.
 Large-source seek latency has not been benchmarked; external privileged writes
 after verification remain outside the preflight guarantee.
+
+
+## Committed real Next/Chromium delivery regression
+
+At production-code commit38d5fbb the full source suite passed1607/0/0 with stable
+start/end source identity; both production builds, worker/desktop types, lint and
+packaged Linux headless passed. Actual licensed recording connected journey1/0,
+actual Arcade/Spaces/recovery10/0, full Studio35/0 with2 opt-in skips also passed.
+Hosted genuine trained4/6 and native crash retries pass at that exact revision;
+full PR/push CI, Arcade, Spaces, batch pass. Connected hosted39538862470 instead
+failed npm ci before any product test, not relabelled a pass. Exact install
+cause is unknown: signed log host is blocked; no speculative dependency change.
+
+The additional production Next HTTP/Chromium probe is now a permanent acceptance
+file, tests/acceptance/media-delivery.test.mjs (run AFTER npm run build; do not
+race desktop staging's second build). It proves actual network suffix bytes,
+actual browser Unicode suggested filenames AND exact downloaded bytes, corrupt
+source/public read refusals, failed publication retaining draft state and repair
+of the same object without replacement. Seeded export/owned generated audio are
+explicit controlled fault fixtures, not model/native render evidence.
+
+Original sandbox browser attempt correctly found suggestedFilename="download"
+despite correct RFC8187 wire headers. LANG/LC_ALL were unset/POSIX. Repeating the
+UNCHANGED expected Unicode filename and byte assertions with installed C.UTF-8
+locale passes. The permanent test sets that locale only for its Linux browser
+child, not the app, and never changes expected filename/checksums to hide failure.
+Original diagnostics remain under .data/reliability-continuation/before/.
+The reusable draft passed1 scenario/10 checks; not ten unique tests. Final
+committed-head acceptance/build/source evidence follows separately.
