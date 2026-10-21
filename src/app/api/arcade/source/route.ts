@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     let artifactId: string | undefined, artifactDownloadUrl: string | undefined, persistenceError: string | undefined;
     if (!isEphemeralBody(input)) {
       try {
-        const body = JSON.stringify(bundle, null, 2), object = await writeArtifactObject(user.id, body, "application/json");
+        const body = JSON.stringify(bundle, null, 2), object = await writeArtifactObject(user.id, body, "application/json; charset=utf-8");
         const artifact = await insertArtifact(db, { ownerId: user.id, kind: "source-patch", title: `2048 source mod: ${input.initialTiles} initial tiles`, sourceType: "arcade-source", sourceId: bundle.revision, body: artifactObjectSummary(object), contentObject: object });
         artifactId = artifact.id;
         artifactDownloadUrl = `/api/artifacts/${artifact.id}?revision=${artifact.currentRevisionId}&download=1`;

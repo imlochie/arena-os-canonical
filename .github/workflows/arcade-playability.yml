@@ -44,6 +44,8 @@ jobs:
       - name: Focused game contracts and durable attempt regressions
         run: |
           node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 src/lib/games/*.test.ts tests/acceptance/arcade-attempts.test.mjs 2>&1 | tee .data/arcade-acceptance/focused.tap
+      - name: Actual API to immutable source package storage and full revision retrieval
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/arcade-source-storage.test.mjs 2>&1 | tee .data/arcade-acceptance/source-storage.tap
       - name: Build actual application
         env:
           DATABASE_URL: postgres://postgres@127.0.0.1:1/build-no-connect
