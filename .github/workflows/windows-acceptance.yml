@@ -33,6 +33,43 @@ env:
   EVIDENCE: windows-evidence
 
 jobs:
+  elevation-probe:
+    name: Windows elevation and non-elevated execution probe
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the runner token
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          whoami | tee "$EVIDENCE/whoami.txt"
+          whoami /groups | grep -iE "administrators|mandatory label" | tee -a "$EVIDENCE/whoami.txt" || true
+
+      - name: PostgreSQL refuses an elevated token (expected on a hosted runner)
+        run: |
+          set -euo pipefail
+          # The embedded server itself, nothing else: if this writes
+          # "root execution ... is not permitted" the token is elevated.
+          BIN=$(ls -d node_modules/@embedded-postgres/windows-x64/native/bin 2>/dev/null || true)
+          if [ -z "$BIN" ]; then echo "platform package not installed in this job" | tee "$EVIDENCE/pg-elevation.txt"; exit 0; fi
+          "$BIN/postgres" --version | tee "$EVIDENCE/pg-elevation.txt"
+
+      - name: Non-elevated execution works
+        run: |
+          set -euo pipefail
+          node scripts/windows-step.mjs "start" "$EVIDENCE/deelevated-smoke.log" -- node scripts/windows-deelevated-step.mjs de-elevation-probe "$EVIDENCE/deelevated-probe.log" 300000 -- cmd /c "echo DEELEVATED_OK && whoami /groups | findstr /i administrators || echo NO_ADMIN_GROUP"
+
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-elevation-${{ github.sha }}
+          path: windows-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
   gates:
     name: Windows gates (typecheck, desktop contracts, full source suite)
     runs-on: windows-latest
@@ -138,7 +175,13 @@ jobs:
         run: node scripts/windows-step.mjs "staged packaging audit (informational)" "$EVIDENCE/staged-audit.log" -- node scripts/windows-acceptance.mjs --audit-only desktop-package
 
       - name: Staged-runtime acceptance (embedded PostgreSQL, worker, FFmpeg export, restart)
-        run: node scripts/windows-step.mjs "staged runtime acceptance" "$EVIDENCE/desktop-acceptance-headless.log" -- npm run desktop:acceptance-headless
+        # De-elevated: PostgreSQL refuses to run under an administrator token,
+        # and a hosted runner executes as one. A real per-user install is
+        # unelevated, so this is the faithful condition, not a workaround of an
+        # application defect.
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "staged runtime acceptance" "$EVIDENCE/desktop-acceptance-headless.log" 2400000 -- node --import ./scripts/register-src-loader.mjs scripts/desktop-acceptance-headless.mjs
 
       - name: Build the NSIS installer
         run: node scripts/windows-step.mjs "desktop:dist (NSIS)" "$EVIDENCE/desktop-dist.log" -- npm run desktop:dist
@@ -201,7 +244,9 @@ jobs:
         # workflow, export via bundled ffprobe, restart persistence, process
         # cleanup, then force-kills mid-run and proves recovery. The mandated
         # report is written either way.
-        run: node scripts/windows-step.mjs "installed acceptance" "$EVIDENCE/installed-acceptance.log" -- node scripts/windows-acceptance.mjs
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "installed acceptance" "$EVIDENCE/installed-acceptance.log" 3000000 -- node scripts/windows-acceptance.mjs
 
       - name: Mandated PASS/FAIL summary
         if: always()
