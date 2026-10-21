@@ -1,3 +1,4 @@
+import { verifyStoredFile, PublishedFileError } from "../../../../../waveyard-worker/packages/dsp/src/verified-file";
 import { attachmentDisposition } from "@/lib/http/download";
 import { parseByteRange } from "@/lib/http/range";
 import { isUuid } from "@/lib/api/ids";
@@ -28,6 +29,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const download = new URL(request.url).searchParams.get("download") === "1";
     const downloadName = source ? source.originalFilename : `${stem!.stemType}.wav`;
     const storage = getStorage();
+    // Playback must resolve the acknowledged source/stem, not merely any bytes
+    // currently present at its path. Never mark a bank complete or delete an
+    // owner asset as a side effect of a failed media read.
+    await verifyStoredFile(storage, asset);
     const signed = await storage.createDownloadUrl(asset.storageKey, 60, download ? downloadName : undefined);
     if (signed) return NextResponse.redirect(signed);
     const localPath = storage.getLocalPath(asset.storageKey);
@@ -39,5 +44,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       return new Response(Readable.toWeb(createReadStream(localPath, { start, end })) as ReadableStream, { status: 206, headers: { "Content-Type": contentType, "Content-Length": String(end - start + 1), "Content-Range": `bytes ${start}-${end}/${file.size}`, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", ...(download ? { "Content-Disposition": attachmentDisposition(downloadName) } : {}) } });
     }
     return new Response(Readable.toWeb(createReadStream(localPath)) as ReadableStream, { headers: { "Content-Type": contentType, "Content-Length": String(file.size), "Accept-Ranges": "bytes", "Cache-Control": "private, no-store", ...(download ? { "Content-Disposition": attachmentDisposition(downloadName) } : {}) } });
-  } catch (error) { if (error instanceof Response) return error; console.error("asset stream failed", error); return NextResponse.json({ error: "Audio could not be read." }, { status: 500 }); }
+  } catch (error) { if (error instanceof PublishedFileError) return NextResponse.json({ error: error.message, code: "asset_identity_unverified" }, { status: error.status }); if (error instanceof Response) return error; console.error("asset stream failed", error); return NextResponse.json({ error: "Audio could not be read." }, { status: 500 }); }
 }

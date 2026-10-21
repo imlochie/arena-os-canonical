@@ -206,6 +206,27 @@ test("Studio downloads automatically bundle exact media, frozen source notices a
       });
     }
   });
+  await t.test("private playback refuses changed, missing and unavailable source/stem objects", async t => {
+    const assets = await import("../../app/api/assets/[id]/route");
+    const [stemRow] = await database.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.id, stem.id));
+    for (const row of [sourceRow, stemRow]) for (const fault of ["corrupt", "missing", "unavailable"] as const) await t.test(`${row.id}: ${fault}`, async t => {
+      await storage.putFile(row.storageKey, input);
+      const local = storage.getLocalPath.bind(storage);
+      if (fault === "corrupt") { const bad = Buffer.from(media); bad[100] ^= 1; await writeFile(local(row.storageKey)!, bad); }
+      if (fault === "missing") await storage.delete(row.storageKey);
+      if (fault === "unavailable") storage.getLocalPath = () => { throw Object.assign(new Error("controlled private storage outage"), { code: "EIO" }); };
+      try {
+        for (const range of [undefined, "bytes=-100"]) await t.test(range ?? "full", async () => {
+          const response = await assets.GET(new Request("http://arena/media", { headers: range ? { Range: range } : {} }), { params: Promise.resolve({ id: row.id }) });
+          await response.arrayBuffer();
+          assert.equal(response.status, fault === "corrupt" ? 422 : fault === "missing" ? 410 : 503);
+        });
+      } finally { storage.getLocalPath = local; await storage.putFile(row.storageKey, input); }
+      const restored = await assets.GET(new Request("http://arena/media"), { params: Promise.resolve({ id: row.id }) });
+      assert.equal(restored.status, 200); assert.deepEqual(Buffer.from(await restored.arrayBuffer()), Buffer.from(media));
+      assert.equal((await database.db.select().from(schema.sourceAssets).where(eq(schema.sourceAssets.id, source.id)))[0].checksumSha256, sourceRow.checksumSha256);
+    });
+  });
   // Streaming/preview is still the original WAV, not a ZIP or a re-render.
   const raw = await route.GET(new Request(`http://arena/api/exports/${job.id}/media`), { params: Promise.resolve({ id: job.id }) });
   assert.equal(raw.headers.get("content-type"), "audio/wav"); assert.deepEqual(Buffer.from(await raw.arrayBuffer()), Buffer.from(media));

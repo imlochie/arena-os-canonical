@@ -102,3 +102,23 @@ Agent B/device-artifact/Spaces implementations are untouched. Regression verifie
 header construction, decoded international names, injection controls and EXACT
 full/suffix audio bytes. Combined focused regressions: 78 pass/0 fail in
 `unicode-download-after.tap`. Typecheck and focused ESLint pass.
+
+## P1: private source/stem playback certified path presence, not asset identity
+
+Following the public/private comparison, actual source and passthrough stem GETs
+also served same-size corrupt audio with HTTP200/206. Missing and transiently
+unreadable objects produced generic500. `private-playback-before.tap` records
+12 failed leaf assertions plus 8 containers (56 other assertions pass).
+
+Fix reuses the existing bounded streaming checksum/size verifier before source/
+stem delivery and preserves distinct422/410/503 errors. Read failure cannot
+rewrite job/bank/source state or delete user audio. A repaired SAME storage object
+serves the SAME asset id and checksum without a duplicate job or replacement.
+Full and suffix requests and exact repaired bytes are covered for both assets.
+Final combined focused command:
+`node --import ./scripts/register-src-loader.mjs --test src/lib/waveyard/export-bundle.test.ts src/lib/waveyard/publication-integrity.test.ts src/lib/http/range.test.ts src/lib/http/download.test.ts`
+97 pass/0 fail, plus typecheck and focused ESLint pass. No complete-file Buffer
+or hash cache was introduced; verification uses streaming reads but adds a full
+identity-read preflight to each request, as private export media already did.
+Large-source seek latency has not been benchmarked; external privileged writes
+after verification remain outside the preflight guarantee.

@@ -1,0 +1,644 @@
+TAP version 13
+# (node:77020) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/http/download.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: download names are header-safe ASCII while preserving international UTF-8 names
+ok 1 - download names are header-safe ASCII while preserving international UTF-8 names
+  ---
+  duration_ms: 32.812971
+  type: 'test'
+  ...
+# Subtest: untrusted names cannot inject headers, paths, quoted parameters or malformed UTF-8
+ok 2 - untrusted names cannot inject headers, paths, quoted parameters or malformed UTF-8
+  ---
+  duration_ms: 1.59033
+  type: 'test'
+  ...
+# (node:77029) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/http/range.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: HTTP single byte ranges preserve exact offsets including suffixes and large bounds
+ok 3 - HTTP single byte ranges preserve exact offsets including suffixes and large bounds
+  ---
+  duration_ms: 2.738848
+  type: 'test'
+  ...
+# Subtest: malformed, multi-part, zero-length and unsatisfiable ranges never become file offsets
+ok 4 - malformed, multi-part, zero-length and unsatisfiable ranges never become file offsets
+  ---
+  duration_ms: 0.456322
+  type: 'test'
+  ...
+# (node:77037) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:77037) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:77037) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: Studio downloads automatically bundle exact media, frozen source notices and honest unknowns
+    # Subtest: invalid or incomplete frozen notices never silently become legacy notices
+    ok 1 - invalid or incomplete frozen notices never silently become legacy notices
+      ---
+      duration_ms: 18.216316
+      type: 'test'
+      ...
+    # Subtest: new snapshots and legacy downloads refuse another owner's referenced source
+    ok 2 - new snapshots and legacy downloads refuse another owner's referenced source
+      ---
+      duration_ms: 15.167915
+      type: 'test'
+      ...
+    # Subtest: MIDI bundle includes its checksum-pinned analysis source even outside the arrangement
+    ok 3 - MIDI bundle includes its checksum-pinned analysis source even outside the arrangement
+      ---
+      duration_ms: 145.550138
+      type: 'test'
+      ...
+# Export output retained for reconciliation {
+#   exportJobId: '31a34d81-ef5f-4abf-8bd3-a8990f3b6b3d',
+#   storageKey: 'projects/a6d007e1-59be-46de-9983-342d9109d979/export/31a34d81-ef5f-4abf-8bd3-a8990f3b6b3d/b4682028-41eb-4f80-a26f-a4a50ac5ba7a.wav'
+# }
+    # Subtest: native export lost COMMIT acknowledgement never deletes already-published audio
+    ok 4 - native export lost COMMIT acknowledgement never deletes already-published audio
+      ---
+      duration_ms: 401.317092
+      type: 'test'
+      ...
+    # Subtest: native export cancelled after upload cannot publish or resurrect the job
+    ok 5 - native export cancelled after upload cannot publish or resurrect the job
+      ---
+      duration_ms: 83.189991
+      type: 'test'
+      ...
+# Export output retained for reconciliation {
+#   exportJobId: 'a5377835-b1cd-461c-a99c-37a9bf183e0e',
+#   storageKey: 'projects/a6d007e1-59be-46de-9983-342d9109d979/export/a5377835-b1cd-461c-a99c-37a9bf183e0e/9e8ef152-5f55-453e-a246-a0598cbb1f6e.wav'
+# }
+    # Subtest: native export uncertain publication retains job-scoped bytes until explicit healthy reconciliation
+    ok 6 - native export uncertain publication retains job-scoped bytes until explicit healthy reconciliation
+      ---
+      duration_ms: 78.879499
+      type: 'test'
+      ...
+    # Subtest: native render refuses changed source bytes and corrupt copies before minting an export
+        # Subtest: stored-bytes
+        ok 1 - stored-bytes
+          ---
+          duration_ms: 155.688173
+          type: 'test'
+          ...
+        # Subtest: copied-bytes
+        ok 2 - copied-bytes
+          ---
+          duration_ms: 154.103581
+          type: 'test'
+          ...
+        # Subtest: copy-unavailable
+        ok 3 - copy-unavailable
+          ---
+          duration_ms: 134.00488
+          type: 'test'
+          ...
+        1..3
+    ok 7 - native render refuses changed source bytes and corrupt copies before minting an export
+      ---
+      duration_ms: 447.762982
+      type: 'test'
+      ...
+    # Subtest: private source, stem and export seek requests deliver exact suffix/clamped bytes
+        # Subtest: source: bytes=-100
+        ok 1 - source: bytes=-100
+          ---
+          duration_ms: 16.910972
+          type: 'test'
+          ...
+        # Subtest: source: bytes=100-
+        ok 2 - source: bytes=100-
+          ---
+          duration_ms: 11.020406
+          type: 'test'
+          ...
+        # Subtest: source: bytes=100-177443
+        ok 3 - source: bytes=100-177443
+          ---
+          duration_ms: 9.651316
+          type: 'test'
+          ...
+        # Subtest: source: bytes=-99999999999999999999999999
+        ok 4 - source: bytes=-99999999999999999999999999
+          ---
+          duration_ms: 10.389158
+          type: 'test'
+          ...
+        # Subtest: source: BYTES=1-2
+        ok 5 - source: BYTES=1-2
+          ---
+          duration_ms: 9.170441
+          type: 'test'
+          ...
+        # Subtest: source: invalid bytes=-0
+        ok 6 - source: invalid bytes=-0
+          ---
+          duration_ms: 21.779113
+          type: 'test'
+          ...
+        # Subtest: source: invalid bytes=176444-
+        ok 7 - source: invalid bytes=176444-
+          ---
+          duration_ms: 14.838084
+          type: 'test'
+          ...
+        # Subtest: source: invalid bytes=2-1
+        ok 8 - source: invalid bytes=2-1
+          ---
+          duration_ms: 7.077189
+          type: 'test'
+          ...
+        # Subtest: source: invalid bytes=0-1,2-3
+        ok 9 - source: invalid bytes=0-1,2-3
+          ---
+          duration_ms: 6.001556
+          type: 'test'
+          ...
+        # Subtest: source: invalid bytes=-
+        ok 10 - source: invalid bytes=-
+          ---
+          duration_ms: 8.19202
+          type: 'test'
+          ...
+        # Subtest: stem: bytes=-100
+        ok 11 - stem: bytes=-100
+          ---
+          duration_ms: 7.004526
+          type: 'test'
+          ...
+        # Subtest: stem: bytes=100-
+        ok 12 - stem: bytes=100-
+          ---
+          duration_ms: 6.726252
+          type: 'test'
+          ...
+        # Subtest: stem: bytes=100-177443
+        ok 13 - stem: bytes=100-177443
+          ---
+          duration_ms: 6.145574
+          type: 'test'
+          ...
+        # Subtest: stem: bytes=-99999999999999999999999999
+        ok 14 - stem: bytes=-99999999999999999999999999
+          ---
+          duration_ms: 11.156444
+          type: 'test'
+          ...
+        # Subtest: stem: BYTES=1-2
+        ok 15 - stem: BYTES=1-2
+          ---
+          duration_ms: 7.4079
+          type: 'test'
+          ...
+        # Subtest: stem: invalid bytes=-0
+        ok 16 - stem: invalid bytes=-0
+          ---
+          duration_ms: 4.925377
+          type: 'test'
+          ...
+        # Subtest: stem: invalid bytes=176444-
+        ok 17 - stem: invalid bytes=176444-
+          ---
+          duration_ms: 5.23221
+          type: 'test'
+          ...
+        # Subtest: stem: invalid bytes=2-1
+        ok 18 - stem: invalid bytes=2-1
+          ---
+          duration_ms: 5.089604
+          type: 'test'
+          ...
+        # Subtest: stem: invalid bytes=0-1,2-3
+        ok 19 - stem: invalid bytes=0-1,2-3
+          ---
+          duration_ms: 6.082527
+          type: 'test'
+          ...
+        # Subtest: stem: invalid bytes=-
+        ok 20 - stem: invalid bytes=-
+          ---
+          duration_ms: 6.427793
+          type: 'test'
+          ...
+        # Subtest: export: bytes=-100
+        ok 21 - export: bytes=-100
+          ---
+          duration_ms: 12.310925
+          type: 'test'
+          ...
+        # Subtest: export: bytes=100-
+        ok 22 - export: bytes=100-
+          ---
+          duration_ms: 9.148491
+          type: 'test'
+          ...
+        # Subtest: export: bytes=100-177443
+        ok 23 - export: bytes=100-177443
+          ---
+          duration_ms: 9.921859
+          type: 'test'
+          ...
+        # Subtest: export: bytes=-99999999999999999999999999
+        ok 24 - export: bytes=-99999999999999999999999999
+          ---
+          duration_ms: 9.525937
+          type: 'test'
+          ...
+        # Subtest: export: BYTES=1-2
+        ok 25 - export: BYTES=1-2
+          ---
+          duration_ms: 9.76151
+          type: 'test'
+          ...
+        # Subtest: export: invalid bytes=-0
+        ok 26 - export: invalid bytes=-0
+          ---
+          duration_ms: 6.862984
+          type: 'test'
+          ...
+        # Subtest: export: invalid bytes=176444-
+        ok 27 - export: invalid bytes=176444-
+          ---
+          duration_ms: 6.795987
+          type: 'test'
+          ...
+        # Subtest: export: invalid bytes=2-1
+        ok 28 - export: invalid bytes=2-1
+          ---
+          duration_ms: 6.371443
+          type: 'test'
+          ...
+        # Subtest: export: invalid bytes=0-1,2-3
+        ok 29 - export: invalid bytes=0-1,2-3
+          ---
+          duration_ms: 8.467558
+          type: 'test'
+          ...
+        # Subtest: export: invalid bytes=-
+        ok 30 - export: invalid bytes=-
+          ---
+          duration_ms: 8.526026
+          type: 'test'
+          ...
+        # Subtest: public: bytes=-100
+        ok 31 - public: bytes=-100
+          ---
+          duration_ms: 14.689836
+          type: 'test'
+          ...
+        # Subtest: public: bytes=100-
+        ok 32 - public: bytes=100-
+          ---
+          duration_ms: 24.263458
+          type: 'test'
+          ...
+        # Subtest: public: bytes=100-177443
+        ok 33 - public: bytes=100-177443
+          ---
+          duration_ms: 45.042034
+          type: 'test'
+          ...
+        # Subtest: public: bytes=-99999999999999999999999999
+        ok 34 - public: bytes=-99999999999999999999999999
+          ---
+          duration_ms: 6.859078
+          type: 'test'
+          ...
+        # Subtest: public: BYTES=1-2
+        ok 35 - public: BYTES=1-2
+          ---
+          duration_ms: 7.231407
+          type: 'test'
+          ...
+        # Subtest: public: invalid bytes=-0
+        ok 36 - public: invalid bytes=-0
+          ---
+          duration_ms: 6.26445
+          type: 'test'
+          ...
+        # Subtest: public: invalid bytes=176444-
+        ok 37 - public: invalid bytes=176444-
+          ---
+          duration_ms: 5.191803
+          type: 'test'
+          ...
+        # Subtest: public: invalid bytes=2-1
+        ok 38 - public: invalid bytes=2-1
+          ---
+          duration_ms: 4.529424
+          type: 'test'
+          ...
+        # Subtest: public: invalid bytes=0-1,2-3
+        ok 39 - public: invalid bytes=0-1,2-3
+          ---
+          duration_ms: 4.96948
+          type: 'test'
+          ...
+        # Subtest: public: invalid bytes=-
+        ok 40 - public: invalid bytes=-
+          ---
+          duration_ms: 4.926003
+          type: 'test'
+          ...
+        1..40
+    ok 8 - private source, stem and export seek requests deliver exact suffix/clamped bytes
+      ---
+      duration_ms: 434.872273
+      type: 'test'
+      ...
+    # Subtest: Unicode source and release downloads preserve the filename and exact bytes
+        # Subtest: source full
+        ok 1 - source full
+          ---
+          duration_ms: 20.419326
+          type: 'test'
+          ...
+        # Subtest: source bytes=-100
+        ok 2 - source bytes=-100
+          ---
+          duration_ms: 7.213532
+          type: 'test'
+          ...
+        # Subtest: public full
+        ok 3 - public full
+          ---
+          duration_ms: 7.97099
+          type: 'test'
+          ...
+        # Subtest: public bytes=-100
+        ok 4 - public bytes=-100
+          ---
+          duration_ms: 8.169737
+          type: 'test'
+          ...
+        1..4
+    ok 9 - Unicode source and release downloads preserve the filename and exact bytes
+      ---
+      duration_ms: 56.136239
+      type: 'test'
+      ...
+    # Subtest: private playback refuses changed, missing and unavailable source/stem objects
+        # Subtest: 7342a8a1-caca-4ab7-8604-7f00998805b1: corrupt
+            # Subtest: full
+            ok 1 - full
+              ---
+              duration_ms: 6.997363
+              type: 'test'
+              ...
+            # Subtest: bytes=-100
+            ok 2 - bytes=-100
+              ---
+              duration_ms: 7.590391
+              type: 'test'
+              ...
+            1..2
+        ok 1 - 7342a8a1-caca-4ab7-8604-7f00998805b1: corrupt
+          ---
+          duration_ms: 30.019188
+          type: 'test'
+          ...
+        # Subtest: 7342a8a1-caca-4ab7-8604-7f00998805b1: missing
+            # Subtest: full
+            ok 1 - full
+              ---
+              duration_ms: 5.375108
+              type: 'test'
+              ...
+            # Subtest: bytes=-100
+            ok 2 - bytes=-100
+              ---
+              duration_ms: 7.247072
+              type: 'test'
+              ...
+            1..2
+        ok 2 - 7342a8a1-caca-4ab7-8604-7f00998805b1: missing
+          ---
+          duration_ms: 26.589992
+          type: 'test'
+          ...
+        # Subtest: 7342a8a1-caca-4ab7-8604-7f00998805b1: unavailable
+            # Subtest: full
+            ok 1 - full
+              ---
+              duration_ms: 6.43401
+              type: 'test'
+              ...
+            # Subtest: bytes=-100
+            ok 2 - bytes=-100
+              ---
+              duration_ms: 5.473271
+              type: 'test'
+              ...
+            1..2
+        ok 3 - 7342a8a1-caca-4ab7-8604-7f00998805b1: unavailable
+          ---
+          duration_ms: 25.04852
+          type: 'test'
+          ...
+        # Subtest: f7521ead-52cb-4de2-90d9-530e4648f896: corrupt
+            # Subtest: full
+            ok 1 - full
+              ---
+              duration_ms: 5.774487
+              type: 'test'
+              ...
+            # Subtest: bytes=-100
+            ok 2 - bytes=-100
+              ---
+              duration_ms: 5.848642
+              type: 'test'
+              ...
+            1..2
+        ok 4 - f7521ead-52cb-4de2-90d9-530e4648f896: corrupt
+          ---
+          duration_ms: 24.306537
+          type: 'test'
+          ...
+        # Subtest: f7521ead-52cb-4de2-90d9-530e4648f896: missing
+            # Subtest: full
+            ok 1 - full
+              ---
+              duration_ms: 3.696917
+              type: 'test'
+              ...
+            # Subtest: bytes=-100
+            ok 2 - bytes=-100
+              ---
+              duration_ms: 5.023729
+              type: 'test'
+              ...
+            1..2
+        ok 5 - f7521ead-52cb-4de2-90d9-530e4648f896: missing
+          ---
+          duration_ms: 18.848962
+          type: 'test'
+          ...
+        # Subtest: f7521ead-52cb-4de2-90d9-530e4648f896: unavailable
+            # Subtest: full
+            ok 1 - full
+              ---
+              duration_ms: 2.753301
+              type: 'test'
+              ...
+            # Subtest: bytes=-100
+            ok 2 - bytes=-100
+              ---
+              duration_ms: 4.476059
+              type: 'test'
+              ...
+            1..2
+        ok 6 - f7521ead-52cb-4de2-90d9-530e4648f896: unavailable
+          ---
+          duration_ms: 17.683247
+          type: 'test'
+          ...
+        1..6
+    ok 10 - private playback refuses changed, missing and unavailable source/stem objects
+      ---
+      duration_ms: 148.018977
+      type: 'test'
+      ...
+    1..10
+ok 5 - Studio downloads automatically bundle exact media, frozen source notices and honest unknowns
+  ---
+  duration_ms: 4413.052914
+  type: 'test'
+  ...
+# (node:77130) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/publication-integrity.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:77130) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# Subtest: public publication and playback never certify absent, changed or unreadable export bytes
+    # Subtest: corrupt
+        # Subtest: publication preflight
+        ok 1 - publication preflight
+          ---
+          duration_ms: 30.254072
+          type: 'test'
+          ...
+        # Subtest: public stream full
+        ok 2 - public stream full
+          ---
+          duration_ms: 5.841904
+          type: 'test'
+          ...
+        # Subtest: public stream bytes=-100
+        ok 3 - public stream bytes=-100
+          ---
+          duration_ms: 5.207297
+          type: 'test'
+          ...
+        1..3
+    ok 1 - corrupt
+      ---
+      duration_ms: 68.695535
+      type: 'test'
+      ...
+    # Subtest: missing
+        # Subtest: publication preflight
+        ok 1 - publication preflight
+          ---
+          duration_ms: 6.030017
+          type: 'test'
+          ...
+        # Subtest: public stream full
+        ok 2 - public stream full
+          ---
+          duration_ms: 4.602891
+          type: 'test'
+          ...
+        # Subtest: public stream bytes=-100
+        ok 3 - public stream bytes=-100
+          ---
+          duration_ms: 5.278962
+          type: 'test'
+          ...
+        1..3
+    ok 2 - missing
+      ---
+      duration_ms: 40.321813
+      type: 'test'
+      ...
+    # Subtest: unavailable
+        # Subtest: publication preflight
+        ok 1 - publication preflight
+          ---
+          duration_ms: 4.844281
+          type: 'test'
+          ...
+        # Subtest: public stream full
+        ok 2 - public stream full
+          ---
+          duration_ms: 4.40232
+          type: 'test'
+          ...
+        # Subtest: public stream bytes=-100
+        ok 3 - public stream bytes=-100
+          ---
+          duration_ms: 4.653285
+          type: 'test'
+          ...
+        1..3
+    ok 3 - unavailable
+      ---
+      duration_ms: 42.418256
+      type: 'test'
+      ...
+    # Subtest: MIDI remains a private usable artifact, never a falsely playable public WAV
+        # Subtest: completed WAV picker excludes MIDI
+        ok 1 - completed WAV picker excludes MIDI
+          ---
+          duration_ms: 3.733016
+          type: 'test'
+          ...
+        # Subtest: publishing MIDI fails without replacing the previous playable release
+        ok 2 - publishing MIDI fails without replacing the previous playable release
+          ---
+          duration_ms: 5.880536
+          type: 'test'
+          ...
+        # Subtest: legacy public MIDI references do not masquerade as audio/wav
+        ok 3 - legacy public MIDI references do not masquerade as audio/wav
+          ---
+          duration_ms: 5.605124
+          type: 'test'
+          ...
+# (node:77130) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+        1..3
+    ok 4 - MIDI remains a private usable artifact, never a falsely playable public WAV
+      ---
+      duration_ms: 196.426038
+      type: 'test'
+      ...
+    1..4
+ok 6 - public publication and playback never certify absent, changed or unreadable export bytes
+  ---
+  duration_ms: 2519.678005
+  type: 'test'
+  ...
+1..6
+# tests 97
+# suites 0
+# pass 97
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 9527.552731
