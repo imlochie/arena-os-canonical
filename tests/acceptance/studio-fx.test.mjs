@@ -1,3 +1,4 @@
+import { sandboxGameDocument } from "../../src/lib/games/sandbox.ts";
 import { readStudioExportBundle } from "../../scripts/lib/studio-export-bundle.mjs";
 // Actual UI + actual route handlers + PostgreSQL + queue + FFmpeg + decoded
 // download. The input is deliberately synthetic PCM, not model/inference proof.
@@ -331,6 +332,13 @@ test("live nonlinear arrangement edits replace one graph, immediately version/ex
   page.once("dialog", (dialog) => dialog.accept("Current live nonlinear settings")); const saved = page.waitForResponse((response) => response.url().endsWith(`/remixes/${remixId}/versions`) && response.request().method() === "POST");
   await page.getByRole("button", { name: "Save version", exact: true }).click(); const { version } = await (await saved).json();
   const output = await render(version.id); let outputError = 0; for (let frame = 0; frame < 22050; frame++) outputError = Math.max(outputError, Math.abs(audition[frame] - output.decoded.samples[frame * 2])); assert.ok(outputError < 0.0002, `live nonlinear/export parity ${outputError}`);
+  // Native export verification can outlive this short, finite audition.
+  // Establish active playback before testing a LIVE loop edit; changing loop
+  // settings while stopped must not implicitly resume the user's transport.
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  const beforeReplay = await page.evaluate(() => window.__starts.length);
+  await page.getByRole("button", { name: "Preview arrangement", exact: true }).click();
+  await page.waitForFunction(count => window.__starts.length > count, beforeReplay);
   const beforeLoop = await page.evaluate(() => window.__starts.length);
   await page.getByRole("button", { name: "Toggle loop", exact: true }).click();
   await page.waitForFunction(count => window.__starts.length > count && window.__starts.at(-1).loop, beforeLoop);
@@ -576,20 +584,22 @@ test("Arcade real catalogue outage never erases acknowledged games or preview; r
   await page.goto(`${origin}/?room=arcade`);
   const entry = page.getByRole("button").filter({ has: page.getByText(prompt, { exact: true }) });
   await expect(entry).toBeVisible(); await entry.click();
-  const preview = page.locator("iframe"); await expect(preview).toHaveAttribute("srcdoc", game.code);
+  // The player now wraps exact acknowledged bytes with the canonical CSP
+  // document. Keep strict document equality AND opaque-origin sandboxing.
+  const preview = page.locator("iframe"); await expect(preview).toHaveAttribute("sandbox", "allow-scripts"); await expect(preview).toHaveAttribute("srcdoc", sandboxGameDocument(game.code));
   await expect(page.frameLocator("iframe").locator("canvas")).toBeVisible();
   await database.pool.query("ALTER TABLE arcade_games RENAME TO unavailable_arcade_games");
   try {
     const failed = await dispatch(new URL("/api/arcade?limit=30", "http://fixture")); assert.equal(failed.status, 503); assert.equal((await failed.json()).games, undefined);
     await page.getByRole("button", { name: "Refresh game library", exact: true }).click();
     await expect(page.getByRole("alert")).toContainText("Game library unavailable"); await expect(entry).toBeVisible();
-    await expect(preview).toHaveAttribute("srcdoc", game.code); await expect(page.getByText("No games yet — forge the first.", { exact: true })).toHaveCount(0);
+    await expect(preview).toHaveAttribute("srcdoc", sandboxGameDocument(game.code)); await expect(page.getByText("No games yet — forge the first.", { exact: true })).toHaveCount(0);
     await page.reload(); await expect(page.getByRole("alert")).toContainText("Game library unavailable");
     await expect(page.getByText("No games yet — forge the first.", { exact: true })).toHaveCount(0);
   } finally { await database.pool.query("ALTER TABLE unavailable_arcade_games RENAME TO arcade_games"); }
   await page.getByRole("button", { name: "Retry game library", exact: true }).click(); await expect(entry).toBeVisible(); await expect(page.getByRole("alert")).toHaveCount(0); await entry.click();
-  await expect(preview).toHaveAttribute("srcdoc", game.code);
-  await f.stop(); await f.start(); await page.reload(); await expect(entry).toBeVisible(); await entry.click(); await expect(preview).toHaveAttribute("srcdoc", game.code);
+  await expect(preview).toHaveAttribute("srcdoc", sandboxGameDocument(game.code));
+  await f.stop(); await f.start(); await page.reload(); await expect(entry).toBeVisible(); await entry.click(); await expect(preview).toHaveAttribute("srcdoc", sandboxGameDocument(game.code));
   const store = await import("../../src/lib/arcadeStore.ts"); const foreign = await store.insertArcadeGame(database.db, { prompt: "Foreign playable game", gameType: "snake", engine: game.engine, code: game.code, ownerId: "foreign-owner" });
   const denied = await dispatch(new URL(`/api/arcade/${foreign.id}`, "http://fixture"), "DELETE"); assert.equal(denied.status, 403);
   assert.equal((await api(`/api/arcade/${foreign.id}`)).game.code, game.code);
@@ -662,11 +672,11 @@ test("Arcade browser reopens private failed attempts after restart without repla
  let failed=(await service.beginAttempt(owner,randomUUID(),"CONTROLLED partial exposure puzzle — not model inference")).cursor; const partial='<!DOCTYPE html><html><canvas></canvas><script>// retained useful Unicode draft 🎵\nconst exposure=0.25;';
  failed=await service.checkpointAttempt(failed,{state:"failed",error:"Controlled repair outage"},{code:partial,validation:validateGameCode(partial),runtime:{modelId:"CONTROLLED-FIXTURE",backend:"fixture",ms:1}});
  let validated=(await service.beginAttempt(owner,randomUUID(),"CONTROLLED validated save retry — not model inference")).cursor;const code=generateGameOffline("snake with wrap").code; validated=await service.checkpointAttempt(validated,{state:"validated"},{code,validation:validateGameCode(code),runtime:{modelId:"CONTROLLED-FIXTURE",backend:"fixture",ms:1}});
- const page=await browser.newPage();t.after(()=>page.close());await page.goto(`${origin}/?room=arcade`);const previousEntry=page.getByRole("button").filter({has:page.getByText(previous.prompt,{exact:true})});await previousEntry.click();await expect(page.locator("iframe")).toHaveAttribute("srcdoc",previous.code);
- const failedRow=page.getByRole("article",{name:`Attempt ${failed.id}`,exact:true});await failedRow.getByRole("button",{name:"Inspect retained draft",exact:true}).click();const retained=page.getByTestId("arcade-failed-draft");await retained.locator("summary").click();await expect(retained.locator("pre")).toHaveText(partial);await expect(page.locator("iframe")).toHaveAttribute("srcdoc",previous.code);
+ const page=await browser.newPage();t.after(()=>page.close());await page.goto(`${origin}/?room=arcade`);const previousEntry=page.getByRole("button").filter({has:page.getByText(previous.prompt,{exact:true})});await previousEntry.click();await expect(page.locator("iframe")).toHaveAttribute("sandbox","allow-scripts");await expect(page.locator("iframe")).toHaveAttribute("srcdoc",sandboxGameDocument(previous.code));
+ const failedRow=page.getByRole("article",{name:`Attempt ${failed.id}`,exact:true});await failedRow.getByRole("button",{name:"Inspect retained draft",exact:true}).click();const retained=page.getByTestId("arcade-failed-draft");await retained.locator("summary").click();await expect(retained.locator("pre")).toHaveText(partial);await expect(page.locator("iframe")).toHaveAttribute("srcdoc",sandboxGameDocument(previous.code));
  const download=page.waitForEvent("download");await failedRow.getByRole("link",{name:"Download exact attempt",exact:true}).click();assert.equal(await readFile(await(await download).path(),"utf8"),partial);
  await f.stop();await f.start();await page.reload();await expect(failedRow).toContainText("failed");await failedRow.getByRole("button",{name:"Inspect retained draft",exact:true}).click();await retained.locator("summary").click();await expect(retained.locator("pre")).toHaveText(partial);
- const validRow=page.getByRole("article",{name:`Attempt ${validated.id}`,exact:true});await validRow.getByRole("button",{name:"Retry saving exact attempt",exact:true}).click();await expect(validRow).toContainText("completed");await expect(page.locator("iframe")).toHaveAttribute("srcdoc",code);await page.reload();await validRow.getByRole("button",{name:"Open saved result",exact:true}).click();await expect(page.locator("iframe")).toHaveAttribute("srcdoc",code);await expect(page.frameLocator("iframe").locator("canvas")).toBeVisible();
+ const validRow=page.getByRole("article",{name:`Attempt ${validated.id}`,exact:true});await validRow.getByRole("button",{name:"Retry saving exact attempt",exact:true}).click();await expect(validRow).toContainText("completed");await expect(page.locator("iframe")).toHaveAttribute("srcdoc",sandboxGameDocument(code));await page.reload();await validRow.getByRole("button",{name:"Open saved result",exact:true}).click();await expect(page.locator("iframe")).toHaveAttribute("srcdoc",sandboxGameDocument(code));await expect(page.frameLocator("iframe").locator("canvas")).toBeVisible();
 });
 
 

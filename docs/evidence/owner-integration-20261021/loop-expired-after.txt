@@ -1,0 +1,27 @@
+TAP version 13
+# (node:24703) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/games/sandbox.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:24703) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:24703) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# {"kind":"live-edits-nonlinear-export","maxError":0.000003471970558166504,"outputError":0.00006844103336334229,"maximumConcurrentSources":1}
+# Subtest: live nonlinear arrangement edits replace one graph, immediately version/export current FX, and preserve pause/seek/stop
+ok 1 - live nonlinear arrangement edits replace one graph, immediately version/export current FX, and preserve pause/seek/stop
+  ---
+  duration_ms: 11070.04838
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 12663.806992

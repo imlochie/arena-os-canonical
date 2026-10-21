@@ -96,3 +96,46 @@ Counts overlap; never sum repeated suites into new capability claims.
 Installed Electron/Windows, live-model creativity/autonomy and unprovided live
 external-provider credentials remain separate gates. No owner return-to-Windows
 requirement and no claims based merely on build/HTTP200/catalogue metadata.
+
+## Combined verification exposed legacy cross-room contract mismatches
+
+The first combined eb6e0ac browser CI failed two existing Arcade recovery tests,
+not the donor's standalone acceptance. Check annotations identify both catalogue
+outage and retained-attempt reopening. Independent local reproduction: **0 pass,
+2 fail**, raw `arcade-srcdoc-before.txt`. Their exact srcdoc expectations were
+still raw game.code; PR19 deliberately changed the player to the canonical
+sandboxGameDocument(code), including the trusted CSP prefix. Updating the
+consumer to compare the EXACT canonical wrapped document (not a substring), and
+also asserting sandbox="allow-scripts", preserves acknowledged code equality,
+private-draft/download/retry/restart/ownership/outage assertions while testing
+the current stricter security contract. Focused actual browser recovery:
+**2 pass, 0 fail**, `arcade-srcdoc-after.txt`. No product code was loosened.
+
+The same first local full Studio attempt also hit its older live-loop test's
+10-second wait after the finite audition had already ended during native export
+verification. Controlled reproduction deliberately allows 3.5 seconds to pass:
+Pause button absent, active AudioBufferSources=0, original live-loop expectation
+fails (`loop-expired-before.txt`). Merely toggling a setting while stopped must
+not restart playback. The test now explicitly stops/replays and observes a new
+actual source start BEFORE testing a live loop edit. It preserves numerical
+PCM, max-one-active-source, loop, seek, pause and stop assertions/deadlines.
+The same delayed diagnostic passes with this explicit precondition
+(`loop-expired-after.txt`); no sleep was added to the permanent test and no
+preparation/PCM product code was changed. This does NOT purport to fix the
+separately documented intermittent key-sync issue from the earlier campaign.
+
+First actual-page combined run had one test-harness orchestration failure:
+Arcade next start overlapped desktop staging's internal next build and saw no
+BUILD_ID. The raw server log explicitly records the missing build. After BOTH
+builds completed, unchanged actual Arcade/Spaces/recovery acceptance passed
+**10 tests**, including the shared/pop-out workshop and full immutable large
+Unicode/binary output recovery. The initial failed aggregate is retained under
+ignored `.data/integration-final/failures/`, not relabelled a pass.
+
+The eb6e0ac local full source and Studio run were intentionally interrupted to
+correct the confirmed consumer contracts. They are incomplete/NOT passes.
+Types/lint/build/packaged Linux headless and focused source/integrity/connected
+checks passed on eb6e0ac; its genuine inference/connected/batch hosted runs also
+passed. Those results are prior-head evidence, not final successor receipts.
+A fresh committed combined source/build/browser verification follows. Native
+installed Windows/Electron and live-provider creative reasoning remain separate.
