@@ -127,15 +127,12 @@ jobs:
       - name: Desktop contract and runtime tests
         # De-elevated for the same reason as the runtime acceptance: these
         # include real-cluster tests that start PostgreSQL, which refuses an
-        # administrator token (the hosted runner's default).
+        # administrator token (the hosted runner's default). Bounded: a hang
+        # must become a recorded failure, not consume the job.
+        timeout-minutes: 60
         run: |
           set -euo pipefail
           node scripts/windows-deelevated-step.mjs "desktop contract tests" "$EVIDENCE/desktop-tests.log" 2400000 -- npm run test:desktop
-
-      - name: Full source suite on Windows
-        run: |
-          set -euo pipefail
-          node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 5400000 -- npm test
 
       - name: Gate summary
         if: always()
@@ -159,6 +156,59 @@ jobs:
           path: windows-evidence/
           if-no-files-found: warn
           retention-days: 30
+
+  source-suite:
+    name: Windows full source suite
+    # Separate job: the suite is the longest gate on Windows and must not be
+    # able to consume the other gate evidence through a job timeout.
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Source identity (start)
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "tree=$(git rev-parse HEAD^{tree})"
+            echo "digest=$(git archive HEAD | sha256sum | cut -d' ' -f1)"
+          } | tee "$EVIDENCE/identity-start.txt"
+
+      - name: Clean dependency install
+        run: node scripts/windows-step.mjs "npm ci (suite job)" "$EVIDENCE/npm-ci.log" -- npm ci
+
+      - name: Full source suite on Windows
+        timeout-minutes: 200
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 10800000 -- npm test
+
+      - name: Suite counts and failing identities
+        if: always()
+        run: |
+          set -euo pipefail
+          grep -hE "^# (tests|pass|fail)" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/suite-counts.txt" || true
+          grep -hE "^not ok" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/failing-tests.txt" | head -40 || true
+          while IFS= read -r line; do echo "::error title=Windows suite failure::$line"; done < <(head -5 "$EVIDENCE/failing-tests.txt" 2>/dev/null || true)
+          while IFS= read -r line; do echo "::warning title=Windows suite counts::$line"; done < <(cat "$EVIDENCE/suite-counts.txt" 2>/dev/null || true)
+
+      - name: Upload suite evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-suite-${{ github.sha }}
+          path: windows-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
 
   package:
     name: Windows installer build + staged-runtime acceptance
