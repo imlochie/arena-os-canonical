@@ -13,7 +13,7 @@ export type MixerValues = {
   monoMonitor?: boolean;
 };
 type PreparedVoice = { sourceId: string; buffer: AudioBuffer; node?: AudioBufferSourceNode; gate?: GainNode; ended?: boolean };
-type ReplacementJob = { abort: AbortController; cancel?: () => void; settled?: Promise<void> };
+type ReplacementJob = { abort: AbortController; cancel?: () => void; commitIfDue?: () => boolean; settled?: Promise<void> };
 type AudioGraph = {
   source: MediaElementAudioSourceNode;
   originalGate: GainNode;
@@ -333,7 +333,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
     gate?.disconnect();
   }, []);
   const cancelReplacements = useCallback(() => {
-    for (const job of replacementJobs.current.values()) { job.abort.abort(); job.cancel?.(); }
+    for (const job of replacementJobs.current.values()) { if (job.commitIfDue?.()) continue; job.abort.abort(); job.cancel?.(); }
     replacementJobs.current.clear();
   }, []);
   const startVoice = useCallback((id: string, entry: PreparedVoice, when: number, offset: number, initialGain = 1) => {
@@ -362,8 +362,10 @@ export function useStemTransport(assetIds: string[], duration: number) {
     }
   }, [startVoice, stopVoice]);
   const replaceSource = useCallback(async (id: string, sourceId: string, target: number | null = null, onPrepared?: (target: number | null) => void) => {
-    replacementJobs.current.get(id)?.abort.abort();
-    replacementJobs.current.get(id)?.cancel?.();
+    const previousJob = replacementJobs.current.get(id);
+    // DSP may already have committed while its UI frame was delayed. Promote
+    // that real result before superseding, rather than undoing audible audio.
+    if (previousJob && !previousJob.commitIfDue?.()) { previousJob.abort.abort(); previousJob.cancel?.(); }
     if ((committedSources.current.get(id)?.sourceId ?? id) === sourceId) return;
     const abort = new AbortController();
     let settled!: () => void;
@@ -428,23 +430,37 @@ export function useStemTransport(assetIds: string[], duration: number) {
       newGate.gain.setValueAtTime(0, when); newGate.gain.linearRampToValueAtTime(1, when + .005);
       await new Promise<void>((resolve, reject) => {
         let frame = 0, done = false;
+        const valid = () => current() && !element.paused && element.playbackRate === rate && ctx.state === "running" && !next?.ended && Math.abs(element.currentTime - (sourceOffset + (ctx.currentTime - when) * rate)) <= .08;
         const rollback = () => {
           if (done) return; done = true; cancelAnimationFrame(frame);
-          if (next) stopVoice(next);
-          oldGate.gain.cancelScheduledValues(0); oldGate.gain.value = 1;
-          if (!old) graph.originalGate.gain.value = 1;
-          else { graph.originalGate.gain.cancelScheduledValues(0); graph.originalGate.gain.value = 0; }
+          job.commitIfDue = undefined;
+          if (ctx.state === "running" && ctx.currentTime >= when) {
+            // Cancel inside the 5ms crossfade without introducing an abrupt
+            // sample discontinuity. Future (not-started) voices stop outright.
+            const now = ctx.currentTime, oldLevel = oldGate.gain.value, newLevel = newGate.gain.value;
+            oldGate.gain.cancelScheduledValues(0); oldGate.gain.setValueAtTime(oldLevel, now); oldGate.gain.linearRampToValueAtTime(1, now + .005);
+            newGate.gain.cancelScheduledValues(0); newGate.gain.setValueAtTime(newLevel, now); newGate.gain.linearRampToValueAtTime(0, now + .005);
+            if (next?.node) {
+              const node = next.node, gate = next.gate!; next.node = undefined; next.gate = undefined;
+              node.onended = () => { node.disconnect(); gate.disconnect(); }; node.stop(now + .005);
+            }
+          } else {
+            if (next) stopVoice(next);
+            oldGate.gain.cancelScheduledValues(0); oldGate.gain.value = 1;
+            graph.originalGate.gain.cancelScheduledValues(0); graph.originalGate.gain.value = old ? 0 : 1;
+          }
           reject(cancelled());
         };
         job.cancel = rollback;
+        const commitIfDue = () => {
+          if (done || !valid() || ctx.currentTime < when + .005) return false;
+          done = true; cancelAnimationFrame(frame); job.cancel = undefined; job.commitIfDue = undefined;
+          finish(); resolve(); return true;
+        };
+        job.commitIfDue = commitIfDue;
         const tick = () => {
-          if (!current() || element.paused || element.playbackRate !== rate || ctx.state !== "running" || next?.ended) { rollback(); return; }
-          // Reject a changed/seeked source clock BEFORE the scheduled start.
-          const predicted = sourceOffset + (ctx.currentTime - when) * rate;
-          if (Math.abs(element.currentTime - predicted) > .08) { rollback(); return; }
-          if (ctx.currentTime >= when + .005) {
-            done = true; job.cancel = undefined; finish(); resolve(); return;
-          }
+          if (!valid()) { rollback(); return; }
+          if (commitIfDue()) return;
           frame = requestAnimationFrame(tick);
         };
         frame = requestAnimationFrame(tick);

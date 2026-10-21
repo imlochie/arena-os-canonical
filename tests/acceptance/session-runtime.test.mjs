@@ -997,3 +997,28 @@ test("a shorter committed donor ends only its lane, reports silence honestly, an
   await source.getByRole("button", { name: "A · Song A", exact: true }).click(); await assertFourSources(page, {});
   await expect(page.getByRole("status").filter({ hasText: "drums donor ended" })).toHaveCount(0);
 });
+
+test("an already-audible donor is not rolled back or duplicated when its UI completion frame is delayed and B is pressed again", { timeout: 15000 }, async t => {
+  session("due-rapid"); const page = await pageFor(t, "due-rapid", candidate => candidate.addInitScript(() => {
+    window.voiceStarts = 0; window.holdCompletionFrames = false; window.heldFrames = [];
+    const nativeStart = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function(...args) { window.voiceStarts++; return nativeStart.apply(this,args); };
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = callback => raf(time => { if (window.holdCompletionFrames) window.heldFrames.push(callback); else callback(time); });
+    window.releaseCompletionFrames = () => { window.holdCompletionFrames = false; for (const callback of window.heldFrames.splice(0)) raf(callback); };
+  }));
+  await start(page);
+  await page.evaluate(() => { window.holdCompletionFrames = true; });
+  const source = page.getByRole("group", {name:"Source for drums", exact:true});
+  await source.getByRole("button",{name:"B · Song B", exact:true}).click();
+  await audible(page,440);
+  assert.equal(await page.evaluate(() => window.voiceStarts),1);
+  await expect(source.getByRole("button",{name:"A · Song A",exact:true})).toHaveAttribute("aria-pressed","true");
+  const before = await page.evaluate(() => ({ starts: window.voiceStarts, signal: window.audioSnapshot() }));
+  await source.getByRole("button",{name:"B · Song B",exact:true}).click();
+  await expect(source.getByRole("button",{name:"B · Song B",exact:true})).toHaveAttribute("aria-pressed","true");
+  assert.equal(await page.evaluate(() => window.voiceStarts),1,"already executed source commit is promoted, not rolled back and restarted");
+  await page.evaluate(() => window.releaseCompletionFrames());
+  await audible(page,440);
+  console.log(JSON.stringify({kind:"already-audible-latest-intent",before,after:await page.evaluate(() => ({ starts: window.voiceStarts, signal: window.audioSnapshot() })),scope:"actual scheduled audio with deliberately withheld UI/clock frames; a newer identical B intent must not restart or roll back it"}));
+});
