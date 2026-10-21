@@ -39,13 +39,17 @@ rather than a human at a desktop with audio hardware.
 
 | Item | Value |
 | --- | --- |
-| Commit | see the run's `identity-start.txt`; the evidence run is cited by run ID in §4 |
+| Evidence commit | `a5d2d582` — the commit the Windows jobs below ran against |
+| Tree | `1e64ebdb9260e695a6721dc4819e98ed614c2798` |
+| Source digest | `sha256(git archive a5d2d58)` = `4918f69f5e0cd64691ab43e48788d967a308702854b4d5e501fdbda4e668dabd` |
 | Base commit | `13638fe8a5c280e6b47ecf97fb6e6cf414163a12` |
-| Source digest | `sha256(git archive HEAD)`, printed by every job's first step |
-| Installer | `Arena Setup 0.1.0.exe`, 621.1 MB, SHA-256 recorded in the `windows-package-*` artifact |
+| Windows run | [39650513338](https://github.com/imlochie/arena-os-canonical/actions/runs/39650513338) (repeat of [39648109209](https://github.com/imlochie/arena-os-canonical/actions/runs/39648109209) with identical section results) |
+| Installer | `Arena Setup 0.1.0.exe`, 621.1 MB; SHA-256 in `installer-sha256.txt` inside the `windows-package-<sha>` artifact |
 
-The Windows jobs print `commit`, `tree` and `digest` at the start of every job,
-so any artifact can be tied to the exact tested source.
+Every Windows job prints `commit`, `tree` and `digest` in its first step, so an
+artifact can be tied to the source that produced it. Commits after `a5d2d58`
+change documentation and workflow text only; no application, packaging or test
+code differs from the evidence commit.
 
 ## 3. What this branch changes
 
