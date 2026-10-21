@@ -796,7 +796,18 @@ interface MissionStepLite {
   thought: string;
   done: boolean;
   actions: (EvidenceAction & { output: string; input: Record<string, unknown> })[];
-  runtime?: { backend?: string; modelId?: string; fallback?: boolean };
+  runtime?: {
+    agentModelId?: string;
+    requestedModelId?: string;
+    runtimeLevel?: string;
+    provider?: string;
+    backend?: string;
+    modelId?: string;
+    via?: string;
+    fallback?: boolean;
+    fallbackFrom?: { runtimeLevel: string; backend: string; modelId: string };
+    fallbackReason?: string;
+  };
   ms: number;
 }
 
@@ -1085,10 +1096,22 @@ export function MissionPanel({ spaceId }: { spaceId: string }) {
               <p className="flex flex-wrap items-center gap-2 text-[11px]">
                 <b className="text-white">{s.agent}</b>
                 <span className="text-slate-600">turn {s.turn}</span>
-                <span className="text-emerald-300/80">{s.runtime?.backend ?? "not observed"} · {s.runtime?.modelId ?? "model not reported"}{s.runtime?.fallback ? " · FALLBACK" : ""}</span>
+                <span className={s.runtime?.fallback ? "text-amber-300" : "text-emerald-300/80"}>
+                  {s.runtime?.runtimeLevel ?? "runtime not reported"} · {s.runtime?.provider ?? s.runtime?.backend ?? "provider not reported"} · actual {s.runtime?.modelId ?? "model not reported"}
+                  {s.runtime?.fallback ? " · FALLBACK" : ""}
+                </span>
+                {s.runtime?.agentModelId && <span className="text-slate-400">plan requested {s.runtime.agentModelId}</span>}
+                {s.runtime?.requestedModelId && s.runtime.requestedModelId !== s.runtime.agentModelId && (
+                  <span className="text-slate-400">router requested {s.runtime.requestedModelId}</span>
+                )}
                 <span className="text-slate-600">{s.ms}ms</span>
                 {s.done && <span className="text-emerald-300">done</span>}
               </p>
+              {s.runtime?.fallback && (
+                <p role="status" className="mt-1 break-words text-[10px] text-amber-300">
+                  Fallback execution—not successful use of the selected model. Requested {s.runtime.fallbackFrom?.modelId ?? s.runtime.requestedModelId ?? s.runtime.agentModelId ?? "model unreported"}; ran {s.runtime.modelId ?? "model unreported"} via {s.runtime.fallbackFrom?.backend ?? s.runtime.backend ?? "backend unreported"}. {s.runtime.fallbackReason ?? "Provider or selected model was unavailable."}
+                </p>
+              )}
               <p className="mt-1 text-[11px] italic text-slate-400">{s.thought}</p>
               {s.modelState && <p className="text-[10px] text-slate-500">Model turn: {s.modelState}</p>}
               {s.requestedActions?.map((request) => <MissionRequestDetails key={request.id} request={request} canResolve={mission.status === "needs_reconciliation"} onResolve={resolveRequest} />)}
