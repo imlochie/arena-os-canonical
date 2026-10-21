@@ -14,6 +14,74 @@ import { missionPostgres } from "../../../tests/helpers/mission-postgres";
 let f: Awaited<ReturnType<typeof missionPostgres>>;
 before(async () => { f = await missionPostgres(); });
 after(async () => { await f?.close(); });
+test("a fresh default mission routes every role through its selected Space model and records actual execution", async () => {
+  const id = randomUUID();
+  const selectedModel = "groq/llama-3.3-70b-versatile";
+  await f.database.insert(spaces).values({ id, prompt: "Selected-model routing fixture", modelId: selectedModel });
+  const dispatched: string[] = [];
+  const mission = await runMission(id, { goal: "Exercise the default mission plan", isolation: "host" }, {
+    database: f.database,
+    generate: async (input) => {
+      dispatched.push(input.modelId);
+      return {
+        text: JSON.stringify({ actions: [], done: true }),
+        provider: "Arena",
+        backend: "arena-local-engine",
+        runtimeLevel: "arena-local",
+        modelId: "local-engine",
+        requestedModelId: selectedModel,
+        via: "offline-fallback",
+        ms: 0,
+        fallback: true,
+        fallbackFrom: { runtimeLevel: "remote", backend: "groq", modelId: selectedModel },
+        fallbackReason: "Provider key is not configured.",
+      };
+    },
+  });
+  assert.deepEqual(mission.agentPlan.map((agent) => agent.modelId), [selectedModel, selectedModel, selectedModel]);
+  assert.deepEqual(dispatched, [selectedModel, selectedModel, selectedModel]);
+  assert.deepEqual(mission.journal.map((step) => ({
+    requested: step.runtime?.agentModelId,
+    providerRequest: step.runtime?.requestedModelId,
+    actual: step.runtime?.modelId,
+    provider: step.runtime?.provider,
+    backend: step.runtime?.backend,
+    fallback: step.runtime?.fallback,
+    reason: step.runtime?.fallbackReason,
+  })), [
+    { requested: selectedModel, providerRequest: selectedModel, actual: "local-engine", provider: "Arena", backend: "arena-local-engine", fallback: true, reason: "Provider key is not configured." },
+    { requested: selectedModel, providerRequest: selectedModel, actual: "local-engine", provider: "Arena", backend: "arena-local-engine", fallback: true, reason: "Provider key is not configured." },
+    { requested: selectedModel, providerRequest: selectedModel, actual: "local-engine", provider: "Arena", backend: "arena-local-engine", fallback: true, reason: "Provider key is not configured." },
+  ]);
+
+  const explicitModel = "openrouter/user-selected-model";
+  const explicitRequests: string[] = [];
+  const overridden = await runMission(id, {
+    goal: "Use the explicit per-mission model override",
+    isolation: "host",
+    agentPlan: [{ name: "Override", role: "explicit override", modelId: explicitModel }],
+  }, {
+    database: f.database,
+    generate: async (input) => {
+      explicitRequests.push(input.modelId);
+      return {
+        text: JSON.stringify({ actions: [], done: true }),
+        backend: "openrouter",
+        runtimeLevel: "remote",
+        modelId: "user-selected-model",
+        requestedModelId: explicitModel,
+        provider: "OpenRouter",
+        via: "openrouter",
+        ms: 0,
+        fallback: false,
+      };
+    },
+  });
+  assert.deepEqual(overridden.agentPlan.map((agent) => agent.modelId), [explicitModel]);
+  assert.deepEqual(explicitRequests, [explicitModel]);
+  assert.equal(overridden.journal[0]?.runtime?.modelId, "user-selected-model");
+  assert.equal(overridden.journal[0]?.runtime?.fallback, false);
+});
 test("a killed runtime resumes its recorded next agent without duplicating a committed command", async (t) => {
   const id = randomUUID(); await f.database.insert(spaces).values({ id, prompt: "Crash recovery fixture" });
   const root = await ensureWorkspace(id); t.after(() => rm(root, { recursive: true, force: true }));
