@@ -132,7 +132,16 @@ export class LocalStorageProvider implements StorageProvider {
     const details = await fs.stat(location);
     if (details.size > maxBytes)
       throw new Error("Derived metadata exceeds the allowed read size.");
-    return fs.readFile(location);
+    // stat is only a fast rejection, not a read bound: a concurrent writer
+    // can grow/replace metadata before it is opened. Read at most limit + 1
+    // bytes so overflow is detected rather than returned or silently truncated.
+    const chunks: Buffer[] = []; let bytes = 0;
+    for await (const chunk of createReadStream(location, { start: 0, end: maxBytes })) {
+      bytes += chunk.length;
+      if (bytes > maxBytes) throw new Error("Derived metadata exceeds the allowed read size.");
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, bytes);
   }
   async exists(key: string) {
     try {

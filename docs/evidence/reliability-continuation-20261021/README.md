@@ -175,3 +175,32 @@ The same owner workflow builds Next and runs the new actual HTTP/browser media
 scenario after connected processing; failures also get existing bounded TAP
 annotations. No dedicated Agent B workflow or branch changed. Final broad gates
 are rerun on the subsequent committed identity; prior38d5fbb receipts are retained.
+
+## P2: bounded metadata reads had a stat/read memory race
+
+After completing all 1ec1b46 gates (source1609/0/0, built HTTP scenario1/0,
+connected1/0, crash matrix44/0, products10/0, Studio35/0+2 opt-in skips), continued
+failure injection found getBuffer(key,64) returned8,388,625 bytes if a writer grew
+the object between stat() and readFile(). The original failing regression records
+actual returned bytes in metadata-growth-before.tap (0 pass/1 fail). Merely
+checking size before an unbounded read does not enforce an allocation/read cap.
+
+Fix keeps the cheap stat rejection but reads through a stream bounded to
+maxBytes+1, rejecting the sentinel instead of returning oversized or silently
+truncated metadata. No reader-side deletion, mutation or overwrite of the object.
+It reuses the existing local provider; no PCM preparation or new cache/registry.
+The regression changes an actual file after its actual successful stat and
+observes real OS read callbacks: exactly65 bytes read for a64-byte cap while the
+8MiB-grown owner object remains intact. Normal empty/exact-limit files and
+oversized rejection also pass. Storage suite6/0; neighbouring archive/export/
+publication suites pass. Typecheck and focused ESLint pass. A candidate was
+proved in ignored scratch files while1ec1b46 full source was running; canonical
+files were changed only AFTER its exact-head attestation completed successfully.
+
+A separate preflight-cost measurement on controlled128MiB bytes observed
+369–538ms full hash vs0.12–3.42ms suffix-only reads across5 rounds under concurrent
+source-suite load. This is NOT an audio/model/browser-latency benchmark. Retain
+identity checks; future immutable-handle/caching work must prove mutation and
+recovery safety first. No unsafe presence-only optimization was shipped.
+The final successor commit receives fresh full source/build/connected checks;
+all intermediate head receipts and failed attempts are preserved separately.
