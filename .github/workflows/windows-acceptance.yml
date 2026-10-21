@@ -1,0 +1,247 @@
+# Windows acceptance — the real Windows product path.
+#
+# Provenance: the repository already ships the Windows acceptance contract
+# (scripts/windows-acceptance.mjs, docs/windows-acceptance.md, Gate D1-D10 in
+# docs/evidence). Until now nothing executed any of it on Windows: every
+# workflow ran on ubuntu-24.04 only, so "Windows ready" was a claim without a
+# host. This workflow runs the same contract on windows-latest and keeps every
+# log/receipt, including failures.
+#
+# Jobs are separate on purpose: a failing gate must not hide packaging
+# evidence, and a packaging failure must not hide the installed-app result.
+# Each job exits non-zero when its own acceptance fails — no pipe or log
+# wrapper may convert a failure into a green step.
+name: Windows acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["arena/windows-ready-integration-2026-10-22"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Git-bash on the Windows runner: pipefail makes `tee` unable to swallow a
+    # failing acceptance command (the CI workflow documents the same rule).
+    shell: bash
+
+jobs:
+  gates:
+    name: Windows gates (typecheck, desktop contracts, full source suite)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Source identity (start)
+        run: |
+          set -euo pipefail
+          mkdir -p windows-evidence
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "tree=$(git rev-parse HEAD^{tree})"
+            echo "digest=$(git archive HEAD | sha256sum | cut -d' ' -f1)"
+            echo "node=$(node -v)"
+            echo "npm=$(npm -v)"
+            echo "runner=$RUNNER_OS/$RUNNER_ARCH $ImageOS"
+          } | tee windows-evidence/identity-start.txt
+
+      - name: Clean dependency install
+        run: |
+          set -euo pipefail
+          npm ci 2>&1 | tee windows-evidence/npm-ci.log
+
+      - name: Windows platform packages present
+        run: |
+          set -euo pipefail
+          node scripts/windows-platform-check.mjs 2>&1 | tee windows-evidence/platform-packages.log
+
+      - name: Typecheck
+        run: |
+          set -euo pipefail
+          npm run typecheck 2>&1 | tee windows-evidence/typecheck.log
+
+      - name: Desktop contract and runtime tests
+        run: |
+          set -euo pipefail
+          npm run test:desktop 2>&1 | tee windows-evidence/desktop-tests.log
+
+      - name: Full source suite on Windows
+        run: |
+          set -euo pipefail
+          npm test 2>&1 | tee windows-evidence/source-suite.log
+
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gates-${{ github.sha }}
+          path: windows-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+  package:
+    name: Windows installer build + staged-runtime acceptance
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Source identity (start)
+        run: |
+          set -euo pipefail
+          mkdir -p windows-evidence
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "tree=$(git rev-parse HEAD^{tree})"
+            echo "digest=$(git archive HEAD | sha256sum | cut -d' ' -f1)"
+          } | tee windows-evidence/identity-start.txt
+
+      - name: Clean dependency install
+        run: |
+          set -euo pipefail
+          npm ci 2>&1 | tee windows-evidence/npm-ci.log
+
+      - name: Stage the packaged server, binaries and migrations
+        run: |
+          set -euo pipefail
+          npm run desktop:compile 2>&1 | tee windows-evidence/desktop-compile.log
+          npm run desktop:prepare-server 2>&1 | tee windows-evidence/prepare-server.log
+
+      - name: Packaging audit of the staged tree
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node scripts/windows-acceptance.mjs --audit-only desktop-package 2>&1 | tee windows-evidence/staged-audit.log
+
+      - name: Staged-runtime acceptance (embedded PostgreSQL, worker, FFmpeg export, restart)
+        run: |
+          set -euo pipefail
+          npm run desktop:acceptance-headless 2>&1 | tee windows-evidence/desktop-acceptance-headless.log
+
+      - name: Build the NSIS installer
+        run: |
+          set -euo pipefail
+          npm run desktop:dist 2>&1 | tee windows-evidence/desktop-dist.log
+
+      - name: Installer identity and hash
+        run: |
+          set -euo pipefail
+          ls -l desktop-release | tee windows-evidence/installer-listing.txt
+          sha256sum desktop-release/*.exe | tee windows-evidence/installer-sha256.txt
+
+      - name: Packaging audit of the built installer tree
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node scripts/windows-acceptance.mjs --audit-only desktop-package 2>&1 | tee windows-evidence/installer-audit.log || true
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-windows-installer-${{ github.sha }}
+          path: desktop-release/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload package evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-${{ github.sha }}
+          path: |
+            windows-evidence/
+            desktop-acceptance-headless-report.json
+            desktop-windows-acceptance-report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  installed:
+    name: Installed application acceptance (install, launch, restart, uninstall)
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Download the installer built by the package job
+        uses: actions/download-artifact@v4
+        with:
+          name: arena-windows-installer-${{ github.sha }}
+          path: desktop-release
+
+      - name: Clean dependency install (orchestrator only)
+        run: |
+          set -euo pipefail
+          mkdir -p windows-evidence
+          npm ci 2>&1 | tee windows-evidence/npm-ci.log
+
+      - name: Silent install + installed-app acceptance
+        # The orchestrator installs the real NSIS package, launches the
+        # INSTALLED Arena.exe with ARENA_DESKTOP_ACCEPTANCE, checks restart
+        # persistence and orphan processes, then force-kills mid-run and proves
+        # recovery. It writes desktop-windows-acceptance-report.json either way.
+        run: |
+          set -euo pipefail
+          node scripts/windows-acceptance.mjs 2>&1 | tee windows-evidence/installed-acceptance.log
+
+      - name: Mandated PASS/FAIL summary
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f desktop-windows-acceptance-report.json || { echo "NO REPORT WRITTEN"; exit 1; }
+          node -e '
+            const r = require("./desktop-windows-acceptance-report.json");
+            for (const [k, v] of Object.entries(r)) {
+              if (["detail", "KNOWN_LIMITATIONS"].includes(k)) continue;
+              console.log(`${k}: ${v}`);
+            }
+            for (const l of r.KNOWN_LIMITATIONS ?? []) console.log(`LIMITATION: ${l}`);
+          ' | tee windows-evidence/installed-report-summary.txt
+
+      - name: Uninstall the application (per-user NSIS uninstaller)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          uninstaller=$(find "$LOCALAPPDATA/Programs" -maxdepth 3 -iname "*ninstall*.exe" 2>/dev/null | head -n 1)
+          if [ -z "$uninstaller" ]; then echo "no uninstaller found under $LOCALAPPDATA/Programs" | tee windows-evidence/uninstall.log; exit 0; fi
+          echo "uninstaller: $uninstaller" | tee windows-evidence/uninstall.log
+          "$uninstaller" /S
+          sleep 5
+          if [ -d "$(dirname "$uninstaller")" ] && [ -n "$(ls -A "$(dirname "$uninstaller")" 2>/dev/null)" ]; then
+            echo "install directory still populated after /S uninstall" | tee -a windows-evidence/uninstall.log
+          else
+            echo "install directory removed" | tee -a windows-evidence/uninstall.log
+          fi
+
+      - name: Upload installed-acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installed-${{ github.sha }}
+          path: |
+            windows-evidence/
+            desktop-windows-acceptance-report.json
+          if-no-files-found: warn
+          retention-days: 30
