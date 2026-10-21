@@ -1,7 +1,7 @@
 name: Spaces real workshop and recovery acceptance
 on:
   push:
-    branches: [product/spaces-workshop-proof, "arena/331aa502-arena-os-canonical"]
+    branches: [product/spaces-workshop-proof, product/arcade-spaces-capabilities, "arena/331aa502-arena-os-canonical"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -32,8 +32,10 @@ jobs:
           mkdir -p .data/spaces-workshop-acceptance
           git rev-parse HEAD > .data/spaces-workshop-acceptance/source-commit.txt
           npm run typecheck 2>&1 | tee .data/spaces-workshop-acceptance/typecheck.txt
-          npx eslint src/lib/spaces/mission-evidence.ts src/lib/spaces/mission-evidence.test.ts 2>&1 | tee .data/spaces-workshop-acceptance/lint.txt
-          node --import ./scripts/register-src-loader.mjs --test src/lib/spaces/mission-evidence.test.ts 2>&1 | tee .data/spaces-workshop-acceptance/focused.tap
+          npx eslint src/lib/spaces/mission-evidence.ts src/lib/spaces/mission-evidence.test.ts src/lib/spaces/mission-memory.ts src/lib/spaces/mission-memory.test.ts 2>&1 | tee .data/spaces-workshop-acceptance/lint.txt
+          node --import ./scripts/register-src-loader.mjs --test src/lib/spaces/mission-evidence.test.ts src/lib/spaces/mission-memory.test.ts src/lib/spaces/spaces-tools.test.ts 2>&1 | tee .data/spaces-workshop-acceptance/focused.tap
+      - name: Automatic model context cannot import outside-workspace notes
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/spaces-notes-boundary.test.mjs 2>&1 | tee .data/spaces-workshop-acceptance/notes-boundary.tap
       - name: Preserve existing real mission/recovery/workbench acceptance
         run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/mission-recovery.test.mjs 2>&1 | tee .data/spaces-workshop-acceptance/existing-recovery.tap
       - name: Build actual application

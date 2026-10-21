@@ -47,7 +47,7 @@ export async function POST(req: Request) {
       if(!begun.created) return Response.json({attempt:cursor,error:"This stable attempt already exists. Inspect/download it, retry saving validated code, or start a new attempt; generation was not replayed."},{status:409});
     }
     const result = await forgeGameWithAI(prompt, {
-      validateRuntime: validateGameRuntime,
+      validateRuntime: code => validateGameRuntime(code, { requireGameplay: true }),
       priorCode, failedDraftCode,
       onDraft: async draft => { lastDraft=draft; if(cursor)cursor=await checkpointAttempt(cursor,{state:draft.validation.ok?"validated":"draft"},draft); },
       keys: localOnly ? undefined : body?.keys,

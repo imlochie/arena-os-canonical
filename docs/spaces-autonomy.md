@@ -44,6 +44,15 @@ evidence/checksum references and a superseded-revision reference. Retrieval must
 remain ownership/workspace-scoped and must not promote model prose into fact.
 That searchable convention is **not implemented by the Workshop UI increment**.
 
+The continuation hardens automatic notes loading: the existing workspace-output
+path policy plus a no-follow file descriptor rejects symlinks, hardlinks,
+non-files, oversized notes and files changed during capture. Reads are bounded
+before allocation. The mission context identifies loaded notes as untrusted
+claims, and records an unavailable-notes notice rather than importing host
+bytes or silently treating them as verified memory. This fixes the automatic
+context-loading boundary; it does not make host-jail commands a container or
+claim to solve general abrupt-failure recovery or field-note indexing.
+
 Tools and governance already exist; a unified preflight capability inventory
 would still need real runtime probes, not a new registry or optimistic buttons.
 Live external publishing, live model reasoning, actual containers and Electron

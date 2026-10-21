@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
@@ -105,6 +105,7 @@ test("actual /arcade page generates, browser-repairs, plays, retains failed revi
     assert.equal(generated.repairsUsed, 1); assert.equal(generated.runtimeValidation.ok, true);
     assert.equal(generated.code, photographyGame);
     assert.deepEqual(modelCalls.map(call => call.repairing), [false, true]);
+    await expect(page.getByText("This generation passed browser smoke and declared controls/progress/terminal/restart scenarios.", { exact: false })).toBeVisible();
     const frame = page.frameLocator("iframe[sandbox='allow-scripts']");
     await frame.getByRole("button", { name: "Start", exact: true }).click();
     await expect(frame.locator("#state")).toHaveText("playing");
@@ -149,7 +150,39 @@ test("actual /arcade page generates, browser-repairs, plays, retains failed revi
     await frame.getByRole("button", { name: "Start", exact: true }).click();
     await expect(frame.locator("#state")).toHaveText("playing");
     assert.equal(modelCalls.length, 4, "reopening is not generation");
+    await expect(page.getByText("No current gameplay receipt loaded for this reopened/retained game.", { exact: false })).toBeVisible();
     assert.equal(escapedRequests, 0);
+    // A real user acquires the real MIT source through the actual Next route,
+    // persists its provenance in Artifacts and downloads the actual patch.
+    const localOnlySource = await page.request.post(`${origin}/api/arcade/source`, { data: { adapter: "2048", initialTiles: 3, localOnly: true } });
+    assert.equal(localOnlySource.status(), 400);
+    assert.match((await localOnlySource.json()).error, /disabled in Local Mode/);
+    await page.getByText("Source workshop · supported MIT 2048 adapter", { exact: true }).click();
+    const acquiredResponse = page.waitForResponse(r => r.url() === `${origin}/api/arcade/source` && r.request().method() === "POST");
+    await page.getByRole("button", { name: "Acquire source and create patch", exact: true }).click();
+    const acquiredHttp = await acquiredResponse, acquired = await acquiredHttp.json();
+    assert.equal(acquiredHttp.status(), 200, acquired.error);
+    assert.ok(acquired.artifactId); assert.equal(acquired.persistenceError, undefined);
+    assert.ok(JSON.stringify(acquired.bundle, null, 2).length > 20000, "exercise the actual large-object storage boundary, not a shortened fixture");
+    const immutableDownload = await page.request.get(`${origin}${acquired.artifactDownloadUrl}`);
+    assert.equal(immutableDownload.status(), 200);
+    assert.deepEqual(await immutableDownload.json(), acquired.bundle, "saved immutable revision retains the entire source/license/patch package");
+    assert.equal(acquired.bundle.revision, "478b6ec346e3787f589e4af751378d06ded4cbbc");
+    assert.equal(acquired.bundle.license.spdx, "MIT");
+    assert.match(acquired.bundle.verification.runtime, /not run/);
+    await expect(page.getByText(`Saved Artifact ${acquired.artifactId}`, { exact: true })).toBeVisible();
+    const patchDownload = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Download patch", exact: true }).click();
+    const downloaded = await patchDownload;
+    assert.equal(await readFile(await downloaded.path(), "utf8"), acquired.bundle.modification.patch);
+    await page.getByRole("button", { name: "Play source preview (unverified)", exact: true }).click();
+    const sourcePlayer = page.frameLocator('iframe[title="2048 source preview"]');
+    await expect(sourcePlayer.locator("#tile-count")).toHaveText("3");
+    await sourcePlayer.locator("canvas").click(); await page.keyboard.press("ArrowRight");
+    await sourcePlayer.getByRole("button", { name: "Restart", exact: true }).click();
+    await expect(sourcePlayer.locator("#tile-count")).toHaveText("3");
+    await writeFile(path.join(evidence, "source-ui-package.json"), JSON.stringify(acquired.bundle, null, 2));
+    receipts.sourceWorkshop = { status: "passed", actualUi: true, artifactId: acquired.artifactId, upstreamRevision: acquired.bundle.revision, sourceFiles: acquired.bundle.files.map(({ path, sha256, bytes }) => ({ path, sha256, bytes })), patchSha256: sha(acquired.bundle.modification.patch), actualOpaqueSourcePreview: { initialTiles: 3, restartedTiles: 3 }, acquisitionRuntimeClaim: "not run; subsequent actual UI play is recorded here, separate original/modded adapter acceptance still required" };
     receipts.product = { status: "passed", actualNextPage: "/arcade", loopbackDesktopTrustOnlyNotElectron: true, scriptedProvider: true, modelCalls, gameId: generated.game.id, successfulAttemptId: generated.attemptId, failedAttemptId: failed.attemptId, codeSha256: sha(photographyGame), failedDraftSha256: sha(crashingGame), behaviours: ["camera keyboard movement", "real clock advancement", "pause freezes clock", "pointer photo scores", "space photo wins", "restart resets", "timeout loses", "bounded runtime repair", "failed child cannot replace saved game", "durable exact failed draft download", "client bypass rejected", "actual player CSP blocks obfuscated fetch", "saved-game reopening without inference"] };
     await page.screenshot({ path: path.join(evidence, "arcade-completed.png"), fullPage: true });
   } catch (error) {
