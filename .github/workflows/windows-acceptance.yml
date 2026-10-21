@@ -210,6 +210,48 @@ jobs:
           retention-days: 30
 
 
+  desktop-diagnostics:
+    name: Desktop test hang diagnostics (bounded, non-blocking)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Clean dependency install
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          node scripts/windows-step.mjs "npm ci (diagnostics)" "$EVIDENCE/npm-ci.log" -- npm ci
+
+      - name: Desktop tests, de-elevated, 15-minute bound (diagnostic only)
+        # Not a gate: the gates job owns the verdict. This exists to find WHERE
+        # a restricted token makes the suite block, by reporting the child's
+        # last output lines when the bound is hit.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "desktop tests diagnostic" "$EVIDENCE/desktop-diagnostic.log" 900000 -- npm run test:desktop
+
+      - name: Behaviour under an elevated token, same bound (diagnostic only)
+        continue-on-error: true
+        run: node scripts/windows-step.mjs "desktop tests elevated" "$EVIDENCE/desktop-elevated.log" -- npm run test:desktop
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-diagnostics-${{ github.sha }}
+          path: windows-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+
   package:
     name: Windows installer build + staged-runtime acceptance
     runs-on: windows-latest

@@ -112,7 +112,11 @@ if (output !== "") {
 }
 
 if (status === undefined) {
-  console.log(`::error title=${label}::de-elevated command produced no completion sentinel within ${timeoutMs} ms`);
+  // Report what the child DID produce: without this, a hang is only "no
+  // sentinel", which cannot be investigated from the checks API.
+  const produced = (existsSync(log) ? readFileSync(log, "utf8") : "").split(/\r?\n/).filter(Boolean);
+  const where = produced.slice(-6).join(" | ").slice(0, 800) || "the log is empty — the command never started";
+  console.log(`::error title=${label}::no completion sentinel within ${timeoutMs} ms; last output: ${where}`);
   process.exit(1);
 }
 if (status !== "0") {
