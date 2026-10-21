@@ -1,5 +1,7 @@
 "use client";
 
+import { SessionSaveQueue, type SessionSaveStatus } from "@/lib/waveyard/library/session-save-queue";
+
 import { defaultPerformance, nextPerformanceBoundary, performanceTick, performMix, type PerformanceAction, type PerformanceSnap } from "@/lib/waveyard/library/performance";
 
 import type { TrackSummary } from "@/lib/waveyard/library/service";
@@ -298,6 +300,22 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
   const [addTrackId, setAddTrackId] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
+  const [editSaveState, setEditSaveState] = useState<SessionSaveStatus>("saved");
+  const [editSaveError, setEditSaveError] = useState<string | null>(null);
+  const [editSaves] = useState(() => new SessionSaveQueue(async (url, body) => {
+    try {
+      const response = await fetch(url, { method: "PATCH", headers: { "content-type": "application/json" }, body, keepalive: true });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        throw new Error(`HTTP ${response.status}${typeof detail?.error === "string" ? `: ${detail.error.slice(0, 240)}` : ""}`);
+      }
+      setEditSaveError(null);
+    } catch (error) {
+      setEditSaveError(error instanceof Error ? error.message : "Network request failed");
+      throw error;
+    }
+  }, setEditSaveState));
+  const editSnapshots = useRef(new Map<string, string>());
   const [handoffConfirm, setHandoffConfirm] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const handoffInFlight = useRef(false);
@@ -542,22 +560,35 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     };
   }, []);
 
-  // Debounced per-track mix + transition persistence.
+  // Snapshot every membership, not only the current deck: changing tracks
+  // must not discard the outgoing deck's debounce. All PATCHes share one writer.
   useEffect(() => {
-    if (session === null || currentItem === null) return;
-    const timer = setTimeout(() => {
-      void fetch(`/api/library/sessions/${session.id}/tracks/${currentItem.id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          stemMix: mixes[currentItem.id] ?? currentItem.stemMix,
-          transition: transitions[currentItem.id] ?? currentItem.transition,
-        }),
-      });
-    }, 600);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounce per current track's controls
-  }, [session?.id, currentItem?.id, mixes, transitions]);
+    if (!session) return;
+    for (const item of session.tracks) {
+      const url = `/api/library/sessions/${session.id}/tracks/${item.id}`;
+      const body = JSON.stringify({ stemMix: mixes[item.id] ?? item.stemMix, transition: transitions[item.id] ?? item.transition });
+      const previous = editSnapshots.current.get(url);
+      editSnapshots.current.set(url, body);
+      if (previous !== undefined && previous !== body) editSaves.enqueue(url, body);
+    }
+  }, [session, mixes, transitions, editSaves]);
+
+  useEffect(() => {
+    const flushHidden = () => { if (document.visibilityState === "hidden") void editSaves.flush(); };
+    const warnUnsaved = (event: BeforeUnloadEvent) => {
+      if (!editSaves.unsaved) return;
+      void editSaves.flush();
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    document.addEventListener("visibilitychange", flushHidden);
+    window.addEventListener("beforeunload", warnUnsaved);
+    return () => {
+      document.removeEventListener("visibilitychange", flushHidden);
+      window.removeEventListener("beforeunload", warnUnsaved);
+      void editSaves.flush();
+    };
+  }, [editSaves]);
 
   // Apply the current mix to the active deck whenever it changes (and to the
   // standby deck so a transition fades in what you hear while setting it up).
@@ -599,11 +630,14 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     if (recorded && (cut || naturalCompletion)) {
       setTransitions((previous) => ({ ...previous, [recorded.fromId]: recorded.transition }));
       const sessionId = sessionRef.current?.id;
-      if (sessionId) cueSave.current = fetch(`/api/library/sessions/${sessionId}/tracks/${recorded.fromId}`, {
-        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ transition: recorded.transition }),
-      }).then((response) => { if (!response.ok) throw new Error("save rejected"); return true; }).catch(() => {
-        setStatus("Playback advanced, but the completed transition could not be saved. Keep this session open and retry Send to Studio to save its visible cues."); return false;
-      });
+      if (sessionId) {
+        const item = sessionRef.current?.tracks.find(item => item.id === recorded.fromId);
+        const url = `/api/library/sessions/${sessionId}/tracks/${recorded.fromId}`;
+        const body = JSON.stringify({ stemMix: performanceState.current.mixes[recorded.fromId] ?? item?.stemMix ?? {}, transition: recorded.transition });
+        editSnapshots.current.set(url, body);
+        editSaves.enqueue(url, body);
+        cueSave.current = editSaves.flush();
+      }
     } else if (recorded) {
       // A forced early finish truncates the envelope, rather than performing
       // the requested full ramp. Do not label it a captured linear fade.
@@ -619,7 +653,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     activateDeck(completed.toId, completed.toDeck);
     setStatus("Transition complete — the next track is now current.");
     void persistStateRef.current();
-  }, [activateDeck]);
+  }, [activateDeck, editSaves]);
 
   const runFade = useCallback(
     (cfg: TransitionConfig, fromDeck: 0 | 1, toDeck: 0 | 1) => {
@@ -958,6 +992,10 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
     void (async () => {
       try {
         await cueSave.current;
+        if (!await editSaves.flush(true)) {
+          setStatus("Session edits could not be saved. Retry saving edits before sending to Studio.");
+          return;
+        }
         const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ mode, trackEdits: session.tracks.map((item) => ({
@@ -980,7 +1018,7 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
         setHandoffBusy(false);
       }
     })();
-  }, [session, mixes, transitions]);
+  }, [session, mixes, transitions, editSaves]);
 
   // ------------------------------------- hardware media keys (P4, standard path)
   // The same OS/hardware media commands as the player, driving the session's
@@ -1143,6 +1181,8 @@ export default function SessionExperience({ sessionId }: { sessionId: string }) 
           <p className="sess-header-sub">
             {session.tracks.length} track{session.tracks.length === 1 ? "" : "s"}
             {` · restore point ${saveState === "saved" ? "saved" : saveState === "saving" ? "saving…" : "save failed"}`}
+            <span role="status" aria-label="Session edit save status">{` · mix/settings ${editSaveState === "saved" ? "saved" : editSaveState === "error" ? "save failed — edits remain in this page" : editSaveState === "pending" ? "not saved yet" : "saving…"}`}</span>
+            {editSaveState === "error" && <><span role="alert"> {editSaveError}</span><button type="button" onClick={() => void editSaves.flush(true)}>Retry saving edits</button></>}
           </p>
         </div>
         <div className="sess-header-actions">

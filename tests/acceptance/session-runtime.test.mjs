@@ -464,3 +464,65 @@ test("isolate preserves the previous mix including a muted lane; Instant Restore
   await expect.poll(() => state.tracks[0].stemMix.drums).toBe(.7);
   assert.equal(state.tracks[0].stemMix.bass, .4);
 });
+
+test("rejected mix save stays visible and explicitly retries the latest settings through reload", { timeout: 20000 }, async t => {
+  let reject = true, patches = 0;
+  const page = await pageFor(t, "save-retry", async page => {
+    await page.route("**/api/library/sessions/save-retry/tracks/*", async route => {
+      patches++;
+      if (reject) await route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"offline fixture"}' });
+      else await route.continue();
+    });
+  });
+  await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+  await expect(page.getByLabel("Session edit save status")).toContainText("save failed");
+  await expect(page.getByRole("alert")).toContainText("HTTP 503: offline fixture");
+  assert.equal(session("save-retry").tracks[0].stemMix.drums, 1);
+  await page.getByLabel("Snap stem changes").selectOption("half");
+  await page.waitForTimeout(750);
+  assert.equal(patches, 1, "failure must not silently retry");
+  reject = false;
+  await page.getByRole("button", { name: "Retry saving edits", exact: true }).click();
+  await expect(page.getByLabel("Session edit save status")).toContainText("settings saved");
+  assert.equal(session("save-retry").tracks[0].stemMix.drums, 0);
+  assert.equal(session("save-retry").tracks[0].transition.performance.snap, "half");
+  await page.reload();
+  await expect(page.getByLabel("Snap stem changes")).toHaveValue("half");
+  await expect(page.getByRole("button", { name: "Mute drums", exact: true })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("an in-flight save is serialized with later edits even after advancing decks", { timeout: 20000 }, async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let requests = 0;
+  const page = await pageFor(t, "save-order", async page => {
+    await page.route("**/api/library/sessions/save-order/tracks/*", async route => {
+      if (++requests === 1) await gate;
+      await route.continue();
+    });
+  });
+  t.after(() => release());
+  await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+  await expect.poll(() => requests).toBe(1);
+  await page.getByRole("button", { name: "Restore stem mix", exact: true }).click();
+  await page.getByTestId("session-transition").click();
+  await current(page, "Song B");
+  await page.waitForTimeout(750);
+  assert.equal(requests, 1, "cue and mix writes must not bypass a delayed predecessor");
+  release();
+  await expect(page.getByLabel("Session edit save status")).toContainText("settings saved");
+  assert.equal(session("save-order").tracks[0].stemMix.drums, 1);
+  assert.equal(session("save-order").tracks[0].transition.cue.toSessionTrackId, "b");
+});
+
+test("reload warns about an unacknowledged edit and flushes it without waiting for debounce", { timeout: 15000 }, async t => {
+  const page = await pageFor(t, "save-close");
+  let warned = false;
+  page.on("dialog", async dialog => { warned = dialog.type() === "beforeunload"; await dialog.accept(); });
+  await page.getByRole("button", { name: "Mute drums", exact: true }).click();
+  await expect(page.getByLabel("Session edit save status")).toContainText("not saved yet");
+  await page.reload();
+  assert.equal(warned, true, "browser must warn before discarding unacknowledged state");
+  await expect(page.getByRole("button", { name: "Mute drums", exact: true })).toHaveAttribute("aria-pressed", "true");
+  assert.equal(session("save-close").tracks[0].stemMix.drums, 0);
+});

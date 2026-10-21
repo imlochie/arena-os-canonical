@@ -1292,3 +1292,33 @@ test("performance settings and exact muted fader recall persist through actual r
   assert.equal(invalid.status, 400);
   assert.deepEqual((await sessions.getSession(OWNER, created.id)).tracks[0].transition.performance, muted.performance, "failed patch cannot overwrite persisted recall");
 });
+
+test("session save retry after a lost SQL acknowledgement preserves audio and latest mix through a fresh process", async () => {
+  const { SessionSaveQueue } = await import("./session-save-queue");
+  const filePath = path.join(root!, "lost-edit-ack.wav"); writeWav(filePath, 2);
+  const originalBytes = readFileSync(filePath);
+  const intake = await service.addTrackFromAudioFile({ ownerId: OWNER, filePath, filename: "lost-edit-ack.wav", mimeType: "audio/wav" });
+  const created = await sessions.createSession(OWNER, "Lost edit acknowledgement");
+  const added = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: intake.track.id });
+  const item = added.tracks[0];
+  const route = await import("@/app/api/library/sessions/[id]/tracks/[itemId]/route");
+  let attempts = 0;
+  const queue = new SessionSaveQueue(async (_url, body) => {
+    const response = await route.PATCH(new Request("http://arena.test/retry", { method: "PATCH", headers: { "content-type": "application/json" }, body }), { params: Promise.resolve({ id: created.id, itemId: item.id }) });
+    assert.equal(response.status, 200);
+    if (++attempts === 1) throw new Error("injected lost acknowledgement AFTER real SQL commit");
+  }, () => {}, 60000);
+  queue.enqueue("item", JSON.stringify({ stemMix: { drums: 0 } }));
+  assert.equal(await queue.flush(), false);
+  assert.equal((await sessions.getSession(OWNER, created.id))!.tracks[0].stemMix.drums, 0);
+  queue.enqueue("item", JSON.stringify({ stemMix: { drums: .37 } }));
+  assert.equal(await queue.flush(), false); assert.equal(attempts, 1);
+  assert.equal(await queue.flush(true), true);
+  const script = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { console.log(JSON.stringify(await getSession('${OWNER}', '${created.id}'))); } finally { await pool.end(); }`;
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });
+  assert.equal(child.status, 0, child.stderr);
+  const reopened = JSON.parse(child.stdout.trim());
+  assert.equal(reopened.tracks[0].stemMix.drums, .37);
+  assert.equal(reopened.tracks[0].track.id, intake.track.id);
+  assert.deepEqual(readFileSync(filePath), originalBytes, "input bytes retained");
+});

@@ -97,3 +97,18 @@ PASS below is a bounded named test, never whole-category parity. HISTORICAL PASS
 - Existing debounced save acknowledgement/error reporting was not upgraded here; browser-close-before-save and network write failures are OPEN, not durable-success claims. Recall is proven after actual persistence, not merely after an optimistic control change.
 - Failed baseline UI test retained under `.data/waveyard-performance/before.tap` (20s timeout because controls are absent), with a build plugin serving unmodified04d SessionExperience. Its old harness header hashes the working-file path, NOT the plugin override; baseline identity is the explicit git-show loader, not that printed hash. No failure hidden.
 - Final exact-head source/build/browser/connected/staged/genuine CI receipts must be recorded after commit; precommit results are not inherited by a changed SHA. No fair same-material STEM.FM comparison has been executed; superiority remains OPEN.
+
+## Continuation: acknowledged session edits (2026-10-21)
+
+The original increment's exact-head result is `cadccef` (1625 source tests, 32 browser/audio tests, seven hosted successes including genuine Demucs 4/6). Raw receipt: `.data/waveyard-performance/receipt.md`. Those counts do not automatically validate this continuation.
+
+Implemented the next save-reliability slice in the canonical SessionExperience, not another persistence service:
+
+- One per-controller serial PATCH writer coalesces each track's latest mix/settings snapshot. A delayed predecessor cannot overwrite a later request from this controller. Completed transition cue writes use the same writer; advancing decks no longer cancels the outgoing edit debounce.
+- Pending/saving/acknowledged/error states are distinct from the separate transport restore-point indicator. HTTP/network failures keep the latest snapshot in this page, show the rejection and offer explicit retry. Failed edits are not silently replayed by a timer. Studio handoff awaits edit acknowledgement and stops on rejection.
+- Page-hidden/unload paths flush without waiting for debounce, use keepalive and warn before leaving with unacknowledged edits. This is best-effort close protection, NOT a durable journal, browser termination/OS-kill recovery or a guarantee that an accepted navigation waits for a slow server.
+- Permanent tests: delayed ordering/coalescing and lost ACK in the pure queue; actual 503/retry/reload, delayed writes across deck advance, and real beforeunload warning/reload in the browser; actual PostgreSQL commit followed by injected lost ACK, explicit latest-edit retry and fresh application-process reopen.
+
+Precommit 23 browser and 32 real-PostgreSQL service tests passed. Initial queue test failed because Node strip-only mode does not support TypeScript constructor parameter properties; replaced with explicit fields (failure retained). Initial browser run had an intermittent existing seek assertion (21 pass/1 fail; expected 8, observed 2.2); unchanged targeted diagnostic and subsequent full run passed. Root cause remains unresolved, not labelled fixed or suppressed. Raw attempts: `.data/waveyard-save-reliability/`.
+
+Remaining: cross-tab/client write ordering, transport cursor save ordering, hanging/lost responses, browser keepalive budgets, and accepted-close/abrupt-kill recovery. No new backend revision protocol or persistent journal was invented. Hold/release isolation, prepared quantised swaps, live tempo/key matching and all other essential OPEN rows above remain in force. Final committed checks must be recorded separately; no completion/release claim.
