@@ -1,0 +1,211 @@
+{
+  "kind": "waveyard-live-session",
+  "fixtureKind": "controlled-pcm-fixture",
+  "sessionId": "3ccecb00-6964-4803-974d-9d6bd6830803",
+  "steps": [
+    {
+      "step": "canonical mix visible",
+      "lanes": 4
+    },
+    {
+      "step": "baseline canonical mix (A sources) audible",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0005449289974948207,
+            0.12912397465027536
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.00036686073080745296,
+            0.07240843987576195
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10922768777735398,
+            0.0004969353033236598
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16100849754653448,
+            0.0005444546797382531
+          ]
+        }
+      },
+      "audible": false,
+      "ms": 20031
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "/?_rsc=TN_KtnulmiBiQbmR",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/chat?_rsc=TN_KtnulmiBiQbmR",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/spaces?_rsc=TN_KtnulmiBiQbmR",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/discover?_rsc=TN_KtnulmiBiQbmR",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/moderation?_rsc=TN_KtnulmiBiQbmR",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/?_rsc=hd2-EiH7-1kzUFhH",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/chat?_rsc=hd2-EiH7-1kzUFhH",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/spaces?_rsc=hd2-EiH7-1kzUFhH",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/discover?_rsc=hd2-EiH7-1kzUFhH",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/moderation?_rsc=hd2-EiH7-1kzUFhH",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/0876916e-bc18-4bfb-886b-466bd04d4d03",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/d4a4f6b8-ddc4-4577-8c47-046492b38c90",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/32e14840-7eef-410f-95c4-7a889e4f5c9a",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/36fe0e45-f54f-402f-ae17-dd7e7dcd6cb4",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/0876916e-bc18-4bfb-886b-466bd04d4d03",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/d4a4f6b8-ddc4-4577-8c47-046492b38c90",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/0876916e-bc18-4bfb-886b-466bd04d4d03",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/d4a4f6b8-ddc4-4577-8c47-046492b38c90",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/324b4c8c-9186-4ef1-a1f8-8261a07eb72b",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/c83f6164-7438-4ae0-965d-01fb1cfdb401",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/eb06522a-ca33-4781-b1a6-2734cfbe4083",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/1cd9a916-3cbf-496b-8015-cc4ca34ae4bf",
+      "failure": "net::ERR_ABORTED"
+    }
+  ],
+  "httpErrors": [],
+  "screenshots": [
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-08-54-650Z/01-session-loaded.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-08-54-650Z/02-playing.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-08-54-650Z/99-failure.png"
+  ],
+  "browser": "153.0.8010.0",
+  "limitations": [
+    "Controlled PCM sine stems inserted by acceptance scaffolding: not separation, not inference, not musical-quality evidence.",
+    "Bar snapping was not exercised: the fixture has no measured beat/downbeat data, so the UI must (and does) state bar snapping is unavailable.",
+    "Real-time audio is measured from analyser taps inside the page's real AudioContext; this is graph-level audibility, not a human listening test."
+  ],
+  "failure": "baseline audio did not reach expected lanes",
+  "stepAtFailure": {
+    "at": "2026-10-21T15:09:17.266Z",
+    "step": "baseline canonical mix (A sources) audible",
+    "detail": "audible layout DID NOT match within timeout"
+  },
+  "finalSessionState": {
+    "status": 200,
+    "currentSessionTrackId": "a6044278-aadf-492f-9387-806d79123df0",
+    "positionSeconds": 48.86891,
+    "swaps": [
+      {
+        "stemType": "vocals",
+        "toStemAssetId": "32e14840-7eef-410f-95c4-7a889e4f5c9a",
+        "atSeconds": 16.962177
+      },
+      {
+        "stemType": "drums",
+        "toStemAssetId": "d4a4f6b8-ddc4-4577-8c47-046492b38c90",
+        "atSeconds": 17.261133
+      },
+      {
+        "stemType": "bass",
+        "toStemAssetId": "0876916e-bc18-4bfb-886b-466bd04d4d03",
+        "atSeconds": 18.530869
+      },
+      {
+        "stemType": "instruments",
+        "toStemAssetId": "36fe0e45-f54f-402f-ae17-dd7e7dcd6cb4",
+        "atSeconds": 17.86195
+      },
+      {
+        "stemType": "vocals",
+        "toStemAssetId": "324b4c8c-9186-4ef1-a1f8-8261a07eb72b",
+        "atSeconds": 19.779133
+      },
+      {
+        "stemType": "drums",
+        "toStemAssetId": "c83f6164-7438-4ae0-965d-01fb1cfdb401",
+        "atSeconds": 33.144863
+      }
+    ]
+  },
+  "log": [
+    {
+      "at": "2026-10-21T15:08:55.533Z",
+      "step": "page",
+      "detail": "Session · Waveyard"
+    },
+    {
+      "at": "2026-10-21T15:09:17.266Z",
+      "step": "baseline canonical mix (A sources) audible",
+      "detail": "audible layout DID NOT match within timeout"
+    }
+  ]
+}

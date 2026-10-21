@@ -1,0 +1,218 @@
+{
+  "status": "automated-passed-human-review-open",
+  "commit": "13638fe8a5c280e6b47ecf97fb6e6cf414163a12",
+  "worktreeClean": true,
+  "humanReview": "OPEN: product owner must inspect selected rule, visible gameplay difference, find/reopen and truthful verification labels",
+  "scope": "Supported guaranteed-four spawning, not general modding, live model quality, catalogue publication, Electron or in-progress board persistence",
+  "uiObservations": [
+    {
+      "label": "before-save",
+      "before": 12,
+      "after": 16,
+      "spawnedValue": 4,
+      "restartValues": [
+        4,
+        4,
+        4
+      ]
+    },
+    {
+      "label": "after-reload-and-immutable-reopen",
+      "before": 12,
+      "after": 16,
+      "spawnedValue": 4,
+      "restartValues": [
+        4,
+        4,
+        4
+      ]
+    },
+    {
+      "label": "last-working-preview-after-corrupted-object-reopen",
+      "before": 12,
+      "after": 16,
+      "spawnedValue": 4,
+      "restartValues": [
+        4,
+        4,
+        4
+      ]
+    }
+  ],
+  "artifact": {
+    "id": "55f13289-6838-44a7-aa27-35953764a78c",
+    "revisionId": "ce7d97da-3b71-4c5c-a658-1ad56b2d3ab6",
+    "packageSha256": "3f96c43565ffe581ce0a0caf9565ec665d067e5769d7983c47f10b67646b8054",
+    "sourceSha256": "6d00b7fdb945091b149d0312a3c9ab9bbc6959e612fed5ee7b58f7078a10aa23",
+    "patchSha256": "c42d2dd69e7d79623646e44f3746abf04fc6c555b4129bbb3bc7b9dddd54e1a8",
+    "object": {
+      "bytes": 26179,
+      "sha256": "3f96c43565ffe581ce0a0caf9565ec665d067e5769d7983c47f10b67646b8054",
+      "version": 1,
+      "mediaType": "application/json; charset=utf-8"
+    }
+  },
+  "serverBrowserReport": {
+    "policyVersion": 1,
+    "checkedAt": "2026-10-21T15:10:16.683Z",
+    "status": "passed",
+    "scope": "Pinned 2048 adapter: real keyboard move, board sum delta (merges conserve sum), restart. Controlled random draws .01/.95; no in-progress board persistence or human review.",
+    "sourceSha256": "6d00b7fdb945091b149d0312a3c9ab9bbc6959e612fed5ee7b58f7078a10aa23",
+    "patchSha256": "c42d2dd69e7d79623646e44f3746abf04fc6c555b4129bbb3bc7b9dddd54e1a8",
+    "previewSha256": "c470d2ed3778b86227ba8a14cd97dbeb6b6646078c6d99f3ecab07008976e58d",
+    "browser": "153.0.8010.0",
+    "observations": [
+      {
+        "baseline": true,
+        "random": 0.01,
+        "before": 4,
+        "after": 6,
+        "spawnedValue": 2,
+        "initialValues": [
+          2,
+          2
+        ],
+        "restartValues": [
+          2,
+          2
+        ]
+      },
+      {
+        "baseline": true,
+        "random": 0.95,
+        "before": 8,
+        "after": 12,
+        "spawnedValue": 4,
+        "initialValues": [
+          4,
+          4
+        ],
+        "restartValues": [
+          4,
+          4
+        ]
+      },
+      {
+        "baseline": false,
+        "random": 0.01,
+        "before": 12,
+        "after": 16,
+        "spawnedValue": 4,
+        "initialValues": [
+          4,
+          4,
+          4
+        ],
+        "restartValues": [
+          4,
+          4,
+          4
+        ]
+      },
+      {
+        "baseline": false,
+        "random": 0.95,
+        "before": 12,
+        "after": 16,
+        "spawnedValue": 4,
+        "initialValues": [
+          4,
+          4,
+          4
+        ],
+        "restartValues": [
+          4,
+          4,
+          4
+        ]
+      }
+    ],
+    "issues": []
+  },
+  "reopenedBrowserReport": {
+    "policyVersion": 1,
+    "checkedAt": "2026-10-21T15:10:19.158Z",
+    "status": "passed",
+    "scope": "Pinned 2048 adapter: real keyboard move, board sum delta (merges conserve sum), restart. Controlled random draws .01/.95; no in-progress board persistence or human review.",
+    "sourceSha256": "6d00b7fdb945091b149d0312a3c9ab9bbc6959e612fed5ee7b58f7078a10aa23",
+    "patchSha256": "c42d2dd69e7d79623646e44f3746abf04fc6c555b4129bbb3bc7b9dddd54e1a8",
+    "previewSha256": "c470d2ed3778b86227ba8a14cd97dbeb6b6646078c6d99f3ecab07008976e58d",
+    "browser": "153.0.8010.0",
+    "observations": [
+      {
+        "baseline": true,
+        "random": 0.01,
+        "before": 4,
+        "after": 6,
+        "spawnedValue": 2,
+        "initialValues": [
+          2,
+          2
+        ],
+        "restartValues": [
+          2,
+          2
+        ]
+      },
+      {
+        "baseline": true,
+        "random": 0.95,
+        "before": 8,
+        "after": 12,
+        "spawnedValue": 4,
+        "initialValues": [
+          4,
+          4
+        ],
+        "restartValues": [
+          4,
+          4
+        ]
+      },
+      {
+        "baseline": false,
+        "random": 0.01,
+        "before": 12,
+        "after": 16,
+        "spawnedValue": 4,
+        "initialValues": [
+          4,
+          4,
+          4
+        ],
+        "restartValues": [
+          4,
+          4,
+          4
+        ]
+      },
+      {
+        "baseline": false,
+        "random": 0.95,
+        "before": 12,
+        "after": 16,
+        "spawnedValue": 4,
+        "initialValues": [
+          4,
+          4,
+          4
+        ],
+        "restartValues": [
+          4,
+          4,
+          4
+        ]
+      }
+    ],
+    "issues": []
+  },
+  "failureChecks": [
+    "tampered patch rejected",
+    "incompatible upstream rejected",
+    "missing immutable revision returns 404",
+    "real storage publication outage cannot replace acknowledged revision",
+    "corrupt-object UI reopen fails closed and retains playable prior preview",
+    "missing Chromium is unavailable",
+    "saved immutable bytes unchanged"
+  ]
+}

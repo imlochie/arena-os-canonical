@@ -1,0 +1,334 @@
+{
+  "kind": "arcade-source-workshop",
+  "steps": [
+    {
+      "step": "modified acquisition (guaranteed-four, 4 initial tiles)",
+      "uiText": ""
+    },
+    {
+      "step": "modified preview gameplay (independent measurement)",
+      "initialCount": 4,
+      "initialValues": [
+        4,
+        4,
+        4,
+        4
+      ],
+      "moveDraw001": {
+        "draw": 0.01,
+        "beforeCount": 4,
+        "beforeValues": [
+          4,
+          4,
+          4,
+          4
+        ],
+        "afterCount": 4,
+        "afterValues": [
+          4,
+          8,
+          4,
+          4
+        ],
+        "spawned": 4
+      },
+      "moveDraw099": {
+        "draw": 0.99,
+        "beforeCount": 4,
+        "beforeValues": [
+          4,
+          8,
+          4,
+          4
+        ],
+        "afterCount": 5,
+        "afterValues": [
+          4,
+          8,
+          4,
+          4,
+          4
+        ],
+        "spawned": 4
+      },
+      "expectation": "4 initial tiles; every spawn is 4 regardless of the random draw"
+    },
+    {
+      "step": "original-rule preview gameplay (control)",
+      "initialCount": 2,
+      "initialValues": [
+        2,
+        2
+      ],
+      "moveDraw001": {
+        "draw": 0.01,
+        "beforeCount": 2,
+        "beforeValues": [
+          2,
+          2
+        ],
+        "afterCount": 3,
+        "afterValues": [
+          2,
+          2,
+          2
+        ],
+        "spawned": 2
+      },
+      "expectation": "2 initial tiles; draw .01 spawns 2 under the upstream rule"
+    },
+    {
+      "step": "verify-and-save (server-side Chromium execution)",
+      "ms": 1908,
+      "uiText": "🎮 Arcade Forge — templates and AI generation\n\nFull arcade games. Templates offline. Custom games with AI.\n\nPlay Pac-Man, Space Invaders, Snake and the other listed templates offline. Custom games and gameplay revisions require a capable on-device or online model. Auto may use online generation; enable Local Mode to keep generation on your device.\n\nSource workshop · supported MIT 2048 adapter\n\nAcquire four pinned files from Gabriele Cirulli’s official repository. Modify initial tiles or the actual spawning rule, verify in Chromium, then save/reopen an immutable game. Board progress is memory-o"
+    },
+    {
+      "step": "saved artifact visible through library API",
+      "id": "6959caa5-bdbe-4d1f-b273-64d1007ef37f",
+      "title": "2048: guaranteed-four; 4 initial tiles",
+      "currentRevisionId": "c202ea54-e59b-4e66-b0cd-2a6d758382ac",
+      "createdAt": "2026-10-21T15:28:36.622Z"
+    },
+    {
+      "step": "download + independent byte/hash verification of the immutable revision",
+      "status": 200,
+      "bytes": 26231,
+      "runtimeStatus": "passed",
+      "observations": [
+        {
+          "baseline": true,
+          "random": 0.01,
+          "before": 4,
+          "after": 6,
+          "spawnedValue": 2,
+          "initialValues": [
+            2,
+            2
+          ],
+          "restartValues": [
+            2,
+            2
+          ]
+        },
+        {
+          "baseline": true,
+          "random": 0.95,
+          "before": 8,
+          "after": 12,
+          "spawnedValue": 4,
+          "initialValues": [
+            4,
+            4
+          ],
+          "restartValues": [
+            4,
+            4
+          ]
+        },
+        {
+          "baseline": false,
+          "random": 0.01,
+          "before": 16,
+          "after": 20,
+          "spawnedValue": 4,
+          "initialValues": [
+            4,
+            4,
+            4,
+            4
+          ],
+          "restartValues": [
+            4,
+            4,
+            4,
+            4
+          ]
+        },
+        {
+          "baseline": false,
+          "random": 0.95,
+          "before": 16,
+          "after": 20,
+          "spawnedValue": 4,
+          "initialValues": [
+            4,
+            4,
+            4,
+            4
+          ],
+          "restartValues": [
+            4,
+            4,
+            4,
+            4
+          ]
+        }
+      ],
+      "spawnRule": "guaranteed-four",
+      "initialTiles": 4,
+      "modifiedHashMatchesContent": true,
+      "filesPinned": true,
+      "patchMentionsFour": true
+    },
+    {
+      "step": "reopened immutable revision gameplay (independent measurement)",
+      "initialCount": 4,
+      "initialValues": [
+        4,
+        4,
+        4,
+        4
+      ],
+      "moveDraw001": {
+        "draw": 0.01,
+        "beforeCount": 4,
+        "beforeValues": [
+          4,
+          4,
+          4,
+          4
+        ],
+        "afterCount": 4,
+        "afterValues": [
+          4,
+          4,
+          4,
+          8
+        ],
+        "spawned": 4
+      }
+    },
+    {
+      "step": "fail-closed API checks",
+      "tamperedStatus": 422,
+      "tamperedBody": "{\"error\":\"Source validation, immutable storage or reopening failed. No existing saved revision was modified; keep this attempt and retry after inspecting the cause.\"}",
+      "foreignRevisionStatus": 404,
+      "foreignRevisionBody": "{\"error\":\"Saved source revision not found.\"}"
+    }
+  ],
+  "consoleErrors": [
+    "The Content Security Policy 'default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'' was delivered via a <meta> element outside the document's <head>, which is disallowed. The policy has been ignored.",
+    "The Content Security Policy 'default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'' was delivered via a <meta> element outside the document's <head>, which is disallowed. The policy has been ignored.",
+    "The Content Security Policy 'default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'' was delivered via a <meta> element outside the document's <head>, which is disallowed. The policy has been ignored."
+  ],
+  "pageErrors": [],
+  "httpErrors": [],
+  "requestFailures": [
+    {
+      "url": "/?_rsc=TBT7LTgpp6pacgCO",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/chat?_rsc=TBT7LTgpp6pacgCO",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/spaces?_rsc=TBT7LTgpp6pacgCO",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/spaces?_rsc=9C9ESiyfrHfl_Jce",
+      "failure": "net::ERR_ABORTED"
+    }
+  ],
+  "screenshots": [
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-59-502Z/arcade-01-acquired-modified.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-59-502Z/arcade-02-modified-preview.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-59-502Z/arcade-03-original-preview.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-59-502Z/arcade-04-saved.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-59-502Z/arcade-05-reopened.png"
+  ],
+  "browser": "153.0.8010.0",
+  "limitations": [
+    "raw.githubusercontent.com is blocked in this sandbox; a byte-faithful local mirror served the four files after verifying the app's own SHA-256 pins (documented as environment scaffolding).",
+    "The playable preview is Arena's canvas adapter over the upstream GameManager/Grid/Tile, not the official 2048 UI; board state is memory-only.",
+    "Controlled Math.random draws are verifier instrumentation; they prove the spawn-rule difference, not general game quality or arbitrary prompt-to-game capability.",
+    "No catalogue publication, no arbitrary patch ecosystem and no in-progress board persistence is claimed."
+  ],
+  "savedArtifact": {
+    "id": "6959caa5-bdbe-4d1f-b273-64d1007ef37f",
+    "title": "2048: guaranteed-four; 4 initial tiles",
+    "currentRevisionId": "c202ea54-e59b-4e66-b0cd-2a6d758382ac",
+    "createdAt": "2026-10-21T15:28:36.622Z"
+  },
+  "savedPackage": {
+    "status": 200,
+    "bytes": 26231,
+    "runtimeStatus": "passed",
+    "observations": [
+      {
+        "baseline": true,
+        "random": 0.01,
+        "before": 4,
+        "after": 6,
+        "spawnedValue": 2,
+        "initialValues": [
+          2,
+          2
+        ],
+        "restartValues": [
+          2,
+          2
+        ]
+      },
+      {
+        "baseline": true,
+        "random": 0.95,
+        "before": 8,
+        "after": 12,
+        "spawnedValue": 4,
+        "initialValues": [
+          4,
+          4
+        ],
+        "restartValues": [
+          4,
+          4
+        ]
+      },
+      {
+        "baseline": false,
+        "random": 0.01,
+        "before": 16,
+        "after": 20,
+        "spawnedValue": 4,
+        "initialValues": [
+          4,
+          4,
+          4,
+          4
+        ],
+        "restartValues": [
+          4,
+          4,
+          4,
+          4
+        ]
+      },
+      {
+        "baseline": false,
+        "random": 0.95,
+        "before": 16,
+        "after": 20,
+        "spawnedValue": 4,
+        "initialValues": [
+          4,
+          4,
+          4,
+          4
+        ],
+        "restartValues": [
+          4,
+          4,
+          4,
+          4
+        ]
+      }
+    ],
+    "spawnRule": "guaranteed-four",
+    "initialTiles": 4,
+    "modifiedHashMatchesContent": true,
+    "filesPinned": true,
+    "patchMentionsFour": true
+  }
+}

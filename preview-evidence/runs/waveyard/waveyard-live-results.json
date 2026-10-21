@@ -1,0 +1,1333 @@
+{
+  "kind": "waveyard-live-session",
+  "fixtureKind": "controlled-pcm-fixture",
+  "sessionId": "00f5616f-1aed-4c73-ae8f-4d442840aa11",
+  "steps": [
+    {
+      "step": "canonical mix visible",
+      "lanes": 4
+    },
+    {
+      "step": "baseline canonical mix (A sources) audible",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1299454413815992,
+            0.0005124563998166863
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07261604976128604,
+            0.00019799456021317013
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.11005835832178111,
+            0.000178794107310558
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16073391209158575,
+            0.0007319849441542854
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 10
+    },
+    {
+      "step": "source switch vocals → song 1 (repeat 1)",
+      "expected": {
+        "vocals": 1,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0007383739440157866,
+            0.1290102942306997
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07270778111009298,
+            0.000025298834856009266
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10955211528765077,
+            0.0004039703709378386
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16132936583068613,
+            0.00012878335699706458
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 13830
+    },
+    {
+      "step": "source switch vocals → song 0 (repeat 1)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1270824111979522,
+            0.000951682638023495
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07225064759442151,
+            0.000438802354766396
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.11006402212947579,
+            0.00017468115250375573
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16133279497277264,
+            0.00011749567213531637
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 108
+    },
+    {
+      "step": "source switch drums → song 1 (repeat 1)",
+      "expected": {
+        "vocals": 0,
+        "drums": 1,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1288608700736108,
+            0.0007123499521104267
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0001350558508837314,
+            0.07262595536518199
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10946328851648796,
+            0.0004314863077032015
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1605088773029047,
+            0.0008565150263666065
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 227
+    },
+    {
+      "step": "source switch drums → song 0 (repeat 1)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1270835991953719,
+            0.0009515671192430886
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07225126889040877,
+            0.0004385298257862993
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.11006132335312022,
+            0.00017664124492460906
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16132789495240688,
+            0.00013364402660097298
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 109
+    },
+    {
+      "step": "source switch bass → song 1 (repeat 1)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 1,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.12873295820486327,
+            0.0007323001974773043
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07269553563358618,
+            0.00007604136477565262
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.000510105520017445,
+            0.10957824195517099
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1604446527857423,
+            0.0008885310415369376
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 226
+    },
+    {
+      "step": "source switch bass → song 0 (repeat 1)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.12829110046762363,
+            0.0007970594897588443
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07263842135800586,
+            0.00017270973252398985
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10917169784970372,
+            0.0005112308647283781
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16085157683073298,
+            0.000658150322651477
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 110
+    },
+    {
+      "step": "source switch instruments → song 1 (repeat 1)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 1
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1286061726262179,
+            0.0007514201850700329
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07268385351434774,
+            0.00010351259721099696
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10930518479675726,
+            0.0004764276546484094
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0007342526512142936,
+            0.1607750732073076
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 219
+    },
+    {
+      "step": "source switch instruments → song 0 (repeat 1)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.12841187900937262,
+            0.0007799164050727843
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07265858667635831,
+            0.0001461270645335393
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10921227873786683,
+            0.0005009701048022517
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.160972683787318,
+            0.0005721195334244147
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 109
+    },
+    {
+      "step": "source switch vocals → song 1 (repeat 2)",
+      "expected": {
+        "vocals": 1,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0004277592067101642,
+            0.12917612374500093
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07260647272340306,
+            0.0002079667300191094
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.11006302038760121,
+            0.00017541719802909297
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1606890629122565,
+            0.0007573426512381086
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 109
+    },
+    {
+      "step": "source switch vocals → song 0 (repeat 2)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.12921898440099594,
+            0.000653328503407901
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07270563599217242,
+            0.00003953536129246099
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10971268734253348,
+            0.0003487624476699149
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16052355184623057,
+            0.0008468510902211127
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 112
+    },
+    {
+      "step": "source switch drums → song 1 (repeat 2)",
+      "expected": {
+        "vocals": 0,
+        "drums": 1,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1278673268218477,
+            0.0008545839674257458
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0004074979652922499,
+            0.07234949382410936
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10917463742186415,
+            0.0005105409354559743
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16046991316000997,
+            0.0008756811939281521
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 109
+    },
+    {
+      "step": "source switch drums → song 0 (repeat 2)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.12941306819411177,
+            0.0006188524573155471
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07269409266054809,
+            0.00008024696065913727
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10983995824319653,
+            0.00029779092755473683
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1612208491249444,
+            0.000333816501574977
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 109
+    },
+    {
+      "step": "source switch bass → song 1 (repeat 2)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 1,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1285029858270259,
+            0.0007666729499823989
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07267145738079599,
+            0.00012611521117781237
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0005072744138170739,
+            0.10957891272008258
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16105806942079623,
+            0.0005032798241020552
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 112
+    },
+    {
+      "step": "source switch bass → song 0 (repeat 2)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1274380385238429,
+            0.0009090362223132979
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0723997809160679,
+            0.0003605627857675222
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10948995152328822,
+            0.0004233887915015838
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16051745367756962,
+            0.0008521357636326196
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 108
+    },
+    {
+      "step": "source switch instruments → song 1 (repeat 2)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 1
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.13101457801722338,
+            0.00013677344134062575
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0722510059873895,
+            0.00043863784507510914
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10914412165629554,
+            0.0005181580806267269
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0001682834107410974,
+            0.16117138643014342
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 107
+    },
+    {
+      "step": "source switch instruments → song 0 (repeat 2)",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.13033344080248055,
+            0.00041763984112441646
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07251604266767085,
+            0.0002849460307598318
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10999792210894269,
+            0.00021831599971130748
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1604268451622339,
+            0.0008969291337769856
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 108
+    },
+    {
+      "step": "rapid source switching settles on the last selected source",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 1,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1289168004659817,
+            0.000703494614719481
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07270597108422927,
+            0.0000379211383181481
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.00045764214981967237,
+            0.10958967839388456
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16131409336040683,
+            0.00017215137330552427
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 109
+    },
+    {
+      "step": "rapid input",
+      "ok": true
+    },
+    {
+      "step": "restore bass to canonical A source",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.13024267961451969,
+            0.00044169451990919406
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07254270389188108,
+            0.000264542842750591
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1100344138942617,
+            0.00019545262798422605
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16047411080266896,
+            0.0008735423960895877
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 107
+    },
+    {
+      "step": "hold to isolate vocals (audio only)",
+      "isolatedAudibly": true,
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.12720521760370038,
+            0.0009371513287745552
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0,
+            0
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0,
+            0
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "step": "release restores the canonical mix",
+      "expected": {
+        "vocals": 0,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.12719170540033822,
+            0.0009387619246515489
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07229961175703595,
+            0.0004147714125770566
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10985339823267673,
+            0.00029184625875382475
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16097911589573535,
+            0.000568280964321136
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 111
+    },
+    {
+      "step": "stem selection save status",
+      "text": " · stem selections saved"
+    },
+    {
+      "step": "post-hold switch to B recorded and audible",
+      "expected": {
+        "vocals": 1,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0007548195753507168,
+            0.1289990292325126
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07230843133136394,
+            0.0004102834624890544
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1093904196788605,
+            0.00045270132203562436
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1609243436981826,
+            0.0006088403887253116
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 108
+    },
+    {
+      "step": "reload reopens the saved selection and plays it",
+      "expected": {
+        "vocals": 1,
+        "drums": 0,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0005123954512136178,
+            0.1291397724635189
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.07232587654947775,
+            0.0004012375041853019
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.10945958580545734,
+            0.000432545476046191
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.16082373492984756,
+            0.0006771421084962002
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 14133
+    },
+    {
+      "step": "failed save surfaces an error",
+      "errorShown": true,
+      "statusTimeline": [
+        {
+          "at": "2026-10-21T15:27:55.870Z",
+          "text": "· stem selections saved"
+        },
+        {
+          "at": "2026-10-21T15:27:56.874Z",
+          "text": "· stem selections error"
+        }
+      ],
+      "alerts": [
+        "HTTP 503: Injected acceptance failure at the save boundary Audio remains selected in this page; reload restores the last acknowledged selection.",
+        ""
+      ],
+      "dbUnchangedByFailedSave": true
+    },
+    {
+      "step": "failed save keeps the audible B selection in this page",
+      "expected": {
+        "vocals": 1,
+        "drums": 1,
+        "bass": 0,
+        "instruments": 0
+      },
+      "observation": {
+        "vocals": {
+          "song": 0,
+          "amplitudeAt": [
+            0.0001474474674359468,
+            0.1292498776063402
+          ]
+        },
+        "drums": {
+          "song": 0,
+          "amplitudeAt": [
+            0.00032447134347045797,
+            0.07246332202508621
+          ]
+        },
+        "bass": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1092625359887732,
+            0.00048781503647725606
+          ]
+        },
+        "instruments": {
+          "song": 0,
+          "amplitudeAt": [
+            0.1604043398675928,
+            0.0009079095240657374
+          ]
+        }
+      },
+      "audible": true,
+      "ms": 5
+    },
+    {
+      "step": "retry after failed save recovers",
+      "recovered": true,
+      "audibleUnchanged": true
+    },
+    {
+      "step": "failed donor preparation is surfaced, working mix retained",
+      "statusTexts": [
+        "restore point saved",
+        " · stem selections saved",
+        " · mix/settings saved",
+        "Donor audio could not be prepared (HTTP 404). The working mix was retained.",
+        "No audio output devices are currently reported by the system."
+      ],
+      "audibleInstruments": 0,
+      "dbUnchanged": true
+    }
+  ],
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ],
+  "pageErrors": [],
+  "requestFailures": [
+    {
+      "url": "/?_rsc=dddqdnjHUoviflyo",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/chat?_rsc=dddqdnjHUoviflyo",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/spaces?_rsc=dddqdnjHUoviflyo",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/473fde72-4360-4c07-9276-2db637e599c2",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/14b84fbb-1c27-4e2f-b07b-bf65f065e019",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/discover?_rsc=dddqdnjHUoviflyo",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/moderation?_rsc=dddqdnjHUoviflyo",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/?_rsc=6u5xkN_M9O9kzj-I",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/79a80a6d-7500-4f4e-87bf-ade9afb0db31",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/spaces?_rsc=6u5xkN_M9O9kzj-I",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/d581cc70-bad8-4c22-9221-84c2134b6458",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/spaces?_rsc=dddqdnjHUoviflyo",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/discover?_rsc=dddqdnjHUoviflyo",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/moderation?_rsc=dddqdnjHUoviflyo",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/?_rsc=6u5xkN_M9O9kzj-I",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/chat?_rsc=6u5xkN_M9O9kzj-I",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/spaces?_rsc=6u5xkN_M9O9kzj-I",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/discover?_rsc=6u5xkN_M9O9kzj-I",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/waveyard/moderation?_rsc=6u5xkN_M9O9kzj-I",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/e20cbf63-5a73-4cb1-8e20-2474fac90445",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/c32423c2-6992-4620-9322-c26a47f41888",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/353ab54d-cd09-4e0e-a417-50089049538d",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/4385da59-64dc-449e-aa9e-33883028914a",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/473fde72-4360-4c07-9276-2db637e599c2",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/14b84fbb-1c27-4e2f-b07b-bf65f065e019",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/79a80a6d-7500-4f4e-87bf-ade9afb0db31",
+      "failure": "net::ERR_ABORTED"
+    },
+    {
+      "url": "/api/assets/d581cc70-bad8-4c22-9221-84c2134b6458",
+      "failure": "net::ERR_ABORTED"
+    }
+  ],
+  "httpErrors": [
+    {
+      "status": 503,
+      "url": "/api/library/sessions/00f5616f-1aed-4c73-ae8f-4d442840aa11/swaps?sessionTrackId=14362a1e-692b-4506-b3b0-17a495a9fd76&stemType=drums",
+      "method": "POST"
+    },
+    {
+      "status": 404,
+      "url": "/api/assets/d581cc70-bad8-4c22-9221-84c2134b6458",
+      "method": "GET"
+    }
+  ],
+  "screenshots": [
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-17-324Z/01-session-loaded.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-17-324Z/02-playing.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-17-324Z/03-after-switches.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-17-324Z/04-hold-isolate.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-17-324Z/05-after-reload.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-17-324Z/06-save-failure.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-27-17-324Z/07-failed-preparation.png"
+  ],
+  "browser": "153.0.8010.0",
+  "limitations": [
+    "Controlled PCM sine stems inserted by acceptance scaffolding: not separation, not inference, not musical-quality evidence.",
+    "Bar snapping was not exercised: the fixture has no measured beat/downbeat data, so the UI must (and does) state bar snapping is unavailable.",
+    "Real-time audio is measured from analyser taps inside the page's real AudioContext; this is graph-level audibility, not a human listening test."
+  ],
+  "finalSessionState": {
+    "status": 200,
+    "currentSessionTrackId": "14362a1e-692b-4506-b3b0-17a495a9fd76",
+    "positionSeconds": 20.94084,
+    "swaps": [
+      {
+        "stemType": "vocals",
+        "toStemAssetId": "e20cbf63-5a73-4cb1-8e20-2474fac90445",
+        "atSeconds": 17.162449
+      },
+      {
+        "stemType": "drums",
+        "toStemAssetId": "c32423c2-6992-4620-9322-c26a47f41888",
+        "atSeconds": 17.461407
+      },
+      {
+        "stemType": "bass",
+        "toStemAssetId": "353ab54d-cd09-4e0e-a417-50089049538d",
+        "atSeconds": 18.72718
+      },
+      {
+        "stemType": "instruments",
+        "toStemAssetId": "4385da59-64dc-449e-aa9e-33883028914a",
+        "atSeconds": 18.062222
+      },
+      {
+        "stemType": "vocals",
+        "toStemAssetId": "473fde72-4360-4c07-9276-2db637e599c2",
+        "atSeconds": 20.06204
+      },
+      {
+        "stemType": "drums",
+        "toStemAssetId": "14b84fbb-1c27-4e2f-b07b-bf65f065e019",
+        "atSeconds": 21.430674
+      }
+    ]
+  },
+  "log": [
+    {
+      "at": "2026-10-21T15:27:18.322Z",
+      "step": "page",
+      "detail": "Session · Waveyard"
+    },
+    {
+      "at": "2026-10-21T15:27:20.082Z",
+      "step": "baseline canonical mix (A sources) audible",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:33.961Z",
+      "step": "source switch vocals → song 1 (repeat 1)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:34.121Z",
+      "step": "source switch vocals → song 0 (repeat 1)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:34.395Z",
+      "step": "source switch drums → song 1 (repeat 1)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:34.553Z",
+      "step": "source switch drums → song 0 (repeat 1)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:34.826Z",
+      "step": "source switch bass → song 1 (repeat 1)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:34.970Z",
+      "step": "source switch bass → song 0 (repeat 1)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:35.251Z",
+      "step": "source switch instruments → song 1 (repeat 1)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:35.404Z",
+      "step": "source switch instruments → song 0 (repeat 1)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:35.553Z",
+      "step": "source switch vocals → song 1 (repeat 2)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:35.705Z",
+      "step": "source switch vocals → song 0 (repeat 2)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:35.853Z",
+      "step": "source switch drums → song 1 (repeat 2)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:36.003Z",
+      "step": "source switch drums → song 0 (repeat 2)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:36.157Z",
+      "step": "source switch bass → song 1 (repeat 2)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:36.300Z",
+      "step": "source switch bass → song 0 (repeat 2)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:36.451Z",
+      "step": "source switch instruments → song 1 (repeat 2)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:36.604Z",
+      "step": "source switch instruments → song 0 (repeat 2)",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:37.121Z",
+      "step": "rapid source switching settles on the last selected source",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:37.267Z",
+      "step": "restore bass to canonical A source",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:37.652Z",
+      "step": "release restores the canonical mix",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:38.603Z",
+      "step": "post-hold switch to B recorded and audible",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:55.588Z",
+      "step": "reload reopens the saved selection and plays it",
+      "detail": "audible layout matches"
+    },
+    {
+      "at": "2026-10-21T15:27:56.995Z",
+      "step": "failed save keeps the audible B selection in this page",
+      "detail": "audible layout matches"
+    }
+  ]
+}

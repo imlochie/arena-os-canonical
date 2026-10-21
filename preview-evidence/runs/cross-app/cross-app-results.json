@@ -1,0 +1,118 @@
+{
+  "kind": "cross-application-navigation",
+  "pages": [
+    {
+      "route": "/",
+      "name": "01-home",
+      "status": 200,
+      "ms": 574,
+      "text": "⚔️ Arena free · private · yours ⚔️Arena 💬Chat 🧩Spaces ⚔️ Arena ▼ 🔓 Cloud 💾 Saved 🛡️ Your private AI arena. Zero cost. Full quality. Battle models blind, vote honestly, and keep everything — rankings, files, agents — on your machine. 🧭 What do you want to do? 🗺️ Browse all rooms Three execution levels — offline engine · on-device LLM · remote models — every answer says what actually ran. QUICK LAUNCH 💬 Chat Talk to the brain you pick 🧩 Spaces Agent fleets & missions 🧭 Command Not sure? Start here 🎚️ Waveyard Music studio — stems, remixes NEW 🎮 Arcade Forge any game NEW 🤝 Collab Models build one answer 🖼️ Image Generate pictures 📁 Projects Long-lived work 🔑 Optional free key bo",
+      "screenshot": "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/01-home.png"
+    },
+    {
+      "route": "/rooms",
+      "name": "02-rooms",
+      "status": 200,
+      "ms": 459,
+      "text": "⚔️ Arena free · private · yours ⚔️Arena 💬Chat 🧩Spaces 🗺️ All rooms ▼ 🔓 Cloud 💾 Saved 🛡️ ARENA ROOM INDEX A clear place to begin. Rooms are addresses into the tools already in Arena OS. Choose a surface, review where it leads, and decide when anything should move. Naming note: Spaces is one of these rooms — the agent workbench that runs fleets and missions in the background. 19 distinct rooms Transfers stay visible ROOM DIRECTORY Pick a working surface View handoffs THINK Assistant Design personal assistants and open a direct chat when you choose. EXISTING APP SURFACE Manage assistants ROUTE Orchestrator Choose an existing workflow for the work. Nothing launches automatically. EXISTING ",
+      "screenshot": "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/02-rooms.png"
+    },
+    {
+      "route": "/arcade",
+      "name": "03-arcade",
+      "status": 200,
+      "ms": 472,
+      "text": "⚔️ Arena free · private · yours ⚔️Arena 💬Chat 🧩Spaces 🎮 Arcade ▼ 🔓 Cloud 💾 Saved 🛡️ 🎮 Arcade Forge — templates and AI generation Full arcade games. Templates offline. Custom games with AI. Play Pac-Man, Space Invaders, Snake and the other listed templates offline. Custom games and gameplay revisions require a capable on-device or online model. Auto may use online generation; enable Local Mode to keep generation on your device. Source workshop · supported MIT 2048 adapter 🚫 WebGPU unavailable 🧠 AI not loaded ⚡ Cores: instant, always BRAIN ○ Local Engine (offline) 🧠 Connect a free brain (30s) Deterministic offline engine — instant, private, and honest, but it plans rather than reason",
+      "screenshot": "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/03-arcade.png"
+    },
+    {
+      "route": "/spaces",
+      "name": "04-spaces",
+      "status": 200,
+      "ms": 402,
+      "text": "⚔️ Arena free · private · yours ⚔️Arena 💬Chat 🧩Spaces 🧩 Spaces ▼ 🔓 Cloud 💾 Saved 🛡️ 🪟 Spaces · agents at work, in windows A workbench of persistent AI workspaces Give a mission an objective, configure its agents, and review actual tool results and deliverables. Recurring draft schedules and carry-forward notes remain available in the same space. 1 schedules enabled 1 space BRAIN ○ Local Engine (offline) 🧠 Connect a free brain (30s) Deterministic offline engine — instant, private, and honest, but it plans rather than reasons and cannot write arbitrary code. — connect a free model and agents can reason, write real code in mission workspaces, and act intelligently. ➕ New space AUDIENCE ",
+      "screenshot": "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/04-spaces.png"
+    },
+    {
+      "route": "/waveyard",
+      "name": "06-waveyard",
+      "status": 200,
+      "ms": 390,
+      "text": "⚔️ Arena free · private · yours ⚔️Arena 💬Chat 🧩Spaces 🎚️ Waveyard ▼ 🔓 Cloud 💾 Saved 🛡️ Waveyard STEM-AWARE MUSIC Music Sessions Studio Discover Moderation Import, review & convert music YOUR MUSIC, STEM-AWARE Listen first. Drop a song anywhere on this page and Waveyard separates it into stems — right here on your machine — then hands you the player. Add audio you own or are authorized to use; the studio is one click deeper. + ADD MUSIC MP3 · WAV · FLAC · M4A · AAC · OGG — local and private IMPORT Queue Nothing queued. Add tracks with + Queue. Library 4 tracks A Controlled song 1 Acceptance fixture ☆ ☆ ☆ ☆ ☆ + label 4 STEMS 1:30 Play + Queue Studio ↗ A Controlled song 0 Acceptance fixtu",
+      "screenshot": "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/06-waveyard.png"
+    },
+    {
+      "route": "/waveyard/session/00f5616f-1aed-4c73-ae8f-4d442840aa11",
+      "name": "07-waveyard-session",
+      "status": 200,
+      "ms": 388,
+      "text": "⚔️ Arena free · private · yours ⚔️Arena 💬Chat 🧩Spaces 🗺️ Rooms ▼ 🔓 Cloud 💾 Saved 🛡️ Waveyard STEM-AWARE MUSIC Music Sessions Studio Discover Moderation SESSION Product preview · live session 15:27:16 2 tracks · restore point saved · stem selections saved · mix/settings saved Play Stop Position Send to Studio All sessions Audio banks — exact saved assets Controlled song 0 bank Keep saved assets Original unseparated source controlled-pcm-fixture · vocals, drums, bass, instruments · 2026-10-21T15:27:15.963Z · dec4affc-4d32-440e-bbbd-8dca14733153 Review removal of saved swaps for Controlled song 0 Controlled song 1 bank Keep saved assets Original unseparated source controlled-pcm-fixture ·",
+      "screenshot": "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/07-waveyard-session.png"
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "badResponses": [],
+  "screenshots": [
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/01-home.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/02-rooms.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/03-arcade.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/04-spaces.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/06-waveyard.png",
+    "/home/user/preview-13638fe/.data/acceptance/product-preview/runs/2026-10-21T15-28-39-550Z/07-waveyard-session.png"
+  ],
+  "navLinks": [
+    {
+      "text": "⚔️Arena",
+      "href": "/"
+    },
+    {
+      "text": "💬Chat",
+      "href": "/chat"
+    },
+    {
+      "text": "🧩Spaces",
+      "href": "/spaces"
+    }
+  ],
+  "roomLinks": [
+    "/spaces",
+    "/rooms/archive-assistant",
+    "/waveyard"
+  ],
+  "arcade": {
+    "savedListVisible": true,
+    "reopenButtons": 5,
+    "showsSavedGame": true,
+    "showsTruthLabels": true
+  },
+  "spaces": {
+    "showsSpace": true,
+    "showsMissionState": true
+  },
+  "spaceDetail": {
+    "cardVisible": true,
+    "cardText": "Product preview space ● 39m Qwen2.5 7B (TurboAgent) · every 60m · 1 runs · last 20m ago {\"thought\":\"Scripted acceptance response for a diligent automation agent running one (turn 1); no model reasoning.\",\"actions\":[{\"tool\":\"write_file\",\"args\":{\"path\":\"acceptance/a-diligent-automation-agent-running-one-turn-1.md\",\"content\":\"# Scripted a diligent automation agent running one turn 1\\n\\nmodel=Qwen/Qwen2.5-7B-Instruct\\n\\nThis file was written by the mission tool executor from a scripted\\nOpenAI-compatible response, not by a language model.\\n\"}}],\"handoff\":\"\",\"done\":true} Objective → agents and tool",
+    "showsFleetModels": true,
+    "historyOptions": [
+      "Latest mission",
+      "Recovery check after the fleet outage was restored. · done",
+      "Mission while the fleet roster is unreadable. · done",
+      "Produce an acceptance note for the product preview and record the execution. · done"
+    ],
+    "outputDownloadLinks": 3
+  },
+  "waveyard": {
+    "loadsSession": true,
+    "lanes": 4,
+    "honestNoDevicesNotice": true
+  },
+  "waveyardSessions": {
+    "listsPreviews": true
+  },
+  "artifacts": {
+    "total": 14,
+    "arcadeSourcePatches": 5,
+    "missionOutputs": 9
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "kind": "spaces-ui-mission",
+  "modelRuntime": "SCRIPTED (deterministic OpenAI-compatible stub, not a language model)",
+  "steps": [
+    {
+      "step": "workbench loads with the configured space",
+      "ok": true
+    },
+    {
+      "step": "mission dispatched from the UI",
+      "goal": "UI-driven acceptance run 2026-10-21T15:30:12.878Z"
+    }
+  ],
+  "consoleErrors": [],
+  "httpErrors": [],
+  "failure": null,
+  "modelCallsBefore": 10,
+  "modelCallsAfter": 13,
+  "modelCallsThisMission": 3,
+  "ui": {
+    "missionDone": true,
+    "outputLinks": 3,
+    "showsModelProvenance": true,
+    "showsScriptedLabel": true,
+    "showsHostJailNotice": true,
+    "excerpt": "⚔️ Arena free · private · yours ⚔️Arena 💬Chat 🧩Spaces 🧩 Spaces ▼ 🔓 Cloud 💾 Saved 🛡️ 🪟 Spaces · agents at work, in windows A workbench of persistent AI workspaces Give a mission an objective, configure its agents, and review actual tool results and deliverables. Recurring draft schedules and carry-forward notes remain available in the same space. 1 schedules enabled 1 space BRAIN ○ Local Eng"
+  },
+  "latestMission": {
+    "id": "a3193ea8-40dc-417b-9ba0-8edb74a3ea1c",
+    "status": "done",
+    "goal": "UI-driven acceptance run 2026-10-21T15:30:12.878Z"
+  },
+  "pass": true
+}
