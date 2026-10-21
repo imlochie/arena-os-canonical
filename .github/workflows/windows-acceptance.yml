@@ -220,6 +220,15 @@ jobs:
           cp desktop-windows-acceptance-report.json "$EVIDENCE/staged-audit-report.json" 2>/dev/null || true
           rm -f desktop-windows-acceptance-report.json
 
+      - name: Hydrate the local Electron runtime
+        # electron 44 ships no npm install script (documented in
+        # docs/windows-acceptance.md): the binary is fetched lazily into
+        # node_modules/electron/dist, and electron-builder is configured to
+        # package THAT local copy (electronDist) rather than download its own.
+        # A clean `npm ci` therefore leaves dist absent and desktop:dist stops
+        # with "the local Electron distribution directory is missing".
+        run: node scripts/windows-step.mjs "hydrate electron" "$EVIDENCE/electron-hydrate.log" -- node node_modules/electron/install.js
+
       - name: Build the NSIS installer
         run: node scripts/windows-step.mjs "desktop:dist (NSIS)" "$EVIDENCE/desktop-dist.log" -- npm run desktop:dist
 
