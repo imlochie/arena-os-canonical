@@ -17,8 +17,9 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
-    branches: [main, "arena/**"]
+    branches: [main, "arena/**", product/arcade-rule-save-reopen]
   pull_request:
     branches: [main]
 
