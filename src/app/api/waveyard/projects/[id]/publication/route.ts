@@ -81,6 +81,7 @@ async function completedExports(projectId: string) {
       and(
         eq(exportAssets.projectId, projectId),
         eq(exportJobs.status, "complete"),
+        eq(exportAssets.format, "wav"),
       ),
     );
 }
@@ -161,6 +162,7 @@ export async function PUT(
           id: exportAssets.id,
           projectId: exportAssets.projectId,
           status: exportJobs.status,
+          format: exportAssets.format,
           storageKey: exportAssets.storageKey,
           checksumSha256: exportAssets.checksumSha256,
           fileSizeBytes: exportAssets.fileSizeBytes,
@@ -184,6 +186,8 @@ export async function PUT(
           { error: "The selected export has not completed rendering.", code: "published_export_not_complete" },
           { status: 422 },
         );
+      if (candidate.format !== "wav")
+        return NextResponse.json({ error: "Select a completed WAV audio render. MIDI exports remain available privately; they are not playable public audio.", code: "published_export_not_audio" }, { status: 422 });
       // A completed row is not proof of a retrievable, intact release. Refuse
       // before the publication/audit transaction; do not delete or rewrite assets.
       await verifyStoredFile(getStorage(), candidate);

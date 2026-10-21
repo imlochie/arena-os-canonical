@@ -18,6 +18,8 @@ export async function GET(
     const wantsDownload = new URL(request.url).searchParams.get("download") === "1";
     if (wantsDownload && project.downloadPermission !== "public")
       return NextResponse.json({ error: "Public download is not enabled for this release." }, { status: 403 });
+    if (asset.format !== "wav")
+      return NextResponse.json({ error: "This release is not a playable WAV render. The owner must select a completed audio export.", code: "release_not_playable" }, { status: 409 });
     const range = parseByteRange(request.headers.get("range"), asset.fileSizeBytes);
     if (range === "invalid")
       return new Response(null, {

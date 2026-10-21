@@ -66,3 +66,22 @@ The actual before/after runs use identical valid one-second owned WAV bytes.
 Verification is at request preflight, not a claim of transactional locking against
 an external privileged writer mutating storage after verification. This change
 does not add content-hash caches or bypass existing private-export checks.
+
+## P1: MIDI was offered/published as a playable public WAV
+
+PublicationPanel explicitly promises a completed WAV picker and public audio
+playback. Its backend picker returned every export format. A completed MIDI
+passed publication validation and was served with Content-Type audio/wav, causing
+an unusable public player while replacing the previous valid release.
+`midi-publication-before.tap`: all three new leaf assertions fail (12 other
+assertions pass, 5 failures including containers). Actual valid MIDI bytes,
+checksum and metadata are used, not merely a renamed WAV.
+
+Fix filters the completed-WAV picker and validates format on publish; rejected
+MIDI cannot mutate the previous release. Legacy public MIDI references receive
+409/release_not_playable with an actionable owner instruction instead of bogus
+WAV bytes. Private MIDI export playback/download paths remain unchanged. The
+regression confirms exact private bytes and audio/midi type remain retrievable.
+Combined range/publication/export regressions: 71 pass/0 fail in
+`midi-publication-after.tap`. Typecheck/focused ESLint pass. No MIDI analysis,
+rendering or Waveyard preparation/PCM ownership code changed.

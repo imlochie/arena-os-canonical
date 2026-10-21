@@ -64,4 +64,33 @@ test("public publication and playback never certify absent, changed or unreadabl
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), media);
     assert.deepEqual(await readFile(storage.getLocalPath(key)!), media);
   });
+  await t.test("MIDI remains a private usable artifact, never a falsely playable public WAV", async t => {
+    const midi = Buffer.from("4d546864000000060000000100604d54726b0000000400ff2f00", "hex");
+    const filename = join(root, "score.mid"); await writeFile(filename, midi);
+    const [midiJob] = await db.insert(schema.exportJobs).values({ projectId: project.id, remixSessionId: session.id, remixVersionId: version.id, requestedById: LOCAL_OWNER_ID, format: "midi", status: "complete", stage: "complete", idempotencyKey: randomUUID() }).returning();
+    const midiKey = `projects/${project.id}/export/${randomUUID()}.mid`; await storage.putFile(midiKey, filename);
+    const [score] = await db.insert(schema.exportAssets).values({ projectId: project.id, exportJobId: midiJob.id, remixVersionId: version.id, storageKey: midiKey, filename: "score.mid", checksumSha256: createHash("sha256").update(midi).digest("hex"), durationSeconds: 0, sampleRate: 44100, channels: 2, codec: "midi", format: "midi", fileSizeBytes: midi.length }).returning();
+    await t.test("completed WAV picker excludes MIDI", async () => {
+      const response = await publication.GET(new Request("http://arena/publication"), params);
+      assert.equal(response.status, 200); const body = await response.json();
+      assert.ok(body.exports.some((row: { id: string }) => row.id === asset.id));
+      assert.ok(!body.exports.some((row: { id: string }) => row.id === score.id));
+    });
+    await t.test("publishing MIDI fails without replacing the previous playable release", async () => {
+      const before = (await db.select().from(schema.projects).where(eq(schema.projects.id, project.id)))[0];
+      const response = await publication.PUT(new Request("http://arena/publication", { method: "PUT", body: JSON.stringify({ visibility: "public", rightsAcknowledged: true, licenseCode: "all-rights-reserved", publishedExportAssetId: score.id }) }), params);
+      assert.equal(response.status, 422);
+      assert.deepEqual((await db.select().from(schema.projects).where(eq(schema.projects.id, project.id)))[0], before);
+    });
+    await t.test("legacy public MIDI references do not masquerade as audio/wav", async () => {
+      await db.update(schema.projects).set({ publishedExportAssetId: score.id }).where(eq(schema.projects.id, project.id));
+      const response = await play(); await response.arrayBuffer(); assert.equal(response.status, 409);
+    });
+    const privateMedia = await import("../../app/api/exports/[id]/media/route");
+    const response = await privateMedia.GET(new Request("http://arena/private-export"), { params: Promise.resolve({ id: midiJob.id }) });
+    assert.equal(response.status, 200); assert.equal(response.headers.get("content-type"), "audio/midi");
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), midi);
+    assert.deepEqual(await readFile(storage.getLocalPath(midiKey)!), midi);
+  });
+
 });
