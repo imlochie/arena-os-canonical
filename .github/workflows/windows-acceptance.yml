@@ -206,7 +206,10 @@ jobs:
         timeout-minutes: 200
         run: |
           set -euo pipefail
-          ARENA_TEST_TIMEOUT_MS=180000 node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 10800000 -- npm test
+          # 60 minutes, not three hours: the suite's own receipts say 17-22
+          # minutes on this runner, so an hour is three runs' worth of headroom
+          # and a repeat of the no-sentinel wait costs one hour, not three.
+          ARENA_TEST_TIMEOUT_MS=180000 node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 3600000 -- npm test
 
       - name: Suite counts and failing identities
         if: always()
@@ -214,13 +217,14 @@ jobs:
           set -euo pipefail
           grep -hE "^# (tests|pass|fail|cancelled|skipped)" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/suite-counts.txt" || true
           grep -hE "^not ok" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/failing-tests.txt" | head -40 || true
-          # A name without a reason cannot be acted on. The TAP failure block
-          # carries `code:` and `error:` — publish the first few verbatim.
-          grep -hE "^\s+(error|code|failureType):" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/failing-reasons.txt" | head -40 || true
+          # A name without a reason cannot be acted on. A TAP failure block
+          # prints `error: |-` and puts the message on the following lines, so
+          # take the error line AND its indented body, then collapse it.
+          awk '/^[[:space:]]+error: /{print; for (i = 0; i < 3; i++) { if (getline <= 0) break; print } }' "$EVIDENCE/source-suite.log" 2>/dev/null | tr '\n' ' ' | tr -s ' ' > "$EVIDENCE/failing-reasons.txt" || true
           # GitHub keeps only the first 10 annotations of a step, so this spends
-          # them deliberately: 5 identities, 3 reasons, 1 counts line (joined).
-          while IFS= read -r line; do echo "::error title=Windows suite failure::$line"; done < <(head -5 "$EVIDENCE/failing-tests.txt" 2>/dev/null || true)
-          while IFS= read -r line; do echo "::error title=Windows suite reason::$line"; done < <(head -3 "$EVIDENCE/failing-reasons.txt" 2>/dev/null || true)
+          # them deliberately: 6 identities, 1 reasons digest, 1 counts line.
+          while IFS= read -r line; do echo "::error title=Windows suite failure::$line"; done < <(head -6 "$EVIDENCE/failing-tests.txt" 2>/dev/null || true)
+          if [ -s "$EVIDENCE/failing-reasons.txt" ]; then echo "::error title=Windows suite reasons::$(cut -c1-1400 "$EVIDENCE/failing-reasons.txt")"; fi
           counts=$(paste -sd' ' "$EVIDENCE/suite-counts.txt" 2>/dev/null || true)
           if [ -n "${counts:-}" ]; then echo "::warning title=Windows suite counts::$counts"; fi
 
