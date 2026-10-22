@@ -164,24 +164,60 @@ worked around by weakening a check.
 7. **`desktop:dist` failed: local Electron distribution missing.** electron 44
    hydrates lazily (documented in `docs/windows-acceptance.md`); the workflow
    now runs `node node_modules/electron/install.js` first.
-8. **The de-elevated test process does not exit** (open, narrowed). A bounded
-   diagnostic run (`desktop-diagnostics` job, run 39659983653) produced:
-   `# tests 168 · # pass 168 · # fail 0 · # cancelled 0 · # duration_ms 429905`
-   and then no completion sentinel — the TAP summary is complete, so every test
-   passed, but the process (and therefore `npm`) never returned. The elevated
-   control in the same job finished in 473 s with the three real-cluster tests
-   failing and one cancelled, as expected under an administrator token.
+8. **"The de-elevated test process does not exit" — our wrapper, not the
+   product.** For three runs the desktop step reported the complete TAP summary
+   (`# pass 168 · # fail 0 · # duration_ms 427262`) and then no completion
+   sentinel, so the step was recorded as BLOCKED. The true cause was in
+   `scripts/windows-deelevated-step.mjs`: it writes a `.bat` whose last lines
+   record `%ERRORLEVEL%` into a sentinel file, and the command it launched was
+   `npm.cmd`. **A `.bat` that invokes another `.bat`/`.cmd` without `call`
+   transfers control instead of returning**, so those last lines never ran and
+   the wrapper polled out its whole bound. The receipts prove it: the suite
+   printed `durationMs=1132214 exit=1` and the step still waited a full hour.
+   Two independent controls agree — the same desktop command launched as `node`
+   always wrote its sentinel, and the elevated control (which never used this
+   wrapper) always finished. The wrapper now emits `call <cmd>` for batch
+   programs. Nothing in the product ever hung; the handle reporter and
+   `--test-force-exit` were chasing this defect.
 
-   So the Windows test *content* is green when the token is right; what breaks
-   is process teardown. The three real-cluster tests boot an embedded
-   PostgreSQL cluster, so the most likely lingering handle is the postmaster (or
-   a worker child) that survives `pg_ctl stop` under a restricted token. Not yet
-   proven: the job log is served from a host this environment cannot reach, and
-   the run only carries annotations. Next step is to capture the surviving
-   child PIDs at the end of the run and kill/verify them explicitly
-   (`desktop/runtime/embedded-postgres.ts` `stop()` path, and the
-   `processCleanup` assertions already used by the installed acceptance, which
-   does pass).
+   The probe this detour produced is kept: it is how the real cost of the two
+   deep-separation files became visible (227 s for `separation.test.ts`, not the
+   100 s the first bound allowed).
+9. **Six crash-recovery tests asserted a POSIX signal.** Windows has no
+   signals: `process.kill(pid, "SIGKILL")` is `TerminateProcess`, so the parent
+   observes `signal: null` plus a non-zero status and
+   `assert.equal(child.signal, "SIGKILL")` failed for a reason unrelated to
+   recovery. `tests/helpers/platform-exit.ts` keeps the intent — abrupt death,
+   never one of the fixture's deliberate 0/73/74 exits — on both platforms.
+   This was the whole content of suite failures 512/513/514 at `2eab64c`.
+10. **Host-command cancellation and timeouts killed only the direct child.**
+    `runCommandProcess` used `child.kill("SIGKILL")` on Windows without a
+    process group, so a shell's descendants survived, held the inherited pipes
+    open and `close` never fired: cancelling a command hung instead of
+    resolving with 130/124. The Windows path now runs
+    `taskkill /pid <pid> /T /F`. Suite failures "cancelling a running host
+    command kills its process group…" and "a real timed-out command retains its
+    committed effect…" disappeared from the next run (8 fail → 5 fail).
+11. **Grant validation compared a resolved scope with an unresolved path.**
+    `validateGrant` compared the stored `canonicalScope` (produced by
+    `realpath`) against `grant.root` as supplied. On Windows a temp path
+    arrives in 8.3 form (`C:\Users\RUNNER~1\…`) while `realpath` returns
+    `C:\Users\runneradmin\…`, so every persisted approval and apply rejected
+    a valid grant with `TOOL_GRANT_INVALID` — all three `toolEffectService`
+    tests. The grant is now canonicalised exactly as the proposal was.
+12. **Arcade publication tests had no browser.** They refuse to publish without
+    real browser verification (`503 Browser verification unavailable`). Ubuntu
+    CI installs Chromium; the Windows jobs did not, so the failure looked like
+    a portability defect. They now `npx playwright install chromium`.
+13. **Test PostgreSQL fixtures hand-wrote `windowsPathDirs: []`.** The product
+    resolver puts the package's `bin`/`lib` on `PATH` so the DLLs load; the
+    fixtures bypassed it and failed on Windows for a reason the product does not
+    have. Both fixtures and the mission helper now derive the value from
+    `desktop/runtime/config.ts`.
+14. **Per-test bounds were set below the work they bounded.** 120 s cut
+    `separation.test.ts` (16 tests, 227 s on Linux) and 180 s cut the ONNX
+    inference tests on a 2-core runner. Bounds are now 600 s (desktop gate) and
+    300 s (full suite), still short enough to turn a hang into a named failure.
 
 ## 6. What the Windows run actually proves
 
