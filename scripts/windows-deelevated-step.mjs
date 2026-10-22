@@ -139,6 +139,13 @@ if (status !== "0") {
   console.log(`::error title=${label}::de-elevated exit ${status} — ${lines.slice(0, 900) || "no failing test line and no error line in the log"}`);
   process.exit(Number(status) || 1);
 }
-const firstLines = output.split(/\r?\n/).slice(0, 3).join(" | ").slice(0, 400);
-console.log(`[deelevated] ${label}: PASS`);
-console.log(`::warning title=${label} verified::de-elevated exit 0 :: ${firstLines}`);
+// "Exit 0" alone does not say what ran. Carry the counts, so a green gate
+// cannot hide a file that silently ran nothing.
+const passCounts = output.split(/\r?\n/)
+  .filter((line) => /^(#|ℹ) (tests|pass|fail|cancelled|skipped) \d+/.test(line.trim()))
+  .map((line) => line.trim())
+  .slice(-8)
+  .join(" ");
+const firstLines = output.split(/\r?\n/).slice(0, 2).join(" | ").slice(0, 200);
+console.log(`[deelevated] ${label}: PASS ${passCounts}`);
+console.log(`::warning title=${label} verified::de-elevated exit 0 — ${passCounts || firstLines}`);

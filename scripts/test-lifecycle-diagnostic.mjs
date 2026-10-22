@@ -106,7 +106,14 @@ for (const file of files) {
       .filter((line) => /^\s*✖\s/.test(line) || /^not ok \d+/.test(line))
       .map((line) => line.replace(/^\s*✖\s*/, "").replace(/^not ok \d+ - /, "").trim())
       .slice(0, 6);
-    console.log(`::warning title=lifecycle ${outcome}::${file} — ${names.length ? names.join(" | ") : entry.tail}`);
+    // A name without a reason cannot be acted on: carry the assertion/crash
+    // line that the reporter printed next to it.
+    const reasons = output.split(/\r?\n/)
+      .filter((line) => /^\s*(error|code|failureType):/.test(line) || /ERR_TEST_FAILURE|Error:|timed out after/.test(line))
+      .map((line) => line.trim())
+      .slice(0, 3);
+    const detail = [...names, ...reasons].join(" | ") || entry.tail;
+    console.log(`::warning title=lifecycle ${outcome}::${file} — ${detail.slice(0, 700)}`);
   }
 }
 
