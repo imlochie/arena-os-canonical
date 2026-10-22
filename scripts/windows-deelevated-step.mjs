@@ -47,7 +47,14 @@ const bat = path.join(workDir, `deelevated-${label.replace(/[^a-z0-9]+/gi, "-").
 rmSync(log, { force: true });
 rmSync(statusFile, { force: true });
 
-const commandLine = [program, ...programArgs].map((part) => (/[\s"]/u.test(part) ? `"${part.replaceAll('"', '""')}"` : part)).join(" ");
+const quoted = [program, ...programArgs].map((part) => (/[\s"]/u.test(part) ? `"${part.replaceAll('"', '""')}"` : part)).join(" ");
+// A .bat/.cmd invoked from another .bat without `call` REPLACES the caller:
+// control never returns, so the sentinel below is never written and the step
+// waits out its whole bound. That is exactly how `npm run test:desktop` (via
+// npm.cmd) "never exited" for three runs while the same command launched as
+// node did. `call` returns control.
+const invokesBatch = /\.(cmd|bat)$/i.test(program);
+const commandLine = invokesBatch ? `call ${quoted}` : quoted;
 writeFileSync(
   bat,
   [
@@ -55,6 +62,7 @@ writeFileSync(
     "setlocal",
     `cd /d "${process.cwd()}"`,
     `set "PATH=${nodeDir};%PATH%"`,
+    // Belt and braces: a batch program must never appear first on the line.
     `${commandLine} > "${log}" 2>&1`,
     // %ERRORLEVEL% is unset in a fresh cmd.exe (it expanded to nothing, so the
     // sentinel read "ECHO is off."). Capture it explicitly instead.
