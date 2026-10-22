@@ -4,6 +4,7 @@ import { readStudioExportBundle } from "../../scripts/lib/studio-export-bundle.m
 // download. The input is deliberately synthetic PCM, not model/inference proof.
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
+import { assertActuallyKilled } from "../helpers/platform-exit.ts";
 import { createServer } from "node:http";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1278,7 +1279,7 @@ test("Gate D genuine executor death and fresh restart preserve trained banks", {
           await new Promise(resolve => setTimeout(resolve, 20));
         }
         if (cancel) await api(`/api/jobs/${job.id}/cancel`, "POST");
-        assert.equal(running.worker.kill("SIGKILL"), true); const [, signal] = await running.exit; assert.equal(signal, "SIGKILL", "executor must actually be killed, not merely finish");
+        assert.equal(running.worker.kill("SIGKILL"), true); const [killedCode, killedSignal] = await running.exit; assertActuallyKilled(assert, { signal: killedSignal, status: killedCode }, "executor must actually be killed, not merely finish");
         const [interrupted] = await database.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.id, job.id));
         const execution = JSON.parse(interrupted.metadata).execution; assert.ok(execution.child);
         const stopped = Date.now() + 5000;

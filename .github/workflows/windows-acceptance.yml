@@ -121,6 +121,13 @@ jobs:
       - name: Windows platform packages present
         run: node scripts/windows-step.mjs "Windows platform packages" "$EVIDENCE/platform-packages.log" -- node scripts/windows-platform-check.mjs
 
+      - name: Browser for real Arcade publication verification
+        # The Arcade security and publication tests refuse to publish without a
+        # real browser (503 "Browser verification unavailable"). Ubuntu CI
+        # installs Chromium; the Windows jobs must too, or those tests fail for
+        # a reason that has nothing to do with the product.
+        run: npx playwright install chromium
+
       - name: Typecheck
         run: node scripts/windows-step.mjs "typecheck" "$EVIDENCE/typecheck.log" -- npm run typecheck
 
@@ -132,7 +139,10 @@ jobs:
         timeout-minutes: 60
         run: |
           set -euo pipefail
-          node scripts/windows-deelevated-step.mjs "desktop contract tests" "$EVIDENCE/desktop-tests.log" 2400000 -- npm run test:desktop
+          # No --test-force-exit: the run must exit on its own. The handle
+          # reporter prints what is still referenced after the summary, so a
+          # hang names its cause instead of just reporting "no exit".
+          node scripts/windows-deelevated-step.mjs "desktop contract tests" "$EVIDENCE/desktop-tests.log" 2400000 -- node --import ./scripts/register-src-loader.mjs --test --test-timeout=120000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-handle-reporter.mjs --test-reporter-destination=stderr "desktop/**/*.test.ts" "src/lib/waveyard/worker-local/*.test.ts"
 
       - name: Gate summary
         if: always()
@@ -185,11 +195,14 @@ jobs:
       - name: Clean dependency install
         run: node scripts/windows-step.mjs "npm ci (suite job)" "$EVIDENCE/npm-ci.log" -- npm ci
 
+      - name: Browser for real Arcade publication verification
+        run: npx playwright install chromium
+
       - name: Full source suite on Windows
         timeout-minutes: 200
         run: |
           set -euo pipefail
-          node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 10800000 -- npm test
+          ARENA_TEST_TIMEOUT_MS=180000 node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 10800000 -- npm test
 
       - name: Suite counts and failing identities
         if: always()
@@ -238,9 +251,15 @@ jobs:
           set -euo pipefail
           node scripts/windows-deelevated-step.mjs "desktop tests diagnostic" "$EVIDENCE/desktop-diagnostic.log" 900000 -- npm run test:desktop
 
-      - name: Behaviour under an elevated token, same bound (diagnostic only)
+      - name: Per-file lifecycle diagnostic — which file does not exit
+        # Names the file that keeps the process alive. `no-exit` means its tests
+        # all reported and the process then stayed up; `timeout` means its tests
+        # did not finish. Neither can be inferred from a single hanging glob.
+        if: always()
         continue-on-error: true
-        run: node scripts/windows-step.mjs "desktop tests elevated" "$EVIDENCE/desktop-elevated.log" -- npm run test:desktop
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 3000000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 150000
 
       - name: Upload diagnostics
         if: always()

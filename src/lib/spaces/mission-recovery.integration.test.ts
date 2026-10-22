@@ -11,6 +11,7 @@ import { ensureWorkspace } from "./tools";
 import { getLatestMission, runMission, reconcileMission, cancelMission, MissionBusyError } from "./mission";
 import { eq } from "drizzle-orm";
 import { missionPostgres } from "../../../tests/helpers/mission-postgres";
+import { assertActuallyKilled } from "../../../tests/helpers/platform-exit";
 let f: Awaited<ReturnType<typeof missionPostgres>>;
 before(async () => { f = await missionPostgres(); });
 after(async () => { await f?.close(); });
@@ -212,7 +213,7 @@ async function setup(t: import("node:test").TestContext) {
 }
 function crash(id: string, boundary: string, actions = [increment] as unknown[], n = 1) {
   const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: boundary, RECOVERY_ACTIONS: JSON.stringify(actions), RECOVERY_BOUNDARY_N: String(n) }, encoding: "utf8", timeout: 15000 });
-  assert.equal(child.signal, "SIGKILL", `runtime must actually be killed at ${boundary}: ${child.stderr}`);
+  assertActuallyKilled(assert, child, `runtime killed at ${boundary}`);
 }
 const expired = () => new Promise((resolve) => setTimeout(resolve, 250));
 for (const boundary of ["created", "model_requested", "model_recorded", "action_recorded", "turn_recorded", "before_completed"]) {

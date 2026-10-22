@@ -19,7 +19,17 @@ test("offline preparation repairs already-installed packages even when tsc exist
   for (let i = 0; i < 2; i++) {
     assert.equal(prepareInstalledNativeTools(root, { platform: "linux", arch: "x64" }).length, 3);
     assert.ok(existsSync(path.join(pg, "hydrated")));
-    assert.equal(statSync(path.join(root, "node_modules/@ffprobe-installer/linux-x64/ffprobe")).mode & 0o777, 0o740);
+    const probe = path.join(root, "node_modules/@ffprobe-installer/linux-x64/ffprobe");
+    if (process.platform === "win32") {
+      // Windows has no POSIX mode bits: chmod only toggles the read-only
+      // attribute, so asserting 0o740 there would test the OS, not the code.
+      // Keep the meaningful part of the contract — the binary still exists,
+      // is readable, and was not emptied by the chmod — and state the gap.
+      assert.equal(statSync(probe).size, "installed fixture".length, "chmod must not truncate the binary");
+      assert.ok((statSync(probe).mode & 0o400) !== 0, "binary must stay readable after the executable-bit pass");
+    } else {
+      assert.equal(statSync(probe).mode & 0o777, 0o740);
+    }
   }
 });
 test("missing packages are not installed or invented", () => {

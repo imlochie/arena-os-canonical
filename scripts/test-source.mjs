@@ -43,7 +43,12 @@ try {
   console.error(`[source-suite] head=${head} sourceDigest=${identity.sourceDigest}; fresh PostgreSQL with canonical migrations; serial test files`);
   await checkpoint({ phase: 'testing', database: 'owned embedded PostgreSQL; canonical desktop migrations' });
   tap = createWriteStream(tapPath);
-  child = spawn(process.execPath, ['--import', './scripts/register-src-loader.mjs', '--test', '--test-concurrency=1', 'src/**/*.test.ts', 'desktop/**/*.test.ts', 'scripts/lib/*.test.mjs'], {
+  // A test that blocks forever must become a recorded failure, not a stalled
+  // job. The bound is per test and generous (3 minutes); it is not a way to
+  // hide slow work — every affected test is named in the TAP output.
+  const testTimeout = process.env.ARENA_TEST_TIMEOUT_MS;
+  const timeoutArgs = testTimeout ? [`--test-timeout=${testTimeout}`] : [];
+  child = spawn(process.execPath, ['--import', './scripts/register-src-loader.mjs', '--test', '--test-concurrency=1', ...timeoutArgs, 'src/**/*.test.ts', 'desktop/**/*.test.ts', 'scripts/lib/*.test.mjs'], {
     stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DATABASE_URL: pg.url },
   });
   child.stdout.pipe(process.stdout, { end: false });

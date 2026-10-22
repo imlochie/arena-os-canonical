@@ -13,6 +13,7 @@
 
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
+import { assertActuallyKilled } from "../../../../tests/helpers/platform-exit";
 import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1352,7 +1353,7 @@ test("restore point survives a lost PUT acknowledgement, explicit latest retry a
     process.kill(process.pid, 'SIGKILL');
   `;
   const killed = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });
-  assert.equal(killed.signal, "SIGKILL", killed.stderr);
+  assertActuallyKilled(assert, killed, "session save process");
   assert.equal(JSON.parse(killed.stdout.trim()).acknowledged, true);
   const reopen = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { console.log(JSON.stringify(await getSession('${OWNER}', '${created.id}'))); } finally { await pool.end(); }`;
   const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", reopen], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });

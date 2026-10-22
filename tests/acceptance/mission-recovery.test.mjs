@@ -3,6 +3,7 @@
 // Controlled model response is only setup: this is NOT reasoning acceptance.
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
+import { assertActuallyKilled } from "../helpers/platform-exit.ts";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -52,7 +53,7 @@ async function interrupted(boundary, lease = 200) {
   await writeFile(path.join(root, "increment.cjs"), "const fs=require('node:fs');const n=Number(fs.existsSync('count')?fs.readFileSync('count','utf8'):0);fs.writeFileSync('count',String(n+1));console.log('actual effect count',n+1);");
   const actions = [{ tool: "run_command", args: { command: "node increment.cjs" } }, { tool: "write_file", args: { path: "report.json", content: '{"retained":true}\n' } }];
   const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: boundary, RECOVERY_ACTIONS: JSON.stringify(actions), RECOVERY_LEASE_MS: String(lease) }, encoding: "utf8", timeout: 15000 });
-  assert.equal(child.signal, "SIGKILL", child.stderr);
+  assertActuallyKilled(assert, child, "crash fixture");
   return { id, root };
 }
 test("review in the real panel → actual HTTP/SQL audit → explicit resume → useful retained file, without duplicated command", async (t) => {
@@ -141,7 +142,7 @@ test("mission panel retrieves immutable outputs after SQL restart and later edit
 test("SIGKILL after immutable output capture before mission advancement recovers one original revision without rewriting the file", async () => {
   const id = randomUUID(); await f.database.insert(schema.spaces).values({ id, prompt: "Durable output interruption" }); const root = await tools.ensureWorkspace(id); roots.push(root);
   const content = "Original captured deliverable before interruption\n";
-  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: "output_captured", RECOVERY_ACTIONS: JSON.stringify([{ tool: "write_file", args: { path: "interrupted.txt", content } }]), RECOVERY_LEASE_MS: "200" }, encoding: "utf8", timeout: 15000 }); assert.equal(child.signal, "SIGKILL", child.stderr);
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: "output_captured", RECOVERY_ACTIONS: JSON.stringify([{ tool: "write_file", args: { path: "interrupted.txt", content } }]), RECOVERY_LEASE_MS: "200" }, encoding: "utf8", timeout: 15000 }); assertActuallyKilled(assert, child, "crash fixture at output_captured");
   const { artifacts, artifactRevisions } = await import("../../src/db/schema.ts"); const { eq } = await import("drizzle-orm");
   const interrupted = await runtime.getLatestMission(id); assert.equal(interrupted.artifacts.length, 0); assert.equal(interrupted.journal[0].requestedActions[0].state, "executing");
   const [captured] = await f.database.select().from(artifacts).where(eq(artifacts.sourceId, interrupted.id)); assert.ok(captured);
