@@ -182,7 +182,9 @@ test("shorts: real captioned MP4 through ffmpeg (burned-in subtitles)", async ()
   try {
     const srt = buildSrt(segmentsFromText("Hello from the burned-in caption test. Second line follows here."));
     const result = await renderCaptionedShort(await readFile(wav), srt);
-    assert.ok(result.ok, `render failed: result.ok === false`);
+    // Carry the tool's own reason: "ok === false" says nothing about whether
+    // this is a missing filter, a codec, or a path problem on this platform.
+    assert.ok(result.ok, `render failed: ${result.ok ? "" : result.reason}`);
     if (result.ok) {
       assert.ok(result.buffer.byteLength > 20_000, `mp4 suspiciously small: ${result.buffer.byteLength}`);
       // Real MP4: ftyp box magic near the start.
