@@ -209,11 +209,12 @@ jobs:
           # 60 minutes, not three hours: the suite's own receipts say 17-22
           # minutes on this runner, so an hour is three runs' worth of headroom
           # and a repeat of the no-sentinel wait costs one hour, not three.
-          # 5 minutes per test, not 3: the ONNX inference tests take 10-32 s on
-          # Linux and the Windows runner is slower and has fewer cores, so 180 s
-          # was cutting real work (two tests timed out at the bound). A hang is
-          # still caught — just five minutes later.
-          ARENA_TEST_TIMEOUT_MS=300000 node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 3600000 -- npm test
+          # 10 minutes per test: the desktop gate already runs
+          # separation.test.ts (16 tests, 227 s on a fast Linux box) inside a
+          # 600 s budget, and the same file inside the suite is slower still on
+          # a 2-core runner — 300 s left it cancelled. The bound only has to be
+          # short enough to turn a hang into a named failure.
+          ARENA_TEST_TIMEOUT_MS=600000 node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 3600000 -- npm test
 
       - name: Suite counts and failing identities
         if: always()
@@ -228,9 +229,15 @@ jobs:
             /^not ok [0-9]+/ { name = $0; sub(/^not ok [0-9]+ - /, "", name); next }
             /^[[:space:]]+error: / {
               msg = $0; sub(/^[[:space:]]+error: /, "", msg)
-              if (msg == "|-") { if (getline <= 0) next; msg = $0 }
+              # `error: |-` carries the message, and for assertion failures the
+              # next lines carry `+ actual - expected` — that is the whole
+              # diagnosis, so take a few.
+              if (msg == "|-") {
+                msg = ""
+                for (i = 0; i < 6; i++) { if (getline <= 0) break; msg = msg " " $0 }
+              }
               gsub(/[[:space:]]+/, " ", msg)
-              if (name != "") { print name " :: " msg; name = "" }
+              if (name != "") { print name " :: " substr(msg, 1, 240); name = "" }
             }
           ' "$EVIDENCE/source-suite.log" 2>/dev/null | head -12 > "$EVIDENCE/failing-reasons.txt" || true
           # GitHub keeps only the first 10 annotations of a step, so this spends
