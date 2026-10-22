@@ -79,3 +79,23 @@ try {
   console.error(`[source-suite] start=${head} end=${end} exit=${code} durationMs=${Date.now() - started}`);
 }
 process.exitCode = code;
+
+// The harness must return the child's status, not wait for ambient handles.
+// On Windows the embedded PostgreSQL child can outlive `pg_ctl stop`; the
+// process then sat for three hours after printing its receipt while the
+// acceptance step waited for a completion sentinel that never came. Naming
+// what is still alive preserves the diagnosis; exiting guarantees the status.
+const lingering = setTimeout(() => {
+  const alive = (process.getActiveResourcesInfo?.() ?? []).filter((name) => name !== "TTYWrap");
+  console.error(`[source-suite] still alive 10 s after the receipt: ${JSON.stringify(alive)}`);
+  process.exit(code);
+}, 10_000);
+lingering.unref();
+const flush = () => process.exit(code);
+if (process.stdout.writableLength === 0) {
+  // Nothing buffered: exit on the next turn so the unref'd timer cannot keep
+  // a clean run waiting ten seconds.
+  setImmediate(flush).unref();
+} else {
+  process.stdout.write("", flush);
+}

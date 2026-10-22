@@ -212,10 +212,17 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          grep -hE "^# (tests|pass|fail)" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/suite-counts.txt" || true
+          grep -hE "^# (tests|pass|fail|cancelled|skipped)" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/suite-counts.txt" || true
           grep -hE "^not ok" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/failing-tests.txt" | head -40 || true
+          # A name without a reason cannot be acted on. The TAP failure block
+          # carries `code:` and `error:` — publish the first few verbatim.
+          grep -hE "^\s+(error|code|failureType):" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/failing-reasons.txt" | head -40 || true
+          # GitHub keeps only the first 10 annotations of a step, so this spends
+          # them deliberately: 5 identities, 3 reasons, 1 counts line (joined).
           while IFS= read -r line; do echo "::error title=Windows suite failure::$line"; done < <(head -5 "$EVIDENCE/failing-tests.txt" 2>/dev/null || true)
-          while IFS= read -r line; do echo "::warning title=Windows suite counts::$line"; done < <(cat "$EVIDENCE/suite-counts.txt" 2>/dev/null || true)
+          while IFS= read -r line; do echo "::error title=Windows suite reason::$line"; done < <(head -3 "$EVIDENCE/failing-reasons.txt" 2>/dev/null || true)
+          counts=$(paste -sd' ' "$EVIDENCE/suite-counts.txt" 2>/dev/null || true)
+          if [ -n "${counts:-}" ]; then echo "::warning title=Windows suite counts::$counts"; fi
 
       - name: Upload suite evidence
         if: always()

@@ -1,7 +1,7 @@
 /** Bounded host subprocess primitive shared by mission command adapters.
  * This is timeout enforcement, NOT execution isolation. POSIX commands get
  * their own process group so descendants cannot keep inherited pipes alive. */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 export function runCommandProcess(command: string, args: string[], opts: { cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv; shell?: boolean; signal?: AbortSignal }) {
   return new Promise<{ code: number; output: string; timedOut: boolean; signal: string | null }>((resolve) => {
     if (opts.signal?.aborted) { resolve({ code: 130, output: "error: command cancelled before start", timedOut: false, signal: null }); return; }
@@ -14,8 +14,19 @@ export function runCommandProcess(command: string, args: string[], opts: { cwd?:
     child.stdout?.on("data", capture); child.stderr?.on("data", capture);
     let cancelled = false;
     const kill = () => {
-      try { if (grouped && child.pid) process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); }
-      catch { child.kill("SIGKILL"); }
+      if (grouped && child.pid) {
+        try { process.kill(-child.pid, "SIGKILL"); return; } catch { /* fall through */ }
+      }
+      // Windows has no process groups. `child.kill()` terminates only the
+      // direct child, so a shell (or anything it started) survives, keeps the
+      // inherited stdout/stderr pipes open and 'close' never fires: a timeout
+      // or cancellation would hang instead of resolving. taskkill /T walks the
+      // tree the same way the POSIX group kill does.
+      if (process.platform === "win32" && child.pid) {
+        try { spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }); }
+        catch { /* fall through to the direct kill */ }
+      }
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
     };
     const onAbort = () => { cancelled = true; kill(); };
     opts.signal?.addEventListener("abort", onAbort, { once: true });
