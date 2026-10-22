@@ -30,27 +30,32 @@ the bundled FFprobe), survives two full close/relaunch cycles, leaves no orphan
 processes, reports every URL loopback-only (offline), passes the packaging
 audit, and uninstalls. Those nine mandated sections are `PASS` on Windows.
 
-The limitations are enumerated in §7. The three that matter: the Windows
-*test* jobs are not green yet (a de-elevated hang, investigated in §5), the
-binary is unsigned, and the Windows run exercises the API-level application
-rather than a human at a desktop with audio hardware.
+On the same commit, the **desktop contract gate runs and records its own exit**
+(168/168) and the **full source suite passes on Windows** (1649 tests, 1643
+pass, 0 fail, 0 cancelled, 6 skipped — each skip named with its reason). This
+was the phase's open question: the suite does not merely "run"; it finishes.
+
+The limitations are enumerated in §7. The ones that matter: the binary is
+unsigned and has no updater, no human has driven the GUI or heard audio on
+Windows, GPU/deep-separation weights were not exercised, and one fixture cannot
+be expressed on Windows at all (a 70,000-character ffmpeg argument).
 
 ## 2. Final revision identity
 
 | Item | Value |
 | --- | --- |
-| Evidence commit | `a5d2d582` — the commit the Windows jobs below ran against |
-| Tree | `1e64ebdb9260e695a6721dc4819e98ed614c2798` |
-| Source digest | `sha256(git archive a5d2d58)` = `4918f69f5e0cd64691ab43e48788d967a308702854b4d5e501fdbda4e668dabd` |
+| Evidence commit | `8a1adee` — the commit the six green Windows jobs ran against |
+| Full suite | 1649 tests · 1643 pass · **0 fail** · 0 cancelled · 6 skipped |
+| Desktop gate | 168 tests · 168 pass · **0 fail** · 0 cancelled · 379 s, de-elevated |
 | Base commit | `13638fe8a5c280e6b47ecf97fb6e6cf414163a12` |
-| Windows runs | [39648109209](https://github.com/imlochie/arena-os-canonical/actions/runs/39648109209) (`e889f4a`), [39650513338](https://github.com/imlochie/arena-os-canonical/actions/runs/39650513338) (`a5d2d58`), [39659983653](https://github.com/imlochie/arena-os-canonical/actions/runs/39659983653) (`ce181f9`) — the installed-app acceptance passed with identical section results in all three, on three different commits |
+| Windows run | [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) — six jobs, all `success` |
+| Predecessor runs | `39724952496` (5 fail), `39736649568` (1 fail), `39739476880` (1 fail), `39770687200` (1 fail) — each failure named and fixed in §5, none retried blindly |
 | Installer | `Arena Setup 0.1.0.exe`, 621.1 MB; SHA-256 in `installer-sha256.txt` inside the `windows-package-<sha>` artifact |
 
-Every Windows job prints `commit`, `tree` and `digest` in its first step, so an
-artifact can be tied to the source that produced it. The installed acceptance
-was reproduced on `e889f4a`, `a5d2d58` and `ce181f9`; commits after `ce181f9`
-change documentation only, and no application, packaging or test code differs
-from the last evidence commit.
+Commits after `8a1adee` change diagnostics and one test's hang guard, not
+product behaviour; their own run is recorded in the same workflow. Every
+Windows job prints `commit`, `tree` and `digest` in its first step, so an
+artifact can be tied to the source that produced it.
 
 ## 3. What this branch changes
 
@@ -71,9 +76,11 @@ PostgreSQL paths. Everything else is packaging, CI or documentation.
 
 ## 4. Windows acceptance matrix
 
-Evidence run: [`windows-acceptance` run 39648109209](https://github.com/imlochie/arena-os-canonical/actions/runs/39648109209)
-(commit `e889f4a`). Job-level results transcribed below; each line was read
-from the job's own report through the checks API.
+Evidence run: [`windows-acceptance` run 39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391)
+(commit `8a1adee`) — **all six jobs green**, including the desktop gate and the
+full source suite. Job-level results below are read from the jobs' own reports
+through the checks API; the job-log host is unreachable from this environment,
+so every step publishes its result as an annotation.
 
 ### 4.1 Installed application — the mandated Gate D / D1–D10 contract
 
@@ -117,13 +124,16 @@ per-user NSIS uninstaller.
 | --- | --- | --- |
 | `npm ci` | **PASS** | PASS |
 | `npm run typecheck` | **PASS** | **PASS** (exit 0) |
-| `npm run test:desktop` | **168/168 tests PASS, gate BLOCKED**: the de-elevated run prints `# tests 168 · # pass 168 · # fail 0` in 429.9 s and then **never exits**, so no clean status can be recorded | **PASS** — 168/168 (clean exit) |
-| `npm run test:desktop`, elevated control | 158/162 pass, **3 fail**, 1 cancelled, 473 s — the three real-cluster tests cannot start PostgreSQL under an administrator token (expected, environmental) | n/a |
-| `npm test` (full source suite) | **NOT RUN** — the suite job had not completed at the time of writing; it is retained as its own job with a 200-minute budget | **PASS** — 1642/1642 at `13638fe` (previous session) |
+| `npm run test:desktop` (de-elevated, restricted token) | **PASS — 168 tests, 168 pass, 0 fail, 0 cancelled, 379 s, and the step records its own exit** | **PASS** — 168/168, clean exit |
+| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped** | **PASS with 2 environment failures** — 1645 tests, 1643 pass; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
+| Per-file lifecycle probe (diagnostics job) | **29/29 files exit cleanly** with the gate's per-test budget | 29/29 exit cleanly |
 | Staging identity guard | **PASS** — correctly refused packages while the tree was genuinely dirty (§5) | PASS |
 
+The elevated control that used to sit beside the desktop gate is gone with the
+defect it documented: the wrapper, not the token, was the problem (§5.8).
+
 A skipped, timed-out or environment-blocked gate is **not** a pass and is not
-counted as one here.
+counted as one here. The six skips in the Windows suite are enumerated in §7.8.
 
 ## 5. Failure ledger (what broke on Windows, and why)
 
@@ -261,11 +271,15 @@ What it does **not** prove is listed next.
 
 ## 7. Limitations (explicit, each with its evidence)
 
-1. **The full source suite is not yet green on Windows.** At `264a1db` it was
-   1645 tests / 1638 pass / 1 fail / 0 cancelled, and the one failure was a
-   fixture timeout that is now diagnosed explicitly and allowed 60 s. The run
-   on the corrected commit is the one that decides this item; until its result
-   is recorded here, the suite is **not** claimed as passing.
+1. **The suite result is a snapshot, and one test in it is timing-sensitive.**
+   At `8a1adee` the suite passed: 1649 tests, 1643 pass, 0 fail, 0 cancelled.
+   The next run (`6485fe8`, diagnostics only) cancelled one test —
+   `seed-http.test.ts` — because the test carried its own `{ timeout: 20_000 }`
+   hang guard, and three TypeScript child processes on a 2-core runner can
+   exceed that. Nothing in the test asserts a duration; the guard is now 120 s
+   and logs each phase, so it names where it stalls. The suite on that commit is
+   the one that must be green before this item is closed, and this record says
+   so rather than presenting the earlier green run as the last word.
 2. **The installed acceptance is API-level.** It drives the real server, real
    database, real worker and real export, but no human saw the window, played
    audio through a device, or moved a mixer. The GUI checklist in
@@ -283,11 +297,15 @@ What it does **not** prove is listed next.
 7. **The hosted runner is not a user's PC.** Windows Server 2022 with an
    administrator account, a restricted-token workaround and no desktop session
    is close to, but not the same as, a Windows 11 laptop.
-8. **One fixture cannot be expressed on Windows.** "oversized embedded
-   metadata" hands ffmpeg a 70,000-character argument; Windows caps a command
-   line at 32,767 characters, so the fixture makes no sense there. It is
-   skipped with that reason (skips are counted separately and never as passes);
-   the 64,000-character bound it exercises is product code, verified on POSIX.
+8. **Six skips, each with its own reason.** One fixture cannot exist on
+   Windows: "oversized embedded metadata" hands ffmpeg a 70,000-character
+   argument and Windows caps a command line at 32,767 characters, so it is
+   skipped with that exact reason — the 64,000-character bound it exercises is
+   product code, verified on POSIX. The other five are pre-existing suites that
+   declare `{ skip: !pgUp }`: they only run when `DATABASE_URL` points at a live
+   server, and the reproducible suite deliberately owns its own embedded
+   cluster instead. Skips are counted separately by the reporter
+   (`# skipped 6`) and never as passes.
 9. **Two tests need a browser.** The Arcade publication test and the Waveyard
    live-session test refuse to run without a real Chromium; the Windows jobs
    install it (`npx playwright install chromium`). In this Linux sandbox the
