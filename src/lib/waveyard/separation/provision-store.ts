@@ -27,8 +27,10 @@
 import { DEEP_MODEL_ID, deepModelSpec } from "./modes";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
+import { replaceFile } from "../../fs-replace";
 
 import {
   checkpointChecksumMatches,
@@ -109,12 +111,14 @@ function lockPath(envDir: string): string {
 }
 
 /** Write a JSON file atomically (temp + rename) so a crash can
- *  never leave a half-written status. */
+ *  never leave a half-written status. The replace tolerates Windows sharing
+ *  violations: `getStatus()` polls this exact file, and a reader holding it
+ *  makes the raw rename fail with EPERM (observed on the Windows runner). */
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await mkdir(join(path, ".."), { recursive: true });
   const temp = `${path}.tmp`;
   await writeFile(temp, JSON.stringify(value, null, 2), "utf8");
-  await rename(temp, path);
+  await replaceFile(temp, path);
 }
 
 async function readJson<T>(path: string): Promise<T | null> {

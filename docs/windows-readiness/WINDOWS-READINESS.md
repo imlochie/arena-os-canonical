@@ -216,27 +216,56 @@ worked around by weakening a check.
     `desktop/runtime/config.ts`.
 14. **Per-test bounds were set below the work they bounded.** 120 s cut
     `separation.test.ts` (16 tests, 227 s on Linux) and 180 s cut the ONNX
-    inference tests on a 2-core runner. Bounds are now 600 s (desktop gate) and
-    300 s (full suite), still short enough to turn a hang into a named failure.
+    inference tests on a 2-core runner. Both jobs now use 600 s, which still
+    turns a hang into a named failure.
+15. **A fixture's 15-second allowance was read as a product defect.** The
+    `turn_recorded` recovery test failed with
+    `platform=win32 signal=SIGTERM status=null` — the exact signature
+    `spawnSync` produces when its own `timeout` expires (verified directly:
+    `{ signal: "SIGTERM", status: null, error.code: "ETIMEDOUT" }`). The
+    fixture, not the product, was killed. The allowance is now 60 s and
+    `harnessTimedOut()` fails with "the fixture never reached its boundary —
+    the HARNESS killed it", so this can never again be recorded as a product
+    failure (or as a pass).
+16. **ffmpeg spoke filter syntax, not Windows paths.** The captioned-short
+    render produced `ffmpeg exited 1` on Windows: `subtitles='C:\…\x.srt'`
+    is parsed as a broken option list because `:` separates options and `\`
+    escapes inside a filtergraph. The path is now escaped as
+    `C\:/…/x.srt`. The error text also showed progress instead of the failure
+    (`… .101 / 58. 6.101`) because it took the last 1,200 characters of a
+    stream ffmpeg rewrites with `\r`; it now keeps the first lines.
 
 ## 6. What the Windows run actually proves
 
 - The application **installs, launches, operates, closes, reopens and
-  uninstalls** from a real Windows installer built from this checkout.
+  uninstalls** from a real Windows installer built from this checkout
+  (`Arena Setup 0.1.0.exe`, 621.1 MB), with all nine sections of the installed
+  acceptance PASS: `INSTALL`, `FIRST_LAUNCH`, `RUNTIME`, `WAVEYARD_WORKFLOW`,
+  `EXPORT`, `RESTART_PERSISTENCE`, `PROCESS_CLEANUP`, `OFFLINE`,
+  `SECURITY/PACKAGING AUDIT`. This has now held on seven consecutive runs.
 - Writable data lives under `%LOCALAPPDATA%\Arena`, not the repository.
 - The embedded database is created on first launch, survives restarts, and is
   reachable only over loopback.
 - Media export works through the **bundled** FFmpeg/FFprobe on Windows.
 - The application runs offline: no request left `127.0.0.1`.
+- The desktop contract gate runs **and records its own exit**:
+  `ℹ tests 168 · ℹ pass 168 · ℹ fail 0 · ℹ cancelled 0`, in 379 s, under a
+  restricted token (run 39770687200, `134dece`). Before the wrapper fix the
+  same suite also passed, but the step could only report "no completion
+  sentinel" (§5.8).
+- The full source suite runs on Windows and reports per test: 1645 tests,
+  1638 pass, 1 fail at `264a1db`; the single failure was the crash fixture's
+  15-second allowance, not a product behaviour (§5.8's footnote).
 
 What it does **not** prove is listed next.
 
 ## 7. Limitations (explicit, each with its evidence)
 
-1. **The Windows test gate cannot record a clean exit.** All 168 desktop tests
-   pass de-elevated, but the process never returns (§5.8), so the gate is
-   BLOCKED, not PASS. The full source suite did not finish within this session.
-   Neither is reported as passing.
+1. **The full source suite is not yet green on Windows.** At `264a1db` it was
+   1645 tests / 1638 pass / 1 fail / 0 cancelled, and the one failure was a
+   fixture timeout that is now diagnosed explicitly and allowed 60 s. The run
+   on the corrected commit is the one that decides this item; until its result
+   is recorded here, the suite is **not** claimed as passing.
 2. **The installed acceptance is API-level.** It drives the real server, real
    database, real worker and real export, but no human saw the window, played
    audio through a device, or moved a mixer. The GUI checklist in
@@ -254,10 +283,22 @@ What it does **not** prove is listed next.
 7. **The hosted runner is not a user's PC.** Windows Server 2022 with an
    administrator account, a restricted-token workaround and no desktop session
    is close to, but not the same as, a Windows 11 laptop.
-8. **Inherited product evidence is not Windows evidence.** Arcade, Spaces and
-   Waveyard workflows were validated on Linux at `13638fe`; this branch does not
-   re-claim them for Windows. The Windows run covers the Waveyard workflow at
-   API level only.
+8. **One fixture cannot be expressed on Windows.** "oversized embedded
+   metadata" hands ffmpeg a 70,000-character argument; Windows caps a command
+   line at 32,767 characters, so the fixture makes no sense there. It is
+   skipped with that reason (skips are counted separately and never as passes);
+   the 64,000-character bound it exercises is product code, verified on POSIX.
+9. **Two tests need a browser.** The Arcade publication test and the Waveyard
+   live-session test refuse to run without a real Chromium; the Windows jobs
+   install it (`npx playwright install chromium`). In this Linux sandbox the
+   browser cannot be downloaded, so the local run reports exactly those two as
+   failing and nothing else (1643/1645 pass) — an environment limit, not a
+   product result.
+10. **Inherited product evidence is not Windows evidence.** Arcade, Spaces and
+    Waveyard workflows were validated on Linux at `13638fe`; this branch does
+    not re-claim them wholesale for Windows. What it does is run those source
+    files on Windows and report each result individually, which is why the
+    remaining failures above are named rather than summarised.
 
 ## 8. Installing the Windows build
 
@@ -288,8 +329,10 @@ node scripts\windows-acceptance.mjs
 
 ## 9. Outstanding work, in priority order
 
-1. **Diagnose the de-elevated desktop-test hang** (§5.8) and get `test:desktop`
-   and `npm test` green on Windows. Until then the Windows *test* gate is open.
+1. **Close out the Windows suite.** The wrapper defect is fixed and the gate
+   passes; the suite's last named failure was a fixture allowance. Confirm the
+   green run on the corrected commit and record the counts here. Nothing else
+   in the test gate is open.
 2. **Run the GUI checklist** on a real Windows desktop: audible playback, meters,
    mixer/inserts, adapter-off offline pass.
 3. **Code-sign the installer** and document the certificate path.
@@ -298,5 +341,6 @@ node scripts\windows-acceptance.mjs
    end with real weights.
 5. **Add an updater story** if the product intends one; today it has none by
    design and that is documented rather than hidden.
-6. **Re-run product workflows on Windows** (Arcade source workshop, Spaces
-   missions) — they are Linux-verified only.
+6. **Re-run product workflows on Windows** at the UI level (Arcade source
+   workshop, Spaces missions) — their source files now run in the Windows suite,
+   but no human has driven their interfaces on Windows.

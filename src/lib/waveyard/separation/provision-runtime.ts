@@ -24,8 +24,10 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+
+import { replaceFile } from "../../fs-replace";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -658,8 +660,10 @@ export async function acquireCheckpoint(
       `The downloaded model failed Demucs' integrity check (sha256 ${sha256.slice(0, 12)}…, expected prefix ${expectedPrefix}). Nothing was installed.`,
     );
   }
-  // Atomic placement: the engine only ever sees a complete file.
-  await rename(tempPath, finalPath);
+  // Atomic placement: the engine only ever sees a complete file. A model
+  // directory can be read by a running worker, so the replace tolerates the
+  // Windows sharing violation a reader creates.
+  await replaceFile(tempPath, finalPath);
   ctx.log(`Model installed and verified (${(bytes / 1_000_000).toFixed(1)} MB, sha256 ${sha256.slice(0, 12)}…).`);
 }
 
@@ -708,7 +712,7 @@ export async function importCheckpoint(
       throw new ProvisionError("INTEGRITY_FAILED", `The imported bytes are not ${spec.name} (${spec.file}). Existing checkpoints were retained.`);
     }
     throwIfCancelled(ctx);
-    await rename(tempPath, finalPath);
+    await replaceFile(tempPath, finalPath);
     ctx.log(`Imported checkpoint verified (sha256 ${sha256}) and placed at ${finalPath}.`);
   } finally { await rm(tempPath, { force: true }).catch(() => undefined); }
 }
