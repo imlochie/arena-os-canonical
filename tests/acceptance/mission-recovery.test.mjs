@@ -4,6 +4,13 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { assertActuallyKilled } from "../helpers/platform-exit.ts";
+/** Startup allowance for the crash fixture: it boots a real process, connects
+ * to PostgreSQL, calls a model and executes a command before reaching the
+ * boundary. 15 s was enough on Linux and not on a Windows runner, where the
+ * harness — not the fixture — killed it at `turn_recorded`. The assertion is
+ * unchanged; only the allowance for the fixture to arrive is. */
+const FIXTURE_TIMEOUT_MS = 60_000;
+
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -52,7 +59,7 @@ async function interrupted(boundary, lease = 200) {
   const root = await tools.ensureWorkspace(id); roots.push(root);
   await writeFile(path.join(root, "increment.cjs"), "const fs=require('node:fs');const n=Number(fs.existsSync('count')?fs.readFileSync('count','utf8'):0);fs.writeFileSync('count',String(n+1));console.log('actual effect count',n+1);");
   const actions = [{ tool: "run_command", args: { command: "node increment.cjs" } }, { tool: "write_file", args: { path: "report.json", content: '{"retained":true}\n' } }];
-  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: boundary, RECOVERY_ACTIONS: JSON.stringify(actions), RECOVERY_LEASE_MS: String(lease) }, encoding: "utf8", timeout: 15000 });
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: boundary, RECOVERY_ACTIONS: JSON.stringify(actions), RECOVERY_LEASE_MS: String(lease) }, encoding: "utf8", timeout: FIXTURE_TIMEOUT_MS });
   assertActuallyKilled(assert, child, "crash fixture");
   return { id, root };
 }
@@ -142,7 +149,7 @@ test("mission panel retrieves immutable outputs after SQL restart and later edit
 test("SIGKILL after immutable output capture before mission advancement recovers one original revision without rewriting the file", async () => {
   const id = randomUUID(); await f.database.insert(schema.spaces).values({ id, prompt: "Durable output interruption" }); const root = await tools.ensureWorkspace(id); roots.push(root);
   const content = "Original captured deliverable before interruption\n";
-  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: "output_captured", RECOVERY_ACTIONS: JSON.stringify([{ tool: "write_file", args: { path: "interrupted.txt", content } }]), RECOVERY_LEASE_MS: "200" }, encoding: "utf8", timeout: 15000 }); assertActuallyKilled(assert, child, "crash fixture at output_captured");
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: "output_captured", RECOVERY_ACTIONS: JSON.stringify([{ tool: "write_file", args: { path: "interrupted.txt", content } }]), RECOVERY_LEASE_MS: "200" }, encoding: "utf8", timeout: FIXTURE_TIMEOUT_MS }); assertActuallyKilled(assert, child, "crash fixture at output_captured");
   const { artifacts, artifactRevisions } = await import("../../src/db/schema.ts"); const { eq } = await import("drizzle-orm");
   const interrupted = await runtime.getLatestMission(id); assert.equal(interrupted.artifacts.length, 0); assert.equal(interrupted.journal[0].requestedActions[0].state, "executing");
   const [captured] = await f.database.select().from(artifacts).where(eq(artifacts.sourceId, interrupted.id)); assert.ok(captured);
@@ -188,7 +195,7 @@ test("large Unicode and binary partial Mission outputs are inspectable/downloada
   }
   await f.stop(); await f.start();
   const freshCode = `import assert from 'node:assert/strict';import{createHash}from'node:crypto';const{retrieveMissionOutput}=await import('./src/lib/spaces/mission-outputs.ts');const{pool}=await import('./src/db/index.ts');try{for(const output of ${JSON.stringify(outputs)}){const result=await retrieveMissionOutput(${JSON.stringify(id)},${JSON.stringify(first.id)},output.id);assert.equal(createHash('sha256').update(result.bytes).digest('hex'),output.checksumSha256);}}finally{await pool.end();}`;
-  const fresh = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "--eval", freshCode], { env: { ...process.env, DATABASE_URL: f.url }, encoding: "utf8", timeout: 15000 }); assert.equal(fresh.status, 0, fresh.stderr);
+  const fresh = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "--eval", freshCode], { env: { ...process.env, DATABASE_URL: f.url }, encoding: "utf8", timeout: FIXTURE_TIMEOUT_MS }); assert.equal(fresh.status, 0, fresh.stderr);
   await page.reload();
   await page.getByRole("textbox", { name: "Mission goal", exact: true }).fill("Keep my existing next-task request.");
   await page.getByRole("button", { name: "Prepare reuse large.bin", exact: true }).click();
