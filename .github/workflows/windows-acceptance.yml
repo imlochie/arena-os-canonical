@@ -276,7 +276,7 @@ jobs:
           mkdir -p "$EVIDENCE"
           node scripts/windows-step.mjs "npm ci (diagnostics)" "$EVIDENCE/npm-ci.log" -- npm ci
 
-      - name: Per-file lifecycle diagnostic — which file does not exit
+      - name: Per-file lifecycle diagnostic — which file does not exit, and when
         # Names the file that keeps the process alive. `no-exit` means its tests
         # all reported and the process then stayed up; `timeout` means its tests
         # did not finish. Neither can be inferred from a single hanging glob.
@@ -286,7 +286,10 @@ jobs:
         # heaviest passing file (separation.test.ts: 16 tests, 227 s) so a
         # file is only classified `timeout`/`no-exit` when it really is stuck;
         # the whole-glob run that used to live above this step is gone, since
-        # it could only repeat "something hangs".
+        # it could only repeat "something hangs". A file classified `fail` is
+        # run a second time and both outcomes are reported: on this runner one
+        # file failed here while passing in the gate and in the suite, and
+        # "flaky" and "profile-dependent" are different claims.
         run: |
           set -euo pipefail
           node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 1800000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 360000

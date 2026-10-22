@@ -45,17 +45,16 @@ function collect(dir) {
 
 const files = [...collect("desktop"), ...collect("src/lib/waveyard/worker-local")].map((f) => f.split(path.sep).join("/")).sort();
 
-const results = [];
-for (const file of files) {
-  const started = Date.now();
-  // The per-test budget must fire BEFORE the file bound, otherwise a hung test
-  // is killed silently and the file is classified without ever naming the test
-  // that hung. 20 s of headroom is enough for the runner to print its failure
-  // and for the file to exit on its own.
-  const perTestMs = Math.max(10_000, boundMs - 20_000);
+// The per-test budget must fire BEFORE the file bound, otherwise a hung test
+// is killed silently and the file is classified without ever naming the test
+// that hung. 20 s of headroom is enough for the runner to print its failure
+// and for the file to exit on its own.
+const perTestMs = Math.max(10_000, boundMs - 20_000);
+
+async function runOnce(file, perTestTimeoutMs, fileBoundMs) {
   const child = spawn(
     process.execPath,
-    ["--import", "./scripts/register-src-loader.mjs", "--test", `--test-timeout=${perTestMs}`, file],
+    ["--import", "./scripts/register-src-loader.mjs", "--test", `--test-timeout=${perTestTimeoutMs}`, file],
     { stdio: ["ignore", "pipe", "pipe"], env: process.env },
   );
   let output = "";
@@ -71,8 +70,8 @@ for (const file of files) {
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       resolve(finishedTests ? "no-exit" : "timeout");
-    }, boundMs);
-    child.once("exit", (code, signal) => {
+    }, fileBoundMs);
+    child.once("exit", (code) => {
       clearTimeout(timer);
       resolve(code === 0 ? "pass" : "fail");
     });
@@ -82,12 +81,30 @@ for (const file of files) {
     });
   });
   clearInterval(watch);
+  return { outcome, output };
+}
+
+const results = [];
+for (const file of files) {
+  const started = Date.now();
+  const { outcome, output } = await runOnce(file, perTestMs, boundMs);
 
   const summary = /# tests (\d+)[\s\S]*?# pass (\d+)[\s\S]*?# fail (\d+)/.exec(output);
+
+  // A file that fails here but passes in the gate and the suite is either
+  // flaky or profile-dependent; one run cannot tell which. Run it again and
+  // report both outcomes, so the next reader gets the distinction instead of
+  // an anecdote.
+  let secondOutcome = null;
+  if (outcome === "fail") {
+    secondOutcome = await runOnce(file, perTestMs, boundMs);
+    console.log(`[lifecycle] repeat ${file}: ${secondOutcome.outcome}`);
+  }
   const entry = {
     file,
     outcome,
     ms: Date.now() - started,
+    repeatOutcome: secondOutcome?.outcome ?? null,
     tests: summary ? Number(summary[1]) : null,
     pass: summary ? Number(summary[2]) : null,
     fail: summary ? Number(summary[3]) : null,
@@ -108,12 +125,20 @@ for (const file of files) {
       .slice(0, 6);
     // A name without a reason cannot be acted on: carry the assertion/crash
     // line that the reporter printed next to it.
-    const reasons = output.split(/\r?\n/)
-      .filter((line) => /^\s*(error|code|failureType):/.test(line) || /ERR_TEST_FAILURE|Error:|timed out after/.test(line))
-      .map((line) => line.trim())
-      .slice(0, 3);
+    // The YAML block under a `not ok` line is the only place the assertion
+    // message lives; a signature like `error: |-` with nothing after it says
+    // only that something failed. Take the block, not the markers.
+    const lines = output.split(/\r?\n/);
+    const at = lines.findIndex((line) => /^not ok \d+/.test(line));
+    const reasons = at === -1
+      ? []
+      : lines.slice(at + 1, at + 1 + 10)
+        .map((line) => line.trim())
+        .filter((line) => line && line !== "---" && line !== "..." && !/^(duration_ms|type|location|failureType|code|name|stack|expected|actual|operator):/.test(line))
+        .slice(0, 6);
     const detail = [...names, ...reasons].join(" | ") || entry.tail;
-    console.log(`::warning title=lifecycle ${outcome}::${file} — ${detail.slice(0, 700)}`);
+    const repeat = secondOutcome === null ? "" : ` [repeat: ${secondOutcome.outcome}]`;
+    console.log(`::warning title=lifecycle ${outcome}${repeat}::${file} — ${detail.slice(0, 650)}`);
   }
 }
 
