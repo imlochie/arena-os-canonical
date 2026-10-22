@@ -44,19 +44,20 @@ be expressed on Windows at all (a 70,000-character ffmpeg argument).
 
 | Item | Value |
 | --- | --- |
-| Evidence commit | `7be5a46` — the commit the six green Windows jobs ran against (also green at `8a1adee` and `52eba9e`) |
+| Evidence commit | `31b93cb` — the commit the six green Windows jobs ran against (green at five other commits as well; see the run list) |
 | Full suite | 1649 tests · 1643 pass · **0 fail** · 0 cancelled · 6 skipped |
 | Desktop gate | 168 tests · 168 pass · **0 fail** · 0 cancelled · 379 s, de-elevated |
 | Base commit | `13638fe8a5c280e6b47ecf97fb6e6cf414163a12` |
-| Windows runs | [39797631449](https://github.com/imlochie/arena-os-canonical/actions/runs/39797631449) (`805e4c0`), [39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515) (`7be5a46`), [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) (`8a1adee`), [39792397329](https://github.com/imlochie/arena-os-canonical/actions/runs/39792397329) (`52eba9e`) — six jobs, all `success`, four times |
+| Windows runs (all six jobs `success`) | [39810859260](https://github.com/imlochie/arena-os-canonical/actions/runs/39810859260) (`31b93cb`), [39810849313](https://github.com/imlochie/arena-os-canonical/actions/runs/39810849313) (`1261b70`), [39797631449](https://github.com/imlochie/arena-os-canonical/actions/runs/39797631449) (`805e4c0`), [39797838680](https://github.com/imlochie/arena-os-canonical/actions/runs/39797838680) (`9dbcfc2`), [39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515) (`7be5a46`), [39792397329](https://github.com/imlochie/arena-os-canonical/actions/runs/39792397329) (`52eba9e`), [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) (`8a1adee`) — seven runs across seven commits |
+| Runs that failed, and why | [39802222893](https://github.com/imlochie/arena-os-canonical/actions/runs/39802222893) (`c087806`): one test, Arcade's 1.2 s cold-start navigation budget (§5.18), fixed in `1261b70` and green in every run since |
 | Predecessor runs | `39724952496` (5 fail), `39736649568` (1 fail), `39739476880` (1 fail), `39770687200` (1 fail) — each failure named and fixed in §5, none retried blindly |
 | Installer | `Arena Setup 0.1.0.exe`, 621.1 MB; SHA-256 in `installer-sha256.txt` inside the `windows-package-<sha>` artifact |
 
-Four consecutive commits produced the same six green jobs, so this is not a
-single lucky sample. Commits after `7be5a46` touch one annotation, the
-readiness record and the PR description; their runs are in the same workflow. Every
-Windows job prints `commit`, `tree` and `digest` in its first step, so an
-artifact can be tied to the source that produced it.
+Seven commits produced the same six green jobs, with exactly one failure in
+between (the Arcade cold-start bound, §5.18, fixed and green since), so this is
+not a single lucky sample. Every Windows job prints `commit`, `tree` and
+`digest` in its first step, so an artifact can be tied to the source that
+produced it.
 
 ## 3. What this branch changes
 
@@ -77,8 +78,8 @@ PostgreSQL paths. Everything else is packaging, CI or documentation.
 
 ## 4. Windows acceptance matrix
 
-Evidence run: [`windows-acceptance` run 39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515)
-(commit `7be5a46`) — **all six jobs green**, including the desktop gate and the
+Evidence run: [`windows-acceptance` run 39810859260](https://github.com/imlochie/arena-os-canonical/actions/runs/39810859260)
+(commit `31b93cb`) — **all six jobs green**, including the desktop gate and the
 full source suite. The same six jobs were also green at `8a1adee`
 (run 39775173391) and at the documentation-only `52eba9e`
 (run 39792397329) and `805e4c0` (run 39797631449), so the result is repeatable
