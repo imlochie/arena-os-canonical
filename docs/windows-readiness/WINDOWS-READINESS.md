@@ -258,6 +258,15 @@ worked around by weakening a check.
     outcomes first and publishes a warning with the counts; run 39797631449
     shows the warning form on a green gate.
 
+18. **The Arcade browser smoke raced a cold Chromium.** Run 39802222893
+    failed exactly one test with `page.goto: Timeout 1200ms exceeded` on the
+    locally-fulfilled verification page; the same test passed on the four
+    preceding commits. Navigation now has 15 s and the whole smoke 30 s instead
+    of 1.2 s / 10 s. Every isolation assertion is unchanged — blocked request
+    count, the `about:srcdoc` frame URL, the page URL and the non-uniform
+    canvas — so the step still fails when a game escapes its sandbox, not when
+    a runner is slow to start a browser.
+
 ## 6. What the Windows run actually proves
 
 - The application **installs, launches, operates, closes, reopens and
