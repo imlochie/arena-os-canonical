@@ -49,7 +49,13 @@ const files = [...collect("desktop"), ...collect("src/lib/waveyard/worker-local"
 // is killed silently and the file is classified without ever naming the test
 // that hung. 20 s of headroom is enough for the runner to print its failure
 // and for the file to exit on its own.
-const perTestMs = Math.max(10_000, boundMs - 20_000);
+//
+// It must also sit ABOVE the work the gate already accepts. The gate runs this
+// same glob with a 600 s per-test budget; a probe that used less reported
+// `separation.test.ts` as failing while the gate and the full suite both passed
+// it — the probe, not the file, was wrong. Probing is for finding hangs, so it
+// uses the gate's number and a file bound above it.
+const perTestMs = Math.min(600_000, Math.max(10_000, boundMs - 20_000));
 
 async function runOnce(file, perTestTimeoutMs, fileBoundMs) {
   const child = spawn(
@@ -129,7 +135,9 @@ for (const file of files) {
     // message lives; a signature like `error: |-` with nothing after it says
     // only that something failed. Take the block, not the markers.
     const lines = output.split(/\r?\n/);
-    const at = lines.findIndex((line) => /^not ok \d+/.test(line));
+    // A TAP `not ok` can name the FILE (a whole-file failure) or a test. The
+    // test is the useful one; the file line is what the summary already says.
+    const at = lines.findIndex((line) => /^not ok \d+ - /.test(line) && !/\.(test\.ts|test\.mjs)$/.test(line));
     const reasons = at === -1
       ? []
       : lines.slice(at + 1, at + 1 + 10)

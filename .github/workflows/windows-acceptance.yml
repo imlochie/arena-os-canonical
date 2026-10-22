@@ -282,9 +282,13 @@ jobs:
         # did not finish. Neither can be inferred from a single hanging glob.
         if: always()
         continue-on-error: true
-        # One file at a time, plus a hard per-file bound. 360 s is above the
-        # heaviest passing file (separation.test.ts: 16 tests, 227 s) so a
-        # file is only classified `timeout`/`no-exit` when it really is stuck;
+        # One file at a time, plus a hard per-file bound. The bound has to sit
+        # above the heaviest PASSING file on this runner, or the probe invents
+        # failures the gate does not have: at 360 s it reported
+        # separation.test.ts as failing (one test hit its 340 s budget) while
+        # the gate and the full suite passed the same file inside a 600 s
+        # per-test budget. 900 s file / 600 s per test is that same number with
+        # room for the file to finish;
         # the whole-glob run that used to live above this step is gone, since
         # it could only repeat "something hangs". A file classified `fail` is
         # run a second time and both outcomes are reported: on this runner one
@@ -292,7 +296,7 @@ jobs:
         # "flaky" and "profile-dependent" are different claims.
         run: |
           set -euo pipefail
-          node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 1800000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 360000
+          node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 2700000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 900000
 
       - name: Upload diagnostics
         if: always()
