@@ -17,7 +17,7 @@
  * keeps every other file's result clean. Uses `--test-timeout` so a hung test
  * is reported as a failure instead of stalling the whole run.
  *
- * Usage: node scripts/test-lifecycle-diagnostic.mjs [--bound-ms N] [--only <glob>]
+ * Usage: node scripts/test-lifecycle-diagnostic.mjs [--bound-ms N]
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
@@ -89,6 +89,9 @@ for (const file of files) {
     tail: output.split(/\r?\n/).filter(Boolean).slice(-4).join(" | ").slice(0, 700),
   };
   results.push(entry);
+  // Written per file, not at the end: a job that is killed mid-run still
+  // leaves the files it already classified.
+  writeFileSync(path.join(evidenceDir, "test-lifecycle.json"), JSON.stringify({ boundMs, results }, null, 2));
   console.log(`[lifecycle] ${outcome.padEnd(8)} ${file} (${entry.ms} ms) tests=${entry.tests ?? "?"} pass=${entry.pass ?? "?"} fail=${entry.fail ?? "?"}`);
   if (outcome === "no-exit" || outcome === "timeout" || outcome === "fail") {
     // Annotations survive even when the job log host is unreachable.

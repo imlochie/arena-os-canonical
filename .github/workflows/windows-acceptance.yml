@@ -242,24 +242,20 @@ jobs:
           mkdir -p "$EVIDENCE"
           node scripts/windows-step.mjs "npm ci (diagnostics)" "$EVIDENCE/npm-ci.log" -- npm ci
 
-      - name: Desktop tests, de-elevated, 15-minute bound (diagnostic only)
-        # Not a gate: the gates job owns the verdict. This exists to find WHERE
-        # a restricted token makes the suite block, by reporting the child's
-        # last output lines when the bound is hit.
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          node scripts/windows-deelevated-step.mjs "desktop tests diagnostic" "$EVIDENCE/desktop-diagnostic.log" 900000 -- npm run test:desktop
-
       - name: Per-file lifecycle diagnostic — which file does not exit
         # Names the file that keeps the process alive. `no-exit` means its tests
         # all reported and the process then stayed up; `timeout` means its tests
         # did not finish. Neither can be inferred from a single hanging glob.
         if: always()
         continue-on-error: true
+        # One file at a time, plus a hard per-file bound: 29 files x 100 s is
+        # the worst case, which fits the job's own 30-minute limit with the
+        # `npm ci` that precedes it. The whole-glob run that used to live above
+        # this step is gone: it can only repeat "something hangs", and it spent
+        # a third of the job's budget doing so.
         run: |
           set -euo pipefail
-          node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 3000000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 150000
+          node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 1500000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 100000
 
       - name: Upload diagnostics
         if: always()
