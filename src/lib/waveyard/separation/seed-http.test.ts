@@ -110,7 +110,13 @@ function child(f: Awaited<ReturnType<typeof fixture>>) {
   return { process, exit, output: () => output };
 }
 
-test('SIGKILL restart resumes persisted prefix in a new process; competing process shares publication lock', { timeout: 20000 }, async () => {
+// 20 s was a hang guard, not a promise: nothing asserted that this finishes
+// within it. On a 2-core Windows runner the test (one killed process, then two
+// competing ones, each downloading through a 4 ms tick) exceeded it in run
+// 39783929848 while passing in 39775173391 — the cap fired, no assertion did.
+// The global per-test budget is the real bound; this stays as a local guard
+// but above the work. Each phase logs first, so a future timeout names where.
+test('SIGKILL restart resumes persisted prefix in a new process; competing process shares publication lock', { timeout: 120000 }, async () => {
   const f = await fixture((req, res, log) => {
     const offset = req.headers.range ? Number(req.headers.range.match(/\d+/)![0]) : 0;
     res.writeHead(offset ? 206 : 200, { 'Content-Length': bytes.length - offset, ETag: '"v1"', ...(offset ? { 'Content-Range': `bytes ${offset}-${bytes.length - 1}/${bytes.length}` } : {}) });
@@ -123,16 +129,19 @@ test('SIGKILL restart resumes persisted prefix in a new process; competing proce
   });
   const children: ReturnType<typeof child>[] = [];
   try {
+    console.log('[phase] first child: downloading prefix');
     const first = child(f); children.push(first);
     await new Promise<void>((resolve, reject) => {
       first.process.on('message', (message: { progress?: { bytes: number } }) => { if ((message.progress?.bytes ?? 0) >= 262144) resolve(); });
       first.process.once('exit', () => reject(new Error(`child exited before prefix: ${first.output()}`)));
     });
+    console.log('[phase] first child: prefix reached, killing');
     first.process.kill('SIGKILL'); await first.exit;
     const prefix = await readFile(f.partial);
     assert.ok(prefix.length >= 262144 && prefix.length < bytes.length);
     assert.deepEqual(prefix, bytes.subarray(0, prefix.length));
     assert.equal((await getModelFileStatus(f.spec, f.dir)).provisioning.state, 'interrupted');
+    console.log('[phase] two competing children: resume and lock');
     const second = child(f), competitor = child(f); children.push(second, competitor);
     const [secondExit, competitorExit] = await Promise.all([second.exit, competitor.exit]);
     assert.equal(secondExit[0], 0, second.output()); assert.equal(competitorExit[0], 0, competitor.output());
