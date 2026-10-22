@@ -129,9 +129,11 @@ jobs:
         run: npx playwright install chromium
 
       - name: Typecheck
+        id: typecheck
         run: node scripts/windows-step.mjs "typecheck" "$EVIDENCE/typecheck.log" -- npm run typecheck
 
       - name: Desktop contract and runtime tests
+        id: desktop_tests
         # De-elevated for the same reason as the runtime acceptance: these
         # include real-cluster tests that start PostgreSQL, which refuses an
         # administrator token (the hosted runner's default). Bounded: a hang
@@ -154,6 +156,16 @@ jobs:
           set -euo pipefail
           grep -hE "^# (tests|pass|fail)" "$EVIDENCE"/*.log 2>/dev/null | tee "$EVIDENCE/suite-counts.txt" || true
           grep -hE "^not ok" "$EVIDENCE"/*.log 2>/dev/null | tee "$EVIDENCE/failing-tests.txt" | head -30 || true
+          counts=$(paste -sd' ' "$EVIDENCE/suite-counts.txt" 2>/dev/null || true)
+          # A green job must not carry a failure annotation. The previous version
+          # grepped the logs for words like "not permitted" and published an
+          # ::error for any match — so a benign npm cleanup warning during a
+          # passing `npm ci` appeared as a failure on a green gate. Failure text
+          # is only published when a gate actually failed.
+          if [ "${{ steps.typecheck.outcome }}" = "success" ] && [ "${{ steps.desktop_tests.outcome }}" = "success" ] && [ ! -s "$EVIDENCE/failing-tests.txt" ]; then
+            echo "::warning title=Windows gate counts::${counts:-typecheck and desktop contracts passed}"
+            exit 0
+          fi
           grep -hE "^  error:|^  code:|root.execution|not permitted" "$EVIDENCE"/*.log 2>/dev/null | head -20 | tee "$EVIDENCE/failure-detail.txt" || true
           if [ -s "$EVIDENCE/failing-tests.txt" ]; then
             while IFS= read -r line; do echo "::error title=Windows test failure::$line"; done < <(head -5 "$EVIDENCE/failing-tests.txt")
