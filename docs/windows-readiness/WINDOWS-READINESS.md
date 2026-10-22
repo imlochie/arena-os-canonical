@@ -44,16 +44,17 @@ be expressed on Windows at all (a 70,000-character ffmpeg argument).
 
 | Item | Value |
 | --- | --- |
-| Evidence commit | `8a1adee` — the commit the six green Windows jobs ran against |
+| Evidence commit | `7be5a46` — the commit the six green Windows jobs ran against (also green at `8a1adee` and `52eba9e`) |
 | Full suite | 1649 tests · 1643 pass · **0 fail** · 0 cancelled · 6 skipped |
 | Desktop gate | 168 tests · 168 pass · **0 fail** · 0 cancelled · 379 s, de-elevated |
 | Base commit | `13638fe8a5c280e6b47ecf97fb6e6cf414163a12` |
-| Windows run | [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) — six jobs, all `success` |
+| Windows runs | [39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515) (`7be5a46`), [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) (`8a1adee`), [39792397329](https://github.com/imlochie/arena-os-canonical/actions/runs/39792397329) (`52eba9e`) — six jobs, all `success`, three times |
 | Predecessor runs | `39724952496` (5 fail), `39736649568` (1 fail), `39739476880` (1 fail), `39770687200` (1 fail) — each failure named and fixed in §5, none retried blindly |
 | Installer | `Arena Setup 0.1.0.exe`, 621.1 MB; SHA-256 in `installer-sha256.txt` inside the `windows-package-<sha>` artifact |
 
-Commits after `8a1adee` change diagnostics and one test's hang guard, not
-product behaviour; their own run is recorded in the same workflow. Every
+Three consecutive commits produced the same six green jobs, so this is not a
+single lucky sample. Commits after `7be5a46` touch one annotation, the
+readiness record and the PR description; their runs are in the same workflow. Every
 Windows job prints `commit`, `tree` and `digest` in its first step, so an
 artifact can be tied to the source that produced it.
 
@@ -76,9 +77,11 @@ PostgreSQL paths. Everything else is packaging, CI or documentation.
 
 ## 4. Windows acceptance matrix
 
-Evidence run: [`windows-acceptance` run 39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391)
-(commit `8a1adee`) — **all six jobs green**, including the desktop gate and the
-full source suite. Job-level results below are read from the jobs' own reports
+Evidence run: [`windows-acceptance` run 39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515)
+(commit `7be5a46`) — **all six jobs green**, including the desktop gate and the
+full source suite. The same six jobs were also green at `8a1adee`
+(run 39775173391) and at the documentation-only `52eba9e`
+(run 39792397329), so the result is repeatable rather than a single sample. Job-level results below are read from the jobs' own reports
 through the checks API; the job-log host is unreachable from this environment,
 so every step publishes its result as an annotation.
 
@@ -125,7 +128,7 @@ per-user NSIS uninstaller.
 | `npm ci` | **PASS** | PASS |
 | `npm run typecheck` | **PASS** | **PASS** (exit 0) |
 | `npm run test:desktop` (de-elevated, restricted token) | **PASS — 168 tests, 168 pass, 0 fail, 0 cancelled, 379 s, and the step records its own exit** | **PASS** — 168/168, clean exit |
-| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped** | **PASS with 2 environment failures** — 1645 tests, 1643 pass; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
+| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped** (green twice: `8a1adee`, `7be5a46`) | **PASS with 2 environment failures** — 1645 tests, 1643 pass; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
 | Per-file lifecycle probe (diagnostics job) | **29/29 files exit cleanly** with the gate's per-test budget | 29/29 exit cleanly |
 | Staging identity guard | **PASS** — correctly refused packages while the tree was genuinely dirty (§5) | PASS |
 
@@ -272,14 +275,16 @@ What it does **not** prove is listed next.
 ## 7. Limitations (explicit, each with its evidence)
 
 1. **The suite result is a snapshot, and one test in it is timing-sensitive.**
-   At `8a1adee` the suite passed: 1649 tests, 1643 pass, 0 fail, 0 cancelled.
-   The next run (`6485fe8`, diagnostics only) cancelled one test —
-   `seed-http.test.ts` — because the test carried its own `{ timeout: 20_000 }`
-   hang guard, and three TypeScript child processes on a 2-core runner can
-   exceed that. Nothing in the test asserts a duration; the guard is now 120 s
-   and logs each phase, so it names where it stalls. The suite on that commit is
-   the one that must be green before this item is closed, and this record says
-   so rather than presenting the earlier green run as the last word.
+   The suite passed at `8a1adee` and again at `7be5a46` (1649 tests, 1643 pass,
+   0 fail, 0 cancelled, 6 skipped) — the second run is the stronger evidence
+   because it includes the fix for the first timing failure. That failure was
+   `seed-http.test.ts`, which carried its own `{ timeout: 20_000 }` hang guard:
+   three TypeScript child processes on a 2-core runner can exceed 20 s, and
+   nothing in the test asserts a duration. The guard is now 120 s and logs each
+   phase. A future cancellation there would name its phase, but the pass rate
+   of that one test still depends on the runner's speed, and this record says so
+   instead of calling the suite deterministic.
+
 2. **The installed acceptance is API-level.** It drives the real server, real
    database, real worker and real export, but no human saw the window, played
    audio through a device, or moved a mixer. The GUI checklist in
