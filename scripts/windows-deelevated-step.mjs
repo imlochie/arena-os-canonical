@@ -120,11 +120,20 @@ if (status === undefined) {
   process.exit(1);
 }
 if (status !== "0") {
-  const errorLines = output.split(/\r?\n/).filter((line) => /fatal|error|fail|refus|denied|could not|not recognized/i.test(line)).slice(0, 6);
-  const fallback = output.split(/\r?\n/).filter(Boolean).slice(-3);
-  const lines = (errorLines.length > 0 ? errorLines : fallback).join(" | ");
+  // Name WHAT failed, not what merely mentions "fail": the previous filter
+  // matched passing tests whose names contain "FAILS" and reported them as the
+  // failure. Both reporter formats are read: the spec reporter marks a failure
+  // with a leading ✖, the TAP reporter with "not ok N -".
+  const all = output.split(/\r?\n/).map((line) => line.trimEnd());
+  const failing = all.filter((line) => /^\s*✖\s/.test(line) || /^not ok \d+/.test(line));
+  const counts = all.filter((line) => /^# (tests|pass|fail|cancelled) \d+/.test(line) || /^\s*ℹ (tests|pass|fail|cancelled) \d+/.test(line));
+  const undiagnosed = failing.length === 0
+    ? all.filter((line) => /fatal|ECONNREFUSED|not recognized|could not|refused|EACCES|EPERM|timed out/i.test(line) && !/^\s*✔/.test(line)).slice(-4)
+    : [];
+  const lines = [...failing.slice(0, 10), ...(failing.length > 10 ? [`…+${failing.length - 10} more`] : []), ...undiagnosed, ...counts.slice(-4)].join(" | ");
   console.log(`[deelevated] ${label}: FAIL (exit=${status})`);
-  console.log(`::error title=${label}::de-elevated exit ${status} — ${lines.slice(0, 900) || "no error lines"}`);
+  console.log(`[deelevated] failing identities: ${failing.length}`);
+  console.log(`::error title=${label}::de-elevated exit ${status} — ${lines.slice(0, 900) || "no failing test line and no error line in the log"}`);
   process.exit(Number(status) || 1);
 }
 const firstLines = output.split(/\r?\n/).slice(0, 3).join(" | ").slice(0, 400);

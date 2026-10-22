@@ -48,9 +48,14 @@ const files = [...collect("desktop"), ...collect("src/lib/waveyard/worker-local"
 const results = [];
 for (const file of files) {
   const started = Date.now();
+  // The per-test budget must fire BEFORE the file bound, otherwise a hung test
+  // is killed silently and the file is classified without ever naming the test
+  // that hung. 20 s of headroom is enough for the runner to print its failure
+  // and for the file to exit on its own.
+  const perTestMs = Math.max(10_000, boundMs - 20_000);
   const child = spawn(
     process.execPath,
-    ["--import", "./scripts/register-src-loader.mjs", "--test", "--test-timeout=120000", file],
+    ["--import", "./scripts/register-src-loader.mjs", "--test", `--test-timeout=${perTestMs}`, file],
     { stdio: ["ignore", "pipe", "pipe"], env: process.env },
   );
   let output = "";
@@ -94,8 +99,14 @@ for (const file of files) {
   writeFileSync(path.join(evidenceDir, "test-lifecycle.json"), JSON.stringify({ boundMs, results }, null, 2));
   console.log(`[lifecycle] ${outcome.padEnd(8)} ${file} (${entry.ms} ms) tests=${entry.tests ?? "?"} pass=${entry.pass ?? "?"} fail=${entry.fail ?? "?"}`);
   if (outcome === "no-exit" || outcome === "timeout" || outcome === "fail") {
-    // Annotations survive even when the job log host is unreachable.
-    console.log(`::warning title=lifecycle ${outcome}::${file} — ${entry.tail}`);
+    // Annotations survive even when the job log host is unreachable, so the
+    // failing test names travel with them: a file classified as `timeout` that
+    // does not say which test hung is only marginally better than "it hangs".
+    const names = output.split(/\r?\n/)
+      .filter((line) => /^\s*✖\s/.test(line) || /^not ok \d+/.test(line))
+      .map((line) => line.replace(/^\s*✖\s*/, "").replace(/^not ok \d+ - /, "").trim())
+      .slice(0, 6);
+    console.log(`::warning title=lifecycle ${outcome}::${file} — ${names.length ? names.join(" | ") : entry.tail}`);
   }
 }
 
