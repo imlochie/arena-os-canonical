@@ -48,7 +48,15 @@ export async function validateGameRuntime(code: string, options: { requireGamepl
       const context = await browser.newContext({ viewport: { width: 900, height: 700 }, serviceWorkers: "block", acceptDownloads: false });
       const page = await context.newPage();
       observedPage = page;
-      page.setDefaultTimeout(1200);
+      // These are observation budgets, not assertions. The page is served from
+      // a fulfilled route, so navigation needs no network — but a cold Chromium
+      // on a 2-core Windows runner took longer than 1.2 s to complete the first
+      // navigation and the smoke failed with `page.goto: Timeout 1200ms
+      // exceeded` while the same test passed on four previous runs. The
+      // isolation assertions (blocked requests, sandbox URL, non-uniform
+      // canvas) are unchanged; only the allowance is.
+      page.setDefaultNavigationTimeout(15_000);
+      page.setDefaultTimeout(5_000);
       const issues = observedIssues, hashes: string[] = [];
       let blockedRequests = 0;
       page.on("pageerror", error => issues.push(`Browser runtime error: ${error.message.slice(0, 250)}`));
@@ -129,7 +137,11 @@ export async function validateGameRuntime(code: string, options: { requireGamepl
     const report = await Promise.race([
       work(),
       new Promise<GameRuntimeReport>(resolve => {
-        timer = setTimeout(() => resolve({ ...base, ok: false, status: browser ? "failed" : "unavailable", issues: [`Browser verification exceeded its 10-second budget during ${phase}; game was not published.`] }), 10000);
+        // The whole smoke (launch, navigation, canvas observation, input and
+        // gameplay scenarios) must still be bounded, but 10 s was a cold-start
+        // race on this runner: every individual step is already bounded above,
+        // and 30 s keeps the endpoint honest without failing valid games.
+        timer = setTimeout(() => resolve({ ...base, ok: false, status: browser ? "failed" : "unavailable", issues: [`Browser verification exceeded its 30-second budget during ${phase}; game was not published.`] }), 30_000);
       }),
     ]);
     if (report.ok) freshChecks.set(report, { hash: base.codeSha256, expires: Date.now() + 30000 });
