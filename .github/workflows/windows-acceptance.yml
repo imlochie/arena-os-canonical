@@ -142,7 +142,11 @@ jobs:
           # No --test-force-exit: the run must exit on its own. The handle
           # reporter prints what is still referenced after the summary, so a
           # hang names its cause instead of just reporting "no exit".
-          node scripts/windows-deelevated-step.mjs "desktop contract tests" "$EVIDENCE/desktop-tests.log" 2400000 -- node --import ./scripts/register-src-loader.mjs --test --test-timeout=120000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-handle-reporter.mjs --test-reporter-destination=stderr "desktop/**/*.test.ts" "src/lib/waveyard/worker-local/*.test.ts"
+          # 600 s per test, not 120 s: separation.test.ts legitimately spends
+          # ~230 s on 16 tests (one alone takes 62 s), so a tighter budget would
+          # fail a passing file and look like a portability defect. The bound
+          # only has to be short enough to turn a hang into a named failure.
+          node scripts/windows-deelevated-step.mjs "desktop contract tests" "$EVIDENCE/desktop-tests.log" 2400000 -- node --import ./scripts/register-src-loader.mjs --test --test-timeout=600000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-handle-reporter.mjs --test-reporter-destination=stderr "desktop/**/*.test.ts" "src/lib/waveyard/worker-local/*.test.ts"
 
       - name: Gate summary
         if: always()
@@ -226,7 +230,7 @@ jobs:
   desktop-diagnostics:
     name: Desktop test hang diagnostics (bounded, non-blocking)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -248,14 +252,14 @@ jobs:
         # did not finish. Neither can be inferred from a single hanging glob.
         if: always()
         continue-on-error: true
-        # One file at a time, plus a hard per-file bound: 29 files x 100 s is
-        # the worst case, which fits the job's own 30-minute limit with the
-        # `npm ci` that precedes it. The whole-glob run that used to live above
-        # this step is gone: it can only repeat "something hangs", and it spent
-        # a third of the job's budget doing so.
+        # One file at a time, plus a hard per-file bound. 360 s is above the
+        # heaviest passing file (separation.test.ts: 16 tests, 227 s) so a
+        # file is only classified `timeout`/`no-exit` when it really is stuck;
+        # the whole-glob run that used to live above this step is gone, since
+        # it could only repeat "something hangs".
         run: |
           set -euo pipefail
-          node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 1500000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 100000
+          node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 1800000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 360000
 
       - name: Upload diagnostics
         if: always()

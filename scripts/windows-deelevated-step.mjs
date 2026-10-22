@@ -130,7 +130,10 @@ if (status !== "0") {
   const undiagnosed = failing.length === 0
     ? all.filter((line) => /fatal|ECONNREFUSED|not recognized|could not|refused|EACCES|EPERM|timed out/i.test(line) && !/^\s*✔/.test(line)).slice(-4)
     : [];
-  const lines = [...failing.slice(0, 10), ...(failing.length > 10 ? [`…+${failing.length - 10} more`] : []), ...undiagnosed, ...counts.slice(-4)].join(" | ");
+  // The handle dump is the reason this reporter exists; it must survive the
+  // trip through the checks API even when the job log host is unreachable.
+  const handleLines = all.filter((line) => line.includes("[handle-reporter]")).slice(-6);
+  const lines = [...failing.slice(0, 10), ...(failing.length > 10 ? [`…+${failing.length - 10} more`] : []), ...undiagnosed, ...handleLines, ...counts.slice(-4)].join(" | ");
   console.log(`[deelevated] ${label}: FAIL (exit=${status})`);
   console.log(`[deelevated] failing identities: ${failing.length}`);
   console.log(`::error title=${label}::de-elevated exit ${status} — ${lines.slice(0, 900) || "no failing test line and no error line in the log"}`);
