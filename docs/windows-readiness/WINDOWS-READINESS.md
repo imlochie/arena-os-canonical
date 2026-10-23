@@ -49,13 +49,13 @@ be expressed on Windows at all (a 70,000-character ffmpeg argument).
 | Desktop gate | 168 tests · 168 pass · **0 fail** · 0 cancelled · 355 s de-elevated in the final run (355–445 s across runs), and the step records its own exit |
 | Base commit | `13638fe8a5c280e6b47ecf97fb6e6cf414163a12` |
 | Windows runs (all six jobs `success`) | [39903639972](https://github.com/imlochie/arena-os-canonical/actions/runs/39903639972) (`db06e29`), [39899148687](https://github.com/imlochie/arena-os-canonical/actions/runs/39899148687) (`1b0cfdb`), [39892723344](https://github.com/imlochie/arena-os-canonical/actions/runs/39892723344) (`e0da39d`), [39890546669](https://github.com/imlochie/arena-os-canonical/actions/runs/39890546669) (`71cdee7`), [39819390531](https://github.com/imlochie/arena-os-canonical/actions/runs/39819390531) (`7c54f07`), [39810859260](https://github.com/imlochie/arena-os-canonical/actions/runs/39810859260) (`31b93cb`), [39810849313](https://github.com/imlochie/arena-os-canonical/actions/runs/39810849313) (`1261b70`), [39797631449](https://github.com/imlochie/arena-os-canonical/actions/runs/39797631449) (`805e4c0`), [39797838680](https://github.com/imlochie/arena-os-canonical/actions/runs/39797838680) (`9dbcfc2`), [39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515) (`7be5a46`), [39792397329](https://github.com/imlochie/arena-os-canonical/actions/runs/39792397329) (`52eba9e`), [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) (`8a1adee`) — twelve runs across twelve commits |
-| Runs that failed, and why | [39886922288](https://github.com/imlochie/arena-os-canonical/actions/runs/39886922288) (`5c54f76`, documentation only — the diff from `7c54f07` is empty outside `docs/`): the conversion provenance test exceeded its own 60 s budget, which the same code had cleared 35 minutes earlier; fixed at the cause in `71cdee7` (§5.19). [39802222893](https://github.com/imlochie/arena-os-canonical/actions/runs/39802222893) (`c087806`): one test, Arcade's 1.2 s cold-start navigation budget (§5.18), fixed in `1261b70`. [39896001156](https://github.com/imlochie/arena-os-canonical/actions/runs/39896001156) (`f43b86e`, documentation only): seed-http's SIGKILL restart test hit the 120 s cap it had been given after the first such failure, in a run whose suite took 37 minutes against 16.5 in the preceding one; the cap was measuring the runner, and both local caps are gone in favour of the suite's single declared bound (§5.20). [39901358509](https://github.com/imlochie/arena-os-canonical/actions/runs/39901358509) (`ff1f1b3`, documentation only): the desktop gate's export-publication test hit its own 30 s cap and the aborted transaction failed the rest of its file; the source suite ran the same file in the same run and passed (§5.21). Four failures are kept here, and no failing commit was re-run until it turned green |
+| Runs that failed, and why | [39886922288](https://github.com/imlochie/arena-os-canonical/actions/runs/39886922288) (`5c54f76`, documentation only — the diff from `7c54f07` is empty outside `docs/`): the conversion provenance test exceeded its own 60 s budget, which the same code had cleared 35 minutes earlier; fixed at the cause in `71cdee7` (§5.19). [39802222893](https://github.com/imlochie/arena-os-canonical/actions/runs/39802222893) (`c087806`): one test, Arcade's 1.2 s cold-start navigation budget (§5.18), fixed in `1261b70`. [39896001156](https://github.com/imlochie/arena-os-canonical/actions/runs/39896001156) (`f43b86e`, documentation only): seed-http's SIGKILL restart test hit the 120 s cap it had been given after the first such failure, in a run whose suite took 37 minutes against 16.5 in the preceding one; the cap was measuring the runner, and both local caps are gone in favour of the suite's single declared bound (§5.20). [39901358509](https://github.com/imlochie/arena-os-canonical/actions/runs/39901358509) (`ff1f1b3`, documentation only): the desktop gate's export-publication test hit its own 30 s cap and the aborted transaction failed the rest of its file; the source suite ran the same file in the same run and passed (§5.21). [39905312322](https://github.com/imlochie/arena-os-canonical/actions/runs/39905312322) (`699747c`, documentation only): a crash fixture's own 60 s allowance expired, and the harness named itself as the killer; the allowance now derives from the suite's declared bound (§5.22). Five failures are kept here, and no failing commit was re-run until it turned green |
 | Predecessor runs | `39724952496` (5 fail), `39736649568` (1 fail), `39739476880` (1 fail), `39770687200` (1 fail) — each failure named and fixed in §5, none retried blindly |
 | Installer | `Arena Setup 0.1.0.exe`, 621.1 MB; SHA-256 in `installer-sha256.txt` inside the `windows-package-<sha>` artifact |
 
-Twelve commits produced the same six green jobs. Four of the sixteen runs
-behind them failed, and all four are named above: the Arcade cold-start bound
-(§5.18) and local per-test caps that measured the runner (§5.19–§5.21). Each was
+Twelve commits produced the same six green jobs. Five of the seventeen runs
+behind them failed, and all five are named above: the Arcade cold-start bound
+(§5.18) and local caps that measured the runner (§5.19–§5.22). Each was
 fixed at its cause and the fixed commit was run again; no failing commit was
 re-run until it turned green. A ledger that deletes an inconvenient result
 stops being a ledger, and one that keeps it without a cause is noise.
@@ -372,6 +372,27 @@ worked around by weakening a check.
     first with all four removed: six jobs green, 1649 tests / 1643 pass /
     0 fail, 168/168 on the desktop gate.
 
+22. **A crash fixture's 60 s allowance, and an annotation that blamed the wrong
+    file.** Run 39905312322 (`699747c`, documentation only) failed one test —
+    "real PostgreSQL restart after before_completed preserves identity/results
+    and executes command once". The harness did what §5.15 built it to do: it
+    named itself as the killer ("the HARNESS killed it after its own timeout
+    (platform=win32 signal=SIGTERM status=null)") instead of reporting a product
+    failure. But the gate still went red for a number nobody asserted. That
+    fixture spawns a whole TypeScript child that talks to PostgreSQL, so a
+    constant bound measures the machine: `tests/helpers/hang-bound.ts` now
+    derives such bounds from the suite's declared per-test bound when CI sets it
+    (`ARENA_TEST_TIMEOUT_MS`), and the crash fixtures in `mission-recovery` and
+    the child scripts in `service.test.ts` use it. A developer run keeps its
+    local 60 s / 30 s guard.
+
+    The same run exposed a defect in the annotation added by §5.20: it carried
+    the last `[phase]` lines in the whole log, so this failure was annotated
+    with seed-http's download phases from a different file. It now takes only
+    the phases printed inside the failing test's own block. An annotation that
+    attributes work to the wrong test is worse than none, which is the premise
+    of §5.17.
+
 ## 6. What the Windows run actually proves
 
 - The application **installs, launches, operates, closes, reopens and
@@ -379,9 +400,10 @@ worked around by weakening a check.
   (`Arena Setup 0.1.0.exe`, 621.1 MB), with all nine sections of the installed
   acceptance PASS: `INSTALL`, `FIRST_LAUNCH`, `RUNTIME`, `WAVEYARD_WORKFLOW`,
   `EXPORT`, `RESTART_PERSISTENCE`, `PROCESS_CLEANUP`, `OFFLINE`,
-  `SECURITY/PACKAGING AUDIT`. Every run that attempted it has passed: 34 of
-  34 (the 13 earliest runs predate the installed-acceptance job and skipped it,
-  which is not a pass and is not counted as one).
+  `SECURITY/PACKAGING AUDIT`. No run that attempted it has failed (the 13
+  earliest runs predate the installed-acceptance job and skipped it, which is
+  not a pass and is not counted as one). The total grows with every green run;
+  the assertion is the absence of a failure, not a particular count.
 - Writable data lives under `%LOCALAPPDATA%\Arena`, not the repository.
 - The embedded database is created on first launch, survives restarts, and is
   reachable only over loopback.

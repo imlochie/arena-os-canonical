@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
 import { eq } from "drizzle-orm";
+import { hangBound } from "../../../../tests/helpers/hang-bound";
 
 /** Independent ZIP extraction before the existing native decode/sample checks. */
 async function extractStudioDownload(response: Response, filename: string) {
@@ -105,7 +106,7 @@ before(async () => {
   writeFileSync(pwFile, "arena-test", { mode: 0o600 });
   const init = spawnSync(embeddedBinary("initdb"), [
     "-D", dataDir, "-U", "arena", "--pwfile", pwFile, "-E", "UTF8", "--locale", "C", "-A", "scram-sha-256",
-  ], { encoding: "utf8", timeout: 120_000 });
+  ], { encoding: "utf8", timeout: hangBound(120_000) });
   rmSync(pwFile, { force: true });
   if (init.status !== 0) throw new Error(`initdb failed (${init.status}): ${(init.stdout ?? "") + (init.stderr ?? "")}`.slice(0, 2000));
 
@@ -1287,7 +1288,7 @@ test("performance settings and exact muted fader recall persist through actual r
   const response = await route.PATCH(new Request("http://arena.test/performance", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ stemMix: muted.mix, transition: { ...item.transition, performance: muted.performance } }) }), params);
   assert.equal(response.status, 200);
   const script = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { const s = await getSession('${OWNER}', '${created.id}'); console.log(JSON.stringify(s.tracks[0])); } finally { await pool.end(); }`;
-  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: hangBound(30_000) });
   assert.equal(child.status, 0, child.stderr);
   const reopened = JSON.parse(child.stdout.trim());
   assert.equal(reopened.stemMix.drums, 0);
@@ -1320,7 +1321,7 @@ test("session save retry after a lost SQL acknowledgement preserves audio and la
   assert.equal(await queue.flush(), false); assert.equal(attempts, 1);
   assert.equal(await queue.flush(true), true);
   const script = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { console.log(JSON.stringify(await getSession('${OWNER}', '${created.id}'))); } finally { await pool.end(); }`;
-  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: hangBound(30_000) });
   assert.equal(child.status, 0, child.stderr);
   const reopened = JSON.parse(child.stdout.trim());
   assert.equal(reopened.tracks[0].stemMix.drums, .37);
@@ -1352,11 +1353,11 @@ test("restore point survives a lost PUT acknowledgement, explicit latest retry a
     writeSync(1, JSON.stringify({acknowledged:true,positionSeconds:1.25,attempts,scope:'injected lost PUT ACK then actual SIGKILL after acknowledged latest retry; DB remains running'})+'\\n');
     process.kill(process.pid, 'SIGKILL');
   `;
-  const killed = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });
+  const killed = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: hangBound(30_000) });
   assertActuallyKilled(assert, killed, "session save process");
   assert.equal(JSON.parse(killed.stdout.trim()).acknowledged, true);
   const reopen = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { console.log(JSON.stringify(await getSession('${OWNER}', '${created.id}'))); } finally { await pool.end(); }`;
-  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", reopen], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: 30000 });
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", reopen], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: hangBound(30_000) });
   assert.equal(child.status, 0, child.stderr);
   const restored = JSON.parse(child.stdout.trim());
   assert.equal(restored.currentSessionTrackId, id);

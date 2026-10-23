@@ -153,9 +153,18 @@ if (status !== "0") {
   const handleLines = all.filter((line) => line.includes("[handle-reporter]")).slice(-6);
   // A timed-out test is named but not explained: the phase lines it printed
   // before it stalled are the explanation, and without this they exist only in
-  // the job log. Carry both, so a timeout annotation says where it stopped.
-  const timedOut = all.filter((line) => /timed out after \d+\s*ms/i.test(line)).slice(-2);
-  const phases = all.filter((line) => line.includes("[phase]")).slice(-6);
+  // the job log. Scope them to the failing test's own block — an earlier
+  // version took the last phase lines in the whole log and attributed another
+  // file's progress to this failure, which is worse than saying nothing.
+  const anchor = failing.length > 0 ? all.lastIndexOf(failing[0]) : -1;
+  let blockStart = 0;
+  for (let i = anchor - 1; i >= 0; i -= 1) {
+    if (/^(ok|not ok) \d+/.test(all[i]) || all[i].startsWith("# Subtest:")) { blockStart = i + 1; break; }
+  }
+  const phases = anchor < 0 ? [] : all.slice(blockStart, anchor).filter((line) => line.includes("[phase]")).slice(-6);
+  const timedOut = anchor < 0
+    ? []
+    : all.slice(anchor, anchor + 24).filter((line) => /timed out after \d+\s*ms/i.test(line)).slice(0, 2);
   const lines = [...failing.slice(0, 10), ...(failing.length > 10 ? [`…+${failing.length - 10} more`] : []), ...timedOut, ...phases, ...undiagnosed, ...handleLines, ...counts.slice(-4)].join(" | ");
   console.log(`[deelevated] ${label}: FAIL (exit=${status})`);
   console.log(`[deelevated] failing identities: ${failing.length}`);

@@ -129,14 +129,16 @@ than retried:
     16.5), the diagnosis changed: those caps were asserting a duration nothing
     in the test claims. Those caps — and three more in tests that build their
     own cluster or browser — are removed, and the suite's single declared
-    per-test bound governs (§5.20 and §5.21 of the readiness record).
+    per-test bound governs (§5.20 and §5.21 of the readiness record). Fixture
+    and child-process bounds follow the same rule through
+    `tests/helpers/hang-bound.ts` (§5.22).
 
 Result: six Windows jobs green on twelve commits, including the full source
 suite (1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped), the desktop
 contract gate (168/168, recording its own exit) and the installed application
-acceptance (34 of 34 runs that attempted it). Sixteen runs stand behind those
-twelve green ones; the four that failed are named in the readiness record (§2,
-§5.18–§5.21), not removed. The evidence commit is `db06e29`; run 39903639972.
+acceptance (no run that attempted it has failed). Seventeen runs stand behind those
+twelve green ones; the five that failed are named in the readiness record (§2,
+§5.18–§5.22), not removed. The evidence commit is `db06e29`; run 39903639972.
 
 ## 4. Reproduction
 

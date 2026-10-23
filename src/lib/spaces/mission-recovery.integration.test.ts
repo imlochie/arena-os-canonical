@@ -12,12 +12,16 @@ import { getLatestMission, runMission, reconcileMission, cancelMission, MissionB
 import { eq } from "drizzle-orm";
 import { missionPostgres } from "../../../tests/helpers/mission-postgres";
 import { assertActuallyKilled } from "../../../tests/helpers/platform-exit";
+import { hangBound } from "../../../tests/helpers/hang-bound";
 /** Startup allowance for the crash fixture: it boots a real process, connects
  * to PostgreSQL, calls a model and executes a command before reaching the
  * boundary. 15 s was enough on Linux and not on a Windows runner, where the
  * harness — not the fixture — killed it at `turn_recorded`. The assertion is
  * unchanged; only the allowance for the fixture to arrive is. */
-const FIXTURE_TIMEOUT_MS = 60_000;
+// A crash fixture is a whole TypeScript child with its own PostgreSQL work; the
+// suite's declared bound is the one that applies when CI sets it (see
+// tests/helpers/hang-bound.ts).
+const FIXTURE_TIMEOUT_MS = hangBound(60_000);
 
 let f: Awaited<ReturnType<typeof missionPostgres>>;
 before(async () => { f = await missionPostgres(); });
