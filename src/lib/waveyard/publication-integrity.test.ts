@@ -10,7 +10,9 @@ import { eq } from "drizzle-orm";
 import { missionPostgres } from "../../../tests/helpers/mission-postgres";
 import { encodeWav16 } from "./mixer/synth";
 
-test("public publication and playback never certify absent, changed or unreadable export bytes", { timeout: 60000 }, async t => {
+// The per-test bound is declared once by the suite (scripts/test-source.mjs);
+// this test builds a PostgreSQL cluster, so a local cap would measure the runner.
+test("public publication and playback never certify absent, changed or unreadable export bytes", async t => {
   const fixture = await missionPostgres();
   const root = await mkdtemp(join(tmpdir(), "arena-public-integrity-"));
   process.env.DATABASE_URL = fixture.url; process.env.WAVEYARD_STORAGE_DIR = root;

@@ -127,15 +127,16 @@ than retried:
     test (60 s → 120 s after run 39886922288). When the same class of failure
     hit seed-http again at 120 s (run 39896001156, a 37-minute suite against
     16.5), the diagnosis changed: those caps were asserting a duration nothing
-    in the test claims. Both are removed and the suite's single declared
-    per-test bound governs (§5.20 of the readiness record).
+    in the test claims. Those caps — and three more in tests that build their
+    own cluster or browser — are removed, and the suite's single declared
+    per-test bound governs (§5.20 and §5.21 of the readiness record).
 
 Result: six Windows jobs green on eleven commits, including the full source
 suite (1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped), the desktop
 contract gate (168/168, recording its own exit) and the installed application
-acceptance (34 of 34 runs that attempted it). Fourteen runs stand behind those
-eleven green ones; the three that failed are named in the readiness record (§2,
-§5.18–§5.20), not removed. The evidence commit is `1b0cfdb`; run 39899148687.
+acceptance (34 of 34 runs that attempted it). Fifteen runs stand behind those
+eleven green ones; the four that failed are named in the readiness record (§2,
+§5.18–§5.21), not removed. The evidence commit is `1b0cfdb`; run 39899148687.
 
 ## 4. Reproduction
 
