@@ -8,7 +8,9 @@ export function runCommandProcess(command: string, args: string[], opts: { cwd?:
     const env = { ...(opts.env ?? process.env) };
     delete env.NODE_TEST_CONTEXT;
     const grouped = process.platform !== "win32";
-    const child = spawn(command, args, { cwd: opts.cwd, env, shell: opts.shell ?? false, detached: grouped });
+    // windowsHide: a workspace command must not flash a console over the app;
+    // `detached` is POSIX-only (process groups) and leaves Windows unchanged.
+    const child = spawn(command, args, { cwd: opts.cwd, env, shell: opts.shell ?? false, detached: grouped, windowsHide: true });
     let output = "", timedOut = false;
     const capture = (data: Buffer) => { if (output.length < 8000) output += data.toString().slice(0, 8000 - output.length); };
     child.stdout?.on("data", capture); child.stderr?.on("data", capture);

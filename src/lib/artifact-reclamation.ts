@@ -3,9 +3,10 @@
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { lstat, open, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, open, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
+import { replaceFile } from "@/lib/fs-replace";
 import { db } from "@/db";
 import { objectReclamations, type ArtifactContentObject } from "@/db/schema";
 import { artifactObjectKey, ArtifactObjectError, MAX_ARTIFACT_OBJECT_BYTES } from "./artifact-objects";
@@ -121,7 +122,7 @@ async function restore(tx: Tx, mark: Mark, reason: string) {
   if (await exists(files.quarantine)) {
     await verify(files.quarantine, mark, true);
     if (await exists(files.canonical)) throw new ArtifactObjectError("Both canonical and quarantine bytes exist; retain both for manual reconciliation.", 409);
-    await rename(files.quarantine, files.canonical);
+    await replaceFile(files.quarantine, files.canonical);
   } else if (!await exists(files.canonical)) throw new ArtifactObjectError("Bytes already absent; restore the private volume from backup before retrying.", 410);
   else await verify(files.canonical, mark, true);
   return record(tx, mark, "restored", reason);
@@ -158,7 +159,7 @@ export async function sweepReclamation(owner: string, id: string, execute = fals
     if (mark.state === "quarantining") {
       if (await exists(files.quarantine)) return restore(tx, mark, "Interrupted quarantine reconciled by restoring bytes, not deleting");
       if (Math.max(mark.notBefore.getTime(), mark.markedAt.getTime() + policy.graceDays * DAY) > Date.now()) throw new ArtifactObjectError("Current mark grace period has not elapsed.", 409);
-      await verify(files.canonical, mark); await rename(files.canonical, files.quarantine);
+      await verify(files.canonical, mark); await replaceFile(files.canonical, files.quarantine);
       return record(tx, mark, "quarantined", "Bytes retained through recovery grace; explicit later purge required", { quarantinedAt: new Date(), purgeAfter: new Date(Date.now() + policy.quarantineDays * DAY) });
     }
     if (!purge) return { ...mark, reason: "Deletion intent unresolved; explicit purge retry or restore required. This sweep did not remove bytes." };

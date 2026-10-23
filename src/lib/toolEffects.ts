@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpath, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { realpath, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ToolGrant } from "./toolRuntime";
+import { replaceFile } from "./fs-replace";
 
 export type WriteCapability="filesystem.patch"|"filesystem.write";
 export type EffectStatus="proposed"|"approved"|"applied"|"failed"|"stale";
@@ -22,7 +23,7 @@ export async function applyFileEffect(effect:ToolEffect,grant:ToolGrant):Promise
  if(grant.id!==effect.grantId||grant.sessionId!==effect.sessionId||grant.resourceId!==effect.resourceId)throw new Error("TOOL_SCOPE_DENIED");
  const root=await realpath(grant.root);if(root!==effect.canonicalRoot)throw new Error("TOOL_SCOPE_STALE");const requested=resolve(root,effect.path);assertInside(root,requested);const parent=await realpath(dirname(requested));assertInside(root,parent);const target=resolve(parent,basename(requested));let before="";try{const canonical=await realpath(target);assertInside(root,canonical);before=await readFile(canonical,"utf8")}catch(e:any){if(e.code!=="ENOENT")throw e}
  if(effect.expectedHash!==null&&hash(before)!==effect.expectedHash)return{...effect,status:"stale",error:"TOOL_PREIMAGE_STALE"};
- const tmp=resolve(dirname(target),`.arena-${effect.id}.tmp`);let created=false;try{await writeFile(tmp,effect.content,{flag:"wx"});created=true;await rename(tmp,target);return{...effect,status:"applied",preimage:before}}catch(e){return{...effect,status:"failed",error:e instanceof Error?e.message:"TOOL_EFFECT_FAILED"}}finally{if(created)await rm(tmp,{force:true}).catch(()=>{})}
+ const tmp=resolve(dirname(target),`.arena-${effect.id}.tmp`);let created=false;try{await writeFile(tmp,effect.content,{flag:"wx"});created=true;await replaceFile(tmp,target);return{...effect,status:"applied",preimage:before}}catch(e){return{...effect,status:"failed",error:e instanceof Error?e.message:"TOOL_EFFECT_FAILED"}}finally{if(created)await rm(tmp,{force:true}).catch(()=>{})}
 }
 export function hash(value:string){return createHash("sha256").update(value).digest("hex")}
 function digest(value:unknown){return hash(JSON.stringify(value))}
