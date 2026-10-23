@@ -44,27 +44,28 @@ be expressed on Windows at all (a 70,000-character ffmpeg argument).
 
 | Item | Value |
 | --- | --- |
-| Evidence commit | `1b0cfdb1b46823531ddd37dbf64725ddbe13d0c0` (`1b0cfdb`) — the commit the final six-job green run (39899148687) ran against. Product code unchanged since `1261b70`; commits after this one change documentation only |
+| Evidence commit | `db06e297e1c8c745a11804fb1e378392b1a88cda` (`db06e29`) — the commit the final six-job green run (39903639972) ran against. Product code unchanged since `1261b70`; commits after this one change documentation only |
 | Full suite | 1649 tests · 1643 pass · **0 fail** · 0 cancelled · 6 skipped — same counts on the five most recent green runs |
-| Desktop gate | 168 tests · 168 pass · **0 fail** · 0 cancelled · 357 s de-elevated in the final run (357–445 s across runs), and the step records its own exit |
+| Desktop gate | 168 tests · 168 pass · **0 fail** · 0 cancelled · 355 s de-elevated in the final run (355–445 s across runs), and the step records its own exit |
 | Base commit | `13638fe8a5c280e6b47ecf97fb6e6cf414163a12` |
-| Windows runs (all six jobs `success`) | [39899148687](https://github.com/imlochie/arena-os-canonical/actions/runs/39899148687) (`1b0cfdb`), [39892723344](https://github.com/imlochie/arena-os-canonical/actions/runs/39892723344) (`e0da39d`), [39890546669](https://github.com/imlochie/arena-os-canonical/actions/runs/39890546669) (`71cdee7`), [39819390531](https://github.com/imlochie/arena-os-canonical/actions/runs/39819390531) (`7c54f07`), [39810859260](https://github.com/imlochie/arena-os-canonical/actions/runs/39810859260) (`31b93cb`), [39810849313](https://github.com/imlochie/arena-os-canonical/actions/runs/39810849313) (`1261b70`), [39797631449](https://github.com/imlochie/arena-os-canonical/actions/runs/39797631449) (`805e4c0`), [39797838680](https://github.com/imlochie/arena-os-canonical/actions/runs/39797838680) (`9dbcfc2`), [39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515) (`7be5a46`), [39792397329](https://github.com/imlochie/arena-os-canonical/actions/runs/39792397329) (`52eba9e`), [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) (`8a1adee`) — eleven runs across eleven commits |
+| Windows runs (all six jobs `success`) | [39903639972](https://github.com/imlochie/arena-os-canonical/actions/runs/39903639972) (`db06e29`), [39899148687](https://github.com/imlochie/arena-os-canonical/actions/runs/39899148687) (`1b0cfdb`), [39892723344](https://github.com/imlochie/arena-os-canonical/actions/runs/39892723344) (`e0da39d`), [39890546669](https://github.com/imlochie/arena-os-canonical/actions/runs/39890546669) (`71cdee7`), [39819390531](https://github.com/imlochie/arena-os-canonical/actions/runs/39819390531) (`7c54f07`), [39810859260](https://github.com/imlochie/arena-os-canonical/actions/runs/39810859260) (`31b93cb`), [39810849313](https://github.com/imlochie/arena-os-canonical/actions/runs/39810849313) (`1261b70`), [39797631449](https://github.com/imlochie/arena-os-canonical/actions/runs/39797631449) (`805e4c0`), [39797838680](https://github.com/imlochie/arena-os-canonical/actions/runs/39797838680) (`9dbcfc2`), [39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515) (`7be5a46`), [39792397329](https://github.com/imlochie/arena-os-canonical/actions/runs/39792397329) (`52eba9e`), [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) (`8a1adee`) — twelve runs across twelve commits |
 | Runs that failed, and why | [39886922288](https://github.com/imlochie/arena-os-canonical/actions/runs/39886922288) (`5c54f76`, documentation only — the diff from `7c54f07` is empty outside `docs/`): the conversion provenance test exceeded its own 60 s budget, which the same code had cleared 35 minutes earlier; fixed at the cause in `71cdee7` (§5.19). [39802222893](https://github.com/imlochie/arena-os-canonical/actions/runs/39802222893) (`c087806`): one test, Arcade's 1.2 s cold-start navigation budget (§5.18), fixed in `1261b70`. [39896001156](https://github.com/imlochie/arena-os-canonical/actions/runs/39896001156) (`f43b86e`, documentation only): seed-http's SIGKILL restart test hit the 120 s cap it had been given after the first such failure, in a run whose suite took 37 minutes against 16.5 in the preceding one; the cap was measuring the runner, and both local caps are gone in favour of the suite's single declared bound (§5.20). [39901358509](https://github.com/imlochie/arena-os-canonical/actions/runs/39901358509) (`ff1f1b3`, documentation only): the desktop gate's export-publication test hit its own 30 s cap and the aborted transaction failed the rest of its file; the source suite ran the same file in the same run and passed (§5.21). Four failures are kept here, and no failing commit was re-run until it turned green |
 | Predecessor runs | `39724952496` (5 fail), `39736649568` (1 fail), `39739476880` (1 fail), `39770687200` (1 fail) — each failure named and fixed in §5, none retried blindly |
 | Installer | `Arena Setup 0.1.0.exe`, 621.1 MB; SHA-256 in `installer-sha256.txt` inside the `windows-package-<sha>` artifact |
 
-Eleven commits produced the same six green jobs. Four of the fifteen runs
+Twelve commits produced the same six green jobs. Four of the sixteen runs
 behind them failed, and all four are named above: the Arcade cold-start bound
 (§5.18) and local per-test caps that measured the runner (§5.19–§5.21). Each was
 fixed at its cause and the fixed commit was run again; no failing commit was
 re-run until it turned green. A ledger that deletes an inconvenient result
 stops being a ledger, and one that keeps it without a cause is noise.
 
-The evidence commit is `1b0cfdb`, the newest commit with a six-job green run —
-39899148687 — and the second in a row whose six jobs carry no `failure`
-annotation at all (§5.17). Commits after it change documentation only; their
-runs are linked from the pull request, because a file cannot record the result
-of the run that reads it. Every Windows job prints `commit`, `tree` and `digest`
+The evidence commit is `db06e29`, the newest commit with a six-job green run —
+39903639972 — the third in a row whose six jobs carry no `failure` annotation
+at all (§5.17), and the first with the local per-test caps removed (§5.20,
+§5.21). Commits after it change documentation only; their runs are linked from
+the pull request, because a file cannot record the result of the run that reads
+it. Every Windows job prints `commit`, `tree` and `digest`
 in its first step, so an artifact can be tied to the source that produced it.
 
 ## 3. What this branch changes
@@ -158,8 +159,8 @@ per-user NSIS uninstaller.
 | --- | --- | --- |
 | `npm ci` | **PASS** | PASS |
 | `npm run typecheck` | **PASS** | **PASS** (exit 0) |
-| `npm run test:desktop` (de-elevated, restricted token) | **PASS — 168 tests, 168 pass, 0 fail, 0 cancelled, 357 s in the final run (357–445 s across runs), and the step records its own exit** | **PASS** — 168/168, clean exit |
-| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped**, green on the five most recent runs (`1261b70`, `31b93cb`, `7c54f07`, `71cdee7`, `1b0cfdb`) | **PASS with 2 environment failures** — 1649 tests, 1647 pass, 2 fail, 0 cancelled, 0 skipped at `e0da39d`; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
+| `npm run test:desktop` (de-elevated, restricted token) | **PASS — 168 tests, 168 pass, 0 fail, 0 cancelled, 355 s in the final run (355–445 s across runs), and the step records its own exit** | **PASS** — 168/168, clean exit |
+| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped**, green on the six most recent runs (`1261b70`, `31b93cb`, `7c54f07`, `71cdee7`, `e0da39d`, `1b0cfdb`, `db06e29`) | **PASS with 2 environment failures** — 1649 tests, 1647 pass, 2 fail, 0 cancelled, 0 skipped at `e0da39d`; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
 | Per-file lifecycle probe (diagnostics job) | **29/29 files exit cleanly** with the gate's per-test budget | 29/29 exit cleanly |
 | Staging identity guard | **PASS** — correctly refused packages while the tree was genuinely dirty (§5) | PASS |
 
@@ -367,7 +368,9 @@ worked around by weakening a check.
     bound — `export-publication` (30 s), `export-bundle` (60 s),
     `publication-integrity` (60 s), `session-live` (60 s) — so no test in that
     class can poison its own file. Tests whose cap is part of what they assert
-    (the Mission deadline tests) keep theirs.
+    (the Mission deadline tests) keep theirs. Run 39903639972 (`db06e29`) is the
+    first with all four removed: six jobs green, 1649 tests / 1643 pass /
+    0 fail, 168/168 on the desktop gate.
 
 ## 6. What the Windows run actually proves
 
@@ -385,13 +388,13 @@ worked around by weakening a check.
 - Media export works through the **bundled** FFmpeg/FFprobe on Windows.
 - The application runs offline: no request left `127.0.0.1`.
 - The desktop contract gate runs **and records its own exit**:
-  `ℹ tests 168 · ℹ pass 168 · ℹ fail 0 · ℹ cancelled 0`, in 357 s, under a
-  restricted token (run 39899148687, `1b0cfdb`). Before the wrapper fix the
+  `ℹ tests 168 · ℹ pass 168 · ℹ fail 0 · ℹ cancelled 0`, in 355 s, under a
+  restricted token (run 39903639972, `db06e29`). Before the wrapper fix the
   same suite also passed, but the step could only report "no completion
   sentinel" (§5.8).
 - The full source suite **passes on Windows**: 1649 tests, 1643 pass, 0 fail,
-  0 cancelled, 6 skipped (run 39899148687, `1b0cfdb`), with the same counts on
-  the five preceding green runs. It finishes; it does not merely start.
+  0 cancelled, 6 skipped (run 39903639972, `db06e29`), with the same counts on
+  the six preceding green runs. It finishes; it does not merely start.
 
 What it does **not** prove is listed next.
 
@@ -399,7 +402,7 @@ What it does **not** prove is listed next.
 
 1. **The suite is green, and three of its tests remain timing-sensitive by
    construction.** The suite passes on Windows at `1261b70`, `31b93cb`,
-   `7c54f07`, `71cdee7`, `e0da39d` and `1b0cfdb` — 1649 tests, 1643 pass, 0 fail,
+   `7c54f07`, `71cdee7`, `e0da39d` and `db06e29` — 1649 tests, 1643 pass, 0 fail,
    0 cancelled, 6 skipped. Four tests run real child processes, and three of
    them stopped at caps they had set for themselves before that was corrected:
    `seed-http.test.ts` (three TypeScript children) at a 20 s guard (run
