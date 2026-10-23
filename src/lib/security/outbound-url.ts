@@ -284,7 +284,7 @@ export async function safeFetch(raw: string | URL, init: RequestInit = {}, optio
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response: Response;
     try {
-      response = await fetchImpl(target.toString(), { ...init, redirect: "manual", signal: controller.signal });
+      response = await fetchImpl(target.toString(), { ...init, redirect: "manual", signal: init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal });
     } catch (error) {
       if (controller.signal.aborted) throw new OutboundUrlError(target.toString(), `request timed out after ${timeoutMs}ms`);
       throw error;

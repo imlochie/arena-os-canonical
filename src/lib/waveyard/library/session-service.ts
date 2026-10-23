@@ -17,6 +17,8 @@
 
 import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 
+import { sessionPlacements, sessionVolumePoints } from "./session-arrangement";
+import { MAX_REMIX_TRACKS, MAX_REMIX_CLIPS_PER_TRACK } from "../remix";
 import { db } from "@/db";
 import {
   listenSessionSwaps,
@@ -24,6 +26,8 @@ import {
   listenSessionTracks,
   projects,
   remixSessions,
+  remixClips,
+  remixAutomationPoints,
   remixTracks,
   sourceAnalyses,
   stemAssets,
@@ -42,7 +46,7 @@ import {
   validateStemSwap,
   type TransitionConfig,
 } from "./session-logic";
-import { getTrack, type TrackDetail, type TrackStem, type TrackSummary } from "./service";
+import { getTrack, type TrackDetail, type TrackStem, type TrackSummary, type AssetSelection } from "./service";
 
 export class SessionNotFoundError extends Error {
   constructor() {
@@ -71,6 +75,8 @@ export class StemSwapRefusedError extends Error {
 // ------------------------------------------------------------------ shapes
 
 export interface SessionTrackPayload {
+  banks: TrackDetail["banks"];
+  selectionRequired: string | null;
   id: string;
   position: number;
   track: TrackSummary;
@@ -105,6 +111,8 @@ export interface SessionSummaryPayload {
 }
 
 export interface SessionSwapPayload {
+  fromStemAssetId: string | null;
+  toStemAssetId: string | null;
   id: string;
   sessionTrackId: string;
   stemType: string;
@@ -115,6 +123,7 @@ export interface SessionSwapPayload {
 }
 
 interface SessionTrackRow {
+  assetSelection: string | null;
   id: string;
   trackId: string;
   position: number;
@@ -125,6 +134,7 @@ interface SessionTrackRow {
 async function loadSessionTracks(sessionId: string): Promise<SessionTrackRow[]> {
   const rows = await db
     .select({
+      assetSelection: listenSessionTracks.assetSelection,
       id: listenSessionTracks.id,
       trackId: listenSessionTracks.trackId,
       position: listenSessionTracks.position,
@@ -159,8 +169,10 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
   // visible in the payload instead of silently dropping them.
   const details = new Map<string, TrackDetail>();
   for (const row of trackRows) {
-    const detail = await getTrack(session.ownerId, row.trackId);
-    if (detail !== null) details.set(row.trackId, detail);
+    const parsed = row.assetSelection ? safeParse(row.assetSelection) as Partial<AssetSelection> | null : null;
+    const selection: AssetSelection | undefined = row.assetSelection === null ? undefined : parsed && Array.isArray(parsed.assetIds) && parsed.assetIds.every(id => typeof id === "string") && (parsed.kind === "source" || parsed.kind === "stems") ? parsed as AssetSelection : {assetIds:[],kind:"stems"};
+    const detail = await getTrack(session.ownerId, row.trackId, selection);
+    if (detail !== null) details.set(row.id, detail);
   }
   const summaries = await trackSummariesById(trackRows.map((row) => row.trackId));
   const analyses = new Map<string, SessionTrackAnalysis | null>();
@@ -178,19 +190,26 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
     currentSessionTrackId: session.currentTrackId,
     positionSeconds: session.positionSeconds,
     tracks: trackRows.map((row) => {
-      const detail = details.get(row.trackId) ?? null;
+      const detail = details.get(row.id) ?? null;
+      const selectionRequired = row.assetSelection === null ? "This legacy or unresolved item needs an explicit bank/source choice. Saved levels and cues are preserved." : detail?.selectionRequired ?? null;
+      const legacySwap = swapRows.some(swap => swap.sessionTrackId === row.id && (!swap.toStemAssetId || !swap.fromStemAssetId));
+      const reason = legacySwap ? "A legacy swap has no exact asset identity. Remove and reselect that swap explicitly; its ledger is preserved." : selectionRequired;
       return {
+        banks: detail?.banks ?? [],
+        selectionRequired: reason,
         id: row.id,
         position: row.position,
         track: (detail as TrackSummary | null) ?? summaries.get(row.trackId) ?? failSummary(row.trackId),
-        stems: detail?.stems ?? [],
-        playback: detail?.playback ?? null,
+        stems: selectionRequired ? [] : detail?.stems ?? [],
+        playback: reason ? null : detail?.playback ?? null,
         stemMix: parseStemMix(row.stemMix),
         transition: normalizeTransitionConfig(safeParse(row.transition)) ?? defaultTransitionConfig(),
         analysis: analyses.get(row.id) ?? null,
       };
     }),
     swaps: swapRows.map((row) => ({
+      fromStemAssetId: row.fromStemAssetId,
+      toStemAssetId: row.toStemAssetId,
       id: row.id,
       sessionTrackId: row.sessionTrackId,
       stemType: row.stemType,
@@ -305,35 +324,37 @@ export async function addTrackToSession(input: {
   ownerId: string;
   sessionId: string;
   trackId: string;
+  bankId?: string;
   position?: number;
+  /** Optional operation identity: retry one insertion, while intentional repeats
+   * without this identity retain the established live-set semantics. */
+  operationId?: string;
 }): Promise<SessionDetailPayload> {
-  await ownedSession(input.ownerId, input.sessionId);
-  const [track] = await db
-    .select({ id: tracks.id })
-    .from(tracks)
-    .where(and(eq(tracks.id, input.trackId), eq(tracks.ownerId, input.ownerId)))
-    .limit(1);
-  if (track === undefined) throw new TrackNotInLibraryError();
-
-  const existing = await loadSessionTracks(input.sessionId);
-  const [item] = await db
-    .insert(listenSessionTracks)
-    .values({
-      sessionId: input.sessionId,
-      trackId: input.trackId,
-      position: existing.length,
-      stemMix: "{}",
-      transition: JSON.stringify(defaultTransitionConfig()),
-    })
-    .returning({ id: listenSessionTracks.id });
-  let ordered = [...existing.map((row) => row.id), item.id];
-  if (input.position !== undefined) {
-    const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
-    const from = ordered.length - 1;
-    ordered.splice(to, 0, ordered.splice(from, 1)[0]);
-  }
-  await resequence(input.sessionId, ordered);
-  await touchSession(input.sessionId);
+  await db.transaction(async tx => {
+    const [session] = await tx.select().from(listenSessions).where(and(eq(listenSessions.id, input.sessionId), eq(listenSessions.ownerId, input.ownerId))).for("update");
+    if (!session) throw new SessionNotFoundError();
+    const [track] = await tx.select({ id: tracks.id }).from(tracks).where(and(eq(tracks.id, input.trackId), eq(tracks.ownerId, input.ownerId)));
+    if (!track) throw new TrackNotInLibraryError();
+    if (input.operationId) {
+      const [previous] = await tx.select().from(listenSessionTracks).where(eq(listenSessionTracks.id, input.operationId));
+      if (previous) {
+        if (previous.sessionId !== input.sessionId || previous.trackId !== input.trackId) throw new StemSwapRefusedError("Session insertion identity belongs to a different item; no substitution allowed.");
+        return;
+      }
+    }
+    const selected = await getTrack(input.ownerId, input.trackId, input.bankId ? { bankId: input.bankId } : undefined);
+    if (input.bankId && selected?.selectionRequired) throw new StemSwapRefusedError(selected.selectionRequired);
+    const assetSelection = selected && !selected.selectionRequired ? JSON.stringify(selected.playback) : null;
+    const existing = await tx.select({ id: listenSessionTracks.id }).from(listenSessionTracks).where(eq(listenSessionTracks.sessionId, input.sessionId)).orderBy(asc(listenSessionTracks.position));
+    const [item] = await tx.insert(listenSessionTracks).values({ id: input.operationId, sessionId: input.sessionId, trackId: input.trackId, assetSelection, position: existing.length, stemMix: "{}", transition: JSON.stringify(defaultTransitionConfig()) }).returning({ id: listenSessionTracks.id });
+    const ordered = [...existing.map(row => row.id), item.id];
+    if (input.position !== undefined) {
+      const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
+      ordered.splice(to, 0, ordered.splice(ordered.length - 1, 1)[0]);
+    }
+    for (const [position, id] of ordered.entries()) await tx.update(listenSessionTracks).set({ position }).where(eq(listenSessionTracks.id, id));
+    await tx.update(listenSessions).set({ updatedAt: new Date() }).where(eq(listenSessions.id, input.sessionId));
+  });
   return sessionPayload(input.sessionId);
 }
 
@@ -390,17 +411,29 @@ export async function updateSessionTrack(
   ownerId: string,
   sessionId: string,
   sessionTrackId: string,
-  patch: { stemMix?: unknown; transition?: unknown },
+  patch: { stemMix?: unknown; transition?: unknown; bankId?: string | null },
 ): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
   const [row] = await db
-    .select({ id: listenSessionTracks.id })
+    .select({ id: listenSessionTracks.id, trackId: listenSessionTracks.trackId })
     .from(listenSessionTracks)
     .where(and(eq(listenSessionTracks.id, sessionTrackId), eq(listenSessionTracks.sessionId, sessionId)))
     .limit(1);
   if (row === undefined) throw new SessionTrackNotFoundError();
 
-  const values: Partial<{ stemMix: string; transition: string }> = {};
+  const values: Partial<{ stemMix: string; transition: string; assetSelection: string }> = {};
+  if (patch.bankId !== undefined) {
+    const selected = await getTrack(ownerId, row.trackId, patch.bankId === null ? undefined : { bankId: patch.bankId });
+    if (!selected) throw new TrackNotInLibraryError();
+    if (patch.bankId === null) {
+      values.assetSelection = JSON.stringify({ kind: "source", assetIds: [selected.source.id] });
+    } else {
+      if (selected.selectionRequired) throw new StemSwapRefusedError(selected.selectionRequired);
+      values.assetSelection = JSON.stringify(selected.playback);
+    }
+    const swaps = await db.select().from(listenSessionSwaps).where(eq(listenSessionSwaps.sessionTrackId, sessionTrackId));
+    if (swaps.length) throw new StemSwapRefusedError("Remove the saved swaps explicitly before changing this item's bank; no swaps or cues were discarded.");
+  }
   if (patch.stemMix !== undefined) {
     const mix = normalizeStemMix(patch.stemMix);
     if (Object.keys(mix).length === 0 && Object.keys(patch.stemMix ?? {}).length > 0) {
@@ -459,6 +492,8 @@ export async function recordStemSwap(input: {
   stemType: string;
   toTrackId: string;
   atSeconds: number;
+  toStemAssetId?: string;
+  fromStemAssetId?: string;
 }): Promise<SessionDetailPayload> {
   await ownedSession(input.ownerId, input.sessionId);
 
@@ -476,20 +511,38 @@ export async function recordStemSwap(input: {
     .limit(1);
   if (donor === undefined) throw new TrackNotInLibraryError();
 
-  const currentDetail = await getTrack(input.ownerId, sessionTrack.trackId);
+  const payload = await sessionPayload(input.sessionId);
+  const currentDetail = payload.tracks.find(item => item.id === input.sessionTrackId);
+  if (currentDetail?.selectionRequired) throw new StemSwapRefusedError(currentDetail.selectionRequired);
   const donorDetail = await getTrack(input.ownerId, input.toTrackId);
-  if (currentDetail === null || donorDetail === null) throw new TrackNotInLibraryError();
+  const candidates = donorDetail?.banks.flatMap(bank => bank.stems).filter(stem => stem.stemType === input.stemType && (!input.toStemAssetId || stem.id === input.toStemAssetId)) ?? [];
+  const donorStem = candidates.length === 1 ? candidates[0] : undefined;
+  if (!donorStem) throw new StemSwapRefusedError("Choose the exact donor stem asset from one published bank; no substitute was selected.");
+  if (!currentDetail || !donorDetail) throw new TrackNotInLibraryError();
 
-  const validation = validateStemSwap(currentDetail.stems, donorDetail.stems, input.stemType);
+  const validation = validateStemSwap(currentDetail.stems, [donorStem], input.stemType);
   if (!validation.ok) throw new StemSwapRefusedError(validation.reason);
 
-  await db.insert(listenSessionSwaps).values({
-    sessionId: input.sessionId,
-    sessionTrackId: input.sessionTrackId,
-    stemType: input.stemType,
-    fromTrackId: sessionTrack.trackId,
-    toTrackId: input.toTrackId,
-    atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
+  await db.transaction(async tx => {
+    // Preserve the existing provenance/Studio ranges. The last acknowledged
+    // selection per category is active, including an explicit return to A.
+    // This is not a complete recording/replay of performed gestures.
+    const [member] = await tx.select({ id: listenSessionTracks.id, assetSelection: listenSessionTracks.assetSelection }).from(listenSessionTracks)
+      .where(and(eq(listenSessionTracks.id, input.sessionTrackId), eq(listenSessionTracks.sessionId, input.sessionId))).for("update");
+    if (!member) throw new SessionTrackNotFoundError();
+    let lockedAssets: unknown = null;
+    try { lockedAssets = member.assetSelection ? JSON.parse(member.assetSelection).assetIds : null; } catch { /* Invalid saved identity is refused below, never guessed. */ }
+    if (input.fromStemAssetId && (currentDetail.stems.find(stem => stem.stemType === input.stemType)?.id !== input.fromStemAssetId || (member.assetSelection && (!Array.isArray(lockedAssets) || !lockedAssets.includes(input.fromStemAssetId))))) throw new StemSwapRefusedError("The target source bank changed. The old selection was not saved; reopen the current bank and choose again.");
+    await tx.insert(listenSessionSwaps).values({
+      sessionId: input.sessionId,
+      sessionTrackId: input.sessionTrackId,
+      stemType: input.stemType,
+      fromStemAssetId: currentDetail.stems.find(stem => stem.stemType === input.stemType)!.id,
+      toStemAssetId: donorStem.id,
+      fromTrackId: sessionTrack.trackId,
+      toTrackId: input.toTrackId,
+      atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
+    });
   });
   await touchSession(input.sessionId);
   return sessionPayload(input.sessionId);
@@ -510,6 +563,7 @@ export interface StudioHandoffResult {
   remixSessionId: string;
   remixTrackCount: number;
   refused?: string;
+  notice: string;
 }
 
 /**
@@ -519,68 +573,122 @@ export interface StudioHandoffResult {
  * stem asset (separation never ran AND no passthrough bridge) are refused
  * honestly by name, because a remix track requires real audio to bind.
  */
-export async function sendSessionToStudio(ownerId: string, sessionId: string): Promise<StudioHandoffResult> {
+export type StudioHandoffTrackEdit = { id: string; stemMix: StemMix; transition: TransitionConfig };
+
+export async function sendSessionToStudio(ownerId: string, sessionId: string, trackEdits: StudioHandoffTrackEdit[] = [], mode: "sequential" | "transitions" = "sequential"): Promise<StudioHandoffResult> {
   await requireUser();
-  const detail = await sessionPayload(sessionId);
   await ownedSession(ownerId, sessionId);
+  const detail = await sessionPayload(sessionId);
+  if (detail.tracks.some(item => item.selectionRequired)) throw new StemSwapRefusedError("Resolve each bank or legacy swap selection before exporting. Existing work is unchanged.");
+  // Capture the visible controls with the handoff, not a possibly stale
+  // 600ms-debounced database state. Validate the whole snapshot before writes.
+  const seen = new Set<string>();
+  for (const edit of trackEdits) {
+    const item = detail.tracks.find((track) => track.id === edit.id);
+    const transition = normalizeTransitionConfig(edit.transition);
+    const stemMix = normalizeStemMix(edit.stemMix);
+    if (!item || seen.has(edit.id) || !transition || Object.keys(stemMix).length !== Object.keys(edit.stemMix).length)
+      throw new StemSwapRefusedError("The handoff edit snapshot is invalid or no longer belongs to this session. Reload and try again.");
+    seen.add(edit.id);
+    item.stemMix = stemMix;
+    item.transition = transition;
+  }
 
-  const bindable: Array<{ sessionTrack: SessionTrackPayload; stemId: string; stemType: string }> = [];
   const refused: string[] = [];
-  for (const sessionTrack of detail.tracks) {
-    const trackDetail = await getTrack(ownerId, sessionTrack.track.id);
-    if (trackDetail === null || trackDetail.stems.length === 0) {
-      refused.push(sessionTrack.track.title);
+  const lanes: Array<{
+    stemAssetId: string; name: string; volume: number;
+    points?: Array<{ timelineMs: number; value: number }>;
+    clips: Array<{ stemAssetId: string; timelineStartMs: number; sourceOffsetMs: number; durationMs: number }>;
+  }> = [];
+  let placements: ReturnType<typeof sessionPlacements> | undefined;
+  if (mode === "transitions") {
+    try { placements = sessionPlacements(detail.tracks.map((item) => ({ id: item.id, durationSeconds: item.track.durationSeconds, transition: item.transition }))); }
+    catch (error) { throw new StemSwapRefusedError(error instanceof Error ? error.message : "Invalid completed transitions."); }
+  }
+  let timelineMs = 0;
+  for (const [itemIndex, item] of detail.tracks.entries()) {
+    const placement = placements?.[itemIndex];
+    if (placement) timelineMs = placement.timelineStartMs;
+    const separated = item.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
+    const selected = separated.length ? separated : item.stems.filter((stem) => stem.engine === "passthrough-unseparated").slice(0, 1);
+    if (!selected.length) {
+      refused.push(`“${item.track.title}” has no stems or explicit unseparated-source bridge.`);
       continue;
     }
-    // Prefer a real separated stem set; fall back to the passthrough stem.
-    const real = trackDetail.stems.find((stem) => stem.engine !== "passthrough-unseparated");
-    const passthrough = trackDetail.stems.find((stem) => stem.engine === "passthrough-unseparated");
-    const stem = real ?? passthrough;
-    if (stem === undefined) {
-      refused.push(sessionTrack.track.title);
+    const durationMs = placement?.sourceEndMs ?? Math.floor(item.track.durationSeconds * 1000);
+    const sourceStartMs = placement?.sourceStartMs ?? 0;
+    if (durationMs <= 0) {
+      refused.push(`“${item.track.title}” has no usable duration.`);
       continue;
     }
-    bindable.push({ sessionTrack, stemId: stem.id, stemType: stem.stemType });
-  }
-  if (bindable.length === 0) {
-    throw new StemSwapRefusedError(
-      `No session track has audio the Studio can bind (needs separated stems or the full-source bridge): ${refused.join(", ")}.`,
-    );
-  }
-
-  const [project] = await db
-    .insert(projects)
-    .values({
-      ownerId,
-      title: `Session · ${detail.name}`,
-      description: `Derived from listening session “${detail.name}” (${detail.tracks.length} tracks). Original tracks and stems are referenced, never copied or modified.`,
-      kind: "studio",
-      visibility: "private",
-    })
-    .returning({ id: projects.id });
-
-  const [remix] = await db
-    .insert(remixSessions)
-    .values({
-      projectId: project.id,
-      ownerId,
-      name: `Session · ${detail.name}`,
-    })
-    .returning({ id: remixSessions.id });
-
-  await db.transaction(async (tx) => {
-    for (const [index, entry] of bindable.entries()) {
-      await tx.insert(remixTracks).values({
-        remixSessionId: remix.id,
-        stemAssetId: entry.stemId,
-        name: `${entry.sessionTrack.track.title} — ${entry.stemType}`,
-        sortOrder: index,
-        volume: entry.sessionTrack.stemMix[entry.stemType] ?? 1,
+    if (timelineMs + durationMs > 86_400_000) throw new StemSwapRefusedError("This arrangement exceeds Studio’s 24-hour timeline limit. Send a shorter session. Nothing was created.");
+    const itemLanes: typeof lanes = [];
+    let invalid: string | undefined;
+    for (const stem of selected) {
+      const swaps = detail.swaps.filter((swap) => swap.sessionTrackId === item.id && swap.stemType === stem.stemType)
+        .sort((a, b) => a.atSeconds - b.atSeconds);
+      const changes = [{ at: 0, stemAssetId: stem.id }];
+      for (const swap of swaps) {
+        const donor = await getTrack(ownerId, swap.toTrackId);
+        const donorStem = donor?.banks.flatMap(bank => bank.stems).find(candidate => candidate.id === swap.toStemAssetId && candidate.stemType === stem.stemType);
+        if (!donorStem) { invalid = `a saved ${stem.stemType} swap donor is unavailable`; break; }
+        const at = Math.round(swap.atSeconds * 1000);
+        if (at < durationMs) changes.push({ at, stemAssetId: donorStem.id });
+      }
+      if (invalid) break;
+      const clips = changes.flatMap((change, index) => {
+        const end = changes[index + 1]?.at ?? durationMs;
+        const start = Math.max(sourceStartMs, change.at);
+        return end > start ? [{ stemAssetId: change.stemAssetId, timelineStartMs: timelineMs + start - sourceStartMs, sourceOffsetMs: start, durationMs: end - start }] : [];
       });
+      if (clips.length > MAX_REMIX_CLIPS_PER_TRACK) throw new StemSwapRefusedError(`A stem lane exceeds Studio’s ${MAX_REMIX_CLIPS_PER_TRACK}-clip limit. Use a session with fewer swaps. Nothing was created.`);
+      const assets = await db.select().from(stemAssets).where(inArray(stemAssets.id, [...new Set(clips.map((clip) => clip.stemAssetId))]));
+      if (clips.some((clip) => {
+        const asset = assets.find((candidate) => candidate.id === clip.stemAssetId);
+        return !asset || !Number.isFinite(asset.durationSeconds) || clip.sourceOffsetMs + clip.durationMs > asset.durationSeconds * 1000;
+      })) { invalid = `a saved stem or swap is missing or shorter than its timeline range`; break; }
+      itemLanes.push({ stemAssetId: stem.id, name: `${item.track.title} — ${stem.stemType}`, volume: item.stemMix[stem.stemType] ?? 1, clips, ...(placement ? { points: sessionVolumePoints(placement, stem.stemType, item.stemMix[stem.stemType] ?? 1) } : {}) });
     }
+    if (invalid) { refused.push(`“${item.track.title}”: ${invalid}.`); continue; }
+    lanes.push(...itemLanes);
+    timelineMs += durationMs;
+  }
+  if (mode === "transitions" && refused.length) throw new StemSwapRefusedError(`Cannot preserve this arrangement: ${refused.join(" ")} Nothing was created; repair the unavailable audio or explicitly choose a sequential edit.`);
+  if (!lanes.length) throw new StemSwapRefusedError(
+    `No session track can be sent to Studio. ${refused.join(" ")} Original sources are untouched.`,
+  );
+  // This is the existing arrangement persistence limit, not a silent truncation.
+  if (lanes.length > MAX_REMIX_TRACKS) throw new StemSwapRefusedError(
+    `This session needs ${lanes.length} stem lanes; Studio currently supports ${MAX_REMIX_TRACKS}. Send a smaller session. Nothing was created.`,
+  );
+  const { project, remix } = await db.transaction(async (tx) => {
+    for (const id of seen) {
+      const item = detail.tracks.find((track) => track.id === id)!;
+      await tx.update(listenSessionTracks).set({ stemMix: serializeStemMix(item.stemMix), transition: JSON.stringify(item.transition) })
+        .where(and(eq(listenSessionTracks.id, id), eq(listenSessionTracks.sessionId, sessionId)));
+    }
+    if (seen.size) await tx.update(listenSessions).set({ updatedAt: new Date() }).where(eq(listenSessions.id, sessionId));
+    const [project] = await tx.insert(projects).values({
+      ownerId, title: `Session — ${detail.name}`, kind: "studio",
+      description: mode === "transitions"
+        ? `Derived from listening session “${detail.name}” (${sessionId}). Completed transition cues, source ranges, saved mixes and donor swaps preserved with remix clips/automation. Provenance: ${JSON.stringify({ sessionId, cursor: { sessionTrackId: detail.currentSessionTrackId, positionSeconds: detail.positionSeconds }, transitions: detail.tracks.map((item) => ({ sessionTrackId: item.id, trackId: item.track.id, transition: item.transition })) })}. Cursor is a source-session bookmark, not an instruction to start playback. Original audio is referenced, not copied.`
+        : `Derived from listening session “${detail.name}” (${sessionId}). Sequential-v1 clips preserve stem levels and timed swaps; live transition timing and crossfades are not recorded. Original audio is referenced, not copied.`,
+    }).returning();
+    const [remix] = await tx.insert(remixSessions).values({ projectId: project.id, ownerId, name: detail.name }).returning();
+    for (const [sortOrder, lane] of lanes.entries()) {
+      const [track] = await tx.insert(remixTracks).values({
+        remixSessionId: remix.id, stemAssetId: lane.stemAssetId, name: lane.name, volume: lane.volume, sortOrder,
+      }).returning();
+      await tx.insert(remixClips).values(lane.clips.map((clip) => ({ ...clip, remixTrackId: track.id, gain: 1 })));
+      if (lane.points?.length) await tx.insert(remixAutomationPoints).values(lane.points.map((point) => ({ ...point, remixSessionId: remix.id, remixTrackId: track.id, parameter: "volume" })));
+    }
+    return { project, remix };
   });
-
-  return { projectId: project.id, remixSessionId: remix.id, remixTrackCount: bindable.length, refused: refused.length > 0 ? refused.join(", ") : undefined };
+  return {
+    projectId: project.id, remixSessionId: remix.id, remixTrackCount: lanes.length,
+    notice: (mode === "transitions" ? "Completed transitions, source ranges, stem levels and timed donor swaps are preserved as Studio clips and volume automation. The source cursor is retained as provenance, not live playback. Pauses, seeks, cancelled/forced-shortened fades and mix gestures are not a performance recording." : "Created a sequential arrangement with saved stem levels and timed swaps. Live transition triggers, crossfades and the playback cursor are not recorded into this arrangement; edit transitions in Studio. Original sources and the listening session are unchanged.") + " Full-length endpoints use Studio’s integer-millisecond grid, rounding down by less than 1 ms to stay within the decoded asset. Original stem files retain every sample.",
+    ...(refused.length ? { refused: refused.join(" ") } : {}),
+  };
 }
 
 /** Analysis for the compatibility panel: BPM/key/beat grid per session track. */

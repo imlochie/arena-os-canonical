@@ -1,6 +1,7 @@
+import { projectAudio } from "@/lib/waveyard/project-audio";
 import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq, inArray, or } from "drizzle-orm";
 import { db } from "@/db";
 import {
   drumAnalyses,
@@ -16,7 +17,6 @@ import {
   sourceEvents,
   sourceSectionAnalyses,
   sourceSections,
-  stemAssets,
   vocalAnalyses,
   vocalPhrases,
   vocalPitchFrames,
@@ -44,25 +44,28 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     
+    const audio = await projectAudio(id);
+    const sourceIds = audio.sources.map((source) => source.id);
+    const stemIds = audio.stems.map((stem) => stem.id);
     const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows, harmonyAnalysisRows, harmonyEventRows, drumAnalysisRows, drumEventRows, vocalAnalysisRows, vocalFrameRows, vocalPhraseRows, acquisitionRows, buildRows] = await Promise.all([
-      db.select().from(sourceAssets).where(eq(sourceAssets.projectId, id)).orderBy(asc(sourceAssets.createdAt)),
-      db.select().from(stemAssets).where(eq(stemAssets.projectId, id)).orderBy(asc(stemAssets.createdAt)),
+      Promise.resolve(audio.sources),
+      Promise.resolve(audio.stems),
       db.select().from(processingJobs).where(eq(processingJobs.projectId, id)).orderBy(asc(processingJobs.createdAt)),
-      db.select().from(waveformAssets).where(eq(waveformAssets.projectId, id)).orderBy(asc(waveformAssets.createdAt)),
+      db.select().from(waveformAssets).where(or(inArray(waveformAssets.sourceAssetId, sourceIds), inArray(waveformAssets.stemAssetId, stemIds))).orderBy(asc(waveformAssets.createdAt)),
       db.select().from(waveformJobs).where(eq(waveformJobs.projectId, id)).orderBy(asc(waveformJobs.createdAt)),
-      db.select().from(sourceAnalyses).where(eq(sourceAnalyses.projectId, id)).orderBy(asc(sourceAnalyses.createdAt)),
-      db.select().from(sourceSectionAnalyses).where(eq(sourceSectionAnalyses.projectId, id)).orderBy(asc(sourceSectionAnalyses.createdAt)),
-      db.select().from(sourceSections).where(eq(sourceSections.projectId, id)).orderBy(asc(sourceSections.sourceAssetId), asc(sourceSections.sectionIndex)),
-      db.select().from(sourceEventAnalyses).where(eq(sourceEventAnalyses.projectId, id)).orderBy(asc(sourceEventAnalyses.createdAt)),
-      db.select().from(sourceEvents).where(eq(sourceEvents.projectId, id)).orderBy(asc(sourceEvents.sourceAssetId), asc(sourceEvents.timestampMs)),
-      db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.projectId, id)).orderBy(asc(harmonyAnalyses.createdAt)),
-      db.select().from(harmonyEvents).innerJoin(harmonyAnalyses, eq(harmonyEvents.harmonyAnalysisId, harmonyAnalyses.id)).where(eq(harmonyAnalyses.projectId, id)).orderBy(asc(harmonyAnalyses.sourceAssetId), asc(harmonyEvents.eventIndex)),
-      db.select().from(drumAnalyses).where(eq(drumAnalyses.projectId, id)).orderBy(asc(drumAnalyses.createdAt)),
-      db.select().from(drumEvents).innerJoin(drumAnalyses, eq(drumEvents.drumAnalysisId, drumAnalyses.id)).where(eq(drumAnalyses.projectId, id)).orderBy(asc(drumAnalyses.stemAssetId), asc(drumEvents.eventIndex)),
-      db.select().from(vocalAnalyses).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.createdAt)),
-      db.select().from(vocalPitchFrames).innerJoin(vocalAnalyses, eq(vocalPitchFrames.vocalAnalysisId, vocalAnalyses.id)).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.stemAssetId), asc(vocalPitchFrames.frameIndex)),
-      db.select().from(vocalPhrases).innerJoin(vocalAnalyses, eq(vocalPhrases.vocalAnalysisId, vocalAnalyses.id)).where(eq(vocalAnalyses.projectId, id)).orderBy(asc(vocalAnalyses.stemAssetId), asc(vocalPhrases.phraseIndex)),
-      db.select().from(sourceAcquisitions).innerJoin(sourceAssets, eq(sourceAcquisitions.sourceAssetId, sourceAssets.id)).where(eq(sourceAssets.projectId, id)),
+      db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, sourceIds)).orderBy(asc(sourceAnalyses.createdAt)),
+      db.select().from(sourceSectionAnalyses).where(inArray(sourceSectionAnalyses.sourceAssetId, sourceIds)).orderBy(asc(sourceSectionAnalyses.createdAt)),
+      db.select().from(sourceSections).where(inArray(sourceSections.sourceAssetId, sourceIds)).orderBy(asc(sourceSections.sourceAssetId), asc(sourceSections.sectionIndex)),
+      db.select().from(sourceEventAnalyses).where(inArray(sourceEventAnalyses.sourceAssetId, sourceIds)).orderBy(asc(sourceEventAnalyses.createdAt)),
+      db.select().from(sourceEvents).where(inArray(sourceEvents.sourceAssetId, sourceIds)).orderBy(asc(sourceEvents.sourceAssetId), asc(sourceEvents.timestampMs)),
+      db.select().from(harmonyAnalyses).where(inArray(harmonyAnalyses.sourceAssetId, sourceIds)).orderBy(asc(harmonyAnalyses.createdAt)),
+      db.select().from(harmonyEvents).innerJoin(harmonyAnalyses, eq(harmonyEvents.harmonyAnalysisId, harmonyAnalyses.id)).where(inArray(harmonyAnalyses.sourceAssetId, sourceIds)).orderBy(asc(harmonyAnalyses.sourceAssetId), asc(harmonyEvents.eventIndex)),
+      db.select().from(drumAnalyses).where(inArray(drumAnalyses.stemAssetId, stemIds)).orderBy(asc(drumAnalyses.createdAt)),
+      db.select().from(drumEvents).innerJoin(drumAnalyses, eq(drumEvents.drumAnalysisId, drumAnalyses.id)).where(inArray(drumAnalyses.stemAssetId, stemIds)).orderBy(asc(drumAnalyses.stemAssetId), asc(drumEvents.eventIndex)),
+      db.select().from(vocalAnalyses).where(inArray(vocalAnalyses.stemAssetId, stemIds)).orderBy(asc(vocalAnalyses.createdAt)),
+      db.select().from(vocalPitchFrames).innerJoin(vocalAnalyses, eq(vocalPitchFrames.vocalAnalysisId, vocalAnalyses.id)).where(inArray(vocalAnalyses.stemAssetId, stemIds)).orderBy(asc(vocalAnalyses.stemAssetId), asc(vocalPitchFrames.frameIndex)),
+      db.select().from(vocalPhrases).innerJoin(vocalAnalyses, eq(vocalPhrases.vocalAnalysisId, vocalAnalyses.id)).where(inArray(vocalAnalyses.stemAssetId, stemIds)).orderBy(asc(vocalAnalyses.stemAssetId), asc(vocalPhrases.phraseIndex)),
+      db.select().from(sourceAcquisitions).innerJoin(sourceAssets, eq(sourceAcquisitions.sourceAssetId, sourceAssets.id)).where(inArray(sourceAssets.id, sourceIds)),
       db.select().from(projectBuilds).where(eq(projectBuilds.projectId, id)).orderBy(desc(projectBuilds.updatedAt)).limit(1),
     ]);
     const analysisBySource = new Map(

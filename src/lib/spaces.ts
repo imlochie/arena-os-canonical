@@ -7,9 +7,9 @@
 // that becomes the space's new briefcase — so agents accumulate context run
 // over run.
 //
-// Execution model (same house pattern as Congress): no background workers.
-// POST /api/spaces/tick runs at most a few due spaces per request; the
-// workbench page and each popped-out window poll it while visible.
+// Recurring execution is request-driven. POST /api/spaces/tick runs a few due
+// spaces per request; visible windows poll it. The optional, separately started
+// spaces-daemon is another HTTP client, not an automatically running service.
 
 import { db } from "@/db";
 import { spaceAgents, spaceRuns, spaces } from "@/db/schema";
@@ -539,10 +539,20 @@ function publicAgent(row: typeof spaceAgents.$inferSelect): SpaceAgent {
   };
 }
 
+/**
+ * Read the durable fleet using the same database connection as the caller.
+ * Mission planning uses this strict variant: a failed roster read must not
+ * turn a configured fleet into an apparently empty one and silently select a
+ * different plan.
+ */
+export async function listAgentsForMission(spaceId: string, database: typeof db = db): Promise<SpaceAgent[]> {
+  const rows = await database.select().from(spaceAgents).where(eq(spaceAgents.spaceId, spaceId)).orderBy(asc(spaceAgents.createdAt));
+  return rows.map(publicAgent);
+}
+
 export async function listAgents(spaceId: string): Promise<SpaceAgent[]> {
   try {
-    const rows = await db.select().from(spaceAgents).where(eq(spaceAgents.spaceId, spaceId)).orderBy(asc(spaceAgents.createdAt));
-    return rows.map(publicAgent);
+    return await listAgentsForMission(spaceId);
   } catch {
     dbHealthy = false;
     return [];

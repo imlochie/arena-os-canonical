@@ -1,11 +1,13 @@
 "use client";
+import { DeepEngineSetup } from "./DeepEngineSetup";
+import { ModelAssetImport } from "./ModelAssetImport";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { summariseSourceIntake } from "@/lib/waveyard/types";
 import { computeBrowserAudioMetadata, computeBrowserWaveform } from "@/lib/waveyard/browser-waveform";
-import { fetchDeepEngineStatus, fetchStemEngineStatus, prepareStemEngine, type StemEngineDeepStatus, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
-import { DEEP_MODEL_ID, separationTargetOptions } from "@/lib/waveyard/separation/modes";
+import { fetchStemEngineStatus, prepareStemEngine, modelPreparationLabel, type StemEngineModelStatus } from "@/lib/waveyard/separation/client";
+import { separationTargetOptions } from "@/lib/waveyard/separation/modes";
 
 /** The upload's separation target. Empty = the machine default (vocals +
  *  instrumental, fastest). Ids are server-validated against the registry
@@ -26,34 +28,43 @@ export function BuildProject() {
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [engine, setEngine] = useState<StemEngineModelStatus[] | null>(null);
-  const [deepEngine, setDeepEngine] = useState<StemEngineDeepStatus | null>(null);
   const [engineRefresh, setEngineRefresh] = useState(0);
+  const engineAbort = useRef<AbortController | null>(null);
+  const [modelRightsReviewed, setModelRightsReviewed] = useState(false);
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [engineError, setEngineError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [status, deepStatus] = await Promise.all([fetchStemEngineStatus(), fetchDeepEngineStatus()]);
+      const status = await fetchStemEngineStatus();
       if (!cancelled) {
         setEngine(status);
-        setDeepEngine(deepStatus);
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [engineRefresh]);
-  const engineMissing = engine !== null && engine.some((model) => !model.ready);
+  useEffect(() => {
+    if (!preparingEngine) return;
+    const timer = setInterval(() => setEngineRefresh(value => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [preparingEngine]);
+  const relevantModels = engine?.filter(model => model.requiredFor?.includes(separationTarget || "default") ?? true) ?? null;
+  const runtimeIssue = relevantModels?.find(model => model.runtimeAvailable === false)?.runtimeReason;
+  const engineMissing = !separationTarget.startsWith("deep_") && relevantModels !== null && relevantModels.some((model) => !model.ready);
   async function prepareEngine() {
-    const missing = engine?.find((model) => !model.ready);
+    const missing = relevantModels?.find((model) => !model.ready);
     if (!missing) return;
+    engineAbort.current = new AbortController();
     setPreparingEngine(true);
     setEngineError(null);
     try {
-      const result = await prepareStemEngine(missing.id);
+      const result = await prepareStemEngine(separationTarget || missing.id, engineAbort.current.signal, modelRightsReviewed);
       if (!result.ok) setEngineError(result.error);
       setEngineRefresh((value) => value + 1);
     } finally {
+      engineAbort.current = null;
       setPreparingEngine(false);
     }
   }
@@ -109,15 +120,19 @@ export function BuildProject() {
     setBusy(false); router.push(`/waveyard/projects/${projectId}`);
   }
   return <form className="build-project" onSubmit={build}>
+    <ModelAssetImport onReviewChange={setModelRightsReviewed} />
+    {runtimeIssue && <p className="error" role="alert">{runtimeIssue}</p>}
     {engineMissing && (
       <p className="notice" role="status">
         First run: the stem engine needs a one-time download
-        ({Math.round((engine!.find((model) => !model.ready)!.sizeBytes ?? 0) / 1_000_000)} MB).
-        You can prepare it now or after your first upload fails — separation
-        then runs fully offline on this machine.
-        <button type="button" className="button secondary" disabled={preparingEngine} onClick={() => void prepareEngine()} style={{ display: "block", marginTop: "0.5rem" }}>
+        ({Math.round((relevantModels!.find((model) => !model.ready)!.sizeBytes ?? 0) / 1_000_000)} MB).
+        <span style={{display:"block"}}>Inspect model sources/licensing above and confirm authorised use to enable preparation.</span>
+        Preparation verifies model files only; inference also needs a working ONNX runtime.
+        {relevantModels?.filter(model => !model.ready).map(model => <span key={model.id} style={{ display: "block" }}>{modelPreparationLabel(model)}</span>)}
+        <button type="button" className="button secondary" disabled={preparingEngine || !modelRightsReviewed} onClick={() => void prepareEngine()} style={{ display: "block", marginTop: "0.5rem" }}>
           {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine now"}
         </button>
+        {preparingEngine && <button type="button" onClick={() => engineAbort.current?.abort()}>Cancel model preparation (retain resumable bytes)</button>}
         {engineError && <span className="error" role="alert" style={{ display: "block", marginTop: "0.5rem" }}>{engineError}</span>}
       </p>
     )}
@@ -132,11 +147,7 @@ export function BuildProject() {
           {SEPARATION_TARGETS.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}
         </select>
       </label>
-      {separationTarget === DEEP_MODEL_ID && deepEngine !== null && !deepEngine.prepared && (
-        <p className="notice" role="status" data-testid="deep-engine-hint">
-          Deep separation needs the deep engine prepared on this machine. {deepEngine.reason ?? "It is not ready yet."}
-        </p>
-      )}
+      {separationTarget.startsWith("deep_") && <DeepEngineSetup key={separationTarget} modelId={separationTarget} />}
       <div className="build-or">or</div>
       <label>Paste authorized source links<textarea aria-label="Authorized source links" value={urls} onChange={(event) => setUrls(event.target.value)} rows={4} placeholder={"https://youtube.com/...\nhttps://youtube.com/..."} /><small>One link per line. This deployment uses only a configured authorized resolver; unsupported links can always be added as local audio.</small></label>
     </>}

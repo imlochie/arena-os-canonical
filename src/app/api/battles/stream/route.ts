@@ -1,3 +1,5 @@
+import { ArtifactInputError, resolveArtifactInput } from "@/lib/artifact-input";
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { battles, battleMessages } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -15,19 +17,24 @@ export const runtime = "nodejs";
 // {type:"meta", battleId, sampling} · {type:"delta", side:"a"|"b", delta}
 // {type:"done", side, ms} · {type:"battle", battle} · {type:"error", error}
 export async function POST(req: Request) {
-  await ensureSeeded();
+  const denied = await requireApiAccess(req); if (denied) return denied;
   let body: any = {};
   try {
     body = await req.json();
   } catch {
     return Response.json({ error: "invalid json" }, { status: 400 });
   }
-  const prompt: string = (body.prompt ?? "").toString().trim();
+  if (body.ephemeral === true) return Response.json({ error: "Use /api/battles for ephemeral execution; the streaming route persists a battle." }, { status: 400 });
+  let resolved;
+  try { resolved = await resolveArtifactInput(body.source, body.prompt); }
+  catch (error) { return Response.json({ error: error instanceof ArtifactInputError ? error.message : "Input storage unavailable; no execution started." }, { status: error instanceof ArtifactInputError ? error.status : 503 }); }
+  const { text: prompt, inputReference } = resolved;
+  await ensureSeeded();
   const keys = body.keys;
   const localOnly = body.localOnly === true || process.env.FORCE_LOCAL_MODE === "1";
   const genKeys = localOnly ? undefined : keys;
   if (!prompt) return Response.json({ error: "prompt required" }, { status: 400 });
-  if (prompt.length > 4000) return Response.json({ error: "prompt too long" }, { status: 400 });
+  if (!inputReference && prompt.length > 4000) return Response.json({ error: "prompt too long" }, { status: 400 });
 
   let setup;
   try {
@@ -48,6 +55,7 @@ export async function POST(req: Request) {
     .insert(battles)
     .values({
       prompt,
+      inputReference,
       category: setup.category,
       modelAId: left.modelId,
       modelBId: right.modelId,
@@ -72,7 +80,7 @@ export async function POST(req: Request) {
           /* closed */
         }
       };
-      send({ type: "meta", battleId: battle.id, sampling: setup.sampling, positionRandomized: true });
+      send({ type: "meta", battleId: battle.id, prompt, inputReference, sampling: setup.sampling, positionRandomized: true });
       let fullA = "";
       let fullB = "";
       try {
@@ -121,6 +129,7 @@ export async function POST(req: Request) {
           battle: {
             id: final.id,
             prompt: final.prompt,
+            inputReference: final.inputReference,
             category: final.category,
             responseA: fullA,
             responseB: fullB,
@@ -160,7 +169,7 @@ export async function POST(req: Request) {
 
   return new Response(stream, {
     headers: {
-      "Content-Type": "text/event-stream",
+      "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
     },

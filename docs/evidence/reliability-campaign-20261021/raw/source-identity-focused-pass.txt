@@ -1,0 +1,302 @@
+TAP version 13
+# (node:60657) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:60657) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:60657) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: Studio downloads automatically bundle exact media, frozen source notices and honest unknowns
+    # Subtest: invalid or incomplete frozen notices never silently become legacy notices
+    ok 1 - invalid or incomplete frozen notices never silently become legacy notices
+      ---
+      duration_ms: 14.317004
+      type: 'test'
+      ...
+    # Subtest: new snapshots and legacy downloads refuse another owner's referenced source
+    ok 2 - new snapshots and legacy downloads refuse another owner's referenced source
+      ---
+      duration_ms: 15.956133
+      type: 'test'
+      ...
+    # Subtest: MIDI bundle includes its checksum-pinned analysis source even outside the arrangement
+    ok 3 - MIDI bundle includes its checksum-pinned analysis source even outside the arrangement
+      ---
+      duration_ms: 136.607294
+      type: 'test'
+      ...
+# Export output retained for reconciliation {
+#   exportJobId: 'dcc3e2f3-9b2e-4cc0-8c2f-1de6ff736ea8',
+#   storageKey: 'projects/e5807237-e1c5-461e-a934-6965c5d127bc/export/dcc3e2f3-9b2e-4cc0-8c2f-1de6ff736ea8/9a35e144-7261-4038-b604-a90ce2f194c6.wav'
+# }
+    # Subtest: native export lost COMMIT acknowledgement never deletes already-published audio
+    ok 4 - native export lost COMMIT acknowledgement never deletes already-published audio
+      ---
+      duration_ms: 384.015131
+      type: 'test'
+      ...
+    # Subtest: native export cancelled after upload cannot publish or resurrect the job
+    ok 5 - native export cancelled after upload cannot publish or resurrect the job
+      ---
+      duration_ms: 72.869291
+      type: 'test'
+      ...
+# Export output retained for reconciliation {
+#   exportJobId: 'b5e6a2a1-86f1-435f-8f47-43af5c09f1e7',
+#   storageKey: 'projects/e5807237-e1c5-461e-a934-6965c5d127bc/export/b5e6a2a1-86f1-435f-8f47-43af5c09f1e7/79d0e621-2bba-46da-9742-8f0b1c0c4142.wav'
+# }
+    # Subtest: native export uncertain publication retains job-scoped bytes until explicit healthy reconciliation
+    ok 6 - native export uncertain publication retains job-scoped bytes until explicit healthy reconciliation
+      ---
+      duration_ms: 68.487177
+      type: 'test'
+      ...
+    # Subtest: native render refuses changed source bytes and corrupt copies before minting an export
+        # Subtest: stored-bytes
+        ok 1 - stored-bytes
+          ---
+          duration_ms: 88.052114
+          type: 'test'
+          ...
+        # Subtest: copied-bytes
+        ok 2 - copied-bytes
+          ---
+          duration_ms: 81.71362
+          type: 'test'
+          ...
+        # Subtest: copy-unavailable
+        ok 3 - copy-unavailable
+          ---
+          duration_ms: 95.089377
+          type: 'test'
+          ...
+        1..3
+    ok 7 - native render refuses changed source bytes and corrupt copies before minting an export
+      ---
+      duration_ms: 267.570802
+      type: 'test'
+      ...
+    1..7
+ok 1 - Studio downloads automatically bundle exact media, frozen source notices and honest unknowns
+  ---
+  duration_ms: 3542.994685
+  type: 'test'
+  ...
+# (node:60749) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/library/service.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:60749) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/verified-file.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:60749) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: library intake creates a playable track through the existing pipeline
+ok 2 - library intake creates a playable track through the existing pipeline
+  ---
+  duration_ms: 1729.968034
+  type: 'test'
+  ...
+# Subtest: duplicate audio is idempotent: same checksum returns the same track, no second copy
+ok 3 - duplicate audio is idempotent: same checksum returns the same track, no second copy
+  ---
+  duration_ms: 12.546872
+  type: 'test'
+  ...
+# Subtest: track detail resolves source, stems, analysis, and the studio handoff project
+ok 4 - track detail resolves source, stems, analysis, and the studio handoff project
+  ---
+  duration_ms: 9.109047
+  type: 'test'
+  ...
+# Subtest: listing and search operate on real persisted metadata
+ok 5 - listing and search operate on real persisted metadata
+  ---
+  duration_ms: 72.132366
+  type: 'test'
+  ...
+# Subtest: play counting increments once per recorded listen and marks recency
+ok 6 - play counting increments once per recorded listen and marks recency
+  ---
+  duration_ms: 14.806506
+  type: 'test'
+  ...
+# Subtest: durable playback state round-trips (stem mix, volume, position)
+ok 7 - durable playback state round-trips (stem mix, volume, position)
+  ---
+  duration_ms: 6.470755
+  type: 'test'
+  ...
+# Subtest: queue: add end/next, move, remove, clear — ordered and owner-scoped
+ok 8 - queue: add end/next, move, remove, clear — ordered and owner-scoped
+  ---
+  duration_ms: 98.877377
+  type: 'test'
+  ...
+# Subtest: playlists: create, add (duplicates allowed), reorder, remove, delete
+ok 9 - playlists: create, add (duplicates allowed), reorder, remove, delete
+  ---
+  duration_ms: 39.645455
+  type: 'test'
+  ...
+# Subtest: persisted stem fixtures select stem playback (not inference)
+ok 10 - persisted stem fixtures select stem playback (not inference)
+  ---
+  duration_ms: 16.853017
+  type: 'test'
+  ...
+# Subtest: passthrough bridge = honest source-only playback
+ok 11 - passthrough bridge = honest source-only playback
+  ---
+  duration_ms: 72.352232
+  type: 'test'
+  ...
+# Subtest: analysis surfaces tempo and key when the engine completed it
+ok 12 - analysis surfaces tempo and key when the engine completed it
+  ---
+  duration_ms: 6.120448
+  type: 'test'
+  ...
+# Subtest: library containers never pollute the studio project list; real projects stay
+ok 13 - library containers never pollute the studio project list; real projects stay
+  ---
+  duration_ms: 5.04208
+  type: 'test'
+  ...
+# Subtest: ownership isolation: another owner sees none of the library
+ok 14 - ownership isolation: another owner sees none of the library
+  ---
+  duration_ms: 16.198702
+  type: 'test'
+  ...
+# Subtest: session: create, add tracks (ordered, duplicates allowed), reorder, remove
+ok 15 - session: create, add tracks (ordered, duplicates allowed), reorder, remove
+  ---
+  duration_ms: 173.545345
+  type: 'test'
+  ...
+# Subtest: session: per-track stem mix and transition persist and round-trip
+ok 16 - session: per-track stem mix and transition persist and round-trip
+  ---
+  duration_ms: 51.737521
+  type: 'test'
+  ...
+# Subtest: session: restore state persists and round-trips; foreign session tracks never persist
+ok 17 - session: restore state persists and round-trips; foreign session tracks never persist
+  ---
+  duration_ms: 64.277741
+  type: 'test'
+  ...
+# Subtest: session stem swap: real swap recorded with provenance; impossible swaps refused honestly
+ok 18 - session stem swap: real swap recorded with provenance; impossible swaps refused honestly
+  ---
+  duration_ms: 110.27307
+  type: 'test'
+  ...
+# Subtest: session stem swap: a donor without the requested stem is refused
+ok 19 - session stem swap: a donor without the requested stem is refused
+  ---
+  duration_ms: 37.529227
+  type: 'test'
+  ...
+# Subtest: session: ownership isolation
+ok 20 - session: ownership isolation
+  ---
+  duration_ms: 23.739764
+  type: 'test'
+  ...
+# Subtest: session handoff: all lanes, timed swap, workspace, save/reopen, version and actual WAV export
+ok 21 - session handoff: all lanes, timed swap, workspace, save/reopen, version and actual WAV export
+  ---
+  duration_ms: 1222.038656
+  type: 'test'
+  ...
+# Subtest: session handoff: empty, foreign-owner and lane-limit refusals create nothing
+ok 22 - session handoff: empty, foreign-owner and lane-limit refusals create nothing
+  ---
+  duration_ms: 590.402507
+  type: 'test'
+  ...
+# Subtest: session handoff: a database write failure rolls back project, remix, lanes and clips
+ok 23 - session handoff: a database write failure rolls back project, remix, lanes and clips
+  ---
+  duration_ms: 79.275671
+  type: 'test'
+  ...
+# Subtest: project audio: bound references cannot expose another owner's audio; malformed versions are ignored
+ok 24 - project audio: bound references cannot expose another owner's audio; malformed versions are ignored
+  ---
+  duration_ms: 20.926583
+  type: 'test'
+  ...
+# Subtest: session: meeting-point primitives power compatibility (analysis surfaced, not duplicated)
+ok 25 - session: meeting-point primitives power compatibility (analysis surfaced, not duplicated)
+  ---
+  duration_ms: 11.255646
+  type: 'test'
+  ...
+# Subtest: handoff editing: referenced source beats, donor clips and sections retain provenance
+ok 26 - handoff editing: referenced source beats, donor clips and sections retain provenance
+  ---
+  duration_ms: 500.022299
+  type: 'test'
+  ...
+# Subtest: track curation: rating and labels persist, normalise, and round-trip
+ok 27 - track curation: rating and labels persist, normalise, and round-trip
+  ---
+  duration_ms: 9.727146
+  type: 'test'
+  ...
+# Subtest: smart collections: CRUD with strict validation, evaluated live over real tracks
+ok 28 - smart collections: CRUD with strict validation, evaluated live over real tracks
+  ---
+  duration_ms: 9.069879
+  type: 'test'
+  ...
+# Subtest: completed mixed transitions survive handoff, donors, save/version restore and real WAV export
+ok 29 - completed mixed transitions survive handoff, donors, save/version restore and real WAV export
+  ---
+  duration_ms: 1453.234337
+  type: 'test'
+  ...
+# Subtest: library and session payloads retain persisted model identity for honest residual labels
+ok 30 - library and session payloads retain persisted model identity for honest residual labels
+  ---
+  duration_ms: 29.68923
+  type: 'test'
+  ...
+# Subtest: decoded bank duration overrides compressed-container padding through session and Studio handoff
+ok 31 - decoded bank duration overrides compressed-container padding through session and Studio handoff
+  ---
+  duration_ms: 252.963719
+  type: 'test'
+  ...
+# (node:60900) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/ffmpeg.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# {"scope":"Actual standalone PostgreSQL/storage/native FFmpeg; not inference","fault":"stored-bytes","originalSha256":"c35c13a02b1c60aa3dcea86f2329d7facaf933ba1ee7bbb8d25ff9fd8331e226","changedSha256":"8fa9418d5127fe702d0cb42337322c53915f251632c52d3b2a22b99e28cbb8a2","status":"failed","assets":0,"errorCode":"source_identity_unverified"}
+# {"fault":"stored-bytes","repaired":true,"exportSha256":"e8026540aa00fa9c9b7953d717216db661fbebbd21b168d9b45ed4100680baef","bytes":176478,"maxPcmError":0.00004844592269168113,"reference":"source PCM times existing Studio sqrt(0.5) centre pan"}
+# {"scope":"Actual standalone PostgreSQL/storage/native FFmpeg; not inference","fault":"copied-bytes","originalSha256":"c35c13a02b1c60aa3dcea86f2329d7facaf933ba1ee7bbb8d25ff9fd8331e226","changedSha256":"8fa9418d5127fe702d0cb42337322c53915f251632c52d3b2a22b99e28cbb8a2","status":"failed","assets":0,"errorCode":"source_identity_unverified"}
+# {"fault":"copied-bytes","repaired":true,"exportSha256":"e8026540aa00fa9c9b7953d717216db661fbebbd21b168d9b45ed4100680baef","bytes":176478,"maxPcmError":0.00004844592269168113,"reference":"source PCM times existing Studio sqrt(0.5) centre pan"}
+# {"scope":"Actual standalone PostgreSQL/storage/native FFmpeg; not inference","fault":"copy-unavailable","originalSha256":"c35c13a02b1c60aa3dcea86f2329d7facaf933ba1ee7bbb8d25ff9fd8331e226","changedSha256":"8fa9418d5127fe702d0cb42337322c53915f251632c52d3b2a22b99e28cbb8a2","status":"failed","assets":0,"errorCode":"source_identity_unverified"}
+# {"fault":"copy-unavailable","repaired":true,"exportSha256":"e8026540aa00fa9c9b7953d717216db661fbebbd21b168d9b45ed4100680baef","bytes":176478,"maxPcmError":0.00004844592269168113,"reference":"source PCM times existing Studio sqrt(0.5) centre pan"}
+# Subtest: standalone native exports reject changed stored/copied bytes and unavailable copies, then recover the same request
+ok 32 - standalone native exports reject changed stored/copied bytes and unavailable copies, then recover the same request
+  ---
+  duration_ms: 3059.248318
+  type: 'test'
+  ...
+1..32
+# tests 42
+# suites 0
+# pass 42
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 14897.39406

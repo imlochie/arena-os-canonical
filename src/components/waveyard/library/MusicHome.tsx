@@ -9,6 +9,7 @@
  * Everything renders from real persisted data — no catalogue fabrication.
  */
 
+import ConversionWorkbench from "./ConversionWorkbench";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -583,6 +584,7 @@ export function MusicHome() {
           void dropToStudio(event.dataTransfer.files);
         }}
       >
+      <ConversionWorkbench />
       <section className="library-hero" aria-label="Your music">
         <div>
           <span className="eyebrow">Your music, stem-aware</span>

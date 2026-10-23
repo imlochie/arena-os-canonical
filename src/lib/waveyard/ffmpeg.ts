@@ -16,7 +16,7 @@ import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants, existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 
 import { resolveExecutable } from "@/lib/capabilities/resolver";
 
@@ -132,26 +132,56 @@ export async function requireTool(tool: FfmpegTool): Promise<ResolvedBinary> {
 export type ExecResult = { stdout: string; stderr: string };
 
 /** Run a tool with an argument array. No shell, ever. */
-export async function execTool(tool: FfmpegTool, args: string[], options: { timeoutMs?: number } = {}): Promise<ExecResult> {
+export async function execTool(tool: FfmpegTool, args: string[], options: { timeoutMs?: number; signal?: AbortSignal; maxOutputBytes?: number } = {}): Promise<ExecResult> {
   const binary = await requireTool(tool);
   return new Promise<ExecResult>((resolve, reject) => {
     const child = spawn(binary.path, args, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      timeout: options.timeoutMs ?? 120_000,
+      signal: options.signal,
     });
     let stdout = "";
     let stderr = "";
+    let outputBytes = 0;
+    let executionError: Error | undefined;
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const escalate = () => {
+      // Allow normal trailer/cleanup handlers, but stopped/TERM-ignoring tools
+      // must not hold cancellation or timeout indefinitely.
+      forceKill ??= setTimeout(() => child.kill("SIGKILL"), 1000);
+      forceKill.unref();
+    };
+    const terminate = () => { child.kill("SIGTERM"); escalate(); };
+    const timeoutMs = options.timeoutMs ?? 120_000;
+    const deadline = timeoutMs > 0 ? setTimeout(() => { executionError ??= new Error(`${tool} timed out after ${timeoutMs}ms; partial output was not certified.`); terminate(); }, timeoutMs) : undefined;
+    deadline?.unref();
+    const bounded = (chunk: Buffer) => {
+      outputBytes += chunk.byteLength;
+      if (options.maxOutputBytes && outputBytes > options.maxOutputBytes) { executionError ??= new Error("Media tool diagnostic output exceeded its bounded limit."); terminate(); return false; }
+      return !options.maxOutputBytes || outputBytes <= options.maxOutputBytes;
+    };
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout += String(chunk);
+      if (bounded(chunk)) stdout += String(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += String(chunk);
+      if (bounded(chunk)) stderr += String(chunk);
     });
-    child.once("error", (error) => reject(error));
-    child.once("close", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${tool} exited ${code}: ${stderr.slice(-1200)}`));
+    // Abort emits error before the process actually exits. Consumers may remove
+    // temporary inputs only once close confirms child/stdio termination.
+    child.once("error", (error) => { executionError ??= error; if (error.name === "AbortError") escalate(); });
+    child.once("close", (code, signal) => {
+      clearTimeout(deadline); if (forceKill) clearTimeout(forceKill);
+      if (executionError) reject(executionError);
+      else if (code === 0) resolve({ stdout, stderr });
+      else {
+        // ffmpeg writes its failure at the TOP of stderr and then overwrites the
+        // tail with `\r`-separated progress lines, so the previous "last 1200
+        // chars" showed progress and hid the error. Keep both ends, normalized.
+        const lines = stderr.replace(/\r/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+        const head = lines.slice(0, 6).join(" | ").slice(0, 900);
+        const tail = lines.slice(-2).join(" | ").slice(0, 300);
+        reject(new Error(`${tool} exited ${code ?? signal}: ${head}${tail && !head.includes(tail) ? ` … ${tail}` : ""}`));
+      }
     });
   });
 }
@@ -176,4 +206,14 @@ export async function toolVersion(pathOrTool: string): Promise<string | null> {
       });
     });
   return run(pathOrTool);
+}
+
+
+/** CLI libraries (Demucs) launch ffmpeg/ffprobe by basename. Give those child
+ * processes Arena's resolved native tools, not an accidental system install. */
+export async function audioToolEnvironment(env: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
+  const tools = await Promise.all([requireTool("ffmpeg"), requireTool("ffprobe")]);
+  const key = Object.keys(env).find(name => name.toLowerCase() === "path") ?? "PATH";
+  const directories = [...new Set(tools.map(tool => dirname(tool.path)))];
+  return { ...env, [key]: [...directories, env[key] ?? ""].join(delimiter), PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" };
 }

@@ -13,15 +13,27 @@
 
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
+import { assertActuallyKilled } from "../../../../tests/helpers/platform-exit";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
 import { eq } from "drizzle-orm";
+import { hangBound } from "../../../../tests/helpers/hang-bound";
+
+/** Independent ZIP extraction before the existing native decode/sample checks. */
+async function extractStudioDownload(response: Response, filename: string) {
+  assert.equal(response.headers.get("content-type"), "application/zip");
+  assert.match(response.headers.get("content-disposition")!, /attachment/);
+  const archive = filename + ".zip"; writeFileSync(archive, Buffer.from(await response.arrayBuffer()));
+  const extracted = spawnSync("python3", ["-c", "import hashlib,json,pathlib,sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; assert z.namelist()==['export.wav','RIGHTS.txt','export-manifest.json']; data=z.read('export.wav'); m=json.loads(z.read('export-manifest.json')); assert hashlib.sha256(data).hexdigest()==m['media']['sha256']; assert len(data)==m['media']['bytes']; assert m['attribution']['basis']=='saved-version'; assert z.read('RIGHTS.txt'); pathlib.Path(sys.argv[2]).write_bytes(data)", archive, filename], { encoding: "utf8" });
+  assert.equal(extracted.status, 0, extracted.stderr);
+}
 
 const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..", "..", "..", "..");
-const OWNER = "11111111-1111-4111-8111-111111111111";
+const OWNER = "00000000-0000-4000-8000-000000000001"; // actual local route owner
 const OTHER = "22222222-2222-4222-8222-222222222222";
 
 type ServiceModule = typeof import("./service");
@@ -94,7 +106,7 @@ before(async () => {
   writeFileSync(pwFile, "arena-test", { mode: 0o600 });
   const init = spawnSync(embeddedBinary("initdb"), [
     "-D", dataDir, "-U", "arena", "--pwfile", pwFile, "-E", "UTF8", "--locale", "C", "-A", "scram-sha-256",
-  ], { encoding: "utf8", timeout: 120_000 });
+  ], { encoding: "utf8", timeout: hangBound(120_000) });
   rmSync(pwFile, { force: true });
   if (init.status !== 0) throw new Error(`initdb failed (${init.status}): ${(init.stdout ?? "") + (init.stderr ?? "")}`.slice(0, 2000));
 
@@ -357,7 +369,7 @@ test("playlists: create, add (duplicates allowed), reorder, remove, delete", asy
   assert.equal((await service.listTracks({ ownerId: OWNER })).length, 2);
 });
 
-test("real stems change availability and what the player loads", async () => {
+test("persisted stem fixtures select stem playback (not inference)", async () => {
   const sourceId = sourceIdByTrackId.get(trackA.id)!;
   const stemIds: string[] = [];
   for (const stemType of ["vocals", "drums", "bass", "other"]) {
@@ -366,8 +378,8 @@ test("real stems change availability and what the player loads", async () => {
       sourceAssetId: sourceId,
       separationJobId: (await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, sourceId)).limit(1))[0].id,
       stemType,
-      engine: "demucs",
-      model: "htdemucs",
+      engine: "synthetic-test-fixture",
+      model: "pcm-tone",
       modelVersion: "test",
       storageKey: `test/${stemType}.wav`,
       checksumSha256: `checksum-${stemType}`,
@@ -380,6 +392,7 @@ test("real stems change availability and what the player loads", async () => {
     }).returning();
     stemIds.push(stem.id);
   }
+  await db.db.update(schema.processingJobs).set({status:"complete"}).where(eq(schema.processingJobs.sourceAssetId, sourceId));
   const detail = await service.getTrack(OWNER, trackA.id);
   assert.equal(detail!.stemAvailability.status, "separated");
   assert.equal((detail!.stemAvailability as { stemCount: number }).stemCount, 4);
@@ -392,6 +405,7 @@ test("real stems change availability and what the player loads", async () => {
 test("passthrough bridge = honest source-only playback", async () => {
   const sourceId = sourceIdByTrackId.get(trackB.id)!;
   const [job] = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, sourceId)).limit(1);
+  await db.db.update(schema.processingJobs).set({status:"complete"}).where(eq(schema.processingJobs.id, job.id));
   const [stem] = await db.db.insert(schema.stemAssets).values({
     projectId: trackB.studioProjectId,
     sourceAssetId: sourceId,
@@ -413,6 +427,20 @@ test("passthrough bridge = honest source-only playback", async () => {
   assert.equal(detail!.stemAvailability.status, "source-only");
   assert.equal(detail!.playback.kind, "source");
   assert.deepEqual(detail!.playback.assetIds, [stem.id]);
+  const session = await sessions.createSession(OWNER, "Explicit full-source bridge");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackB.id });
+  try {
+    const handoff = await sessions.sendSessionToStudio(OWNER, session.id);
+    assert.equal(handoff.remixTrackCount, 1);
+    const [lane] = await db.db.select().from(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
+    const [clip] = await db.db.select().from(schema.remixClips).where(eq(schema.remixClips.remixTrackId, lane.id));
+    assert.equal(lane.stemAssetId, stem.id);
+    assert.equal(clip.stemAssetId, stem.id);
+    assert.equal(clip.durationMs, 3000);
+    assert.match(lane.name, /source$/);
+  } finally {
+    await sessions.deleteSession(OWNER, session.id);
+  }
 });
 
 test("analysis surfaces tempo and key when the engine completed it", async () => {
@@ -559,8 +587,8 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
     sourceAssetId: sourceB,
     separationJobId: jobB.id,
     stemType: "drums",
-    engine: "demucs",
-    model: "htdemucs",
+    engine: "synthetic-test-fixture",
+    model: "pcm-tone",
     modelVersion: "test",
     storageKey: "test/b-drums.wav",
     checksumSha256: "checksum-b-drums",
@@ -587,7 +615,7 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
   assert.equal(swapped.swaps.length, 1);
   assert.deepEqual(
     { ...swapped.swaps[0], createdAt: undefined },
-    { id: swapped.swaps[0].id, sessionTrackId: sessionTrackB, stemType: "drums", fromTrackId: trackB.id, toTrackId: trackA.id, atSeconds: 12.5, createdAt: undefined },
+    { fromStemAssetId: (await service.getTrack(OWNER, trackB.id))!.stems.find(stem => stem.stemType === "drums")!.id, toStemAssetId: (await service.getTrack(OWNER, trackA.id))!.stems.find(stem => stem.stemType === "drums")!.id, id: swapped.swaps[0].id, sessionTrackId: sessionTrackB, stemType: "drums", fromTrackId: trackB.id, toTrackId: trackA.id, atSeconds: 12.5, createdAt: undefined },
     "provenance: source track, donor track, stem type, session context",
   );
 
@@ -596,11 +624,15 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
     () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "vocals", toTrackId: trackA.id, atSeconds: 1 }),
     (error: Error) => error instanceof sessions.StemSwapRefusedError && /current track has no real/i.test(error.message),
   );
-  // Refusal: donor A has no "piano" stem.
-  await assert.rejects(
-    () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "drums", toTrackId: trackA.id === trackA.id ? trackA.id : trackA.id, atSeconds: 1 }),
-    /donor/i,
-  ).catch(() => undefined); // (A DOES have drums — this call succeeds; the real refusal case is below)
+  // Repeated selections retain provenance/Studio ranges, but the latest exact
+  // asset alone is active. Returning A must be representable without deleting
+  // an older row and accidentally revealing an even older donor on reload.
+  const repeated = await sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "drums", toTrackId: trackA.id, atSeconds: 13 });
+  assert.equal(repeated.swaps.length, 2);
+  const originalAsset = detail.tracks[0].stems.find(stem => stem.stemType === "drums")!.id;
+  const restored = await sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "drums", toTrackId: trackB.id, toStemAssetId: originalAsset, atSeconds: 14 });
+  assert.equal(restored.swaps.length, 3);
+  assert.equal(restored.swaps.at(-1)!.toStemAssetId, originalAsset);
   await sessions.deleteSession(OWNER, created.id);
 });
 
@@ -629,33 +661,250 @@ test("session: ownership isolation", async () => {
   await sessions.deleteSession(OWNER, created.id);
 });
 
-test("session: send to Studio derives a remix that REFERENCES existing stems (no copies)", async () => {
-  const created = await sessions.createSession(OWNER, "Handoff set");
-  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
-  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
-
-  const handoff = await sessions.sendSessionToStudio(OWNER, created.id);
-  assert.ok(handoff.projectId);
-  assert.ok(handoff.remixSessionId);
-  assert.equal(handoff.remixTrackCount, 2, "A binds its real stems; B binds its passthrough bridge");
-
-  // The derived project is a STUDIO project (visible in studio listings).
-  const studioList = await service.listStudioProjects(OWNER);
-  assert.ok(studioList.some((project) => project.id === handoff.projectId));
-
-  // The remix tracks reference the EXISTING stem asset rows — no new audio.
-  const remixTrackRows = await db.db.select().from(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
-  assert.equal(remixTrackRows.length, 2);
-  const stemIdsBefore = new Set(
-    (await db.db.select({ id: schema.stemAssets.id }).from(schema.stemAssets)).map((row) => row.id),
-  );
-  for (const row of remixTrackRows) {
-    assert.ok(stemIdsBefore.has(row.stemAssetId), `remix track ${row.id} references a pre-existing stem`);
+test("session handoff: all lanes, timed swap, workspace, save/reopen, version and actual WAV export", async () => {
+  // Controlled signal fixtures exercise persistence and rendering, NOT Demucs.
+  const { getStorage } = await import("../storage");
+  const storage = getStorage();
+  const frequencies: Record<string, number> = { vocals: 330, drums: 220, bass: 110, other: 550 };
+  // Materialise controlled stems with REAL identities before taking the
+  // immutability snapshot. Catalogue-only fixture hashes are not audio proof.
+  for (const stem of await db.db.select().from(schema.stemAssets)) {
+    const filename = storage.getLocalPath(stem.storageKey)!;
+    mkdirSync(path.dirname(filename), { recursive: true });
+    writeWav(filename, stem.durationSeconds, stem.storageKey.includes("b-drums") ? 880 : frequencies[stem.stemType] ?? 660);
+    const bytes = readFileSync(filename);
+    await db.db.update(schema.stemAssets).set({ checksumSha256: createHash("sha256").update(bytes).digest("hex"), fileSizeBytes: bytes.length }).where(eq(schema.stemAssets.id, stem.id));
   }
-  // The source audio count is unchanged (no copies anywhere).
-  assert.equal((await db.db.select().from(schema.sourceAssets)).length, 3, "A, B and the other owner's — nothing added");
+  const beforeStems = await db.db.select().from(schema.stemAssets);
+  const beforeSources = await db.db.select().from(schema.sourceAssets);
+  const created = await sessions.createSession(OWNER, "Handoff acceptance");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const listening = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
+  const itemA = listening.tracks[0];
+  const itemB = listening.tracks[1];
+  await sessions.updateSessionTrack(OWNER, created.id, itemA.id, { stemMix: { vocals: 0, drums: 0.1, bass: 0, other: 0 } });
+  await sessions.updateSessionTrack(OWNER, created.id, itemB.id, { stemMix: { drums: 0.25 } });
+  await sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: itemA.id, stemType: "drums", toTrackId: trackB.id, atSeconds: 1 });
 
+  const handoffRoute = await import("@/app/api/library/sessions/[id]/studio-handoff/route");
+  const beforeProjectCount = (await db.db.select().from(schema.projects)).length;
+  const confirmation = await handoffRoute.POST(new Request("http://arena.test/handoff", { method: "POST" }), { params: Promise.resolve({ id: created.id }) });
+  assert.equal(confirmation.status, 409);
+  assert.equal((await confirmation.json()).errorCode, "handoff_confirmation_required");
+  assert.equal((await db.db.select().from(schema.projects)).length, beforeProjectCount, "declining has no side effects");
+  const handoffResponse = await handoffRoute.POST(new Request("http://arena.test/handoff", { method: "POST", body: JSON.stringify({ mode: "sequential", trackEdits: [{ id: itemA.id, stemMix: { vocals: 0, drums: 0.4, bass: 0, other: 0 }, transition: itemA.transition }] }) }), { params: Promise.resolve({ id: created.id }) });
+  assert.equal(handoffResponse.status, 201);
+  const { handoff } = await handoffResponse.json() as { handoff: import("./session-service").StudioHandoffResult };
+  assert.equal(handoff.remixTrackCount, 5, "all four A stems and B's real drum stem; no double-mixed passthrough");
+  assert.match(handoff.notice, /Live transition/);
+  assert.equal(handoff.refused, undefined);
+  assert.equal((await sessions.getSession(OWNER, created.id)).tracks[0].stemMix.drums, 0.4, "visible edits are saved with the derived arrangement, not stale debounced levels");
+  assert.deepEqual(await db.db.select().from(schema.stemAssets), beforeStems, "no copied or reparented stem rows");
+  assert.deepEqual(await db.db.select().from(schema.sourceAssets), beforeSources, "no copied or reparented sources");
+  assert.ok((await service.listStudioProjects(OWNER)).some((project) => project.id === handoff.projectId));
+
+  const projectRoute = await import("@/app/api/waveyard/projects/[id]/route");
+  const projectResponse = await projectRoute.GET(new Request("http://arena.test/project"), { params: Promise.resolve({ id: handoff.projectId }) });
+  assert.equal(projectResponse.status, 200);
+  const project = await projectResponse.json();
+  assert.equal(project.stems.length, 5, "workspace can mount the actual editor");
+  assert.equal(project.sources.length, 2);
+  assert.ok(project.sources.some((source: { id: string }) => source.id === sourceIdByTrackId.get(trackA.id)));
+
+  const remixRoute = await import("@/app/api/remixes/[id]/route");
+  const params = { params: Promise.resolve({ id: handoff.remixSessionId }) };
+  const getState = async () => {
+    const response = await remixRoute.GET(new Request("http://arena.test/remix"), params);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const state = await getState();
+  const assetRoute = await import("@/app/api/assets/[id]/route");
+  const individualStem = beforeStems.find((stem) => stem.sourceAssetId === sourceIdByTrackId.get(trackA.id) && stem.stemType === "drums")!;
+  const individual = await assetRoute.GET(new Request("http://arena.test/asset?download=1"), { params: Promise.resolve({ id: individualStem.id }) });
+  assert.equal(individual.status, 200);
+  assert.match(individual.headers.get("content-disposition")!, /drums.wav/);
+  const individualBytes = Buffer.from(await individual.arrayBuffer());
+  assert.deepEqual(individualBytes, readFileSync(storage.getLocalPath(individualStem.storageKey)!));
+  const individualPath = path.join(root!, "individual-drums.wav");
+  writeFileSync(individualPath, individualBytes);
+  assert.equal((await (await import("../audio")).validateAudio(individualPath)).durationSeconds, 2);
+  assert.equal(state.tracks.length, 5);
+  assert.equal(state.tracks.flatMap((track: { clips: unknown[] }) => track.clips).length, 6, "swap becomes two real source ranges");
+  const drumsA = state.tracks.find((track: { name: string }) => track.name.endsWith("— drums"));
+  assert.deepEqual(drumsA.clips.map((clip: { timelineStartMs: number; sourceOffsetMs: number; durationMs: number }) => [clip.timelineStartMs, clip.sourceOffsetMs, clip.durationMs]), [[0, 0, 1000], [1000, 1000, 1000]]);
+  assert.equal(drumsA.volume, 0.4);
+  assert.equal(state.tracks[4].clips[0].timelineStartMs, 2000, "listening order becomes sequential music, not stacked songs");
+  const input = { ...state.remix, tracks: state.tracks, automation: state.automation, masterVolume: 0.5 };
+  const save = await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify(input) }), params);
+  assert.equal(save.status, 200, await save.clone().text());
+  const reopened = await getState();
+  assert.equal(reopened.remix.masterVolume, 0.5);
+  assert.deepEqual(reopened.tracks, (await save.json()).tracks);
+
+  // Existing bound references are allowed, not arbitrary audio in another
+  // project (including the same owner's unused passthrough).
+  const unbound = beforeStems.find((stem) => stem.engine === "passthrough-unseparated")!;
+  const invalid = structuredClone(input);
+  invalid.tracks[0].clips[0].stemAssetId = unbound.id;
+  const denied = await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify(invalid) }), params);
+  assert.equal(denied.status, 403);
+  assert.deepEqual((await getState()).tracks, reopened.tracks, "refused save is non-destructive");
+
+  const versionsRoute = await import("@/app/api/remixes/[id]/versions/route");
+  const versionResponse = await versionsRoute.POST(new Request("http://arena.test/versions", { method: "POST", body: JSON.stringify({ name: "Actual render acceptance" }) }), params);
+  assert.equal(versionResponse.status, 201, await versionResponse.clone().text());
+  const { version } = await versionResponse.json();
+  // Exercise the actual route -> desktop queue -> actual FFmpeg handler.
+  const { getLocalJobBroker } = await import("../worker-local/broker");
+  const { handleExportJob } = await import("../worker-local/export");
+  const { EXPORT_QUEUE } = await import("../queue");
+  const priorWorker = process.env.WAVEYARD_LOCAL_WORKER;
+  const priorRedis = process.env.REDIS_URL;
+  process.env.WAVEYARD_LOCAL_WORKER = "1";
+  delete process.env.REDIS_URL;
+  const broker = getLocalJobBroker();
+  broker.register(EXPORT_QUEUE, handleExportJob);
+  try {
+    const exportRoute = await import("@/app/api/remix-versions/[id]/exports/route");
+    const response = await exportRoute.POST(new Request("http://arena.test/exports", { method: "POST", body: JSON.stringify({ format: "wav" }) }), { params: Promise.resolve({ id: version.id }) });
+    assert.equal(response.status, 201, await response.clone().text());
+    const { job } = await response.json();
+    assert.equal(await broker.drain(30_000), true);
+    const [finished] = await db.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id));
+    assert.equal(finished.status, "complete", finished.errorMessage ?? JSON.stringify(finished));
+    const [asset] = await db.db.select().from(schema.exportAssets).where(eq(schema.exportAssets.exportJobId, job.id));
+    assert.ok(asset);
+    const mediaRoute = await import("@/app/api/exports/[id]/media/route");
+    const media = await mediaRoute.GET(new Request("http://arena.test/media?download=1"), { params: Promise.resolve({ id: job.id }) });
+    assert.equal(media.status, 200);
+    assert.equal(media.headers.get("content-type"), "application/zip");
+    assert.match(media.headers.get("content-disposition")!, /attachment/);
+    const downloaded = path.join(root!, "downloaded-handoff.wav");
+    await extractStudioDownload(media, downloaded);
+    const { validateAudio, exec } = await import("../audio");
+    const { requireTool } = await import("../ffmpeg");
+    const metadata = await validateAudio(downloaded);
+    assert.ok(Math.abs(metadata.durationSeconds - 5) < 0.02, JSON.stringify(metadata));
+    assert.equal(metadata.sampleRate, 44100);
+    assert.equal(metadata.channels, 2);
+    const decoded = path.join(root!, "decoded.f32");
+    await exec((await requireTool("ffmpeg")).path, ["-y", "-i", downloaded, "-f", "f32le", "-ac", "1", decoded]);
+    const pcm = readFileSync(decoded);
+    function magnitude(hz: number, start: number, end: number) {
+      let sin = 0, cos = 0;
+      const first = Math.round(start * 44100), last = Math.round(end * 44100);
+      for (let index = first; index < last; index++) {
+        const sample = pcm.readFloatLE(index * 4);
+        sin += sample * Math.sin(2 * Math.PI * hz * index / 44100);
+        cos += sample * Math.cos(2 * Math.PI * hz * index / 44100);
+      }
+      return 2 * Math.hypot(sin, cos) / (last - first);
+    }
+    const signal = {
+      initialDrums: magnitude(220, 0.2, 0.8), initialDonor: magnitude(880, 0.2, 0.8),
+      swappedDrums: magnitude(220, 1.2, 1.8), swappedDonor: magnitude(880, 1.2, 1.8),
+      nextSong: magnitude(880, 2.2, 4.8), mutedVocal: magnitude(330, 0.2, 0.8),
+    };
+    assert.ok(signal.initialDrums > 0.02 && signal.initialDonor < 0.001, JSON.stringify(signal));
+    assert.ok(signal.swappedDonor > 0.02 && signal.swappedDrums < 0.001, JSON.stringify(signal));
+    assert.ok(signal.nextSong > 0.01 && signal.mutedVocal < 0.001, JSON.stringify(signal));
+    if (process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR) {
+      const directory = process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR;
+      mkdirSync(directory, { recursive: true });
+      copyFileSync(downloaded, path.join(directory, "handoff.wav"));
+      copyFileSync(individualPath, path.join(directory, "individual-drums.wav"));
+      const sourceFiles = [
+        "src/lib/waveyard/library/session-service.ts", "src/lib/waveyard/library/service.test.ts", "src/lib/waveyard/project-audio.ts",
+        "src/lib/waveyard/worker-local/export.ts", "src/lib/waveyard/remix.ts", "src/app/api/remixes/[id]/route.ts",
+        "src/app/api/remixes/[id]/versions/[versionId]/restore/route.ts", "src/app/api/waveyard/projects/[id]/route.ts",
+        "src/app/api/waveyard/projects/[id]/remixes/route.ts", "src/components/waveyard/library/SessionExperience.tsx", "src/app/api/remixes/[id]/clips/align-beat/route.ts",
+        "src/app/api/remixes/[id]/clips/from-section/route.ts", "src/lib/waveyard/types/section-arrangement.ts",
+        "src/lib/waveyard/worker-local/broker.ts", "src/app/api/library/sessions/[id]/studio-handoff/route.ts",
+      ];
+      const sha256 = (filename: string) => createHash("sha256").update(readFileSync(filename)).digest("hex");
+      const git = (args: string[]) => spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" }).stdout?.trim() ?? null;
+      writeFileSync(path.join(directory, "handoff.json"), JSON.stringify({
+        observedAt: new Date().toISOString(), fixture: "synthetic PCM tones; NOT separation inference",
+        source: { head: git(["rev-parse", "HEAD"]), worktree: git(["status", "--porcelain"]), sha256: Object.fromEntries(sourceFiles.map((filename) => [filename, sha256(path.join(repoRoot, filename))])) },
+        runtime: { node: process.version, platform: process.platform, arch: process.arch, ffmpeg: spawnSync((await requireTool("ffmpeg")).path, ["-version"], { encoding: "utf8" }).stdout.split("\n")[0] },
+        inputs: beforeStems.map((stem) => ({ id: stem.id, engine: stem.engine, durationSeconds: stem.durationSeconds, storageKey: stem.storageKey, actualSha256: sha256(storage.getLocalPath(stem.storageKey)!) })),
+        handoff, job: finished, asset, metadata, signal,
+        limitations: ["No model inference", "No Electron, Windows or room UI acceptance", "Live transition triggers/crossfades are not reconstructed"],
+      }, null, 2));
+    }
+  } finally {
+    if (priorWorker === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = priorWorker;
+    if (priorRedis === undefined) delete process.env.REDIS_URL; else process.env.REDIS_URL = priorRedis;
+  }
+  // Asset provenance also survives loss/replacement of live lanes: immutable
+  // versions, not the current timeline alone, authorize restore/render reuse.
+  await db.db.delete(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
+  const { projectAudio } = await import("../project-audio");
+  assert.equal((await projectAudio(handoff.projectId)).stems.length, 5);
+  const restore = await import("@/app/api/remixes/[id]/versions/[versionId]/restore/route");
+  const restored = await restore.POST(new Request("http://arena.test/restore", { method: "POST" }), { params: Promise.resolve({ id: handoff.remixSessionId, versionId: version.id }) });
+  assert.equal(restored.status, 200, await restored.clone().text());
   await sessions.deleteSession(OWNER, created.id);
+  assert.equal((await getState()).tracks.length, 5, "derived arrangement survives listening-session deletion");
+});
+
+test("session handoff: empty, foreign-owner and lane-limit refusals create nothing", async () => {
+  const route = await import("@/app/api/library/sessions/[id]/studio-handoff/route");
+  const created = await sessions.createSession(OWNER, "Refusal acceptance");
+  const beforeProjects = (await db.db.select().from(schema.projects)).length;
+  const beforeRemixes = (await db.db.select().from(schema.remixSessions)).length;
+  const post = () => route.POST(new Request("http://arena.test/handoff", { method: "POST", body: JSON.stringify({ mode: "sequential" }) }), { params: Promise.resolve({ id: created.id }) });
+  assert.equal((await post()).status, 409, "empty sessions fail honestly");
+  await assert.rejects(() => sessions.sendSessionToStudio(OTHER, created.id), sessions.SessionNotFoundError);
+  for (let count = 0; count < 9; count++) await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const oversized = await post();
+  assert.equal(oversized.status, 409);
+  assert.match((await oversized.json()).error, /36.*32/);
+  assert.equal((await db.db.select().from(schema.projects)).length, beforeProjects);
+  assert.equal((await db.db.select().from(schema.remixSessions)).length, beforeRemixes);
+  assert.equal((await sessions.getSession(OWNER, created.id)).tracks.length, 9, "refusal preserves the listening session");
+  await sessions.deleteSession(OWNER, created.id);
+});
+
+test("session handoff: a database write failure rolls back project, remix, lanes and clips", async () => {
+  const created = await sessions.createSession(OWNER, "Atomic acceptance");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const counts = async () => Promise.all([schema.projects, schema.remixSessions, schema.remixTracks, schema.remixClips].map(async (table) => (await db.db.select().from(table)).length));
+  const before = await counts();
+  // Genuine PostgreSQL failure at the last write boundary, no transaction mock.
+  await client!.query(`CREATE FUNCTION pg_temp.reject_handoff_clip() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'acceptance: injected clip write failure'; END $$`);
+  await client!.query(`CREATE TRIGGER acceptance_reject_clip BEFORE INSERT ON remix_clips FOR EACH ROW EXECUTE FUNCTION pg_temp.reject_handoff_clip()`);
+  try {
+    const original = await sessions.getSession(OWNER, created.id);
+    await assert.rejects(() => sessions.sendSessionToStudio(OWNER, created.id, [{ id: original.tracks[0].id, stemMix: { drums: 0.15 }, transition: original.tracks[0].transition }]));
+    assert.deepEqual((await sessions.getSession(OWNER, created.id)).tracks[0].stemMix, original.tracks[0].stemMix, "failed handoff also rolls back visible edit persistence");
+    assert.deepEqual(await counts(), before, "no orphan project or partial arrangement survives");
+  } finally {
+    await client!.query("DROP TRIGGER acceptance_reject_clip ON remix_clips");
+    await client!.query("DROP FUNCTION pg_temp.reject_handoff_clip()");
+    await sessions.deleteSession(OWNER, created.id);
+  }
+});
+
+test("project audio: bound references cannot expose another owner's audio; malformed versions are ignored", async () => {
+  const [foreignSource] = await db.db.select().from(schema.sourceAssets).where(eq(schema.sourceAssets.projectId, (await service.listTracks({ ownerId: OTHER }))[0].studioProjectId));
+  const [foreignJob] = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, foreignSource.id));
+  const [foreignStem] = await db.db.insert(schema.stemAssets).values({
+    projectId: foreignSource.projectId, sourceAssetId: foreignSource.id, separationJobId: foreignJob.id,
+    stemType: "drums", engine: "synthetic-test-fixture", model: "none", modelVersion: "test",
+    storageKey: "test/foreign-owner.wav", checksumSha256: "fixture", durationSeconds: 2,
+    sampleRate: 44100, channels: 1, codec: "wav", format: "wav", fileSizeBytes: 100,
+  }).returning();
+  const [project] = await db.db.insert(schema.projects).values({ ownerId: OWNER, title: "Reference isolation fixture", kind: "studio" }).returning();
+  const [remix] = await db.db.insert(schema.remixSessions).values({ projectId: project.id, ownerId: OWNER, name: "Invalid reference fixture" }).returning();
+  await db.db.insert(schema.remixTracks).values({ remixSessionId: remix.id, stemAssetId: foreignStem.id, name: "Foreign fixture" });
+  await db.db.insert(schema.remixVersions).values({ remixSessionId: remix.id, createdById: OWNER, name: "Broken legacy snapshot", snapshot: "not JSON" });
+  await db.db.insert(schema.remixVersions).values({ remixSessionId: remix.id, createdById: OWNER, name: "Invalid legacy UUID", snapshot: JSON.stringify({ tracks: [{ id: "legacy", stemAssetId: "not-a-uuid", clips: [] }] }) });
+  const { projectAudio } = await import("../project-audio");
+  assert.deepEqual(await projectAudio(project.id), { stems: [], sources: [] });
+  await db.db.delete(schema.projects).where(eq(schema.projects.id, project.id));
+  await db.db.delete(schema.stemAssets).where(eq(schema.stemAssets.id, foreignStem.id));
 });
 
 test("session: meeting-point primitives power compatibility (analysis surfaced, not duplicated)", async () => {
@@ -687,6 +936,119 @@ test("session: meeting-point primitives power compatibility (analysis surfaced, 
   assert.equal(key.relationship, "relative", "A minor ↔ C major");
   const alignment = sessionLogic.beatAlignedTransitionStart(analysisA?.beatGridMs ?? null, analysisB?.beatGridMs ?? null, 100, "beat");
   assert.equal(alignment.ok, true, "both grids verified → aligned start available");
+});
+
+test("handoff editing: referenced source beats, donor clips and sections retain provenance", async () => {
+  const listening = await sessions.createSession(OWNER, "Referenced editing acceptance");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: listening.id, trackId: trackA.id });
+  const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: listening.id, trackId: trackB.id });
+  await sessions.recordStemSwap({ ownerId: OWNER, sessionId: listening.id, sessionTrackId: detail.tracks[0].id, stemType: "drums", toTrackId: trackB.id, atSeconds: 1 });
+  const handoff = await sessions.sendSessionToStudio(OWNER, listening.id);
+  const [sourceA] = await db.db.select().from(schema.sourceAssets).where(eq(schema.sourceAssets.id, sourceIdByTrackId.get(trackA.id)!));
+  const [sourceB] = await db.db.select().from(schema.sourceAssets).where(eq(schema.sourceAssets.id, sourceIdByTrackId.get(trackB.id)!));
+  for (const source of [sourceA, sourceB]) await db.db.update(schema.sourceAnalyses).set({ sourceChecksumSha256: source.checksumSha256 }).where(eq(schema.sourceAnalyses.sourceAssetId, source.id));
+  const [analysis] = await db.db.select().from(schema.sourceAnalyses).where(eq(schema.sourceAnalyses.sourceAssetId, sourceA.id));
+  const [sectionAnalysis] = await db.db.insert(schema.sourceSectionAnalyses).values({
+    projectId: sourceA.projectId, sourceAssetId: sourceA.id, sourceAnalysisId: analysis.id,
+    status: "complete", stage: "complete", analysisEngine: "section-fixture", analysisEngineVersion: "1",
+    sourceChecksumSha256: sourceA.checksumSha256, idempotencyKey: `reference-edit:${sourceA.id}`,
+  }).returning();
+  const [section] = await db.db.insert(schema.sourceSections).values({
+    id: `reference-edit:${sourceA.id}`, projectId: sourceA.projectId, sourceAssetId: sourceA.id,
+    sourceAnalysisId: analysis.id, sourceSectionAnalysisId: sectionAnalysis.id,
+    sectionIndex: 0, startMs: 0, endMs: 936, startBeatIndex: 0, endBeatIndex: 2,
+    startBar: 1, endBar: 1, structuralConfidence: 0.8,
+    analysisEngine: "section-fixture", analysisEngineVersion: "1", sourceChecksumSha256: sourceA.checksumSha256,
+  }).returning();
+  const lanes = await db.db.select().from(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
+  const lane = lanes.find((row) => row.name.endsWith("— drums"))!;
+  const clips = (await db.db.select().from(schema.remixClips).where(eq(schema.remixClips.remixTrackId, lane.id))).sort((a, b) => a.timelineStartMs - b.timelineStartMs);
+  const params = { params: Promise.resolve({ id: handoff.remixSessionId }) };
+  const alignRoute = await import("@/app/api/remixes/[id]/clips/align-beat/route");
+  const align = (clipId: string, sourceBeatIndex: number, timelineTargetMs: number) => alignRoute.POST(new Request("http://arena.test/align", { method: "POST", body: JSON.stringify({ clipId, sourceBeatIndex, timelineTargetMs }) }), params);
+  try {
+    const aligned = await align(clips[0].id, 1, 1000);
+    assert.equal(aligned.status, 200, await aligned.clone().text());
+    assert.equal((await aligned.json()).clip.timelineStartMs, 532);
+    // The donor clip's asset deliberately differs from its lane's original
+    // stem. Its own source analysis, not the original lane's, must be used.
+    const donorAligned = await align(clips[1].id, 2, 2500);
+    assert.equal(donorAligned.status, 200, await donorAligned.clone().text());
+    assert.equal((await donorAligned.json()).clip.timelineStartMs, 2500);
+    const sectionRoute = await import("@/app/api/remixes/[id]/clips/from-section/route");
+    const input = { sectionId: section.id, stemAssetId: lane.stemAssetId, remixTrackId: lane.id, action: "loop", repetitions: 1, timelineStartMs: 5000 };
+    const place = (body: unknown) => sectionRoute.POST(new Request("http://arena.test/section", { method: "POST", body: JSON.stringify(body) }), params);
+    const placed = await place(input);
+    assert.equal(placed.status, 201, await placed.clone().text());
+    assert.deepEqual((await placed.json()).clips.map((clip: { timelineStartMs: number; durationMs: number }) => [clip.timelineStartMs, clip.durationMs]), [[5000, 936], [5936, 936]]);
+    const count = async () => (await db.db.select().from(schema.remixClips).where(eq(schema.remixClips.remixTrackId, lane.id))).length;
+    const before = await count();
+    const remixRoute = await import("@/app/api/remixes/[id]/route");
+    const state = await (await remixRoute.GET(new Request("http://arena.test/remix"), params)).json();
+    const saved = await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify({ ...state.remix, tracks: state.tracks.map((track: { id: string }) => ({ ...track, muted: track.id !== lane.id })) }) }), params);
+    assert.equal(saved.status, 200, await saved.clone().text());
+    const [savedClip] = (await db.db.select().from(schema.remixClips).where(eq(schema.remixClips.remixTrackId, lane.id))).filter((clip) => clip.timelineStartMs === 532);
+    const versions = await import("@/app/api/remixes/[id]/versions/route");
+    const versionResponse = await versions.POST(new Request("http://arena.test/version", { method: "POST", body: JSON.stringify({ name: "Aligned library sections" }) }), params);
+    assert.equal(versionResponse.status, 201);
+    const { version } = await versionResponse.json();
+    const previousMode = process.env.WAVEYARD_LOCAL_WORKER;
+    const previousRedis = process.env.REDIS_URL;
+    process.env.WAVEYARD_LOCAL_WORKER = "1";
+    delete process.env.REDIS_URL;
+    try {
+      const { getLocalJobBroker } = await import("../worker-local/broker");
+      const exports = await import("@/app/api/remix-versions/[id]/exports/route");
+      const response = await exports.POST(new Request("http://arena.test/export", { method: "POST", body: JSON.stringify({ format: "wav" }) }), { params: Promise.resolve({ id: version.id }) });
+      assert.equal(response.status, 201, await response.clone().text());
+      const { job } = await response.json();
+      assert.equal(await getLocalJobBroker().drain(30_000), true, "wait for the second real render, not an old drain result");
+      const [finished] = await db.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id));
+      assert.equal(finished.status, "complete", finished.errorMessage ?? "not complete");
+      const media = await import("@/app/api/exports/[id]/media/route");
+      const download = await media.GET(new Request("http://arena.test/download"), { params: Promise.resolve({ id: job.id }) });
+      assert.equal(download.status, 200);
+      const filename = path.join(root!, "aligned-sections.wav");
+      assert.equal(download.headers.get("content-type"), "audio/wav");
+      writeFileSync(filename, Buffer.from(await download.arrayBuffer()));
+      const { validateAudio, exec } = await import("../audio");
+      const { requireTool } = await import("../ffmpeg");
+      const metadata = await validateAudio(filename);
+      assert.ok(Math.abs(metadata.durationSeconds - 6.872) < 0.005, JSON.stringify(metadata));
+      const decoded = path.join(root!, "aligned-sections.f32");
+      await exec((await requireTool("ffmpeg")).path, ["-y", "-i", filename, "-f", "f32le", "-ac", "1", decoded]);
+      const pcm = readFileSync(decoded);
+      const magnitude = (hz: number, start: number, end: number) => {
+        let sin = 0, cos = 0;
+        const first = Math.round(start * 44100), last = Math.round(end * 44100);
+        for (let i = first; i < last; i++) { const value = pcm.readFloatLE(i * 4); sin += value * Math.sin(2 * Math.PI * hz * i / 44100); cos += value * Math.cos(2 * Math.PI * hz * i / 44100); }
+        return 2 * Math.hypot(sin, cos) / (last - first);
+      };
+      const signal = { before: magnitude(220, 0.1, 0.5), aligned: magnitude(220, 0.6, 1.4), donor: magnitude(880, 2.6, 3.4), gap: magnitude(220, 4, 4.8), section: magnitude(220, 5.2, 5.7), repeated: magnitude(220, 6.1, 6.7) };
+      assert.ok(signal.before < 0.0001 && signal.gap < 0.0001, JSON.stringify(signal));
+      assert.ok(signal.aligned > 0.05 && signal.donor > 0.05 && signal.section > 0.05 && signal.repeated > 0.05, JSON.stringify(signal));
+      if (process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR) {
+        const directory = process.env.WAVEYARD_ACCEPTANCE_ARTIFACT_DIR;
+        mkdirSync(directory, { recursive: true });
+        copyFileSync(filename, path.join(directory, "aligned-sections.wav"));
+        writeFileSync(path.join(directory, "aligned-sections.json"), JSON.stringify({ fixture: "synthetic signals, not inference", metadata, signal, job: finished, sourceChecksums: [sourceA.checksumSha256, sourceB.checksumSha256] }, null, 2));
+      }
+    } finally {
+      if (previousMode === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = previousMode;
+      if (previousRedis === undefined) delete process.env.REDIS_URL; else process.env.REDIS_URL = previousRedis;
+    }
+    const [unbound] = await db.db.select().from(schema.stemAssets).where(eq(schema.stemAssets.engine, "passthrough-unseparated"));
+    assert.equal((await place({ ...input, stemAssetId: unbound.id })).status, 422, "same-owner unbound stems are not granted");
+    await db.db.update(schema.sourceAnalyses).set({ sourceChecksumSha256: "stale" }).where(eq(schema.sourceAnalyses.id, analysis.id));
+    assert.equal((await align(savedClip.id, 1, 1000)).status, 422, "stale analysis cannot align referenced audio");
+    assert.equal((await place(input)).status, 422, "stale analysis cannot create referenced section clips");
+    assert.equal(await count(), before);
+    const [persisted] = await db.db.select().from(schema.remixClips).where(eq(schema.remixClips.id, savedClip.id));
+    assert.equal(persisted.timelineStartMs, 532, "rejected actions preserve the saved edit");
+  } finally {
+    await db.db.update(schema.sourceAnalyses).set({ sourceChecksumSha256: sourceA.checksumSha256 }).where(eq(schema.sourceAnalyses.id, analysis.id));
+    await sessions.deleteSession(OWNER, listening.id);
+  }
 });
 
 test("track curation: rating and labels persist, normalise, and round-trip", async () => {
@@ -760,4 +1122,246 @@ test("smart collections: CRUD with strict validation, evaluated live over real t
   assert.equal(await service.deleteSmartCollection(OWNER, created!.id), true);
   assert.equal(await service.deleteSmartCollection(OWNER, created!.id), false);
   assert.equal((await service.listSmartCollections(OWNER)).length, 0);
+});
+
+test("completed mixed transitions survive handoff, donors, save/version restore and real WAV export", async () => {
+ for (const held of [false, true]) {
+  const created = await sessions.createSession(OWNER, "Synthetic completed transition regression");
+  for (const track of [trackA, trackB, trackA]) await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: track.id });
+  const detail = await sessions.getSession(OWNER, created.id);
+  const [a, b, c] = detail.tracks;
+  const cueA = { ...a.transition, crossfadeSeconds: 0.5, keepStems: held ? ["drums"] : [], cue: { toSessionTrackId: b.id, fromDeck: 0, toDeck: 1, fromSeconds: 0.5, incomingSeconds: 0.25 } };
+  const cueB = { ...b.transition, crossfadeSeconds: held ? 0.25 : 0, cue: { toSessionTrackId: c.id, fromDeck: 1, toDeck: 0, fromSeconds: 1.5, incomingSeconds: 0.5 } };
+  await sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: a.id, stemType: "drums", toTrackId: trackB.id, atSeconds: 0.75 });
+  const route = await import("@/app/api/library/sessions/[id]/studio-handoff/route");
+  const countBefore = (await db.db.select().from(schema.projects)).length;
+  const missing = await route.POST(new Request("http://arena.test/handoff", { method: "POST", body: JSON.stringify({ mode: "transitions" }) }), { params: Promise.resolve({ id: created.id }) });
+  assert.equal(missing.status, 409);
+  assert.equal((await db.db.select().from(schema.projects)).length, countBefore, "missing cues never silently become a lossy arrangement");
+  const trackRoute = await import("@/app/api/library/sessions/[id]/tracks/[itemId]/route");
+  const patch = await trackRoute.PATCH(new Request("http://arena.test/track", { method: "PATCH", body: JSON.stringify({ transition: cueA }) }), { params: Promise.resolve({ id: created.id, itemId: a.id }) });
+  assert.equal(patch.status, 200);
+  assert.equal((await sessions.getSession(OWNER, created.id)).tracks[0].transition.cue?.toSessionTrackId, b.id);
+  const edits = [
+    { id: a.id, stemMix: { vocals: 0, drums: 0.4, bass: 0, other: 0 }, transition: cueA },
+    { id: b.id, stemMix: { drums: 0.25 }, transition: cueB },
+    { id: c.id, stemMix: { vocals: 0, drums: 0.2, bass: 0, other: 0 }, transition: { ...c.transition, crossfadeSeconds: 0 } },
+  ];
+  const response = await route.POST(new Request("http://arena.test/handoff", { method: "POST", body: JSON.stringify({ mode: "transitions", trackEdits: edits }) }), { params: Promise.resolve({ id: created.id }) });
+  assert.equal(response.status, 201, await response.clone().text());
+  const { handoff } = await response.json();
+  assert.equal((await sessions.getSession(OWNER, created.id)).tracks[0].transition.cue?.toSessionTrackId, b.id);
+  const remixRoute = await import("@/app/api/remixes/[id]/route");
+  const params = { params: Promise.resolve({ id: handoff.remixSessionId }) };
+  const read = async () => (await remixRoute.GET(new Request("http://arena.test/remix"), params)).json();
+  const state = await read();
+  assert.equal(state.automation.length, 9, "lane envelopes, including muted stems, persist through the existing automation contract");
+  const outgoing = state.tracks[1]; // A drums, split at donor change
+  assert.deepEqual(outgoing.clips.map((clip: { timelineStartMs: number; sourceOffsetMs: number; durationMs: number }) => [clip.timelineStartMs, clip.sourceOffsetMs, clip.durationMs]), [[0, 0, 750], [750, 750, 250]]);
+  assert.deepEqual(state.tracks[4].clips.map((clip: { timelineStartMs: number; sourceOffsetMs: number; durationMs: number }) => [clip.timelineStartMs, clip.sourceOffsetMs, clip.durationMs]), [[500, 250, held ? 1500 : 1250]]);
+  const save = await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify({ ...state.remix, tracks: state.tracks, automation: state.automation }) }), params);
+  assert.equal(save.status, 200, await save.clone().text());
+  const reopened = await read();
+  const versions = await import("@/app/api/remixes/[id]/versions/route");
+  const versionResponse = await versions.POST(new Request("http://arena.test/version", { method: "POST", body: JSON.stringify({ name: "Synthetic transition structure" }) }), params);
+  assert.equal(versionResponse.status, 201);
+  const { version } = await versionResponse.json();
+  const changed = { ...reopened.remix, tracks: reopened.tracks.map((track: { clips: unknown[] }) => ({ ...track, clips: [] })), automation: [] };
+  assert.equal((await remixRoute.PUT(new Request("http://arena.test/remix", { method: "PUT", body: JSON.stringify(changed) }), params)).status, 200);
+  const restore = await import("@/app/api/remixes/[id]/versions/[versionId]/restore/route");
+  assert.equal((await restore.POST(new Request("http://arena.test/restore", { method: "POST" }), { params: Promise.resolve({ id: handoff.remixSessionId, versionId: version.id }) })).status, 200);
+  const restored = await read();
+  assert.deepEqual(restored.tracks.map((track: { clips: unknown[] }) => track.clips.map((clip) => { const row = clip as Record<string, unknown>; return [row.stemAssetId, row.timelineStartMs, row.sourceOffsetMs, row.durationMs, row.gain, row.fadeInMs, row.fadeOutMs]; })), reopened.tracks.map((track: { clips: unknown[] }) => track.clips.map((clip) => { const row = clip as Record<string, unknown>; return [row.stemAssetId, row.timelineStartMs, row.sourceOffsetMs, row.durationMs, row.gain, row.fadeInMs, row.fadeOutMs]; })));
+  const envelopes = (value: typeof restored) => value.automation.map((lane: { remixTrackId: string; parameter: string; points: Array<{ timelineMs: number; value: number }> }) => ({ track: lane.remixTrackId, parameter: lane.parameter, points: lane.points.map(({ timelineMs, value }) => ({ timelineMs, value })) })).sort((a: { track: string }, b: { track: string }) => a.track.localeCompare(b.track));
+  assert.deepEqual(envelopes(restored), envelopes(reopened));
+  const priorWorker = process.env.WAVEYARD_LOCAL_WORKER, priorRedis = process.env.REDIS_URL;
+  process.env.WAVEYARD_LOCAL_WORKER = "1"; delete process.env.REDIS_URL;
+  const { getLocalJobBroker } = await import("../worker-local/broker");
+  const { handleExportJob } = await import("../worker-local/export");
+  const { EXPORT_QUEUE } = await import("../queue");
+  getLocalJobBroker().register(EXPORT_QUEUE, handleExportJob);
+  try {
+    const exports = await import("@/app/api/remix-versions/[id]/exports/route");
+    const exp = await exports.POST(new Request("http://arena.test/export", { method: "POST", body: JSON.stringify({ format: "wav" }) }), { params: Promise.resolve({ id: version.id }) });
+    assert.equal(exp.status, 201, await exp.clone().text());
+    const { job } = await exp.json();
+    assert.equal(await getLocalJobBroker().drain(30_000), true);
+    const [finished] = await db.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id));
+    assert.equal(finished.status, "complete", finished.errorMessage ?? "");
+    const media = await import("@/app/api/exports/[id]/media/route");
+    const download = await media.GET(new Request("http://arena.test/media?download=1"), { params: Promise.resolve({ id: job.id }) });
+    assert.equal(download.status, 200);
+    const filename = path.join(root!, `completed-transitions${held ? "-held" : ""}.wav`), decoded = path.join(root!, "completed-transitions.f32");
+    await extractStudioDownload(download, filename);
+    const { validateAudio, exec } = await import("../audio");
+    const { requireTool } = await import("../ffmpeg");
+    assert.ok(Math.abs((await validateAudio(filename)).durationSeconds - 3.25) < 0.02);
+    await exec((await requireTool("ffmpeg")).path, ["-y", "-i", filename, "-f", "f32le", "-ac", "1", decoded]);
+    const pcm = readFileSync(decoded);
+    const magnitude = (hz: number, start: number, end: number) => {
+      let sin = 0, cos = 0;
+      const first = Math.round(start * 44100), last = Math.round(end * 44100);
+      for (let i = first; i < last; i++) { const value = pcm.readFloatLE(i * 4); sin += value * Math.sin(2 * Math.PI * hz * i / 44100); cos += value * Math.cos(2 * Math.PI * hz * i / 44100); }
+      return 2 * Math.hypot(sin, cos) / (last - first);
+    };
+    const signal = { initial: magnitude(220, 0.1, 0.3), fadeOut: magnitude(220, 0.55, 0.65), fadeIn: magnitude(880, 0.55, 0.65), donorOld: magnitude(220, 0.8, 0.9), donorNew: magnitude(880, 0.8, 0.9), beforeCut: magnitude(880, 1.5, 1.7), afterCut: magnitude(220, 1.8, 2), wrongAfterCut: magnitude(880, 1.8, 2) };
+    assert.ok(signal.initial > 0.05, JSON.stringify(signal));
+    assert.ok(held ? signal.fadeOut / signal.initial > 0.98 && signal.fadeOut / signal.initial < 1.02 : signal.fadeOut / signal.initial > 0.65 && signal.fadeOut / signal.initial < 0.95, JSON.stringify(signal));
+    assert.ok(signal.fadeIn > 0.004 && signal.fadeIn < 0.025, JSON.stringify(signal));
+    assert.ok(signal.donorOld < 0.002 && signal.donorNew > 0.03, JSON.stringify(signal));
+    assert.ok(signal.beforeCut > 0.03 && signal.afterCut > 0.02 && (held ? signal.wrongAfterCut > 0.003 : signal.wrongAfterCut < 0.002), JSON.stringify(signal));
+    if (process.env.ARENA_TRANSITION_EVIDENCE_DIR) {
+      const out = process.env.ARENA_TRANSITION_EVIDENCE_DIR; mkdirSync(out, { recursive: true }); copyFileSync(filename, path.join(out, `completed-transitions${held ? "-held" : ""}.wav`));
+      writeFileSync(path.join(out, `result${held ? "-held" : ""}.json`), JSON.stringify({ syntheticAudio: true, held, sourceHead: spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(), workingDiffSha256: createHash("sha256").update(spawnSync("git", ["diff", "HEAD"], { encoding: "utf8" }).stdout).digest("hex"), state: restored, signal, wavSha256: createHash("sha256").update(readFileSync(filename)).digest("hex") }, null, 2));
+    }
+  } finally { if (priorWorker === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = priorWorker; if (priorRedis === undefined) delete process.env.REDIS_URL; else process.env.REDIS_URL = priorRedis; }
+ }
+});
+
+
+test("library and session payloads retain persisted model identity for honest residual labels", async () => {
+  const detail = await service.getTrack(OWNER, trackA.id);
+  const residual = detail!.stems.find(stem => stem.stemType === "other")!;
+  assert.equal(residual.model, "pcm-tone");
+  await db.db.update(schema.stemAssets).set({ model: "deep_6s" }).where(eq(schema.stemAssets.id, residual.id));
+  try {
+    const reread = await service.getTrack(OWNER, trackA.id);
+    assert.equal(reread!.stems.find(stem => stem.id === residual.id)!.model, "deep_6s");
+    const session = await sessions.createSession(OWNER, "Model identity contract");
+    const result = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackA.id });
+    assert.equal(result.tracks[0].stems.find(stem => stem.id === residual.id)!.model, "deep_6s");
+  } finally {
+    await db.db.update(schema.stemAssets).set({ model: "pcm-tone" }).where(eq(schema.stemAssets.id, residual.id));
+  }
+});
+
+test("decoded bank duration overrides compressed-container padding through session and Studio handoff", async () => {
+  const file = path.join(root!, "fractional-bank.wav"); writeWav(file, 1.23456, 791);
+  const { track } = await service.addTrackFromAudioFile({ ownerId: OWNER, filePath: file, filename: "Fractional duration fixture.wav", mimeType: "audio/wav", prepareSeparation: false });
+  const [row] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, track.id));
+  const exact = Math.floor(1.23456 * 44100) / 44100;
+  // Reproduce MP3 encoder padding without pretending this controlled WAV is
+  // trained inference. Source/library container metadata must remain intact.
+  await db.db.update(schema.tracks).set({ durationSeconds: exact + .039 }).where(eq(schema.tracks.id, row.id));
+  const [job] = await db.db.insert(schema.processingJobs).values({ projectId: row.projectId, sourceAssetId: row.sourceAssetId, type: "separation", status: "complete", stage: "complete", model: "controlled-duration", requestedDevice: "cpu", idempotencyKey: `controlled-duration:${track.id}` }).returning();
+  const { getStorage } = await import("../storage"); const storage = getStorage();
+  for (const stemType of ["vocals", "drums", "bass", "other"]) {
+    const key = `duration-fixture/${job.id}/${stemType}.wav`; const destination = storage.getLocalPath(key)!;
+    mkdirSync(path.dirname(destination), { recursive: true }); copyFileSync(file, destination);
+    await db.db.insert(schema.stemAssets).values({ projectId: row.projectId, sourceAssetId: row.sourceAssetId, separationJobId: job.id, stemType, engine: "controlled-duration-fixture", model: "controlled-duration", modelVersion: "not-inference", storageKey: key, checksumSha256: createHash("sha256").update(readFileSync(file)).digest("hex"), durationSeconds: exact, sampleRate: 44100, channels: 1, codec: "pcm_s16le", format: "wav", fileSizeBytes: readFileSync(file).length });
+  }
+  const detail = await service.getTrack(OWNER, track.id, { bankId: job.id }); assert.ok(detail);
+  assert.equal(detail.durationSeconds, exact);
+  const sessions = await import("./session-service"); const session = await sessions.createSession(OWNER, "Fractional decoded bank");
+  await sessions.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: track.id, bankId: job.id });
+  const reread = await sessions.getSession(OWNER, session.id); assert.equal(reread.tracks[0].track.durationSeconds, exact);
+  const handoff = await sessions.sendSessionToStudio(OWNER, session.id); assert.equal(handoff.remixTrackCount, 4);
+  const clips = await db.db.select({ durationMs: schema.remixClips.durationMs }).from(schema.remixClips).innerJoin(schema.remixTracks, eq(schema.remixTracks.id, schema.remixClips.remixTrackId)).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
+  assert.equal(clips.length, 4); assert.ok(clips.every(clip => Math.abs(clip.durationMs - exact * 1000) < 1));
+  // Actual version/queue/renderer must agree with handoff's range validation.
+  const versions = await import("@/app/api/remixes/[id]/versions/route");
+  const versionResponse = await versions.POST(new Request("http://arena.test/version", { method: "POST", body: JSON.stringify({ name: "Fractional bank regression" }) }), { params: Promise.resolve({ id: handoff.remixSessionId }) });
+  assert.equal(versionResponse.status, 201); const { version } = await versionResponse.json();
+  const { getLocalJobBroker } = await import("../worker-local/broker"); const { handleExportJob } = await import("../worker-local/export");
+  const priorWorker = process.env.WAVEYARD_LOCAL_WORKER; process.env.WAVEYARD_LOCAL_WORKER = "1";
+  const broker = getLocalJobBroker(); broker.register("waveyard-export", handleExportJob);
+  try {
+    const exports = await import("@/app/api/remix-versions/[id]/exports/route");
+    const response = await exports.POST(new Request("http://arena.test/export", { method: "POST", body: JSON.stringify({ format: "wav" }) }), { params: Promise.resolve({ id: version.id }) });
+    assert.equal(response.status, 201, await response.clone().text()); const { job } = await response.json(); assert.equal(await broker.drain(30_000), true);
+    const [finished] = await db.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, job.id)); assert.equal(finished.status, "complete", finished.errorMessage ?? "export failed");
+  } finally { if (priorWorker === undefined) delete process.env.WAVEYARD_LOCAL_WORKER; else process.env.WAVEYARD_LOCAL_WORKER = priorWorker; }
+  const [unchanged] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, track.id)); assert.equal(unchanged.durationSeconds, exact + .039);
+});
+
+
+test("performance settings and exact muted fader recall persist through actual route, SQL and a fresh application process", async () => {
+  const filePath = path.join(root!, "performance.wav"); writeWav(filePath, 2);
+  const intake = await service.addTrackFromAudioFile({ ownerId: OWNER, filePath, filename: "performance.wav", mimeType: "audio/wav" });
+  const created = await sessions.createSession(OWNER, "Performance recall persistence");
+  const added = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: intake.track.id });
+  const item = added.tracks[0];
+  const { defaultPerformance, performMix } = await import("./performance");
+  const muted = performMix({ drums: .37, vocals: .8 }, { ...defaultPerformance(), snap: "quarter", instantRestore: false }, { kind: "mute", stem: "drums" }, ["drums", "vocals"]);
+  const route = await import("@/app/api/library/sessions/[id]/tracks/[itemId]/route");
+  const params = { params: Promise.resolve({ id: created.id, itemId: item.id }) };
+  const response = await route.PATCH(new Request("http://arena.test/performance", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ stemMix: muted.mix, transition: { ...item.transition, performance: muted.performance } }) }), params);
+  assert.equal(response.status, 200);
+  const script = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { const s = await getSession('${OWNER}', '${created.id}'); console.log(JSON.stringify(s.tracks[0])); } finally { await pool.end(); }`;
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: hangBound(30_000) });
+  assert.equal(child.status, 0, child.stderr);
+  const reopened = JSON.parse(child.stdout.trim());
+  assert.equal(reopened.stemMix.drums, 0);
+  assert.deepEqual(reopened.transition.performance, muted.performance);
+  assert.equal(performMix(reopened.stemMix, reopened.transition.performance, { kind: "mute", stem: "drums" }, ["drums", "vocals"]).mix.drums, .37);
+  const invalid = await route.PATCH(new Request("http://arena.test/performance", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ transition: { ...item.transition, performance: { ...muted.performance, recall: { drums: -5 } } } }) }), params);
+  assert.equal(invalid.status, 400);
+  assert.deepEqual((await sessions.getSession(OWNER, created.id)).tracks[0].transition.performance, muted.performance, "failed patch cannot overwrite persisted recall");
+});
+
+test("session save retry after a lost SQL acknowledgement preserves audio and latest mix through a fresh process", async () => {
+  const { SessionSaveQueue } = await import("./session-save-queue");
+  const filePath = path.join(root!, "lost-edit-ack.wav"); writeWav(filePath, 2);
+  const originalBytes = readFileSync(filePath);
+  const intake = await service.addTrackFromAudioFile({ ownerId: OWNER, filePath, filename: "lost-edit-ack.wav", mimeType: "audio/wav" });
+  const created = await sessions.createSession(OWNER, "Lost edit acknowledgement");
+  const added = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: intake.track.id });
+  const item = added.tracks[0];
+  const route = await import("@/app/api/library/sessions/[id]/tracks/[itemId]/route");
+  let attempts = 0;
+  const queue = new SessionSaveQueue(async (_url, body) => {
+    const response = await route.PATCH(new Request("http://arena.test/retry", { method: "PATCH", headers: { "content-type": "application/json" }, body }), { params: Promise.resolve({ id: created.id, itemId: item.id }) });
+    assert.equal(response.status, 200);
+    if (++attempts === 1) throw new Error("injected lost acknowledgement AFTER real SQL commit");
+  }, () => {}, 60000);
+  queue.enqueue("item", JSON.stringify({ stemMix: { drums: 0 } }));
+  assert.equal(await queue.flush(), false);
+  assert.equal((await sessions.getSession(OWNER, created.id))!.tracks[0].stemMix.drums, 0);
+  queue.enqueue("item", JSON.stringify({ stemMix: { drums: .37 } }));
+  assert.equal(await queue.flush(), false); assert.equal(attempts, 1);
+  assert.equal(await queue.flush(true), true);
+  const script = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { console.log(JSON.stringify(await getSession('${OWNER}', '${created.id}'))); } finally { await pool.end(); }`;
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: hangBound(30_000) });
+  assert.equal(child.status, 0, child.stderr);
+  const reopened = JSON.parse(child.stdout.trim());
+  assert.equal(reopened.tracks[0].stemMix.drums, .37);
+  assert.equal(reopened.tracks[0].track.id, intake.track.id);
+  assert.deepEqual(readFileSync(filePath), originalBytes, "input bytes retained");
+});
+
+test("restore point survives a lost PUT acknowledgement, explicit latest retry and actual application SIGKILL", async () => {
+  const filePath = path.join(root!, "cursor-recovery.wav"); writeWav(filePath, 2);
+  const intake = await service.addTrackFromAudioFile({ ownerId: OWNER, filePath, filename: "cursor-recovery.wav", mimeType: "audio/wav" });
+  const created = await sessions.createSession(OWNER, "Cursor kill after acknowledged retry");
+  const added = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: intake.track.id });
+  const id = added.tracks[0].id;
+  const script = `
+    import assert from 'node:assert/strict';
+    import { writeSync } from 'node:fs';
+    import { SessionSaveQueue } from './src/lib/waveyard/library/session-save-queue.ts';
+    import { PUT } from './src/app/api/library/sessions/[id]/state/route.ts';
+    let attempts = 0;
+    const queue = new SessionSaveQueue(async (_url, body) => {
+      const response = await PUT(new Request('http://arena.test/state', { method: 'PUT', headers: {'content-type':'application/json'}, body }), {params:Promise.resolve({id:'${created.id}'})});
+      assert.equal(response.status, 200);
+      if (++attempts === 1) throw new Error('injected lost response AFTER real cursor SQL commit');
+    }, () => {}, 60000);
+    const body = positionSeconds => JSON.stringify({currentSessionTrackId:'${id}', positionSeconds});
+    queue.enqueue('state', body(.25)); assert.equal(await queue.flush(), false);
+    queue.enqueue('state', body(1.25)); assert.equal(await queue.flush(), false); assert.equal(attempts, 1);
+    assert.equal(await queue.flush(true), true);
+    writeSync(1, JSON.stringify({acknowledged:true,positionSeconds:1.25,attempts,scope:'injected lost PUT ACK then actual SIGKILL after acknowledged latest retry; DB remains running'})+'\\n');
+    process.kill(process.pid, 'SIGKILL');
+  `;
+  const killed = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", script], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: hangBound(30_000) });
+  assertActuallyKilled(assert, killed, "session save process");
+  assert.equal(JSON.parse(killed.stdout.trim()).acknowledged, true);
+  const reopen = `import { getSession } from './src/lib/waveyard/library/session-service.ts'; import { pool } from './src/db/index.ts'; try { console.log(JSON.stringify(await getSession('${OWNER}', '${created.id}'))); } finally { await pool.end(); }`;
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "--input-type=module", "-e", reopen], { cwd: repoRoot, env: process.env, encoding: "utf8", timeout: hangBound(30_000) });
+  assert.equal(child.status, 0, child.stderr);
+  const restored = JSON.parse(child.stdout.trim());
+  assert.equal(restored.currentSessionTrackId, id);
+  assert.equal(restored.positionSeconds, 1.25);
+  assert.equal(restored.tracks[0].track.id, intake.track.id);
+  console.log(JSON.stringify({ kind: "cursor-route-process-recovery", signal: killed.signal, acknowledgement: JSON.parse(killed.stdout.trim()), reopened: { currentSessionTrackId: restored.currentSessionTrackId, positionSeconds: restored.positionSeconds }, scope: "real PUT/SQL; handler process SIGKILL after acknowledged retry; database stays running, not Electron/OS-kill/in-flight or unsaved recovery" }));
 });

@@ -16,6 +16,7 @@
  *
  * Usage:  node scripts/environment-restore.mjs
  */
+import { prepareInstalledNativeTools } from "./lib/installed-tool-preparation.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import net from "node:net";
@@ -45,36 +46,12 @@ async function main() {
   if (!existsSync(join(root, "node_modules/.bin/tsc"))) {
     log("deps", "node_modules missing — npm ci --ignore-scripts (sandbox-safe)");
     execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { stdio: "inherit", cwd: root });
-    // --ignore-scripts skips benign postinstalls these packages need:
-    //  - @embedded-postgres/*: hydrate libpq.so.5-style versioned symlinks
-    //    (run with the package dir as cwd — the script resolves relatively)
-    //  - @ff{mpeg,probe}-installer/*: chmod u+x the real binaries
-    // (onnxruntime-node's nuget postinstall stays skipped: nuget is blocked
-    //  in the sandbox; the linux-x64 binding ships inside the tarball.)
-    for (const pkg of ["@embedded-postgres/linux-x64", "@embedded-postgres/linux-arm64", "@embedded-postgres/darwin-x64", "@embedded-postgres/darwin-arm64"]) {
-      const dir = join(root, "node_modules", pkg);
-      if (!existsSync(join(dir, "scripts/hydrate-symlinks.js"))) continue;
-      try {
-        execFileSync("node", ["scripts/hydrate-symlinks.js"], { stdio: "ignore", cwd: dir });
-        log("deps", `${pkg}: symlinks hydrated`);
-      } catch {
-        log("deps", `${pkg}: symlink hydration failed (may still work)`);
-      }
-    }
-    for (const bin of ["@ffprobe-installer/linux-x64/ffprobe", "@ffmpeg-installer/linux-x64/ffmpeg"]) {
-      const target = join(root, "node_modules", bin);
-      if (existsSync(target)) {
-        try {
-          execFileSync("chmod", ["u+x", target], { stdio: "ignore" });
-          log("deps", `${bin}: +x`);
-        } catch {
-          /* best effort */
-        }
-      }
-    }
   } else {
     log("deps", "node_modules present");
   }
+  // A prior --ignore-scripts install still needs offline hydration even
+  // when tsc exists. This runs only known, already-shipped preparations.
+  for (const result of prepareInstalledNativeTools(root)) log("deps", result);
 
   // --- 2. PostgreSQL ---------------------------------------------------
   if (await pgUp()) {

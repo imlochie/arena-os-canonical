@@ -102,13 +102,16 @@ function normaliseTiming(raw: Partial<RemixStateInput>): MusicalTiming {
   };
 }
 
+export const MAX_REMIX_TRACKS = 32;
+export const MAX_REMIX_CLIPS_PER_TRACK = 256;
+
 export function normaliseRemixState(raw: unknown): RemixStateInput | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Partial<RemixStateInput>;
-  if (!Array.isArray(value.tracks) || value.tracks.length > 32) return null;
+  if (!Array.isArray(value.tracks) || value.tracks.length > MAX_REMIX_TRACKS) return null;
   const tracks: RemixTrackInput[] = [];
   for (const [trackIndex, input] of value.tracks.entries()) {
-    if (!input || typeof input !== "object" || !input.id || !input.stemAssetId || !Array.isArray(input.clips) || input.clips.length > 256) return null;
+    if (!input || typeof input !== "object" || !input.id || !input.stemAssetId || !Array.isArray(input.clips) || input.clips.length > MAX_REMIX_CLIPS_PER_TRACK) return null;
     const trackInserts = normaliseInserts(input.inserts);
     if (trackInserts === null) return null;
     const clips: RemixClipInput[] = [];

@@ -20,7 +20,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const user = await requireUser();
     const { id } = await params;
     if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
-    const track = await getTrack(user.id, id);
+    const bankId = new URL(_request.url).searchParams.get("bankId");
+    if (bankId && !isUuid(bankId)) return NextResponse.json({ error: "Invalid bank id." }, { status: 400 });
+    const track = await getTrack(user.id, id, bankId ? { bankId } : undefined);
     if (track === null) return NextResponse.json({ error: "Track not found." }, { status: 404 });
     return NextResponse.json({ track });
   } catch (error) {

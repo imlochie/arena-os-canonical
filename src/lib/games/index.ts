@@ -27,10 +27,10 @@ export const GAME_TYPES: GameMeta[] = [
   { id: "pong", name: "Pong", emoji: "🏓", desc: "You vs the machine, first to 7" },
   { id: "tetris", name: "Falling Blocks", emoji: "🧱", desc: "Tetris-classic: 7-bag, hold, ghost, levels" },
   { id: "2048", name: "Merge Numbers", emoji: "🔢", desc: "2048-classic: slide, merge, reach the target" },
-  { id: "arena", name: "Neon Arena", emoji: "🚀", desc: "Parametric survival — themed from ANY words" },
+  { id: "arena", name: "Neon Arena", emoji: "🚀", desc: "Survival template — theme, speed and lives modifiers" },
 ];
 
-export function detectGameType(prompt: string): GameType {
+export function detectGameType(prompt: string): GameType | null {
   const p = prompt.toLowerCase();
   const has = (...ks: string[]) => ks.some((k) => p.includes(k));
   if (has("pacman", "pac-man", "pac man", "maze chase", "chomp", "pellet", "ghost maze")) return "pacman";
@@ -40,11 +40,8 @@ export function detectGameType(prompt: string): GameType {
   if (has("pong", "table tennis", "ping pong")) return "pong";
   if (has("tetris", "falling block", "falling piece", "block stack", "stacking block", "stack blocks")) return "tetris";
   if (has("2048", "twenty forty", "merge number", "merge tiles", "powers of two", "power of 2")) return "2048";
-  if (has("shooter", "shoot", "alien", "space", "invad")) return "invaders";
-  if (has("maze", "chase", "ghost", "eat the dots", "dots")) return "pacman";
-  if (has("paddle", "bounce", "blocks")) return "breakout";
   if (has("surviv", "arena", "waves", "horde", "vampire")) return "arena";
-  return "arena"; // parametric fallback: every prompt yields a game
+  return null; // Unknown mechanics require genuine code generation, not a themed template.
 }
 
 export interface Mods {
@@ -109,6 +106,7 @@ export interface OfflineGame {
 export function generateGameOffline(prompt: string, forceType?: GameType): OfflineGame {
   const started = Date.now();
   const gameType = forceType ?? detectGameType(prompt);
+  if (!gameType) throw new Error("No offline template matches this request. Choose an explicit template or connect a model for custom game generation.");
   const mods = parseMods(prompt);
   const s = speedScale(mods);
   const hasRemix =

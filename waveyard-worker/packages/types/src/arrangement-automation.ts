@@ -61,19 +61,36 @@ export function automationLinearSegments(points: AutomationPoint[]) {
   })).filter((segment) => segment.endMs > segment.startMs);
 }
 
-/** Linear interpolation, clamped to the first/last point at both lane boundaries. */
-export function evaluateAutomation(
-  points: AutomationPoint[],
-  timelineMs: number,
-  defaultValue: number,
-) {
-  if (!Number.isFinite(timelineMs) || !Number.isFinite(defaultValue) || !points.length) return defaultValue;
+/** Compile once per prepared lane, not once per audio sample.
+ * Sorted-breakpoint lookup adapted from SoundCraft AutomationLane::value_at,
+ * crates/model/src/automation.rs at 25d52c646aea780c8076ff966076f994ad256221.
+ * Copyright (c) 2026 ArtCraft Team and SoundCraft contributors, MIT.
+ * See docs/licenses/soundcraft-MIT.txt. Retains Waveyard's historical boundary
+ * and duplicate-point semantics; normalization remains the write-time contract.
+ */
+export function createAutomationEvaluator(points: AutomationPoint[], defaultValue: number) {
   const ordered = [...points].sort((left, right) => left.timelineMs - right.timelineMs);
-  if (timelineMs <= ordered[0].timelineMs) return ordered[0].value;
-  const final = ordered.at(-1)!;
-  if (timelineMs >= final.timelineMs) return final.value;
-  const segment = automationLinearSegments(ordered).find((item) => timelineMs <= item.endMs);
-  if (!segment) return final.value;
-  const fraction = (timelineMs - segment.startMs) / (segment.endMs - segment.startMs);
-  return segment.startValue + (segment.endValue - segment.startValue) * fraction;
+  return (timelineMs: number): number => {
+    if (!Number.isFinite(timelineMs) || !Number.isFinite(defaultValue) || !ordered.length) return defaultValue;
+    if (timelineMs <= ordered[0].timelineMs) return ordered[0].value;
+    const final = ordered[ordered.length - 1];
+    if (timelineMs >= final.timelineMs) return final.value;
+    // Lower bound preserves the first point AT a duplicate timestamp, just as
+    // the old first-ending-segment search did. Beyond it, the last duplicate
+    // supplies the next segment's left endpoint. No per-sample allocations.
+    let low = 1, high = ordered.length - 1;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (ordered[middle].timelineMs < timelineMs) low = middle + 1;
+      else high = middle;
+    }
+    const left = ordered[low - 1], right = ordered[low];
+    const fraction = (timelineMs - left.timelineMs) / (right.timelineMs - left.timelineMs);
+    return left.value + (right.value - left.value) * fraction;
+  };
+}
+
+/** Convenience API for isolated queries; renderers should compile once. */
+export function evaluateAutomation(points: AutomationPoint[], timelineMs: number, defaultValue: number) {
+  return createAutomationEvaluator(points, defaultValue)(timelineMs);
 }

@@ -14,7 +14,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { executeTool, WORKSPACE_ROOT } from "./tools";
-import { runMission, type MissionAgentSpec } from "./mission";
+import { runMission as runDurableMission, type MissionAgentSpec } from "./mission";
 import type { GenerateResult } from "@/lib/runtime";
 import { decideApproval, listApprovals } from "./governance";
 import {
@@ -212,7 +212,7 @@ test("mission gate: a denied external_call is terminal — nothing is ever sent"
   const m2 = await runMission(spaceId, { goal: "call probe", timeBudgetMs: 30_000, maxTurnsPerAgent: 2 },
     { generate: gen, externalDeps: { fetcher, env: TWILIO_ENV } });
   assert.equal(calls.length, 0, "a denied call never reached Twilio");
-  assert.equal(m2.status, "done");
+  assert.equal(m2.status, "incomplete", "a denied, unexecuted required call is not a completed mission");
 });
 
 test("executeTool: refused payment links surface as honest failures, not successes", async () => {
@@ -221,3 +221,6 @@ test("executeTool: refused payment links surface as honest failures, not success
   assert.equal(outcome.ok, false);
   assert.match(outcome.output, /exceeds the safety cap/);
 });
+
+// Explicitly ephemeral unless this fixture supplies real SQL.
+const runMission: typeof runDurableMission = (id, opts, deps = {}) => runDurableMission(id, opts, { memoryOnly: !deps.database, ...deps });

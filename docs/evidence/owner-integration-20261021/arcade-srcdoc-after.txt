@@ -1,0 +1,148 @@
+TAP version 13
+# (node:24343) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/games/sandbox.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:24343) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:24343) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# DrizzleQueryError: Failed query: select "id", "prompt", "game_type", "engine", "code", "parent_id", "project_id", "owner_id", "created_at" from "arcade_games" order by "arcade_games"."created_at" desc limit $1
+# params: 30
+#     at NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:41:15)
+#     at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#     at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#     ... 3 lines matching cause stack trace ...
+#     at async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3) {
+#   query: 'select "id", "prompt", "game_type", "engine", "code", "parent_id", "project_id", "owner_id", "created_at" from "arcade_games" order by "arcade_games"."created_at" desc limit $1',
+#   params: [ 30 ],
+#   cause: error: relation "arcade_games" does not exist
+#       at /home/user/arena-os-canonical/node_modules/pg-pool/index.js:45:11
+#       at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:124:18
+#       at async NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:39:16)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#       at async GET (file:///home/user/arena-os-canonical/src/app/api/arcade/route.ts:31:18)
+#       at async TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/studio-fx.test.mjs:586:20)
+#       at async Test.run (node:internal/test_runner/test:1054:7)
+#       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3) {
+#     length: 112,
+#     severity: 'ERROR',
+#     code: '42P01',
+#     detail: undefined,
+#     hint: undefined,
+#     position: '112',
+#     internalPosition: undefined,
+#     internalQuery: undefined,
+#     where: undefined,
+#     schema: undefined,
+#     table: undefined,
+#     column: undefined,
+#     dataType: undefined,
+#     constraint: undefined,
+#     file: 'parse_relation.c',
+#     line: '1452',
+#     routine: 'parserOpenTable'
+#   }
+# }
+# DrizzleQueryError: Failed query: select "id", "prompt", "game_type", "engine", "code", "parent_id", "project_id", "owner_id", "created_at" from "arcade_games" order by "arcade_games"."created_at" desc limit $1
+# params: 30
+#     at NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:41:15)
+#     at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#     at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#     at async GET (file:///home/user/arena-os-canonical/src/app/api/arcade/route.ts:31:18)
+#     at async Server.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/studio-fx.test.mjs:97:26) {
+#   query: 'select "id", "prompt", "game_type", "engine", "code", "parent_id", "project_id", "owner_id", "created_at" from "arcade_games" order by "arcade_games"."created_at" desc limit $1',
+#   params: [ 30 ],
+#   cause: error: relation "arcade_games" does not exist
+#       at /home/user/arena-os-canonical/node_modules/pg-pool/index.js:45:11
+#       at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:124:18
+#       at async NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:39:16)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#       at async GET (file:///home/user/arena-os-canonical/src/app/api/arcade/route.ts:31:18)
+#       at async Server.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/studio-fx.test.mjs:97:26) {
+#     length: 112,
+#     severity: 'ERROR',
+#     code: '42P01',
+#     detail: undefined,
+#     hint: undefined,
+#     position: '112',
+#     internalPosition: undefined,
+#     internalQuery: undefined,
+#     where: undefined,
+#     schema: undefined,
+#     table: undefined,
+#     column: undefined,
+#     dataType: undefined,
+#     constraint: undefined,
+#     file: 'parse_relation.c',
+#     line: '1452',
+#     routine: 'parserOpenTable'
+#   }
+# }
+# DrizzleQueryError: Failed query: select "id", "prompt", "game_type", "engine", "code", "parent_id", "project_id", "owner_id", "created_at" from "arcade_games" order by "arcade_games"."created_at" desc limit $1
+# params: 30
+#     at NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:41:15)
+#     at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#     at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#     at async GET (file:///home/user/arena-os-canonical/src/app/api/arcade/route.ts:31:18)
+#     at async Server.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/studio-fx.test.mjs:97:26) {
+#   query: 'select "id", "prompt", "game_type", "engine", "code", "parent_id", "project_id", "owner_id", "created_at" from "arcade_games" order by "arcade_games"."created_at" desc limit $1',
+#   params: [ 30 ],
+#   cause: error: relation "arcade_games" does not exist
+#       at /home/user/arena-os-canonical/node_modules/pg-pool/index.js:45:11
+#       at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:124:18
+#       at async NodePgPreparedQuery.queryWithCache (file:///home/user/arena-os-canonical/node_modules/drizzle-orm/pg-core/session.js:39:16)
+#       at async file:///home/user/arena-os-canonical/node_modules/drizzle-orm/node-postgres/session.js:117:22
+#       at async GET (file:///home/user/arena-os-canonical/src/app/api/arcade/route.ts:31:18)
+#       at async Server.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/studio-fx.test.mjs:97:26) {
+#     length: 112,
+#     severity: 'ERROR',
+#     code: '42P01',
+#     detail: undefined,
+#     hint: undefined,
+#     position: '112',
+#     internalPosition: undefined,
+#     internalQuery: undefined,
+#     where: undefined,
+#     schema: undefined,
+#     table: undefined,
+#     column: undefined,
+#     dataType: undefined,
+#     constraint: undefined,
+#     file: 'parse_relation.c',
+#     line: '1452',
+#     routine: 'parserOpenTable'
+#   }
+# }
+# [database] active connection lost: terminating connection due to administrator command
+# [database] idle connection lost: terminating connection due to administrator command
+# Subtest: Arcade real catalogue outage never erases acknowledged games or preview; retry/reopen retains exact playable bytes and enforces deletion ownership
+ok 1 - Arcade real catalogue outage never erases acknowledged games or preview; retry/reopen retains exact playable bytes and enforces deletion ownership
+  ---
+  duration_ms: 4993.696347
+  type: 'test'
+  ...
+# [database] active connection lost: terminating connection due to administrator command
+# [database] idle connection lost: terminating connection due to administrator command
+# [database] active connection lost: terminating connection due to administrator command
+# [database] idle connection lost: terminating connection due to administrator command
+# Subtest: Arcade browser reopens private failed attempts after restart without replacing previous playable game; save recovery commits exact validated bytes and exposes reopen
+ok 2 - Arcade browser reopens private failed attempts after restart without replacing previous playable game; save recovery commits exact validated bytes and exposes reopen
+  ---
+  duration_ms: 3364.610406
+  type: 'test'
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 9910.304376

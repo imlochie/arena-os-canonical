@@ -11,8 +11,13 @@ node_modules
 tsconfig.tsbuildinfo
 
 # The worker image builds from ./waveyard-worker with its own context; the
-# web app does not need the worker sources.
-waveyard-worker
+# web uses the canonical DSP and its shared type-only helpers.
+waveyard-worker/*
+!waveyard-worker/packages/
+waveyard-worker/packages/*
+!waveyard-worker/packages/dsp/
+!waveyard-worker/packages/types/
+**/node_modules
 
 # Never bake user media into an image
 uploads

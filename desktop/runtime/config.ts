@@ -110,19 +110,36 @@ export async function pickFreePort(host: string): Promise<number> {
   });
 }
 
-function resolveEmbeddedPostgres(platform: string, appRoot: string): EmbeddedPostgresLayout {
+/** Server binary name for a platform. Windows binaries always carry `.exe`,
+ *  in the packaged tree AND in the dev node_modules layout — a bare "initdb"
+ *  spawn fails with ENOENT on Windows even though the file exists. */
+export function postgresBinary(platform: string, binDir: string, tool: "initdb" | "pg_ctl" | "postgres"): string {
+  return path.join(binDir, platform === "win32" ? `${tool}.exe` : tool);
+}
+
+/** On Windows the bundled DLLs live beside the executables; both the bin and
+ *  lib directories must be on PATH for initdb/pg_ctl/postgres to load them.
+ *  This applies to the dev layout too (same package shape). */
+export function postgresPathDirs(platform: string, nativeDir: string): string[] {
+  return platform === "win32" ? [path.join(nativeDir, "bin"), path.join(nativeDir, "lib")] : [];
+}
+
+function postgresLayout(platform: string, nativeDir: string): EmbeddedPostgresLayout {
+  const binDir = path.join(nativeDir, "bin");
+  return {
+    nativeDir,
+    initdb: postgresBinary(platform, binDir, "initdb"),
+    pgCtl: postgresBinary(platform, binDir, "pg_ctl"),
+    postgres: postgresBinary(platform, binDir, "postgres"),
+    libDir: path.join(nativeDir, "lib"),
+    windowsPathDirs: postgresPathDirs(platform, nativeDir),
+  };
+}
+
+export function resolveEmbeddedPostgres(platform: string, appRoot: string): EmbeddedPostgresLayout {
   // Packaged layout: extraResources/embedded-postgres/{bin,lib,share}.
   const bundled = path.join(appRoot, "embedded-postgres");
-  if (existsSync(path.join(bundled, "bin"))) {
-    return {
-      nativeDir: bundled,
-      initdb: path.join(bundled, "bin", platform === "win32" ? "initdb.exe" : "initdb"),
-      pgCtl: path.join(bundled, "bin", platform === "win32" ? "pg_ctl.exe" : "pg_ctl"),
-      postgres: path.join(bundled, "bin", platform === "win32" ? "postgres.exe" : "postgres"),
-      libDir: path.join(bundled, "lib"),
-      windowsPathDirs: platform === "win32" ? [path.join(bundled, "bin"), path.join(bundled, "lib")] : [],
-    };
-  }
+  if (existsSync(path.join(bundled, "bin"))) return postgresLayout(platform, bundled);
   // Dev layout: the npm platform package under node_modules.
   const packageName = platform === "win32" ? "@embedded-postgres/windows-x64" : platform === "darwin" ? "@embedded-postgres/darwin-x64" : "@embedded-postgres/linux-x64";
   const nativeDir = path.join(appRoot, "node_modules", packageName, "native");
@@ -132,14 +149,7 @@ function resolveEmbeddedPostgres(platform: string, appRoot: string): EmbeddedPos
         `The desktop runtime requires the @embedded-postgres platform package for ${platform}.`,
     );
   }
-  return {
-    nativeDir,
-    initdb: path.join(nativeDir, "bin", "initdb"),
-    pgCtl: path.join(nativeDir, "bin", "pg_ctl"),
-    postgres: path.join(nativeDir, "bin", "postgres"),
-    libDir: path.join(nativeDir, "lib"),
-    windowsPathDirs: [],
-  };
+  return postgresLayout(platform, nativeDir);
 }
 
 function resolveInstallerBinary(platform: string, appRoot: string, tool: "ffmpeg" | "ffprobe"): string | null {

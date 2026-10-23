@@ -1,0 +1,4 @@
+
+> nextjs-postgresql-template@0.1.0 typecheck
+> node scripts/typecheck.mjs
+

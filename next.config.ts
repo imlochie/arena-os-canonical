@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { ARCADE_HOST_CSP } from "./src/lib/games/sandbox";
 
 // onnxruntime-node MUST stay external: it resolves its native binding
 // (bin/napi-v6/<platform>/*.node) relative to its own module directory. If
@@ -66,5 +67,11 @@ const nextConfig: NextConfig =
         },
       }
     : { serverExternalPackages: externalPackages };
+
+// srcdoc games cannot navigate even their own frame to another endpoint.
+nextConfig.headers = async () => [{
+  source: "/arcade",
+  headers: [{ key: "Content-Security-Policy", value: ARCADE_HOST_CSP }],
+}];
 
 export default nextConfig;

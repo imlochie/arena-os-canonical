@@ -55,6 +55,7 @@ export function approvalRequired(actionClass: ActionClass): boolean {
 /** Map a mission tool name to its action class. */
 export function classifyToolAction(tool: string): ActionClass {
   switch (tool) {
+    case "reuse_mission_output":
     case "write_file":
     case "edit_file":
     case "delete_file":
@@ -161,16 +162,16 @@ export async function requestApproval(input: {
   actionClass: ActionClass;
   summary: string;
   payload?: unknown;
-}): Promise<ActionApproval> {
-  if (ledgerDbHealthy) {
+}, database: typeof db = db, strict = false): Promise<ActionApproval> {
+  if (strict || database !== db || ledgerDbHealthy) {
     try {
-      const existing = await db
+      const existing = await database
         .select()
         .from(spaceActionApprovals)
         .where(and(eq(spaceActionApprovals.signature, input.signature), inArray(spaceActionApprovals.status, ACTIVE)))
         .limit(1);
       if (existing.length) return rowToApproval(existing[0]);
-      const [row] = await db
+      const [row] = await database
         .insert(spaceActionApprovals)
         .values({
           spaceId: input.spaceId,
@@ -183,7 +184,8 @@ export async function requestApproval(input: {
         })
         .returning();
       return rowToApproval(row);
-    } catch {
+    } catch (error) {
+      if (strict || database !== db) throw error;
       ledgerDbHealthy = false;
     }
   }
@@ -211,13 +213,14 @@ export async function requestApproval(input: {
 }
 
 export async function getApproval(id: string): Promise<ActionApproval | null> {
-  if (ledgerDbHealthy) {
+  if (!memoryApprovals.has(id)) {
     try {
       const rows = await db.select().from(spaceActionApprovals).where(eq(spaceActionApprovals.id, id)).limit(1);
       if (rows.length) return rowToApproval(rows[0]);
       return null;
     } catch {
       ledgerDbHealthy = false;
+      throw new Error("Approval storage unavailable. Reconnect PostgreSQL and retry; no decision was recorded in memory.");
     }
   }
   return memoryApprovals.get(id) ?? null;
@@ -247,10 +250,10 @@ export async function findActiveBySignature(signature: string): Promise<ActionAp
  * so that terminal decisions (denied, executed) stay binding on re-emission:
  * a denied action is refused without a fresh request; an executed one is
  * never run again. */
-export async function findLatestBySignature(signature: string): Promise<ActionApproval | null> {
-  if (ledgerDbHealthy) {
+export async function findLatestBySignature(signature: string, database: typeof db = db, strict = false): Promise<ActionApproval | null> {
+  if (strict || database !== db || ledgerDbHealthy) {
     try {
-      const rows = await db
+      const rows = await database
         .select()
         .from(spaceActionApprovals)
         .where(eq(spaceActionApprovals.signature, signature))
@@ -258,7 +261,8 @@ export async function findLatestBySignature(signature: string): Promise<ActionAp
         .limit(1);
       if (rows.length) return rowToApproval(rows[0]);
       return null;
-    } catch {
+    } catch (error) {
+      if (strict || database !== db) throw error;
       ledgerDbHealthy = false;
     }
   }
@@ -270,7 +274,7 @@ export async function findLatestBySignature(signature: string): Promise<ActionAp
 }
 
 export async function listApprovals(spaceId?: string, status?: ApprovalStatus): Promise<ActionApproval[]> {
-  if (ledgerDbHealthy) {
+  {
     try {
       const conditions = [];
       if (spaceId) conditions.push(eq(spaceActionApprovals.spaceId, spaceId));
@@ -281,9 +285,11 @@ export async function listApprovals(spaceId?: string, status?: ApprovalStatus): 
         .where(conditions.length ? and(...conditions) : undefined)
         .orderBy(desc(spaceActionApprovals.requestedAt))
         .limit(200);
+      ledgerDbHealthy = true;
       return rows.map(rowToApproval);
     } catch {
       ledgerDbHealthy = false;
+      if (![...memoryApprovals.values()].some((approval) => !spaceId || approval.spaceId === spaceId)) throw new Error("Approval storage unavailable. Reconnect PostgreSQL and retry; an empty ledger cannot be assumed.");
     }
   }
   return [...memoryApprovals.values()]
@@ -297,7 +303,7 @@ export async function decideApproval(
   decision: "approve" | "deny",
   decidedBy: string,
 ): Promise<ActionApproval | null> {
-  if (ledgerDbHealthy) {
+  if (!memoryApprovals.has(id)) {
     try {
       const [row] = await db
         .update(spaceActionApprovals)
@@ -311,6 +317,7 @@ export async function decideApproval(
       return row ? rowToApproval(row) : null;
     } catch {
       ledgerDbHealthy = false;
+      throw new Error("Approval storage unavailable. Reconnect PostgreSQL and retry; no decision was recorded in memory.");
     }
   }
   const a = memoryApprovals.get(id);
@@ -323,16 +330,17 @@ export async function decideApproval(
 
 /** Single-claim execution: exactly one caller may transition approved →
  * executing. A second claim (double-click, daemon race, replay) loses. */
-export async function claimExecution(id: string): Promise<boolean> {
-  if (ledgerDbHealthy) {
+export async function claimExecution(id: string, database: typeof db = db, strict = false): Promise<boolean> {
+  if (strict || database !== db || ledgerDbHealthy) {
     try {
-      const rows = await db
+      const rows = await database
         .update(spaceActionApprovals)
         .set({ status: "executing" })
         .where(and(eq(spaceActionApprovals.id, id), eq(spaceActionApprovals.status, "approved")))
         .returning();
       return rows.length > 0;
-    } catch {
+    } catch (error) {
+      if (strict || database !== db) throw error;
       ledgerDbHealthy = false;
     }
   }
@@ -342,20 +350,21 @@ export async function claimExecution(id: string): Promise<boolean> {
   return true;
 }
 
-export async function completeExecution(id: string, ok: boolean, result: unknown, failureReason?: string): Promise<void> {
-  if (ledgerDbHealthy) {
+export async function completeExecution(id: string, ok: boolean, result: unknown, failureReason?: string, database: typeof db = db, strict = false): Promise<void> {
+  if (strict || database !== db || ledgerDbHealthy) {
     try {
-      await db
+      await database
         .update(spaceActionApprovals)
         .set({
           status: ok ? "executed" : "failed",
           executedAt: new Date(),
-          result: (ok ? result : null) as never,
+          result: result as never,
           failureReason: ok ? null : String(failureReason ?? "execution failed").slice(0, 1000),
         })
         .where(eq(spaceActionApprovals.id, id));
       return;
-    } catch {
+    } catch (error) {
+      if (strict || database !== db) throw error;
       ledgerDbHealthy = false;
     }
   }
@@ -363,7 +372,7 @@ export async function completeExecution(id: string, ok: boolean, result: unknown
   if (!a) return;
   a.status = ok ? "executed" : "failed";
   a.executedAt = new Date().toISOString();
-  a.result = ok ? result : null;
+  a.result = result;
   a.failureReason = ok ? null : String(failureReason ?? "execution failed").slice(0, 1000);
 }
 

@@ -1,3 +1,6 @@
+import { attachmentDisposition } from "@/lib/http/download";
+import { verifyStoredFile, PublishedFileError } from "../../../../../../../waveyard-worker/packages/dsp/src/verified-file";
+import { parseByteRange } from "@/lib/http/range";
 import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import { getStorage } from "@/lib/waveyard/storage";
@@ -5,16 +8,6 @@ import { publicProjectResolution } from "@/lib/waveyard/publication";
 
 export const runtime = "nodejs";
 
-function parseRange(value: string | null, size: number) {
-  if (!value) return null;
-  const match = /^bytes=(\d+)-(\d*)$/.exec(value);
-  if (!match) return undefined;
-  const start = Number(match[1]);
-  const end = match[2] ? Number(match[2]) : size - 1;
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= size)
-    return undefined;
-  return { start, end };
-}
 
 export async function GET(
   request: Request,
@@ -26,12 +19,17 @@ export async function GET(
     const wantsDownload = new URL(request.url).searchParams.get("download") === "1";
     if (wantsDownload && project.downloadPermission !== "public")
       return NextResponse.json({ error: "Public download is not enabled for this release." }, { status: 403 });
-    const range = parseRange(request.headers.get("range"), asset.fileSizeBytes);
-    if (range === undefined)
+    if (asset.format !== "wav")
+      return NextResponse.json({ error: "This release is not a playable WAV render. The owner must select a completed audio export.", code: "release_not_playable" }, { status: 409 });
+    const range = parseByteRange(request.headers.get("range"), asset.fileSizeBytes);
+    if (range === "invalid")
       return new Response(null, {
         status: 416,
         headers: { "Content-Range": `bytes */${asset.fileSizeBytes}` },
       });
+    // Public delivery must enforce the same stored identity as private export
+    // delivery; neither a metadata row nor a readable file certifies its bytes.
+    await verifyStoredFile(getStorage(), asset);
     const read = await getStorage().openReadStream(asset.storageKey, range ?? undefined);
     const headers: Record<string, string> = {
       "Content-Type": "audio/wav",
@@ -42,13 +40,14 @@ export async function GET(
     };
     if (range) headers["Content-Range"] = `bytes ${range.start}-${range.end}/${read.size}`;
     if (wantsDownload)
-      headers["Content-Disposition"] = `attachment; filename="${asset.filename.replace(/[\\"\r\n]/g, "_")}"`;
+      headers["Content-Disposition"] = attachmentDisposition(asset.filename);
     return new Response(Readable.toWeb(read.stream) as ReadableStream, {
       status: range ? 206 : 200,
       headers,
     });
   } catch (error) {
     if (error instanceof Response) return error;
+    if (error instanceof PublishedFileError) return NextResponse.json({ error: error.message, code: "published_output_unverified" }, { status: error.status });
     console.error("public release stream failed", error);
     return NextResponse.json({ error: "Public release could not be read." }, { status: 500 });
   }

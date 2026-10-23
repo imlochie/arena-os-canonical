@@ -90,7 +90,7 @@ export function ArrangementInspector({
   const startBeatIndex = prefillMatches && dismissedPrefill !== prefillKey ? slicePrefill!.startBeatIndex : enteredStartBeatIndex;
   const endBeatIndex = prefillMatches && dismissedPrefill !== prefillKey ? slicePrefill!.endBeatIndex : enteredEndBeatIndex;
   if (!track || !clip || !selection)
-    return <aside className="clip-inspector"><h3>Arrangement inspector</h3><p>Select a clip to edit timing, source offset, gain, fades, or export-only tempo sync.</p></aside>;
+    return <aside className="clip-inspector"><h3>Arrangement inspector</h3><p>Select a clip to edit timing, source offset, gain, fades, or tempo/key sync for audition and export.</p></aside>;
   const update = (change: (current: RemixClipInput) => RemixClipInput) => onChange((current) => updateSelected(current, selection, change));
   const maxFade = Math.max(0, clip.durationMs - clip.fadeOutMs);
   const sourceBpm = sourceBpmByStemId?.get(clip.stemAssetId) ?? null;
@@ -245,14 +245,14 @@ export function ArrangementInspector({
     <fieldset className="tempo-sync"><legend>Tempo sync</legend>
       <label><input aria-label="Tempo sync" type="checkbox" checked={clip.tempoSyncEnabled} onChange={(event) => update((item) => ({ ...item, tempoSyncEnabled: event.target.checked }))} /> {clip.tempoSyncEnabled ? "Sync to remix BPM" : "Off"}</label>
       {usableBpm
-        ? (clip.tempoSyncEnabled && <p>Source {sourceBpm!.toFixed(2)} BPM → remix {remix.tempoBpm.toFixed(2)} BPM · ratio {tempoRatio!.toFixed(4)}. Export-only; arrangement preview uses original audio.</p>)
-        : <p>Source tempo unavailable. {clip.tempoSyncEnabled ? "Export will fail until this source has complete BPM analysis." : "Tempo sync cannot be rendered until BPM analysis completes."}</p>}
+        ? (clip.tempoSyncEnabled && <p>Source {sourceBpm!.toFixed(2)} BPM → remix {remix.tempoBpm.toFixed(2)} BPM · ratio {tempoRatio!.toFixed(4)}. Audition and export use the same tempo/pitch transform filters; audition prepares synchronised audio locally before playback.</p>)
+        : <p>Source tempo unavailable. {clip.tempoSyncEnabled ? "Audition and export will fail until this source has complete BPM analysis." : "Tempo sync cannot be rendered until BPM analysis completes."}</p>}
     </fieldset>
     <fieldset className="key-sync"><legend>Key Sync</legend>
       <label><input aria-label="Key sync" type="checkbox" checked={clip.keySyncEnabled} onChange={(event) => update((item) => ({ ...item, keySyncEnabled: event.target.checked }))} /> {clip.keySyncEnabled ? "Sync to remix key" : "Off"}</label>
       {sourceKey && remix.targetKey && keyShift !== null
-        ? (clip.keySyncEnabled && <p>Source {sourceKey} → remix {remix.targetKey} · {keyShift >= 0 ? "+" : ""}{keyShift} semitones. Export-only; arrangement preview uses original audio.</p>)
-        : <p>{!sourceKey ? "Source key unavailable." : "Target remix key unavailable."} {clip.keySyncEnabled ? "Export will fail until complete key analysis and a target key are available." : "Key sync cannot be rendered until both are available."}</p>}
+        ? (clip.keySyncEnabled && <p>Source {sourceKey} → remix {remix.targetKey} · {keyShift >= 0 ? "+" : ""}{keyShift} semitones. Audition and export use the same tempo/pitch transform filters; audition prepares synchronised audio locally before playback.</p>)
+        : <p>{!sourceKey ? "Source key unavailable." : "Target remix key unavailable."} {clip.keySyncEnabled ? "Audition and export will fail until complete key analysis and a target key are available." : "Key sync cannot be rendered until both are available."}</p>}
     </fieldset>
     <fieldset className="beat-snap"><legend>Beat Snap</legend>
       <label><input aria-label="Beat snap" type="checkbox" checked={clip.beatSnapEnabled} onChange={(event) => update((item) => {

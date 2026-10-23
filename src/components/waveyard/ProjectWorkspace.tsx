@@ -1,4 +1,6 @@
 "use client";
+import { DeepEngineSetup } from "./DeepEngineSetup";
+import { ModelAssetImport } from "./ModelAssetImport";
 
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { StudioCore } from "./StudioCore";
@@ -76,9 +78,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [selectedSourceName, setSelectedSourceName] = useState("");
   const [sourceMessage, setSourceMessage] = useState<string | null>(null);
   const [passthroughBusy, setPassthroughBusy] = useState(false);
+  const [modelRightsReviewed, setModelRightsReviewed] = useState(false);
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [processorNotice, setProcessorNotice] = useState<string | null>(null);
   const processorChecked = useRef(false);
+  const [canRecoverSeparation, setCanRecoverSeparation] = useState(false);
+  const [canCancelSeparation, setCanCancelSeparation] = useState(false);
   const finalizingBuild = useRef<string | null>(null);
 
   useEffect(() => {
@@ -106,17 +111,19 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         ...(json.stems ?? []).flatMap((stem: { drumAnalysis?: { status?: string } | null; vocalAnalysis?: { status?: string } | null }) => [stem.drumAnalysis, stem.vocalAnalysis]).filter(Boolean),
       ].some(
         (job: { status: string }) =>
-          ["queued", "preparing", "processing", "finalizing"].includes(
+          ["queued", "preparing", "processing", "finalizing", "cancelling"].includes(
             job.status,
           ),
       );
       if (active) timer = setTimeout(load, 2_500);
-      if (active && !processorChecked.current) {
+      if (!processorChecked.current) {
         processorChecked.current = true;
         void (async () => {
           try {
             const response = await fetch("/api/waveyard/processing-status", { cache: "no-store" });
             const body = await response.json();
+            setCanCancelSeparation(response.ok && body.separationCancellation?.available === true);
+            setCanRecoverSeparation(response.ok && body.separationRecovery?.available === true);
             if (response.ok && (body.mode === "none" || (body.mode === "in-process" && body.localWorker === null))) {
               setProcessorNotice(body.explanation ?? "Processing is waiting — no processor is running.");
             } else {
@@ -137,13 +144,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   useEffect(() => {
     const build = data?.build;
     if (!data || !build || build.status !== "processing" || finalizingBuild.current === build.id) return;
-    const processing = data.jobs.some((job) => ["queued", "preparing", "processing", "finalizing"].includes(job.status));
+    const processing = data.jobs.some((job) => ["queued", "preparing", "processing", "finalizing", "cancelling"].includes(job.status));
     const finalization = evaluateAutomaticBuildFinalization({
       acceptedSourceCount: build.acceptedSourceCount,
       persistedFailedSourceCount: build.failedSourceCount,
       processing,
       failedJobSourceIds: data.jobs
-        .filter((job) => job.status === "failed")
+        .filter((job) => job.status === "failed" || job.status === "cancelled")
         .map((job) => job.sourceAssetId),
       sources: data.sources.map((source) => ({
         id: source.id,
@@ -180,11 +187,13 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     }
   }
 
-async function prepareEngine(model: string, jobId: string) {
+  const engineAbort = useRef<AbortController | null>(null);
+  async function prepareEngine(model: string, jobId: string) {
+    engineAbort.current = new AbortController();
     setPreparingEngine(true);
     setError(null);
     try {
-      const result = await prepareStemEngine(model);
+      const result = await prepareStemEngine(model, engineAbort.current.signal, modelRightsReviewed);
       if (!result.ok) {
         setError(result.error);
         return;
@@ -194,6 +203,7 @@ async function prepareEngine(model: string, jobId: string) {
       if (result.requeued > 0) setRefresh((value) => value + 1);
       else await retry(jobId);
     } finally {
+      engineAbort.current = null;
       setPreparingEngine(false);
     }
   }
@@ -208,6 +218,28 @@ async function prepareEngine(model: string, jobId: string) {
     setRetrying(false);
     if (!response.ok) setError(json.error ?? "Retry could not be started.");
     else setRefresh((value) => value + 1);
+  }
+
+  async function recoverSeparation(jobId: string) {
+    setRetrying(true); setError(null);
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/recover`, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Recovery could not verify the execution.");
+      setRefresh(value => value + 1);
+    } catch (error) { setError(error instanceof Error ? error.message : "Recovery pending; audio retained."); }
+    finally { setRetrying(false); }
+  }
+
+  async function cancelSeparation(jobId: string) {
+    setRetrying(true); setError(null);
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Cancellation could not be recorded.");
+      setRefresh((value) => value + 1);
+    } catch (error) { setError(error instanceof Error ? error.message : "Cancellation could not be recorded."); }
+    finally { setRetrying(false); }
   }
 
   async function retryWaveform(jobId: string) {
@@ -392,6 +424,23 @@ async function prepareEngine(model: string, jobId: string) {
           );
         })}
       </section>}
+      <DeepEngineSetup onReady={() => setRefresh(value => value + 1)} />
+      <ModelAssetImport onReviewChange={setModelRightsReviewed} />
+      {preparingEngine && <button type="button" onClick={() => engineAbort.current?.abort()}>Cancel model preparation (retain resumable bytes)</button>}
+      {editable && canCancelSeparation && data.jobs.filter(job => ["queued", "preparing", "processing", "finalizing", "cancelling"].includes(job.status)).map(job => <div key={`cancel-${job.id}`}>
+        <p>{job.status === "cancelling" ? "Stopping separation; waiting for inference and partial-output cleanup. Existing stems and source are retained." : `Separation: ${job.stage}`}</p>
+        <button className="button secondary" disabled={retrying || job.status === "cancelling"} onClick={() => void cancelSeparation(job.id)}>{job.status === "cancelling" ? "Stopping separation…" : "Cancel separation"}</button>
+        {canRecoverSeparation && <button className="button secondary" disabled={retrying} onClick={() => void recoverSeparation(job.id)}>Check interrupted separation recovery</button>}
+      </div>)}
+      {data.jobs.filter(job => recoveryAudit(job.metadata).length > 0).map(job => <details key={`audit-${job.id}`}>
+        <summary>Separation recovery audit · {job.id}</summary>
+        <ol>{recoveryAudit(job.metadata).map(check => <li key={check.id}>
+          <time>{check.startedAt}</time> · {check.state}{check.result ? ` · ${check.result}` : ""}{check.error ? ` · ${check.error}` : ""}
+          {check.state === "in-progress" && " · No durable outcome yet; an interrupted checker requires a fresh ownership check."}
+          {check.resolvedBy ? ` · Reconciled by check ${check.resolvedBy}; original outcome was not assumed.` : check.state === "outcome-unknown" && " · Outcome unverified; audio retained pending reconciliation."}
+        </li>)}</ol>
+      </details>)}
+      {latest?.status === "cancelled" && <div><p className="notice">Separation cancelled. Source and existing stem banks are unchanged.</p>{latest.errorMessage && <p>{latest.errorMessage}</p>}{editable && canCancelSeparation && <button className="button" disabled={retrying} onClick={() => void retry(latest.id)}>Restart separation</button>}</div>}
       {latest?.status === "failed" && (
         <div>
           <p className="error" role="alert">
@@ -402,10 +451,10 @@ async function prepareEngine(model: string, jobId: string) {
           {editable && latest.errorCode === "separation_unavailable" && (
             <button
               className="button"
-              disabled={preparingEngine}
+              disabled={preparingEngine || !modelRightsReviewed}
               onClick={() => void prepareEngine(latest.model, latest.id)}
             >
-              {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine (one-time download)"}
+              {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine (review sources/licensing above first)"}
             </button>
           )}
           {editable && latest.errorCode !== "separation_unavailable" && (
@@ -419,7 +468,7 @@ async function prepareEngine(model: string, jobId: string) {
           )}
         </div>
       )}
-      {latest && latest.status !== "complete" && latest.status !== "failed" && (
+      {latest && latest.status !== "complete" && latest.status !== "failed" && latest.status !== "cancelled" && (
         <p className="notice">
           {(() => {
             const progress = parseJobProgress(latest.metadata);
@@ -485,4 +534,11 @@ async function prepareEngine(model: string, jobId: string) {
       </p>
     </>
   );
+}
+
+function recoveryAudit(raw: string | null) {
+  try {
+    const history = JSON.parse(raw ?? "{}").recoveryHistory;
+    return Array.isArray(history) ? history.filter(item => item && typeof item.id === "string" && typeof item.state === "string") as Array<{ id: string; state: string; startedAt: string; result?: string; error?: string; resolvedBy?: string }> : [];
+  } catch { return []; }
 }

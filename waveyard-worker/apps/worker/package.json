@@ -1,11 +1,16 @@
 {
   "name": "@waveyard/worker",
   "private": true,
-  "scripts": { "start": "tsx src/index.ts", "doctor": "tsx src/doctor.ts", "build": "tsc --noEmit" },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "doctor": "tsx src/doctor.ts",
+    "build": "tsc --noEmit"
+  },
   "dependencies": {
     "@waveyard/audio": "*",
     "@waveyard/database": "*",
     "@waveyard/queue": "*",
-    "@waveyard/storage": "*"
+    "@waveyard/storage": "*",
+    "@waveyard/dsp": "*"
   }
 }

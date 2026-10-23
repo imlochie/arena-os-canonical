@@ -1,0 +1,212 @@
+TAP version 13
+# (node:6199) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:6199) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:6199) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: native separation real SIGKILL/restart matrix
+    # Subtest: claimed
+    ok 1 - claimed
+      ---
+      duration_ms: 3741.235457
+      type: 'test'
+      ...
+    # Subtest: inference-starting
+    ok 2 - inference-starting
+      ---
+      duration_ms: 5342.50321
+      type: 'test'
+      ...
+    # Subtest: inference-running
+    ok 3 - inference-running
+      ---
+      duration_ms: 5070.167524
+      type: 'test'
+      ...
+    # Subtest: outputs-written
+    ok 4 - outputs-written
+      ---
+      duration_ms: 4864.292493
+      type: 'test'
+      ...
+    # Subtest: staging
+    ok 5 - staging
+      ---
+      duration_ms: 4848.868493
+      type: 'test'
+      ...
+    # Subtest: object-partial
+    ok 6 - object-partial
+      ---
+      duration_ms: 5006.118783
+      type: 'test'
+      ...
+    # Subtest: object-written:1
+    ok 7 - object-written:1
+      ---
+      duration_ms: 4961.833841
+      type: 'test'
+      ...
+    # Subtest: object-written:4
+    ok 8 - object-written:4
+      ---
+      duration_ms: 5187.010196
+      type: 'test'
+      ...
+    # Subtest: validated
+    ok 9 - validated
+      ---
+      duration_ms: 5561.034071
+      type: 'test'
+      ...
+    # Subtest: publication-locked
+    not ok 10 - publication-locked
+      ---
+      duration_ms: 6035.881983
+      type: 'test'
+      location: '/home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:56:15'
+      failureType: 'testCodeFailure'
+      error: |-
+        [{"error":"Recovery source identity cannot be verified; staged audio retained."}] (node:6893) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/fixtures/separation-crash-worker.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+        (Use `node --trace-warnings ...` to show where the warning was created)
+        (node:6893) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+        (node:6893) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+        Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+        To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+        
+        
+        1 !== 0
+        
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: 0
+      actual: 1
+      operator: 'strictEqual'
+      stack: |-
+        Object.done (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:44:149)
+        process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+        async Promise.all (index 1)
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:69:9)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:56:7)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+      ...
+    # Subtest: committed
+    ok 11 - committed
+      ---
+      duration_ms: 9110.254959
+      type: 'test'
+      ...
+    # Subtest: queued restart has no phantom executor
+    ok 12 - queued restart has no phantom executor
+      ---
+      duration_ms: 5894.589176
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: cleanup-written
+    ok 13 - reconciler crash: cleanup-written
+      ---
+      duration_ms: 5506.195641
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: recovery-committed-before-ack
+    ok 14 - reconciler crash: recovery-committed-before-ack
+      ---
+      duration_ms: 5479.85452
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: native-unregistered
+    ok 15 - real Python ownership pipe: native-unregistered
+      ---
+      duration_ms: 3588.708813
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: native-registered
+    ok 16 - real Python ownership pipe: native-registered
+      ---
+      duration_ms: 3181.147764
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: inference-running
+    ok 17 - real Python ownership pipe: inference-running
+      ---
+      duration_ms: 3108.567549
+      type: 'test'
+      ...
+    # Subtest: pending cancellation plus executor crash
+    ok 18 - pending cancellation plus executor crash
+      ---
+      duration_ms: 3712.670481
+      type: 'test'
+      ...
+    # Subtest: corrupt staged file is retired, not published
+    ok 19 - corrupt staged file is retired, not published
+      ---
+      duration_ms: 3781.703071
+      type: 'test'
+      ...
+    # Subtest: storage read failure retains journal for retry
+    ok 20 - storage read failure retains journal for retry
+      ---
+      duration_ms: 5200.378932
+      type: 'test'
+      ...
+    # Subtest: storage cleanup failure retains journal for retry
+    ok 21 - storage cleanup failure retains journal for retry
+      ---
+      duration_ms: 4926.862837
+      type: 'test'
+      ...
+    # Subtest: database dies during recovery; restart converges
+    ok 22 - database dies during recovery; restart converges
+      ---
+      duration_ms: 5417.829044
+      type: 'test'
+      ...
+    # Subtest: retry races recovery, then creates one fresh attempt retaining history
+    ok 23 - retry races recovery, then creates one fresh attempt retaining history
+      ---
+      duration_ms: 6898.06342
+      type: 'test'
+      ...
+    # Subtest: outdated completion state is reconciled without replacing committed assets
+    ok 24 - outdated completion state is reconciled without replacing committed assets
+      ---
+      duration_ms: 3380.598751
+      type: 'test'
+      ...
+    # Subtest: PID incarnation mismatch is dead, unknown scope is not reclaimed
+    ok 25 - PID incarnation mismatch is dead, unknown scope is not reclaimed
+      ---
+      duration_ms: 2.678839
+      type: 'test'
+      ...
+    1..25
+not ok 1 - native separation real SIGKILL/restart matrix
+  ---
+  duration_ms: 121577.360328
+  type: 'test'
+  location: '/home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts:18:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 26
+# suites 0
+# pass 24
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 122402.363722

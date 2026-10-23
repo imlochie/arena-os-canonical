@@ -1,3 +1,5 @@
+import { orchestratorErrorResponse } from "@/lib/orchestrator";
+import { requireApiAccess } from "@/lib/security/api-access";
 import { addRelay } from "@/lib/orchestrator";
 
 export const dynamic = "force-dynamic";
@@ -6,6 +8,7 @@ export const dynamic = "force-dynamic";
 // {target (participant key), source?, purpose?, request (required),
 //  contextRefs?, classification?, responseContract?}
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const { id } = await params;
   try {
     const body = await req.json();
@@ -15,6 +18,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return Response.json({ error: "a relay needs a target participant key" }, { status: 400 });
     }
     const relay = await addRelay(id, {
+      requestId: body.requestId,
       source: body.source,
       target: String(body.target),
       purpose: body.purpose,
@@ -26,6 +30,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     return Response.json({ relay }, { status: 201 });
   } catch (e) {
-    return Response.json({ error: e instanceof Error ? e.message : "failed to add relay" }, { status: 400 });
+    return orchestratorErrorResponse(e);
   }
 }

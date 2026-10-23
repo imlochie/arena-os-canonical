@@ -1,0 +1,1540 @@
+{
+  "generatedAt": "2026-10-21T16:15:33.862Z",
+  "base": "13638fe8a5c280e6b47ecf97fb6e6cf414163a12",
+  "note": "Every PR fetched via refs/pull/*/head and re-verified. Content dispositions were checked by blob comparison or git cherry, not by assumption.",
+  "pullRequests": [
+    {
+      "number": 1,
+      "title": "Add Studio: multimodal generation (WanGP bridge + ComfyUI + hosted BYOK + demo)",
+      "state": "OPEN",
+      "draft": false,
+      "headRefName": "arena/01a0a9b7-arena-os-canonical",
+      "head": "e60e3591f1cc22e12a51df0e69a5d8d8545c5a5b",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 13,
+      "disposition": "integrated-content",
+      "reason": "Studio (WanGP/ComfyUI), Congress, Cut Lab, Archive Assistant and space templates are present in the candidate; src/app/api/studio/generate/route.ts is byte-identical to the PR head.",
+      "evidencePaths": [
+        "src/app/api/studio/generate/route.ts"
+      ],
+      "evidenceBlobIdentical": {
+        "src/app/api/studio/generate/route.ts": true
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "6f9f5a85",
+          "subject": "f35aec9c47e46955e732dd38a6c3c7b"
+        },
+        {
+          "applied": false,
+          "commit": "d355568f",
+          "subject": "db2b3af6f9ba8481eedb74481e6afd8"
+        },
+        {
+          "applied": false,
+          "commit": "26665d1d",
+          "subject": "465700976acabb6404d92af71552054"
+        },
+        {
+          "applied": false,
+          "commit": "472eba95",
+          "subject": "574d4760e70238b11d9d8c2feaf71dd"
+        },
+        {
+          "applied": false,
+          "commit": "6403814e",
+          "subject": "7c02ed8bf3712bf3cf6d8bea4935840"
+        },
+        {
+          "applied": false,
+          "commit": "55c22c21",
+          "subject": "fe3d61c7457c3e70a743a7218be400c"
+        },
+        {
+          "applied": false,
+          "commit": "2e9af3e0",
+          "subject": "7e920abdf2cab1bf127ae0041e27712"
+        },
+        {
+          "applied": false,
+          "commit": "5118b741",
+          "subject": "b3d8ca874d02ade58bef6f699b3b6f0"
+        },
+        {
+          "applied": false,
+          "commit": "e4f84cf9",
+          "subject": "f602915c2eb1ab04efadc50d09d3dc2"
+        },
+        {
+          "applied": false,
+          "commit": "a451a7fa",
+          "subject": "f0e4b463ce1511222be3bfdd4b766b6"
+        },
+        {
+          "applied": false,
+          "commit": "8a2cb80f",
+          "subject": "990f2d0cec77ba42b1f327806e130a6"
+        },
+        {
+          "applied": false,
+          "commit": "e60e3591",
+          "subject": "1cc22e12a51df0e69a5d8d8545c5a5b"
+        }
+      ],
+      "cherryTotal": 13,
+      "cherryUnapplied": 13
+    },
+    {
+      "number": 2,
+      "title": "Waves 4-6: the Mind, email login + native Archive Assistant merge, and the Toolbox (local conversion)",
+      "state": "MERGED",
+      "draft": false,
+      "headRefName": "arena/01a10c30-arena-os-canonical",
+      "head": "8e83bfa09453113637403eb7ee53a664f14244fd",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 107,
+      "disposition": "merged",
+      "reason": "Merged; content present (src/lib/mind.ts byte-identical).",
+      "evidencePaths": [
+        "src/lib/mind.ts"
+      ],
+      "evidenceBlobIdentical": {
+        "src/lib/mind.ts": true
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 106,
+      "cherryUnapplied": 106
+    },
+    {
+      "number": 3,
+      "title": "Waveyard A7: the deep separation engine bridge (6-stem Demucs on the durable pipeline)",
+      "state": "OPEN",
+      "draft": false,
+      "headRefName": "arena/a7466e3a-arena-os-canonical",
+      "head": "2e459e335aabbdaefe68450059694a9a66de156e",
+      "baseRefName": "arena/01a10c30-arena-os-canonical",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 113,
+      "disposition": "integrated-content",
+      "reason": "A7 deep-separation bridge present (ADR-007 + separation/deep.ts); candidate carries a later revision.",
+      "evidencePaths": [
+        "docs/ADR-007-deep-separation-engine-bridge.md",
+        "src/lib/waveyard/separation/deep.ts"
+      ],
+      "evidenceBlobIdentical": {
+        "docs/ADR-007-deep-separation-engine-bridge.md": false,
+        "src/lib/waveyard/separation/deep.ts": false
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 112,
+      "cherryUnapplied": 112
+    },
+    {
+      "number": 4,
+      "title": "fix(db): enforce UTF-8 database encoding",
+      "state": "MERGED",
+      "draft": false,
+      "headRefName": "fix/db-setup-utf8-mainline",
+      "head": "711b261e07019be4c3123945c6df7bb805a13222",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 109,
+      "disposition": "merged",
+      "reason": "Merged; scripts/db-setup.mjs byte-identical (UTF-8 database creation).",
+      "evidencePaths": [
+        "scripts/db-setup.mjs"
+      ],
+      "evidenceBlobIdentical": {
+        "scripts/db-setup.mjs": true
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 107,
+      "cherryUnapplied": 107
+    },
+    {
+      "number": 5,
+      "title": "Waveyard A7: harden deep separation and retry lifecycle",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "arena/4fa4a9aa-arena-os-canonical",
+      "head": "7be58833b3a3807570de400d5ada5dc85f5c0586",
+      "baseRefName": "fix/db-setup-utf8-mainline",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 116,
+      "disposition": "integrated-content",
+      "reason": "A7 hardening lineage; candidate retry.ts carries the same claim-first contract in a later revision.",
+      "evidencePaths": [
+        "src/lib/waveyard/separation/retry.ts"
+      ],
+      "evidenceBlobIdentical": {
+        "src/lib/waveyard/separation/retry.ts": false
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 114,
+      "cherryUnapplied": 114
+    },
+    {
+      "number": 6,
+      "title": "Waveyard A7: R4 server retry with missing queue record uses fresh enqueue claim-first",
+      "state": "CLOSED",
+      "draft": false,
+      "headRefName": "arena/a76da1f7-arena-os-canonical",
+      "head": "add40e56803508c8537e57886a0d5c8b5c6e997c",
+      "baseRefName": "fix/db-setup-utf8-mainline",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 116,
+      "disposition": "closed-superseded",
+      "reason": "Closed; same lineage as #5 and older.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 114,
+      "cherryUnapplied": 114
+    },
+    {
+      "number": 7,
+      "title": "Fix/windows desktop packaging acceptance",
+      "state": "CLOSED",
+      "draft": false,
+      "headRefName": "fix/windows-desktop-packaging-acceptance",
+      "head": "f9c42d585c4465b21ca5fbeb2197c29ee38875e5",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 118,
+      "disposition": "closed-superseded",
+      "reason": "Closed; superseded by #9.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 116,
+      "cherryUnapplied": 116
+    },
+    {
+      "number": 8,
+      "title": "Fix Windows media-library acceptance tests",
+      "state": "MERGED",
+      "draft": false,
+      "headRefName": "arena/7860da1d-arena-os-canonical",
+      "head": "8bd15c29a1053658f250c22dec8d883244da2588",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 117,
+      "disposition": "merged",
+      "reason": "Merged; desktop/acceptance.ts byte-identical.",
+      "evidencePaths": [
+        "desktop/acceptance.ts"
+      ],
+      "evidenceBlobIdentical": {
+        "desktop/acceptance.ts": true
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 115,
+      "cherryUnapplied": 115
+    },
+    {
+      "number": 9,
+      "title": "Fix Windows desktop packaging acceptance",
+      "state": "MERGED",
+      "draft": false,
+      "headRefName": "fix/windows-packaging-after-pr8",
+      "head": "15041c4928d5a5b805798a94487cc57a5d13dcc1",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 119,
+      "disposition": "merged",
+      "reason": "Merged; scripts/windows-acceptance.mjs and docs/windows-acceptance.md byte-identical \u2014 the Windows contract itself.",
+      "evidencePaths": [
+        "scripts/windows-acceptance.mjs",
+        "docs/windows-acceptance.md"
+      ],
+      "evidenceBlobIdentical": {
+        "scripts/windows-acceptance.mjs": true,
+        "docs/windows-acceptance.md": true
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 116,
+      "cherryUnapplied": 116
+    },
+    {
+      "number": 10,
+      "title": "fix: pin embedded PG16, postgres diagnostics, API hardening, capability resolver",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "fix/pg-recovery-hardening",
+      "head": "753ae03f4c1c4ce6bc49ca822b6021be229e77c3",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 124,
+      "disposition": "integrated-content",
+      "reason": "Capability resolver and embedded PG16 pin present (resolver.ts byte-identical).",
+      "evidencePaths": [
+        "src/lib/capabilities/resolver.ts"
+      ],
+      "evidenceBlobIdentical": {
+        "src/lib/capabilities/resolver.ts": true
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 121,
+      "cherryUnapplied": 121
+    },
+    {
+      "number": 11,
+      "title": "fix: reconcile PostgreSQL recovery, API security, capabilities and CI",
+      "state": "MERGED",
+      "draft": false,
+      "headRefName": "arena/7e7916ff-arena-os-canonical",
+      "head": "468e774bedb42bcb39a5143b15670ebd0b8fac46",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 141,
+      "disposition": "merged",
+      "reason": "Merged; content present.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 137,
+      "cherryUnapplied": 137
+    },
+    {
+      "number": 13,
+      "title": "A7: real-runtime acceptance (PostgreSQL + Redis + BullMQ)",
+      "state": "MERGED",
+      "draft": false,
+      "headRefName": "arena/c887bce3-arena-os-canonical",
+      "head": "53a62a311303aa0fc7071f23086719245f403ff1",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 143,
+      "disposition": "merged",
+      "reason": "Merged; content present.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 138,
+      "cherryUnapplied": 138
+    },
+    {
+      "number": 14,
+      "title": "feat(waveyard): self-service deep-engine provisioning (six-stem Demucs)",
+      "state": "OPEN",
+      "draft": false,
+      "headRefName": "arena/6e5aab6e-arena-os-canonical",
+      "head": "536c940c2df502f12f0945789e0053fa68466eff",
+      "baseRefName": "main",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 145,
+      "disposition": "integrated-content",
+      "reason": "Self-service deep-engine provisioning present (provision*.ts, DeepEngineSetup.tsx, four deep/prepare routes); candidate revision is newer.",
+      "evidencePaths": [
+        "src/lib/waveyard/separation/provision.ts",
+        "src/lib/waveyard/separation/provision-store.ts",
+        "src/components/waveyard/DeepEngineSetup.tsx"
+      ],
+      "evidenceBlobIdentical": {
+        "src/lib/waveyard/separation/provision.ts": false,
+        "src/lib/waveyard/separation/provision-store.ts": false,
+        "src/components/waveyard/DeepEngineSetup.tsx": false
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "c1c12190",
+          "subject": "92c17fc5c922cb030e8158927716c9c"
+        },
+        {
+          "applied": false,
+          "commit": "1077e3a0",
+          "subject": "002bf916eca3de91f673c6c09157c94"
+        },
+        {
+          "applied": false,
+          "commit": "f7efd79a",
+          "subject": "0e32f67a8ed53759e2017d7df3b479a"
+        },
+        {
+          "applied": false,
+          "commit": "7d458c2f",
+          "subject": "6c540caf718c85737ae379f43c45be6"
+        },
+        {
+          "applied": false,
+          "commit": "e3ef5225",
+          "subject": "a6c9e23507b594d7d8bffccc140b141"
+        },
+        {
+          "applied": false,
+          "commit": "f45eda9d",
+          "subject": "936c69b97009f5a885e954879a556bf"
+        },
+        {
+          "applied": false,
+          "commit": "e2d280af",
+          "subject": "4fb3322334fc668762bd86f0e8a7429"
+        },
+        {
+          "applied": false,
+          "commit": "24917e1f",
+          "subject": "c43356cca4a4049f08a3c846d2fc4c8"
+        },
+        {
+          "applied": false,
+          "commit": "b453208c",
+          "subject": "087e1b2082ce1b65e7b10cd5496fd00"
+        },
+        {
+          "applied": false,
+          "commit": "8d273613",
+          "subject": "116a033ee7ac475824ec4675eb38c92"
+        },
+        {
+          "applied": false,
+          "commit": "4bd9541b",
+          "subject": "53c0ac68a85d1c6b92c72ad9c972240"
+        },
+        {
+          "applied": false,
+          "commit": "a24051af",
+          "subject": "2d7142eafe9de7feb9cfcee53caa198"
+        },
+        {
+          "applied": false,
+          "commit": "294b6f04",
+          "subject": "738242290bbb8a0562e85779189a04f"
+        },
+        {
+          "applied": false,
+          "commit": "336757ed",
+          "subject": "1a957fe47221626229069ef813b757b"
+        },
+        {
+          "applied": false,
+          "commit": "ad86c3b8",
+          "subject": "5b2a1635e5c681064dc5db28a83dea0"
+        }
+      ],
+      "cherryTotal": 139,
+      "cherryUnapplied": 139
+    },
+    {
+      "number": 15,
+      "title": "fix(coherence): Arcade truthfulness, real Waveyard playback, fail-closed agent review",
+      "state": "OPEN",
+      "draft": false,
+      "headRefName": "arena/331aa502-arena-os-canonical",
+      "head": "04705abdb6155ad61ae11e96f231cac6302f7529",
+      "baseRefName": "main",
+      "ancestorOfCandidate": true,
+      "newCommitsSinceCandidate": 0,
+      "disposition": "integrated-ancestor",
+      "reason": "Integration base; ancestor of the candidate.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": null
+    },
+    {
+      "number": 16,
+      "title": "perf(waveyard): release duplicate source PCM after render",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "replit/waveyard-memory-ownership",
+      "head": "622b78a558f8d548ab297efb734b7efd9cd4e92f",
+      "baseRefName": "arena/331aa502-arena-os-canonical",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 4,
+      "disposition": "integrated-content",
+      "reason": "PCM ownership release is implemented in the candidate's newer arrangement-preparation.ts; the PR's test variant is superseded by the candidate's larger studio-fx.test.mjs.",
+      "evidencePaths": [
+        "src/lib/waveyard/arrangement-preparation.ts"
+      ],
+      "evidenceBlobIdentical": {
+        "src/lib/waveyard/arrangement-preparation.ts": false
+      },
+      "cherry": [
+        {
+          "applied": false,
+          "commit": "41a8cb1f",
+          "subject": "68b3fdcf3f8ac608e034fb310d5f4dc"
+        },
+        {
+          "applied": false,
+          "commit": "349cd678",
+          "subject": "650cb3175c7305e1f0c65c2c66c9f7e"
+        },
+        {
+          "applied": false,
+          "commit": "43dd5099",
+          "subject": "002e78c9dff893539c48b552e4dfdf2"
+        },
+        {
+          "applied": false,
+          "commit": "622b78a5",
+          "subject": "8f8d548ab297efb734b7efd9cd4e92f"
+        }
+      ],
+      "cherryTotal": 4,
+      "cherryUnapplied": 4
+    },
+    {
+      "number": 17,
+      "title": "feat(music): verified batch ZIP downloads",
+      "state": "MERGED",
+      "draft": true,
+      "headRefName": "arena/conversion-batch-download",
+      "head": "566a33ba6989f39064965264d458b92d942b60a6",
+      "baseRefName": "arena/331aa502-arena-os-canonical",
+      "ancestorOfCandidate": true,
+      "newCommitsSinceCandidate": 0,
+      "disposition": "integrated-ancestor",
+      "reason": "Merged; ancestor of the candidate.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": null
+    },
+    {
+      "number": 18,
+      "title": "test(music): verify converted audio through Waveyard and Studio",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "product/converter-waveyard-flow",
+      "head": "bca22c5db9e54c69710d72b6b01714a2925c8f94",
+      "baseRefName": "arena/conversion-batch-download",
+      "ancestorOfCandidate": true,
+      "newCommitsSinceCandidate": 0,
+      "disposition": "integrated-ancestor",
+      "reason": "Ancestor of the candidate.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": null
+    },
+    {
+      "number": 19,
+      "title": "Arcade: browser-check custom publication and retain failed game drafts",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "product/arcade-runtime-validation",
+      "head": "16a6e0be3bc09908e961d79d74901a7f5713823e",
+      "baseRefName": "arena/331aa502-arena-os-canonical",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 1,
+      "disposition": "integrated-patch-equivalent",
+      "reason": "git cherry reports every commit as already applied.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": [
+        {
+          "applied": true,
+          "commit": "16a6e0be",
+          "subject": "bc09908e961d79d74901a7f5713823e"
+        }
+      ],
+      "cherryTotal": 1,
+      "cherryUnapplied": 0
+    },
+    {
+      "number": 20,
+      "title": "Spaces: shared mission Workshop, truthful evidence and pop-out continuation",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "product/spaces-workshop-proof",
+      "head": "04ea4bd62f8d261dfd2e26a65bf90bfe19ec6a6f",
+      "baseRefName": "arena/331aa502-arena-os-canonical",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 3,
+      "disposition": "integrated-patch-equivalent",
+      "reason": "git cherry reports every commit as already applied.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": [
+        {
+          "applied": true,
+          "commit": "d898fedb",
+          "subject": "ba7d72fe2bbdb6375c31d2042d56035"
+        },
+        {
+          "applied": true,
+          "commit": "9e584348",
+          "subject": "15dcaae24f66b2c80b0d80c2ac030c1"
+        },
+        {
+          "applied": true,
+          "commit": "04ea4bd6",
+          "subject": "f8d261dfd2e26a65bf90bfe19ec6a6f"
+        }
+      ],
+      "cherryTotal": 3,
+      "cherryUnapplied": 0
+    },
+    {
+      "number": 21,
+      "title": "Arcade gameplay/source workshop and contained Spaces memory",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "product/arcade-spaces-capabilities",
+      "head": "6aeff9bdb59083252a9464495a2bbdf5df88048e",
+      "baseRefName": "arena/331aa502-arena-os-canonical",
+      "ancestorOfCandidate": false,
+      "newCommitsSinceCandidate": 9,
+      "disposition": "integrated-patch-equivalent",
+      "reason": "git cherry reports every commit as already applied.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": [
+        {
+          "applied": true,
+          "commit": "589815e8",
+          "subject": "6eb5e96950961129d94cc3e5a73fbcf"
+        },
+        {
+          "applied": true,
+          "commit": "95d6d6ac",
+          "subject": "13a77e99c7a20fbf24163e2cb78e9af"
+        },
+        {
+          "applied": true,
+          "commit": "6d8b6030",
+          "subject": "a2d95a16958b5413049bee731843672"
+        },
+        {
+          "applied": true,
+          "commit": "7a882f41",
+          "subject": "6820c4e2de119d662d6096d2fd44b5b"
+        },
+        {
+          "applied": true,
+          "commit": "91fe8fef",
+          "subject": "704b6e68fc691c0ae5289b4e4b62080"
+        },
+        {
+          "applied": true,
+          "commit": "18a70572",
+          "subject": "dc0918bd01df40a6ed297f3079b76ce"
+        },
+        {
+          "applied": true,
+          "commit": "802fab1e",
+          "subject": "7aa44d8abe44a585374596ed77a2fc6"
+        },
+        {
+          "applied": true,
+          "commit": "8ea94fbe",
+          "subject": "1a7878d4aebcb2c485d698e9d721846"
+        },
+        {
+          "applied": true,
+          "commit": "6aeff9bd",
+          "subject": "59083252a9464495a2bbdf5df88048e"
+        }
+      ],
+      "cherryTotal": 9,
+      "cherryUnapplied": 0
+    },
+    {
+      "number": 22,
+      "title": "Arcade: guaranteed-four rule with immutable save/reopen proof",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "product/arcade-rule-save-reopen",
+      "head": "0908842fa91c2cbd090b1d3e9cfcd164ee52f7dd",
+      "baseRefName": "arena/331aa502-arena-os-canonical",
+      "ancestorOfCandidate": true,
+      "newCommitsSinceCandidate": 0,
+      "disposition": "integrated-ancestor",
+      "reason": "Ancestor (Arcade guaranteed-four save/reopen).",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": null
+    },
+    {
+      "number": 23,
+      "title": "Spaces: honor selected model in default missions",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "arena/spaces-selected-model",
+      "head": "28e4db87c065140d7441ddb3dd209d7acd0bb672",
+      "baseRefName": "arena/331aa502-arena-os-canonical",
+      "ancestorOfCandidate": true,
+      "newCommitsSinceCandidate": 0,
+      "disposition": "integrated-ancestor",
+      "reason": "Ancestor (Spaces selected-model routing).",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": null
+    },
+    {
+      "number": 24,
+      "title": "fix(spaces): fail closed when mission fleet cannot be resolved",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "arena/spaces-fleet-resolution",
+      "head": "5ea44bddca506df0ca7c7cdda148f7ef4ae2caec",
+      "baseRefName": "arena/spaces-selected-model",
+      "ancestorOfCandidate": true,
+      "newCommitsSinceCandidate": 0,
+      "disposition": "integrated-ancestor",
+      "reason": "Ancestor (Spaces fleet resolution).",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": null
+    },
+    {
+      "number": 25,
+      "title": "Integration candidate: Arcade + Spaces on Waveyard 04705ab",
+      "state": "OPEN",
+      "draft": true,
+      "headRefName": "arena/integration-candidate-2026-10-21",
+      "head": "13638fe8a5c280e6b47ecf97fb6e6cf414163a12",
+      "baseRefName": "arena/331aa502-arena-os-canonical",
+      "ancestorOfCandidate": true,
+      "newCommitsSinceCandidate": 0,
+      "disposition": "integration-base",
+      "reason": "The verified integration candidate this branch starts from.",
+      "evidencePaths": [],
+      "evidenceBlobIdentical": {},
+      "cherry": null
+    }
+  ]
+}

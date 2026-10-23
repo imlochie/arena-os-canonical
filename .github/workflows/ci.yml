@@ -17,14 +17,22 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
-    branches: [main, "arena/**"]
+    branches: [main, "arena/**", product/arcade-rule-save-reopen]
   pull_request:
     branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# GitHub's unspecified-shell bash template uses -e without pipefail.
+# Explicit bash uses --noprofile --norc -e -o pipefail: tee must never turn a
+# failed acceptance command into a successful job.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   static:
@@ -48,6 +56,8 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/app_db
+      # Explicit CI-only browser setting; production keeps Chromium's OS sandbox.
+      ARENA_ARCADE_CI_NO_SANDBOX: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -60,8 +70,17 @@ jobs:
       - name: Clean dependency install
         run: npm ci
 
+      - name: Browser for real Arcade publication security tests
+        run: npx playwright install --with-deps chromium
+
       - name: Initialize test database schema
         run: npx drizzle-kit push --force
+
+      - name: Native separation SIGKILL and fresh-process restart matrix
+        run: |
+          mkdir -p .data/acceptance/waveyard-handoff
+          set -o pipefail
+          node --import ./scripts/register-src-loader.mjs --test tests/acceptance/separation-crash.test.ts 2>&1 | tee .data/acceptance/waveyard-handoff/crashes.tap
 
       - name: Typecheck
         run: npm run typecheck
@@ -70,7 +89,28 @@ jobs:
         run: npm run lint
 
       - name: Test
-        run: npm test
+        env:
+          WAVEYARD_ACCEPTANCE_ARTIFACT_DIR: .data/acceptance/waveyard-handoff
+          ARENA_TRANSITION_EVIDENCE_DIR: .data/acceptance/waveyard-handoff/transitions
+          ARENA_LIVE_STEM_EVIDENCE_DIR: .data/acceptance/waveyard-handoff/live-stems
+        run: |
+          mkdir -p .data/acceptance/waveyard-handoff
+          set -o pipefail
+          npm test 2>&1 | tee .data/acceptance/waveyard-handoff/tests.tap
+
+      - name: Publish failing test identities to check annotations
+        if: failure()
+        run: |
+          node scripts/ci-test-summary.mjs .data/acceptance/waveyard-handoff/crashes.tap --details
+          node scripts/ci-test-summary.mjs .data/acceptance/waveyard-handoff/tests.tap --details
+
+      - name: Retain Waveyard persistence/render evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveyard-handoff-evidence
+          path: .data/acceptance/waveyard-handoff/
+          if-no-files-found: warn
 
       - name: Build
         run: npm run build
@@ -127,8 +167,94 @@ jobs:
       - name: Initialize test database schema
         run: npx drizzle-kit push --force
 
+      - name: Install isolated Waveyard worker dependencies
+        run: npm ci --prefix waveyard-worker
+      - name: Typecheck production Waveyard worker
+        run: npx tsc --noEmit --project waveyard-worker/tsconfig.production.json
+      - name: Real FX export expired-lease and retained-publication acceptance
+        env:
+          ARENA_FX_REDIS_URL: redis://127.0.0.1:6379/15
+        run: |
+          export LD_LIBRARY_PATH="$PWD/node_modules/@embedded-postgres/linux-x64/native/lib:${LD_LIBRARY_PATH:-}"
+          node --import ./scripts/register-src-loader.mjs --test tests/acceptance/export-lease.test.mjs tests/acceptance/export-source-identity.test.mjs | tee fx-lease-acceptance.tap
       - name: A7 real-runtime acceptance
-        run: npm run test:acceptance:a7
+        run: npm run test:acceptance:a7 | tee a7-acceptance.tap
+      - name: Publish failing A7 test identities to check annotations
+        if: failure()
+        run: |
+          node scripts/ci-test-summary.mjs fx-lease-acceptance.tap
+          node scripts/ci-test-summary.mjs a7-acceptance.tap
+      - name: Retain A7 evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-acceptance-${{ github.sha }}
+          path: |
+            a7-acceptance.tap
+            fx-lease-acceptance.tap
+
+  playback-acceptance:
+    # Real browser audio primitives, not a mocked transport or separation job.
+    # No model/credentials/database required. This does not establish Electron
+    # or source-to-separated-stems acceptance.
+    name: Waveyard browser audio acceptance
+    # These durable workflows also publish Arcade games through the new gate.
+    # The production validator permits no-sandbox ONLY with CI=true as well.
+    env:
+      ARENA_ARCADE_CI_NO_SANDBOX: "1"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Clean dependency install
+        run: npm ci
+      - name: Install browser runtime
+        run: npx playwright install --with-deps chromium
+      - name: Exercise actual stem playback and recovery
+        run: npm run --silent test:acceptance:transport | tee transport-acceptance.tap
+      - name: Exercise actual session controls, transitions and audible recovery
+        run: npm run --silent test:acceptance:session | tee session-acceptance.tap
+      - name: Exercise Arcade draft and Artifact Library recovery (controlled HTTP)
+        run: node --test tests/acceptance/recovery-runtime.test.mjs | tee recovery-acceptance.tap
+      - name: Install isolated remote worker dependencies for real export parity
+        run: npm ci --prefix waveyard-worker --ignore-scripts --no-audit --no-fund
+      - name: Exercise durable mission review and Studio FX through real browser, PostgreSQL and rendering
+        env:
+          ARENA_STUDIO_FX_EVIDENCE_DIR: .data/acceptance/studio-fx
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/mission-recovery.test.mjs tests/acceptance/studio-fx.test.mjs tests/acceptance/artifact-retention.test.mjs tests/acceptance/cross-room-references.test.mjs tests/acceptance/orchestrator-durability.test.mjs tests/acceptance/artifact-objects.test.mjs tests/acceptance/object-reclamation.test.mjs tests/acceptance/arcade-attempts.test.mjs tests/acceptance/foundry-workflow.test.mjs tests/acceptance/music-conversion.test.mjs | tee durable-workflows-acceptance.tap
+      - name: Publish failing durable workflow test identities
+        if: failure()
+        run: node scripts/ci-test-summary.mjs durable-workflows-acceptance.tap
+      - name: Retain durable workflow and decoded FX evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: durable-workflows-${{ github.sha }}
+          path: |
+            durable-workflows-acceptance.tap
+            .data/acceptance/studio-fx/
+      - name: Retain recovery evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-acceptance-${{ github.sha }}
+          path: recovery-acceptance.tap
+      - name: Retain session evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-acceptance-${{ github.sha }}
+          path: session-acceptance.tap
+      - name: Retain playback evidence (including failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transport-acceptance-${{ github.sha }}
+          path: transport-acceptance.tap
 
   compose-build:
     name: Compose images build

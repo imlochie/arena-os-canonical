@@ -213,7 +213,7 @@ export async function processSeparation(
         modelVersion: result.modelVersion ?? payload.model,
         storageKey,
         checksumSha256: stem.checksumSha256,
-        durationSeconds: Math.round(stem.metadata.durationSeconds),
+        durationSeconds: stem.metadata.durationSeconds,
         sampleRate: stem.metadata.sampleRate,
         channels: stem.metadata.channels,
         codec: stem.metadata.codec,
@@ -223,7 +223,8 @@ export async function processSeparation(
     }
 
     const durableWork = await db.transaction(async (tx) => {
-      await tx.delete(stemAssets).where(eq(stemAssets.separationJobId, job.id));
+      const previous = await tx.select({ id: stemAssets.id }).from(stemAssets).where(eq(stemAssets.separationJobId, job.id));
+      if (previous.length) throw new Error("This run already has published assets. They were preserved; start a new separation run rather than replacing this bank.");
       const storedStems = await tx
         .insert(stemAssets)
         .values(values)

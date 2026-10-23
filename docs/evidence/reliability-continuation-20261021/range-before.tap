@@ -1,0 +1,455 @@
+TAP version 13
+# (node:75332) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:75332) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:75332) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: Studio downloads automatically bundle exact media, frozen source notices and honest unknowns
+    # Subtest: invalid or incomplete frozen notices never silently become legacy notices
+    ok 1 - invalid or incomplete frozen notices never silently become legacy notices
+      ---
+      duration_ms: 17.687352
+      type: 'test'
+      ...
+    # Subtest: new snapshots and legacy downloads refuse another owner's referenced source
+    ok 2 - new snapshots and legacy downloads refuse another owner's referenced source
+      ---
+      duration_ms: 15.539211
+      type: 'test'
+      ...
+    # Subtest: MIDI bundle includes its checksum-pinned analysis source even outside the arrangement
+    ok 3 - MIDI bundle includes its checksum-pinned analysis source even outside the arrangement
+      ---
+      duration_ms: 139.773493
+      type: 'test'
+      ...
+# Export output retained for reconciliation {
+#   exportJobId: '4177fbee-33f6-415e-896d-0787a58ed477',
+#   storageKey: 'projects/c201909d-a2e5-4bdb-ad55-bf5c3f974d80/export/4177fbee-33f6-415e-896d-0787a58ed477/1e5a9799-a012-4cbe-bf09-a3b4eea110e8.wav'
+# }
+    # Subtest: native export lost COMMIT acknowledgement never deletes already-published audio
+    ok 4 - native export lost COMMIT acknowledgement never deletes already-published audio
+      ---
+      duration_ms: 379.285811
+      type: 'test'
+      ...
+    # Subtest: native export cancelled after upload cannot publish or resurrect the job
+    ok 5 - native export cancelled after upload cannot publish or resurrect the job
+      ---
+      duration_ms: 68.816101
+      type: 'test'
+      ...
+# Export output retained for reconciliation {
+#   exportJobId: '28788dd8-0dcf-4a6d-bee1-2ca0c111667d',
+#   storageKey: 'projects/c201909d-a2e5-4bdb-ad55-bf5c3f974d80/export/28788dd8-0dcf-4a6d-bee1-2ca0c111667d/15e07839-2b21-4eec-bce5-6895e76b01bb.wav'
+# }
+    # Subtest: native export uncertain publication retains job-scoped bytes until explicit healthy reconciliation
+    ok 6 - native export uncertain publication retains job-scoped bytes until explicit healthy reconciliation
+      ---
+      duration_ms: 100.008335
+      type: 'test'
+      ...
+    # Subtest: native render refuses changed source bytes and corrupt copies before minting an export
+        # Subtest: stored-bytes
+        ok 1 - stored-bytes
+          ---
+          duration_ms: 87.112164
+          type: 'test'
+          ...
+        # Subtest: copied-bytes
+        ok 2 - copied-bytes
+          ---
+          duration_ms: 78.87269
+          type: 'test'
+          ...
+        # Subtest: copy-unavailable
+        ok 3 - copy-unavailable
+          ---
+          duration_ms: 76.226725
+          type: 'test'
+          ...
+        1..3
+    ok 7 - native render refuses changed source bytes and corrupt copies before minting an export
+      ---
+      duration_ms: 244.219911
+      type: 'test'
+      ...
+    # Subtest: private source, stem and export seek requests deliver exact suffix/clamped bytes
+        # Subtest: source: bytes=-100
+        not ok 1 - source: bytes=-100
+          ---
+          duration_ms: 5.282866
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            + actual - expected
+            
+            + 'bytes 0-100/176444'
+            - 'bytes 176344-176443/176444'
+                     ^
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 'bytes 176344-176443/176444'
+          actual: 'bytes 0-100/176444'
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:176:16)
+            process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: source: bytes=100-
+        ok 2 - source: bytes=100-
+          ---
+          duration_ms: 8.277725
+          type: 'test'
+          ...
+        # Subtest: source: bytes=100-177443
+        not ok 3 - source: bytes=100-177443
+          ---
+          duration_ms: 2.671045
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            416 !== 206
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 206
+          actual: 416
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:175:16)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: source: bytes=-99999999999999999999999999
+        not ok 4 - source: bytes=-99999999999999999999999999
+          ---
+          duration_ms: 2.867214
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            416 !== 206
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 206
+          actual: 416
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:175:16)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: source: BYTES=1-2
+        not ok 5 - source: BYTES=1-2
+          ---
+          duration_ms: 4.474964
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            416 !== 206
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 206
+          actual: 416
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:175:16)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: stem: bytes=-100
+        not ok 6 - stem: bytes=-100
+          ---
+          duration_ms: 2.833206
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            + actual - expected
+            
+            + 'bytes 0-100/176444'
+            - 'bytes 176344-176443/176444'
+                     ^
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 'bytes 176344-176443/176444'
+          actual: 'bytes 0-100/176444'
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:176:16)
+            process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: stem: bytes=100-
+        ok 7 - stem: bytes=100-
+          ---
+          duration_ms: 6.781067
+          type: 'test'
+          ...
+        # Subtest: stem: bytes=100-177443
+        not ok 8 - stem: bytes=100-177443
+          ---
+          duration_ms: 8.901416
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            416 !== 206
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 206
+          actual: 416
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:175:16)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: stem: bytes=-99999999999999999999999999
+        not ok 9 - stem: bytes=-99999999999999999999999999
+          ---
+          duration_ms: 5.241192
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            416 !== 206
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 206
+          actual: 416
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:175:16)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: stem: BYTES=1-2
+        not ok 10 - stem: BYTES=1-2
+          ---
+          duration_ms: 2.632756
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            416 !== 206
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 206
+          actual: 416
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:175:16)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: export: bytes=-100
+        not ok 11 - export: bytes=-100
+          ---
+          duration_ms: 13.040819
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            + actual - expected
+            
+            + 'bytes 0-100/176444'
+            - 'bytes 176344-176443/176444'
+                     ^
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 'bytes 176344-176443/176444'
+          actual: 'bytes 0-100/176444'
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:176:16)
+            process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: export: bytes=100-
+        ok 12 - export: bytes=100-
+          ---
+          duration_ms: 4.923705
+          type: 'test'
+          ...
+        # Subtest: export: bytes=100-177443
+        not ok 13 - export: bytes=100-177443
+          ---
+          duration_ms: 3.476588
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            416 !== 206
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 206
+          actual: 416
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:175:16)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: export: bytes=-99999999999999999999999999
+        not ok 14 - export: bytes=-99999999999999999999999999
+          ---
+          duration_ms: 3.782002
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            416 !== 206
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 206
+          actual: 416
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:175:16)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        # Subtest: export: BYTES=1-2
+        not ok 15 - export: BYTES=1-2
+          ---
+          duration_ms: 4.62216
+          type: 'test'
+          location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:27'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly equal:
+            
+            416 !== 206
+            
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected: 206
+          actual: 416
+          operator: 'strictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:175:16)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:172:19)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+            async Test.run (node:internal/test_runner/test:1054:7)
+            async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+          ...
+        1..15
+    not ok 8 - private source, stem and export seek requests deliver exact suffix/clamped bytes
+      ---
+      duration_ms: 90.389589
+      type: 'test'
+      location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:11'
+      failureType: 'subtestsFailed'
+      error: '12 subtests failed'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        async TestContext.<anonymous> (file:///home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:161:3)
+      ...
+    1..8
+not ok 1 - Studio downloads automatically bundle exact media, frozen source notices and honest unknowns
+  ---
+  duration_ms: 3721.275788
+  type: 'test'
+  location: '/home/user/arena-os-canonical/src/lib/waveyard/export-bundle.test.ts:14:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 27
+# suites 0
+# pass 13
+# fail 14
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4751.047612

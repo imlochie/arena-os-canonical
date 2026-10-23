@@ -63,6 +63,7 @@ export function MixerConsole({
   onInserts,
   masterInserts,
   onMasterInserts,
+  onMasterVolume,
 }: {
   stems: Stem[];
   sources: Source[];
@@ -76,6 +77,7 @@ export function MixerConsole({
   onInserts: (stemAssetId: string, chain: InsertChain) => void;
   masterInserts: InsertChain;
   onMasterInserts: (chain: InsertChain) => void;
+  onMasterVolume: (volume: number) => void;
 }) {
   const [meters, setMeters] = useState<MeterSnapshot | null>(null);
   const rafId = useRef<number | null>(null);
@@ -221,7 +223,7 @@ export function MixerConsole({
               <input
                 aria-label="Master volume"
                 type="range" min="0" max="2" step="0.01" value={transport.masterVolume}
-                onChange={(event) => transport.setMasterVolume(Number(event.target.value))}
+                onChange={(event) => onMasterVolume(Number(event.target.value))}
               />
             </label>
             <div className="console-toggles">

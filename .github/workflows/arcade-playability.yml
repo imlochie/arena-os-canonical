@@ -1,0 +1,86 @@
+name: Arcade browser publication and actual-page acceptance
+on:
+  push:
+    branches: [product/arcade-runtime-validation, product/arcade-spaces-capabilities, product/arcade-rule-save-reopen, "arena/331aa502-arena-os-canonical"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: arcade-playability-${{ github.ref }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      ARENA_ARCADE_CI_NO_SANDBOX: "1"
+      ARENA_ARCADE_EVIDENCE_DIR: .data/arcade-acceptance
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Source identity
+        run: |
+          mkdir -p .data/arcade-acceptance
+          {
+            git rev-parse HEAD
+            git status --short
+            node --version
+            echo "Donor PR19 base ba5cfa731712b8f4759416830ed66b9cb50b9d84; tested HEAD above is authoritative"
+            echo "Controlled model replies; no live model quality or Electron claim."
+          } > .data/arcade-acceptance/source-manifest.txt
+      - name: Typecheck and focused lint
+        run: |
+          npm run typecheck 2>&1 | tee .data/arcade-acceptance/typecheck.txt
+          npx eslint src/lib/games/sandbox.ts src/lib/games/runtime-validation.ts src/lib/games/runtime-contract.test.ts src/lib/games/gameplay-contract.ts src/lib/games/gameplay-contract.test.ts src/lib/games/source-2048.ts src/lib/games/source-2048.test.ts src/lib/games/source-rule-validation.ts src/app/api/arcade/source/route.ts src/components/ArcadeSourceWorkshop.tsx next.config.ts 2>&1 | tee .data/arcade-acceptance/lint.txt
+      - name: Focused game contracts and durable attempt regressions
+        run: |
+          node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 src/lib/games/*.test.ts tests/acceptance/arcade-attempts.test.mjs 2>&1 | tee .data/arcade-acceptance/focused.tap
+      - name: Actual API to immutable source package storage and full revision retrieval
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/arcade-source-storage.test.mjs 2>&1 | tee .data/arcade-acceptance/source-storage.tap
+      - name: Build actual application
+        env:
+          DATABASE_URL: postgres://postgres@127.0.0.1:1/build-no-connect
+        run: npm run build 2>&1 | tee .data/arcade-acceptance/build.txt
+      - name: Real browser contract and actual Next Arcade page
+        run: node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 tests/acceptance/arcade-playability.test.mjs 2>&1 | tee .data/arcade-acceptance/browser.tap
+      - name: Diverse declared mechanics and adversarial controls through production browser validator
+        run: node --import ./scripts/register-src-loader.mjs --test --test-concurrency=1 tests/acceptance/arcade-gameplay.test.mjs 2>&1 | tee .data/arcade-acceptance/gameplay.tap
+      - name: Genuine MIT source acquisition, patch replay and original/modded browser execution
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/arcade-source.test.mjs 2>&1 | tee .data/arcade-acceptance/source-adapter.tap
+      - name: Actual gameplay-rule modification, immutable save and reopened-game execution
+        run: node --import ./scripts/register-src-loader.mjs --test tests/acceptance/arcade-rule-reopen.test.mjs 2>&1 | tee .data/arcade-acceptance/rule-reopen.tap
+      - name: Complete isolated source suite, unchanged gates
+        run: npm test 2>&1 | tee .data/arcade-acceptance/source-suite.tap
+      - name: Preserve machine-readable evidence and failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arcade-playability-receipts-${{ github.run_id }}
+          path: |
+            .data/arcade-acceptance/*.json
+            .data/arcade-acceptance/*.txt
+            .data/arcade-acceptance/*.tap
+            .data/acceptance/source-suite/*.json
+            .data/arcade-gameplay/*.json
+            .data/arcade-source/*.json
+          retention-days: 90
+      - name: Preserve screenshots and browser trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arcade-playability-browser-${{ github.run_id }}
+          path: |
+            .data/arcade-acceptance/*.png
+            .data/arcade-acceptance/*.zip
+            .data/arcade-source/*.png
+            .data/arcade-source/*.zip
+          retention-days: 90

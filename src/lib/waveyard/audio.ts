@@ -20,6 +20,8 @@ const ACCEPTED_EXTENSIONS = new Set([
   ".m4a",
   ".aac",
   ".ogg",
+  ".aif",
+  ".aiff",
 ]);
 export const MAX_UPLOAD_BYTES = Number(
   process.env.MAX_UPLOAD_BYTES ?? 524_288_000,
@@ -88,8 +90,14 @@ async function exec(
   });
 }
 
+// Intake is a selected local audio container, never a playlist/program that
+// instructs FFmpeg to open network URLs or unrelated local files. Restrict the
+// demuxer before it reads headers (protocol restriction alone permits file HLS).
+export const localAudioInputOptions = ["-protocol_whitelist", "file", "-format_whitelist", "wav,mp3,flac,aiff,mov,mp4,m4a,3gp,3g2,mj2,aac,ogg,matroska,webm"];
+
 export async function probeAudio(path: string): Promise<AudioMetadata> {
   const { stdout } = await exec((await requireTool("ffprobe")).path, [
+    ...localAudioInputOptions,
     "-v",
     "error",
     "-show_entries",

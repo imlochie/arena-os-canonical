@@ -1,3 +1,5 @@
+import { orchestratorErrorResponse } from "@/lib/orchestrator";
+import { requireApiAccess } from "@/lib/security/api-access";
 import { advanceCollaboration } from "@/lib/orchestrator";
 
 export const dynamic = "force-dynamic";
@@ -7,6 +9,7 @@ export const maxDuration = 120;
 // surface a human checkpoint, or let the conductor route an idle session.
 // {keys?, localOnly?}
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const { id } = await params;
   try {
     const body = await req.json().catch(() => ({}));
@@ -18,6 +21,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return Response.json(result);
   } catch (e) {
     console.error(e);
-    return Response.json({ error: e instanceof Error ? e.message : "advance failed" }, { status: 500 });
+    return orchestratorErrorResponse(e);
   }
 }

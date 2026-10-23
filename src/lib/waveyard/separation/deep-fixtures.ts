@@ -34,6 +34,8 @@ import { DEEP_CHECKPOINT_FILE, DEEP_MODEL_SIGNATURE } from "./deep";
 import { DEEP_STEM_TYPES } from "./modes";
 
 export type StubDeepOptions = {
+  /** Process-lifecycle fixture only; never learned inference. */
+  hangIgnoringTermination?: boolean;
   /** Demucs version the interpreter reports; null = not installed (no
    *  package metadata AND no `demucs` module — `-m demucs` fails too). */
   demucsVersion?: string | null;
@@ -192,7 +194,12 @@ def main(argv):
         if not os.path.isfile(track):
             sys.stderr.write("fake demucs: no such file %s\\n" % track)
             return 2
-${failure}
+${options.hangIgnoringTermination ? `    import signal, time
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    sys.stderr.write("1%\\n")
+    sys.stderr.flush()
+    time.sleep(60)
+` : ""}${failure}
     track_dir = os.path.join(out, name, "track")
     os.makedirs(track_dir, exist_ok=True)
     for stem in STEMS:

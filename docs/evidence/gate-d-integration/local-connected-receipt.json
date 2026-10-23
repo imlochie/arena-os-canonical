@@ -1,0 +1,302 @@
+{
+  "scope": "Production ConversionWorkbench, TrackPlayer, SessionExperience and StudioCore; real HTTP handlers, PostgreSQL, native FFmpeg, browser media/Web Audio and downloaded files. Full original uploaded and converted. Isolated component host, not a complete Next.js/Electron launch. No inference, DRM removal, subjective listening or production deployment claim.",
+  "testedCommit": null,
+  "branch": null,
+  "ownerSnapshot": null,
+  "combinedTree": null,
+  "originalSha256": "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507",
+  "rights": "Slow Motion Dream — Steven M Bryant © 2011 / CSoul / AlexBeroza / Robert Siekawitch. CC BY 3.0 https://creativecommons.org/licenses/by/3.0/ . Publisher: https://github.com/deezer/spleeter/blob/c8854001ac8acad34a9bc2bd15f28475541828b1/README.md#note . Modifications: native FLAC conversion and sequential Studio edit; no endorsement.",
+  "outputs": [
+    {
+      "path": "Steven M Bryant _ CSoul _ AlexBeroza _ Robert Siekawitch/Authorised conversion flow/01 - Converted music — first - 03e9301e.flac",
+      "conversionId": "03e9301e-1ca6-4a2c-8b96-cd5011708c94",
+      "sourceTrackId": "4a168db5-40e0-48e4-bc1b-870117d85223",
+      "outputTrackId": "b07c7df1-8277-486f-8c23-57d93436f700",
+      "sourceSha256": "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507",
+      "outputSha256": "7a13ba4fb000d6c57eae7011ceaabfcef246e248cd1a6391be3d300e91ae34b1",
+      "bytes": 1330680,
+      "settings": {
+        "format": "flac",
+        "bitrate": 192,
+        "sampleRate": 44100,
+        "channels": 2,
+        "pcmBits": 16,
+        "compression": 5,
+        "template": "{artist}/{album}/{track} - {title}"
+      },
+      "fullyDecoded": true,
+      "inspection": {
+        "durationSeconds": 10.881,
+        "sampleRate": 44100,
+        "channels": 2,
+        "codec": "flac",
+        "bitrate": 978392,
+        "container": "flac",
+        "sizeBytes": 1330680,
+        "channelLayout": "stereo",
+        "unreviewedTags": {},
+        "truncatedTags": [],
+        "bitsPerSample": 16,
+        "tags": {
+          "title": "Converted music — first",
+          "artist": "Steven M Bryant / CSoul / AlexBeroza / Robert Siekawitch",
+          "album": "Authorised conversion flow",
+          "track": "1",
+          "date": "2013",
+          "lyrics": "Slow Motion Dream — Steven M Bryant © 2011 / CSoul / AlexBeroza / Robert Siekawitch. CC BY 3.0 https://creativecommons.org/licenses/by/3.0/ . Publisher: https://github.com/deezer/spleeter/blob/c8854001ac8acad34a9bc2bd15f28475541828b1/README.md#note . Modifications: native FLAC conversion and sequential Studio edit; no endorsement."
+        },
+        "artwork": null
+      },
+      "decodedFrames": 479832,
+      "decodedPcmSha256": "326959bf5f46596deefc779e74c6b649e6dd1254dad97710073f15b7cbf3aae8",
+      "exactDurationSeconds": 10.880544217687074,
+      "outputSourceId": "0ad0f70a-1c00-4212-8959-597b4f6f7653",
+      "originalSourceAssetId": "f7f6ab2e-6476-432c-88e3-6af3fef40233",
+      "originalTrackId": "4a168db5-40e0-48e4-bc1b-870117d85223",
+      "verification": {
+        "checksumSha256": "7a13ba4fb000d6c57eae7011ceaabfcef246e248cd1a6391be3d300e91ae34b1",
+        "fileSizeBytes": 1330680,
+        "fullyDecoded": true,
+        "warnings": [
+          "Lossy source codec mp3: lossless output cannot restore previously discarded audio."
+        ],
+        "actual": {
+          "codec": "flac",
+          "sampleRate": 44100,
+          "channels": 2,
+          "durationSeconds": 10.881
+        }
+      }
+    },
+    {
+      "path": "Steven M Bryant _ CSoul _ AlexBeroza _ Robert Siekawitch/Authorised conversion flow/02 - Converted music — second - 2c4001e9.flac",
+      "conversionId": "2c4001e9-63ac-4bdf-87b2-1a60994228a9",
+      "sourceTrackId": "4a168db5-40e0-48e4-bc1b-870117d85223",
+      "outputTrackId": "5fb2702a-5af4-4cba-a26f-5e06e3f032b3",
+      "sourceSha256": "4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507",
+      "outputSha256": "181613d39f40495acc9822150d77085a77f592db58bfafd6f019776c85bda941",
+      "bytes": 1330681,
+      "settings": {
+        "format": "flac",
+        "bitrate": 192,
+        "sampleRate": 44100,
+        "channels": 2,
+        "pcmBits": 16,
+        "compression": 5,
+        "template": "{artist}/{album}/{track} - {title}"
+      },
+      "fullyDecoded": true,
+      "inspection": {
+        "durationSeconds": 10.881,
+        "sampleRate": 44100,
+        "channels": 2,
+        "codec": "flac",
+        "bitrate": 978392,
+        "container": "flac",
+        "sizeBytes": 1330681,
+        "channelLayout": "stereo",
+        "unreviewedTags": {},
+        "truncatedTags": [],
+        "bitsPerSample": 16,
+        "tags": {
+          "title": "Converted music — second",
+          "artist": "Steven M Bryant / CSoul / AlexBeroza / Robert Siekawitch",
+          "album": "Authorised conversion flow",
+          "track": "2",
+          "date": "2013",
+          "lyrics": "Slow Motion Dream — Steven M Bryant © 2011 / CSoul / AlexBeroza / Robert Siekawitch. CC BY 3.0 https://creativecommons.org/licenses/by/3.0/ . Publisher: https://github.com/deezer/spleeter/blob/c8854001ac8acad34a9bc2bd15f28475541828b1/README.md#note . Modifications: native FLAC conversion and sequential Studio edit; no endorsement."
+        },
+        "artwork": null
+      },
+      "decodedFrames": 479832,
+      "decodedPcmSha256": "326959bf5f46596deefc779e74c6b649e6dd1254dad97710073f15b7cbf3aae8",
+      "exactDurationSeconds": 10.880544217687074,
+      "outputSourceId": "8239d596-13bc-49d3-a09f-d2dec90605ae",
+      "originalSourceAssetId": "f7f6ab2e-6476-432c-88e3-6af3fef40233",
+      "originalTrackId": "4a168db5-40e0-48e4-bc1b-870117d85223",
+      "verification": {
+        "checksumSha256": "181613d39f40495acc9822150d77085a77f592db58bfafd6f019776c85bda941",
+        "fileSizeBytes": 1330681,
+        "fullyDecoded": true,
+        "warnings": [
+          "Lossy source codec mp3: lossless output cannot restore previously discarded audio."
+        ],
+        "actual": {
+          "codec": "flac",
+          "sampleRate": 44100,
+          "channels": 2,
+          "durationSeconds": 10.881
+        }
+      }
+    }
+  ],
+  "sessionId": "7e05119b-ba4d-4a28-8066-9b4c32bced1c",
+  "player": {
+    "trackId": "b07c7df1-8277-486f-8c23-57d93436f700",
+    "sourceAssetId": "0ad0f70a-1c00-4212-8959-597b4f6f7653",
+    "rms": 0.012542970300696664
+  },
+  "sessionRms": 0.012542970300696664,
+  "reopenedSessionRms": 0.2807062481168467,
+  "reopenedSessionIdentityVerified": true,
+  "handoff": {
+    "projectId": "6c482936-736e-4e17-b6f2-83f450032f09",
+    "remixSessionId": "db1256be-9c75-449b-8bcb-f8d38711946c",
+    "remixTrackCount": 2,
+    "notice": "Created a sequential arrangement with saved stem levels and timed swaps. Live transition triggers, crossfades and the playback cursor are not recorded into this arrangement; edit transitions in Studio. Original sources and the listening session are unchanged. Full-length endpoints use Studio’s integer-millisecond grid, rounding down by less than 1 ms to stay within the decoded asset. Original stem files retain every sample."
+  },
+  "versionId": "ce0d4896-bcb5-4cc7-aa62-fb870fcea23c",
+  "exportJobId": "f8287be4-bd56-4157-8ed7-c2d5f1baa40a",
+  "zipSha256": "9324ff4e1194fec54d17572f8b2223d862880d54bfd925bfe8ca7288fbbbd476",
+  "export": {
+    "sha256": "d9c77f7528c23f62d7729bb964f1d1b2afd704cda584ce1a3ece5f0c79cac00a",
+    "fileSizeBytes": 3838974,
+    "inspection": {
+      "durationSeconds": 21.762,
+      "sampleRate": 44100,
+      "channels": 2,
+      "codec": "pcm_s16le",
+      "bitrate": 1411287,
+      "container": "wav",
+      "sizeBytes": 3838974,
+      "channelLayout": "stereo",
+      "unreviewedTags": {},
+      "truncatedTags": [],
+      "bitsPerSample": 16,
+      "tags": {
+        "title": "Converted music — first",
+        "artist": "Steven M Bryant / CSoul / AlexBeroza / Robert Siekawitch",
+        "album": "Authorised conversion flow",
+        "track": "1",
+        "date": "2013"
+      },
+      "artwork": null
+    },
+    "frames": 959684,
+    "exactDurationSeconds": 21.76154195011338,
+    "idealTimelineFrames": 959705,
+    "expectedPhysicalTimelineFrames": 959684,
+    "gridEndpointDifferenceFrames": -21,
+    "rounding": [
+      {
+        "sourceFrames": 479832,
+        "durationMs": 10881,
+        "timelineStartMs": 0,
+        "startFrame": 0,
+        "physicalClipFrames": 479832,
+        "gridFrames": 479852,
+        "sourceToGridDifferenceFrames": -20,
+        "tailPadFrames": 479852
+      },
+      {
+        "sourceFrames": 479832,
+        "durationMs": 10881,
+        "timelineStartMs": 10881,
+        "startFrame": 479852,
+        "physicalClipFrames": 479832,
+        "gridFrames": 479852,
+        "sourceToGridDifferenceFrames": -20,
+        "tailPadFrames": 0
+      }
+    ],
+    "peak": 0.707122802734375,
+    "rms": 0.1765070305173224,
+    "centrePanGain": 0.7071067811865476,
+    "decodedPcmSha256": "04a97c786e55c3f1b919e43a5f0e36037be0c0238907d84942a2c4448588ee18",
+    "referencePcmSha256": "4d7a0e44da499ed55a843336371714d34a177fe2cd4409cfe3c8052677acf753",
+    "maximumError": 0.000059664249420166016,
+    "tolerance": 0.0001220703125
+  },
+  "originalAndPublishedOutputsUnchanged": true,
+  "routeErrors": [],
+  "optionalPanelStates": [
+    {
+      "path": "/api/assets/0ad0f70a-1c00-4212-8959-597b4f6f7653/waveform",
+      "status": 404,
+      "error": "{\"error\":\"Waveform is not available for this asset yet.\"}"
+    },
+    {
+      "path": "/api/assets/0ad0f70a-1c00-4212-8959-597b4f6f7653/waveform",
+      "status": 404,
+      "error": "{\"error\":\"Waveform is not available for this asset yet.\"}"
+    },
+    {
+      "path": "/api/assets/0ad0f70a-1c00-4212-8959-597b4f6f7653/waveform",
+      "status": 404,
+      "error": "{\"error\":\"Waveform is not available for this asset yet.\"}"
+    },
+    {
+      "path": "/api/assets/5e1189bc-55b3-4d9f-817b-3f40661cd01f/waveform",
+      "status": 404,
+      "error": "{\"error\":\"Waveform is not available for this asset yet.\"}"
+    },
+    {
+      "path": "/api/waveyard/projects/6c482936-736e-4e17-b6f2-83f450032f09/master",
+      "status": 409,
+      "error": "{\"error\":\"This project has no source audio to master.\"}"
+    },
+    {
+      "path": "/api/assets/0ad0f70a-1c00-4212-8959-597b4f6f7653/waveform",
+      "status": 404,
+      "error": "{\"error\":\"Waveform is not available for this asset yet.\"}"
+    },
+    {
+      "path": "/api/assets/5e1189bc-55b3-4d9f-817b-3f40661cd01f/waveform",
+      "status": 404,
+      "error": "{\"error\":\"Waveform is not available for this asset yet.\"}"
+    },
+    {
+      "path": "/api/assets/0ad0f70a-1c00-4212-8959-597b4f6f7653/waveform",
+      "status": 404,
+      "error": "{\"error\":\"Waveform is not available for this asset yet.\"}"
+    },
+    {
+      "path": "/api/waveyard/projects/6c482936-736e-4e17-b6f2-83f450032f09/master",
+      "status": 409,
+      "error": "{\"error\":\"This project has no source audio to master.\"}"
+    }
+  ],
+  "browserErrors": [],
+  "assetResponses": [
+    {
+      "url": "/api/assets/0ad0f70a-1c00-4212-8959-597b4f6f7653",
+      "status": 206
+    },
+    {
+      "url": "/api/assets/5e1189bc-55b3-4d9f-817b-3f40661cd01f",
+      "status": 206
+    },
+    {
+      "url": "/api/assets/abe85285-316e-44a6-a7e3-9e1f6687f2ae",
+      "status": 206
+    },
+    {
+      "url": "/api/assets/5e1189bc-55b3-4d9f-817b-3f40661cd01f",
+      "status": 206
+    },
+    {
+      "url": "/api/assets/abe85285-316e-44a6-a7e3-9e1f6687f2ae",
+      "status": 206
+    },
+    {
+      "url": "/api/assets/5e1189bc-55b3-4d9f-817b-3f40661cd01f",
+      "status": 206
+    },
+    {
+      "url": "/api/assets/abe85285-316e-44a6-a7e3-9e1f6687f2ae",
+      "status": 206
+    },
+    {
+      "url": "/api/assets/5e1189bc-55b3-4d9f-817b-3f40661cd01f",
+      "status": 206
+    },
+    {
+      "url": "/api/assets/abe85285-316e-44a6-a7e3-9e1f6687f2ae",
+      "status": 206
+    }
+  ],
+  "runtime": {
+    "node": "v22.22.3",
+    "chromium": "153.0.8010.0"
+  }
+}

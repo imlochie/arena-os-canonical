@@ -20,14 +20,17 @@ import {
   resolve,
   sep,
 } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 
+export class StorageIntegrityError extends Error {}
 export type StorageRead = { stream: Readable; size: number; start: number; end: number };
 
 export interface StorageProvider {
   readonly kind: "local";
   putFile(key: string, localPath: string, contentType?: string): Promise<void>;
   putBuffer(key: string, data: string): Promise<void>;
+  putImmutableBuffer(key: string, data: Buffer): Promise<void>;
+  putImmutableStream(key: string, data: AsyncIterable<Uint8Array>, expected: { bytes: number; sha256: string }): Promise<void>;
   getToFile(key: string, localPath: string): Promise<void>;
   // Bounded derived metadata (waveforms), never large audio delivery.
   getBuffer(key: string, maxBytes: number): Promise<Buffer>;
@@ -81,6 +84,38 @@ export class LocalStorageProvider implements StorageProvider {
     await fs.mkdir(dirname(destination), { recursive: true });
     await fs.copyFile(localPath, destination);
   }
+  async putImmutableStream(key: string, source: AsyncIterable<Uint8Array>, expected: { bytes: number; sha256: string }) {
+    if (!Number.isSafeInteger(expected.bytes) || expected.bytes < 0 || expected.bytes > 524_288_000 || !/^[a-f0-9]{64}$/.test(expected.sha256)) throw new Error("A bounded immutable stream checksum/size is required.");
+    const destination = safeLocalPath(this.root, key); await fs.mkdir(dirname(destination), { recursive: true });
+    const temporary = `${destination}.${randomUUID()}.partial`; let handle;
+    try {
+      handle = await fs.open(temporary, "wx"); const hash = createHash("sha256"); let size = 0;
+      for await (const chunk of source) { size += chunk.byteLength; if (size > expected.bytes) throw new StorageIntegrityError("Immutable upload exceeded its declared bounded size."); hash.update(chunk); await handle.writeFile(chunk); }
+      if (size !== expected.bytes || hash.digest("hex") !== expected.sha256) throw new StorageIntegrityError("Interrupted/corrupt immutable upload; no object was published.");
+      await handle.sync(); await handle.close(); handle = undefined;
+      try { await fs.link(temporary, destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const oldHash = createHash("sha256"); let oldSize = 0;
+        for await (const chunk of createReadStream(destination)) { oldSize += chunk.length; if (oldSize > expected.bytes) throw new StorageIntegrityError("Existing immutable content is corrupt; it was not overwritten."); oldHash.update(chunk); }
+        if (oldSize !== expected.bytes || oldHash.digest("hex") !== expected.sha256) throw new StorageIntegrityError("Existing immutable content is corrupt; it was not overwritten.");
+      }
+    } finally { await handle?.close().catch(() => {}); await fs.unlink(temporary).catch(() => {}); }
+  }
+  async putImmutableBuffer(key: string, data: Buffer) {
+    const destination = safeLocalPath(this.root, key);
+    await fs.mkdir(dirname(destination), { recursive: true });
+    const temporary = `${destination}.${randomUUID()}.partial`;
+    try {
+      await fs.writeFile(temporary, data, { flag: "wx" });
+      try { await fs.link(temporary, destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const previous = await fs.readFile(destination);
+        if (!previous.equals(data)) throw new Error("Immutable output object is corrupted; it was not overwritten.");
+      }
+    } finally { await fs.unlink(temporary).catch(() => {}); }
+  }
   async putBuffer(key: string, data: string) {
     const destination = safeLocalPath(this.root, key);
     await fs.mkdir(dirname(destination), { recursive: true });
@@ -97,7 +132,16 @@ export class LocalStorageProvider implements StorageProvider {
     const details = await fs.stat(location);
     if (details.size > maxBytes)
       throw new Error("Derived metadata exceeds the allowed read size.");
-    return fs.readFile(location);
+    // stat is only a fast rejection, not a read bound: a concurrent writer
+    // can grow/replace metadata before it is opened. Read at most limit + 1
+    // bytes so overflow is detected rather than returned or silently truncated.
+    const chunks: Buffer[] = []; let bytes = 0;
+    for await (const chunk of createReadStream(location, { start: 0, end: maxBytes })) {
+      bytes += chunk.length;
+      if (bytes > maxBytes) throw new Error("Derived metadata exceeds the allowed read size.");
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, bytes);
   }
   async exists(key: string) {
     try {

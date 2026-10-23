@@ -1,0 +1,141 @@
+TAP version 13
+# (node:4960) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:4960) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:4960) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: native separation real SIGKILL/restart matrix
+    # Subtest: claimed
+    ok 1 - claimed
+      ---
+      duration_ms: 3418.280065
+      type: 'test'
+      ...
+    # Subtest: inference-starting
+    ok 2 - inference-starting
+      ---
+      duration_ms: 3621.217255
+      type: 'test'
+      ...
+    # Subtest: inference-running
+    ok 3 - inference-running
+      ---
+      duration_ms: 3682.281129
+      type: 'test'
+      ...
+    # Subtest: outputs-written
+    ok 4 - outputs-written
+      ---
+      duration_ms: 3713.199826
+      type: 'test'
+      ...
+    # Subtest: staging
+    ok 5 - staging
+      ---
+      duration_ms: 3610.675406
+      type: 'test'
+      ...
+    # Subtest: object-partial
+    ok 6 - object-partial
+      ---
+      duration_ms: 3637.086418
+      type: 'test'
+      ...
+    # Subtest: object-written:1
+    ok 7 - object-written:1
+      ---
+      duration_ms: 3580.510524
+      type: 'test'
+      ...
+    # Subtest: object-written:4
+    ok 8 - object-written:4
+      ---
+      duration_ms: 3757.456348
+      type: 'test'
+      ...
+    # Subtest: validated
+    ok 9 - validated
+      ---
+      duration_ms: 3684.751756
+      type: 'test'
+      ...
+    # Subtest: publication-locked
+    ok 10 - publication-locked
+      ---
+      duration_ms: 3691.918355
+      type: 'test'
+      ...
+    # Subtest: committed
+    ok 11 - committed
+      ---
+      duration_ms: 3813.440128
+      type: 'test'
+      ...
+    # Subtest: queued restart has no phantom executor
+    ok 12 - queued restart has no phantom executor
+      ---
+      duration_ms: 2861.352312
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: cleanup-written
+    ok 13 - reconciler crash: cleanup-written
+      ---
+      duration_ms: 2703.94985
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: recovery-committed-before-ack
+    ok 14 - reconciler crash: recovery-committed-before-ack
+      ---
+      duration_ms: 2616.651927
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: native-unregistered
+    ok 15 - real Python ownership pipe: native-unregistered
+      ---
+      duration_ms: 1856.728923
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: native-registered
+    ok 16 - real Python ownership pipe: native-registered
+      ---
+      duration_ms: 1747.423675
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: inference-running
+    ok 17 - real Python ownership pipe: inference-running
+      ---
+      duration_ms: 1746.372334
+      type: 'test'
+      ...
+    # Subtest: pending cancellation plus executor crash
+    ok 18 - pending cancellation plus executor crash
+      ---
+      duration_ms: 1697.712544
+      type: 'test'
+      ...
+    # Subtest: PID incarnation mismatch is dead, unknown scope is not reclaimed
+    ok 19 - PID incarnation mismatch is dead, unknown scope is not reclaimed
+      ---
+      duration_ms: 2.691259
+      type: 'test'
+      ...
+    1..19
+ok 1 - native separation real SIGKILL/restart matrix
+  ---
+  duration_ms: 57026.754518
+  type: 'test'
+  ...
+1..1
+# tests 20
+# suites 0
+# pass 20
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 57839.636995

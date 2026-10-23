@@ -1,9 +1,7 @@
 "use client";
 
-// Spaces — a multi-window workbench where agents run small recurring tasks.
-// Each panel is a "window" into one agent space; ⤢ pops it out into a real
-// browser window that keeps its agent ticking while open. All tasks produce
-// drafts for human review — nothing auto-posts anywhere.
+// Spaces — governed workspace missions and recurring draft schedules.
+// Workbench and pop-out reuse one Workshop; no second execution path.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "@/components/Markdown";
@@ -12,6 +10,7 @@ import { privacyFlags } from "@/lib/privacyClient";
 import { SPACE_TEMPLATES, SPACE_TEMPLATE_GROUPS, getSpaceTemplate } from "@/lib/spaceTemplates";
 import BrainCard from "@/components/BrainCard";
 import { readBrain } from "@/lib/connectedBrain";
+import { missionEvidence, type EvidenceAction } from "@/lib/spaces/mission-evidence";
 
 interface SpaceState {
   id: string;
@@ -31,7 +30,7 @@ interface SpaceState {
   createdAt: string;
 }
 
-interface ModelInfo {
+export interface ModelInfo {
   id: string;
   name: string;
   emoji: string;
@@ -246,17 +245,17 @@ export default function SpacesWorkbench() {
           <h1 className="mt-3 text-3xl font-black tracking-tight text-white sm:text-4xl">
             A workbench of{" "}
             <span className="bg-gradient-to-r from-cyan-300 to-violet-300 bg-clip-text text-transparent">
-              small repetitive tasks
+              persistent AI workspaces
             </span>
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-slate-300">
-            Each space is one recurring agent task on its own clock — with a persistent <em>briefcase</em> of notes it
-            carries between runs. Pop spaces out into real browser windows; each open window keeps its agent ticking.
+            Give a mission an objective, configure its agents, and review actual tool results and deliverables.
+            Recurring draft schedules and carry-forward notes remain available in the same space.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs font-bold">
           <span className="rounded-full bg-emerald-400/10 px-3 py-1.5 text-emerald-300 ring-1 ring-emerald-400/30">
-            ● {runningCount} running
+            {runningCount} schedules enabled
           </span>
           <span className="rounded-full bg-white/5 px-3 py-1.5 text-slate-400 ring-1 ring-white/10">
             {spaces.length} space{spaces.length === 1 ? "" : "s"}
@@ -506,9 +505,7 @@ function SpaceWindow({
           )}
         </div>
 
-        <AgentFleet spaceId={space.id} models={models} />
-        <MissionPanel spaceId={space.id} />
-        <ApprovalsPanel spaceId={space.id} onDecided={onRefresh} />
+        <SpaceWorkshop spaceId={space.id} models={models} onRefresh={onRefresh} />
 
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           <button
@@ -695,6 +692,7 @@ function AgentFleet({ spaceId, models }: { spaceId: string; models: ModelInfo[] 
             className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-slate-600"
           />
           <select
+            aria-label="Fleet agent model"
             value={modelId}
             onChange={(e) => setModelId(e.target.value)}
             className="rounded-lg border border-white/10 bg-[#0c1428] px-2.5 py-1.5 text-xs text-white outline-none"
@@ -779,13 +777,37 @@ function AgentFleet({ spaceId, models }: { spaceId: string; models: ModelInfo[] 
 
 // ---------------- mission panel ----------------
 
+/** Same governed workshop in the workbench and its pop-out, not a parallel UI
+ * or executor. Decisions remain in the existing approval component/API. */
+export function SpaceWorkshop({ spaceId, models, onRefresh }: { spaceId: string; models: ModelInfo[]; onRefresh: () => void }) {
+  return <section aria-label="Space mission workshop">
+    <p className="mt-2 text-xs text-slate-400">Objective → agents and tools → execution evidence → deliverables → review and continuation.</p>
+    <AgentFleet spaceId={spaceId} models={models} />
+    <MissionPanel spaceId={spaceId} />
+    <ApprovalsPanel spaceId={spaceId} onDecided={onRefresh} />
+  </section>;
+}
+
 interface MissionStepLite {
+  modelState?: string;
+  requestedActions?: { id: string; tool: string; args: Record<string, unknown>; state: string; resolutions?: { resolution: string; evidence: string; at: string }[] }[];
   agent: string;
   turn: number;
   thought: string;
   done: boolean;
-  actions: { tool: string; ok: boolean; output: string; input: Record<string, unknown> }[];
-  runtime?: { backend?: string; modelId?: string; fallback?: boolean };
+  actions: (EvidenceAction & { output: string; input: Record<string, unknown> })[];
+  runtime?: {
+    agentModelId?: string;
+    requestedModelId?: string;
+    runtimeLevel?: string;
+    provider?: string;
+    backend?: string;
+    modelId?: string;
+    via?: string;
+    fallback?: boolean;
+    fallbackFrom?: { runtimeLevel: string; backend: string; modelId: string };
+    fallbackReason?: string;
+  };
   ms: number;
 }
 
@@ -795,13 +817,34 @@ interface MissionLite {
   status: string;
   statusDetail: string;
   timeBudgetMs: number;
+  persistence?: string;
+  updatedAt?: string;
   agentPlan: { name: string; role: string }[];
   journal: MissionStepLite[];
-  artifacts: { path: string; bytes: number }[];
+  artifacts: import("@/lib/spaces/mission-outputs").MissionOutput[];
   handoff: string;
 }
 
-function MissionPanel({ spaceId }: { spaceId: string }) {
+function MissionOutputItem({ output, spaceId, missionId, onPrepareReuse }: { output: import("@/lib/spaces/mission-outputs").MissionOutput; spaceId: string; missionId: string; onPrepareReuse: (draft: string) => void }) {
+  const [text, setText] = useState<string | null>(null), [error, setError] = useState<string | null>(null);
+  const url = `/api/spaces/${spaceId}/mission/outputs/${output.id}?missionId=${missionId}`;
+  async function inspect() {
+    try { setError(null); const response = await fetch(url + "&view=1"); if (!response.ok) { const data = await response.json(); throw new Error(data.error); } setText(await response.text()); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : "Output unavailable."); }
+  }
+  function prepareReuse() {
+    const args = { sourceSpaceId: spaceId, missionId, outputId: output.id, path: `reused/${output.path.split(/[\\/]/).pop()}` };
+    onPrepareReuse(`Reuse the original immutable output with reuse_mission_output ${JSON.stringify(args)}. Its pinned Artifact is ${output.artifactId}@${output.revisionId}; verify SHA-256 ${output.checksumSha256} before using the copied bytes. Do not substitute the current workspace file.`);
+  }
+  return <li className="mt-2"><span>{output.path} · {output.bytes} bytes · {output.tool ?? "legacy workspace reference"} · {output.state ?? "unverified legacy reference"}</span>
+    {output.state === "complete" && output.id ? <div><a href={url}>Download {output.path}</a>{" "}{output.artifactId && output.revisionId && <button type="button" title="Prepare pinned output reuse in the next goal; does not execute tools" onClick={prepareReuse}>Prepare reuse {output.path}</button>}{" "}{output.mediaType?.startsWith("text/") && <button type="button" onClick={() => void inspect()}>View {output.path}</button>}<small className="block break-all">SHA-256 {output.checksumSha256} · Artifact revision {output.revisionId}</small></div> : <p role="status">{output.error ?? "Only a legacy workspace path was retained; no immutable download was recorded."}</p>}
+    {error && <p role="alert">{error}</p>}{text !== null && <pre className="max-h-64 overflow-auto whitespace-pre-wrap">{text}</pre>}
+  </li>;
+}
+
+export function MissionPanel({ spaceId }: { spaceId: string }) {
+  const [selectedMission, setSelectedMission] = useState("");
+  const [missionHistory, setMissionHistory] = useState<{ id: string; goal: string; status: string }[]>([]);
   const [goal, setGoal] = useState("");
   const [budget, setBudget] = useState(5);
   const [turns, setTurns] = useState(3);
@@ -814,17 +857,47 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
   const [running, setRunning] = useState(false);
   const [mission, setMission] = useState<MissionLite | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    fetch(`/api/spaces/${spaceId}/mission`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((b) => { if (alive && b.mission) setMission(b.mission); })
-      .catch(() => {});
-    return () => { alive = false; };
-  }, [spaceId]);
+    let alive = true, loading = false;
+    async function refresh() {
+      if (loading) return;
+      loading = true;
+      try {
+        const response = await fetch(`/api/spaces/${spaceId}/mission${selectedMission ? `?missionId=${selectedMission}` : ""}`, { cache: "no-store" });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error ?? "Mission could not be retrieved");
+        if (alive) setLoadError(null);
+        if (alive && body.mission) setMission((previous) => previous?.id === body.mission.id && previous?.updatedAt && body.mission.updatedAt < previous.updatedAt ? previous : body.mission);
+      } catch (error) { if (alive) setLoadError(error instanceof Error ? error.message : "Mission could not be retrieved"); }
+      finally { loading = false; }
+    }
+    void refresh();
+    void fetch(`/api/spaces/${spaceId}/mission?history=1`).then(async (response) => { if (!response.ok) throw new Error("Mission history unavailable"); const body = await response.json(); if (alive) setMissionHistory(body.missions ?? []); }).catch((error) => { if (alive) setLoadError(error.message); });
+    const timer = setInterval(() => void refresh(), 2000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [spaceId, selectedMission]);
+
+  async function resolveRequest(requestId: string, resolution: string, evidence: string) {
+    const response = await fetch(`/api/spaces/${spaceId}/mission`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operation: "reconcile", missionId: mission?.id, requestId, resolution, evidence }) });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? "Reconciliation failed");
+    setMission(body.mission); setError(null);
+  }
+
+  async function cancel() {
+    setError(null);
+    try {
+      const response = await fetch(`/api/spaces/${spaceId}/mission`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ missionId: mission?.id }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Cancellation failed");
+      setMission(body.mission);
+    } catch (error) { setError(error instanceof Error ? error.message : "Cancellation failed"); }
+  }
 
   async function start(continueMission: boolean) {
+    setSelectedMission("");
     setRunning(true);
     setError(null);
     try {
@@ -843,7 +916,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
             .map((c) => c.trim())
             .filter(Boolean)
             .slice(0, 12),
-          ...(continueMission ? {} : { goal, timeBudgetMinutes: budget }),
+          ...(continueMission ? { missionId: mission?.id } : { goal, timeBudgetMinutes: budget }),
         }),
       });
       const body = await res.json();
@@ -859,10 +932,12 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
     }
   }
 
-  const checkpointed = mission?.status === "checkpointed" || mission?.status === "awaiting_approval";
+  const checkpointed = mission && ["running", "checkpointed", "awaiting_approval", "needs_reconciliation"].includes(mission.status);
+  const evidence = mission ? missionEvidence(mission) : null;
 
   return (
     <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
+      <label>Mission history<select aria-label="Mission history" value={selectedMission} onChange={(event) => { setSelectedMission(event.target.value); setMission(null); }}><option value="">Latest mission</option>{missionHistory.map((item) => <option key={item.id} value={item.id}>{item.goal} · {item.status}</option>)}</select></label>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-200/70">Build mission</span>
         {mission && (
@@ -881,6 +956,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
             {mission.status}
           </span>
         )}
+        {checkpointed && <button onClick={() => void cancel()} className="rounded-lg bg-red-500/10 px-2 py-1 text-[11px] text-red-200">Cancel mission</button>}
         <button
           onClick={() => setShowGit((v) => !v)}
           className="rounded-lg bg-white/5 px-2 py-1 text-[11px] font-bold text-slate-400 ring-1 ring-white/10 hover:bg-white/10"
@@ -952,6 +1028,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
 
       <div className="mt-2 grid gap-1.5 sm:grid-cols-[1fr_90px_auto]">
         <input
+          aria-label="Mission goal"
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
           placeholder={checkpointed ? `resume: ${mission?.goal.slice(0, 60)}…` : "Mission goal — e.g. 'build tetris in index.html, publish to my repo'"}
@@ -995,7 +1072,18 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
         )}
       </div>
 
-      {error && <p className="mt-2 text-xs text-amber-300">{error}</p>}
+      {(error || loadError) && <p role="alert" className="mt-2 text-xs text-amber-300">{error || loadError}</p>}
+      {mission?.statusDetail && <p className="mt-2 text-xs text-amber-200">{mission.statusDetail}</p>}
+      {mission?.persistence && <p className="mt-1 text-[10px] text-slate-500">Storage: {mission.persistence}{mission.persistence === "memory-only" ? " — does not survive restart" : " — durable requests and results"}</p>}
+      {mission && evidence && <section aria-label="Mission evidence summary" className="mt-2 rounded-lg bg-white/[0.03] p-2 text-xs text-slate-300">
+        <p><b>Objective:</b> {mission.goal}</p>
+        <p>Test-tool commands: {evidence.testCommandSuccesses} succeeded · {evidence.testCommandFailures} failed (history retained). Inspect their actual assertions and output; zero exit alone is not proof of passing tests.</p>
+        <p>Successful command outcomes: {evidence.commandSuccesses} — commands are not test passes.</p>
+        <p>Immutable outputs recorded: {evidence.immutableOutputs} · unavailable: {evidence.unavailableOutputs}.</p>
+        {evidence.humanReviewed > 0 && <p>Owner-reviewed outcomes: {evidence.humanReviewed} — not independently machine-verified.</p>}
+        {evidence.uncertain > 0 && <p role="status">Uncertain outcomes: {evidence.uncertain}. Inspect evidence before retrying an effect.</p>}
+        <p className="mt-1 text-slate-500">{mission.status === "running" ? "Saved as running; this is not a live-process health check." : "Execution status is not proof of product correctness. Review the command results and deliverables."}</p>
+      </section>}
 
       {mission && (
         <div className="scroll-thin mt-2.5 max-h-72 space-y-2 overflow-y-auto">
@@ -1008,22 +1096,35 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
               <p className="flex flex-wrap items-center gap-2 text-[11px]">
                 <b className="text-white">{s.agent}</b>
                 <span className="text-slate-600">turn {s.turn}</span>
-                <span className="text-emerald-300/80">{s.runtime?.backend ?? "?"}</span>
+                <span className={s.runtime?.fallback ? "text-amber-300" : "text-emerald-300/80"}>
+                  {s.runtime?.runtimeLevel ?? "runtime not reported"} · {s.runtime?.provider ?? s.runtime?.backend ?? "provider not reported"} · actual {s.runtime?.modelId ?? "model not reported"}
+                  {s.runtime?.fallback ? " · FALLBACK" : ""}
+                </span>
+                {s.runtime?.agentModelId && <span className="text-slate-400">plan requested {s.runtime.agentModelId}</span>}
+                {s.runtime?.requestedModelId && s.runtime.requestedModelId !== s.runtime.agentModelId && (
+                  <span className="text-slate-400">router requested {s.runtime.requestedModelId}</span>
+                )}
                 <span className="text-slate-600">{s.ms}ms</span>
                 {s.done && <span className="text-emerald-300">done</span>}
               </p>
-              <p className="mt-1 text-[11px] italic text-slate-400">{s.thought}</p>
-              {s.actions.map((a, j) => (
-                <p key={j} className={`mt-1 break-all font-mono text-[10px] ${a.ok ? "text-slate-400" : "text-red-300/80"}`}>
-                  {a.ok ? "✓" : "✗"} {a.tool} {JSON.stringify(a.input).slice(0, 90)} → {a.output.slice(0, 140)}
+              {s.runtime?.fallback && (
+                <p role="status" className="mt-1 break-words text-[10px] text-amber-300">
+                  Fallback execution—not successful use of the selected model. Requested {s.runtime.fallbackFrom?.modelId ?? s.runtime.requestedModelId ?? s.runtime.agentModelId ?? "model unreported"}; ran {s.runtime.modelId ?? "model unreported"} via {s.runtime.fallbackFrom?.backend ?? s.runtime.backend ?? "backend unreported"}. {s.runtime.fallbackReason ?? "Provider or selected model was unavailable."}
                 </p>
+              )}
+              <p className="mt-1 text-[11px] italic text-slate-400">{s.thought}</p>
+              {s.modelState && <p className="text-[10px] text-slate-500">Model turn: {s.modelState}</p>}
+              {s.requestedActions?.map((request) => <MissionRequestDetails key={request.id} request={request} canResolve={mission.status === "needs_reconciliation"} onResolve={resolveRequest} />)}
+              {s.actions.map((a, j) => (
+                <details key={j} className={`mt-1 break-all font-mono text-[10px] ${a.ok ? "text-slate-400" : "text-red-300/80"}`}>
+                  <summary>{a.ok ? "✓" : "✗"} {a.tool} → {a.output.slice(0, 140)}</summary>
+                  <pre className="whitespace-pre-wrap">{JSON.stringify(a.input, null, 2)}{"\n"}{a.output}</pre>
+                </details>
               ))}
             </div>
           ))}
           {mission.artifacts.length > 0 && (
-            <p className="text-[11px] text-slate-500">
-              workspace: {mission.artifacts.map((a) => a.path).join(", ")}
-            </p>
+            <section aria-label="Mission outputs"><b>Mission outputs</b><ul>{mission.artifacts.map((output, index) => <MissionOutputItem key={output.id ?? `${output.path}:${index}`} output={output} spaceId={spaceId} missionId={mission.id} onPrepareReuse={(draft) => setGoal((current) => current.includes(draft) ? current : [current, draft].filter(Boolean).join(" "))} />)}</ul></section>
           )}
           {mission.handoff && (
             <p className="rounded-lg bg-white/[0.03] p-2 text-[11px] text-slate-400 ring-1 ring-white/5">
@@ -1034,6 +1135,36 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
       )}
     </div>
   );
+}
+
+function MissionRequestDetails({ request, canResolve, onResolve }: {
+  request: NonNullable<MissionStepLite["requestedActions"]>[number];
+  canResolve: boolean;
+  onResolve: (id: string, resolution: string, evidence: string) => Promise<void>;
+}) {
+  const [resolution, setResolution] = useState("succeeded");
+  const [evidence, setEvidence] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  return <details open={request.state === "uncertain"} className="mt-1 rounded border border-white/10 p-2 text-[11px] text-slate-300">
+    <summary>{request.tool} · {request.state} · {request.id}</summary>
+    <pre className="whitespace-pre-wrap break-all">{JSON.stringify(request.args, null, 2)}</pre>
+    {request.resolutions?.map((entry, index) => <p key={index}>{entry.at}: owner chose {entry.resolution} — {entry.evidence}</p>)}
+    {request.state === "uncertain" && canResolve && <form onSubmit={async (event) => {
+      event.preventDefault(); setSaving(true); setError("");
+      try { await onResolve(request.id, resolution, evidence); }
+      catch (error) { setError(error instanceof Error ? error.message : "Could not save review"); }
+      finally { setSaving(false); }
+    }}>
+      <p className="my-1 text-amber-200">Inspect the actual files/service first. Success/failure here is your report, not machine verification. Retry can duplicate an effect and requires your explicit authorisation. Saving never resumes automatically.</p>
+      <select aria-label="Inspected outcome" value={resolution} onChange={(event) => setResolution(event.target.value)} className="bg-slate-900 p-1">
+        <option value="succeeded">I verified it succeeded</option><option value="failed">I verified it failed</option><option value="retry">I authorise retry despite duplicate risk</option>
+      </select>
+      <textarea aria-label="Inspection evidence" value={evidence} onChange={(event) => setEvidence(event.target.value)} required minLength={12} maxLength={4000} placeholder="What did you inspect? What happened?" className="mt-1 block w-full bg-slate-900 p-2" />
+      <button disabled={saving} className="mt-1 rounded bg-amber-500/20 p-2">{saving ? "Saving review…" : "Save inspected outcome"}</button>
+      {error && <p role="alert" className="text-red-300">{error}</p>}
+    </form>}
+  </details>;
 }
 
 // ---------------- approvals panel (check-in environment) ----------------

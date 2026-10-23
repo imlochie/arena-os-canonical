@@ -1,0 +1,279 @@
+TAP version 13
+# (node:3279) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/acceptance/separation-crash.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:3279) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:3279) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: native separation real SIGKILL/restart matrix
+    # Subtest: claimed
+    ok 1 - claimed
+      ---
+      duration_ms: 6269.217477
+      type: 'test'
+      ...
+    # Subtest: inference-starting
+    ok 2 - inference-starting
+      ---
+      duration_ms: 6293.180715
+      type: 'test'
+      ...
+    # Subtest: inference-running
+    ok 3 - inference-running
+      ---
+      duration_ms: 7374.261443
+      type: 'test'
+      ...
+    # Subtest: outputs-written
+    ok 4 - outputs-written
+      ---
+      duration_ms: 7565.461391
+      type: 'test'
+      ...
+    # Subtest: staging
+    ok 5 - staging
+      ---
+      duration_ms: 7182.707017
+      type: 'test'
+      ...
+    # Subtest: object-partial
+    ok 6 - object-partial
+      ---
+      duration_ms: 6943.642234
+      type: 'test'
+      ...
+    # Subtest: object-written:1
+    ok 7 - object-written:1
+      ---
+      duration_ms: 6382.259674
+      type: 'test'
+      ...
+    # Subtest: object-written:4
+    ok 8 - object-written:4
+      ---
+      duration_ms: 5776.751462
+      type: 'test'
+      ...
+    # Subtest: validated
+    ok 9 - validated
+      ---
+      duration_ms: 6297.955689
+      type: 'test'
+      ...
+    # Subtest: publication-locked
+    ok 10 - publication-locked
+      ---
+      duration_ms: 6371.121344
+      type: 'test'
+      ...
+    # Subtest: committed
+    ok 11 - committed
+      ---
+      duration_ms: 6605.057543
+      type: 'test'
+      ...
+    # Subtest: queued restart has no phantom executor
+    ok 12 - queued restart has no phantom executor
+      ---
+      duration_ms: 4159.084236
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: recovery-intent
+    ok 13 - reconciler crash: recovery-intent
+      ---
+      duration_ms: 3382.300635
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: cleanup-written
+    ok 14 - reconciler crash: cleanup-written
+      ---
+      duration_ms: 3639.166765
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: recovery-committed-before-ack
+    ok 15 - reconciler crash: recovery-committed-before-ack
+      ---
+      duration_ms: 3464.179365
+      type: 'test'
+      ...
+    # Subtest: reconciler crash: recovery-after-commit
+    ok 16 - reconciler crash: recovery-after-commit
+      ---
+      duration_ms: 3740.024179
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: native-unregistered
+    ok 17 - real Python ownership pipe: native-unregistered
+      ---
+      duration_ms: 2116.703573
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: native-registered
+    ok 18 - real Python ownership pipe: native-registered
+      ---
+      duration_ms: 1932.700977
+      type: 'test'
+      ...
+    # Subtest: real Python ownership pipe: inference-running
+    ok 19 - real Python ownership pipe: inference-running
+      ---
+      duration_ms: 1850.401616
+      type: 'test'
+      ...
+    # Subtest: pending cancellation plus executor crash
+    ok 20 - pending cancellation plus executor crash
+      ---
+      duration_ms: 1861.415765
+      type: 'test'
+      ...
+    # Subtest: corrupt staged file is retired, not published
+    ok 21 - corrupt staged file is retired, not published
+      ---
+      duration_ms: 1936.745263
+      type: 'test'
+      ...
+    # Subtest: storage read failure retains journal for retry
+    ok 22 - storage read failure retains journal for retry
+      ---
+      duration_ms: 2803.840599
+      type: 'test'
+      ...
+    # Subtest: storage cleanup failure retains journal for retry
+    ok 23 - storage cleanup failure retains journal for retry
+      ---
+      duration_ms: 2738.237062
+      type: 'test'
+      ...
+    # Subtest: database dies during recovery; restart converges
+    ok 24 - database dies during recovery; restart converges
+      ---
+      duration_ms: 3083.529122
+      type: 'test'
+      ...
+    # Subtest: retry races recovery, then creates one fresh attempt retaining history
+    ok 25 - retry races recovery, then creates one fresh attempt retaining history
+      ---
+      duration_ms: 3747.014099
+      type: 'test'
+      ...
+    # Subtest: outdated completion state is reconciled without replacing committed assets
+    ok 26 - outdated completion state is reconciled without replacing committed assets
+      ---
+      duration_ms: 1920.747119
+      type: 'test'
+      ...
+    # Subtest: lost recovery COMMIT acknowledgement preserves the published bank
+    ok 27 - lost recovery COMMIT acknowledgement preserves the published bank
+      ---
+      duration_ms: 2794.960705
+      type: 'test'
+      ...
+    # Subtest: cancel and SIGKILL at claimed
+    ok 28 - cancel and SIGKILL at claimed
+      ---
+      duration_ms: 1797.358626
+      type: 'test'
+      ...
+    # Subtest: cancel and SIGKILL at inference-starting
+    ok 29 - cancel and SIGKILL at inference-starting
+      ---
+      duration_ms: 1787.146987
+      type: 'test'
+      ...
+    # Subtest: cancel and SIGKILL at inference-running
+    ok 30 - cancel and SIGKILL at inference-running
+      ---
+      duration_ms: 1816.572784
+      type: 'test'
+      ...
+    # Subtest: cancel and SIGKILL at object-partial
+    ok 31 - cancel and SIGKILL at object-partial
+      ---
+      duration_ms: 1831.559608
+      type: 'test'
+      ...
+    # Subtest: cancel and SIGKILL at validated
+    ok 32 - cancel and SIGKILL at validated
+      ---
+      duration_ms: 1932.29082
+      type: 'test'
+      ...
+    # Subtest: cancel and SIGKILL at committed
+    ok 33 - cancel and SIGKILL at committed
+      ---
+      duration_ms: 1918.568493
+      type: 'test'
+      ...
+    # Subtest: queued cancellation cannot later claim or publish
+    ok 34 - queued cancellation cannot later claim or publish
+      ---
+      duration_ms: 914.653407
+      type: 'test'
+      ...
+    # Subtest: cancellation waiting at uncommitted publication wins after executor crash
+    ok 35 - cancellation waiting at uncommitted publication wins after executor crash
+      ---
+      duration_ms: 1923.1909
+      type: 'test'
+      ...
+    # Subtest: committed-bank temporary cleanup failure is retried on fresh startup
+    ok 36 - committed-bank temporary cleanup failure is retried on fresh startup
+      ---
+      duration_ms: 2824.976971
+      type: 'test'
+      ...
+    # Subtest: actual FFmpeg lifetime: decoder-unregistered
+    ok 37 - actual FFmpeg lifetime: decoder-unregistered
+      ---
+      duration_ms: 1880.066358
+      type: 'test'
+      ...
+    # Subtest: actual FFmpeg lifetime: decoder-registered
+    ok 38 - actual FFmpeg lifetime: decoder-registered
+      ---
+      duration_ms: 1903.741307
+      type: 'test'
+      ...
+    # Subtest: actual FFmpeg lifetime: decoder-running
+    ok 39 - actual FFmpeg lifetime: decoder-running
+      ---
+      duration_ms: 1864.300014
+      type: 'test'
+      ...
+    # Subtest: actual FFmpeg lifetime: decoder-complete
+    ok 40 - actual FFmpeg lifetime: decoder-complete
+      ---
+      duration_ms: 11366.418461
+      type: 'test'
+      ...
+    # Subtest: successful but corrupt object write is refused before normal publication
+    ok 41 - successful but corrupt object write is refused before normal publication
+      ---
+      duration_ms: 973.05749
+      type: 'test'
+      ...
+    # Subtest: PID incarnation mismatch is dead, unknown scope is not reclaimed
+    ok 42 - PID incarnation mismatch is dead, unknown scope is not reclaimed
+      ---
+      duration_ms: 2.858897
+      type: 'test'
+      ...
+    1..42
+ok 1 - native separation real SIGKILL/restart matrix
+  ---
+  duration_ms: 154975.518458
+  type: 'test'
+  ...
+1..1
+# tests 43
+# suites 0
+# pass 43
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 155977.378384

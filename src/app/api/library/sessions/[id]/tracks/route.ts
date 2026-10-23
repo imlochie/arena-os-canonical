@@ -3,6 +3,7 @@ import { z } from "zod";
 import { isUuid } from "@/lib/api/ids";
 import { requireUser } from "@/lib/waveyard/local-context";
 import {
+  StemSwapRefusedError,
   SessionNotFoundError,
   SessionTrackNotFoundError,
   TrackNotInLibraryError,
@@ -13,7 +14,7 @@ import {
 
 export const runtime = "nodejs";
 
-const addSchema = z.object({ trackId: z.string().uuid(), position: z.number().int().min(0).optional() });
+const addSchema = z.object({ bankId: z.string().uuid().optional(), trackId: z.string().uuid(), operationId: z.string().uuid().optional(), position: z.number().int().min(0).optional() });
 
 /** POST /api/library/sessions/[id]/tracks — add a library track (ordered,
  * duplicates allowed — a live set can play a song twice). */
@@ -27,6 +28,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const session = await addTrackToSession({ ownerId: user.id, sessionId: id, ...parsed.data });
     return NextResponse.json({ session }, { status: 201 });
   } catch (error) {
+    if (error instanceof StemSwapRefusedError) return NextResponse.json({ error: error.message }, { status: 409 });
     if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
     if (error instanceof TrackNotInLibraryError) return NextResponse.json({ error: "Track not found." }, { status: 404 });
     if (error instanceof Response) return error;

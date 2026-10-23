@@ -15,7 +15,7 @@
  *   - consumers verify the stamp against the current checkout and fail
  *     LOUDLY on any mismatch — a stale package can never be silently tested.
  *
- * Identity is commit SHA plus a digest of `git status --porcelain`, so a
+ * Identity is commit SHA plus a digest of source bytes plus `git status --porcelain`, so a
  * staged tree is rejected even when the commit matches but tracked files
  * changed since staging. Never timestamps — they prove nothing about which
  * source produced the tree.
@@ -23,7 +23,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export const IDENTITY_FILE = "build-identity.json";
@@ -35,12 +35,27 @@ function git(root, args) {
 }
 
 /** The source state a staged package must match: HEAD commit + a digest of
- * the tracked working-tree state (porcelain output is stable because all
+ * tracked/unignored file contents (build outputs are ignored because all
  * build outputs — .next, desktop-package, node_modules — are gitignored). */
 export function computeSourceIdentity(root) {
   const commit = git(root, ["rev-parse", "HEAD"]);
   const porcelain = git(root, ["status", "--porcelain"]);
-  const sourceDigest = createHash("sha256").update(`${commit}\n${porcelain}`).digest("hex");
+  // Status alone is not source identity: two edits of an already-dirty file
+  // have identical porcelain output. Include every tracked/unignored source
+  // file's bytes (and deletions/symlink targets), not mtime or status labels.
+  const files = [...new Set(execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean))].sort();
+  const hash = createHash("sha256").update(`${commit}\n${porcelain}\n`);
+  for (const filename of files) {
+    hash.update(`${Buffer.byteLength(filename)}:${filename}\0`);
+    const full = path.join(root, filename);
+    let stat;
+    try { stat = lstatSync(full); }
+    catch (error) { if (error.code !== "ENOENT") throw error; hash.update("deleted\0"); continue; }
+    if (stat.isSymbolicLink()) hash.update(`link:${readlinkSync(full)}\0`);
+    else if (stat.isFile()) hash.update(`file:${stat.mode & 0o111}:`).update(createHash("sha256").update(readFileSync(full)).digest()).update("\0");
+    else hash.update("non-file\0");
+  }
+  const sourceDigest = hash.digest("hex");
   return { commit, sourceDigest };
 }
 

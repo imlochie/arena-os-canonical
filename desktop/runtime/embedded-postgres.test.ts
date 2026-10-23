@@ -32,7 +32,7 @@ import {
   readDataDirVersion,
 } from "./embedded-postgres";
 import { removeDirWithRetry } from "./fs-cleanup";
-import type { ArenaRuntimeConfig } from "./config";
+import { postgresPathDirs, type ArenaRuntimeConfig } from "./config";
 
 // ---------- pure helpers -------------------------------------------------
 
@@ -132,6 +132,7 @@ function configFor(root: string): ArenaRuntimeConfig {
       pgCtl: "/fake/native/bin/pg_ctl",
       postgres: "/fake/native/bin/postgres",
       libDir: "/fake/native/lib",
+      // Scripted spawn only: no real binary, so no PATH is needed.
       windowsPathDirs: [],
     },
     migrationsDir: join(root, "migrations"),
@@ -308,7 +309,7 @@ function realConfig(root: string): ArenaRuntimeConfig | null {
       pgCtl: join(nativeDir, "bin", `pg_ctl${ext}`),
       postgres: join(nativeDir, "bin", `postgres${ext}`),
       libDir: join(nativeDir, "lib"),
-      windowsPathDirs: [],
+      windowsPathDirs: postgresPathDirs(process.platform, nativeDir),
     },
     migrationsDir: join(root, "migrations"),
     ffmpegPath: null,

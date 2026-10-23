@@ -1,3 +1,4 @@
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { battles, battleMessages } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
@@ -20,6 +21,7 @@ REASONING: <2-4 sentences explaining the verdict>`;
 
 // POST → ask an impartial LLM judge for an advisory verdict (does not vote for you)
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const { id } = await params;
     const body = await req.json().catch(() => ({}));

@@ -1,0 +1,122 @@
+name: Converted music to Waveyard and Studio
+on:
+  push:
+    branches: ["product/converter-waveyard-flow", "arena/331aa502-arena-os-canonical"]
+  workflow_dispatch:
+    inputs:
+      owner_snapshot:
+        description: Exact owner-branch commit to compose for validation.
+        required: true
+        type: string
+        default: 04705abdb6155ad61ae11e96f231cac6302f7529
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  connected-product-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      OWNER_SNAPSHOT: ${{ github.ref_name == 'arena/331aa502-arena-os-canonical' && github.sha || github.event.inputs.owner_snapshot || '04705abdb6155ad61ae11e96f231cac6302f7529' }}
+      ARENA_CONVERTER_FLOW_EVIDENCE_DIR: ${{ github.workspace }}/.data/converter-waveyard
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify current-owner compatibility without changing either shared branch
+        run: |
+          mkdir -p .data/converter-waveyard/receipts
+          git config user.name "Isolated product verification"
+          git config user.email "ci@users.noreply.github.com"
+          git merge --no-commit --no-ff "$OWNER_SNAPSHOT"
+          echo "TESTED_COMBINED_TREE=$(git write-tree)" >> "$GITHUB_ENV"
+          {
+            echo "Test branch: $(git rev-parse HEAD)"
+            echo "PR17 dependency: 566a33ba6989f39064965264d458b92d942b60a6"
+            echo "Owner snapshot: $OWNER_SNAPSHOT"
+            echo "Temporary combined tree: $(git write-tree)"
+            echo "No merge commit or shared branch update is performed."
+            node --version
+          } | tee .data/converter-waveyard/receipts/source-manifest.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - name: Install locked dependencies and retain preparation diagnostics
+        id: install
+        run: npm ci 2>&1 | tee .data/converter-waveyard/receipts/npm-ci.log
+      - name: Publish safe dependency failure metadata when tests cannot start
+        if: failure() && steps.install.outcome == 'failure'
+        run: node scripts/ci-test-summary.mjs .data/converter-waveyard/receipts/npm-ci.log --install
+      - name: Install native media tools and browser
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          npx playwright install --with-deps chromium
+      - name: Acquire hash-pinned publisher-licensed genuine music
+        run: |
+          curl --fail --silent --show-error --location https://api.github.com/repos/deezer/spleeter/git/blobs/cc91788843d20ae7af169d6e0f72c2c5658fdb39 > "$RUNNER_TEMP/music-blob.json"
+          python3 - "$RUNNER_TEMP/music-blob.json" "$RUNNER_TEMP/Slow Motion Dream.mp3" <<'PY'
+          import sys,json,base64,hashlib
+          blob=json.load(open(sys.argv[1]))
+          assert blob["encoding"]=="base64"
+          music=base64.b64decode(blob["content"])
+          assert hashlib.sha256(music).hexdigest()=="4b431d535d235bd81b62f816f08c3f1afb6679d2706d84b3b75903b7df909507"
+          open(sys.argv[2],"wb").write(music)
+          PY
+      - name: Typecheck and validate acceptance source
+        run: |
+          npm run typecheck
+          node --check tests/acceptance/converter-waveyard.test.mjs
+          npx eslint tests/acceptance/converter-waveyard.fixture.tsx
+      - name: Real converted files through download, playback, Studio and decoded export
+        env:
+          ARENA_FFMPEG_PATH: /usr/bin/ffmpeg
+          ARENA_FFPROBE_PATH: /usr/bin/ffprobe
+        run: |
+          export LD_LIBRARY_PATH="$PWD/node_modules/@embedded-postgres/linux-x64/native/lib:${LD_LIBRARY_PATH:-}"
+          export ARENA_CONVERSION_REAL_INPUT="$RUNNER_TEMP/Slow Motion Dream.mp3"
+          node --import ./scripts/register-src-loader.mjs --test tests/acceptance/converter-waveyard.test.mjs 2>&1 | tee .data/converter-waveyard/receipts/tests.tap
+      - name: Build production server and exercise real HTTP delivery and Unicode browser downloads
+        env:
+          ARENA_MEDIA_DELIVERY_EVIDENCE_DIR: .data/converter-waveyard/receipts/media-delivery
+        run: |
+          npm run build
+          export LD_LIBRARY_PATH="$PWD/node_modules/@embedded-postgres/linux-x64/native/lib:${LD_LIBRARY_PATH:-}"
+          node --import ./scripts/register-src-loader.mjs --test tests/acceptance/media-delivery.test.mjs 2>&1 | tee .data/converter-waveyard/receipts/media-delivery.tap
+      - name: Publish media delivery failures through Checks when signed logs are unavailable
+        if: always()
+        run: node scripts/ci-test-summary.mjs .data/converter-waveyard/receipts/media-delivery.tap --details
+      - name: Publish integrated connected-journey measurements
+        if: always()
+        run: node scripts/publish-converter-acceptance.mjs .data/converter-waveyard/receipts/receipt.json
+      - name: Retrieve Agent B original CI receipts for independent inspection
+        uses: actions/download-artifact@v4
+        with:
+          name: converter-waveyard-receipts-39435365934
+          run-id: 39435365934
+          github-token: ${{ github.token }}
+          path: .data/converter-waveyard/donor-receipts
+      - name: Publish original companion CI measurements separately
+        run: node scripts/publish-converter-acceptance.mjs .data/converter-waveyard/donor-receipts/receipt.json
+      - name: Upload small independently inspectable receipts, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: converter-waveyard-receipts-${{ github.run_id }}
+          path: |
+            .data/converter-waveyard/receipts/
+            .data/converter-waveyard/donor-receipts/
+          retention-days: 90
+          if-no-files-found: warn
+      - name: Upload real downloaded audio, original recording and browser trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: converter-waveyard-real-files-${{ github.run_id }}
+          path: .data/converter-waveyard/media/
+          retention-days: 90
+          if-no-files-found: warn

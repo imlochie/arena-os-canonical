@@ -1,0 +1,98 @@
+TAP version 13
+# (node:32175) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/src/lib/waveyard/separation/retry.test.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:32175) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:32175) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: a failed separation job is re-enqueued from its own row (claimed first, then handed to the queue)
+ok 1 - a failed separation job is re-enqueued from its own row (claimed first, then handed to the queue)
+  ---
+  duration_ms: 3431.271335
+  type: 'test'
+  ...
+# Subtest: non-failed and non-separation jobs are refused; a missing job is not found
+ok 2 - non-failed and non-separation jobs are refused; a missing job is not found
+  ---
+  duration_ms: 2638.330047
+  type: 'test'
+  ...
+# Subtest: a queue that cannot accept the job leaves the row honestly failed
+ok 3 - a queue that cannot accept the job leaves the row honestly failed
+  ---
+  duration_ms: 2654.123653
+  type: 'test'
+  ...
+# Subtest: a retried layer job carries its parent stem in the payload again
+ok 4 - a retried layer job carries its parent stem in the payload again
+  ---
+  duration_ms: 2601.379127
+  type: 'test'
+  ...
+# Subtest: a failed row is not resurrected while a newer attempt at its target is active — and is retryable once that attempt is over
+ok 5 - a failed row is not resurrected while a newer attempt at its target is active — and is retryable once that attempt is over
+  ---
+  duration_ms: 2574.617904
+  type: 'test'
+  ...
+# Subtest: the post-seed sweep requeues ONLY this model's retryable failures
+ok 6 - the post-seed sweep requeues ONLY this model's retryable failures
+  ---
+  duration_ms: 2702.760366
+  type: 'test'
+  ...
+# Subtest: server-mode hand-off: invoked only AFTER the row is claimed, never when a newer attempt holds the target, restored when it fails
+ok 7 - server-mode hand-off: invoked only AFTER the row is claimed, never when a newer attempt holds the target, restored when it fails
+  ---
+  duration_ms: 2550.961089
+  type: 'test'
+  ...
+# Subtest: server mode: a queue_unavailable row with NO queue record is retried by a FRESH submission — claimed first
+ok 8 - server mode: a queue_unavailable row with NO queue record is retried by a FRESH submission — claimed first
+  ---
+  duration_ms: 2575.893912
+  type: 'test'
+  ...
+# Subtest: server mode: an existing FINISHED record is retried in place — no fresh submission
+ok 9 - server mode: an existing FINISHED record is retried in place — no fresh submission
+  ---
+  duration_ms: 2599.216239
+  type: 'test'
+  ...
+# Subtest: server mode: a record BullMQ still holds (waiting / delayed / active) is left alone — the claimed row is honestly queued
+ok 10 - server mode: a record BullMQ still holds (waiting / delayed / active) is left alone — the claimed row is honestly queued
+  ---
+  duration_ms: 2465.407061
+  type: 'test'
+  ...
+# Subtest: server mode: a Redis that never answers is a bounded refusal — the claimed row is restored, never held hostage
+ok 11 - server mode: a Redis that never answers is a bounded refusal — the claimed row is restored, never held hostage
+  ---
+  duration_ms: 2714.580795
+  type: 'test'
+  ...
+# Subtest: lost retry handoff acknowledgement never rolls back an executor's newer state or audit
+ok 12 - lost retry handoff acknowledgement never rolls back an executor's newer state or audit
+  ---
+  duration_ms: 2714.463889
+  type: 'test'
+  ...
+# Subtest: an older retry refusal cannot roll back a later retry of the same queued row
+ok 13 - an older retry refusal cannot roll back a later retry of the same queued row
+  ---
+  duration_ms: 2529.131928
+  type: 'test'
+  ...
+1..13
+# tests 13
+# suites 0
+# pass 13
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 35658.903043

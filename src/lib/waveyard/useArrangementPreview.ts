@@ -1,184 +1,81 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { clipFadeShapeOrLinear, fadeCurveSamples, fadeGainAt } from "./fades";
-import { effectiveMuted, type RemixTrackInput } from "./remix";
+import type { ArrangementPreviewState } from "./arrangement-pcm";
+import { ArrangementPreparation, previewStateKey } from "./arrangement-preparation";
 
-type PreviewClip = RemixTrackInput["clips"][number];
-type PreviewTrack = RemixTrackInput;
-type PreviewState = {
-  masterVolume: number;
-  loopStartMs: number;
-  loopEndMs: number | null;
-  tracks: PreviewTrack[];
-};
+// Loop settings change playback, not rendered PCM: apply them immediately while
+// reusing the finished mix rather than quietly retaining the previous loop.
+const playbackStateKey = (state: ArrangementPreviewState, revision: string, sourceRevisions: ReadonlyMap<string, string>) => JSON.stringify([previewStateKey(state, revision, sourceRevisions), state.loopStartMs, state.loopEndMs]);
+const EMPTY_SOURCE_REVISIONS: ReadonlyMap<string, string> = new Map();
 
-type ScheduledSource = { source: AudioBufferSourceNode; gain: GainNode };
-
-function clipLevelAt(clip: PreviewClip, offsetMs: number) {
-  const shape = clipFadeShapeOrLinear(clip.fadeShape);
-  if (clip.fadeInMs > 0 && offsetMs < clip.fadeInMs) return fadeGainAt(shape, offsetMs / clip.fadeInMs);
-  const fadeOutStart = clip.durationMs - clip.fadeOutMs;
-  if (clip.fadeOutMs > 0 && offsetMs > fadeOutStart) return fadeGainAt(shape, (clip.durationMs - offsetMs) / clip.fadeOutMs);
-  return 1;
-}
-
-/**
- * A deliberately browser-only audition graph. It reads the same private asset
- * route as the stem inspector but never writes audio or becomes an export
- * source; persisted clips and the worker snapshot remain authoritative.
- */
-export function useArrangementPreview(onPosition: (milliseconds: number) => void) {
+/** Prepared canonical-DSP audition. One connected source per run; generation
+ * fencing prevents cancelled loads/older edits from starting a stale graph. */
+export function useArrangementPreview(onPosition: (milliseconds: number) => void, state?: ArrangementPreviewState | null, sourceRevision = "", scopeKey = "", sourceRevisions: ReadonlyMap<string, string> = EMPTY_SOURCE_REVISIONS) {
   const context = useRef<AudioContext | null>(null);
-  const buffers = useRef(new Map<string, AudioBuffer>());
-  const scheduled = useRef<ScheduledSource[]>([]);
+  const preparation = useRef<ArrangementPreparation | null>(null);
+  const preparedKey = useRef("");
+  const [preparing, setPreparing] = useState(false);
+  const source = useRef<AudioBufferSourceNode | null>(null);
+  const generation = useRef(0);
   const raf = useRef<number | null>(null);
   const origin = useRef({ contextTime: 0, positionMs: 0 });
-  const currentState = useRef<PreviewState | null>(null);
+  const active = useRef(false);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   const clear = useCallback(() => {
+    generation.current++;
+    preparation.current?.cancel();
     if (raf.current !== null) cancelAnimationFrame(raf.current);
     raf.current = null;
-    for (const item of scheduled.current) {
-      try { item.source.stop(); } catch { /* already finished */ }
-      item.source.disconnect();
-      item.gain.disconnect();
-    }
-    scheduled.current = [];
+    if (source.current) { source.current.onended = null; try { source.current.stop(); } catch { /* already ended */ } source.current.disconnect(); source.current = null; }
   }, []);
-
-  const ensureContext = useCallback(() => {
-    if (!context.current) context.current = new AudioContext();
-    return context.current;
+  const position = useCallback(() => {
+    const node = source.current;
+    let next = origin.current.positionMs + (active.current && node && context.current ? (context.current.currentTime - origin.current.contextTime) * 1000 : 0);
+    if (node?.loop && next >= node.loopEnd * 1000) next = node.loopStart * 1000 + (next - node.loopStart * 1000) % ((node.loopEnd - node.loopStart) * 1000);
+    return Math.min(next, node?.buffer ? node.buffer.duration * 1000 : Infinity);
   }, []);
-  const ensureBuffer = useCallback(async (assetId: string) => {
-    const existing = buffers.current.get(assetId);
-    if (existing) return existing;
-    const response = await fetch(`/api/assets/${assetId}`);
-    if (!response.ok) throw new Error("A stem could not be loaded for arrangement preview.");
-    const data = await response.arrayBuffer();
-    const decoded = await ensureContext().decodeAudioData(data);
-    buffers.current.set(assetId, decoded);
-    return decoded;
-  }, [ensureContext]);
-
-  const schedule = useCallback(async (state: PreviewState, startMs: number) => {
-    const audio = ensureContext();
-    const assetIds = [...new Set(state.tracks.flatMap((track) => track.clips.map((clip) => clip.stemAssetId)))];
-    await Promise.all(assetIds.map(ensureBuffer));
-    clear();
-    const master = audio.createGain();
-    master.gain.value = state.masterVolume;
-    master.connect(audio.destination);
-    const anySolo = state.tracks.some((track) => track.solo);
-    for (const track of state.tracks) {
-      if (effectiveMuted(track, anySolo)) continue;
-      for (const clip of track.clips) {
-        const elapsedMs = Math.max(0, startMs - clip.timelineStartMs);
-        if (elapsedMs >= clip.durationMs) continue;
-        const buffer = buffers.current.get(clip.stemAssetId);
-        if (!buffer) continue;
-        const source = audio.createBufferSource();
-        const gain = audio.createGain();
-        const panner = "createStereoPanner" in audio ? audio.createStereoPanner() : null;
-        source.buffer = buffer;
-        source.connect(gain);
-        if (panner) { gain.connect(panner); panner.pan.value = track.pan; panner.connect(master); }
-        else gain.connect(master);
-        const baseGain = track.volume * clip.gain;
-        const startAt = audio.currentTime + Math.max(0, (clip.timelineStartMs - startMs) / 1000);
-        const remainingMs = clip.durationMs - elapsedMs;
-        const level = baseGain * clipLevelAt(clip, elapsedMs);
-        gain.gain.setValueAtTime(level, startAt);
-        const fadeShape = clipFadeShapeOrLinear(clip.fadeShape);
-        const fadeOutStart = clip.durationMs - clip.fadeOutMs;
-        if (fadeShape === "linear") {
-          if (clip.fadeInMs > elapsedMs)
-            gain.gain.linearRampToValueAtTime(baseGain, startAt + (clip.fadeInMs - elapsedMs) / 1000);
-          if (clip.fadeOutMs > 0) {
-            const untilFadeMs = fadeOutStart - elapsedMs;
-            const endAt = startAt + remainingMs / 1000;
-            if (untilFadeMs > 0) {
-              gain.gain.setValueAtTime(baseGain, startAt + untilFadeMs / 1000);
-              gain.gain.linearRampToValueAtTime(0, endAt);
-            } else gain.gain.linearRampToValueAtTime(0, endAt);
-          }
-        } else {
-          // Shaped fades: exact curve segments sampled from the same
-          // fadeGainAt the ffmpeg render uses (qsin/hsin), so preview and
-          // export agree by construction.
-          if (clip.fadeInMs > elapsedMs) {
-            const curve = fadeCurveSamples(fadeShape, elapsedMs / clip.fadeInMs, 1, 65);
-            for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
-            gain.gain.setValueCurveAtTime(curve, startAt, (clip.fadeInMs - elapsedMs) / 1000);
-          }
-          if (clip.fadeOutMs > 0 && fadeOutStart > elapsedMs) {
-            const curve = fadeCurveSamples(fadeShape, 1, 0, 65);
-            for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
-            gain.gain.setValueCurveAtTime(curve, startAt + (fadeOutStart - elapsedMs) / 1000, clip.fadeOutMs / 1000);
-          } else if (clip.fadeOutMs > 0) {
-            // Resuming inside the fade-out: curve from the current position.
-            const curve = fadeCurveSamples(fadeShape, remainingMs / clip.fadeOutMs, 0, 65);
-            for (let i = 0; i < curve.length; i += 1) curve[i] *= baseGain;
-            gain.gain.setValueCurveAtTime(curve, startAt, remainingMs / 1000);
-          }
-        }
-        source.start(startAt, (clip.sourceOffsetMs + elapsedMs) / 1000, remainingMs / 1000);
-        source.onended = () => { source.disconnect(); gain.disconnect(); };
-        scheduled.current.push({ source, gain });
-      }
-    }
-    origin.current = { contextTime: audio.currentTime, positionMs: startMs };
-  }, [clear, ensureBuffer, ensureContext]);
-
   const pause = useCallback(() => {
-    if (!context.current) return;
-    const next = origin.current.positionMs + (context.current.currentTime - origin.current.contextTime) * 1000;
-    clear();
-    origin.current = { contextTime: 0, positionMs: next };
-    onPosition(next);
-    setPlaying(false);
-  }, [clear, onPosition]);
-
-  const play = useCallback(async (state: PreviewState, fromMs: number) => {
+    const next = position(); active.current = false; clear(); origin.current.positionMs = next;
+    onPosition(next); setPlaying(false); setPreparing(false);
+  }, [clear, onPosition, position]);
+  const play = useCallback(async (snapshot: ArrangementPreviewState, fromMs: number) => {
+    preparedKey.current = playbackStateKey(snapshot, sourceRevision, sourceRevisions);
+    clear(); const token = generation.current; active.current = true; origin.current.positionMs = fromMs; setError(null); setPlaying(false); setPreparing(true);
     try {
-      setError(null);
-      currentState.current = state;
-      const audio = ensureContext();
+      const audio = context.current ??= new AudioContext({ sampleRate: 44100 });
       if (audio.state === "suspended") await audio.resume();
-      await schedule(state, fromMs);
-      setPlaying(true);
+      const engine = preparation.current ??= new ArrangementPreparation();
+      const buffer = await engine.prepare(snapshot, audio, sourceRevision, sourceRevisions);
+      if (token !== generation.current) return;
+      preparedKey.current = playbackStateKey(snapshot, sourceRevision, sourceRevisions);
+      const node = audio.createBufferSource(); node.buffer = buffer; node.connect(audio.destination);
+      const offset = Math.max(0, Math.min(fromMs / 1000, buffer.duration));
+      if (snapshot.loopEndMs !== null && snapshot.loopEndMs > snapshot.loopStartMs) { node.loop = true; node.loopStart = snapshot.loopStartMs / 1000; node.loopEnd = Math.min(buffer.duration, snapshot.loopEndMs / 1000); }
+      source.current = node; origin.current = { contextTime: audio.currentTime, positionMs: offset * 1000 };
+      node.onended = () => { if (token === generation.current) pause(); };
+      node.start(0, offset); setPlaying(true); setPreparing(false);
       const tick = () => {
-        const active = currentState.current;
-        if (!active || !context.current) return;
-        const positionMs = origin.current.positionMs + (context.current.currentTime - origin.current.contextTime) * 1000;
-        if (active.loopEndMs !== null && active.loopEndMs > active.loopStartMs && positionMs >= active.loopEndMs) {
-          void schedule(active, active.loopStartMs).then(() => {
-            raf.current = requestAnimationFrame(tick);
-          });
-          return;
-        }
-        const endMs = Math.max(0, ...active.tracks.flatMap((track) => track.clips.map((clip) => clip.timelineStartMs + clip.durationMs)));
-        if (positionMs >= endMs) { pause(); return; }
-        onPosition(positionMs);
-        raf.current = requestAnimationFrame(tick);
+        if (token !== generation.current) return;
+        let next = position();
+        if (node.loop && next >= node.loopEnd * 1000) next = node.loopStart * 1000 + (next - node.loopStart * 1000) % ((node.loopEnd - node.loopStart) * 1000);
+        onPosition(next); raf.current = requestAnimationFrame(tick);
       };
       raf.current = requestAnimationFrame(tick);
     } catch (cause) {
-      clear();
-      setPlaying(false);
-      setError(cause instanceof Error ? cause.message : "Arrangement preview could not start.");
+      if (token !== generation.current) return;
+      active.current = false; clear(); setPlaying(false); setPreparing(false); setError(cause instanceof Error ? cause.message : "Arrangement audition failed.");
     }
-  }, [clear, ensureContext, onPosition, pause, schedule]);
-
-  const stop = useCallback(() => {
-    clear();
-    origin.current = { contextTime: 0, positionMs: 0 };
-    onPosition(0);
-    setPlaying(false);
-  }, [clear, onPosition]);
-  useEffect(() => () => { clear(); void context.current?.close(); }, [clear]);
-  return { playing, error, play, pause, stop };
+  }, [clear, onPosition, pause, position, sourceRevision, sourceRevisions]);
+  const stop = useCallback(() => { active.current = false; clear(); origin.current = { contextTime: 0, positionMs: 0 }; onPosition(0); setPlaying(false); setPreparing(false); }, [clear, onPosition]);
+  // Edits invalidate the old graph immediately and prepare the new snapshot at
+  // the observed cursor. No effect nodes or old requests survive replacement.
+  const stateKey = state ? playbackStateKey(state, sourceRevision, sourceRevisions) : "";
+  useEffect(() => { if (active.current && stateKey !== preparedKey.current) { if (state) void play(state, position()); else stop(); } }, [stateKey, state, play, position, stop]);
+  const previousScope = useRef(scopeKey);
+  useEffect(() => { if (previousScope.current !== scopeKey) { previousScope.current = scopeKey; stop(); preparation.current?.dispose(); } }, [scopeKey, stop]);
+  useEffect(() => () => { active.current = false; clear(); preparation.current?.dispose(); void context.current?.close(); }, [clear]);
+  const seek = useCallback((seconds: number) => { if (active.current && state) void play(state, seconds * 1000); else { origin.current.positionMs = seconds * 1000; onPosition(seconds * 1000); } }, [onPosition, play, state]);
+  return { playing, preparing, error, play, pause, stop, seek };
 }

@@ -30,7 +30,7 @@ async function bootFixture() {
   }
   const { EmbeddedPostgres } = await import("../../../../desktop/runtime/embedded-postgres");
   const { applyMigrations } = await import("../../../../desktop/runtime/migrate");
-  const { pickFreePort } = await import("../../../../desktop/runtime/config");
+  const { pickFreePort, postgresPathDirs } = await import("../../../../desktop/runtime/config");
   const ext = process.platform === "win32" ? ".exe" : "";
   const config = {
     dirs: {
@@ -51,7 +51,10 @@ async function bootFixture() {
       pgCtl: join(nativeDir, "bin", `pg_ctl${ext}`),
       postgres: join(nativeDir, "bin", `postgres${ext}`),
       libDir: join(nativeDir, "lib"),
-      windowsPathDirs: [],
+      // Derived, never hand-written: on Windows PostgreSQL needs bin+lib on
+      // PATH to load its DLLs, and a hard-coded [] made this fixture the only
+      // place that disagreed with the product resolver.
+      windowsPathDirs: postgresPathDirs(process.platform, nativeDir),
     },
     migrationsDir: path.join(process.cwd(), "desktop-migrations"),
     ffmpegPath: null, ffprobePath: null,
@@ -93,7 +96,7 @@ function __hud(score){ document.title = "score " + score; }
 var score = 0;
 var c = document.getElementById("game");
 var ctx = c.getContext("2d");
-function loop(){ ctx.fillRect(0,0,10,10); score++; __hud(score); requestAnimationFrame(loop); }
+function loop(){ ctx.clearRect(0,0,480,480); ctx.fillStyle="cyan"; ctx.fillRect((score*3)%400,30,30,30); score++; __hud(score); requestAnimationFrame(loop); }
 requestAnimationFrame(loop);
 window.addEventListener("keydown", function(e){ score += e.keyCode; });
 window.addEventListener("touchstart", function(){ score += 1; });
@@ -139,7 +142,7 @@ test("arcade security: validation gate, owner scoping, ownership-checked delete"
   }
 
   // 1. Valid generated game is persisted and records its owner.
-  const created = await routes.POST(arcadeRequest("/api/arcade", { prompt: "a calm asteroid drifter" }));
+  const created = await routes.POST(arcadeRequest("/api/arcade", { prompt: "a calm asteroid drifter", gameType: "arena" }));
   assert.equal(created.status, 201);
   const createdBody = (await created.json()) as { game: { id: string; ownerId: string }; validation: { ok: boolean } };
   assert.equal(createdBody.validation.ok, true);
@@ -151,7 +154,7 @@ test("arcade security: validation gate, owner scoping, ownership-checked delete"
 
   // 3. Valid client code persists with the caller as owner.
   const clientGame = await routes.POST(arcadeRequest("/api/arcade", { prompt: "client game", clientCode: validGameHtml() }));
-  assert.equal(clientGame.status, 201);
+  assert.equal(clientGame.status, 201, String((await clientGame.clone().json()).error ?? "client publication failed"));
   const clientBody = (await clientGame.json()) as { game: { id: string; ownerId: string } };
   assert.equal(clientBody.game.ownerId, "00000000-0000-4000-8000-000000000001");
 
@@ -291,4 +294,54 @@ test("artifact reads are owner-private: no cross-owner or anonymous access", asy
     if (createdArtifact) await deleteArtifact(db, createdArtifact.id, owner);
     await db.delete(projects).where(eq(projects.id, project.id));
   }
+});
+
+
+test("arcade rejects unsupported offline mechanics and persists verified provenance", async (t) => {
+  if (!fixture || !routes) return t.skip("embedded postgres platform package unavailable");
+  const unsupported = await routes.POST(arcadeRequest("/api/arcade", { prompt: "a railway logistics puzzle with cargo contracts" }));
+  assert.equal(unsupported.status, 422);
+  assert.match((await unsupported.json()).error, /No offline template/);
+  const { generateGameOffline } = await import("@/lib/games");
+  const core = generateGameOffline("snake");
+  const saved = await routes.POST(arcadeRequest("/api/arcade", {
+    prompt: "snake", clientCode: core.code, gameType: core.gameType, engine: core.engine,
+  }));
+  assert.equal(saved.status, 201);
+  const { game } = await saved.json();
+  assert.equal(game.engine, "verified");
+  const reopened = await idRoutes!.GET(new Request(`http://127.0.0.1/api/arcade/${game.id}`), { params: Promise.resolve({ id: game.id }) });
+  const persisted = (await reopened.json()).game;
+  assert.equal(persisted.code, core.code);
+  assert.equal(persisted.engine, "verified");
+});
+
+test("generative route rejects invalid iteration context and unavailable model honestly", async (t) => {
+  if (!fixture) return t.skip("embedded postgres platform package unavailable");
+  const forge = await import("./forge/route");
+  const invalid = await forge.POST(arcadeRequest("/api/arcade/forge", { prompt: "add cargo", priorCode: "broken" }));
+  assert.equal(invalid.status, 400);
+  const unavailable = await forge.POST(arcadeRequest("/api/arcade/forge", { prompt: "railway logistics puzzle", localOnly: true }));
+  assert.equal(unavailable.status, 503);
+  assert.equal((await unavailable.json()).code, undefined);
+});
+
+test("artifact storage outage is an actionable 503; recovery returns the saved work", async (t) => {
+  if (!fixture || !artifactRoutes || !projectArtifactRoutes) return t.skip("embedded postgres platform package unavailable");
+  const { pool } = await import("@/db");
+  const projectId = "11111111-1111-4111-8111-111111111111";
+  const saved = await artifactRoutes.POST(arcadeRequest("/api/artifacts", { title: "Storage recovery probe", body: "Persisted evidence survives unavailable reads", kind: "research" }));
+  assert.equal(saved.status, 201);
+  const { artifact } = await saved.json();
+  const request = () => new Request("http://127.0.0.1/api/artifacts", { headers: { host: "127.0.0.1" } });
+  // Real PostgreSQL schema fault, not a mocked successful database response.
+  await pool.query("alter table artifacts rename to artifacts_outage_probe");
+  try {
+    const unavailable = await artifactRoutes.GET(request());
+    assert.equal(unavailable.status, 503);
+    const body = await unavailable.json(); assert.match(body.error, /storage unavailable/i); assert.equal(body.artifacts, undefined);
+    assert.equal((await projectArtifactRoutes.GET(request(), { params: Promise.resolve({ id: projectId }) })).status, 503);
+  } finally { await pool.query("alter table artifacts_outage_probe rename to artifacts"); }
+  const recovered = await artifactRoutes.GET(request()); assert.equal(recovered.status, 200);
+  assert.ok((await recovered.json()).artifacts.some((row: { id: string }) => row.id === artifact.id));
 });

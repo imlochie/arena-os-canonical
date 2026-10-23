@@ -17,7 +17,7 @@
  * app still shouldn't rm -rf the host it runs on.
  */
 
-import { spawn } from "node:child_process";
+import { runCommandProcess } from "./command-process";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -41,25 +41,22 @@ export async function ensureWorkspace(spaceId: string): Promise<string> {
   return dir;
 }
 
-/** Confine a path inside the workspace (no ../ escapes, no absolute paths). */
-function safePath(dir: string, p: string): string {
-  if (path.isAbsolute(p)) throw new Error("path escapes workspace");
-  const full = path.resolve(dir, p);
-  if (full !== dir && !full.startsWith(dir + path.sep)) throw new Error("path escapes workspace");
-  return full;
-}
-
 // ---------------- file tools ----------------
 
-export async function toolWriteFile(dir: string, p: string, content: string): Promise<string> {
-  const full = safePath(dir, p);
-  const check = await syntaxCheck(p, content);
+export async function toolWriteFile(dir: string, p: string, content: string | Buffer): Promise<string> {
+  const { containedOutputPath, MAX_MISSION_OUTPUT_BYTES } = await import("./mission-outputs");
+  const byteLength = Buffer.byteLength(content);
+  if (byteLength > MAX_MISSION_OUTPUT_BYTES) return "error: file exceeds the existing 32 MiB output bound — NOT written.";
+  const full = await containedOutputPath(dir, p, true);
+  const text = typeof content === "string" ? content : content.toString("utf8");
+  const check = await syntaxCheck(p, text);
+  if (check.checked && Buffer.isBuffer(content) && !Buffer.from(text, "utf8").equals(content)) return "error: binary bytes cannot be interpreted as source code — NOT written.";
   if (check.checked && !check.ok) {
     return `error: ${p} has syntax errors — NOT written.\n${check.error}\nFix and retry.`;
   }
   await mkdir(path.dirname(full), { recursive: true });
   await writeFile(full, content, "utf8");
-  return `wrote ${p} (${content.length} bytes)${check.checked ? " · syntax ✓" : ""}`;
+  return `wrote ${p} (${byteLength} bytes)${check.checked ? " · syntax ✓" : ""}`;
 }
 
 /**
@@ -72,7 +69,8 @@ export async function toolReadFile(
   p: string,
   opts: { startLine?: number; endLine?: number } = {},
 ): Promise<string> {
-  const full = safePath(dir, p);
+  const { containedOutputPath } = await import("./mission-outputs");
+  const full = await containedOutputPath(dir, p);
   const content = await readFile(full, "utf8");
   const lines = content.split("\n");
   const total = lines.length;
@@ -106,7 +104,8 @@ export async function toolListFiles(dir: string): Promise<string> {
 }
 
 export async function toolDeleteFile(dir: string, p: string): Promise<string> {
-  const full = safePath(dir, p);
+  const { containedOutputPath } = await import("./mission-outputs");
+  const full = await containedOutputPath(dir, p, true);
   await rm(full, { force: true });
   return `deleted ${p}`;
 }
@@ -127,6 +126,7 @@ export async function toolRunCommand(
   timeoutMs = 20_000,
   extraAllow: string[] = [],
   execTarget?: import("./workspace-isolation").ExecTarget,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (!commandAllowed(cmd, extraAllow)) {
     return `refused: "${cmd.trim().split(/\s+/)[0]}" is not on the tool allowlist (${COMMAND_ALLOWLIST.join(", ")}${extraAllow.length ? " + " + extraAllow.join(", ") : ""})`;
@@ -138,22 +138,9 @@ export async function toolRunCommand(
     const { runInTarget } = await import("./workspace-isolation");
     return runInTarget(execTarget, cmd, timeoutMs);
   }
-  return new Promise((resolve) => {
-    const parts = cmd.trim().split(/\s+/);
-    // Clean env: never leak the host process's test-runner context into
-    // child processes (a nested `node --test` would otherwise no-op).
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    const child = spawn(parts[0], parts.slice(1), { cwd: dir, timeout: timeoutMs, env, shell: IS_WINDOWS });
-    let out = "";
-    const cap = (s: string) => {
-      if (out.length < 8000) out += s;
-    };
-    child.stdout.on("data", cap);
-    child.stderr.on("data", cap);
-    child.on("error", (e) => resolve(`error: ${e.message}`));
-    child.on("close", (code) => resolve(`exit ${code}\n${out.slice(0, 8000)}`));
-  });
+  const parts = cmd.trim().split(/\s+/);
+  const result = await runCommandProcess(parts[0], parts.slice(1), { cwd: dir, timeoutMs, shell: IS_WINDOWS, signal });
+  return `${result.code === 0 ? "" : `error: command did not succeed${result.signal ? ` (${result.signal})` : ""}\n`}exit ${result.code}\n${result.output}`;
 }
 
 // ---------------- fetch tool ----------------
@@ -259,7 +246,8 @@ export async function toolEditFile(
   const oldText = String(args.old_text ?? "");
   const newText = String(args.new_text ?? "");
   if (!oldText) return "error: old_text is required (use read_file to view exact text first)";
-  const full = safePath(dir, p);
+  const { containedOutputPath } = await import("./mission-outputs");
+  const full = await containedOutputPath(dir, p, true);
   let original: string;
   try {
     original = await readFile(full, "utf8");
@@ -367,6 +355,7 @@ export async function toolRunTests(
   args: { command?: string },
   extraAllow: string[] = [],
   execTarget?: import("./workspace-isolation").ExecTarget,
+  signal?: AbortSignal,
 ): Promise<string> {
   const hasPkg = await readFile(path.join(dir, "package.json"), "utf8").catch(() => "");
   let cmd = String(args.command ?? "").trim();
@@ -391,11 +380,11 @@ export async function toolRunTests(
       };
       await walk(dir, "");
       if (files.length) cmd = "node --test";
-      else return "no tests found — write *.test.js files or add a package.json test script first";
+      else return "error: no tests found — write *.test.js files or add a package.json test script first";
     }
   }
-  const out = await toolRunCommand(dir, cmd, 60_000, extraAllow, execTarget);
-  return `[${cmd}]\n${out}`;
+  const out = await toolRunCommand(dir, cmd, 60_000, extraAllow, execTarget, signal);
+  return `${out.startsWith("error:") || out.startsWith("refused:") ? "error: test execution failed\n" : ""}[${cmd}]\n${out}`;
 }
 
 // ---------------- GitHub tool ----------------
@@ -407,6 +396,7 @@ export function githubToken(opts: { githubToken?: string }): string | undefined 
 async function gh(pathname: string, token: string, init?: RequestInit): Promise<any> {
   const res = await fetch("https://api.github.com" + pathname, {
     ...init,
+    signal: init?.signal ?? AbortSignal.timeout(20000),
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
@@ -497,6 +487,9 @@ export interface ToolOutcome {
   output: string;
   ok: boolean;
   ms: number;
+  uncertain?: boolean;
+  requestId?: string;
+  provenance?: "executed" | "file-postcondition" | "human-reconciliation" | "observation" | "approval-ledger";
 }
 
 export async function executeTool(
@@ -504,18 +497,41 @@ export async function executeTool(
   action: ToolAction,
   opts: {
     githubToken?: string;
+    signal?: AbortSignal;
     extraAllow?: string[];
     execTarget?: import("./workspace-isolation").ExecTarget;
     browserEngine?: import("./browser").BrowserEngine;
     externalDeps?: import("./external").ExternalDeps;
   } = {}
 ): Promise<ToolOutcome> {
+  if (opts.signal?.aborted) return { tool: action.tool, input: action.args, ok: false, output: "error: mission cancelled before dispatch", ms: 0 };
   const dir = await ensureWorkspace(spaceId);
   const t0 = Date.now();
   const run = async (): Promise<string> => {
     switch (action.tool) {
+      case "publish_output": { const { inspectOutput } = await import("./mission-outputs"); return inspectOutput(spaceId, String(action.args.path ?? "")); }
+      case "reuse_mission_output": {
+        const { retrieveMissionOutput } = await import("./mission-outputs");
+        const { isUuid } = await import("../api/ids");
+        for (const key of ["sourceSpaceId", "missionId", "outputId"]) if (!isUuid(String(action.args[key] ?? ""))) return `error: ${key} must be a stable authorised ID`;
+        const { bytes } = await retrieveMissionOutput(action.args.sourceSpaceId, action.args.missionId, action.args.outputId);
+        return toolWriteFile(dir, String(action.args.path ?? ""), bytes);
+      }
       case "write_file":
         return toolWriteFile(dir, String(action.args.path ?? ""), String(action.args.content ?? ""));
+      case "read_artifact": {
+        const { isUuid } = await import("../api/ids");
+        const { artifactId, revisionId } = action.args;
+        if (!isUuid(String(artifactId ?? "")) || !isUuid(String(revisionId ?? ""))) return "error: read_artifact requires artifactId and immutable revisionId; an unbound current reference is not accepted";
+        const { db } = await import("@/db");
+        const { getArtifactRevision } = await import("../arcadeStore");
+        const { LOCAL_OWNER_ID } = await import("../waveyard/local-context");
+        const revision = await getArtifactRevision(db, artifactId, revisionId, LOCAL_OWNER_ID);
+        if (!revision) return "error: artifact revision unavailable or not owned by this caller";
+        const { artifactRevisionText } = await import("../artifact-objects");
+        const body = await artifactRevisionText(LOCAL_OWNER_ID, revision.snapshot);
+        return JSON.stringify({ artifactId, revisionId: revision.id, revision: revision.revision, ...revision.snapshot, body });
+      }
       case "read_file":
         return toolReadFile(dir, String(action.args.path ?? ""), {
           startLine: action.args.startLine ? Number(action.args.startLine) : undefined,
@@ -532,7 +548,7 @@ export async function executeTool(
       case "delete_file":
         return toolDeleteFile(dir, String(action.args.path ?? ""));
       case "run_command":
-        return toolRunCommand(dir, String(action.args.command ?? ""), 20_000, opts.extraAllow ?? [], opts.execTarget);
+        return toolRunCommand(dir, String(action.args.command ?? ""), 20_000, opts.extraAllow ?? [], opts.execTarget, opts.signal);
       case "search_code":
         return toolSearchCode(dir, {
           pattern: String(action.args.pattern ?? ""),
@@ -540,7 +556,7 @@ export async function executeTool(
           maxResults: action.args.maxResults ? Number(action.args.maxResults) : undefined,
         });
       case "run_tests":
-        return toolRunTests(dir, { command: action.args.command ? String(action.args.command) : undefined }, opts.extraAllow ?? [], opts.execTarget);
+        return toolRunTests(dir, { command: action.args.command ? String(action.args.command) : undefined }, opts.extraAllow ?? [], opts.execTarget, opts.signal);
       case "fetch_url":
         return toolFetchUrl(String(action.args.url ?? ""));
       case "browser_navigate":
@@ -611,5 +627,6 @@ export async function executeTool(
     ok = false;
     output = `error: ${e instanceof Error ? e.message : "tool failed"}`;
   }
-  return { tool: action.tool, input: action.args, output, ok, ms: Date.now() - t0 };
+  const uncertain = !ok && /timed out|timeout|command cancelled|fetch failed|network error|aborted/i.test(output) && !["read_file", "read_artifact", "list_files", "search_code"].includes(action.tool);
+  return { tool: action.tool, input: action.args, output, ok, ms: Date.now() - t0, ...(uncertain ? { uncertain: true } : {}) };
 }

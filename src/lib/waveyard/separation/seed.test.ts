@@ -187,3 +187,21 @@ test("the seed URL is always the registry's own sourceUrl", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('owner-supplied pinned bytes use existing publication and readiness; corrupt replacement preserves installed file', async () => {
+  const { importModelFile } = await import('./seed');
+  const { writeFile } = await import('node:fs/promises');
+  const dir = await mkdtemp(join(tmpdir(), 'wy-owner-model-'));
+  try {
+    const bytes = Buffer.alloc(2_000_000, 11), spec = await specFor(bytes);
+    const file = join(dir, 'owner-upload.bin'); await writeFile(file, bytes);
+    const result = await importModelFile(spec, file, { dir, rightsReviewed: true });
+    assert.equal((await getModelFileStatus(spec, dir)).acquisition?.kind, "owner-supplied-file");
+    assert.equal(result.inputVerifiedFrom, 'owner-supplied-file');
+    assert.equal(result.sha256, spec.sha256);
+    assert.equal((await getModelFileStatus(spec, dir)).verified, true);
+    await writeFile(file, Buffer.alloc(bytes.length, 3));
+    await assert.rejects(importModelFile(spec, file, { dir, rightsReviewed: true }), /does not match pinned/);
+    assert.deepEqual(await readFile(join(dir, spec.file)), bytes);
+  } finally { await rm(dir, { recursive:true, force:true }); }
+});

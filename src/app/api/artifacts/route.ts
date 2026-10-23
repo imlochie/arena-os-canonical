@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { isUuid } from "@/lib/api/ids";
-import { deleteArtifact, insertArtifact, listArtifacts } from "@/lib/arcadeStore";
+import { ArtifactContentError, assertArtifactBodySize, deleteArtifact, insertArtifact, listArtifacts } from "@/lib/arcadeStore";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireApiAccess } from "@/lib/security/api-access";
 
@@ -19,14 +19,14 @@ export async function GET(req: Request) {
   const kind = url.searchParams.get("kind");
   const q = (url.searchParams.get("q") ?? "").toLowerCase().trim();
   try {
-    let rows = await listArtifacts(db, user.id, 200);
+    let rows = await listArtifacts(db, user.id, 200, url.searchParams.get("trash") === "1", projectId ?? undefined);
     if (projectId) rows = rows.filter((r) => r.projectId === projectId);
     if (kind) rows = rows.filter((r) => r.kind === kind);
     if (q) rows = rows.filter((r) => (r.title + " " + r.body).toLowerCase().includes(q));
     return Response.json({ artifacts: rows.slice(0, limit) });
   } catch (e) {
     console.error(e);
-    return Response.json({ artifacts: [] });
+    return Response.json({ error: "Artifact storage unavailable. Your saved work has not been removed; retry when the service recovers." }, { status: 503 });
   }
 }
 
@@ -38,11 +38,14 @@ export async function POST(req: Request) {
     const user = await requireUser();
     const body = await req.json();
     const title = (body.title ?? "Untitled artifact").toString().slice(0, 160);
-    const artifactBody = (body.body ?? "").toString().slice(0, 20000);
+    const artifactBody = (body.body ?? "").toString();
+    assertArtifactBodySize(artifactBody);
     if (!artifactBody.trim()) return Response.json({ error: "body required" }, { status: 400 });
     const kind = (body.kind ?? "brief").toString().slice(0, 20);
     const projectId = body.projectId ? String(body.projectId) : null;
     const sourceType = (body.sourceType ?? "manual").toString().slice(0, 20);
+    if(sourceType === "arcade-generation")return Response.json({error:"Arcade attempt provenance must be recorded by an executed generation operation."},{status:400});
+    if (sourceType === "mission-output") return Response.json({ error: "Mission output provenance must be recorded by an executed mission operation." }, { status: 400 });
     const sourceId = body.sourceId ? String(body.sourceId).slice(0, 80) : null;
     const row = await insertArtifact(db, {
       projectId,
@@ -56,7 +59,7 @@ export async function POST(req: Request) {
     return Response.json({ artifact: row }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "create failed" }, { status: 500 });
+    return Response.json({ error: e instanceof ArtifactContentError ? "Artifact body exceeds the 20,000-character limit. Nothing was saved; split the content before retrying." : "Could not confirm Artifact creation. Reload the library before retrying." }, { status: e instanceof ArtifactContentError ? 413 : 503 });
   }
 }
 

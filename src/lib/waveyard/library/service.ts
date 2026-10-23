@@ -21,7 +21,8 @@
 
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 
-import { db } from "@/db";
+import { db, pool } from "@/db";
+import { inspect } from "../conversion/engine";
 import {
   playbackState,
   playlistItems,
@@ -32,6 +33,7 @@ import {
   smartCollections,
   sourceAnalyses,
   sourceAssets,
+  sourceAcquisitions,
   stemAssets,
   tracks,
 } from "@/db/waveyardSchema";
@@ -43,9 +45,10 @@ import {
   parseSmartRules,
   type SmartCollection,
 } from "./collections";
-import { ingestSourceFile } from "@/lib/waveyard/source-ingest"
+import { type SourceAcquisitionProvenance, ingestSourceFile } from "@/lib/waveyard/source-ingest"
 import { defaultSeparationModel } from "@/lib/waveyard/separation/selection";
 import {
+  DEFAULT_STEM_CHANNEL_TYPES,
   deriveTrackMetadata,
   libraryContainerProjectName,
   normalizeStemMix,
@@ -76,7 +79,15 @@ export interface TrackSummary {
   studioProjectId: string;
 }
 
+export type AssetSelection = { assetIds: string[]; kind: "stems" | "source" };
+export interface SeparationBank { id: string; model: string; createdAt: string; stems: TrackStem[] }
+
 export interface TrackStem {
+  /** Decoded/published audio duration, not the original container estimate. */
+  durationSeconds?: number;
+  separationJobId?: string;
+  /** Registry model identity is required to distinguish MDX melody from deep residual. */
+  model?: string | null;
   id: string;
   stemType: string;
   engine: string;
@@ -89,6 +100,9 @@ export interface TrackAnalysis {
 }
 
 export interface TrackDetail extends TrackSummary {
+  rights?: { sourceUrl: string | null; attribution: string; notice: string } | null;
+  banks: SeparationBank[];
+  selectionRequired: string | null;
   source: {
     id: string;
     originalFilename: string;
@@ -127,8 +141,9 @@ async function availabilityBySource(
   if (sourceAssetIds.length === 0) return map;
   const [stemRows, jobRows] = await Promise.all([
     db
-      .select({ sourceAssetId: stemAssets.sourceAssetId, stemType: stemAssets.stemType, engine: stemAssets.engine })
+      .select({ sourceAssetId: stemAssets.sourceAssetId, stemType: stemAssets.stemType, engine: stemAssets.engine, separationJobId: stemAssets.separationJobId, jobStatus: processingJobs.status })
       .from(stemAssets)
+      .innerJoin(processingJobs, eq(processingJobs.id, stemAssets.separationJobId))
       .where(inArray(stemAssets.sourceAssetId, sourceAssetIds)),
     db
       .select({ sourceAssetId: processingJobs.sourceAssetId, status: processingJobs.status })
@@ -143,7 +158,9 @@ async function availabilityBySource(
   ]);
   const pendingBySource = new Set(jobRows.map((row) => row.sourceAssetId));
   for (const id of sourceAssetIds) {
-    const stems = stemRows.filter((row) => row.sourceAssetId === id);
+    const stems = stemRows.filter(row => row.sourceAssetId === id && (row.jobStatus === "complete" || row.engine === "passthrough-unseparated"));
+    const bankCount = new Set(stems.filter(stem => stem.engine !== "passthrough-unseparated").map(stem => stem.separationJobId)).size;
+    if (bankCount > 1) { map.set(id, {status:"unavailable", reason:"Multiple published banks: choose one explicitly in the player or session."}); continue; }
     map.set(
       id,
       resolveStemAvailability({ stems, separationPending: pendingBySource.has(id) }),
@@ -227,8 +244,15 @@ export async function addTrackFromAudioFile(input: {
   device?: "auto" | "cpu" | "cuda";
   title?: string;
   artist?: string;
+  album?: string;
+  existingObject?: { storageKey: string; checksumSha256: string };
+  prepareSeparation?: boolean;
+  provenance?: SourceAcquisitionProvenance;
 }): Promise<AddTrackResult> {
   const checksum = await checksumFile(input.filePath);
+  const lock = await pool.connect();
+  try {
+  await lock.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [`library-import:${input.ownerId}:${checksum}`]);
 
   const [existing] = await db
     .select(trackSelection)
@@ -238,13 +262,18 @@ export async function addTrackFromAudioFile(input: {
     .orderBy(desc(tracks.createdAt))
     .limit(1);
   if (existing !== undefined) {
+    if (input.provenance) {
+      const [acquisition] = await db.select().from(sourceAcquisitions).where(eq(sourceAcquisitions.sourceAssetId, existing.sourceAssetId)).limit(1);
+      if ((acquisition?.sourceUrl ?? null) !== (input.provenance.sourceUrl ?? null)) throw new Error("These audio bytes already exist under a different acquisition. Original rights/provenance were preserved; no catalogue rights were attached to that track.");
+    }
     const [summary] = await summariesFor([existing]);
     return { track: summary, created: false, separationQueued: false };
   }
 
   const derived = deriveTrackMetadata(input.filename);
-  const title = (input.title ?? "").trim() || derived.title;
-  const artist = (input.artist ?? "").trim() || derived.artist;
+  const embedded = await inspect(input.filePath);
+  const title = (input.title ?? embedded.tags.title ?? "").trim() || derived.title;
+  const artist = (input.artist ?? embedded.tags.artist ?? "").trim() || derived.artist;
 
   const [container] = await db
     .insert(projects)
@@ -264,7 +293,9 @@ export async function addTrackFromAudioFile(input: {
     mimeType: input.mimeType,
     model: input.model ?? defaultSeparationModel(),
     device: input.device ?? "auto",
-    provenance: { method: "local-upload", title, artist, metadata: { intake: "waveyard-library" } },
+    provenance: input.provenance ?? { method: "local-upload", title, artist, metadata: { intake: "waveyard-library", ...(input.existingObject ? { conversionObject: input.existingObject } : {}) } },
+    existingObject: input.existingObject,
+    prepareSeparation: input.prepareSeparation,
   });
 
   const [row] = await db
@@ -273,7 +304,7 @@ export async function addTrackFromAudioFile(input: {
       ownerId: input.ownerId,
       title,
       artist,
-      album: "",
+      album: input.album ?? embedded.tags.album ?? "",
       sourceAssetId: ingest.source.id,
       projectId: container.id,
       durationSeconds: ingest.source.durationSeconds,
@@ -281,6 +312,10 @@ export async function addTrackFromAudioFile(input: {
     .returning(trackSelection);
   const [summary] = await summariesFor([row]);
   return { track: summary, created: true, separationQueued: ingest.separationQueued };
+  } finally {
+    try { await lock.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [`library-import:${input.ownerId}:${checksum}`]); }
+    finally { lock.release(); }
+  }
 }
 
 // ------------------------------------------------------------- track reading
@@ -327,7 +362,7 @@ export async function listRecentlyPlayed(ownerId: string, limit = 12): Promise<T
   return summariesFor(rows);
 }
 
-export async function getTrack(ownerId: string, trackId: string): Promise<TrackDetail | null> {
+export async function getTrack(ownerId: string, trackId: string, selection?: AssetSelection | { bankId: string }): Promise<TrackDetail | null> {
   const [row] = await db
     .select(trackSelection)
     .from(tracks)
@@ -338,10 +373,41 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
   const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, row.sourceAssetId)).limit(1);
   if (source === undefined) return null;
 
-  const stemRows = await db
-    .select({ id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine })
+  const publishedRows = await db
+    .select({ durationSeconds: stemAssets.durationSeconds, id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine, model: stemAssets.model, separationJobId: stemAssets.separationJobId, createdAt: stemAssets.createdAt, jobStatus: processingJobs.status, jobModel: processingJobs.model })
     .from(stemAssets)
-    .where(eq(stemAssets.sourceAssetId, row.sourceAssetId));
+    .innerJoin(processingJobs, eq(processingJobs.id, stemAssets.separationJobId))
+    .where(eq(stemAssets.sourceAssetId, row.sourceAssetId))
+    // Heap/index order changes after restart/CLUSTER. A bank chosen again must
+    // produce the same ordered snapshot; saved explicit assetIds below retain
+    // their original order, rather than being silently canonicalised.
+    .orderBy(
+      sql`case ${sql.join(DEFAULT_STEM_CHANNEL_TYPES.map((type, rank) => sql`when ${stemAssets.stemType} = ${type} then ${rank}::integer`), sql` `)} else ${DEFAULT_STEM_CHANNEL_TYPES.length}::integer end`,
+      asc(stemAssets.stemType), asc(stemAssets.id),
+    );
+  const banks: SeparationBank[] = [];
+  for (const stem of publishedRows) {
+    if (stem.jobStatus !== "complete" || stem.engine === "passthrough-unseparated") continue;
+    let bank = banks.find(bank => bank.id === stem.separationJobId);
+    if (!bank) { bank = { id: stem.separationJobId, model: stem.jobModel, createdAt: stem.createdAt.toISOString(), stems: [] }; banks.push(bank); }
+    bank.stems.push(stem);
+  }
+  banks.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  let selectionRequired: string | null = null;
+  let stemRows: TrackStem[] = [];
+  if (selection && "assetIds" in selection) {
+    stemRows = selection.assetIds.flatMap(id => publishedRows.filter(stem => stem.id === id && (stem.jobStatus === "complete" || stem.engine === "passthrough-unseparated")));
+    const valid = selection.kind === "source"
+      ? selection.assetIds.length === 1 && (selection.assetIds[0] === source.id || (stemRows.length === 1 && stemRows[0].engine === "passthrough-unseparated"))
+      : new Set(selection.assetIds).size === selection.assetIds.length && stemRows.length === selection.assetIds.length && stemRows.length > 0 && new Set(stemRows.map(stem => stem.separationJobId)).size === 1 && !stemRows.some(stem => stem.engine === "passthrough-unseparated");
+    if (!valid) selectionRequired = "Saved audio assets are unavailable or inconsistent. Choose a bank explicitly; no substitute was loaded.";
+  } else {
+    const bank = selection && "bankId" in selection ? banks.find(bank => bank.id === selection.bankId) : banks.length === 1 ? banks[0] : undefined;
+    if (bank) stemRows = bank.stems;
+    else if (banks.length || selection) selectionRequired = "Choose one separation bank. Multiple generations cannot be mixed implicitly.";
+    else stemRows = publishedRows.filter(stem => stem.engine === "passthrough-unseparated").slice(0, 1);
+  }
+  if (selectionRequired) stemRows = [];
 
   const [analysis] = await db
     .select({
@@ -356,13 +422,27 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
   const availability = resolveStemAvailability({ stems: stemRows });
   const realStems = stemRows.filter((stem) => stem.engine !== "passthrough-unseparated");
   const passthrough = stemRows.find((stem) => stem.engine === "passthrough-unseparated");
-  const playback =
+  const playback = selectionRequired ? { assetIds: [], kind: "stems" as const } : selection && "assetIds" in selection ? selection :
     realStems.length > 0
       ? { assetIds: realStems.map((stem) => stem.id), kind: "stems" as const }
       : { assetIds: [passthrough?.id ?? source.id], kind: "source" as const };
 
+  // Compressed container timestamps can include encoder delay/padding. A
+  // pinned learned bank plays its validated decoded assets, not that estimate.
+  // Do not mutate the source/library metadata or choose a different bank.
+  const playbackDuration = playback.kind === "stems" && realStems.length > 0 && realStems.every(stem => typeof stem.durationSeconds === "number" && Number.isFinite(stem.durationSeconds) && stem.durationSeconds > 0)
+    ? Math.min(...realStems.map(stem => stem.durationSeconds!)) : row.durationSeconds;
+
+  const [acquisition] = await db.select({ method: sourceAcquisitions.method, sourceUrl: sourceAcquisitions.sourceUrl, metadata: sourceAcquisitions.metadata }).from(sourceAcquisitions).where(eq(sourceAcquisitions.sourceAssetId, source.id)).limit(1);
+  let rights: TrackDetail["rights"] = null;
+  try {
+    const metadata = JSON.parse(acquisition?.metadata ?? "{}");
+    if (acquisition?.method === "authorized-url" && typeof metadata.attribution === "string" && typeof metadata.rightsNotice === "string") rights = { sourceUrl: acquisition.sourceUrl, attribution: metadata.attribution, notice: metadata.rightsNotice };
+  } catch { /* Invalid provenance is not invented permission. */ }
   return {
     ...toSummary(row, availability),
+    durationSeconds: playbackDuration,
+    rights,
     source: {
       id: source.id,
       originalFilename: source.originalFilename,
@@ -371,6 +451,8 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
       channels: source.channels,
       bitrate: source.bitrate,
     },
+    banks,
+    selectionRequired,
     stems: stemRows,
     analysis: analysis ?? null,
     playback,

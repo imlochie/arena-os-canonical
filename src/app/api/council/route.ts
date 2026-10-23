@@ -1,3 +1,5 @@
+import { ArtifactInputError, resolveArtifactInput } from "@/lib/artifact-input";
+import { requireApiAccess } from "@/lib/security/api-access";
 import { db } from "@/db";
 import { artifacts, cognitiveSessions, councilArtifacts, councilRuns, projects } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
@@ -21,6 +23,7 @@ function pickTextModel(raw: string | undefined, fallback: string): string {
 }
 
 export async function GET(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 20), 50);
   try {
@@ -36,10 +39,11 @@ export async function GET(req: Request) {
 // raw material → perspective A + B (parallel) → cross-critiques (parallel)
 // → synthesis → usable artifact. Honors Local Mode + Ephemeral.
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
-    await ensureSeeded();
     const body = await req.json();
-    const material: string = (body.material ?? "").toString().trim();
+    const { text: material, inputReference } = await resolveArtifactInput(body.source, body.material);
+    await ensureSeeded();
     const jobId: string = (body.jobId ?? "second_brain").toString();
     const keys = body.keys;
     const localOnly = isLocalOnlyBody(body);
@@ -47,7 +51,7 @@ export async function POST(req: Request) {
     const genKeys = localOnly ? undefined : keys;
 
     if (!material) return Response.json({ error: "material required" }, { status: 400 });
-    if (material.length > 8000) return Response.json({ error: "material too long" }, { status: 400 });
+    if (!inputReference && material.length > 8000) return Response.json({ error: "material too long" }, { status: 400 });
 
     const job = getCognitiveJob(jobId);
     const pool = textModels().filter((m) => m.id !== "offline-sage");
@@ -61,7 +65,7 @@ export async function POST(req: Request) {
 
     const projectId = body.projectId ? String(body.projectId) : null;
     const ctx = await getProjectContext(projectId);
-    const effectiveMaterial = withProjectContext(material, ctx);
+    const effectiveMaterial = inputReference ? material : withProjectContext(material, ctx);
 
     const started = Date.now();
     const sysA = `You are ${job.roleA.name} (${job.roleA.emoji}) on a Cognitive Council for the job "${job.name}". ${job.roleA.instruction}`;
@@ -94,7 +98,7 @@ export async function POST(req: Request) {
         messages: [
           {
             role: "user",
-            content: `ORIGINAL MATERIAL:\n${material.slice(0, 3000)}\n\nYOUR PERSPECTIVE (${job.roleA.name}):\n${pA.text.slice(0, 2500)}\n\nRIVAL PERSPECTIVE (${job.roleB.name}):\n${pB.text.slice(0, 2500)}\n\n${job.critiqueInstruction}`,
+            content: `ORIGINAL MATERIAL:\n${material}\n\nYOUR PERSPECTIVE (${job.roleA.name}):\n${pA.text.slice(0, 2500)}\n\nRIVAL PERSPECTIVE (${job.roleB.name}):\n${pB.text.slice(0, 2500)}\n\n${job.critiqueInstruction}`,
           },
         ],
         system: sysA,
@@ -107,7 +111,7 @@ export async function POST(req: Request) {
         messages: [
           {
             role: "user",
-            content: `ORIGINAL MATERIAL:\n${material.slice(0, 3000)}\n\nYOUR PERSPECTIVE (${job.roleB.name}):\n${pB.text.slice(0, 2500)}\n\nRIVAL PERSPECTIVE (${job.roleA.name}):\n${pA.text.slice(0, 2500)}\n\n${job.critiqueInstruction}`,
+            content: `ORIGINAL MATERIAL:\n${material}\n\nYOUR PERSPECTIVE (${job.roleB.name}):\n${pB.text.slice(0, 2500)}\n\nRIVAL PERSPECTIVE (${job.roleA.name}):\n${pA.text.slice(0, 2500)}\n\n${job.critiqueInstruction}`,
           },
         ],
         system: sysB,
@@ -123,7 +127,7 @@ export async function POST(req: Request) {
       messages: [
         {
           role: "user",
-          content: `COGNITIVE JOB: ${job.name}\n\nRAW MATERIAL:\n${material.slice(0, 3000)}\n\n--- ${job.roleA.name} ---\n${pA.text.slice(0, 2200)}\n\n--- ${job.roleB.name} ---\n${pB.text.slice(0, 2200)}\n\n--- ${job.roleA.name}'s critique ---\n${cA.text.slice(0, 1200)}\n\n--- ${job.roleB.name}'s critique ---\n${cB.text.slice(0, 1200)}`,
+          content: `COGNITIVE JOB: ${job.name}\n\nRAW MATERIAL:\n${material}\n\n--- ${job.roleA.name} ---\n${pA.text.slice(0, 2200)}\n\n--- ${job.roleB.name} ---\n${pB.text.slice(0, 2200)}\n\n--- ${job.roleA.name}'s critique ---\n${cA.text.slice(0, 1200)}\n\n--- ${job.roleB.name}'s critique ---\n${cB.text.slice(0, 1200)}`,
         },
       ],
       system: job.synthesisInstruction,
@@ -138,7 +142,7 @@ export async function POST(req: Request) {
       messages: [
         {
           role: "user",
-          content: `Based on this synthesis, produce the artifact.\n\nSYNTHESIS:\n${synth.text.slice(0, 5000)}`,
+          content: `ORIGINAL MATERIAL:\n${material}\n\nBased on this synthesis, produce the artifact.\n\nSYNTHESIS:\n${synth.text.slice(0, 5000)}`,
         },
       ],
       system: job.artifactInstruction,
@@ -159,6 +163,7 @@ export async function POST(req: Request) {
           ephemeral: true,
           jobId: job.id,
           material,
+          inputReference,
           modelAId,
           modelBId,
           synthesisModel,
@@ -187,6 +192,7 @@ export async function POST(req: Request) {
       .values({
         jobId: job.id,
         material,
+        inputReference,
         modelAId,
         modelBId,
         synthesisModel,
@@ -244,6 +250,7 @@ export async function POST(req: Request) {
 
     return Response.json({ run: { ...run, localOnly }, session, artifact, unifiedArtifact: unified, ms, localOnly }, { status: 201 });
   } catch (e) {
+    if (e instanceof ArtifactInputError) return Response.json({ error: e.message }, { status: e.status });
     console.error("council error", e);
     return Response.json({ error: "council run failed" }, { status: 500 });
   }

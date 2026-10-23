@@ -1,7 +1,7 @@
 import { db } from "@/db";
-import { artifacts, projects } from "@/db/schema";
-import { and, desc, eq } from "drizzle-orm";
-import { insertArtifact } from "@/lib/arcadeStore";
+import { projects } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { ArtifactContentError, assertArtifactBodySize, insertArtifact, listArtifacts } from "@/lib/arcadeStore";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireApiAccess } from "@/lib/security/api-access";
 
@@ -17,16 +17,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   try {
     const user = await requireUser();
     const { id } = await params;
-    const rows = await db
-      .select()
-      .from(artifacts)
-      .where(and(eq(artifacts.projectId, id), eq(artifacts.ownerId, user.id)))
-      .orderBy(desc(artifacts.createdAt))
-      .limit(100);
+    const rows = await listArtifacts(db, user.id, 100, false, id);
     return Response.json({ artifacts: rows });
   } catch (e) {
     console.error(e);
-    return Response.json({ artifacts: [] });
+    return Response.json({ error: "Artifact storage unavailable. Your saved work has not been removed; retry when the service recovers." }, { status: 503 });
   }
 }
 
@@ -41,25 +36,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const body = await req.json();
     const kind = KINDS.includes(String(body.kind)) ? String(body.kind) : "brief";
     const title = (body.title ?? "Untitled artifact").toString().slice(0, 160);
-    const artifactBody = (body.body ?? "").toString().slice(0, 20000);
+    const artifactBody = (body.body ?? "").toString();
+    assertArtifactBodySize(artifactBody);
     if (!artifactBody.trim()) return Response.json({ error: "body required" }, { status: 400 });
     const sourceType = (body.sourceType ?? "manual").toString().slice(0, 20);
+    if (sourceType === "mission-output") return Response.json({ error: "Mission output provenance must come from executed mission operations." }, { status: 400 });
     const sourceId = body.sourceId ? String(body.sourceId).slice(0, 80) : null;
     // Record the caller as owner through the shared store (never a raw insert
     // that would fall back to the column default).
-    const row = await insertArtifact(db, {
-      projectId: id,
-      kind,
-      title,
-      body: artifactBody,
-      sourceType,
-      sourceId,
-      ownerId: user.id,
+    const row = await db.transaction(async (tx) => {
+      const row = await insertArtifact(tx, {
+        projectId: id, kind, title, body: artifactBody,
+        sourceType, sourceId, ownerId: user.id,
+      });
+      await tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, id));
+      return row;
     });
-    await db.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, id));
     return Response.json({ artifact: row }, { status: 201 });
   } catch (e) {
     console.error(e);
-    return Response.json({ error: "create failed" }, { status: 500 });
+    return Response.json({ error: e instanceof ArtifactContentError ? e.message : "Could not confirm project Artifact creation. Reload the library before retrying." }, { status: e instanceof ArtifactContentError ? 413 : 503 });
   }
 }

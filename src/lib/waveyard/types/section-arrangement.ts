@@ -75,9 +75,12 @@ export function createSectionArrangementClips(
 }
 
 /** Current source/section provenance must agree before a section can drive a clip. */
-/** Project and immutable-source chain used by the server before clip creation. */
+/** Immutable-source chain used after the server has resolved projectAudio
+ * membership. The source project may differ from the destination remix project;
+ * every source-side record must still belong to the same original project.
+ */
 export function sectionActionScopeReason(input: {
-  remixProjectId: string;
+  audioProjectId: string;
   sectionProjectId: string;
   sourceProjectId: string;
   sourceAnalysisProjectId: string;
@@ -94,11 +97,11 @@ export function sectionActionScopeReason(input: {
   stemAssetId: string;
 }): "section_action_unavailable" | null {
   if (
-    input.sectionProjectId !== input.remixProjectId
-    || input.sourceProjectId !== input.remixProjectId
-    || input.sourceAnalysisProjectId !== input.remixProjectId
-    || input.sectionAnalysisProjectId !== input.remixProjectId
-    || input.stemProjectId !== input.remixProjectId
+    input.sectionProjectId !== input.audioProjectId
+    || input.sourceProjectId !== input.audioProjectId
+    || input.sourceAnalysisProjectId !== input.audioProjectId
+    || input.sectionAnalysisProjectId !== input.audioProjectId
+    || input.stemProjectId !== input.audioProjectId
     || input.trackRemixSessionId !== input.remixId
     || input.sectionSourceAssetId !== input.sourceAssetId
     || input.analysisSourceAssetId !== input.sourceAssetId

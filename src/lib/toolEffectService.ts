@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { toolEffects } from "@/db/identitySchema";
 import { and, eq, sql } from "drizzle-orm";
 import { appendSessionEvent } from "./sessionEvents";
+import { realpath } from "node:fs/promises";
 import { applyFileEffect, approveToolEffect, type ToolEffect } from "./toolEffects";
 import type { ToolGrant } from "./toolRuntime";
 import { authorize, type AuthenticatedIdentity } from "./authorization";
@@ -17,8 +18,9 @@ export async function persistEffect(effect: ToolEffect, database: Database = db)
 }
 
 export async function approveEffectWithIdentity(input:{effectId:string;sessionId:string;expectedDigest:string;grant:ToolGrant;identity:AuthenticatedIdentity},database:Database=db){
+ const grant=await canonicalGrant(input.grant);
  return database.transaction(async tx=>{const [effect]=await tx.select().from(toolEffects).where(and(eq(toolEffects.id,input.effectId),eq(toolEffects.sessionId,input.sessionId))).limit(1);if(!effect)throw new Error("TOOL_EFFECT_NOT_FOUND");
- const decision=await authorize({identity:input.identity,capability:"tool_effect.approve",resource:effect.resourceId,scope:effect.canonicalScope,effectClass:effect.effectClass,requiresFreshAuthentication:true},tx as never);if(!decision.allowed)throw new Error(decision.code);validateGrant(effect,input.grant);if(effect.operationDigest!==input.expectedDigest)throw new Error("TOOL_DIGEST_MISMATCH");approveToolEffect(fromRow(effect),input.identity.ownerId);
+ const decision=await authorize({identity:input.identity,capability:"tool_effect.approve",resource:effect.resourceId,scope:effect.canonicalScope,effectClass:effect.effectClass,requiresFreshAuthentication:true},tx as never);if(!decision.allowed)throw new Error(decision.code);validateGrant(effect,grant);if(effect.operationDigest!==input.expectedDigest)throw new Error("TOOL_DIGEST_MISMATCH");approveToolEffect(fromRow(effect),input.identity.ownerId);
  const [claimed]=await tx.update(toolEffects).set({status:"approved",approvedBy:input.identity.ownerId,approvedDigest:effect.operationDigest,approvedAt:new Date()}).where(and(eq(toolEffects.id,effect.id),eq(toolEffects.status,"proposed"),eq(toolEffects.operationDigest,input.expectedDigest))).returning();if(!claimed)throw new Error("TOOL_EFFECT_STATE");await appendSessionEvent(tx,effect.sessionId,"tool_effect_approved",{effectId:effect.id,approverId:input.identity.ownerId,deviceId:input.identity.deviceId,authenticatedSessionId:input.identity.sessionId});return preview(claimed)})
 }
 
@@ -26,12 +28,13 @@ export async function approveEffectWithIdentity(input:{effectId:string;sessionId
 export async function approvePersistedEffect(input: {
   effectId: string; sessionId: string; approverId: string; expectedDigest: string; grant: ToolGrant;
 }, database: Database = db) {
+  const grant = await canonicalGrant(input.grant);
   return database.transaction(async (tx) => {
     const [current] = await tx.select().from(toolEffects).where(and(
       eq(toolEffects.id, input.effectId), eq(toolEffects.sessionId, input.sessionId)
     )).limit(1);
     if (!current) throw new Error("TOOL_EFFECT_NOT_FOUND");
-    validateGrant(current, input.grant);
+    validateGrant(current, grant);
     if (current.operationDigest !== input.expectedDigest) throw new Error("TOOL_DIGEST_MISMATCH");
     const approved = approveToolEffect(fromRow(current), input.approverId);
     const [claimed] = await tx.update(toolEffects).set({
@@ -46,17 +49,25 @@ export async function approvePersistedEffect(input: {
 export async function applyPersistedEffect(input: {
   effectId: string; sessionId: string; expectedDigest: string; grant: ToolGrant;
 }, database: Database = db) {
+  const grant = await canonicalGrant(input.grant);
   const claimed = await database.transaction(async (tx) => {
     const [row] = await tx.update(toolEffects).set({ status: "applying" }).where(and(
       eq(toolEffects.id, input.effectId), eq(toolEffects.sessionId, input.sessionId), eq(toolEffects.status, "approved"),
       eq(toolEffects.operationDigest, input.expectedDigest), sql`${toolEffects.approvedDigest} = ${toolEffects.operationDigest}`
     )).returning();
     if (!row) throw new Error("TOOL_EFFECT_NOT_CLAIMABLE");
-    validateGrant(row, input.grant);
+    validateGrant(row, grant);
     return row;
   });
 
-  const outcome = await applyFileEffect({ ...fromRow(claimed), status: "approved" }, input.grant);
+  let outcome: ToolEffect;
+  try {
+    outcome = await applyFileEffect({ ...fromRow(claimed), status: "approved" }, grant);
+  } catch (error) {
+    // A rejected digest/path must become a durable failed outcome, not leave
+    // the already-claimed row permanently stuck in "applying".
+    outcome = { ...fromRow(claimed), status: "failed", error: error instanceof Error ? error.message : "TOOL_EFFECT_FAILED" };
+  }
   return database.transaction(async (tx) => {
     const eventType = outcome.status === "applied" ? "tool_effect_applied" : outcome.status === "stale" ? "tool_effect_stale" : "tool_effect_failed";
     const [row] = await tx.update(toolEffects).set({
@@ -72,6 +83,19 @@ export async function applyPersistedEffect(input: {
 function validateGrant(row: typeof toolEffects.$inferSelect, grant: ToolGrant) {
   if (row.grantId !== grant.id || row.sessionId !== grant.sessionId || row.resourceId !== grant.resourceId || row.canonicalScope !== grant.root) {
     throw new Error("TOOL_GRANT_INVALID");
+  }
+}
+/** The row stores the RESOLVED scope (proposeFileEffect realpaths it). Comparing
+ * that against an unresolved grant root rejects a valid grant on Windows,
+ * where a temp path is often handed back in 8.3 short form
+ * (`C:\Users\RUNNER~1\…`) while realpath returns `C:\Users\runneradmin\…`.
+ * Canonicalise the grant the same way the proposal was canonicalised. */
+async function canonicalGrant(grant: ToolGrant): Promise<ToolGrant> {
+  try {
+    const root = await realpath(grant.root);
+    return root === grant.root ? grant : { ...grant, root };
+  } catch {
+    return grant;
   }
 }
 function toInsert(e: ToolEffect) { return { id:e.id,sessionId:e.sessionId,actorId:e.actorId,grantId:e.grantId,resourceId:e.resourceId,capability:e.capability,canonicalScope:e.canonicalRoot,targetPath:e.path,proposedOperation:JSON.stringify({content:e.content,expectedHash:e.expectedHash}),operationDigest:e.operationDigest,status:e.status }; }

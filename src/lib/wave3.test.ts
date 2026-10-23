@@ -108,8 +108,8 @@ test("deep agent: a bounded run plans, verifies, and persists its transcript", {
 
   const run = await runDeepAgent("write a two-line haiku about local-first software", { steps: 2, timeBudgetMs: 60_000 });
   assert.ok(run.id);
-  assert.equal(run.status, "done");
-  assert.equal(run.steps.length, 2);
+  assert.equal(run.status, "failed", "the deterministic local engine cannot verify its own draft");
+  assert.equal(run.steps.length, 1, "failed work must not feed a subsequent step");
   for (const step of run.steps) {
     assert.ok(step.title.length > 0);
     assert.ok(step.output.length > 0);
@@ -120,10 +120,10 @@ test("deep agent: a bounded run plans, verifies, and persists its transcript", {
   assert.match(run.engine, /arena-local-engine|local/);
 
   const fetched = await getRun(run.id);
-  assert.equal(fetched?.steps.length, 2);
+  assert.equal(fetched?.steps.length, 1);
 
   const listed = await listRuns();
-  assert.ok(listed.some((r) => r.id === run.id && r.stepCount === 2));
+  assert.ok(listed.some((r) => r.id === run.id && r.stepCount === 1));
 
   assert.equal(await deleteRun(run.id), true);
   assert.equal(await getRun(run.id), null);
@@ -182,7 +182,9 @@ test("shorts: real captioned MP4 through ffmpeg (burned-in subtitles)", async ()
   try {
     const srt = buildSrt(segmentsFromText("Hello from the burned-in caption test. Second line follows here."));
     const result = await renderCaptionedShort(await readFile(wav), srt);
-    assert.ok(result.ok, `render failed: result.ok === false`);
+    // Carry the tool's own reason: "ok === false" says nothing about whether
+    // this is a missing filter, a codec, or a path problem on this platform.
+    assert.ok(result.ok, `render failed: ${result.ok ? "" : result.reason}`);
     if (result.ok) {
       assert.ok(result.buffer.byteLength > 20_000, `mp4 suspiciously small: ${result.buffer.byteLength}`);
       // Real MP4: ftyp box magic near the start.

@@ -18,6 +18,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { separationTargetOptions } from "@/lib/waveyard/separation/modes";
+import { DeepEngineSetup } from "../DeepEngineSetup";
+import { laneDisplayName } from "@/lib/waveyard/separation/stem-display";
 import { useRouter } from "next/navigation";
 
 import { formatPlayClock, STEM_CHANNEL_LABELS } from "@/lib/waveyard/library/model";
@@ -38,6 +41,9 @@ import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import { WaveformCanvas } from "@/components/waveyard/WaveformCanvas";
 
 interface TrackDetail {
+  rights?: { sourceUrl: string | null; attribution: string; notice: string } | null;
+  banks?: Array<{id:string;model:string;createdAt:string;stems:Array<{id:string;stemType:string}>}>;
+  selectionRequired?: string | null;
   id: string;
   title: string;
   artist: string;
@@ -47,7 +53,7 @@ interface TrackDetail {
   stemAvailability: { status: string; stemCount?: number; reason?: string };
   studioProjectId: string;
   source: { id: string; originalFilename: string; codec: string; sampleRate: number; channels: number; bitrate: number | null };
-  stems: Array<{ id: string; stemType: string; engine: string }>;
+  stems: Array<{ id: string; stemType: string; engine: string; model?: string | null }>;
   analysis: { status: string; bpm: number | null; musicalKey: string | null } | null;
   playback: { assetIds: string[]; kind: "stems" | "source" };
 }
@@ -79,6 +85,33 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   const [repeat, setRepeat] = useState<RepeatMode>("off");
   const [shuffle, setShuffle] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [separationModel, setSeparationModel] = useState("stems_4");
+  const [separationJobs, setSeparationJobs] = useState<Array<{ id: string; status: string; stage: string; model: string; errorMessage: string | null }>>([]);
+  const [separationBusy, setSeparationBusy] = useState(false);
+  const [separationRefresh, setSeparationRefresh] = useState(0);
+  useEffect(() => {
+    let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
+      try {
+        const response = await fetch(`/api/library/tracks/${trackId}/separation`, { cache: "no-store" });
+        if (!response.ok) return;
+        const body = await response.json();
+        if (stopped) return;
+        setSeparationJobs(body.jobs ?? []);
+        if (body.jobs?.some((job: { status: string }) => !["complete", "failed", "cancelled"].includes(job.status))) timer = setTimeout(() => void load(), 2000);
+      } catch { /* Existing playback remains usable; errors on actions stay visible. */ }
+    };
+    void load(); return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, [trackId, separationRefresh]);
+  async function requestSeparation() {
+    setSeparationBusy(true);
+    try {
+      const response = await fetch(`/api/library/tracks/${trackId}/separation`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: separationModel }) });
+      const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Separation could not start.");
+      setStatus("Separation queued. Original audio and existing banks are retained."); setSeparationRefresh(value => value + 1);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Separation could not start."); }
+    finally { setSeparationBusy(false); }
+  }
   const [startingSession, setStartingSession] = useState(false);
 
   const countedRef = useRef(false);
@@ -95,6 +128,17 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   const assetIds = useMemo(() => track?.playback.assetIds ?? [], [track]);
   const duration = track?.durationSeconds ?? 0;
   const transport = useStemTransport(assetIds, duration);
+  async function auditionBank(id: string) {
+    try {
+      const response = await fetch(`/api/library/tracks/${trackId}?bankId=${encodeURIComponent(id)}`, { cache: "no-store" });
+      const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Bank unavailable.");
+      const detail = body.track as TrackDetail;
+      const initial: Record<string, MixerValues> = {};
+      for (const stem of detail.stems) initial[stem.id] = mixRef.current[stem.id] ?? { volume: 1, pan: 0, muted: false, solo: false };
+      transport.pause(); setTrack(detail); setMix(initial); mixRef.current = initial; transport.applyMix(initial);
+      setStatus("Loaded the selected validated bank. New bank channels start at their default levels.");
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Bank could not load; current audio is unchanged."); }
+  }
   const seek = transport.seek;
 
   // ---------------------------------------------------------------- loading
@@ -308,6 +352,8 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   // only one playback engine, never two running at once).
   const playAsSession = useCallback(() => {
     if (startingSession || track === null) return;
+    const selectedBank = track.playback.kind === "stems" ? (track.banks ?? []).find(bank => bank.stems.length === track.playback.assetIds.length && bank.stems.every(stem => track.playback.assetIds.includes(stem.id))) : undefined;
+    if (track.selectionRequired || (track.playback.kind === "stems" && !selectedBank)) { setStatus("Choose one completed bank before starting a session. Current playback is unchanged."); return; }
     setStartingSession(true);
     void (async () => {
       try {
@@ -324,7 +370,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
         const added = await fetch(`/api/library/sessions/${session.id}/tracks`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ trackId: track.id }),
+          body: JSON.stringify({ trackId: track.id, ...(selectedBank ? { bankId: selectedBank.id } : {}) }),
         });
         if (!added.ok) {
           setStatus("The track could not be added to the new session.");
@@ -482,13 +528,13 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
     );
   }
 
-  const separated = track.playback.kind === "stems";
+  const separated = track.playback.kind === "stems" && !track.selectionRequired;
   const playableStems = track.stems.filter((stem) => assetIds.includes(stem.id));
   const stemChannels = separated
     ? playableStems.map((stem) => ({
         assetId: stem.id,
         stemType: stem.stemType,
-        label: STEM_CHANNEL_LABELS[stem.stemType] ?? stem.stemType[0]?.toUpperCase() + stem.stemType.slice(1),
+        label: laneDisplayName(stem, playableStems),
       }))
     : ["vocals", "drums", "bass", "other"].map((stemType) => ({
         assetId: "",
@@ -526,6 +572,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
         <div className="wplayer-identity">
           <span className="eyebrow">Now playing</span>
           <h1>{track.title}</h1>
+          {track.rights && <details><summary>Source rights / attribution for this recording</summary><p>{track.rights.attribution}</p><p>{track.rights.notice}</p><a href={`data:text/plain;charset=utf-8,${encodeURIComponent(track.rights.attribution + "\n\n" + track.rights.notice)}`} download={`${track.id}-rights.txt`}>Save rights/attribution notice</a><p>Keep these notices and describe modifications with exported audio. Library import is not legal clearance.</p></details>}
           <p className="player-sub">{track.artist || "Unknown artist"}{track.album ? ` · ${track.album}` : ""}</p>
           <p className="player-facts">
             {formatPlayClock(track.durationSeconds)}
@@ -540,8 +587,20 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
         </div>
       </header>
 
+      <details className="separation-workbench"><summary>Separate this recording</summary>
+        <label>Separation engine<select aria-label="Separation engine" value={separationModel} onChange={event => setSeparationModel(event.target.value)}>{separationTargetOptions().map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+        <button type="button" disabled={separationBusy} onClick={() => void requestSeparation()}>Start separation</button>
+        {separationModel.startsWith("deep_") && <DeepEngineSetup key={separationModel} modelId={separationModel} />}
+        <p>Processing uses this stored recording, not a new upload. Playback changes only when you choose a completed bank.</p>
+        <div role="status" aria-live="polite">{separationJobs.slice(0, 3).map(job => <div key={job.id}><span>{job.model}: {job.status} · {job.stage}</span>{job.errorMessage && <p>{job.errorMessage}</p>}{job.status === "complete" && <button type="button" onClick={() => void auditionBank(job.id)}>Load bank {job.id}</button>}<Link href={`/waveyard/projects/${track.studioProjectId}`}>Processing and recovery</Link></div>)}</div>
+      </details>
+      {track.selectionRequired && <p role="alert">{track.selectionRequired}</p>}
+      {!!track.banks?.length && <label>Audition separation bank<select aria-label="Audition separation bank" value="" onChange={event => {
+        const bankId = event.target.value; if (!bankId) return;
+        void auditionBank(bankId);
+      }}><option value="">Choose an explicit bank</option>{track.banks.map(bank => <option key={bank.id} value={bank.id}>{bank.model} · {bank.createdAt} · {bank.id}</option>)}</select></label>}
       {availabilityNote !== null && <p className="player-note" role="note">{availabilityNote}</p>}
-      {transport.error !== null && <p className="error" role="alert">{transport.error}</p>}
+      {transport.error !== null && <><p className="error" role="alert">{transport.error}</p>{!separated && <p>This browser may not support the source codec, or the original bytes may be unavailable. <Link href={`/waveyard?convertTrack=${track.id}`}>Review browser-compatible conversion</Link> to explicitly create WAV/FLAC/MP3 from this same owned source. The original is retained; this does not repair missing/corrupt bytes or silently replace your audio.</p>}</>}
 
       {/* THE FOUR DOMINANT STEMS — real gain, real meters, honest states. */}
       <div className={`stem-deck ${separated ? "" : "source-only"}`} aria-label="Stem channels">
@@ -643,7 +702,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
 
       <div className="player-actions">
         <button type="button" className="button" onClick={() => void addToQueue()}>+ Queue</button>
-        <button type="button" className="button secondary" onClick={playAsSession} disabled={startingSession} title="Create a session starting with this track">
+        <button type="button" className="button secondary" onClick={playAsSession} disabled={startingSession} title="Create a fresh session from this selected audio bank. Audition mute/solo controls reset in the new session.">
           {startingSession ? "Starting…" : "Play as session"}
         </button>
         {playlists.length > 0 && (

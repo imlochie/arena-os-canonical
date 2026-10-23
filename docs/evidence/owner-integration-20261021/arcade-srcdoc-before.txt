@@ -1,0 +1,284 @@
+TAP version 13
+# (node:24163) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/tests/helpers/mission-postgres.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/package.json.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:24163) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/dsp/src/dsp.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/dsp/package.json.
+# (node:24163) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/arena-os-canonical/waveyard-worker/packages/types/src/arrangement-automation.ts is not specified and it doesn't parse as CommonJS.
+# Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+# To eliminate this warning, add "type": "module" to /home/user/arena-os-canonical/waveyard-worker/packages/types/package.json.
+# Subtest: Arcade real catalogue outage never erases acknowledged games or preview; retry/reopen retains exact playable bytes and enforces deletion ownership
+not ok 1 - Arcade real catalogue outage never erases acknowledged games or preview; retry/reopen retains exact playable bytes and enforces deletion ownership
+  ---
+  duration_ms: 8474.974868
+  type: 'test'
+  location: '/home/user/arena-os-canonical/tests/acceptance/studio-fx.test.mjs:571:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    expect(locator).toHaveAttribute(expected) failed
+    
+    Locator: locator('iframe')
+    Timeout: 5000ms
+    - Expected  - 2
+    + Received  + 2
+    
+    @@ -1,6 +1,6 @@
+    - <!DOCTYPE html>
+    + <!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="no-referrer"></head><body><!DOCTYPE html>
+      <html lang="en">
+      <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+      <title>Snake</title>
+    @@ -83,6 +83,6 @@
+      window.__start=function(){newGame();};
+      window.addEventListener('keydown',function(e){var k=e.key;if(k==='ArrowUp'||k==='w'||k==='W'){if(dir.y!==1)want={x:0,y:-1};}else if(k==='ArrowDown'||k==='s'||k==='S'){if(dir.y!==-1)want={x:0,y:1};}else if(k==='ArrowLeft'||k==='a'||k==='A'){if(dir.x!==1)want={x:-1,y:0};}else if(k==='ArrowRight'||k==='d'||k==='D'){if(dir.x!==-1)want={x:1,y:0};}else if(k==='p'||k==='P'){if(state==='play'){state='pause';__overlay('<div class="big">⏸</div><h2>PAUSED</h2><p>Press P to resume</p>');}else if(state==='pause'){state='play';__hideOverlay();}}else if(k==='m'||k==='M'){__muted=!__muted;}else if(k==='r'||k==='R'){newGame();}else if((k===' '||k==='Enter')&&state==='title'){newGame();}});
+      reset();state='title';__overlay('<div class="big">🐍</div><h2>SNAKE</h2><p>Eat '+CONFIG.goal+' to win. Stars = 50.<br>Arrows / WASD / swipe / dpad.<br><br><button onclick="__start()">▶ START</button></p>');__hud('SCORE 0 / '+(CONFIG.goal*10),'LV 1 · BEST '+high);requestAnimationFrame(loop);
+      </script>
+      </body>
+    - </html>
+    + </html></body></html>
+    
+    Call log:
+      - Expect "toHaveAttribute" locator('iframe') with timeout 5000ms
+      - waiting for locator('iframe')
+        14 × locator resolved to <iframe sandbox="allow-scripts" referrerpolicy="no-referrer" class="h-[640px] w-full bg-black" title="snake — outage recovery acceptance" srcdoc="<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="n…></iframe>
+           - unexpected value "<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="no-referrer"></head><body><!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>Snake</title>
+    <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#05070f;color:#e8edf7;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:10px;-webkit-user-select:none;user-select:none}
+    .wrap{width:100%;max-width:441px}
+    h1{font-size:17px;font-weight:800;text-align:center;letter-spacing:.3px}
+    h1 .dot{color:#7CFC00}
+    .tag{text-align:center;font-size:11px;color:#8b93a9;margin:2px 0 8px}
+    #hud{display:flex;justify-content:space-between;align-items:center;background:#0b1120;border:1px solid #232c47;border-radius:10px;padding:7px 12px;font-size:12px;font-weight:700;margin-bottom:8px;font-variant-numeric:tabular-nums}
+    #hud .lv{color:#7CFC00}
+    #stage{position:relative;border-radius:12px;overflow:hidden;border:1px solid #232c47;background:#000;touch-action:none}
+    canvas{display:block;width:100%;height:auto}
+    #overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:rgba(3,6,15,.82);backdrop-filter:blur(2px);padding:16px;z-index:5}
+    #overlay.hidden{display:none}
+    #overlay h2{font-size:24px;margin-bottom:6px}
+    #overlay p{font-size:13px;color:#aeb6cc;line-height:1.55;max-width:340px}
+    #overlay .big{font-size:40px;margin-bottom:8px}
+    #overlay button{margin-top:12px;background:#7CFC00;border:0;color:#fff;font-weight:800;font-size:14px;padding:10px 26px;border-radius:10px;cursor:pointer}
+    .ctl{display:flex;gap:8px;justify-content:center;margin-top:10px}
+    .ctl button{background:#141c33;border:1px solid #2a3557;color:#dbe3f3;border-radius:10px;font-size:12px;font-weight:700;padding:7px 12px;cursor:pointer}
+    .dpad{display:none;grid-template-columns:repeat(3,64px);grid-template-rows:repeat(2,56px);gap:6px;justify-content:center;margin-top:10px}
+    .dpad button{background:#141c33;border:1px solid #2a3557;color:#fff;border-radius:12px;font-size:20px;touch-action:none}
+    .dpad .act{background:#7CFC00;border-color:#7CFC00;font-size:15px;font-weight:800}
+    @media (pointer:coarse){.dpad{display:grid}}
+    .help{text-align:center;font-size:10.5px;color:#69718c;margin-top:8px;line-height:1.5}
+    .foot{text-align:center;font-size:10px;color:#4a5370;margin-top:6px}
+    </style>
+    </head>
+    <body>
+    <div class="wrap">
+    <h1><span class="dot">●</span> Snake</h1>
+    <div class="tag">arcade-classic · generated fully offline</div>
+    <div id="hud"><span id="hL">SCORE 0</span><span class="lv" id="hR">LV 1</span></div>
+    <div id="stage"><canvas id="game" width="441" height="441"></canvas><div id="overlay"></div></div>
+    <div class="ctl"><button data-k="p">⏸ Pause</button><button data-k="m">🔊 Sound</button><button data-k="r">↻ Restart</button></div>
+    <div class="dpad"><span></span><button data-k="ArrowUp">▲</button><span></span><button data-k="ArrowLeft">◀</button><button data-k="ArrowDown">▼</button><button data-k="ArrowRight">▶</button></div>
+    <div class="dpad" style="grid-template-rows:56px"><span></span><button class="act" data-k=" "> ⏸</button><span></span></div>
+    <div class="help">Arrows / WASD / swipe — steer · Red = 10 · ★ = 50 · P — pause · M — sound · R — restart</div>
+    <div class="foot">🔒 built offline · ArenaForge Arcade · never trained on</div>
+    </div>
+    <script>
+    "use strict";
+    if(typeof CanvasRenderingContext2D!=='undefined'&&!CanvasRenderingContext2D.prototype.roundRect){CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h){this.rect(x,y,w,h);return this;};}
+    function __hud(l,r){document.getElementById('hL').textContent=l;document.getElementById('hR').textContent=r;}
+    function __overlay(html){var el=document.getElementById('overlay');el.innerHTML=html;el.classList.remove('hidden');}
+    function __hideOverlay(){document.getElementById('overlay').classList.add('hidden');}
+    var __store={get:function(k,d){try{var v=localStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}},set:function(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}};
+    function __press(key){window.dispatchEvent(new KeyboardEvent('keydown',{key:key}));}
+    function __release(key){window.dispatchEvent(new KeyboardEvent('keyup',{key:key}));}
+    document.querySelectorAll('[data-k]').forEach(function(b){var k=b.getAttribute('data-k');b.addEventListener('pointerdown',function(e){e.preventDefault();__press(k);});b.addEventListener('pointerup',function(){__release(k);});b.addEventListener('pointerleave',function(){__release(k);});b.addEventListener('pointercancel',function(){__release(k);});});
+    (function(){var cv=document.getElementById('game');var sx=0,sy=0;cv.addEventListener('touchstart',function(e){var t=e.changedTouches[0];sx=t.clientX;sy=t.clientY;},{passive:true});cv.addEventListener('touchend',function(e){var t=e.changedTouches[0];var dx=t.clientX-sx,dy=t.clientY-sy;if(Math.max(Math.abs(dx),Math.abs(dy))<24){__press(' ');__release(' ');return;}var k=Math.abs(dx)>Math.abs(dy)?(dx>0?'ArrowRight':'ArrowLeft'):(dy>0?'ArrowDown':'ArrowUp');__press(k);setTimeout(function(){__release(k);},90);},{passive:true});cv.addEventListener('mousedown',function(){__press(' ');__release(' ');});})();
+    window.addEventListener('keydown',function(e){if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].indexOf(e.key)>=0){e.preventDefault();}});
+    var __ac=null,__muted=false;
+    function __sfx(f,d,type,v,slide){if(__muted)return;try{if(!__ac){var AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;__ac=new AC();}if(__ac.state==='suspended'){__ac.resume();}var o=__ac.createOscillator(),g=__ac.createGain();o.type=type||'square';o.frequency.setValueAtTime(f,__ac.currentTime);if(slide){o.frequency.exponentialRampToValueAtTime(Math.max(30,slide),__ac.currentTime+(d||0.1));}g.gain.setValueAtTime(v||0.04,__ac.currentTime);g.gain.exponentialRampToValueAtTime(0.0001,__ac.currentTime+(d||0.1));o.connect(g);g.connect(__ac.destination);o.start();o.stop(__ac.currentTime+(d||0.1));}catch(e){}}
+    var CONFIG={speed:9,wrap:false,goal:25};
+    var cv=document.getElementById('game'),ctx=cv.getContext('2d'),N=21,T=cv.width/N;
+    var snake,dir,want,food,special,score,level,high=__store.get('af_snake_high',0),state='title',acc=0,specialT=0;
+    function placeFood(){while(true){var x=Math.floor(Math.random()*N),y=Math.floor(Math.random()*N);var ok=true;for(var i=0;i<snake.length;i++){if(snake[i].x===x&&snake[i].y===y){ok=false;break;}}if(ok){food={x:x,y:y};return;}}}
+    function reset(){snake=[{x:10,y:10},{x:9,y:10},{x:8,y:10}];dir={x:1,y:0};want={x:1,y:0};score=0;level=1;special=null;specialT=6;placeFood();}
+    function newGame(){reset();state='play';__hideOverlay();}
+    function step(){if(want.x!==-dir.x||want.y!==-dir.y){if(!(want.x===dir.x&&want.y===dir.y)||true){if(snake.length<2||true){dir={x:want.x,y:want.y};}}}
+    var h={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
+    if(CONFIG.wrap){h.x=(h.x+N)%N;h.y=(h.y+N)%N;}else if(h.x<0||h.y<0||h.x>=N||h.y>=N){return die();}
+    for(var i=0;i<snake.length;i++){if(snake[i].x===h.x&&snake[i].y===h.y)return die();}
+    snake.unshift(h);
+    if(h.x===food.x&&h.y===food.y){score+=10;__sfx(520+score,0.07,'square',0.035);if(score/10%5===0){level++;__sfx(780,0.12,'square',0.04);}placeFood();if(score/10>=CONFIG.goal){return win();}}
+    else if(special&&h.x===special.x&&h.y===special.y){score+=50;special=null;specialT=8;__sfx(990,0.15,'square',0.05);}
+    else snake.pop();
+    __hud('SCORE '+score+' / '+(CONFIG.goal*10),'LV '+level+' · BEST '+Math.max(high,score));}
+    function die(){if(score>high){high=score;__store.set('af_snake_high',high);}state='over';__sfx(200,0.4,'sawtooth',0.06,60);__overlay('<div class="big">🐍</div><h2>GAME OVER</h2><p>Score '+score+' · Level '+level+'<br>Best '+high+'<br><br>Press R or tap Restart</p>');}
+    function win(){if(score>high){high=score;__store.set('af_snake_high',high);}state='over';__overlay('<div class="big">🏆</div><h2>YOU WIN!</h2><p>Score '+score+'<br>Best '+high+'<br><br>Press R to play again</p>');}
+    function draw(){ctx.fillStyle='#05070f';ctx.fillRect(0,0,cv.width,cv.height);ctx.strokeStyle='#1a2340';ctx.lineWidth=1;for(var g=0;g<=N;g++){ctx.beginPath();ctx.moveTo(g*T,0);ctx.lineTo(g*T,cv.height);ctx.stroke();ctx.beginPath();ctx.moveTo(0,g*T);ctx.lineTo(cv.width,g*T);ctx.stroke();}
+    ctx.fillStyle='#ff4d6d';ctx.beginPath();ctx.arc(food.x*T+T/2,food.y*T+T/2,T*0.32,0,7);ctx.fill();ctx.fillStyle='#7CFC00';ctx.fillRect(food.x*T+T/2-1,food.y*T+2,3,5);
+    if(special){ctx.fillStyle='#ffd700';ctx.beginPath();ctx.arc(special.x*T+T/2,special.y*T+T/2,T*0.4,0,7);ctx.fill();ctx.fillStyle='#05070f';ctx.font='bold 11px system-ui';ctx.textAlign='center';ctx.fillText('★',special.x*T+T/2,special.y*T+T/2+4);}
+    for(var i=snake.length-1;i>=0;i--){var s=snake[i];var t=i/snake.length;ctx.fillStyle=i===0?'#a3ff5e':'rgb('+(60+Math.floor((1-t)*60))+','+(200-Math.floor(t*70))+',60)';ctx.beginPath();ctx.roundRect(s.x*T+1.5,s.y*T+1.5,T-3,T-3,i===0?6:4);ctx.fill();if(i===0){ctx.fillStyle='#05070f';var ex=dir.x*3,ey=dir.y*3;ctx.beginPath();ctx.arc(s.x*T+T/2-4+ex,s.y*T+T/2-3+ey,2,0,7);ctx.arc(s.x*T+T/2+4+ex,s.y*T+T/2-3+ey,2,0,7);ctx.fill();}}}
+    var last=0;
+    function loop(ts){requestAnimationFrame(loop);var dt=Math.min(0.05,(ts-last)/1000||0.016);last=ts;if(state==='play'){acc+=dt;var rate=1/(CONFIG.speed+ (level-1)*0.9);while(acc>rate){acc-=rate;step();if(state!=='play')break;}specialT-=dt;if(specialT<=0&&!special){special={x:2+Math.floor(Math.random()*(N-4)),y:2+Math.floor(Math.random()*(N-4))};specialT=10;}if(special&&specialT<-6){special=null;specialT=8;}}draw();}
+    window.__start=function(){newGame();};
+    window.addEventListener('keydown',function(e){var k=e.key;if(k==='ArrowUp'||k==='w'||k==='W'){if(dir.y!==1)want={x:0,y:-1};}else if(k==='ArrowDown'||k==='s'||k==='S'){if(dir.y!==-1)want={x:0,y:1};}else if(k==='ArrowLeft'||k==='a'||k==='A'){if(dir.x!==1)want={x:-1,y:0};}else if(k==='ArrowRight'||k==='d'||k==='D'){if(dir.x!==-1)want={x:1,y:0};}else if(k==='p'||k==='P'){if(state==='play'){state='pause';__overlay('<div class="big">⏸</div><h2>PAUSED</h2><p>Press P to resume</p>');}else if(state==='pause'){state='play';__hideOverlay();}}else if(k==='m'||k==='M'){__muted=!__muted;}else if(k==='r'||k==='R'){newGame();}else if((k===' '||k==='Enter')&&state==='title'){newGame();}});
+    reset();state='title';__overlay('<div class="big">🐍</div><h2>SNAKE</h2><p>Eat '+CONFIG.goal+' to win. Stars = 50.<br>Arrows / WASD / swipe / dpad.<br><br><button onclick="__start()">▶ START</button></p>');__hud('SCORE 0 / '+(CONFIG.goal*10),'LV 1 · BEST '+high);requestAnimationFrame(loop);
+    </script>
+    </body>
+    </html></body></html>"
+    
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    captureRawStack (/home/user/arena-os-canonical/node_modules/playwright-core/lib/coreBundle.js:9282:17)
+    callMatcherAsStep (/home/user/arena-os-canonical/node_modules/playwright/lib/matchers/expect.js:13316:57)
+    Object.toHaveAttribute (/home/user/arena-os-canonical/node_modules/playwright/lib/matchers/expect.js:13308:23)
+    TestContext.<anonymous> (/home/user/arena-os-canonical/tests/acceptance/studio-fx.test.mjs:579:65)
+  ...
+# Subtest: Arcade browser reopens private failed attempts after restart without replacing previous playable game; save recovery commits exact validated bytes and exposes reopen
+not ok 2 - Arcade browser reopens private failed attempts after restart without replacing previous playable game; save recovery commits exact validated bytes and exposes reopen
+  ---
+  duration_ms: 5407.576596
+  type: 'test'
+  location: '/home/user/arena-os-canonical/tests/acceptance/studio-fx.test.mjs:659:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    expect(locator).toHaveAttribute(expected) failed
+    
+    Locator: locator('iframe')
+    Timeout: 5000ms
+    - Expected  - 2
+    + Received  + 2
+    
+    @@ -1,6 +1,6 @@
+    - <!DOCTYPE html>
+    + <!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="no-referrer"></head><body><!DOCTYPE html>
+      <html lang="en">
+      <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+      <title>Snake</title>
+    @@ -83,6 +83,6 @@
+      window.__start=function(){newGame();};
+      window.addEventListener('keydown',function(e){var k=e.key;if(k==='ArrowUp'||k==='w'||k==='W'){if(dir.y!==1)want={x:0,y:-1};}else if(k==='ArrowDown'||k==='s'||k==='S'){if(dir.y!==-1)want={x:0,y:1};}else if(k==='ArrowLeft'||k==='a'||k==='A'){if(dir.x!==1)want={x:-1,y:0};}else if(k==='ArrowRight'||k==='d'||k==='D'){if(dir.x!==-1)want={x:1,y:0};}else if(k==='p'||k==='P'){if(state==='play'){state='pause';__overlay('<div class="big">⏸</div><h2>PAUSED</h2><p>Press P to resume</p>');}else if(state==='pause'){state='play';__hideOverlay();}}else if(k==='m'||k==='M'){__muted=!__muted;}else if(k==='r'||k==='R'){newGame();}else if((k===' '||k==='Enter')&&state==='title'){newGame();}});
+      reset();state='title';__overlay('<div class="big">🐍</div><h2>SNAKE</h2><p>Eat '+CONFIG.goal+' to win. Stars = 50.<br>Arrows / WASD / swipe / dpad.<br><br><button onclick="__start()">▶ START</button></p>');__hud('SCORE 0 / '+(CONFIG.goal*10),'LV 1 · BEST '+high);requestAnimationFrame(loop);
+      </script>
+      </body>
+    - </html>
+    + </html></body></html>
+    
+    Call log:
+      - Expect "toHaveAttribute" locator('iframe') with timeout 5000ms
+      - waiting for locator('iframe')
+        14 × locator resolved to <iframe sandbox="allow-scripts" referrerpolicy="no-referrer" class="h-[640px] w-full bg-black" title="snake — private attempt recovery previous" srcdoc="<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="referrer" con…></iframe>
+           - unexpected value "<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="no-referrer"></head><body><!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>Snake</title>
+    <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#05070f;color:#e8edf7;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:10px;-webkit-user-select:none;user-select:none}
+    .wrap{width:100%;max-width:441px}
+    h1{font-size:17px;font-weight:800;text-align:center;letter-spacing:.3px}
+    h1 .dot{color:#7CFC00}
+    .tag{text-align:center;font-size:11px;color:#8b93a9;margin:2px 0 8px}
+    #hud{display:flex;justify-content:space-between;align-items:center;background:#0b1120;border:1px solid #232c47;border-radius:10px;padding:7px 12px;font-size:12px;font-weight:700;margin-bottom:8px;font-variant-numeric:tabular-nums}
+    #hud .lv{color:#7CFC00}
+    #stage{position:relative;border-radius:12px;overflow:hidden;border:1px solid #232c47;background:#000;touch-action:none}
+    canvas{display:block;width:100%;height:auto}
+    #overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:rgba(3,6,15,.82);backdrop-filter:blur(2px);padding:16px;z-index:5}
+    #overlay.hidden{display:none}
+    #overlay h2{font-size:24px;margin-bottom:6px}
+    #overlay p{font-size:13px;color:#aeb6cc;line-height:1.55;max-width:340px}
+    #overlay .big{font-size:40px;margin-bottom:8px}
+    #overlay button{margin-top:12px;background:#7CFC00;border:0;color:#fff;font-weight:800;font-size:14px;padding:10px 26px;border-radius:10px;cursor:pointer}
+    .ctl{display:flex;gap:8px;justify-content:center;margin-top:10px}
+    .ctl button{background:#141c33;border:1px solid #2a3557;color:#dbe3f3;border-radius:10px;font-size:12px;font-weight:700;padding:7px 12px;cursor:pointer}
+    .dpad{display:none;grid-template-columns:repeat(3,64px);grid-template-rows:repeat(2,56px);gap:6px;justify-content:center;margin-top:10px}
+    .dpad button{background:#141c33;border:1px solid #2a3557;color:#fff;border-radius:12px;font-size:20px;touch-action:none}
+    .dpad .act{background:#7CFC00;border-color:#7CFC00;font-size:15px;font-weight:800}
+    @media (pointer:coarse){.dpad{display:grid}}
+    .help{text-align:center;font-size:10.5px;color:#69718c;margin-top:8px;line-height:1.5}
+    .foot{text-align:center;font-size:10px;color:#4a5370;margin-top:6px}
+    </style>
+    </head>
+    <body>
+    <div class="wrap">
+    <h1><span class="dot">●</span> Snake</h1>
+    <div class="tag">arcade-classic · generated fully offline</div>
+    <div id="hud"><span id="hL">SCORE 0</span><span class="lv" id="hR">LV 1</span></div>
+    <div id="stage"><canvas id="game" width="441" height="441"></canvas><div id="overlay"></div></div>
+    <div class="ctl"><button data-k="p">⏸ Pause</button><button data-k="m">🔊 Sound</button><button data-k="r">↻ Restart</button></div>
+    <div class="dpad"><span></span><button data-k="ArrowUp">▲</button><span></span><button data-k="ArrowLeft">◀</button><button data-k="ArrowDown">▼</button><button data-k="ArrowRight">▶</button></div>
+    <div class="dpad" style="grid-template-rows:56px"><span></span><button class="act" data-k=" "> ⏸</button><span></span></div>
+    <div class="help">Arrows / WASD / swipe — steer · Red = 10 · ★ = 50 · P — pause · M — sound · R — restart</div>
+    <div class="foot">🔒 built offline · ArenaForge Arcade · never trained on</div>
+    </div>
+    <script>
+    "use strict";
+    if(typeof CanvasRenderingContext2D!=='undefined'&&!CanvasRenderingContext2D.prototype.roundRect){CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h){this.rect(x,y,w,h);return this;};}
+    function __hud(l,r){document.getElementById('hL').textContent=l;document.getElementById('hR').textContent=r;}
+    function __overlay(html){var el=document.getElementById('overlay');el.innerHTML=html;el.classList.remove('hidden');}
+    function __hideOverlay(){document.getElementById('overlay').classList.add('hidden');}
+    var __store={get:function(k,d){try{var v=localStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}},set:function(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}};
+    function __press(key){window.dispatchEvent(new KeyboardEvent('keydown',{key:key}));}
+    function __release(key){window.dispatchEvent(new KeyboardEvent('keyup',{key:key}));}
+    document.querySelectorAll('[data-k]').forEach(function(b){var k=b.getAttribute('data-k');b.addEventListener('pointerdown',function(e){e.preventDefault();__press(k);});b.addEventListener('pointerup',function(){__release(k);});b.addEventListener('pointerleave',function(){__release(k);});b.addEventListener('pointercancel',function(){__release(k);});});
+    (function(){var cv=document.getElementById('game');var sx=0,sy=0;cv.addEventListener('touchstart',function(e){var t=e.changedTouches[0];sx=t.clientX;sy=t.clientY;},{passive:true});cv.addEventListener('touchend',function(e){var t=e.changedTouches[0];var dx=t.clientX-sx,dy=t.clientY-sy;if(Math.max(Math.abs(dx),Math.abs(dy))<24){__press(' ');__release(' ');return;}var k=Math.abs(dx)>Math.abs(dy)?(dx>0?'ArrowRight':'ArrowLeft'):(dy>0?'ArrowDown':'ArrowUp');__press(k);setTimeout(function(){__release(k);},90);},{passive:true});cv.addEventListener('mousedown',function(){__press(' ');__release(' ');});})();
+    window.addEventListener('keydown',function(e){if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].indexOf(e.key)>=0){e.preventDefault();}});
+    var __ac=null,__muted=false;
+    function __sfx(f,d,type,v,slide){if(__muted)return;try{if(!__ac){var AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;__ac=new AC();}if(__ac.state==='suspended'){__ac.resume();}var o=__ac.createOscillator(),g=__ac.createGain();o.type=type||'square';o.frequency.setValueAtTime(f,__ac.currentTime);if(slide){o.frequency.exponentialRampToValueAtTime(Math.max(30,slide),__ac.currentTime+(d||0.1));}g.gain.setValueAtTime(v||0.04,__ac.currentTime);g.gain.exponentialRampToValueAtTime(0.0001,__ac.currentTime+(d||0.1));o.connect(g);g.connect(__ac.destination);o.start();o.stop(__ac.currentTime+(d||0.1));}catch(e){}}
+    var CONFIG={speed:9,wrap:false,goal:25};
+    var cv=document.getElementById('game'),ctx=cv.getContext('2d'),N=21,T=cv.width/N;
+    var snake,dir,want,food,special,score,level,high=__store.get('af_snake_high',0),state='title',acc=0,specialT=0;
+    function placeFood(){while(true){var x=Math.floor(Math.random()*N),y=Math.floor(Math.random()*N);var ok=true;for(var i=0;i<snake.length;i++){if(snake[i].x===x&&snake[i].y===y){ok=false;break;}}if(ok){food={x:x,y:y};return;}}}
+    function reset(){snake=[{x:10,y:10},{x:9,y:10},{x:8,y:10}];dir={x:1,y:0};want={x:1,y:0};score=0;level=1;special=null;specialT=6;placeFood();}
+    function newGame(){reset();state='play';__hideOverlay();}
+    function step(){if(want.x!==-dir.x||want.y!==-dir.y){if(!(want.x===dir.x&&want.y===dir.y)||true){if(snake.length<2||true){dir={x:want.x,y:want.y};}}}
+    var h={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
+    if(CONFIG.wrap){h.x=(h.x+N)%N;h.y=(h.y+N)%N;}else if(h.x<0||h.y<0||h.x>=N||h.y>=N){return die();}
+    for(var i=0;i<snake.length;i++){if(snake[i].x===h.x&&snake[i].y===h.y)return die();}
+    snake.unshift(h);
+    if(h.x===food.x&&h.y===food.y){score+=10;__sfx(520+score,0.07,'square',0.035);if(score/10%5===0){level++;__sfx(780,0.12,'square',0.04);}placeFood();if(score/10>=CONFIG.goal){return win();}}
+    else if(special&&h.x===special.x&&h.y===special.y){score+=50;special=null;specialT=8;__sfx(990,0.15,'square',0.05);}
+    else snake.pop();
+    __hud('SCORE '+score+' / '+(CONFIG.goal*10),'LV '+level+' · BEST '+Math.max(high,score));}
+    function die(){if(score>high){high=score;__store.set('af_snake_high',high);}state='over';__sfx(200,0.4,'sawtooth',0.06,60);__overlay('<div class="big">🐍</div><h2>GAME OVER</h2><p>Score '+score+' · Level '+level+'<br>Best '+high+'<br><br>Press R or tap Restart</p>');}
+    function win(){if(score>high){high=score;__store.set('af_snake_high',high);}state='over';__overlay('<div class="big">🏆</div><h2>YOU WIN!</h2><p>Score '+score+'<br>Best '+high+'<br><br>Press R to play again</p>');}
+    function draw(){ctx.fillStyle='#05070f';ctx.fillRect(0,0,cv.width,cv.height);ctx.strokeStyle='#1a2340';ctx.lineWidth=1;for(var g=0;g<=N;g++){ctx.beginPath();ctx.moveTo(g*T,0);ctx.lineTo(g*T,cv.height);ctx.stroke();ctx.beginPath();ctx.moveTo(0,g*T);ctx.lineTo(cv.width,g*T);ctx.stroke();}
+    ctx.fillStyle='#ff4d6d';ctx.beginPath();ctx.arc(food.x*T+T/2,food.y*T+T/2,T*0.32,0,7);ctx.fill();ctx.fillStyle='#7CFC00';ctx.fillRect(food.x*T+T/2-1,food.y*T+2,3,5);
+    if(special){ctx.fillStyle='#ffd700';ctx.beginPath();ctx.arc(special.x*T+T/2,special.y*T+T/2,T*0.4,0,7);ctx.fill();ctx.fillStyle='#05070f';ctx.font='bold 11px system-ui';ctx.textAlign='center';ctx.fillText('★',special.x*T+T/2,special.y*T+T/2+4);}
+    for(var i=snake.length-1;i>=0;i--){var s=snake[i];var t=i/snake.length;ctx.fillStyle=i===0?'#a3ff5e':'rgb('+(60+Math.floor((1-t)*60))+','+(200-Math.floor(t*70))+',60)';ctx.beginPath();ctx.roundRect(s.x*T+1.5,s.y*T+1.5,T-3,T-3,i===0?6:4);ctx.fill();if(i===0){ctx.fillStyle='#05070f';var ex=dir.x*3,ey=dir.y*3;ctx.beginPath();ctx.arc(s.x*T+T/2-4+ex,s.y*T+T/2-3+ey,2,0,7);ctx.arc(s.x*T+T/2+4+ex,s.y*T+T/2-3+ey,2,0,7);ctx.fill();}}}
+    var last=0;
+    function loop(ts){requestAnimationFrame(loop);var dt=Math.min(0.05,(ts-last)/1000||0.016);last=ts;if(state==='play'){acc+=dt;var rate=1/(CONFIG.speed+ (level-1)*0.9);while(acc>rate){acc-=rate;step();if(state!=='play')break;}specialT-=dt;if(specialT<=0&&!special){special={x:2+Math.floor(Math.random()*(N-4)),y:2+Math.floor(Math.random()*(N-4))};specialT=10;}if(special&&specialT<-6){special=null;specialT=8;}}draw();}
+    window.__start=function(){newGame();};
+    window.addEventListener('keydown',function(e){var k=e.key;if(k==='ArrowUp'||k==='w'||k==='W'){if(dir.y!==1)want={x:0,y:-1};}else if(k==='ArrowDown'||k==='s'||k==='S'){if(dir.y!==-1)want={x:0,y:1};}else if(k==='ArrowLeft'||k==='a'||k==='A'){if(dir.x!==1)want={x:-1,y:0};}else if(k==='ArrowRight'||k==='d'||k==='D'){if(dir.x!==-1)want={x:1,y:0};}else if(k==='p'||k==='P'){if(state==='play'){state='pause';__overlay('<div class="big">⏸</div><h2>PAUSED</h2><p>Press P to resume</p>');}else if(state==='pause'){state='play';__hideOverlay();}}else if(k==='m'||k==='M'){__muted=!__muted;}else if(k==='r'||k==='R'){newGame();}else if((k===' '||k==='Enter')&&state==='title'){newGame();}});
+    reset();state='title';__overlay('<div class="big">🐍</div><h2>SNAKE</h2><p>Eat '+CONFIG.goal+' to win. Stars = 50.<br>Arrows / WASD / swipe / dpad.<br><br><button onclick="__start()">▶ START</button></p>');__hud('SCORE 0 / '+(CONFIG.goal*10),'LV 1 · BEST '+high);requestAnimationFrame(loop);
+    </script>
+    </body>
+    </html></body></html>"
+    
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    captureRawStack (/home/user/arena-os-canonical/node_modules/playwright-core/lib/coreBundle.js:9282:17)
+    callMatcherAsStep (/home/user/arena-os-canonical/node_modules/playwright/lib/matchers/expect.js:13316:57)
+    Object.toHaveAttribute (/home/user/arena-os-canonical/node_modules/playwright/lib/matchers/expect.js:13308:23)
+    TestContext.<anonymous> (/home/user/arena-os-canonical/tests/acceptance/studio-fx.test.mjs:665:274)
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 0
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 15424.823517

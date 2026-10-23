@@ -1,3 +1,4 @@
+import { projectAudio } from "@/lib/waveyard/project-audio";
 import { isUuid } from "@/lib/api/ids";
 import { NextResponse } from "next/server";
 import { eq, inArray } from "drizzle-orm";
@@ -8,7 +9,6 @@ import {
   remixSessions,
   remixTracks,
   remixVersions,
-  stemAssets,
 } from "@/db/waveyardSchema";
 import { requireUser } from "@/lib/waveyard/local-context";
 import { requireProjectRole } from "@/lib/waveyard/local-context";
@@ -42,10 +42,7 @@ export async function POST(
     const state = normaliseRemixState(JSON.parse(version.snapshot));
     if (!state)
       return NextResponse.json({ error: "Stored remix version is invalid." }, { status: 422 });
-    const projectStems = await db
-      .select({ id: stemAssets.id, durationSeconds: stemAssets.durationSeconds })
-      .from(stemAssets)
-      .where(eq(stemAssets.projectId, remix.projectId));
+    const { stems: projectStems } = await projectAudio(remix.projectId);
     const durationByAssetId = new Map(projectStems.map((asset) => [asset.id, asset.durationSeconds * 1000]));
     if (state.tracks.some((track) => !durationByAssetId.has(track.stemAssetId) || track.clips.some((clip) => !durationByAssetId.has(clip.stemAssetId))))
       return NextResponse.json({ error: "This version references a removed asset." }, { status: 409 });

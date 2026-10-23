@@ -15,6 +15,7 @@ export function StudioTransport({
   onMasterVolume,
   onLoopChange,
   arrangementPlaying,
+  arrangementPreparing = false,
   arrangementError,
   onToggleArrangement,
   onToggleStemPreview,
@@ -26,6 +27,7 @@ export function StudioTransport({
   onMasterVolume: (volume: number) => void;
   onLoopChange: (startMs: number, endMs: number | null) => void;
   arrangementPlaying: boolean;
+  arrangementPreparing?: boolean;
   arrangementError: string | null;
   onToggleArrangement: () => void;
   onToggleStemPreview: () => void;
@@ -45,7 +47,7 @@ export function StudioTransport({
           {transport.playing ? "Pause stems" : "Play stems"}
         </button>
         <button className={`button ${arrangementPlaying ? "active" : "secondary"}`} onClick={onToggleArrangement}>
-          {arrangementPlaying ? "Pause arrangement" : "Preview arrangement"}
+          {arrangementPreparing ? "Cancel preparation" : arrangementPlaying ? "Pause arrangement" : "Preview arrangement"}
         </button>
         <button className="button secondary" aria-label="Stop" onClick={transport.stop}>
           Stop stems
@@ -105,6 +107,7 @@ export function StudioTransport({
         />
       </label>
       {transport.error && <p className="error">{transport.error}</p>}
+      {arrangementPreparing && <p role="status">Preparing arrangement audio. Synchronized clips use local FFmpeg; mixing and FX run off the UI thread.</p>}
       {arrangementError && <p className="error">{arrangementError}</p>}
     </section>
   );

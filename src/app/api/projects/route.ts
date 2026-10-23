@@ -1,3 +1,5 @@
+import { requireApiAccess } from "@/lib/security/api-access";
+import { artifactScope } from "@/lib/arcadeStore";
 import { db } from "@/db";
 import { artifacts, battles, collabs, councilRuns, projectMemory, projects } from "@/db/schema";
 import { desc, eq, sql } from "drizzle-orm";
@@ -10,7 +12,8 @@ const STARTERS = [
   { name: "Media Archive", emoji: "🗂️", description: "Screen & media archive, taxonomy, retrieval." },
 ];
 
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     let rows = await db.select().from(projects).orderBy(desc(projects.updatedAt)).limit(50);
     if (rows.length === 0) {
@@ -23,7 +26,7 @@ export async function GET() {
         const [b] = await db.select({ n: sql<number>`count(*)::int` }).from(battles).where(eq(battles.projectId, p.id));
         const [c] = await db.select({ n: sql<number>`count(*)::int` }).from(collabs).where(eq(collabs.projectId, p.id));
         const [r] = await db.select({ n: sql<number>`count(*)::int` }).from(councilRuns).where(eq(councilRuns.projectId, p.id));
-        const [a] = await db.select({ n: sql<number>`count(*)::int` }).from(artifacts).where(eq(artifacts.projectId, p.id));
+        const [a] = await db.select({ n: sql<number>`count(*)::int` }).from(artifacts).where(artifactScope(undefined, p.id));
         const [m] = await db.select({ n: sql<number>`count(*)::int` }).from(projectMemory).where(eq(projectMemory.projectId, p.id));
         return { ...p, counts: { battles: b?.n ?? 0, collabs: c?.n ?? 0, councils: r?.n ?? 0, artifacts: a?.n ?? 0, memory: m?.n ?? 0 } };
       })
@@ -36,6 +39,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const denied = await requireApiAccess(req); if (denied) return denied;
   try {
     const body = await req.json();
     const name = (body.name ?? "").toString().trim().slice(0, 80);

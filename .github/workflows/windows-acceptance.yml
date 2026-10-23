@@ -1,0 +1,522 @@
+# Windows acceptance — the real Windows product path.
+#
+# Provenance: the repository already ships the Windows acceptance contract
+# (scripts/windows-acceptance.mjs, docs/windows-acceptance.md, the Gate D
+# evidence under docs/evidence). Until this workflow existed nothing executed
+# any of it on Windows: every workflow ran on ubuntu-24.04 only, so "Windows
+# ready" was a claim without a host. This runs the same contract on
+# windows-latest and keeps every log and receipt, including failures.
+#
+# Jobs are separate on purpose: a failing gate must not hide packaging
+# evidence, and a packaging failure must not hide the installed-app result.
+# Every command goes through scripts/windows-step.mjs, which propagates the
+# child exit status verbatim and publishes a failure annotation that is
+# readable without access to the job-log blob host.
+name: Windows acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["arena/windows-ready-integration-2026-10-22"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Git-bash on the Windows runner; pipefail stops `tee` from hiding a
+    # failing acceptance command (the same rule the Linux CI documents).
+    shell: bash
+
+env:
+  # Evidence lands in one directory per job so uploads are unconditional.
+  EVIDENCE: windows-evidence
+  # Never look for a signing certificate on a hosted runner: the acceptance
+  # build is unsigned by design, and auto-discovery adds minutes and warnings.
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+jobs:
+  elevation-probe:
+    name: Windows elevation and non-elevated execution probe
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the runner token
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          whoami | tee "$EVIDENCE/whoami.txt"
+          whoami /groups | grep -iE "administrators|mandatory label" | tee -a "$EVIDENCE/whoami.txt" || true
+
+      - name: PostgreSQL refuses an elevated token (expected on a hosted runner)
+        run: |
+          set -euo pipefail
+          # The embedded server itself, nothing else: if this writes
+          # "root execution ... is not permitted" the token is elevated.
+          BIN=$(ls -d node_modules/@embedded-postgres/windows-x64/native/bin 2>/dev/null || true)
+          if [ -z "$BIN" ]; then echo "platform package not installed in this job" | tee "$EVIDENCE/pg-elevation.txt"; exit 0; fi
+          "$BIN/postgres" --version | tee "$EVIDENCE/pg-elevation.txt"
+
+      - name: Variant A — node wrapper, cmd builtin (bounded 3 min)
+        timeout-minutes: 4
+        env:
+          # A cmd builtin cannot write the completion sentinel, so this variant
+          # FAILS BY DESIGN: it is the control proving the wrapper reports a
+          # missing sentinel instead of waiting out its bound. Tolerated here (the
+          # `|| echo` below keeps the step green), and therefore annotated as a
+          # warning — an ::error on a passing job is a contradiction a reviewer
+          # has to resolve, and this workflow exists to remove those.
+          ARENA_STEP_TOLERATED_FAILURE: "control: a cmd builtin cannot write the completion sentinel; the wrapper must report that, not hang"
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs de-elevation-cmd "$EVIDENCE/deelevated-cmd.log" 180000 -- cmd /c "echo DEELEVATED_OK" || echo "VARIANT_A_EXIT=$?" | tee "$EVIDENCE/variant-a.txt"
+
+      - name: Variant B — direct runas from bash (bounded 2 min)
+        timeout-minutes: 3
+        run: |
+          set -uo pipefail
+          rm -f "$EVIDENCE/direct.txt"
+          timeout 100 runas /trustlevel:0x20000 "cmd.exe /c echo DIRECT_OK ^> $(cygpath -w "$EVIDENCE/direct.txt")" || echo "runas exit=$?"
+          sleep 3
+          cat "$EVIDENCE/direct.txt" 2>/dev/null || echo "direct.txt absent"
+
+      - name: Variant C — node wrapper, node process
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs de-elevation-node "$EVIDENCE/deelevated-node.log" 180000 -- node -e "console.log('NODE_DEELEVATED_OK')" || echo "VARIANT_C_EXIT=$?" | tee "$EVIDENCE/variant-c.txt"
+
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-elevation-${{ github.sha }}
+          path: windows-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+  gates:
+    name: Windows gates (typecheck, desktop contracts, full source suite)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Source identity (start)
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "tree=$(git rev-parse HEAD^{tree})"
+            echo "digest=$(git archive HEAD | sha256sum | cut -d' ' -f1)"
+            echo "node=$(node -v)"
+            echo "npm=$(npm -v)"
+            echo "os=$RUNNER_OS/$RUNNER_ARCH $ImageOS"
+          } | tee "$EVIDENCE/identity-start.txt"
+
+      - name: Clean dependency install
+        run: node scripts/windows-step.mjs "npm ci (clean install)" "$EVIDENCE/npm-ci.log" -- npm ci
+
+      - name: Windows platform packages present
+        run: node scripts/windows-step.mjs "Windows platform packages" "$EVIDENCE/platform-packages.log" -- node scripts/windows-platform-check.mjs
+
+      - name: Browser for real Arcade publication verification
+        # The Arcade security and publication tests refuse to publish without a
+        # real browser (503 "Browser verification unavailable"). Ubuntu CI
+        # installs Chromium; the Windows jobs must too, or those tests fail for
+        # a reason that has nothing to do with the product.
+        run: npx playwright install chromium
+
+      - name: Typecheck
+        id: typecheck
+        run: node scripts/windows-step.mjs "typecheck" "$EVIDENCE/typecheck.log" -- npm run typecheck
+
+      - name: Desktop contract and runtime tests
+        id: desktop_tests
+        # De-elevated for the same reason as the runtime acceptance: these
+        # include real-cluster tests that start PostgreSQL, which refuses an
+        # administrator token (the hosted runner's default). Bounded: a hang
+        # must become a recorded failure, not consume the job.
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          # No --test-force-exit: the run must exit on its own. The handle
+          # reporter prints what is still referenced after the summary, so a
+          # hang names its cause instead of just reporting "no exit".
+          # 600 s per test, not 120 s: separation.test.ts legitimately spends
+          # ~230 s on 16 tests (one alone takes 62 s), so a tighter budget would
+          # fail a passing file and look like a portability defect. The bound
+          # only has to be short enough to turn a hang into a named failure.
+          node scripts/windows-deelevated-step.mjs "desktop contract tests" "$EVIDENCE/desktop-tests.log" 2400000 -- node --import ./scripts/register-src-loader.mjs --test --test-timeout=600000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/test-handle-reporter.mjs --test-reporter-destination=stderr "desktop/**/*.test.ts" "src/lib/waveyard/worker-local/*.test.ts"
+
+      - name: Gate summary
+        if: always()
+        run: |
+          set -euo pipefail
+          grep -hE "^# (tests|pass|fail)" "$EVIDENCE"/*.log 2>/dev/null | tee "$EVIDENCE/suite-counts.txt" || true
+          grep -hE "^not ok" "$EVIDENCE"/*.log 2>/dev/null | tee "$EVIDENCE/failing-tests.txt" | head -30 || true
+          counts=$(paste -sd' ' "$EVIDENCE/suite-counts.txt" 2>/dev/null || true)
+          # A green job must not carry a failure annotation. The previous version
+          # grepped the logs for words like "not permitted" and published an
+          # ::error for any match — so a benign npm cleanup warning during a
+          # passing `npm ci` appeared as a failure on a green gate. Failure text
+          # is only published when a gate actually failed.
+          if [ "${{ steps.typecheck.outcome }}" = "success" ] && [ "${{ steps.desktop_tests.outcome }}" = "success" ] && [ ! -s "$EVIDENCE/failing-tests.txt" ]; then
+            echo "::warning title=Windows gate counts::${counts:-typecheck and desktop contracts passed}"
+            exit 0
+          fi
+          grep -hE "^  error:|^  code:|root.execution|not permitted" "$EVIDENCE"/*.log 2>/dev/null | head -20 | tee "$EVIDENCE/failure-detail.txt" || true
+          if [ -s "$EVIDENCE/failing-tests.txt" ]; then
+            while IFS= read -r line; do echo "::error title=Windows test failure::$line"; done < <(head -5 "$EVIDENCE/failing-tests.txt")
+          fi
+          if [ -s "$EVIDENCE/failure-detail.txt" ]; then
+            echo "::error title=Windows failure detail::$(head -4 "$EVIDENCE/failure-detail.txt" | tr '\n' ' ' | cut -c1-900)"
+          fi
+
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gates-${{ github.sha }}
+          path: windows-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+  source-suite:
+    name: Windows full source suite
+    # Separate job: the suite is the longest gate on Windows and must not be
+    # able to consume the other gate evidence through a job timeout.
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Source identity (start)
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "tree=$(git rev-parse HEAD^{tree})"
+            echo "digest=$(git archive HEAD | sha256sum | cut -d' ' -f1)"
+          } | tee "$EVIDENCE/identity-start.txt"
+
+      - name: Clean dependency install
+        run: node scripts/windows-step.mjs "npm ci (suite job)" "$EVIDENCE/npm-ci.log" -- npm ci
+
+      - name: Browser for real Arcade publication verification
+        run: npx playwright install chromium
+
+      - name: Full source suite on Windows
+        timeout-minutes: 200
+        run: |
+          set -euo pipefail
+          # 60 minutes, not three hours: the suite's own receipts say 17-22
+          # minutes on this runner, so an hour is three runs' worth of headroom
+          # and a repeat of the no-sentinel wait costs one hour, not three.
+          # 10 minutes per test: the desktop gate already runs
+          # separation.test.ts (16 tests, 227 s on a fast Linux box) inside a
+          # 600 s budget, and the same file inside the suite is slower still on
+          # a 2-core runner — 300 s left it cancelled. The bound only has to be
+          # short enough to turn a hang into a named failure.
+          ARENA_TEST_TIMEOUT_MS=600000 node scripts/windows-deelevated-step.mjs "full source suite" "$EVIDENCE/source-suite.log" 3600000 -- npm test
+
+      - name: Suite counts and failing identities
+        if: always()
+        run: |
+          set -euo pipefail
+          grep -hE "^# (tests|pass|fail|cancelled|skipped)" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/suite-counts.txt" || true
+          grep -hE "^not ok" "$EVIDENCE/source-suite.log" 2>/dev/null | tee "$EVIDENCE/failing-tests.txt" | head -40 || true
+          # A name without a reason cannot be acted on, and the reasons belong
+          # to specific tests. TAP prints `not ok N - name`, then a YAML block
+          # whose `error: |-` carries the message on the next line. Pair them.
+          awk '
+            /^not ok [0-9]+/ { name = $0; sub(/^not ok [0-9]+ - /, "", name); next }
+            /^[[:space:]]+error: / {
+              msg = $0; sub(/^[[:space:]]+error: /, "", msg)
+              # `error: |-` carries the message, and for assertion failures the
+              # next lines carry `+ actual - expected` — that is the whole
+              # diagnosis, so take a few.
+              if (msg == "|-") {
+                msg = ""
+                for (i = 0; i < 6; i++) { if (getline <= 0) break; msg = msg " " $0 }
+              }
+              gsub(/[[:space:]]+/, " ", msg)
+              if (name != "") { print name " :: " substr(msg, 1, 240); name = "" }
+            }
+          ' "$EVIDENCE/source-suite.log" 2>/dev/null | head -12 > "$EVIDENCE/failing-reasons.txt" || true
+          # GitHub keeps only the first 10 annotations of a step, so this spends
+          # them deliberately: 6 identities, 1 reasons digest, 1 counts line.
+          while IFS= read -r line; do echo "::error title=Windows suite failure::$line"; done < <(head -6 "$EVIDENCE/failing-tests.txt" 2>/dev/null || true)
+          if [ -s "$EVIDENCE/failing-reasons.txt" ]; then echo "::error title=Windows suite reasons::$(cut -c1-1400 "$EVIDENCE/failing-reasons.txt")"; fi
+          counts=$(paste -sd' ' "$EVIDENCE/suite-counts.txt" 2>/dev/null || true)
+          if [ -n "${counts:-}" ]; then echo "::warning title=Windows suite counts::$counts"; fi
+
+      - name: Upload suite evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-suite-${{ github.sha }}
+          path: windows-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+
+  desktop-diagnostics:
+    name: Desktop test hang diagnostics (bounded, non-blocking)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Clean dependency install
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          node scripts/windows-step.mjs "npm ci (diagnostics)" "$EVIDENCE/npm-ci.log" -- npm ci
+
+      - name: Per-file lifecycle diagnostic — which file does not exit, and when
+        # Names the file that keeps the process alive. `no-exit` means its tests
+        # all reported and the process then stayed up; `timeout` means its tests
+        # did not finish. Neither can be inferred from a single hanging glob.
+        if: always()
+        continue-on-error: true
+        # One file at a time, plus a hard per-file bound. The bound has to sit
+        # above the heaviest PASSING file on this runner, or the probe invents
+        # failures the gate does not have: at 360 s it reported
+        # separation.test.ts as failing (one test hit its 340 s budget) while
+        # the gate and the full suite passed the same file inside a 600 s
+        # per-test budget. 900 s file / 600 s per test is that same number with
+        # room for the file to finish;
+        # the whole-glob run that used to live above this step is gone, since
+        # it could only repeat "something hangs". A file classified `fail` is
+        # run a second time and both outcomes are reported: on this runner one
+        # file failed here while passing in the gate and in the suite, and
+        # "flaky" and "profile-dependent" are different claims.
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 2700000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 900000
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-diagnostics-${{ github.sha }}
+          path: windows-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+
+  package:
+    name: Windows installer build + staged-runtime acceptance
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Source identity (start)
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "tree=$(git rev-parse HEAD^{tree})"
+            echo "digest=$(git archive HEAD | sha256sum | cut -d' ' -f1)"
+          } | tee "$EVIDENCE/identity-start.txt"
+
+      - name: Clean dependency install
+        run: node scripts/windows-step.mjs "npm ci (package job)" "$EVIDENCE/npm-ci.log" -- npm ci
+
+      - name: Windows platform packages present
+        run: node scripts/windows-step.mjs "Windows platform packages (package job)" "$EVIDENCE/platform-packages.log" -- node scripts/windows-platform-check.mjs
+
+      - name: Compile the desktop shell
+        run: node scripts/windows-step.mjs "desktop:compile" "$EVIDENCE/desktop-compile.log" -- npm run desktop:compile
+
+      - name: Stage server, binaries, migrations and models
+        run: node scripts/windows-step.mjs "desktop:prepare-server" "$EVIDENCE/prepare-server.log" -- npm run desktop:prepare-server
+
+      - name: Staged-runtime acceptance (embedded PostgreSQL, worker, FFmpeg export, restart)
+        # De-elevated: PostgreSQL refuses to run under an administrator token,
+        # and a hosted runner executes as one. A real per-user install is
+        # unelevated, so this is the faithful condition, not a workaround of an
+        # application defect.
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "staged runtime acceptance" "$EVIDENCE/desktop-acceptance-headless.log" 2400000 -- node --import ./scripts/register-src-loader.mjs scripts/desktop-acceptance-headless.mjs
+
+      - name: Packaging audit of the staged tree (informational)
+        # Runs AFTER the acceptance on purpose: the auditor writes
+        # desktop-windows-acceptance-report.json into the repo root, which is an
+        # untracked file, and the staged-tree identity check hashes untracked
+        # files — running it between staging and verification invalidated the
+        # package ("tracked files changed since staging"). The report is removed
+        # again so later steps see the tree the acceptance verified.
+        #
+        # The auditor targets an INSTALLED tree (bin/ beside app/), so on
+        # desktop-package/ it reports the media binaries as missing. The
+        # authoritative install-tree audit runs in the installed job.
+        if: always()
+        continue-on-error: true
+        env:
+          # The auditor targets an INSTALLED tree (bin/ beside app/), so against
+          # a staged tree it reports the media binaries as missing. That is the
+          # expected result, not a packaging failure; the installed job runs the
+          # authoritative audit. Say so in a warning instead of a red annotation.
+          ARENA_STEP_TOLERATED_FAILURE: "informational: the auditor targets an installed layout, so a staged tree reports bin/ beside app/ as missing; the installed job audits the real tree"
+        run: |
+          set -euo pipefail
+          node scripts/windows-step.mjs "staged packaging audit (informational)" "$EVIDENCE/staged-audit.log" -- node scripts/windows-acceptance.mjs --audit-only desktop-package || true
+          cp desktop-windows-acceptance-report.json "$EVIDENCE/staged-audit-report.json" 2>/dev/null || true
+          rm -f desktop-windows-acceptance-report.json
+
+      - name: Hydrate the local Electron runtime
+        # electron 44 ships no npm install script (documented in
+        # docs/windows-acceptance.md): the binary is fetched lazily into
+        # node_modules/electron/dist, and electron-builder is configured to
+        # package THAT local copy (electronDist) rather than download its own.
+        # A clean `npm ci` therefore leaves dist absent and desktop:dist stops
+        # with "the local Electron distribution directory is missing".
+        run: node scripts/windows-step.mjs "hydrate electron" "$EVIDENCE/electron-hydrate.log" -- node node_modules/electron/install.js
+
+      - name: Build the NSIS installer
+        run: node scripts/windows-step.mjs "desktop:dist (NSIS)" "$EVIDENCE/desktop-dist.log" -- npm run desktop:dist
+
+      - name: Installer identity and hash
+        run: |
+          set -euo pipefail
+          ls -l desktop-release | tee "$EVIDENCE/installer-listing.txt"
+          sha256sum desktop-release/*.exe | tee "$EVIDENCE/installer-sha256.txt"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-windows-installer-${{ github.sha }}
+          path: desktop-release/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload package evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-${{ github.sha }}
+          path: |
+            windows-evidence/
+            desktop-acceptance-headless-report.json
+            desktop-windows-acceptance-report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  installed:
+    name: Installed application acceptance (install, launch, restart, recovery, uninstall)
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Download the installer built by the package job
+        uses: actions/download-artifact@v4
+        with:
+          name: arena-windows-installer-${{ github.sha }}
+          path: desktop-release
+
+      - name: Clean dependency install (orchestrator only)
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          node scripts/windows-step.mjs "npm ci (installed job)" "$EVIDENCE/npm-ci.log" -- npm ci
+
+      - name: Silent install + installed-app acceptance
+        # Installs the real NSIS package, launches the INSTALLED Arena.exe with
+        # ARENA_DESKTOP_ACCEPTANCE, checks first launch, paths, the Waveyard
+        # workflow, export via bundled ffprobe, restart persistence, process
+        # cleanup, then force-kills mid-run and proves recovery. The mandated
+        # report is written either way.
+        run: |
+          set -euo pipefail
+          node scripts/windows-deelevated-step.mjs "installed acceptance" "$EVIDENCE/installed-acceptance.log" 3000000 -- node scripts/windows-acceptance.mjs
+
+      - name: Mandated PASS/FAIL summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f desktop-windows-acceptance-report.json ]; then echo "NO REPORT WRITTEN"; exit 1; fi
+          node -e '
+            const r = require("./desktop-windows-acceptance-report.json");
+            for (const [k, v] of Object.entries(r)) {
+              if (["detail", "KNOWN_LIMITATIONS"].includes(k)) continue;
+              console.log(`${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`);
+            }
+            for (const l of r.KNOWN_LIMITATIONS ?? []) console.log(`LIMITATION: ${l}`);
+          ' | tee "$EVIDENCE/installed-report-summary.txt"
+          # Publish every mandated line as an annotation: the job-log blob host
+          # is not reachable from every reviewer, annotations are.
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::warning title=windows-report::$line"
+          done < "$EVIDENCE/installed-report-summary.txt"
+          if grep -q ": FAIL" "$EVIDENCE/installed-report-summary.txt"; then
+            echo "::error title=installed acceptance::$(grep ': FAIL' "$EVIDENCE/installed-report-summary.txt" | tr '\n' ' ' | cut -c1-900)"
+          fi
+
+      - name: Uninstall the application (per-user NSIS uninstaller)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          uninstaller=$(find "$LOCALAPPDATA/Programs" -maxdepth 3 -iname "*ninstall*.exe" 2>/dev/null | head -n 1)
+          if [ -z "$uninstaller" ]; then echo "no uninstaller found under $LOCALAPPDATA/Programs" | tee "$EVIDENCE/uninstall.log"; exit 0; fi
+          echo "uninstaller: $uninstaller" | tee "$EVIDENCE/uninstall.log"
+          "$uninstaller" /S
+          sleep 5
+          dir=$(dirname "$uninstaller")
+          if [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+            echo "install directory still populated after /S uninstall: $dir" | tee -a "$EVIDENCE/uninstall.log"
+          else
+            echo "install directory removed: $dir" | tee -a "$EVIDENCE/uninstall.log"
+          fi
+
+      - name: Upload installed-acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installed-${{ github.sha }}
+          path: |
+            windows-evidence/
+            desktop-windows-acceptance-report.json
+          if-no-files-found: warn
+          retention-days: 30
