@@ -510,11 +510,25 @@ What it does **not** prove is listed next.
     cancelled before it executed a single test: `actions/setup-node` spent the
     job's whole 10-minute budget in a failing cache restore and logged "Failed
     to restore: Egress is over the account limit", so every acceptance step was
-    skipped while the workflow's other three jobs passed. That is an
-    account-level egress limit, not a result: it is reported here, not counted
-    as a pass or a failure, and it needs a re-run once the limit clears. This
-    record still claims the Windows gate only; nothing here says the
-    repository's checks are all green.
+    skipped while the workflow's other three jobs passed. The next attempt
+    (39935007547 on `285064d`) never reached a verdict either: the browser job
+    spent 5 m 48 s of its 10-minute budget downloading the browser, ran its
+    three test steps successfully, and was killed by its own wall clock; the
+    test/build job was killed at its 30-minute budget 14.5 minutes into its Test
+    step. On a healthy runner those jobs take 8 m 50 s and 14–22 minutes, so
+    both wall clocks sit above their measured cost — the runs that hit them
+    did so while the account was throttled, which is also what the Egress
+    message above says.
+
+    The conclusion recorded here is deliberately narrow. **Linux CI is green at
+    `7096fa8`, all four jobs** — that is the run that verifies the fix for the
+    one real failure, and it is the Linux evidence for this candidate. The two
+    later tips were cancelled by an account condition, not by a test, and they
+    are neither counted as a pass nor reported as a product failure. This
+    record claims the Windows gate plus that one green Linux CI run; it does
+    not claim that every check on every later commit is green, and a reviewer
+    should re-run CI once the account's egress limit clears rather than read
+    "cancelled" as either.
 
 ## 8. Installing the Windows build
 

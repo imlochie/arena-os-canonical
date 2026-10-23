@@ -144,11 +144,16 @@ The Windows gate is not the repository's whole CI. The Linux CI failure that
 stood open on `95f4ce9` is diagnosed in §7.11 of the readiness record — a test
 deleting a temp tree while the lifecycle was still writing to it, reported as
 `ENOTEMPTY` from its own `finally` — and fixed in `7096fa8`, whose Linux CI run
-(39928621325) is green in all four jobs. The next CI run (39932071273) was
-cancelled before it ran a test: `actions/setup-node` spent the job's whole
-10-minute budget in a failing cache restore — "Egress is over the account
-limit" — while the workflow's other three jobs passed. That is an account
-condition, reported rather than counted.
+(39928621325) is green in all four jobs. That run is the Linux evidence for
+this candidate.
+
+The two runs after it were cancelled by an account condition, not by a test:
+39932071273 lost `actions/setup-node` to a failing cache restore that logged
+"Egress is over the account limit", and 39935007547 hit the jobs' own wall
+clocks (10 m and 30 m) while the account was still throttled — the browser
+job's download step alone took 5 m 48 s of its 10-minute budget. Neither is
+counted as a pass or reported as a product failure; both are reported, and CI
+should be re-run once the limit clears.
 
 ## 4. Reproduction
 
