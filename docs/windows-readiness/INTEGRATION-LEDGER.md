@@ -123,12 +123,15 @@ than retried:
 10. **Bounds below the work they bounded.** Per-test and per-file budgets (some
     inside the tests themselves) were raised above measured cost, and a fixture
     the harness itself kills is now reported as such rather than as a product
-    defect.
+    defect. The same treatment was applied later to the conversion provenance
+    test (60 s → 120 s after run 39886922288), whose per-phase diagnostics now
+    say where the time went if it ever overruns again.
 
-Result: six Windows jobs green on eight commits, including the full source
+Result: six Windows jobs green on nine commits, including the full source
 suite (1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped) and the desktop
-contract gate (168/168, recording its own exit). The evidence commit is
-`7c54f07`; run 39819390531.
+contract gate (168/168, recording its own exit). Eleven runs stand behind those
+nine green ones; the two that failed are named in the readiness record (§2,
+§5.18, §5.19), not removed. The evidence commit is `71cdee7`; run 39890546669.
 
 ## 4. Reproduction
 

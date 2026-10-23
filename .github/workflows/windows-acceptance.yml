@@ -61,6 +61,14 @@ jobs:
 
       - name: Variant A — node wrapper, cmd builtin (bounded 3 min)
         timeout-minutes: 4
+        env:
+          # A cmd builtin cannot write the completion sentinel, so this variant
+          # FAILS BY DESIGN: it is the control proving the wrapper reports a
+          # missing sentinel instead of waiting out its bound. Tolerated here (the
+          # `|| echo` below keeps the step green), and therefore annotated as a
+          # warning — an ::error on a passing job is a contradiction a reviewer
+          # has to resolve, and this workflow exists to remove those.
+          ARENA_STEP_TOLERATED_FAILURE: "control: a cmd builtin cannot write the completion sentinel; the wrapper must report that, not hang"
         run: |
           set -euo pipefail
           node scripts/windows-deelevated-step.mjs de-elevation-cmd "$EVIDENCE/deelevated-cmd.log" 180000 -- cmd /c "echo DEELEVATED_OK" || echo "VARIANT_A_EXIT=$?" | tee "$EVIDENCE/variant-a.txt"
@@ -377,6 +385,12 @@ jobs:
         # authoritative install-tree audit runs in the installed job.
         if: always()
         continue-on-error: true
+        env:
+          # The auditor targets an INSTALLED tree (bin/ beside app/), so against
+          # a staged tree it reports the media binaries as missing. That is the
+          # expected result, not a packaging failure; the installed job runs the
+          # authoritative audit. Say so in a warning instead of a red annotation.
+          ARENA_STEP_TOLERATED_FAILURE: "informational: the auditor targets an installed layout, so a staged tree reports bin/ beside app/ as missing; the installed job audits the real tree"
         run: |
           set -euo pipefail
           node scripts/windows-step.mjs "staged packaging audit (informational)" "$EVIDENCE/staged-audit.log" -- node scripts/windows-acceptance.mjs --audit-only desktop-package || true

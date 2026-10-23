@@ -17,6 +17,12 @@
  * `runas` detaches, so this writes a .bat, starts it de-elevated, polls for a
  * completion sentinel, then replays the child's output and exits with the
  * child's own status. A missing sentinel is a failure, never a pass.
+ *
+ * ARENA_STEP_TOLERATED_FAILURE names a reason when the caller deliberately
+ * expects the command to fail (the Probe's Variant A is such a control: a cmd
+ * builtin cannot write the sentinel, and the point is that the wrapper says so
+ * instead of hanging). The annotation is then a `::warning` with that reason,
+ * never an `::error` on a job that passes; the exit status is unchanged.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -28,6 +34,10 @@ if (label === undefined || logFile === undefined || dashdash !== "--" || rest.le
   console.error("usage: node scripts/windows-deelevated-step.mjs <label> <log> [timeout-ms] -- <program> [args...]");
   process.exit(2);
 }
+const tolerated = process.env.ARENA_STEP_TOLERATED_FAILURE?.trim() || undefined;
+const annotate = (detail) => tolerated === undefined
+  ? `::error title=${label}::${detail}`
+  : `::warning title=${label} (tolerated)::${tolerated} — ${detail}`;
 const timeoutMs = timeoutRaw !== undefined && timeoutRaw !== "--" ? Number(timeoutRaw) : 30 * 60_000;
 const args = timeoutRaw === "--" ? [timeoutRaw, ...rest] : rest;
 let [program, ...programArgs] = args;
@@ -124,7 +134,7 @@ if (status === undefined) {
   // sentinel", which cannot be investigated from the checks API.
   const produced = (existsSync(log) ? readFileSync(log, "utf8") : "").split(/\r?\n/).filter(Boolean);
   const where = produced.slice(-6).join(" | ").slice(0, 800) || "the log is empty — the command never started";
-  console.log(`::error title=${label}::no completion sentinel within ${timeoutMs} ms; last output: ${where}`);
+  console.log(annotate(`no completion sentinel within ${timeoutMs} ms; last output: ${where}`));
   process.exit(1);
 }
 if (status !== "0") {
@@ -144,7 +154,7 @@ if (status !== "0") {
   const lines = [...failing.slice(0, 10), ...(failing.length > 10 ? [`…+${failing.length - 10} more`] : []), ...undiagnosed, ...handleLines, ...counts.slice(-4)].join(" | ");
   console.log(`[deelevated] ${label}: FAIL (exit=${status})`);
   console.log(`[deelevated] failing identities: ${failing.length}`);
-  console.log(`::error title=${label}::de-elevated exit ${status} — ${lines.slice(0, 900) || "no failing test line and no error line in the log"}`);
+  console.log(annotate(`de-elevated exit ${status} — ${lines.slice(0, 900) || "no failing test line and no error line in the log"}`));
   process.exit(Number(status) || 1);
 }
 // "Exit 0" alone does not say what ran. Carry the counts, so a green gate
