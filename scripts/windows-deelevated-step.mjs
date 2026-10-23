@@ -151,7 +151,12 @@ if (status !== "0") {
   // The handle dump is the reason this reporter exists; it must survive the
   // trip through the checks API even when the job log host is unreachable.
   const handleLines = all.filter((line) => line.includes("[handle-reporter]")).slice(-6);
-  const lines = [...failing.slice(0, 10), ...(failing.length > 10 ? [`…+${failing.length - 10} more`] : []), ...undiagnosed, ...handleLines, ...counts.slice(-4)].join(" | ");
+  // A timed-out test is named but not explained: the phase lines it printed
+  // before it stalled are the explanation, and without this they exist only in
+  // the job log. Carry both, so a timeout annotation says where it stopped.
+  const timedOut = all.filter((line) => /timed out after \d+\s*ms/i.test(line)).slice(-2);
+  const phases = all.filter((line) => line.includes("[phase]")).slice(-6);
+  const lines = [...failing.slice(0, 10), ...(failing.length > 10 ? [`…+${failing.length - 10} more`] : []), ...timedOut, ...phases, ...undiagnosed, ...handleLines, ...counts.slice(-4)].join(" | ");
   console.log(`[deelevated] ${label}: FAIL (exit=${status})`);
   console.log(`[deelevated] failing identities: ${failing.length}`);
   console.log(annotate(`de-elevated exit ${status} — ${lines.slice(0, 900) || "no failing test line and no error line in the log"}`));

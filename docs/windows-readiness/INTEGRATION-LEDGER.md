@@ -124,15 +124,18 @@ than retried:
     inside the tests themselves) were raised above measured cost, and a fixture
     the harness itself kills is now reported as such rather than as a product
     defect. The same treatment was applied later to the conversion provenance
-    test (60 s → 120 s after run 39886922288), whose per-phase diagnostics now
-    say where the time went if it ever overruns again.
+    test (60 s → 120 s after run 39886922288). When the same class of failure
+    hit seed-http again at 120 s (run 39896001156, a 37-minute suite against
+    16.5), the diagnosis changed: those caps were asserting a duration nothing
+    in the test claims. Both are removed and the suite's single declared
+    per-test bound governs (§5.20 of the readiness record).
 
 Result: six Windows jobs green on ten commits, including the full source
 suite (1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped), the desktop
 contract gate (168/168, recording its own exit) and the installed application
-acceptance (34 of 34 runs that attempted it). Twelve runs stand behind those
-ten green ones; the two that failed are named in the readiness record (§2,
-§5.18, §5.19), not removed. The evidence commit is `e0da39d`; run 39892723344.
+acceptance (34 of 34 runs that attempted it). Thirteen runs stand behind those
+ten green ones; the three that failed are named in the readiness record (§2,
+§5.18–§5.20), not removed. The evidence commit is `e0da39d`; run 39892723344.
 
 ## 4. Reproduction
 

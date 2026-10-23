@@ -49,25 +49,26 @@ be expressed on Windows at all (a 70,000-character ffmpeg argument).
 | Desktop gate | 168 tests · 168 pass · **0 fail** · 0 cancelled · 431 s de-elevated in the final run (379–445 s across runs), and the step records its own exit |
 | Base commit | `13638fe8a5c280e6b47ecf97fb6e6cf414163a12` |
 | Windows runs (all six jobs `success`) | [39892723344](https://github.com/imlochie/arena-os-canonical/actions/runs/39892723344) (`e0da39d`), [39890546669](https://github.com/imlochie/arena-os-canonical/actions/runs/39890546669) (`71cdee7`), [39819390531](https://github.com/imlochie/arena-os-canonical/actions/runs/39819390531) (`7c54f07`), [39810859260](https://github.com/imlochie/arena-os-canonical/actions/runs/39810859260) (`31b93cb`), [39810849313](https://github.com/imlochie/arena-os-canonical/actions/runs/39810849313) (`1261b70`), [39797631449](https://github.com/imlochie/arena-os-canonical/actions/runs/39797631449) (`805e4c0`), [39797838680](https://github.com/imlochie/arena-os-canonical/actions/runs/39797838680) (`9dbcfc2`), [39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515) (`7be5a46`), [39792397329](https://github.com/imlochie/arena-os-canonical/actions/runs/39792397329) (`52eba9e`), [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) (`8a1adee`) — ten runs across ten commits |
-| Runs that failed, and why | [39886922288](https://github.com/imlochie/arena-os-canonical/actions/runs/39886922288) (`5c54f76`, documentation only — the diff from `7c54f07` is empty outside `docs/`): the conversion provenance test exceeded its own 60 s budget, which the same code had cleared 35 minutes earlier; fixed at the cause in `71cdee7` (§5.19). [39802222893](https://github.com/imlochie/arena-os-canonical/actions/runs/39802222893) (`c087806`): one test, Arcade's 1.2 s cold-start navigation budget (§5.18), fixed in `1261b70`. Both failures are kept here, and neither commit was re-run until it turned green |
+| Runs that failed, and why | [39886922288](https://github.com/imlochie/arena-os-canonical/actions/runs/39886922288) (`5c54f76`, documentation only — the diff from `7c54f07` is empty outside `docs/`): the conversion provenance test exceeded its own 60 s budget, which the same code had cleared 35 minutes earlier; fixed at the cause in `71cdee7` (§5.19). [39802222893](https://github.com/imlochie/arena-os-canonical/actions/runs/39802222893) (`c087806`): one test, Arcade's 1.2 s cold-start navigation budget (§5.18), fixed in `1261b70`. [39896001156](https://github.com/imlochie/arena-os-canonical/actions/runs/39896001156) (`f43b86e`, documentation only): seed-http's SIGKILL restart test hit the 120 s cap it had been given after the first such failure, in a run whose suite took 37 minutes against 16.5 in the preceding one; the cap was measuring the runner, and both local caps are gone in favour of the suite's single declared bound (§5.20). All three failures are kept here, and no failing commit was re-run until it turned green |
 | Predecessor runs | `39724952496` (5 fail), `39736649568` (1 fail), `39739476880` (1 fail), `39770687200` (1 fail) — each failure named and fixed in §5, none retried blindly |
 | Installer | `Arena Setup 0.1.0.exe`, 621.1 MB; SHA-256 in `installer-sha256.txt` inside the `windows-package-<sha>` artifact |
 
-Ten commits produced the same six green jobs. Two of the twelve runs behind
-them failed, and both are named above: the Arcade cold-start bound (§5.18) and
-the conversion test's own 60 s budget (§5.19). Each was fixed at its cause and
-the fixed commit was run again; neither failing commit was re-run until it
-went green. A ledger that deletes an inconvenient result stops being a ledger,
-and one that keeps it without a cause is noise.
+Ten commits produced the same six green jobs. Three of the thirteen runs behind
+them failed, and all three are named above: the Arcade cold-start bound (§5.18)
+and two local per-test caps that measured the runner (§5.19, §5.20). Each was
+fixed at its cause and the fixed commit was run again; no failing commit was
+re-run until it turned green. A ledger that deletes an inconvenient result
+stops being a ledger, and one that keeps it without a cause is noise.
 
 The evidence commit is `e0da39d`, the newest commit with a six-job green run —
 39892723344 — and the first whose six jobs carry no `failure` annotation at
 all. The last commit that changes what the jobs verify (product code, a test,
-or a command) is `71cdee7`, run 39890546669; commits after `e0da39d` change
-documentation only. Their runs are linked from the pull request,
-because a file cannot record the result of the run that reads it. Every Windows
-job prints `commit`, `tree` and `digest` in its first step, so an artifact can
-be tied to the source that produced it.
+or a command) is `71cdee7`, run 39890546669. Commits after `e0da39d` change
+documentation, the detail the wrappers report on a failure, and the way the
+suite declares its per-test bound (§5.20); none changes an assertion. Their
+runs are linked from the pull request, because a file cannot record the result
+of the run that reads it. Every Windows job prints `commit`, `tree` and `digest`
+in its first step, so an artifact can be tied to the source that produced it.
 
 ## 3. What this branch changes
 
@@ -333,7 +334,25 @@ worked around by weakening a check.
     `execTool` allows one conversion), and the test now emits a `t.diagnostic`
     line per phase, so the next overrun names where the time went instead of
     only that it ran out. No assertion, isolation check or verification step
-    was relaxed; the fix is `71cdee7`.
+    was relaxed; the fix is `71cdee7`. The 120 s cap was itself removed when the
+    same class of failure hit another test (§5.20) — the diagnostics and this
+    record of the failure remain.
+
+20. **Two local per-test caps were measuring the runner, not the product.**
+    Runs 39886922288 and 39896001156 each stopped a different test at a cap the
+    test had declared for itself — 60 s for the conversion provenance test, then
+    120 s for seed-http's SIGKILL restart test — and neither test asserts
+    anything about duration. The second failure is the clearer signal: the whole
+    suite took 37 minutes in that run against 16.5 minutes in the one before it,
+    with the same code (`f43b86e` changes documentation only), so the machine
+    was slow, not the code. The suite already declares exactly one per-test hang
+    detector, `--test-timeout`, 10 minutes in CI; that declaration now applies
+    to a developer run as well (`scripts/test-source.mjs` supplies it instead of
+    leaving the local run unbounded), and the two local caps are gone. The phase
+    log lines stay, and the de-elevated wrapper now carries the `[phase]` and
+    `timed out after` lines into its annotation, so a timeout says where it
+    stopped instead of only that it stopped. No assertion, isolation check or
+    verification step is relaxed, and the failures above remain in this record.
 
 ## 6. What the Windows run actually proves
 
@@ -365,17 +384,20 @@ What it does **not** prove is listed next.
 
 1. **The suite is green, and three of its tests remain timing-sensitive by
    construction.** The suite passes on Windows at `1261b70`, `31b93cb`,
-   `7c54f07` and `71cdee7` — 1649 tests, 1643 pass, 0 fail, 0 cancelled,
-   6 skipped. Three tests run real child processes and failed exactly once each
-   before their bounds were corrected: `seed-http.test.ts` (three TypeScript
-   children on a 2-core runner against a 20 s guard, run 39783929848), the
-   Arcade browser smoke (cold Chromium against a 1.2 s navigation budget, run
-   39802222893) and the conversion provenance test (a per-test PostgreSQL
-   cluster plus native FFmpeg against a 60 s budget, run 39886922288). All
-   three are fixed — 120 s, 15 s/30 s and 120 s respectively, each logging
-   where it stalled — and each is green in every run since its fix. Their pass
-   rate still depends on runner speed, so this record does not call the suite
-   deterministic.
+   `7c54f07`, `71cdee7` and `e0da39d` — 1649 tests, 1643 pass, 0 fail,
+   0 cancelled, 6 skipped. Three tests run real child processes, and two of
+   them stopped at caps they had set for themselves before that was corrected:
+   `seed-http.test.ts` (three TypeScript children) at a 20 s guard (run
+   39783929848) and again at the 120 s cap that replaced it (run 39896001156),
+   and the conversion provenance test (a per-test PostgreSQL cluster plus native
+   FFmpeg) at 60 s (run 39886922288). Neither cap asserted anything about
+   duration, so both are gone: one bound, declared by the suite, now applies to
+   every test and to a developer run (§5.20). The third, the Arcade smoke,
+   failed once against a real assertion of its own — 1.2 s to navigate a
+   locally-fulfilled page (run 39802222893) — and keeps its 15 s navigation
+   inside a 30 s smoke. All three log where they stalled, and each is green in
+   every run since its fix. Their pass rate still depends on runner speed, so
+   this record does not call the suite deterministic.
 
 2. **The installed acceptance is API-level.** It drives the real server, real
    database, real worker and real export, but no human saw the window, played

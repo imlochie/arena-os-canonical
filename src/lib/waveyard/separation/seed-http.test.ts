@@ -110,13 +110,14 @@ function child(f: Awaited<ReturnType<typeof fixture>>) {
   return { process, exit, output: () => output };
 }
 
-// 20 s was a hang guard, not a promise: nothing asserted that this finishes
-// within it. On a 2-core Windows runner the test (one killed process, then two
-// competing ones, each downloading through a 4 ms tick) exceeded it in run
-// 39783929848 while passing in 39775173391 — the cap fired, no assertion did.
-// The global per-test budget is the real bound; this stays as a local guard
-// but above the work. Each phase logs first, so a future timeout names where.
-test('SIGKILL restart resumes persisted prefix in a new process; competing process shares publication lock', { timeout: 120000 }, async () => {
+// No local cap: the suite declares its per-test bound once (scripts/test-source.mjs,
+// 10 minutes in CI) and this test asserts nothing about duration. A local guard
+// fired twice here without any assertion failing — 20 s in run 39783929848 and
+// 120 s in run 39896001156, where the whole suite took 37 minutes against 16.5
+// in the run before — so the local number was measuring the runner, not the
+// product. Each phase logs before it runs, so a timeout that does happen still
+// names where it stalled.
+test('SIGKILL restart resumes persisted prefix in a new process; competing process shares publication lock', async () => {
   const f = await fixture((req, res, log) => {
     const offset = req.headers.range ? Number(req.headers.range.match(/\d+/)![0]) : 0;
     res.writeHead(offset ? 206 : 200, { 'Content-Length': bytes.length - offset, ETag: '"v1"', ...(offset ? { 'Content-Range': `bytes ${offset}-${bytes.length - 1}/${bytes.length}` } : {}) });

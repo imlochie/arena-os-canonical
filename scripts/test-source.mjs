@@ -44,10 +44,15 @@ try {
   await checkpoint({ phase: 'testing', database: 'owned embedded PostgreSQL; canonical desktop migrations' });
   tap = createWriteStream(tapPath);
   // A test that blocks forever must become a recorded failure, not a stalled
-  // job. The bound is per test and generous (3 minutes); it is not a way to
-  // hide slow work — every affected test is named in the TAP output.
-  const testTimeout = process.env.ARENA_TEST_TIMEOUT_MS;
-  const timeoutArgs = testTimeout ? [`--test-timeout=${testTimeout}`] : [];
+  // job. The bound is per test, declared once — here — and it is a hang
+  // detector, not a performance assertion: it never hides slow work, because
+  // every test it stops is named in the TAP output. It also applies to a
+  // developer run, so the same test fails at the same place instead of the
+  // local run having no bound at all. Individual tests override it only when
+  // they are asserting a tighter budget of their own (the Arcade smoke does);
+  // a local cap that merely fires before this one does not belong in a test.
+  const testTimeout = process.env.ARENA_TEST_TIMEOUT_MS ?? "600000";
+  const timeoutArgs = [`--test-timeout=${testTimeout}`];
   child = spawn(process.execPath, ['--import', './scripts/register-src-loader.mjs', '--test', '--test-concurrency=1', ...timeoutArgs, 'src/**/*.test.ts', 'desktop/**/*.test.ts', 'scripts/lib/*.test.mjs'], {
     stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DATABASE_URL: pg.url },
   });

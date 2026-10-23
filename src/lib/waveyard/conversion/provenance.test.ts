@@ -9,21 +9,16 @@ import { eq } from "drizzle-orm";
 import { missionPostgres } from "../../../../tests/helpers/mission-postgres";
 import { encodeWav16 } from "../mixer/synth";
 
-// The bound is a hang detector, not a performance target: it only has to be
-// short enough to turn a stuck conversion into a named failure, and 60 s was
-// not. Every run of this test builds a PostgreSQL cluster before the first
-// conversion — initdb writes 968 files / 39 MB — and then drives native FFmpeg
-// probe, encode and full-decode verification for each conversion, six of them
-// in the corrupt-metadata repair loop alone. That is 3.1 s end to end on a
-// Linux development box; on a 2-core Windows runner sharing its disk with the
-// electron-builder job it exceeded 60 s once (run 39886922288) while passing at
-// the same code before and since. The phases below are emitted so the next
-// overrun names where the time went instead of only that it ran out. 120 s
-// matches the bound the suite already gives its other native-heavy fixtures
-// (separation-real-ort, claim, seed-http, service) and stays far below the
-// 600 s the product's own execTool allows a single conversion. No assertion,
-// isolation check or verification step is relaxed here.
-test("native conversion and reconversion preserve original acquisition rights and checksum lineage", { timeout: 120000 }, async t => {
+// No local cap: the suite declares its per-test bound once (scripts/test-source.mjs,
+// 10 minutes in CI) and this test asserts nothing about duration. A 60 s cap
+// fired in run 39886922288 (documentation-only commit, same code green 35
+// minutes earlier) while the work measured 3.1 s on a Linux box — every run
+// builds a PostgreSQL cluster (`initdb` writes 968 files / 39 MB) and drives a
+// native FFmpeg probe, encode and full-decode verification per conversion, six
+// of them in the corrupt-metadata repair loop, so a stalled runner can stretch
+// it by an order of magnitude. The phases below are emitted as they happen, so
+// a timeout that does occur names where the time went.
+test("native conversion and reconversion preserve original acquisition rights and checksum lineage", async t => {
   const startedAt = Date.now();
   const phase = (name: string) => t.diagnostic(`${name} at ${Date.now() - startedAt} ms`);
   const fixture = await missionPostgres(), root = await mkdtemp(join(tmpdir(), "arena-conversion-rights-"));
