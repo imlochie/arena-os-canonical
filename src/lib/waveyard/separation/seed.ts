@@ -19,7 +19,7 @@
  */
 
 import { createReadStream } from "node:fs";
-import { mkdir, rename, rm, stat, readFile, writeFile, open } from "node:fs/promises";
+import { mkdir, rm, stat, readFile, writeFile, open } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { Transform, Writable } from "node:stream";
@@ -27,6 +27,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { hostname } from "node:os";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
+import { replaceFile } from "../../fs-replace";
 
 import { checksumFile } from "../audio";
 import type { MdxModelSpec } from "./mdx";
@@ -70,7 +71,10 @@ async function record(path: string): Promise<PartialRecord | null> {
 async function save(path: string, data: PartialRecord | ModelAcquisition) {
   const temp = `${path}.${randomUUID()}`;
   await writeFile(temp, JSON.stringify(data));
-  await rename(temp, path);
+  // A status poller reads this record while the download writes it. On Windows
+  // `rename` over a file another handle is reading fails with EPERM, and the
+  // download would be recorded as failed although the write was valid.
+  await replaceFile(temp, path);
 }
 async function size(path: string) { try { return (await stat(path)).size; } catch { return 0; } }
 function alive(owner: LockOwner) {
@@ -115,10 +119,44 @@ async function acquire(lock: string, signal?: AbortSignal) {
   }
 }
 
+/**
+ * Digests of model files already verified against their pinned SHA-256.
+ *
+ * `getModelFileStatus` is polled by the models endpoint every two seconds while
+ * the engine setup panel is open, and the four registry models total ~148 MB.
+ * Re-hashing them on every poll measured 368 ms per poll on a fast Linux
+ * container (more on Windows, where Defender scans every read), and it kept a
+ * read handle on the very file the installer renames over — the EPERM
+ * condition `fs-replace.ts` exists to survive.
+ *
+ * Keyed on the file identity a write always changes (size, mtime, ctime) — the
+ * same evidence `deep.ts` already trusts for the deep checkpoint — and primed
+ * from the digest verified at install time. The five-minute ceiling re-reads
+ * the bytes even when the timestamps look untouched, so a filesystem with
+ * coarse timestamp granularity cannot extend a stale verdict indefinitely.
+ * The map is bounded. An explicit verify (session.verifyModelFile) bypasses
+ * this cache entirely and always re-hashes the bytes.
+ */
+type VerifiedDigest = { size: number; mtimeMs: number; ctimeMs: number; at: number; sha256: string };
+const verifiedDigests = new Map<string, VerifiedDigest>();
+const VERIFIED_DIGEST_LIMIT = 32;
+const VERIFIED_DIGEST_TTL_MS = 5 * 60_000;
+
+async function verifiedDigest(file: string): Promise<string | null> {
+  let info;
+  try { info = await stat(file); } catch { return null; }
+  const cached = verifiedDigests.get(file);
+  if (cached !== undefined && cached.size === info.size && cached.mtimeMs === info.mtimeMs && cached.ctimeMs === info.ctimeMs && Date.now() - cached.at < VERIFIED_DIGEST_TTL_MS) return cached.sha256;
+  const sha256 = await checksumFile(file);
+  if (verifiedDigests.size >= VERIFIED_DIGEST_LIMIT) verifiedDigests.clear();
+  verifiedDigests.set(file, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, at: Date.now(), sha256 });
+  return sha256;
+}
+
 export async function getModelFileStatus(spec: MdxModelSpec, dir = resolveModelsDir()): Promise<ModelFileStatus> {
   const p = paths(spec, resolve(dir));
   let present = false, verified = false, sizeBytes: number | null = null;
-  try { const details = await stat(p.final); present = details.isFile(); sizeBytes = details.size; if (present) verified = await checksumFile(p.final) === spec.sha256; } catch { /* missing is not ready */ }
+  try { const details = await stat(p.final); present = details.isFile(); sizeBytes = details.size; if (present) verified = await verifiedDigest(p.final) === spec.sha256; } catch { /* missing is not ready */ }
   const meta = await record(p.metadata);
   const matching = meta?.revision === identity(spec);
   const partialBytes = matching ? await size(p.partial) : 0;
@@ -240,7 +278,12 @@ async function seedModelFileUncached(spec: MdxModelSpec, opts: SeedOptions): Pro
     }
     const bytes = await size(p.partial);
     opts.signal?.throwIfAborted();
-    await rename(p.partial, p.final);
+    // Same Windows sharing-violation class as `save`: a status poll, an
+    // antivirus scan or a reader can hold the destination momentarily.
+    await replaceFile(p.partial, p.final);
+    const installed = await stat(p.final);
+    if (verifiedDigests.size >= VERIFIED_DIGEST_LIMIT) verifiedDigests.clear();
+    verifiedDigests.set(p.final, { size: installed.size, mtimeMs: installed.mtimeMs, ctimeMs: installed.ctimeMs, at: Date.now(), sha256: sha });
     await save(`${p.final}.provenance.json`, { kind: opts.acquisition ?? "registry-download", sourceUrl: spec.sourceUrl, sha256: sha, licence: spec.license, permission: opts.acquisition === "owner-supplied-file" || opts.permissionReviewed ? "owner-asserted-not-verified" : "not-established", installedAt: new Date().toISOString() });
     await rm(p.metadata, { force: true });
     return { outcome: "installed", bytes };
