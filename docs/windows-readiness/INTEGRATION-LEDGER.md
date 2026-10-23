@@ -133,12 +133,13 @@ than retried:
     and child-process bounds follow the same rule through
     `tests/helpers/hang-bound.ts` (§5.22).
 
-Result: six Windows jobs green on twelve commits, including the full source
+Result: six Windows jobs green on thirteen commits, including the full source
 suite (1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped), the desktop
 contract gate (168/168, recording its own exit) and the installed application
-acceptance (no run that attempted it has failed). Seventeen runs stand behind those
-twelve green ones; the five that failed are named in the readiness record (§2,
-§5.18–§5.22), not removed. The evidence commit is `db06e29`; run 39903639972.
+acceptance (no run that attempted it has failed). Eighteen runs stand behind
+those thirteen green ones; the five that failed are named in the readiness
+record (§2, §5.18–§5.22), not removed. The evidence commit is `15e4666`; run
+39908416966.
 
 ## 4. Reproduction
 
