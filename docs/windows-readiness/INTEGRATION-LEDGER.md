@@ -152,8 +152,11 @@ The two runs after it were cancelled by an account condition, not by a test:
 "Egress is over the account limit", and 39935007547 hit the jobs' own wall
 clocks (10 m and 30 m) while the account was still throttled — the browser
 job's download step alone took 5 m 48 s of its 10-minute budget. Neither is
-counted as a pass or reported as a product failure; both are reported, and CI
-should be re-run once the limit clears.
+counted as a pass or reported as a product failure.
+
+The re-run once the limit cleared, 39938802094 on `86ede5f`, is green in all
+four jobs with the same budgets — 8 m 39 s of 10 and 14 m 57 s of 30 — which is
+the evidence that the budgets were never the problem.
 
 ## 4. Reproduction
 
