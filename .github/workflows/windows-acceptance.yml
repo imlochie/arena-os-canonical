@@ -325,6 +325,18 @@ jobs:
           set -euo pipefail
           node scripts/windows-deelevated-step.mjs "per-file lifecycle" "$EVIDENCE/lifecycle.log" 2700000 -- node scripts/test-lifecycle-diagnostic.mjs --bound-ms 900000
 
+      - name: Sweep measurement — model status poll cost (informational, non-blocking)
+        # Runs the two functions the 2026-10-23 sweep changed, on this runner,
+        # through the production modules. There is no threshold and the step is
+        # continue-on-error: a speed measurement must never become a gate, and a
+        # noisy shared runner must not turn a comparison into a failure. The
+        # result is annotated and written to $EVIDENCE/sweep-measurement.json.
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node --import ./scripts/register-src-loader.mjs scripts/windows-sweep-measure.mjs
+
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
