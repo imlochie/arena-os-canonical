@@ -133,18 +133,22 @@ than retried:
     and child-process bounds follow the same rule through
     `tests/helpers/hang-bound.ts` (§5.22).
 
-Result: six Windows jobs green on sixteen commits, including the full source
+Result: six Windows jobs green on seventeen commits, including the full source
 suite (1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped), the desktop
 contract gate (168/168, recording its own exit) and the installed application
-acceptance (no run that attempted it has failed). Of the twenty-two runs behind
-them, six failed; those are named in the readiness record (§2, §5.18–§5.22),
+acceptance (no run that attempted it has failed). Of the twenty-three runs
+behind them, six failed; those are named in the readiness record (§2, §5.18–§5.22),
 not removed. The evidence commit is `7096fa8`; run 39928621349.
 
 The Windows gate is not the repository's whole CI. The Linux CI failure that
 stood open on `95f4ce9` is diagnosed in §7.11 of the readiness record — a test
 deleting a temp tree while the lifecycle was still writing to it, reported as
 `ENOTEMPTY` from its own `finally` — and fixed in `7096fa8`, whose Linux CI run
-(39928621325) is green in all four jobs.
+(39928621325) is green in all four jobs. The next CI run (39932071273) was
+cancelled before it ran a test: `actions/setup-node` spent the job's whole
+10-minute budget in a failing cache restore — "Egress is over the account
+limit" — while the workflow's other three jobs passed. That is an account
+condition, reported rather than counted.
 
 ## 4. Reproduction
 
