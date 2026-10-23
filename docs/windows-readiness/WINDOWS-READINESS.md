@@ -160,7 +160,7 @@ per-user NSIS uninstaller.
 | `npm ci` | **PASS** | PASS |
 | `npm run typecheck` | **PASS** | **PASS** (exit 0) |
 | `npm run test:desktop` (de-elevated, restricted token) | **PASS — 168 tests, 168 pass, 0 fail, 0 cancelled, 258 s in the final run (258–445 s across runs), and the step records its own exit** | **PASS** — 168/168, clean exit |
-| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped**, green on the seven most recent runs (`1261b70`, `31b93cb`, `7c54f07`, `71cdee7`, `e0da39d`, `1b0cfdb`, `db06e29`, `15e4666`) | **PASS with 2 environment failures** — 1649 tests, 1647 pass, 2 fail, 0 cancelled, 0 skipped at `e0da39d`; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
+| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped**, green on the eight evidence runs since `1261b70` (`1261b70`, `31b93cb`, `7c54f07`, `71cdee7`, `e0da39d`, `1b0cfdb`, `db06e29`, `15e4666`) | **PASS with 2 environment failures** — 1649 tests, 1647 pass, 2 fail, 0 cancelled, 0 skipped at `e0da39d`; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
 | Per-file lifecycle probe (diagnostics job) | **29/29 files exit cleanly** with the gate's per-test budget | 29/29 exit cleanly |
 | Staging identity guard | **PASS** — correctly refused packages while the tree was genuinely dirty (§5) | PASS |
 
@@ -480,6 +480,28 @@ What it does **not** prove is listed next.
     files on Windows and report each result individually — which is why there is
     no line here that says "inherited, therefore passing".
 
+11. **This record is the Windows gate, not the repository's whole CI.** The
+    branch also runs the repository's Linux CI (`ci.yml`: typecheck, lint, the
+    source suite, build, the A7 runtime acceptance, browser audio and the
+    compose images). That workflow failed on the committed tip `95f4ce9` at one
+    test — "two concurrent starts cannot corrupt each other — the second is
+    refused" in `src/lib/waveyard/separation/provision-store.test.ts`. The job
+    log host is unreachable from here, but the check annotation carries the TAP
+    block and names the failure exactly: `ENOTEMPTY: directory not empty,
+    rmdir '/tmp/wy-store-…/env'`, thrown by the test's own `finally`. The
+    preparation manager persists `ready` *before* its last status write and the
+    lock release, so a test that removed its temp tree as soon as
+    `getStatus()` said `ready` was deleting a directory still being written to;
+    the throwing `finally` then replaced whatever the body had produced, which
+    is why a green test was reported as a failure with no assertion in it. The
+    test now joins the lifecycle's settlement — a `start()` on a ready machine
+    resolves only after cleanup, the contract its sibling test already asserts —
+    and removes the tree with retries, and a cleanup that still fails is logged
+    rather than allowed to replace the result. That is a defect in the test, not
+    in the product, and it is fixed in this commit; the Linux CI run on it is
+    the verification. Until that run is green this record claims the Windows
+    gate only: it does not say every repository check passes.
+
 ## 8. Installing the Windows build
 
 For a reviewer with the artifact:
@@ -525,9 +547,9 @@ names. What follows cannot be closed by a hosted runner.
    workshop, Spaces missions) — their source files run in the Windows suite, but
    no human has driven their interfaces on Windows.
 6. **Verify the newest commit's run.** Runs are recorded here for every commit
-   that changes what the jobs verify — product code, tests, or a command; the
-   last such commit is `71cdee7`. A commit that changes only documentation, or
-   only the annotation level of a tolerated control, is verified by its own
-   workflow run, linked from the pull request —
-   a file cannot record the result of the run that reads it. If that run is not
-   six green jobs with the counts above, this record is wrong and the run wins.
+   that changes what the jobs verify — product code, tests, or a command; that
+   commit and its run are the evidence row in §2. A commit that changes only
+   documentation, or only the annotation level of a tolerated control, is
+   verified by its own workflow run, linked from the pull request — a file
+   cannot record the result of the run that reads it. If that run is not six
+   green jobs with the counts above, this record is wrong and the run wins.

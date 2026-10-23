@@ -24,6 +24,25 @@ import {
 import type { EnvironmentReport } from "./provision";
 import type { ProvisionContext, RunOutcome } from "./provision-runtime";
 
+/** Remove a test's temp tree without letting cleanup replace the result.
+ *
+ *  `fs.rm` fails with ENOTEMPTY when something is still writing inside the tree,
+ *  and a throwing `finally` replaces the assertion it was cleaning up after — so
+ *  a test that passed could be reported as a failure. That is exactly what Linux
+ *  CI did at run 39911184046: the preparation run persisted its final status
+ *  after `getStatus()` had already said `ready`, the test removed the directory
+ *  underneath it, and `rmdir` found a file it had not listed. Retry, and if the
+ *  tree still will not go, report it: a leftover directory under the OS temp
+ *  root is harmless, an unexplained failure is not.
+ */
+async function removeTree(directory: string): Promise<void> {
+  try {
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch (error) {
+    console.error(`[provision-store.test] could not remove ${directory}:`, error);
+  }
+}
+
 /** A deferred the tests resolve to control a blocking step. */
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
   let resolve!: (value: T) => void;
@@ -93,7 +112,7 @@ test("a fresh machine reports not_prepared with an empty record", async () => {
     assert.equal(status.state, "not_prepared");
     assert.equal(status.result.provenance, null);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTree(directory);
   }
 });
 
@@ -110,7 +129,7 @@ test("consent is required before any material step, and a partial grant is refus
       assert.ok(outcome.missing.length > 0, "the missing consents are named");
     }
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTree(directory);
   }
 });
 
@@ -152,7 +171,7 @@ test("a full preparation runs the lifecycle, publishes the pointer only after th
     // Idempotent: a second start on a ready machine is a no-op.
     assert.equal((await manager.start(grants)).outcome, "already-ready");
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTree(directory);
   }
 });
 
@@ -182,8 +201,15 @@ test("two concurrent starts cannot corrupt each other — the second is refused"
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.equal(status.state, "ready");
+    // `ready` is persisted before the lifecycle's own last writes settle (the
+    // steps are marked done and the lock is released afterwards), so the
+    // directory is not safe to remove until the run has actually finished. A
+    // start() on a ready machine joins that settlement — the contract proved by
+    // "published readiness joins final settlement" — so this both asserts
+    // idempotency and gives the cleanup a settled tree to delete.
+    assert.equal((await manager.start(["python-packages", "model-checkpoint"])).outcome, "already-ready");
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTree(directory);
   }
 });
 
@@ -208,7 +234,7 @@ test("a failing dependency install lands in failed with an actionable error", as
     // No pointer was published — the engine is honestly not ready.
     assert.ok(!existsSync(join(envDir, "interpreter.json")), "a failed run publishes no pointer");
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTree(directory);
   }
 });
 
@@ -243,7 +269,7 @@ test("cancellation lands in cancelled, not ready", async () => {
     assert.ok(status.state === "cancelled" || status.state === "failed", "cancellation is terminal, never ready");
     assert.notEqual(status.state, "ready");
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTree(directory);
   }
 });
 
@@ -281,7 +307,7 @@ test("an interrupted run (Arena restarted) is honestly reported as recovering, t
     const recovered = await manager.recover();
     assert.equal(recovered.state, "not_prepared");
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTree(directory);
   }
 });
 
@@ -302,7 +328,7 @@ test("the status record is durable and valid JSON across transitions", async () 
     assert.equal(raw.state, status.state);
     assert.ok(Array.isArray(raw.log));
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTree(directory);
   }
 });
 
@@ -326,7 +352,7 @@ test("a checkpoint removed after preparation is detected — readiness does not 
     assert.equal(after.state, "not_prepared", "a vanished checkpoint drops readiness");
     assert.equal(after.error?.code, "ENVIRONMENT_CHANGED");
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await removeTree(directory);
   }
 });
 
@@ -340,7 +366,7 @@ test("changed checkpoint bytes invalidate the recorded smoke, even with the same
     assert.equal(status.state, "ready");
     await writeFile(status.environment.checkpointPath, "replaced-controlled-checkpoint");
     assert.equal((await manager.getStatus()).state, "not_prepared");
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally { await removeTree(directory); }
 });
 
 
@@ -367,5 +393,5 @@ test("published readiness joins final settlement, while an actual preparation re
     assert.equal((await repeated).outcome, "already-ready");
     assert.equal((await manager.start(grants)).outcome, "already-ready");
     assert.equal(installs, 1);
-  } finally { installGate.resolve(); cleanupGate.resolve(); await rm(directory, { recursive: true, force: true }); }
+  } finally { installGate.resolve(); cleanupGate.resolve(); await removeTree(directory); }
 });
