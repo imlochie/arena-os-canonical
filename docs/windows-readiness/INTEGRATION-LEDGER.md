@@ -127,11 +127,12 @@ than retried:
     test (60 s → 120 s after run 39886922288), whose per-phase diagnostics now
     say where the time went if it ever overruns again.
 
-Result: six Windows jobs green on nine commits, including the full source
-suite (1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped) and the desktop
-contract gate (168/168, recording its own exit). Eleven runs stand behind those
-nine green ones; the two that failed are named in the readiness record (§2,
-§5.18, §5.19), not removed. The evidence commit is `71cdee7`; run 39890546669.
+Result: six Windows jobs green on ten commits, including the full source
+suite (1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped), the desktop
+contract gate (168/168, recording its own exit) and the installed application
+acceptance (34 of 34 runs that attempted it). Twelve runs stand behind those
+ten green ones; the two that failed are named in the readiness record (§2,
+§5.18, §5.19), not removed. The evidence commit is `e0da39d`; run 39892723344.
 
 ## 4. Reproduction
 

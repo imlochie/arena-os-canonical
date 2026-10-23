@@ -44,27 +44,27 @@ be expressed on Windows at all (a 70,000-character ffmpeg argument).
 
 | Item | Value |
 | --- | --- |
-| Evidence commit | `71cdee76087f36f989659920da2bbc20090e8f29` (`71cdee7`) — the commit the final six-job green run (39890546669) ran against; product code unchanged since `1261b70` |
+| Evidence commit | `e0da39d23d61d929b8983d6a697e7a98e7b7f204` (`e0da39d`) — the newest commit with a six-job green run (39892723344), and the first where no job carries a `failure` annotation (§5.17). The last commit that changes what the jobs verify is `71cdee7` (run 39890546669); product code unchanged since `1261b70` |
 | Full suite | 1649 tests · 1643 pass · **0 fail** · 0 cancelled · 6 skipped — same counts on the four most recent green runs |
 | Desktop gate | 168 tests · 168 pass · **0 fail** · 0 cancelled · 431 s de-elevated in the final run (379–445 s across runs), and the step records its own exit |
 | Base commit | `13638fe8a5c280e6b47ecf97fb6e6cf414163a12` |
-| Windows runs (all six jobs `success`) | [39890546669](https://github.com/imlochie/arena-os-canonical/actions/runs/39890546669) (`71cdee7`), [39819390531](https://github.com/imlochie/arena-os-canonical/actions/runs/39819390531) (`7c54f07`), [39810859260](https://github.com/imlochie/arena-os-canonical/actions/runs/39810859260) (`31b93cb`), [39810849313](https://github.com/imlochie/arena-os-canonical/actions/runs/39810849313) (`1261b70`), [39797631449](https://github.com/imlochie/arena-os-canonical/actions/runs/39797631449) (`805e4c0`), [39797838680](https://github.com/imlochie/arena-os-canonical/actions/runs/39797838680) (`9dbcfc2`), [39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515) (`7be5a46`), [39792397329](https://github.com/imlochie/arena-os-canonical/actions/runs/39792397329) (`52eba9e`), [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) (`8a1adee`) — nine runs across nine commits |
+| Windows runs (all six jobs `success`) | [39892723344](https://github.com/imlochie/arena-os-canonical/actions/runs/39892723344) (`e0da39d`), [39890546669](https://github.com/imlochie/arena-os-canonical/actions/runs/39890546669) (`71cdee7`), [39819390531](https://github.com/imlochie/arena-os-canonical/actions/runs/39819390531) (`7c54f07`), [39810859260](https://github.com/imlochie/arena-os-canonical/actions/runs/39810859260) (`31b93cb`), [39810849313](https://github.com/imlochie/arena-os-canonical/actions/runs/39810849313) (`1261b70`), [39797631449](https://github.com/imlochie/arena-os-canonical/actions/runs/39797631449) (`805e4c0`), [39797838680](https://github.com/imlochie/arena-os-canonical/actions/runs/39797838680) (`9dbcfc2`), [39792179515](https://github.com/imlochie/arena-os-canonical/actions/runs/39792179515) (`7be5a46`), [39792397329](https://github.com/imlochie/arena-os-canonical/actions/runs/39792397329) (`52eba9e`), [39775173391](https://github.com/imlochie/arena-os-canonical/actions/runs/39775173391) (`8a1adee`) — ten runs across ten commits |
 | Runs that failed, and why | [39886922288](https://github.com/imlochie/arena-os-canonical/actions/runs/39886922288) (`5c54f76`, documentation only — the diff from `7c54f07` is empty outside `docs/`): the conversion provenance test exceeded its own 60 s budget, which the same code had cleared 35 minutes earlier; fixed at the cause in `71cdee7` (§5.19). [39802222893](https://github.com/imlochie/arena-os-canonical/actions/runs/39802222893) (`c087806`): one test, Arcade's 1.2 s cold-start navigation budget (§5.18), fixed in `1261b70`. Both failures are kept here, and neither commit was re-run until it turned green |
 | Predecessor runs | `39724952496` (5 fail), `39736649568` (1 fail), `39739476880` (1 fail), `39770687200` (1 fail) — each failure named and fixed in §5, none retried blindly |
 | Installer | `Arena Setup 0.1.0.exe`, 621.1 MB; SHA-256 in `installer-sha256.txt` inside the `windows-package-<sha>` artifact |
 
-Nine commits produced the same six green jobs. Two of the eleven runs behind
+Ten commits produced the same six green jobs. Two of the twelve runs behind
 them failed, and both are named above: the Arcade cold-start bound (§5.18) and
 the conversion test's own 60 s budget (§5.19). Each was fixed at its cause and
 the fixed commit was run again; neither failing commit was re-run until it
 went green. A ledger that deletes an inconvenient result stops being a ledger,
 and one that keeps it without a cause is noise.
 
-The evidence commit is `71cdee7`, the last commit that changes what the jobs
-verify — product code, a test, or a command — and 39890546669 is its run.
-Commits after it change documentation and the level at which a deliberately
-tolerated control is annotated (§5.17); the same commands, tests and assertions
-still run. Their runs are linked from the pull request,
+The evidence commit is `e0da39d`, the newest commit with a six-job green run —
+39892723344 — and the first whose six jobs carry no `failure` annotation at
+all. The last commit that changes what the jobs verify (product code, a test,
+or a command) is `71cdee7`, run 39890546669; commits after `e0da39d` change
+documentation only. Their runs are linked from the pull request,
 because a file cannot record the result of the run that reads it. Every Windows
 job prints `commit`, `tree` and `digest` in its first step, so an artifact can
 be tied to the source that produced it.
@@ -161,7 +161,7 @@ per-user NSIS uninstaller.
 | `npm ci` | **PASS** | PASS |
 | `npm run typecheck` | **PASS** | **PASS** (exit 0) |
 | `npm run test:desktop` (de-elevated, restricted token) | **PASS — 168 tests, 168 pass, 0 fail, 0 cancelled, 431 s in the final run (379–445 s across runs), and the step records its own exit** | **PASS** — 168/168, clean exit |
-| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped**, green on the four most recent runs (`1261b70`, `31b93cb`, `7c54f07`, `71cdee7`) | **PASS with 2 environment failures** — 1645 tests, 1643 pass; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
+| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped**, green on the four most recent runs (`1261b70`, `31b93cb`, `7c54f07`, `71cdee7`) | **PASS with 2 environment failures** — 1649 tests, 1647 pass, 2 fail, 0 cancelled, 0 skipped at `e0da39d`; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
 | Per-file lifecycle probe (diagnostics job) | **29/29 files exit cleanly** with the gate's per-test budget | 29/29 exit cleanly |
 | Staging identity guard | **PASS** — correctly refused packages while the tree was genuinely dirty (§5) | PASS |
 
@@ -301,7 +301,10 @@ worked around by weakening a check.
     job. Both wrappers now read `ARENA_STEP_TOLERATED_FAILURE`: the exit status
     is untouched, so the workflow still decides whether to tolerate the step,
     but the annotation becomes a `::warning` carrying the reason the step is
-    tolerated. A green job now carries only warnings and verified counts.
+    tolerated. A green job now carries only warnings and verified counts, and
+    run 39892723344 (`e0da39d`) is the first where that holds for all six jobs:
+    not one `failure` annotation, only warnings and the counts each wrapper
+    reports.
 
 18. **The Arcade browser smoke raced a cold Chromium.** Run 39802222893
     failed exactly one test with `page.goto: Timeout 1200ms exceeded` on the
@@ -339,8 +342,8 @@ worked around by weakening a check.
   (`Arena Setup 0.1.0.exe`, 621.1 MB), with all nine sections of the installed
   acceptance PASS: `INSTALL`, `FIRST_LAUNCH`, `RUNTIME`, `WAVEYARD_WORKFLOW`,
   `EXPORT`, `RESTART_PERSISTENCE`, `PROCESS_CLEANUP`, `OFFLINE`,
-  `SECURITY/PACKAGING AUDIT`. Every run that attempted it has passed: 31 of
-  31 (the 13 earliest runs predate the installed-acceptance job and skipped it,
+  `SECURITY/PACKAGING AUDIT`. Every run that attempted it has passed: 34 of
+  34 (the 13 earliest runs predate the installed-acceptance job and skipped it,
   which is not a pass and is not counted as one).
 - Writable data lives under `%LOCALAPPDATA%\Arena`, not the repository.
 - The embedded database is created on first launch, survives restarts, and is
@@ -404,8 +407,8 @@ What it does **not** prove is listed next.
    live-session test refuse to run without a real Chromium; the Windows jobs
    install it (`npx playwright install chromium`). In this Linux sandbox the
    browser cannot be downloaded, so the local run reports exactly those two as
-   failing and nothing else (1643/1645 pass) — an environment limit, not a
-   product result.
+   failing and nothing else (1647/1649 pass, measured at `e0da39d`) — an
+   environment limit, not a product result.
 10. **Inherited product evidence is not Windows evidence.** Arcade, Spaces and
     Waveyard workflows were validated on Linux at `13638fe`; this branch does
     not re-claim them wholesale for Windows. What it does is run those source
