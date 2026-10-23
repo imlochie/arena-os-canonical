@@ -23,7 +23,7 @@
 import { createReadStream } from "node:fs";
 import { mkdir, mkdtemp, open, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
+import { cpus, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { checksumFile } from "../src/lib/waveyard/audio.ts";
@@ -100,8 +100,15 @@ async function measure() {
     const coldMs = performance.now() - coldStarted;
     const steadyMs = await timeAverage(() => getModelFileStatus(spec, dir), POLLS);
 
+    const cpu = cpus()[0];
     return {
       platform: process.platform,
+      arch: process.arch,
+      // Throughput on a shared hosted runner is only interpretable next to the
+      // machine it was measured on; the buffer-size comparison is the part
+      // that does not depend on the host.
+      cpu: cpu ? cpu.model.trim() : "unknown",
+      cores: cpus().length,
       node: process.version,
       sizeMiB: info.size / MB,
       checksum64KiBBufferMs: Number(oldBufferMs.toFixed(1)),
