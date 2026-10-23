@@ -165,7 +165,7 @@ per-user NSIS uninstaller.
 | `npm ci` | **PASS** | PASS |
 | `npm run typecheck` | **PASS** | **PASS** (exit 0) |
 | `npm run test:desktop` (de-elevated, restricted token) | **PASS — 168 tests, 168 pass, 0 fail, 0 cancelled, 340 s in the final run (258–445 s across runs), and the step records its own exit** | **PASS** — 168/168, clean exit |
-| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped**, green on sixteen runs, `1261b70` among them (§2 lists every run, green and failed) | **PASS with 2 environment failures** — 1649 tests, 1647 pass, 2 fail, 0 cancelled, 0 skipped at `e0da39d`; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
+| `npm test` (full source suite, Windows) | **PASS — 1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped**, green on every run in §2 (which lists them all, green and failed, so the count cannot drift from the list) | **PASS with 2 environment failures** — 1649 tests, 1647 pass, 2 fail, 0 cancelled, 0 skipped at `e0da39d`; the two failing tests require Chromium, which this sandbox cannot download (§7.9) |
 | Per-file lifecycle probe (diagnostics job) | **29/29 files exit cleanly** with the gate's per-test budget | 29/29 exit cleanly |
 | Staging identity guard | **PASS** — correctly refused packages while the tree was genuinely dirty (§5) | PASS |
 
