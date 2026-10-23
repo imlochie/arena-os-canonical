@@ -96,6 +96,40 @@ branches remain untouched.
    acceptance, install, installed-app acceptance, recovery, uninstall) and
    `scripts/windows-platform-check.mjs`.
 
+### 3.1 Second pass: the Windows lifecycle defects
+
+Once the de-elevated wrapper was fixed (a `.bat` invoking `npm.cmd` without
+`call` never reached its sentinel, so every step looked like a hang — see
+`WINDOWS-READINESS.md` §5.8), the gate could finally gate. It then exposed the
+defects below — each one specific to Windows, each fixed at its cause rather
+than retried:
+
+5. **Process-tree termination.** `runCommandProcess` killed only the direct
+   child; descendants held the pipes and cancellation never settled. The Windows
+   path now uses `taskkill /T /F`.
+6. **Path canonicalisation.** Grant validation compared a `realpath`-resolved
+   scope with an unresolved root; 8.3 short temp paths (`RUNNER~1`) made valid
+   persisted approvals fail with `TOOL_GRANT_INVALID`.
+7. **Atomic replacement under a reader.** `rename` over an open file returns
+   `EPERM` on Windows; `src/lib/fs-replace.ts` retries exactly EPERM/EACCES/EBUSY,
+   bounded, and rethrows everything else. Used by the provisioning store and the
+   model/checkpoint placement paths.
+8. **ffmpeg syntax, not paths.** Filter paths need `C\:/…`; and the failure text
+   now keeps the head of stderr, because ffmpeg rewrites the tail with progress.
+9. **Test fixtures that encoded POSIX or bypassed the product.** Crash-recovery
+   tests asserted a `SIGKILL` signal (Windows reports a non-zero status instead);
+   PostgreSQL fixtures hand-wrote `windowsPathDirs: []` instead of deriving it
+   from `desktop/runtime/config.ts`.
+10. **Bounds below the work they bounded.** Per-test and per-file budgets (some
+    inside the tests themselves) were raised above measured cost, and a fixture
+    the harness itself kills is now reported as such rather than as a product
+    defect.
+
+Result: six Windows jobs green on eight commits, including the full source
+suite (1649 tests, 1643 pass, 0 fail, 0 cancelled, 6 skipped) and the desktop
+contract gate (168/168, recording its own exit). The evidence commit is
+`7c54f07`; run 39819390531.
+
 ## 4. Reproduction
 
 ```bash
