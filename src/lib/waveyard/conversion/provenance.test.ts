@@ -9,8 +9,25 @@ import { eq } from "drizzle-orm";
 import { missionPostgres } from "../../../../tests/helpers/mission-postgres";
 import { encodeWav16 } from "../mixer/synth";
 
-test("native conversion and reconversion preserve original acquisition rights and checksum lineage", { timeout: 60000 }, async t => {
+// The bound is a hang detector, not a performance target: it only has to be
+// short enough to turn a stuck conversion into a named failure, and 60 s was
+// not. Every run of this test builds a PostgreSQL cluster before the first
+// conversion — initdb writes 968 files / 39 MB — and then drives native FFmpeg
+// probe, encode and full-decode verification for each conversion, six of them
+// in the corrupt-metadata repair loop alone. That is 3.1 s end to end on a
+// Linux development box; on a 2-core Windows runner sharing its disk with the
+// electron-builder job it exceeded 60 s once (run 39886922288) while passing at
+// the same code before and since. The phases below are emitted so the next
+// overrun names where the time went instead of only that it ran out. 120 s
+// matches the bound the suite already gives its other native-heavy fixtures
+// (separation-real-ort, claim, seed-http, service) and stays far below the
+// 600 s the product's own execTool allows a single conversion. No assertion,
+// isolation check or verification step is relaxed here.
+test("native conversion and reconversion preserve original acquisition rights and checksum lineage", { timeout: 120000 }, async t => {
+  const startedAt = Date.now();
+  const phase = (name: string) => t.diagnostic(`${name} at ${Date.now() - startedAt} ms`);
   const fixture = await missionPostgres(), root = await mkdtemp(join(tmpdir(), "arena-conversion-rights-"));
+  phase("postgres cluster ready");
   process.env.DATABASE_URL = fixture.url; process.env.WAVEYARD_STORAGE_DIR = join(root, "private");
   process.env.WAVEYARD_LOCAL_WORKER = "1"; delete process.env.REDIS_URL;
   const database = await import("../../../db/index");
@@ -25,6 +42,7 @@ test("native conversion and reconversion preserve original acquisition rights an
   const original = await service.addTrackFromAudioFile({ ownerId, filePath: filename, filename: "authorized.wav", mimeType: "audio/wav", prepareSeparation: false, provenance });
   let inputTrackId = original.track.id;
   const originalDetail = await service.getTrack(ownerId, inputTrackId);
+  phase("source ingested");
   for (const format of ["flac", "aiff"] as const) {
     const [job] = await jobs.createBatch(ownerId, randomUUID(), [{ trackId: inputTrackId, tags: { title: `Converted ${format}` } }], engine.settingsSchema.parse({ format, pcmBits: 16 }));
     await jobs.execute(job.id);
@@ -42,6 +60,7 @@ test("native conversion and reconversion preserve original acquisition rights an
     const [again] = await database.db.select().from(schema.sourceAcquisitions).where(eq(schema.sourceAcquisitions.id, acquisition.id));
     assert.deepEqual(again, acquisition);
     inputTrackId = m.outputTrackId!;
+    phase(`converted to ${format}`);
   }
   await t.test("corrupt acquisition metadata refuses library publication and repair resumes retained bytes", async () => {
     const [originalAcquisition] = await database.db.select().from(schema.sourceAcquisitions).where(eq(schema.sourceAcquisitions.sourceAssetId, originalDetail!.source.id));
@@ -61,6 +80,7 @@ test("native conversion and reconversion preserve original acquisition rights an
       assert.deepEqual((await service.getTrack(ownerId, jobs.metadata(resumed).outputTrackId!))?.rights, originalDetail?.rights);
     }
   });
+  phase("corrupt-metadata repair loop done");
   await t.test("local upload stays unknown-rights and interrupted library handoff resumes without relabelling", async () => {
     const local = await service.addTrackFromAudioFile({ ownerId: randomUUID(), filePath: filename, filename: "local.wav", mimeType: "audio/wav", prepareSeparation: false });
     const localOwner = (await database.db.select().from(schema.tracks).where(eq(schema.tracks.id, local.track.id)))[0].ownerId;
@@ -78,4 +98,5 @@ test("native conversion and reconversion preserve original acquisition rights an
     const [after] = await database.db.select().from(schema.sourceAcquisitions).where(eq(schema.sourceAcquisitions.id, before.id));
     assert.deepEqual(after, before); assert.equal(jobs.metadata(resumed).outputSourceId, m.outputSourceId);
   });
+  phase("interrupted handoff resumed");
 });
