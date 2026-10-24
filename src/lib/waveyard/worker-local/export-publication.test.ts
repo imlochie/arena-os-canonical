@@ -12,7 +12,12 @@ import { projects, remixSessions, remixVersions, exportJobs, exportAssets, sourc
 import { LocalStorageProvider } from "../storage";
 import { cleanupExportAttempt, exportAttemptKey, publishExport } from "../../../../waveyard-worker/packages/dsp/src/export-publication";
 
-test("export publication and cleanup use authoritative row locks and exact references", { timeout: 30000 }, async t => {
+// No local cap: the suite declares the per-test bound once (scripts/test-source.mjs,
+// 10 minutes in CI). This test builds its own PostgreSQL cluster before it does
+// any work, so a fixed cap measures the runner — run 39901358509 stopped it at
+// 30 s, then every later test in the file failed on the state the aborted
+// transaction left behind.
+test("export publication and cleanup use authoritative row locks and exact references", async t => {
   const pg = await missionPostgres(), root = await mkdtemp(join(tmpdir(), "arena-export-publication-"));
   t.after(async () => { await pg.close(); await rm(root, { recursive: true, force: true }); });
   const database = pg.database, storage = new LocalStorageProvider(join(root, "private"));

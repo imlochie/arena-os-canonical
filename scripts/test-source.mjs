@@ -43,7 +43,17 @@ try {
   console.error(`[source-suite] head=${head} sourceDigest=${identity.sourceDigest}; fresh PostgreSQL with canonical migrations; serial test files`);
   await checkpoint({ phase: 'testing', database: 'owned embedded PostgreSQL; canonical desktop migrations' });
   tap = createWriteStream(tapPath);
-  child = spawn(process.execPath, ['--import', './scripts/register-src-loader.mjs', '--test', '--test-concurrency=1', 'src/**/*.test.ts', 'desktop/**/*.test.ts', 'scripts/lib/*.test.mjs'], {
+  // A test that blocks forever must become a recorded failure, not a stalled
+  // job. The bound is per test, declared once — here — and it is a hang
+  // detector, not a performance assertion: it never hides slow work, because
+  // every test it stops is named in the TAP output. It also applies to a
+  // developer run, so the same test fails at the same place instead of the
+  // local run having no bound at all. Individual tests override it only when
+  // they are asserting a tighter budget of their own (the Arcade smoke does);
+  // a local cap that merely fires before this one does not belong in a test.
+  const testTimeout = process.env.ARENA_TEST_TIMEOUT_MS ?? "600000";
+  const timeoutArgs = [`--test-timeout=${testTimeout}`];
+  child = spawn(process.execPath, ['--import', './scripts/register-src-loader.mjs', '--test', '--test-concurrency=1', ...timeoutArgs, 'src/**/*.test.ts', 'desktop/**/*.test.ts', 'scripts/lib/*.test.mjs'], {
     stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DATABASE_URL: pg.url },
   });
   child.stdout.pipe(process.stdout, { end: false });
@@ -74,3 +84,23 @@ try {
   console.error(`[source-suite] start=${head} end=${end} exit=${code} durationMs=${Date.now() - started}`);
 }
 process.exitCode = code;
+
+// The harness must return the child's status, not wait for ambient handles.
+// On Windows the embedded PostgreSQL child can outlive `pg_ctl stop`; the
+// process then sat for three hours after printing its receipt while the
+// acceptance step waited for a completion sentinel that never came. Naming
+// what is still alive preserves the diagnosis; exiting guarantees the status.
+const lingering = setTimeout(() => {
+  const alive = (process.getActiveResourcesInfo?.() ?? []).filter((name) => name !== "TTYWrap");
+  console.error(`[source-suite] still alive 10 s after the receipt: ${JSON.stringify(alive)}`);
+  process.exit(code);
+}, 10_000);
+lingering.unref();
+const flush = () => process.exit(code);
+if (process.stdout.writableLength === 0) {
+  // Nothing buffered: exit on the next turn so the unref'd timer cannot keep
+  // a clean run waiting ten seconds.
+  setImmediate(flush).unref();
+} else {
+  process.stdout.write("", flush);
+}

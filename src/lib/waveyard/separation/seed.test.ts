@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -68,6 +68,33 @@ test("status: absent model is honestly not-present; seeded model is verified", a
     assert.ok(installed.equals(bytes));
     const leftovers = (await readdir(dir)).filter((name) => name.startsWith(".download-"));
     assert.deepEqual(leftovers, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status keeps verifying the bytes, not a stale cached verdict", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wy-seed-"));
+  try {
+    // The models endpoint polls this status every two seconds while the setup
+    // panel is open; it must stay a stat-driven answer and must notice a file
+    // whose bytes changed without its size changing.
+    const bytes = Buffer.alloc(1_000_000, 3);
+    const spec = await specFor(bytes);
+    await seedModelFile(spec, { dir, fetchImpl: fetchServing(bytes).fetchImpl });
+    assert.equal((await getModelFileStatus(spec, dir)).verified, true);
+    assert.equal((await getModelFileStatus(spec, dir)).verified, true);
+
+    const file = join(dir, spec.file);
+    const tampered = Buffer.from(bytes);
+    tampered[0] ^= 0xff;
+    await writeFile(file, tampered);
+    const afterTamper = await getModelFileStatus(spec, dir);
+    assert.equal(afterTamper.sizeBytes, bytes.length, "the tamper kept the size");
+    assert.equal(afterTamper.verified, false);
+
+    await writeFile(file, bytes);
+    assert.equal((await getModelFileStatus(spec, dir)).verified, true, "restoring the bytes is verified again");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -11,6 +11,18 @@ import { ensureWorkspace } from "./tools";
 import { getLatestMission, runMission, reconcileMission, cancelMission, MissionBusyError } from "./mission";
 import { eq } from "drizzle-orm";
 import { missionPostgres } from "../../../tests/helpers/mission-postgres";
+import { assertActuallyKilled } from "../../../tests/helpers/platform-exit";
+import { hangBound } from "../../../tests/helpers/hang-bound";
+/** Startup allowance for the crash fixture: it boots a real process, connects
+ * to PostgreSQL, calls a model and executes a command before reaching the
+ * boundary. 15 s was enough on Linux and not on a Windows runner, where the
+ * harness — not the fixture — killed it at `turn_recorded`. The assertion is
+ * unchanged; only the allowance for the fixture to arrive is. */
+// A crash fixture is a whole TypeScript child with its own PostgreSQL work; the
+// suite's declared bound is the one that applies when CI sets it (see
+// tests/helpers/hang-bound.ts).
+const FIXTURE_TIMEOUT_MS = hangBound(60_000);
+
 let f: Awaited<ReturnType<typeof missionPostgres>>;
 before(async () => { f = await missionPostgres(); });
 after(async () => { await f?.close(); });
@@ -157,7 +169,7 @@ test("a killed runtime resumes its recorded next agent without duplicating a com
   const id = randomUUID(); await f.database.insert(spaces).values({ id, prompt: "Crash recovery fixture" });
   const root = await ensureWorkspace(id); t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(path.join(root, "increment.cjs"), "const fs=require('node:fs');const n=Number(fs.existsSync('count')?fs.readFileSync('count','utf8'):0);fs.writeFileSync('count',String(n+1));");
-  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id }, encoding: "utf8", timeout: 15000 });
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id }, encoding: "utf8", timeout: FIXTURE_TIMEOUT_MS });
   assert.equal(child.status, 73, child.stderr);
   const interrupted = await getLatestMission(id, f.database); assert.equal(interrupted?.status, "running");
   assert.equal(await readFile(path.join(root, "count"), "utf8"), "1");
@@ -211,8 +223,8 @@ async function setup(t: import("node:test").TestContext) {
   return { id, root };
 }
 function crash(id: string, boundary: string, actions = [increment] as unknown[], n = 1) {
-  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: boundary, RECOVERY_ACTIONS: JSON.stringify(actions), RECOVERY_BOUNDARY_N: String(n) }, encoding: "utf8", timeout: 15000 });
-  assert.equal(child.signal, "SIGKILL", `runtime must actually be killed at ${boundary}: ${child.stderr}`);
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: boundary, RECOVERY_ACTIONS: JSON.stringify(actions), RECOVERY_BOUNDARY_N: String(n) }, encoding: "utf8", timeout: FIXTURE_TIMEOUT_MS });
+  assertActuallyKilled(assert, child, `runtime killed at ${boundary}`);
 }
 const expired = () => new Promise((resolve) => setTimeout(resolve, 250));
 for (const boundary of ["created", "model_requested", "model_recorded", "action_recorded", "turn_recorded", "before_completed"]) {
@@ -324,7 +336,7 @@ test("a second native runtime cannot claim an active SQL lease", async (t) => {
   const first = runMission(id, { goal: "Durable increment and inspection", isolation: "host", agentPlan: [{ name: "Writer", role: "worker", modelId: "controlled" }] }, { database: f.database, leaseMs: 30000, onCheckpoint: async (point) => { if (point === "model_requested") { requested(); await hold; } }, generate: async () => result([increment]) });
   t.after(release); await ready;
   await assert.rejects(runMission(id, { goal: "Durable increment and inspection" }, { database: f.database }), MissionBusyError);
-  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: "never" }, encoding: "utf8", timeout: 15000 });
+  const child = spawnSync(process.execPath, ["--import", "./scripts/register-src-loader.mjs", "tests/fixtures/mission-crash.ts"], { env: { ...process.env, DATABASE_URL: f.url, RECOVERY_SPACE_ID: id, RECOVERY_BOUNDARY: "never" }, encoding: "utf8", timeout: FIXTURE_TIMEOUT_MS });
   assert.equal(child.status, 74, child.stderr); assert.match(child.stderr, /active runner lease/);
   release(); const completed = await first; assert.equal(completed.status, "done");
   assert.equal(await readFile(path.join(root, "count"), "utf8"), "1");

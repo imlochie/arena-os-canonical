@@ -64,12 +64,34 @@ async function directoryBytes(dir: string): Promise<number> {
   }
 }
 
+/**
+ * Resolved yt-dlp path plus the result of really executing it, memoised.
+ *
+ * The probe stays a real `yt-dlp --version` execution — it is what makes
+ * "available" honest — but it is no longer paid on every request: the library
+ * page asks on open and every URL ingest asks again, and starting a process is
+ * the expensive half on Windows (~60-100 ms, plus Defender inspecting the
+ * binary). Path resolution still runs first on every call, so an uninstalled,
+ * overridden or moved binary is observed immediately; a probe that failed is
+ * retried after the TTL rather than cached as a permanent verdict.
+ */
+const YTDLP_PROBE_TTL_MS = 60_000;
+let ytDlpProbe: { path: string; at: number; ok: boolean } | null = null;
+
 async function resolveYtDlp(): Promise<string | null> {
   // override -> bundled (app/bin) -> system PATH, always an absolute path.
   const found = resolveExecutable("yt-dlp", { envVar: "ARENA_YTDLP_PATH" });
-  if (found === null) return null;
+  if (found === null) {
+    ytDlpProbe = null;
+    return null;
+  }
+  if (ytDlpProbe !== null && ytDlpProbe.path === found.path && Date.now() - ytDlpProbe.at < YTDLP_PROBE_TTL_MS) {
+    return ytDlpProbe.ok ? found.path : null;
+  }
   const probe = await run(found.path, ["--version"], 8000);
-  return probe.code === 0 && probe.stdout.trim().length > 0 ? found.path : null;
+  const ok = probe.code === 0 && probe.stdout.trim().length > 0;
+  ytDlpProbe = { path: found.path, at: Date.now(), ok };
+  return ok ? found.path : null;
 }
 
 export async function GET(req: Request) {

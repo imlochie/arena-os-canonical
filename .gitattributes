@@ -3,3 +3,11 @@
 # Without this attribute a Windows checkout with core.autocrlf=true shows a
 # permanent phantom modification of a generated file.
 desktop/build/licenses/FFMPEG-LICENSE.txt text eol=lf
+
+# The same rule applies to the ONNX Runtime notice: prepare-server rewrites it
+# too. It was omitted from the original attribute, so a Windows checkout
+# (core.autocrlf=true) turned the regenerated LF file into a phantom tracked
+# modification. The staged-tree identity check then refused the package with
+# "tracked files changed since staging" — the Windows installer could never be
+# built from a Windows checkout.
+desktop/build/licenses/ONNXRUNTIME-LICENSE.txt text eol=lf

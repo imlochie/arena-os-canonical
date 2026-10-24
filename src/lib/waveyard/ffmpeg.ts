@@ -173,7 +173,15 @@ export async function execTool(tool: FfmpegTool, args: string[], options: { time
       clearTimeout(deadline); if (forceKill) clearTimeout(forceKill);
       if (executionError) reject(executionError);
       else if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${tool} exited ${code ?? signal}: ${stderr.slice(-1200)}`));
+      else {
+        // ffmpeg writes its failure at the TOP of stderr and then overwrites the
+        // tail with `\r`-separated progress lines, so the previous "last 1200
+        // chars" showed progress and hid the error. Keep both ends, normalized.
+        const lines = stderr.replace(/\r/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+        const head = lines.slice(0, 6).join(" | ").slice(0, 900);
+        const tail = lines.slice(-2).join(" | ").slice(0, 300);
+        reject(new Error(`${tool} exited ${code ?? signal}: ${head}${tail && !head.includes(tail) ? ` … ${tail}` : ""}`));
+      }
     });
   });
 }

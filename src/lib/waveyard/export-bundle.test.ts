@@ -11,7 +11,9 @@ import { eq } from "drizzle-orm";
 import { missionPostgres } from "../../../tests/helpers/mission-postgres";
 import { encodeWav16 } from "./mixer/synth";
 
-test("Studio downloads automatically bundle exact media, frozen source notices and honest unknowns", { timeout: 60000 }, async t => {
+// The per-test bound is declared once by the suite (scripts/test-source.mjs);
+// this test builds a PostgreSQL cluster, so a local cap would measure the runner.
+test("Studio downloads automatically bundle exact media, frozen source notices and honest unknowns", async t => {
   const fixture = await missionPostgres(), root = await mkdtemp(join(tmpdir(), "arena-export-bundle-"));
   process.env.DATABASE_URL = fixture.url; process.env.WAVEYARD_STORAGE_DIR = join(root, "private");
   process.env.WAVEYARD_LOCAL_WORKER = "1"; delete process.env.REDIS_URL;

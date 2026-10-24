@@ -50,10 +50,20 @@ export function sanitizedFilename(filename: string) {
   return result || "upload";
 }
 
+/**
+ * SHA-256 of a file, streamed.
+ *
+ * 1 MiB read buffers instead of the stream default 64 KiB: measured on this
+ * repository's own 66.8 MB model on a Linux container, 92 ms vs 133 ms
+ * (~31 % less time, 693 MiB/s vs 479 MiB/s), because the syscall count drops
+ * 16x. Hashing is on the critical path of every ingest, export and model
+ * verification, and on Windows the same reduction also removes 15/16 of the
+ * read calls that Defender inspects.
+ */
 export async function checksumFile(path: string): Promise<string> {
   const hash = createHash("sha256");
   await new Promise<void>((resolve, reject) =>
-    createReadStream(path)
+    createReadStream(path, { highWaterMark: 1024 * 1024 })
       .on("data", (chunk) => hash.update(chunk))
       .on("error", reject)
       .on("end", resolve),
@@ -70,6 +80,9 @@ async function exec(
     const child = spawn(command, args, {
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      // ffprobe/ffmpeg run on every import. Without this, Windows allocates a
+      // console for each child and a black window flashes over the app.
+      windowsHide: true,
     });
     let stdout = "";
     let stderr = "";

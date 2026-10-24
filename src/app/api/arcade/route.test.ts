@@ -30,7 +30,7 @@ async function bootFixture() {
   }
   const { EmbeddedPostgres } = await import("../../../../desktop/runtime/embedded-postgres");
   const { applyMigrations } = await import("../../../../desktop/runtime/migrate");
-  const { pickFreePort } = await import("../../../../desktop/runtime/config");
+  const { pickFreePort, postgresPathDirs } = await import("../../../../desktop/runtime/config");
   const ext = process.platform === "win32" ? ".exe" : "";
   const config = {
     dirs: {
@@ -51,7 +51,10 @@ async function bootFixture() {
       pgCtl: join(nativeDir, "bin", `pg_ctl${ext}`),
       postgres: join(nativeDir, "bin", `postgres${ext}`),
       libDir: join(nativeDir, "lib"),
-      windowsPathDirs: [],
+      // Derived, never hand-written: on Windows PostgreSQL needs bin+lib on
+      // PATH to load its DLLs, and a hard-coded [] made this fixture the only
+      // place that disagreed with the product resolver.
+      windowsPathDirs: postgresPathDirs(process.platform, nativeDir),
     },
     migrationsDir: path.join(process.cwd(), "desktop-migrations"),
     ffmpegPath: null, ffprobePath: null,

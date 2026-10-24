@@ -18,6 +18,12 @@ tsconfig.tsbuildinfo
 desktop-acceptance-headless-report.json
 desktop-windows-acceptance-report.json
 
+# CI evidence collected by .github/workflows/windows-acceptance.yml. It lives
+# inside the checkout so upload-artifact can find it, but the staged-tree
+# identity check hashes untracked files — without this ignore, writing a log
+# between staging and verification invalidates the package.
+windows-evidence/
+
 # Local tool caches (content-hash based; never committed)
 .eslintcache
 playwright-report/

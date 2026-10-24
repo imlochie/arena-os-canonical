@@ -721,8 +721,9 @@ rooms.
   head `e60e359`, created 2026-09-16T10:49:22Z.
 - `git tag` — empty; `gh release list` — empty.
 - Docs read at their tips: `bebf:docs/RECOVERY_AUDIT.md`, `RECONNAISSANCE.md`, `README.md`;
-  `bb55:docs/college-runtime-architecture.md` §0, `docs/deployment.md`, tip commit
-  message; `b544:docs/gate-8-arena-tree-first-discovery.md`, `lab-004-decision-record.md`;
+  `bb55:docs/college-runtime-architecture.md` §0, `docs/college-deployment.md` (read at
+  the time as `docs/deployment.md`; renamed to remove the Windows case collision), tip
+  commit message; `b544:docs/gate-8-arena-tree-first-discovery.md`, `lab-004-decision-record.md`;
   `a9b7:AGENTS.md`; `9640:docs/tool-runtime-architecture.md`; `arena-rooms-handoffs`
   full diff incl. `src/lib/arenaRooms.ts`, `src/lib/arenaHandoffs.ts`.
 

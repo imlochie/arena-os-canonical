@@ -13,6 +13,12 @@ The local-worker architecture is intentionally different from
 browser/cloud mode (local broker instead of Redis) while preserving the
 server's job semantics — that is the design, not debt.
 
+> **Hosted-runner evidence and the current readiness verdict live in
+> [`docs/windows-readiness/WINDOWS-READINESS.md`](windows-readiness/WINDOWS-READINESS.md).**
+> That record also lists the Windows-specific defects this contract exposed
+> (dependency platform filtering, FFmpeg packaging, dev-layout `.exe` paths,
+> a CRLF-sensitive staging guard) and the limitations that remain.
+
 ## The one command (Windows 10/11 x64 machine)
 
 From the repo root on the Windows machine (Node.js + npm + git required

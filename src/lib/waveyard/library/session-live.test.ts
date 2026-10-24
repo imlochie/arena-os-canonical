@@ -25,7 +25,10 @@ function pcm(hz: number) {
   return bytes;
 }
 
-test("live four-category UI audio selection, held monitoring, rejected save/retry and reload use production handlers and real PostgreSQL", { timeout: 60000 }, async t => {
+// The per-test bound is declared once by the suite (scripts/test-source.mjs);
+// this test starts a PostgreSQL cluster and a real Chromium, so a local cap
+// would measure the runner.
+test("live four-category UI audio selection, held monitoring, rejected save/retry and reload use production handlers and real PostgreSQL", async t => {
   const cleanup: Array<() => unknown> = []; t.after(async () => { for (const close of cleanup.reverse()) await close(); });
   const postgres = await missionPostgres(); cleanup.push(() => postgres.close());
   const root = mkdtempSync(path.join(tmpdir(), "arena-live-stems-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));

@@ -26,7 +26,11 @@ export async function renderCaptionedShort(audio: Buffer, srt: string): Promise<
     const outPath = join(dir, "short.mp4");
     await writeFile(audioPath, audio);
     await writeFile(srtPath, srt, "utf8");
-    const escaped = srtPath.replace(/'/g, "\\'");
+    // ffmpeg's filtergraph parser uses ':' as an option separator and '\' as
+    // its escape, so a Windows path must be handed over as C\:/dir/file.srt —
+    // the raw C:\dir\file.srt is parsed as a broken option list and the whole
+    // render exits 1. Forward slashes are accepted on every platform.
+    const escaped = srtPath.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'");
     await execTool(
       "ffmpeg",
       [
