@@ -24,7 +24,9 @@ let queueSequence = 0;
 let sessionTrackSequence = 0;
 
 function wav() {
-  const count = 22050 * 12;
+  // Keep audio alive through the removal scenarios; track metadata remains
+  // short so the later automatic-fade check still completes quickly.
+  const count = 22050 * 60;
   const bytes = Buffer.alloc(44 + count * 2);
   bytes.write("RIFF"); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write("WAVEfmt ", 8);
   bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22);
@@ -79,6 +81,31 @@ try {
     await routeJson(route, { queue: savedQueue });
   });
   await page.route("**/api/library/queue/*", async (route) => {
+    if (route.request().method() === "PATCH") {
+      const { position, sessionId: requestedSessionId } = route.request().postDataJSON();
+      assert.equal(requestedSessionId, sessionId, "queue moves identify the active listening session");
+      const id = new URL(route.request().url()).pathname.split("/").at(-1);
+      const from = savedQueue.findIndex((item) => item.id === id);
+      assert.notEqual(from, -1, "the moved saved row exists");
+      const target = Math.min(Math.max(position, 0), savedQueue.length - 1);
+      savedQueue.splice(target, 0, savedQueue.splice(from, 1)[0]);
+      savedQueue.forEach((item, index) => { item.position = index; });
+
+      const rank = new Map(savedQueue.map((item, index) => [item.id, index]));
+      const linked = session.tracks
+        .filter((item) => item.queueItemId !== null && rank.has(item.queueItemId))
+        .sort((a, b) => rank.get(a.queueItemId) - rank.get(b.queueItemId));
+      const positions = session.tracks
+        .map((item, index) => item.queueItemId !== null && rank.has(item.queueItemId) ? index : -1)
+        .filter((index) => index >= 0);
+      const before = session.tracks.map((item) => item.id);
+      const reordered = [...session.tracks];
+      positions.forEach((slot, index) => { reordered[slot] = linked[index]; });
+      session.tracks = reordered;
+      session.tracks.forEach((item, index) => { item.position = index; });
+      const changed = session.tracks.some((item, index) => item.id !== before[index]);
+      return routeJson(route, { queue: savedQueue, affectedSessionIds: changed ? [sessionId] : [] });
+    }
     if (route.request().method() !== "DELETE") return route.continue();
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
     const removedQueueItem = savedQueue.find((item) => item.id === id);
@@ -143,10 +170,39 @@ try {
   await waitForFixture(() => session.tracks.length === 3 && savedQueue.length === 3, "the repeated queued songs");
   assert.equal(session.tracks[0].track.id, session.tracks[2].track.id, "the duplicate songs remain separate entries");
   assert.notEqual(session.tracks[0].queueItemId, session.tracks[2].queueItemId, "repeated songs have distinct saved-row links");
+
+  await page.locator("#sess-fade").focus();
+  await page.keyboard.press("End");
+  assert.equal(await page.locator("#sess-fade").inputValue(), "15", "the long fade leaves time to remove its target");
+  await page.waitForFunction(() => {
+    const audio = document.querySelector('.sess-deck[data-role="current"] audio');
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
+  });
+  const currentAudioTimeBeforeTargetRemoval = await page.locator('.sess-deck[data-role="current"] audio').evaluate((audio) => audio.currentTime);
+  const currentSessionTrackIdBeforeTargetRemoval = session.currentSessionTrackId;
+  await page.getByTestId("session-transition").click();
+  await page.locator(".wy-now .eyebrow").filter({ hasText: "Mixing" }).waitFor();
   await page.getByRole("button", { name: "Remove Queue fixture 2 from queue" }).click();
-  await waitForFixture(() => session.tracks.length === 2 && savedQueue.length === 2, "removing one saved queue row");
-  assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[0], ids[0]], "removing a queued song leaves the repeated song copies intact");
-  assert.equal(session.currentSessionTrackId, "session-track-1", "removing a later queue item does not interrupt the current song");
+  await waitForFixture(
+    () => session.tracks.length === 2 && savedQueue.length === 2 && session.currentSessionTrackId === currentSessionTrackIdBeforeTargetRemoval,
+    "removing the pending mix target",
+  );
+  await page.getByTestId("session-transition").waitFor();
+  await page.getByRole("button", { name: "Pause", exact: true }).waitFor();
+  await page.waitForFunction((before) => {
+    const current = document.querySelector('.sess-deck[data-role="current"] audio');
+    const next = document.querySelector('.sess-deck[data-role="next"] audio');
+    return current instanceof HTMLAudioElement
+      && !current.paused
+      && current.currentTime >= before
+      && current.volume > 0.9
+      && (next === null || (next instanceof HTMLAudioElement && next.paused));
+  }, currentAudioTimeBeforeTargetRemoval);
+  assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[0], ids[0]], "removing the target leaves both duplicate current-song entries");
+  assert.equal(session.tracks[0].id, currentSessionTrackIdBeforeTargetRemoval, "the retained current entry stays selected");
+  assert.equal(session.tracks[0].queueItemId, savedQueue[0].id, "the current queue row remains linked to its original session entry");
+  assert.match(await page.locator(".wy-now .eyebrow").innerText(), /^Playing/i, "the current deck continues after the mix target is removed");
+  assert.equal(session.currentSessionTrackId, "session-track-1", "removing a pending target does not interrupt the current song");
 
   await page.getByRole("button", { name: "Test playlist" }).click();
   await page.getByTestId("playlist-live-test-set").click();
@@ -156,10 +212,54 @@ try {
   assert.equal(savedQueue.length, 2, "playlist-only songs do not create saved-queue rows");
   assert.equal(session.tracks[2].queueItemId, null, "directly appended session songs have no saved-queue link");
 
+  const movedQueueId = savedQueue[1].id;
+  const directSessionTrackIds = session.tracks.filter((item) => item.queueItemId === null).map((item) => item.id);
+  const currentSessionTrackId = session.currentSessionTrackId;
+  const currentPositionSeconds = session.positionSeconds;
+  await page.getByRole("button", { name: "Move Queue fixture 1 up from position 2" }).click();
+  await waitForFixture(
+    () => savedQueue[0].id === movedQueueId && session.tracks[0].queueItemId === movedQueueId,
+    "the moved saved row and its exact linked session entry",
+  );
+  await page.getByRole("button", { name: "Move Queue fixture 1 down from position 1" }).waitFor();
+  assert.deepEqual(session.tracks.map((item) => item.queueItemId), [movedQueueId, savedQueue[1].id, null, null]);
+  assert.deepEqual(
+    session.tracks.filter((item) => item.queueItemId === null).map((item) => item.id),
+    directSessionTrackIds,
+    "direct playlist additions keep their rows and order when saved queue rows move",
+  );
+  assert.equal(session.currentSessionTrackId, currentSessionTrackId, "reordering does not interrupt the current song");
+  assert.equal(session.positionSeconds, currentPositionSeconds, "reordering does not reset playback position");
+
+  const currentQueueItemId = session.tracks.find((item) => item.id === session.currentSessionTrackId)?.queueItemId;
+  const currentQueueIndex = savedQueue.findIndex((item) => item.id === currentQueueItemId);
+  assert.notEqual(currentQueueIndex, -1, "the playing session row is linked to a saved queue item");
+  await page.waitForFunction(() => {
+    const current = document.querySelector('.sess-deck[data-role="current"] audio');
+    return current instanceof HTMLAudioElement && !current.paused;
+  });
+  await page.locator(".queue-panel .queue-list li").nth(currentQueueIndex)
+    .getByRole("button", { name: "Remove Queue fixture 1 from queue" }).click();
+  await waitForFixture(
+    () => session.tracks.length === 3 && savedQueue.length === 1 && session.currentSessionTrackId === "session-track-4",
+    "playback selecting a remaining entry after its current linked row is removed",
+  );
+  assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[0], ids[1], ids[2]]);
+  assert.equal(session.tracks[0].queueItemId, savedQueue[0].id, "the duplicate saved song remains linked to its own session row");
+  assert.deepEqual(
+    session.tracks.filter((item) => item.queueItemId === null).map((item) => item.id),
+    directSessionTrackIds,
+    "removing the current saved row leaves playlist-only rows untouched",
+  );
+  assert.ok(session.tracks.some((item) => item.id === session.currentSessionTrackId), "the new current pointer resolves to a remaining session entry");
+  assert.equal(session.tracks.find((item) => item.id === session.currentSessionTrackId)?.track.id, ids[1]);
+  await page.getByRole("button", { name: "Pause", exact: true }).waitFor();
+  assert.match(await page.locator(".wy-now .eyebrow").innerText(), /^Playing/i, "playback resumes on a valid remaining entry");
+
   await page.getByRole("button", { name: "Clear", exact: true }).click();
   await waitForFixture(() => session.tracks.length === 2 && savedQueue.length === 0, "clearing linked saved rows");
   assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[1], ids[2]], "clearing the saved queue leaves direct playlist songs in the session");
-  await waitForFixture(() => session.currentSessionTrackId === "session-track-4", "playback advances to the first remaining session song");
+  assert.equal(session.currentSessionTrackId, "session-track-4", "clearing a later queue row keeps the current direct playlist entry");
 
   await queueTrack("Queue fixture 1");
   await waitForFixture(() => session.tracks.length === 3 && savedQueue.length === 1, "a queue item after clearing");
@@ -167,13 +267,13 @@ try {
   assert.equal(await autoCrossfade.isChecked(), false, "auto-crossfade stays opt-in");
   await page.getByTestId("session-transition").click();
   await page.getByRole("button", { name: "Finish", exact: true }).click();
-  await waitForFixture(() => session.currentSessionTrackId === "session-track-5", "the existing manual mix control");
+  await waitForFixture(() => session.currentSessionTrackId === "session-track-6", "the existing manual mix control");
   await autoCrossfade.check();
   await page.locator(".wy-now .eyebrow").filter({ hasText: "Mixing" }).waitFor({ timeout: 16000 });
   await waitForFixture(() => session.currentSessionTrackId === "session-track-6", "automatic handoff at the selected fade length", 18000);
   await page.reload();
   assert.equal(await page.getByTestId("session-auto-crossfade").isChecked(), true, "the auto-crossfade preference survives reload");
-  console.log("PASS: exact queue/session links, duplicate preservation, clear behavior, manual and automatic fades");
+  console.log("PASS: queue removal during playback and mixing keeps valid session entries, preserves direct/duplicate rows, and retains fades");
 } finally {
   await browser.close();
 }

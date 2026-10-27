@@ -641,14 +641,64 @@ export async function moveQueueItem(
   ownerId: string,
   itemId: string,
   position: number,
-): Promise<QueueItemPayload[]> {
+  sessionId?: string,
+): Promise<QueueEditPayload> {
   const ids = await remainingIds(ownerId);
   const from = ids.indexOf(itemId);
   if (from === -1) throw new QueueItemNotFoundError();
   const to = Math.min(Math.max(Math.trunc(position), 0), ids.length - 1);
   ids.splice(to, 0, ids.splice(from, 1)[0]);
-  await resequenceQueue(ownerId, ids);
-  return queueTracks(ownerId);
+  const affectedSessionIds: string[] = [];
+
+  await db.transaction(async (tx) => {
+    for (const [index, id] of ids.entries()) {
+      await tx.update(queueItems)
+        .set({ position: index })
+        .where(and(eq(queueItems.id, id), eq(queueItems.ownerId, ownerId)));
+    }
+
+    if (sessionId === undefined) return;
+    const [ownedSession] = await tx
+      .select({ id: listenSessions.id })
+      .from(listenSessions)
+      .where(and(eq(listenSessions.id, sessionId), eq(listenSessions.ownerId, ownerId)))
+      .limit(1);
+    if (ownedSession === undefined) throw new QueueSessionNotFoundError();
+
+    const sessionRows = await tx
+      .select({ id: listenSessionTracks.id, queueItemId: listenSessionTracks.queueItemId })
+      .from(listenSessionTracks)
+      .where(eq(listenSessionTracks.sessionId, sessionId))
+      .orderBy(asc(listenSessionTracks.position));
+    const queueRank = new Map(ids.map((id, index) => [id, index]));
+    const linkedRows = sessionRows
+      .filter((row) => row.queueItemId !== null && queueRank.has(row.queueItemId))
+      .sort((a, b) => queueRank.get(a.queueItemId!)! - queueRank.get(b.queueItemId!)!);
+    if (linkedRows.length < 2) return;
+
+    // Reorder only the session positions occupied by saved-queue entries.
+    // Direct playlist/session additions keep their positions and relative order.
+    const reorderedIds = sessionRows.map((row) => row.id);
+    const linkedPositions = sessionRows
+      .map((row, index) => row.queueItemId !== null && queueRank.has(row.queueItemId) ? index : -1)
+      .filter((index) => index >= 0);
+    linkedPositions.forEach((position, index) => {
+      reorderedIds[position] = linkedRows[index].id;
+    });
+    if (reorderedIds.every((id, index) => id === sessionRows[index].id)) return;
+
+    for (const [position, id] of reorderedIds.entries()) {
+      await tx.update(listenSessionTracks)
+        .set({ position })
+        .where(and(eq(listenSessionTracks.id, id), eq(listenSessionTracks.sessionId, sessionId)));
+    }
+    await tx.update(listenSessions)
+      .set({ updatedAt: new Date() })
+      .where(and(eq(listenSessions.id, sessionId), eq(listenSessions.ownerId, ownerId)));
+    affectedSessionIds.push(sessionId);
+  });
+
+  return { queue: await queueTracks(ownerId), affectedSessionIds };
 }
 
 export async function clearQueue(ownerId: string): Promise<QueueEditPayload> {
@@ -687,6 +737,12 @@ export class TrackNotFoundError extends Error {
 export class QueueItemNotFoundError extends Error {
   constructor() {
     super("Queue item not found.");
+  }
+}
+
+export class QueueSessionNotFoundError extends Error {
+  constructor() {
+    super("Listening session not found.");
   }
 }
 

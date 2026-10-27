@@ -618,6 +618,21 @@ export function MusicHome() {
     }
   }, [host]);
 
+  const moveQueueItem = useCallback(async (itemId: string, position: number) => {
+    const response = await fetch(`/api/library/queue/${itemId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ position, sessionId: host.sessionId ?? undefined }),
+    });
+    if (response.ok) {
+      const result = await response.json();
+      setQueue(result.queue ?? []);
+      host.refreshSession(result.affectedSessionIds ?? []);
+    } else {
+      setMessage("Could not update the saved queue order.");
+    }
+  }, [host]);
+
   const recentlyPlayed = useMemo(
     () =>
       [...tracks]
@@ -735,9 +750,21 @@ export function MusicHome() {
               <p className="empty">Nothing queued. Add tracks with + Queue.</p>
             ) : (
               <ol className="queue-list">
-                {queue.map((item) => (
+                {queue.map((item, index) => (
                   <li key={item.id}>
                     <Link href={`/waveyard/play/${item.track.id}`}>{item.track.title}</Link>
+                    <button
+                      type="button"
+                      aria-label={`Move ${item.track.title} up from position ${index + 1}`}
+                      disabled={index === 0}
+                      onClick={() => void moveQueueItem(item.id, index - 1)}
+                    >↑</button>
+                    <button
+                      type="button"
+                      aria-label={`Move ${item.track.title} down from position ${index + 1}`}
+                      disabled={index === queue.length - 1}
+                      onClick={() => void moveQueueItem(item.id, index + 1)}
+                    >↓</button>
                     <button type="button" aria-label={`Remove ${item.track.title} from queue`} onClick={() => void removeQueueItem(item.id)}>×</button>
                   </li>
                 ))}

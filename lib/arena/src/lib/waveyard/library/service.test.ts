@@ -312,24 +312,54 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
 
   // queue is [A, B₂, B₁]; moving B₁ (queue[2]) to the front → [B₁, A, B₂].
   const moved = await service.moveQueueItem(OWNER, queue[2].id, 0);
-  assert.equal(moved.map((item) => item.track.id).join(","), [trackB.id, trackA.id, trackB.id].join(","));
+  assert.equal(moved.queue.map((item) => item.track.id).join(","), [trackB.id, trackA.id, trackB.id].join(","));
 
   const session = await sessionService.createSession(OWNER, "Queue provenance test");
-  await sessionService.addTrackToSession({
+  let sessionDetail = await sessionService.addTrackToSession({
+    ownerId: OWNER, sessionId: session.id, trackId: trackB.id, queueItemId: moved.queue[0].id,
+  });
+  const currentSessionTrackId = sessionDetail.tracks[0].id;
+  sessionDetail = await sessionService.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackA.id });
+  const directSessionTrackIds = [sessionDetail.tracks[1].id];
+  sessionDetail = await sessionService.addTrackToSession({
     ownerId: OWNER, sessionId: session.id, trackId: trackA.id, queueItemId: addedA.addedQueueItemId,
   });
-  await sessionService.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackA.id });
-  await sessionService.addTrackToSession({
-    ownerId: OWNER, sessionId: session.id, trackId: trackB.id, queueItemId: moved[0].id,
-  });
-  await sessionService.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackB.id });
+  sessionDetail = await sessionService.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackB.id });
+  directSessionTrackIds.push(sessionDetail.tracks[3].id);
+  await sessionService.saveSessionState(OWNER, session.id, currentSessionTrackId, 73.5);
 
-  // removing B₁ (moved[0]) leaves [A, B₂].
-  const removed = await service.removeQueueItem(OWNER, moved[0].id);
+  // Moving the saved A above linked B swaps only the linked positions. The
+  // direct A/B additions stay in place and the current track pointer is untouched.
+  const reordered = await service.moveQueueItem(OWNER, addedA.addedQueueItemId, 0, session.id);
+  assert.deepEqual(reordered.queue.map((item) => item.id), [
+    addedA.addedQueueItemId,
+    moved.queue[0].id,
+    moved.queue[1].id,
+  ]);
+  assert.deepEqual(reordered.affectedSessionIds, [session.id]);
+  sessionDetail = await sessionService.getSession(OWNER, session.id);
+  assert.deepEqual(
+    sessionDetail.tracks.map((item) => item.track.id),
+    [trackA.id, trackA.id, trackB.id, trackB.id],
+    "saved links follow the queue while direct entries stay in their session slots",
+  );
+  assert.deepEqual(
+    sessionDetail.tracks.filter((item) => item.queueItemId === null).map((item) => item.id),
+    directSessionTrackIds,
+    "playlist-only session rows remain distinct and in order",
+  );
+  assert.equal(sessionDetail.currentTrackId, currentSessionTrackId, "queue moves never reset the current playback row");
+
+  const retainedPlaybackTrackId = sessionDetail.tracks[0].id;
+  await sessionService.saveSessionState(OWNER, session.id, retainedPlaybackTrackId, 73.5);
+  // removing B₁ leaves [A, B₂].
+  const removed = await service.removeQueueItem(OWNER, moved.queue[0].id);
   assert.equal(removed.queue.map((item) => item.track.id).join(","), [trackA.id, trackB.id].join(","));
   assert.deepEqual(removed.queue.map((item) => item.position), [0, 1], "positions resequence without gaps");
   assert.deepEqual(removed.affectedSessionIds, [session.id]);
-  let sessionDetail = await sessionService.getSession(OWNER, session.id);
+  sessionDetail = await sessionService.getSession(OWNER, session.id);
+  assert.equal(sessionDetail.currentTrackId, retainedPlaybackTrackId, "removing a non-current mix target preserves the playing session row");
+  assert.equal(sessionDetail.positionSeconds, 73.5, "removing a non-current mix target preserves playback position");
   assert.deepEqual(
     sessionDetail.tracks.map((item) => item.track.id),
     [trackA.id, trackA.id, trackB.id],
@@ -356,6 +386,8 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
     [trackA.id, trackB.id],
     "clearing the saved queue keeps only session-only entries",
   );
+  assert.equal(sessionDetail.currentTrackId, null, "removing the current linked row clears the stale server pointer");
+  assert.equal(sessionDetail.positionSeconds, 0, "removing the current linked row resets its stale saved position");
   assert.equal((await service.listQueue(OTHER)).length, 1, "clearing one owner never touches another");
 
   const savedForSession = await service.addToQueue({ ownerId: OWNER, trackId: trackA.id });

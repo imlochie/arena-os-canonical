@@ -800,6 +800,22 @@ export default function SessionExperience({
     setStatus("Transition frozen — both decks hold their levels.");
   }, []);
 
+  const abortTransition = useCallback((message: string) => {
+    const fade = fadeRef.current;
+    if (fade === null) return;
+    cancelAnimationFrame(fade.raf);
+    const outgoing = decksRef.current[fade.fromDeck];
+    const incoming = decksRef.current[fade.toDeck];
+    incoming?.transport.pause();
+    incoming?.transport.setMasterVolume(masterRef.current);
+    outgoing?.transport.setMasterVolume(masterRef.current);
+    if (outgoing?.hasStemChannels) outgoing.applyStemVolumes(currentEffective);
+    fadeRef.current = null;
+    advancingRef.current = false;
+    setPhase("idle");
+    setStatus(message);
+  }, [currentEffective]);
+
   const togglePlay = useCallback(async () => {
     if (phase === "fading") cancelTransition();
     const api = decksRef.current[activeDeck];
@@ -908,7 +924,14 @@ export default function SessionExperience({
           if (sessionRef.current?.id !== detail.id) return;
           const currentRetained = previousCurrentId === null || detail.tracks.some((item) => item.id === previousCurrentId);
           const nextRetained = previousNextId === null || detail.tracks.some((item) => item.id === previousNextId);
-          if (fadeRef.current !== null && (!currentRetained || !nextRetained)) cancelTransition();
+          const wasFading = fadeRef.current !== null;
+          const removedCurrent = previousCurrentId !== null && !currentRetained;
+          const removedNext = previousNextId !== null && !nextRetained;
+          if (wasFading && (removedCurrent || removedNext)) {
+            abortTransition(removedCurrent
+              ? "The current song was removed; switching to a remaining song."
+              : "The mix target was removed; current playback continues.");
+          }
 
           const liveIds = new Set(detail.tracks.map((item) => item.id));
           setMixes((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
@@ -919,7 +942,9 @@ export default function SessionExperience({
           setSession(detail);
 
           if (previousCurrentId === null || currentRetained) {
-            setStatus("Saved queue changes are reflected in the listening order.");
+            if (!(wasFading && removedNext)) {
+              setStatus("Saved queue changes are reflected in the listening order.");
+            }
             return;
           }
           const fallbackIndex = Math.min(Math.max(previousIndex, 0), detail.tracks.length - 1);

@@ -2,11 +2,19 @@
 import { z } from "zod";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
-import { moveQueueItem, QueueItemNotFoundError, removeQueueItem } from "@workspace/arena/lib/waveyard/library/service";
+import {
+  moveQueueItem,
+  QueueItemNotFoundError,
+  QueueSessionNotFoundError,
+  removeQueueItem,
+} from "@workspace/arena/lib/waveyard/library/service";
 
 export const runtime = "nodejs";
 
-const moveSchema = z.object({ position: z.number().int().min(0) });
+const moveSchema = z.object({
+  position: z.number().int().min(0),
+  sessionId: z.string().uuid().optional(),
+});
 
 /** PATCH /api/library/queue/[id] — move a queue item to a position. */
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -16,10 +24,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = moveSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) return Response.json({ error: "A target position is required." }, { status: 400 });
-    const queue = await moveQueueItem(user.id, id, parsed.data.position);
-    return Response.json({ queue });
+    const result = await moveQueueItem(user.id, id, parsed.data.position, parsed.data.sessionId);
+    return Response.json(result);
   } catch (error) {
     if (error instanceof QueueItemNotFoundError) return Response.json({ error: "Queue item not found." }, { status: 404 });
+    if (error instanceof QueueSessionNotFoundError) return Response.json({ error: "Listening session not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }

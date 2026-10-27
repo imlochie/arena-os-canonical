@@ -453,11 +453,11 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
       await queueAction(`/api/library/queue/${itemId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ position: 0 }),
+        body: JSON.stringify({ position: 0, sessionId: host.sessionId ?? undefined }),
       }).catch(() => undefined);
       goToTrack(targetTrackId);
     },
-    [goToTrack, queueAction],
+    [goToTrack, host.sessionId, queueAction],
   );
 
   const addToQueue = useCallback(async () => {
@@ -720,8 +720,8 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
                   <button type="button" className="queue-drawer-play" aria-label={`Play ${item.track.title} now`} onClick={() => void playNow(item.id, item.track.id)}>▶</button>
                   <span className="queue-drawer-title">{item.track.title}<small>{item.track.artist || "Unknown artist"}</small></span>
                   <span className="playlist-item-actions">
-                    <button type="button" aria-label="Move up" disabled={index === 0} onClick={() => void queueAction(`/api/library/queue/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ position: index - 1 }) })}>↑</button>
-                    <button type="button" aria-label="Move down" disabled={index === queue.length - 1} onClick={() => void queueAction(`/api/library/queue/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ position: index + 1 }) })}>↓</button>
+                    <button type="button" aria-label="Move up" disabled={index === 0} onClick={() => void queueAction(`/api/library/queue/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ position: index - 1, sessionId: host.sessionId ?? undefined }) })}>↑</button>
+                    <button type="button" aria-label="Move down" disabled={index === queue.length - 1} onClick={() => void queueAction(`/api/library/queue/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ position: index + 1, sessionId: host.sessionId ?? undefined }) })}>↓</button>
                     <button type="button" aria-label={`Remove ${item.track.title}`} onClick={() => void queueAction(`/api/library/queue/${item.id}`, { method: "DELETE" })}>×</button>
                   </span>
                 </li>
