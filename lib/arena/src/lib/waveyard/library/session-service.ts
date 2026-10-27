@@ -75,6 +75,8 @@ export interface SessionTrackPayload {
   id: string;
   position: number;
   track: TrackSummary;
+  /** Original uploaded asset, retained even after separated stems become the playback source. */
+  sourceAssetId: string | null;
   /** Real stems of the underlying track (empty if the track was deleted). */
   stems: TrackStem[];
   /** What a deck should load — stems when separated, source otherwise.
@@ -192,6 +194,7 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
         id: row.id,
         position: row.position,
         track: (detail as TrackSummary | null) ?? summaries.get(row.trackId) ?? failSummary(row.trackId),
+        sourceAssetId: detail?.source.id ?? null,
         stems: detail?.stems ?? [],
         playback: detail?.playback ?? null,
         stemMix: parseStemMix(row.stemMix),

@@ -25,7 +25,8 @@ const tracks = ["a", "b", "c"].map((id, index) => {
     assets.set(key, wav(duration, 130 + index * 100 + i * 40));
     return { id: key, stemType, engine: "synthetic-test" };
   });
-  return { id, position: index, track: { id, title: `Test ${id}`, artist: "Synthetic fixture", durationSeconds: duration },
+  return { id, position: index, sourceAssetId: id === "a" ? "a-source" : null,
+    track: { id, title: `Test ${id}`, artist: "Synthetic fixture", durationSeconds: duration },
     stems, playback: { kind: "stems", assetIds: stems.map(s => s.id) }, stemMix: {},
     transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
     analysis: { bpm: 120, musicalKey: ["A minor", "C major", "C# major"][index], beatGridMs: null } };
@@ -44,6 +45,9 @@ const libraryRows = tracks.map((item, index) => ({
 }));
 let liveQueue = [];
 let exposeSeparatedSource = false;
+let heldAssetId = null;
+let heldAssetGate = null;
+let signalHeldAssetRequest = null;
 const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 const browser = await chromium.launch({ executablePath: "/repl/tools/bin/chromium",
@@ -53,12 +57,20 @@ try {
   let page = await context.newPage();
   page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
   await context.addInitScript(() => {
-    window.audioProbe = { sources: [], buffers: [] };
+    window.audioProbe = { sources: [], buffers: [], masterGains: [] };
     const Base = window.AudioContext;
     window.AudioContext = class extends Base {
+      constructor(...args) {
+        super(...args);
+        this.probeFirstGain = true;
+      }
       createGain() {
         const node = super.createGain(), connect = node.connect.bind(node);
         node.connect = (target, ...args) => { node.nextNode = target; return connect(target, ...args); };
+        if (this.probeFirstGain) {
+          window.audioProbe.masterGains.push(node);
+          this.probeFirstGain = false;
+        }
         return node;
       }
       createMediaElementSource(media) {
@@ -78,6 +90,10 @@ try {
   let failAsset = null;
   await context.route("**/api/assets/*", async route => {
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
+    if (id === heldAssetId && heldAssetGate !== null) {
+      signalHeldAssetRequest?.();
+      await heldAssetGate;
+    }
     if (id === failAsset) return route.fulfill({ status: 503, body: "Test failure" });
     const body = assets.get(id);
     if (!body) return route.fulfill({ status: 404 });
@@ -90,7 +106,7 @@ try {
     });
   });
   await context.route("**/api/library/tracks", route => route.fulfill({ json: { tracks: [
-    ...libraryRows, { id: "d", title: "Test D", artist: "Synthetic fixture", stemAvailability: { status: "separated" } },
+    ...libraryRows, { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4 }, studioProjectId: "fixture-project-d" },
   ] } }));
   await context.route("**/api/library/playlists", route => route.fulfill({ json: { playlists: [
     { id: "test-playlist", name: "Test order", trackCount: 2 },
@@ -255,6 +271,7 @@ try {
     "a track change mirrors to the other tab without starting duplicate audio");
   await secondPage.getByTestId("session-play").click();
   await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].every(element => element.paused));
   assert.ok(await page.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.paused)),
     "a pause command in the mirror tab pauses the active tab");
   await secondPage.close();
@@ -309,7 +326,59 @@ try {
   assert.ok(types.every(type => handoffGains.find(source => source.url.endsWith(`/a-${type}`))?.gain > 0),
     "all prepared stems must be audible after the handoff");
 
+  const masterVolume = page.getByLabel("Master volume", { exact: true });
+  await masterVolume.fill("0.63");
+  assert.equal(await masterVolume.inputValue(), "0.63", "the chosen master level is active before returning");
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+    "the live master gain matches its control before returning");
+  const beforeReturn = await current.locator("audio").evaluateAll(elements => Math.max(...elements.map(element => element.currentTime)));
+  const returnStartedAt = Date.now();
+  let notifyHeldRequest;
+  const heldRequest = new Promise(resolve => { notifyHeldRequest = resolve; });
+  let releaseHeldRequest;
+  heldAssetGate = new Promise(resolve => { releaseHeldRequest = resolve; });
+  heldAssetId = "a-source";
+  signalHeldAssetRequest = notifyHeldRequest;
+  await page.getByTestId("button-return-full-track-a").click();
+  await heldRequest;
+  await page.getByTestId("source-handoff-status").waitFor();
+  const duringReturn = await current.locator("audio").evaluateAll(elements => elements.map(element => ({
+    src: element.src, paused: element.paused, time: element.currentTime,
+  })));
+  assert.equal(duringReturn.length, 5, "the original source is prepared alongside the playing stem mix");
+  assert.ok(duringReturn.slice(0, 4).every(element => !element.paused),
+    "the separated mix continues playing while the original source is still loading");
+  assert.ok(duringReturn[4].src.endsWith("/a-source") && duringReturn[4].paused,
+    "the staged full-track element does not start before it is ready");
+  assert.ok(duringReturn[0].time > beforeReturn, "the existing stem mix advances during source preparation");
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+    "the master gain stays unchanged while the original is prepared");
+  heldAssetId = null;
+  heldAssetGate = null;
+  signalHeldAssetRequest = null;
+  releaseHeldRequest();
+  await page.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+    return audio.length === 1 && audio[0].src.endsWith("/a-source") && audio[0].readyState >= 2 && !audio[0].paused;
+  });
+  const afterReturn = await current.locator("audio").evaluate(element => element.currentTime);
+  const expectedReturnPosition = beforeReturn + (Date.now() - returnStartedAt) / 1000;
+  assert.ok(Math.abs(afterReturn - expectedReturnPosition) < 0.5,
+    `returning to the full track preserves the live playhead; expected ${expectedReturnPosition}, received ${afterReturn}`);
+  assert.equal(await masterVolume.inputValue(), "0.63", "returning does not reset the master-volume control");
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+    "returning preserves the actual master gain");
+  const returnGains = await page.evaluate(() => window.audioProbe.sources.map(source => ({
+    url: source.mediaElement.src, gain: source.inputNode?.nextNode?.gain?.value,
+  })));
+  assert.ok(returnGains.filter(source => source.url.endsWith("/a-source")).at(-1)?.gain > 0.9,
+    "the original full-track signal is audible after the handoff");
+  assert.ok(types.every(type => returnGains.filter(source => source.url.endsWith(`/a-${type}`)).at(-1)?.gain < 0.01),
+    "the separated layer signals are silent after returning to the full track");
+  assert.equal(await page.getByTestId("session-play").getAttribute("aria-pressed"), "true",
+    "the deck remains in the playing state after returning to the full track");
+
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile must not overflow");
-  console.log("PASS: live swaps, seek/resume, failed and gapless stem handoffs, mobile width");
+  console.log("PASS: live swaps, seek/resume, gapless stem and full-track handoffs, mobile width");
 } finally { await browser.close(); }
