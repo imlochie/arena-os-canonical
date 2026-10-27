@@ -10,6 +10,7 @@ import {
   detectGameType,
   extractGameCode,
   generateGameOffline,
+  parseMods,
   validateGameCode,
   LLM_GAME_SYSTEM,
   type GameType,
@@ -176,14 +177,10 @@ export default function ArcadeForge() {
     );
   }
 
-  async function runAI(p: string, parentId?: string, priorCode?: string, requireModel = false) {
+  async function runAI(p: string, parentId?: string, priorCode?: string) {
     const ok = await ensureEngine();
     if (!ok) {
-      if (requireModel) throw new Error("A custom game needs a working code-writing model. Load the on-device model or connect a model in Settings.");
-      const type = detectGameType(p);
-      setNotice("On-device model unavailable — using the matching offline classic core instead.");
-      await runInstant(p, type, parentId);
-      return;
+      throw new Error("A custom game needs a working code-writing model. Load the on-device model or connect a model in Settings.");
     }
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -204,11 +201,9 @@ export default function ArcadeForge() {
       if (!code) throw new Error("AI output wasn't a complete game file");
       const v = validateGameCode(code);
       if (!v.ok) {
-        if (requireModel) throw new Error(`The generated game did not pass validation: ${v.issues.join("; ")}`);
-        setNotice(`⚠️ AI draft had issues (${v.issues.join("; ")}). Delivered a verified core instead — guaranteed playable.`);
-        await runInstant(p, detectGameType(p), parentId);
-        return;
+        throw new Error(`The generated game did not pass validation: ${v.issues.join("; ")}`);
       }
+      const type = detectGameType(p);
       const saved = await persistGame({ prompt: p, clientCode: code, gameType: type, parentId });
       setGame({ ...saved, code, genMs: res.ms, tokps: res.tokps, tokens: res.tokens, engine: "on-device-ai" });
       if (!saved.ephemeral) fetchHistory();
@@ -235,10 +230,10 @@ export default function ArcadeForge() {
         if (type === "arena") throw new Error("Quick cores cover the built-in classics. Choose Automatic or connect an AI model for this original game idea.");
         await runInstant(q, type);
       } else if (strategy === "ai") {
-        await runAI(q, undefined, undefined, true);
+        await runAI(q);
       } else if (type === "arena") {
         if (privacyFlags().localOnly || isEngineLoaded()) {
-          await runAI(q, undefined, undefined, true);
+          await runAI(q);
         } else {
           await runServerAI(q);
         }
@@ -261,14 +256,16 @@ export default function ArcadeForge() {
       return;
     }
     setIterating(true);
-    setInstruction("");
     setError(null);
     setNotice(null);
     try {
       const combined = `${game.prompt} — CHANGE: ${ins}`;
       const mods = parseMods(ins);
+      // A history entry can have legacy engine metadata. Only rewrite a core
+      // if its source is actually the known core; custom code must be preserved.
+      const isVerifiedCore = generateGameOffline(game.prompt, game.gameType).code === game.code;
       const offlineModifier =
-        game.engine !== "ai-codegen" &&
+        isVerifiedCore &&
         (mods.lives !== undefined ||
           mods.speed !== "normal" ||
           mods.accent !== undefined ||
@@ -284,9 +281,10 @@ export default function ArcadeForge() {
       } else if (game.engine === "ai-codegen" && !privacyFlags().localOnly) {
         await runServerAI(ins, game.id, game.code);
       } else {
-        if (privacyFlags().localOnly) await runAI(combined, game.id, game.code, true);
+        if (privacyFlags().localOnly) await runAI(combined, game.id, game.code);
         else await runServerAI(ins, game.id, game.code);
       }
+      setInstruction("");
     } catch (e: any) {
       setError(e.message ?? "iterate failed");
     } finally {
@@ -405,7 +403,7 @@ export default function ArcadeForge() {
               <p className="mt-1 truncate text-[11px] text-slate-400">{loadText}</p>
             </div>
           )}
-          {gpu && !gpu.ok && <p className="mt-2 text-[11px] text-slate-500">🧠 {gpu.reason} Instant verified cores + remix still cover every classic, fully offline.</p>}
+          {gpu && !gpu.ok && <p className="mt-2 text-[11px] text-slate-500">On-device GPU unavailable. Classic cores still work; custom games can use a model connected in Settings.</p>}
         </div>
 
         {/* Composer */}
@@ -429,6 +427,7 @@ export default function ArcadeForge() {
             )}
           </div>
           <textarea
+            aria-label="Game prompt"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => {
@@ -490,7 +489,7 @@ export default function ArcadeForge() {
             </div>
           )}
           {notice && <p className="mt-3 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-200">{notice}</p>}
-          {error && <p className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">⚠️ {error}</p>}
+          {error && <p role="alert" className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">⚠️ {error}</p>}
         </div>
 
         {/* Result */}
@@ -537,6 +536,7 @@ export default function ArcadeForge() {
                 <p className="text-xs font-extrabold text-white">Change this game</p>
                 <div className="mt-2 flex gap-2">
                   <input
+                    aria-label="Game change"
                     value={instruction}
                     onChange={(e) => setInstruction(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && iterate()}
@@ -558,11 +558,9 @@ export default function ArcadeForge() {
       {/* Sidebar */}
       <aside className="min-w-0 space-y-4">
         <div className="rounded-2xl border border-emerald-400/25 bg-gradient-to-br from-emerald-500/15 to-cyan-500/5 p-4">
-          <p className="text-sm font-extrabold text-emerald-200">🎮 The offline ultimate test</p>
+          <p className="text-sm font-extrabold text-emerald-200">Your game, then your changes</p>
           <p className="mt-1.5 text-xs leading-relaxed text-emerald-100/80">
-            <strong>Instant cores</strong> deliver Pac-Man-classics in milliseconds. <strong>On-device AI</strong> (WebGPU,
-            cached after one download) writes anything else — no prompts, no code, no data ever leaves your machine.
-            No limits, no boundaries.
+            Build from the prompt, play the result, then change it. Custom revisions use the current game file as their starting point, not a replacement preset.
           </p>
         </div>
         <div className="glass rounded-2xl p-4">
