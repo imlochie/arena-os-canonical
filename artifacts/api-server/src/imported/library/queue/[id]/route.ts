@@ -31,8 +31,7 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
     const user = await requireUser();
     const { id } = await params;
     if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
-    const queue = await removeQueueItem(user.id, id);
-    return Response.json({ queue });
+    return Response.json(await removeQueueItem(user.id, id));
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

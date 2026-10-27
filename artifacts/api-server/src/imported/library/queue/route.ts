@@ -28,8 +28,8 @@ export async function POST(request: Request) {
     const user = await requireUser();
     const parsed = addSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) return Response.json({ error: "A track id is required." }, { status: 400 });
-    const queue = await addToQueue({ ownerId: user.id, ...parsed.data });
-    return Response.json({ queue }, { status: 201 });
+    const result = await addToQueue({ ownerId: user.id, ...parsed.data });
+    return Response.json(result, { status: 201 });
   } catch (error) {
     if (error instanceof TrackNotFoundError) return Response.json({ error: "Track not found." }, { status: 404 });
     if (error instanceof Response) return error;
@@ -41,8 +41,7 @@ export async function POST(request: Request) {
 export async function DELETE() {
   try {
     const user = await requireUser();
-    await clearQueue(user.id);
-    return Response.json({ queue: [] });
+    return Response.json(await clearQueue(user.id));
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

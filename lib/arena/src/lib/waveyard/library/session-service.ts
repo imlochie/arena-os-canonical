@@ -22,6 +22,7 @@ import {
   listenSessionSwaps,
   listenSessions,
   listenSessionTracks,
+  queueItems,
   projects,
   remixSessions,
   remixTracks,
@@ -42,7 +43,7 @@ import {
   validateStemSwap,
   type TransitionConfig,
 } from "./session-logic";
-import { getTrack, type TrackDetail, type TrackStem, type TrackSummary } from "./service";
+import { getTrack, QueueItemNotFoundError, removeQueueItem, type TrackDetail, type TrackStem, type TrackSummary } from "./service";
 
 export class SessionNotFoundError extends Error {
   constructor() {
@@ -208,7 +209,7 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
       createdAt: row.createdAt.toISOString(),
       donorTrack: details.has(row.toTrackId) ? {
         id: row.toTrackId,
-        title: details.get(row.toTrackId)!.track.title,
+        title: details.get(row.toTrackId)!.title,
         stems: details.get(row.toTrackId)!.stems,
       } : null,
     })),
@@ -319,6 +320,7 @@ export async function addTrackToSession(input: {
   sessionId: string;
   trackId: string;
   position?: number;
+  queueItemId?: string;
 }): Promise<SessionDetailPayload> {
   await ownedSession(input.ownerId, input.sessionId);
   const [track] = await db
@@ -329,16 +331,30 @@ export async function addTrackToSession(input: {
   if (track === undefined) throw new TrackNotInLibraryError();
 
   const existing = await loadSessionTracks(input.sessionId);
-  const [item] = await db
-    .insert(listenSessionTracks)
-    .values({
-      sessionId: input.sessionId,
-      trackId: input.trackId,
-      position: existing.length,
-      stemMix: "{}",
-      transition: JSON.stringify(defaultTransitionConfig()),
-    })
-    .returning({ id: listenSessionTracks.id });
+  const [item] = await db.transaction(async (tx) => {
+    if (input.queueItemId !== undefined) {
+      const [queueItem] = await tx
+        .select({ trackId: queueItems.trackId })
+        .from(queueItems)
+        .where(and(
+          eq(queueItems.id, input.queueItemId),
+          eq(queueItems.ownerId, input.ownerId),
+        ))
+        .limit(1);
+      if (queueItem === undefined || queueItem.trackId !== input.trackId) throw new QueueItemNotFoundError();
+    }
+    return tx
+      .insert(listenSessionTracks)
+      .values({
+        sessionId: input.sessionId,
+        trackId: input.trackId,
+        queueItemId: input.queueItemId ?? null,
+        position: existing.length,
+        stemMix: "{}",
+        transition: JSON.stringify(defaultTransitionConfig()),
+      })
+      .returning({ id: listenSessionTracks.id });
+  });
   let ordered = [...existing.map((row) => row.id), item.id];
   if (input.position !== undefined) {
     const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
@@ -372,9 +388,30 @@ async function sessionTrackIds(sessionId: string): Promise<string[]> {
 
 export async function removeSessionTrack(ownerId: string, sessionId: string, sessionTrackId: string): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
-  await db
-    .delete(listenSessionTracks)
-    .where(and(eq(listenSessionTracks.id, sessionTrackId), eq(listenSessionTracks.sessionId, sessionId)));
+  const [item] = await db
+    .select({ queueItemId: listenSessionTracks.queueItemId })
+    .from(listenSessionTracks)
+    .where(and(eq(listenSessionTracks.id, sessionTrackId), eq(listenSessionTracks.sessionId, sessionId)))
+    .limit(1);
+  if (item === undefined) throw new SessionTrackNotFoundError();
+  if (item.queueItemId !== null) {
+    await removeQueueItem(ownerId, item.queueItemId);
+  } else {
+    const now = new Date();
+    await db.transaction(async (tx) => {
+      await tx.delete(listenSessionTracks).where(and(
+        eq(listenSessionTracks.id, sessionTrackId),
+        eq(listenSessionTracks.sessionId, sessionId),
+      ));
+      await tx.update(listenSessions)
+        .set({ currentTrackId: null, positionSeconds: 0, updatedAt: now })
+        .where(and(
+          eq(listenSessions.id, sessionId),
+          eq(listenSessions.ownerId, ownerId),
+          eq(listenSessions.currentTrackId, sessionTrackId),
+        ));
+    });
+  }
   await resequence(sessionId, await sessionTrackIds(sessionId));
   await touchSession(sessionId);
   return sessionPayload(sessionId);

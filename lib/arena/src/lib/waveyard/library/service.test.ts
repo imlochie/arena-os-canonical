@@ -14,7 +14,7 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -25,10 +25,12 @@ const OWNER = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
 
 type ServiceModule = typeof import("./service");
+type SessionServiceModule = typeof import("./session-service");
 type DbModule = typeof import("@workspace/db");
 type SchemaModule = typeof import("@workspace/db/waveyardSchema");
 
 let service: ServiceModule;
+let sessionService: SessionServiceModule;
 let db: DbModule;
 let schema: SchemaModule;
 let pool: import("pg").Pool;
@@ -40,7 +42,11 @@ let dataDir: string | null = null;
 function embeddedBinary(name: string): string {
   const pkg = process.platform === "win32" ? "windows-x64" : "linux-x64";
   const exe = process.platform === "win32" ? `${name}.exe` : name;
-  return path.join(repoRoot, "node_modules", "@embedded-postgres", pkg, "native", "bin", exe);
+  const bundled = path.join(repoRoot, "node_modules", "@embedded-postgres", pkg, "native", "bin", exe);
+  if (existsSync(bundled)) return bundled;
+  const locator = process.platform === "win32" ? "where.exe" : "which";
+  const located = spawnSync(locator, [exe], { encoding: "utf8" }).stdout?.trim().split(/\r?\n/)[0];
+  return located && existsSync(located) ? located : bundled;
 }
 
 function freePort(): Promise<number> {
@@ -125,6 +131,7 @@ before(async () => {
   process.env.WAVEYARD_STORAGE_DIR = path.join(storageDir, "objects");
 
   service = await import("./service");
+  sessionService = await import("./session-service");
   db = (await import("@workspace/db")) as DbModule;
   schema = (await import("@workspace/db/waveyardSchema")) as SchemaModule;
   pool = (db as unknown as { pool: import("pg").Pool }).pool;
@@ -290,13 +297,14 @@ test("durable playback state round-trips (stem mix, volume, position)", async ()
 });
 
 test("queue: add end/next, move, remove, clear — ordered and owner-scoped", async () => {
-  let queue = await service.addToQueue({ ownerId: OWNER, trackId: trackA.id });
+  const addedA = await service.addToQueue({ ownerId: OWNER, trackId: trackA.id });
+  let queue = addedA.queue;
   assert.equal(queue.length, 1);
-  queue = await service.addToQueue({ ownerId: OWNER, trackId: trackB.id });
+  queue = (await service.addToQueue({ ownerId: OWNER, trackId: trackB.id })).queue;
   assert.equal(queue.map((item) => item.track.id).join(","), [trackA.id, trackB.id].join(","), "adds stack at the end in order");
 
   // "next" inserts right after the currently playing track.
-  queue = await service.addToQueue({ ownerId: OWNER, trackId: trackB.id, at: "next", currentTrackId: trackA.id });
+  queue = (await service.addToQueue({ ownerId: OWNER, trackId: trackB.id, at: "next", currentTrackId: trackA.id })).queue;
   assert.equal(
     queue.map((item) => item.track.id).join(","),
     [trackA.id, trackB.id, trackB.id].join(","),
@@ -306,10 +314,27 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
   const moved = await service.moveQueueItem(OWNER, queue[2].id, 0);
   assert.equal(moved.map((item) => item.track.id).join(","), [trackB.id, trackA.id, trackB.id].join(","));
 
+  const session = await sessionService.createSession(OWNER, "Queue provenance test");
+  await sessionService.addTrackToSession({
+    ownerId: OWNER, sessionId: session.id, trackId: trackA.id, queueItemId: addedA.addedQueueItemId,
+  });
+  await sessionService.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackA.id });
+  await sessionService.addTrackToSession({
+    ownerId: OWNER, sessionId: session.id, trackId: trackB.id, queueItemId: moved[0].id,
+  });
+  await sessionService.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackB.id });
+
   // removing B₁ (moved[0]) leaves [A, B₂].
   const removed = await service.removeQueueItem(OWNER, moved[0].id);
-  assert.equal(removed.map((item) => item.track.id).join(","), [trackA.id, trackB.id].join(","));
-  assert.deepEqual(removed.map((item) => item.position), [0, 1], "positions resequence without gaps");
+  assert.equal(removed.queue.map((item) => item.track.id).join(","), [trackA.id, trackB.id].join(","));
+  assert.deepEqual(removed.queue.map((item) => item.position), [0, 1], "positions resequence without gaps");
+  assert.deepEqual(removed.affectedSessionIds, [session.id]);
+  let sessionDetail = await sessionService.getSession(OWNER, session.id);
+  assert.deepEqual(
+    sessionDetail.tracks.map((item) => item.track.id),
+    [trackA.id, trackA.id, trackB.id],
+    "removing one repeated queued song keeps the direct session copies and other songs",
+  );
 
   // Another owner's queue is independent.
   writeWav(path.join(root!, "other-owner.wav"), 2, 440); // distinct content
@@ -319,12 +344,38 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
     filename: "Other Owner - Isolated Track.wav",
     mimeType: "audio/wav",
   })).track.id });
-  assert.equal(otherQueue.length, 1);
+  assert.equal(otherQueue.queue.length, 1);
   assert.equal((await service.listQueue(OWNER)).length, 2);
 
   const cleared = await service.clearQueue(OWNER);
-  assert.equal(cleared.length, 0);
+  assert.equal(cleared.queue.length, 0);
+  assert.deepEqual(cleared.affectedSessionIds, [session.id]);
+  sessionDetail = await sessionService.getSession(OWNER, session.id);
+  assert.deepEqual(
+    sessionDetail.tracks.map((item) => item.track.id),
+    [trackA.id, trackB.id],
+    "clearing the saved queue keeps only session-only entries",
+  );
   assert.equal((await service.listQueue(OTHER)).length, 1, "clearing one owner never touches another");
+
+  const savedForSession = await service.addToQueue({ ownerId: OWNER, trackId: trackA.id });
+  const linkedDetail = await sessionService.addTrackToSession({
+    ownerId: OWNER,
+    sessionId: session.id,
+    trackId: trackA.id,
+    queueItemId: savedForSession.addedQueueItemId,
+  });
+  await sessionService.removeSessionTrack(OWNER, session.id, linkedDetail.tracks.at(-1)!.id);
+  assert.equal((await service.listQueue(OWNER)).length, 0, "removing a linked session entry also removes its saved queue row");
+
+  const unrelatedSaved = await service.addToQueue({ ownerId: OWNER, trackId: trackB.id });
+  const withDirectAddition = await sessionService.addTrackToSession({ ownerId: OWNER, sessionId: session.id, trackId: trackB.id });
+  await sessionService.removeSessionTrack(OWNER, session.id, withDirectAddition.tracks.at(-1)!.id);
+  assert.deepEqual(
+    (await service.listQueue(OWNER)).map((item) => item.id),
+    [unrelatedSaved.addedQueueItemId],
+    "removing a session-only duplicate leaves an unlinked saved queue entry untouched",
+  );
 });
 
 test("playlists: create, add (duplicates allowed), reorder, remove, delete", async () => {

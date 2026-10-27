@@ -270,6 +270,17 @@ export function MusicHome() {
     return () => clearTimeout(timer);
   }, [refresh]);
 
+  useEffect(() => {
+    const reloadQueue = () => {
+      void fetch("/api/library/queue", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        setQueue((await response.json()).queue ?? []);
+      }).catch(() => setMessage("The saved queue could not be refreshed."));
+    };
+    window.addEventListener("waveyard:queue-changed", reloadQueue);
+    return () => window.removeEventListener("waveyard:queue-changed", reloadQueue);
+  }, []);
+
   // Debounced live search over real persisted metadata.
   useEffect(() => {
     if (reloadTimer.current !== null) clearTimeout(reloadTimer.current);
@@ -409,22 +420,30 @@ export function MusicHome() {
   const nextTrack = useCallback((track: TrackSummary) => void host.sendTrack(track.id, "next"), [host]);
 
   const onQueue = useCallback(async (track: TrackSummary) => {
-    const addedToListening = await host.enqueueTracks([track.id]);
-    if (!addedToListening) {
-      setMessage("The song could not be added to the listening order.");
-      return;
-    }
     const response = await fetch("/api/library/queue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ trackId: track.id, at: "end", currentTrackId: playback?.currentTrackId ?? null }),
     });
-    if (response.ok) {
-      setQueue((await response.json()).queue ?? []);
-      setMessage(`${track.title} added to the listening order.`);
-    } else {
-      setMessage(`${track.title} is in the listening order; the saved queue could not be updated.`);
+    if (!response.ok) {
+      setMessage(`${track.title} could not be added to the saved queue.`);
+      return;
     }
+    const result = await response.json();
+    setQueue(result.queue ?? []);
+    if (typeof result.addedQueueItemId !== "string") {
+      setMessage(`${track.title} was saved, but its listening entry could not be linked.`);
+      return;
+    }
+
+    const addedToListening = await host.enqueueTracks([track.id], [result.addedQueueItemId]);
+    if (!addedToListening) {
+      const rollback = await fetch(`/api/library/queue/${result.addedQueueItemId}`, { method: "DELETE" });
+      if (rollback.ok) setQueue((await rollback.json()).queue ?? []);
+      setMessage("The song could not be added to the listening order.");
+      return;
+    }
+    setMessage(`${track.title} added to the listening order.`);
   }, [playback, host]);
 
   const enqueuePlaylist = useCallback(async (playlist: PlaylistDetail) => {
@@ -583,13 +602,21 @@ export function MusicHome() {
 
   const removeQueueItem = useCallback(async (itemId: string) => {
     const response = await fetch(`/api/library/queue/${itemId}`, { method: "DELETE" });
-    if (response.ok) setQueue((await response.json()).queue ?? []);
-  }, []);
+    if (response.ok) {
+      const result = await response.json();
+      setQueue(result.queue ?? []);
+      host.refreshSession(result.affectedSessionIds ?? []);
+    }
+  }, [host]);
 
   const clearQueue = useCallback(async () => {
     const response = await fetch("/api/library/queue", { method: "DELETE" });
-    if (response.ok) setQueue([]);
-  }, []);
+    if (response.ok) {
+      const result = await response.json();
+      setQueue(result.queue ?? []);
+      host.refreshSession(result.affectedSessionIds ?? []);
+    }
+  }, [host]);
 
   const recentlyPlayed = useMemo(
     () =>

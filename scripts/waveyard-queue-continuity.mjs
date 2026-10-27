@@ -10,7 +10,7 @@ const sourceId = "550e8400-e29b-41d4-a716-446655440020";
 const ids = ["550e8400-e29b-41d4-a716-446655440001", "550e8400-e29b-41d4-a716-446655440002", "550e8400-e29b-41d4-a716-446655440003"];
 const library = ids.map((id, i) => ({
   id, title: `Queue fixture ${i + 1}`, artist: "Synthetic test",
-  album: "", durationSeconds: 4, rating: 0, playCount: 0, labels: [],
+  album: "", durationSeconds: 12, rating: 0, playCount: 0, labels: [],
   addedAt: new Date().toISOString(), lastPlayedAt: null,
   stemAvailability: { status: "source-only" }, studioProjectId: null,
 }));
@@ -20,9 +20,11 @@ const session = {
   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
 };
 let savedQueue = [];
+let queueSequence = 0;
+let sessionTrackSequence = 0;
 
 function wav() {
-  const count = 22050 * 4;
+  const count = 22050 * 12;
   const bytes = Buffer.alloc(44 + count * 2);
   bytes.write("RIFF"); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write("WAVEfmt ", 8);
   bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22);
@@ -58,9 +60,39 @@ try {
   await page.route("**/api/library/queue", async (route) => {
     if (route.request().method() === "POST") {
       const { trackId } = route.request().postDataJSON();
-      savedQueue.push({ id: `saved-${trackId}`, position: savedQueue.length, track: library.find((item) => item.id === trackId) });
+      const id = `saved-${++queueSequence}`;
+      savedQueue.push({ id, position: savedQueue.length, track: library.find((item) => item.id === trackId) });
+      return routeJson(route, { queue: savedQueue, addedQueueItemId: id }, 201);
+    }
+    if (route.request().method() === "DELETE") {
+      const linkedIds = new Set(savedQueue.map((item) => item.id));
+      const removed = session.tracks.filter((item) => linkedIds.has(item.queueItemId));
+      session.tracks = session.tracks.filter((item) => !linkedIds.has(item.queueItemId));
+      session.tracks.forEach((item, position) => { item.position = position; });
+      if (removed.some((item) => item.id === session.currentSessionTrackId)) {
+        session.currentSessionTrackId = null;
+        session.positionSeconds = 0;
+      }
+      savedQueue = [];
+      return routeJson(route, { queue: [], affectedSessionIds: removed.length > 0 ? [sessionId] : [] });
     }
     await routeJson(route, { queue: savedQueue });
+  });
+  await page.route("**/api/library/queue/*", async (route) => {
+    if (route.request().method() !== "DELETE") return route.continue();
+    const id = new URL(route.request().url()).pathname.split("/").at(-1);
+    const removedQueueItem = savedQueue.find((item) => item.id === id);
+    savedQueue = savedQueue.filter((item) => item.id !== id);
+    savedQueue.forEach((item, position) => { item.position = position; });
+    const linkedIds = new Set(removedQueueItem ? [removedQueueItem.id] : []);
+    const removed = session.tracks.filter((item) => linkedIds.has(item.queueItemId));
+    session.tracks = session.tracks.filter((item) => !linkedIds.has(item.queueItemId));
+    session.tracks.forEach((item, position) => { item.position = position; });
+    if (removed.some((item) => item.id === session.currentSessionTrackId)) {
+      session.currentSessionTrackId = null;
+      session.positionSeconds = 0;
+    }
+    return routeJson(route, { queue: savedQueue, affectedSessionIds: removed.length > 0 ? [sessionId] : [] });
   });
   await page.route("**/api/library/sessions", async (route) => {
     if (route.request().method() === "POST") {
@@ -74,11 +106,12 @@ try {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "POST" && url.pathname.endsWith("/tracks")) {
-      const { trackId, position } = request.postDataJSON();
+      const { trackId, position, queueItemId } = request.postDataJSON();
       const track = library.find((item) => item.id === trackId);
       assert.ok(track, `known fixture track ${trackId}`);
       session.tracks.push({
-        id: `session-track-${session.tracks.length + 1}`, position,
+        id: `session-track-${++sessionTrackSequence}`, position,
+        queueItemId: queueItemId ?? null,
         track: { id: track.id, title: track.title, artist: track.artist, durationSeconds: track.durationSeconds },
         stems: [], playback: { assetIds: [sourceId], kind: "source" }, stemMix: {},
         transition: { mode: "manual", crossfadeSeconds: 1, keepStems: [] }, analysis: null,
@@ -93,34 +126,54 @@ try {
 
   await page.goto("http://localhost:80/waveyard");
   await page.locator('[data-testid="button-play-550e8400-e29b-41d4-a716-446655440001"]').waitFor();
-  await page.locator('[data-testid="library-track"]').filter({ hasText: "Queue fixture 1" })
-    .getByRole("button", { name: "+ Queue" }).click();
-  const waitForFixture = async (predicate, description) => {
-    const until = Date.now() + 8000;
+  const waitForFixture = async (predicate, description, timeoutMs = 8000) => {
+    const until = Date.now() + timeoutMs;
     while (!predicate() && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 30));
     assert.ok(predicate(), `timed out waiting for ${description}`);
   };
-  await waitForFixture(() => session.tracks.length === 1, "the first queue addition");
+  const queueTrack = (title) => page.locator('[data-testid="library-track"]').filter({ hasText: title })
+    .getByRole("button", { name: "+ Queue" }).click();
+  await queueTrack("Queue fixture 1");
+  await waitForFixture(() => session.tracks.length === 1 && savedQueue.length === 1, "the first queue addition");
   await waitForFixture(() => session.currentSessionTrackId === session.tracks[0]?.id, "the idle session to start");
-  assert.equal(session.currentSessionTrackId, "session-track-1", "the first queued song starts an idle listening session");
+  assert.equal(session.tracks[0].queueItemId, savedQueue[0].id, "the saved row is linked to its exact session entry");
+
+  await queueTrack("Queue fixture 2");
+  await queueTrack("Queue fixture 1");
+  await waitForFixture(() => session.tracks.length === 3 && savedQueue.length === 3, "the repeated queued songs");
+  assert.equal(session.tracks[0].track.id, session.tracks[2].track.id, "the duplicate songs remain separate entries");
+  assert.notEqual(session.tracks[0].queueItemId, session.tracks[2].queueItemId, "repeated songs have distinct saved-row links");
+  await page.getByRole("button", { name: "Remove Queue fixture 2 from queue" }).click();
+  await waitForFixture(() => session.tracks.length === 2 && savedQueue.length === 2, "removing one saved queue row");
+  assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[0], ids[0]], "removing a queued song leaves the repeated song copies intact");
+  assert.equal(session.currentSessionTrackId, "session-track-1", "removing a later queue item does not interrupt the current song");
 
   await page.getByRole("button", { name: "Test playlist" }).click();
   await page.getByTestId("playlist-live-test-set").click();
-  await waitForFixture(() => session.tracks.length === 3, "the ordered playlist additions");
-  assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[0], ids[1], ids[2]], "playlist order appends intact");
+  await waitForFixture(() => session.tracks.length === 4, "the ordered playlist additions");
+  assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[0], ids[0], ids[1], ids[2]], "playlist songs append without saved-queue links");
   assert.equal(session.currentSessionTrackId, "session-track-1", "appending the playlist leaves the current song playing");
-  assert.equal(savedQueue.length, 1, "the library's saved queue remains intact too");
+  assert.equal(savedQueue.length, 2, "playlist-only songs do not create saved-queue rows");
+  assert.equal(session.tracks[2].queueItemId, null, "directly appended session songs have no saved-queue link");
+
+  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await waitForFixture(() => session.tracks.length === 2 && savedQueue.length === 0, "clearing linked saved rows");
+  assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[1], ids[2]], "clearing the saved queue leaves direct playlist songs in the session");
+  await waitForFixture(() => session.currentSessionTrackId === "session-track-4", "playback advances to the first remaining session song");
+
+  await queueTrack("Queue fixture 1");
+  await waitForFixture(() => session.tracks.length === 3 && savedQueue.length === 1, "a queue item after clearing");
   const autoCrossfade = page.getByTestId("session-auto-crossfade");
   assert.equal(await autoCrossfade.isChecked(), false, "auto-crossfade stays opt-in");
   await page.getByTestId("session-transition").click();
   await page.getByRole("button", { name: "Finish", exact: true }).click();
-  await waitForFixture(() => session.currentSessionTrackId === "session-track-2", "the existing manual mix control");
+  await waitForFixture(() => session.currentSessionTrackId === "session-track-5", "the existing manual mix control");
   await autoCrossfade.check();
-  await page.locator(".wy-now .eyebrow").filter({ hasText: "Mixing" }).waitFor({ timeout: 8000 });
-  await waitForFixture(() => session.currentSessionTrackId === "session-track-3", "automatic handoff at the selected fade length");
+  await page.locator(".wy-now .eyebrow").filter({ hasText: "Mixing" }).waitFor({ timeout: 16000 });
+  await waitForFixture(() => session.currentSessionTrackId === "session-track-6", "automatic handoff at the selected fade length", 18000);
   await page.reload();
   assert.equal(await page.getByTestId("session-auto-crossfade").isChecked(), true, "the auto-crossfade preference survives reload");
-  console.log("PASS: queue order, manual mix, opt-in automatic crossfade, and preference persistence");
+  console.log("PASS: exact queue/session links, duplicate preservation, clear behavior, manual and automatic fades");
 } finally {
   await browser.close();
 }

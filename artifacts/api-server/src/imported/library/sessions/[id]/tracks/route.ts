@@ -10,10 +10,15 @@ import {
   moveSessionTrack,
   removeSessionTrack,
 } from "@workspace/arena/lib/waveyard/library/session-service";
+import { QueueItemNotFoundError } from "@workspace/arena/lib/waveyard/library/service";
 
 export const runtime = "nodejs";
 
-const addSchema = z.object({ trackId: z.string().uuid(), position: z.number().int().min(0).optional() });
+const addSchema = z.object({
+  trackId: z.string().uuid(),
+  position: z.number().int().min(0).optional(),
+  queueItemId: z.string().uuid().optional(),
+});
 
 /** POST /api/library/sessions/[id]/tracks — add a library track (ordered,
  * duplicates allowed — a live set can play a song twice). */
@@ -28,7 +33,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return Response.json({ session }, { status: 201 });
   } catch (error) {
     if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
-    if (error instanceof TrackNotInLibraryError) return Response.json({ error: "Track not found." }, { status: 404 });
+    if (error instanceof TrackNotInLibraryError || error instanceof QueueItemNotFoundError) return Response.json({ error: "Track or queue entry not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }

@@ -60,12 +60,13 @@ interface LibraryTrackOption {
   stemAvailability?: { status: "separated" | "source-only" | "processing" | "unavailable" };
 }
 
-export type HostCommandKind = "play" | "load" | "next" | "enqueue";
+export type HostCommandKind = "play" | "load" | "next" | "enqueue" | "refresh";
 export interface HostCommand {
   seq: number;
   kind: HostCommandKind;
   trackId: string;
   trackIds?: string[];
+  queueItemIds?: string[];
 }
 
 type DeckApi = {
@@ -895,17 +896,67 @@ export default function SessionExperience({
     void (async () => {
       let s = sessionRef.current;
       if (s === null) return;
+      if (command.kind === "refresh") {
+        const previousCurrentId = currentIdRef.current;
+        const previousIndex = s.tracks.findIndex((item) => item.id === previousCurrentId);
+        const previousNextId = previousIndex >= 0 ? s.tracks[previousIndex + 1]?.id ?? null : null;
+        const wasPlaying = playingRef.current;
+        try {
+          const response = await fetch(`/api/library/sessions/${s.id}`, { cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const detail = (await response.json()).session as SessionDetail;
+          if (sessionRef.current?.id !== detail.id) return;
+          const currentRetained = previousCurrentId === null || detail.tracks.some((item) => item.id === previousCurrentId);
+          const nextRetained = previousNextId === null || detail.tracks.some((item) => item.id === previousNextId);
+          if (fadeRef.current !== null && (!currentRetained || !nextRetained)) cancelTransition();
+
+          const liveIds = new Set(detail.tracks.map((item) => item.id));
+          setMixes((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
+          setTransitions((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
+          setStemsReady((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
+          setFlags((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
+          sessionRef.current = detail;
+          setSession(detail);
+
+          if (previousCurrentId === null || currentRetained) {
+            setStatus("Saved queue changes are reflected in the listening order.");
+            return;
+          }
+          const fallbackIndex = Math.min(Math.max(previousIndex, 0), detail.tracks.length - 1);
+          const fallbackId = detail.tracks[fallbackIndex]?.id ?? null;
+          if (fallbackId !== null) {
+            jumpTo(fallbackId, wasPlaying);
+            setStatus(wasPlaying ? "Removed the current song; playing the next remaining song." : "Removed the current song from the listening order.");
+          } else {
+            if (fadeRef.current !== null) cancelTransition();
+            decksRef.current.forEach((api) => api?.transport.pause());
+            currentIdRef.current = null;
+            setCurrentId(null);
+            setAutoPlayId(null);
+            void persistState({ id: null, position: 0 });
+            setStatus("The listening order is empty.");
+          }
+        } catch {
+          setStatus("The saved queue changed, but the listening order could not be refreshed.");
+        }
+        return;
+      }
       if (command.kind === "enqueue") {
         const ids = command.trackIds?.length ? command.trackIds : [command.trackId];
         const startFirst = s.tracks.length === 0 && currentIdRef.current === null;
         let firstAdded: string | null = null;
-        for (const trackId of ids) {
+        for (const [index, trackId] of ids.entries()) {
           const latest = sessionRef.current;
           if (latest === null) return;
+          const queueItemId = command.queueItemIds?.[index];
           const detail = await mutate(`/api/library/sessions/${latest.id}/tracks`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ trackId, position: latest.tracks.length }),
+            body: JSON.stringify({
+              trackId,
+              position: latest.tracks.length,
+              ...(queueItemId === undefined ? {} : { queueItemId }),
+            }),
           });
           if (detail === null) return;
           s = detail;
@@ -984,16 +1035,25 @@ export default function SessionExperience({
   const removeTrack = useCallback(
     (itemId: string) => {
       if (session === null) return;
+      const previousIndex = session.tracks.findIndex((item) => item.id === itemId);
+      const wasPlaying = playingRef.current;
       void mutate(`/api/library/sessions/${session.id}/tracks?sessionTrackId=${itemId}`, { method: "DELETE" }).then((detail) => {
-        if (detail !== null && currentIdRef.current === itemId) {
-          decksRef.current[activeDeckRef.current]?.transport.pause();
-          const fallback = detail.tracks[0]?.id ?? null;
-          currentIdRef.current = fallback;
-          setCurrentId(fallback);
+        if (detail === null) return;
+        window.dispatchEvent(new Event("waveyard:queue-changed"));
+        if (currentIdRef.current !== itemId) return;
+        const fallbackIndex = Math.min(Math.max(previousIndex, 0), detail.tracks.length - 1);
+        const fallback = detail.tracks[fallbackIndex]?.id ?? null;
+        if (fallback !== null) jumpTo(fallback, wasPlaying);
+        else {
+          decksRef.current.forEach((api) => api?.transport.pause());
+          currentIdRef.current = null;
+          setCurrentId(null);
+          setAutoPlayId(null);
+          void persistState({ id: null, position: 0 });
         }
       });
     },
-    [session, mutate],
+    [session, mutate, jumpTo, persistState],
   );
 
   // ------------------------------------------------------------------ swaps

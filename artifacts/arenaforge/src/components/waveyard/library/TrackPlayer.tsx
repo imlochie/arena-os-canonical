@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "@/routing/Link";
 import { useRouter } from "@/routing/navigation";
+import { useListeningHost } from "@/components/waveyard/listening/ListeningHost";
 
 import { formatPlayClock, STEM_CHANNEL_LABELS } from "@workspace/arena/lib/waveyard/library/model";
 import {
@@ -66,6 +67,7 @@ interface QueueItem {
 const SAVE_INTERVAL_MS = 10_000;
 
 export function TrackPlayer({ trackId }: { trackId: string }) {
+  const host = useListeningHost();
   const router = useRouter();
 
   const [track, setTrack] = useState<TrackDetail | null>(null);
@@ -430,11 +432,21 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   const queueAction = useCallback(async (input: RequestInfo, init: RequestInit) => {
     const response = await fetch(input, init);
     if (response.ok) {
-      const loaded = (await response.json()).queue ?? [];
+      const result = await response.json();
+      const loaded = result.queue ?? [];
       setQueue(loaded);
       queueRef.current = loaded;
+      host.refreshSession(result.affectedSessionIds ?? []);
     }
-  }, []);
+  }, [host]);
+
+  useEffect(() => {
+    const reloadQueue = () => {
+      void refreshQueue().catch(() => setStatus("The saved queue could not be refreshed."));
+    };
+    window.addEventListener("waveyard:queue-changed", reloadQueue);
+    return () => window.removeEventListener("waveyard:queue-changed", reloadQueue);
+  }, [refreshQueue]);
 
   const playNow = useCallback(
     async (itemId: string, targetTrackId: string) => {
@@ -455,12 +467,29 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
       body: JSON.stringify({ trackId, at: "end" }),
     });
     if (response.ok) {
-      await refreshQueue();
+      const result = await response.json();
+      setQueue(result.queue ?? []);
+      queueRef.current = result.queue ?? [];
+      if (typeof result.addedQueueItemId !== "string") {
+        setStatus("Saved to the queue, but the listening entry could not be linked.");
+        return;
+      }
+      const added = await host.enqueueTracks([trackId], [result.addedQueueItemId]);
+      if (!added) {
+        const rollback = await fetch(`/api/library/queue/${result.addedQueueItemId}`, { method: "DELETE" });
+        if (rollback.ok) {
+          const restored = (await rollback.json()).queue ?? [];
+          setQueue(restored);
+          queueRef.current = restored;
+        }
+        setStatus("Could not add the song to the listening order.");
+        return;
+      }
       setStatus("Added to the queue.");
     } else {
       setStatus("Could not add to the queue.");
     }
-  }, [refreshQueue, trackId]);
+  }, [host, trackId]);
 
   // ----------------------------------------------------------------- render
   if (loadError !== null) {

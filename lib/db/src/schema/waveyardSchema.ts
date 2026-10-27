@@ -881,6 +881,8 @@ export const listenSessionTracks = pgTable("wy_listen_session_tracks", {
   id: uuid("id").defaultRandom().primaryKey(),
   sessionId: uuid("session_id").notNull().references(() => listenSessions.id, { onDelete: "cascade" }),
   trackId: uuid("track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  /** Exact saved-queue row that added this session entry; null means session-only. */
+  queueItemId: uuid("queue_item_id").references(() => queueItems.id, { onDelete: "cascade" }),
   position: integer("position").notNull(),
   stemMix: text("stem_mix").notNull().default("{}"),
   transition: text("transition").notNull().default("{}"),
@@ -888,6 +890,7 @@ export const listenSessionTracks = pgTable("wy_listen_session_tracks", {
 }, (table) => [
   index("wy_listen_session_tracks_session_pos_idx").on(table.sessionId, table.position),
   index("wy_listen_session_tracks_track_id_idx").on(table.trackId),
+  uniqueIndex("wy_listen_session_tracks_queue_item_unique").on(table.queueItemId),
 ]);
 
 // ---------------------------------------------------------------- streaming

@@ -23,6 +23,8 @@ import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm
 
 import { db } from "@workspace/db";
 import {
+  listenSessions,
+  listenSessionTracks,
   playbackState,
   playlistItems,
   playlists,
@@ -492,6 +494,16 @@ export interface QueueItemPayload {
   track: TrackSummary;
 }
 
+export interface QueueEditPayload {
+  queue: QueueItemPayload[];
+  affectedSessionIds: string[];
+}
+
+export interface QueueAddPayload {
+  queue: QueueItemPayload[];
+  addedQueueItemId: string;
+}
+
 async function queueTracks(ownerId: string): Promise<QueueItemPayload[]> {
   const rows = await db
     .select({ item: queueItems, track: trackSelection })
@@ -519,7 +531,7 @@ export async function addToQueue(input: {
   at?: "end" | "next";
   /** The currently playing track (positions "next" right after it). */
   currentTrackId?: string | null;
-}): Promise<QueueItemPayload[]> {
+}): Promise<QueueAddPayload> {
   const [track] = await db
     .select({ id: tracks.id })
     .from(tracks)
@@ -549,7 +561,7 @@ export async function addToQueue(input: {
     orderedIds.splice(insertAt, 0, item.id);
   }
   await resequenceQueue(input.ownerId, orderedIds);
-  return queueTracks(input.ownerId);
+  return { queue: await queueTracks(input.ownerId), addedQueueItemId: item.id };
 }
 
 async function resequenceQueue(ownerId: string, orderedIds: string[]): Promise<void> {
@@ -560,10 +572,60 @@ async function resequenceQueue(ownerId: string, orderedIds: string[]): Promise<v
   });
 }
 
-export async function removeQueueItem(ownerId: string, itemId: string): Promise<QueueItemPayload[]> {
-  await db.delete(queueItems).where(and(eq(queueItems.id, itemId), eq(queueItems.ownerId, ownerId)));
+async function resequenceSessionsAfterQueueEdit(sessionIds: string[]): Promise<void> {
+  for (const sessionId of sessionIds) {
+    const rows = await db
+      .select({ id: listenSessionTracks.id })
+      .from(listenSessionTracks)
+      .where(eq(listenSessionTracks.sessionId, sessionId))
+      .orderBy(asc(listenSessionTracks.position));
+    await db.transaction(async (tx) => {
+      for (const [position, row] of rows.entries()) {
+        await tx.update(listenSessionTracks).set({ position }).where(eq(listenSessionTracks.id, row.id));
+      }
+    });
+  }
+}
+
+async function linkedQueueEntries(ownerId: string, queueIds?: string[]) {
+  const rows = await db
+    .select({ sessionId: listenSessionTracks.sessionId, sessionTrackId: listenSessionTracks.id })
+    .from(queueItems)
+    .innerJoin(listenSessionTracks, eq(listenSessionTracks.queueItemId, queueItems.id))
+    .where(queueIds === undefined
+      ? eq(queueItems.ownerId, ownerId)
+      : and(eq(queueItems.ownerId, ownerId), inArray(queueItems.id, queueIds)));
+  return rows;
+}
+
+async function deleteSavedQueueItems(ownerId: string, itemIds?: string[]): Promise<string[]> {
+  const rows = await linkedQueueEntries(ownerId, itemIds);
+  const sessionIds = [...new Set(rows.map((row) => row.sessionId))];
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    if (sessionIds.length > 0) {
+      await tx.update(listenSessions)
+        .set({ updatedAt: now })
+        .where(and(eq(listenSessions.ownerId, ownerId), inArray(listenSessions.id, sessionIds)));
+      await tx.update(listenSessions)
+        .set({ currentTrackId: null, positionSeconds: 0, updatedAt: now })
+        .where(and(
+          eq(listenSessions.ownerId, ownerId),
+          inArray(listenSessions.currentTrackId, rows.map((row) => row.sessionTrackId)),
+        ));
+    }
+    await tx.delete(queueItems).where(itemIds === undefined
+      ? eq(queueItems.ownerId, ownerId)
+      : and(eq(queueItems.ownerId, ownerId), inArray(queueItems.id, itemIds)));
+  });
+  await resequenceSessionsAfterQueueEdit(sessionIds);
+  return sessionIds;
+}
+
+export async function removeQueueItem(ownerId: string, itemId: string): Promise<QueueEditPayload> {
+  const affectedSessionIds = await deleteSavedQueueItems(ownerId, [itemId]);
   await resequenceQueue(ownerId, await remainingIds(ownerId));
-  return queueTracks(ownerId);
+  return { queue: await queueTracks(ownerId), affectedSessionIds };
 }
 
 async function remainingIds(ownerId: string): Promise<string[]> {
@@ -589,9 +651,9 @@ export async function moveQueueItem(
   return queueTracks(ownerId);
 }
 
-export async function clearQueue(ownerId: string): Promise<QueueItemPayload[]> {
-  await db.delete(queueItems).where(eq(queueItems.ownerId, ownerId));
-  return [];
+export async function clearQueue(ownerId: string): Promise<QueueEditPayload> {
+  const affectedSessionIds = await deleteSavedQueueItems(ownerId);
+  return { queue: [], affectedSessionIds };
 }
 
 // ---------------------------------------------------------------- playlists
