@@ -401,6 +401,13 @@ export default function SessionExperience({
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
   const [masterLevel, setMasterLevel] = useState(1);
   const [autoPlayId, setAutoPlayId] = useState<string | null>(null);
+  const [autoCrossfadeEnabled, setAutoCrossfadeEnabled] = useState(() => {
+    try {
+      return typeof window !== "undefined" && window.localStorage.getItem("waveyard:auto-crossfade") === "on";
+    } catch {
+      return false;
+    }
+  });
   const [positions, setPositions] = useState<[number, number]>([0, 0]);
   /** Items whose stems finished while their source was audible: held until the user switches. */
   const [stemsReady, setStemsReady] = useState<Record<string, SessionTrackItem>>({});
@@ -412,6 +419,7 @@ export default function SessionExperience({
   const [playingByDeck, setPlayingByDeck] = useState<[boolean, boolean]>([false, false]);
   const sessionRef = useRef<SessionDetail | null>(null);
   const currentIdRef = useRef<string | null>(null);
+  const autoCrossfadeStartedForRef = useRef<string | null>(null);
   const activeDeckRef = useRef<0 | 1>(0);
   const masterRef = useRef(1);
   const playingRef = useRef(false);
@@ -420,6 +428,13 @@ export default function SessionExperience({
   useEffect(() => { activeDeckRef.current = activeDeck; }, [activeDeck]);
   useEffect(() => { masterRef.current = masterLevel; }, [masterLevel]);
   useEffect(() => { playingRef.current = playingByDeck[activeDeck]; }, [playingByDeck, activeDeck]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("waveyard:auto-crossfade", autoCrossfadeEnabled ? "on" : "off");
+    } catch {
+      // The control remains usable for this session when browser storage is unavailable.
+    }
+  }, [autoCrossfadeEnabled]);
 
   const currentIndex = useMemo(() => {
     if (session === null) return -1;
@@ -1160,6 +1175,45 @@ export default function SessionExperience({
     return { tempo, key, alignment, evidence };
   }, [currentItem, nextItem, currentTransition]);
 
+  // Start the selected fade early enough to reach its transition cue and finish
+  // before the current song ends. The same transition core powers manual mixes.
+  useEffect(() => {
+    if (!autoCrossfadeEnabled || phase === "fading" || !playingByDeck[activeDeck] || currentItem === null || nextItem === null) return;
+    const fromApi = decksRef.current[activeDeck];
+    const toDeck: 0 | 1 = activeDeck === 0 ? 1 : 0;
+    if (fromApi === null || decksRef.current[toDeck] === null) return;
+
+    const cfg = transitions[currentItem.id] ?? currentItem.transition;
+    if (cfg.crossfadeSeconds <= 0) return;
+    const currentPosition = fromApi.transport.position;
+    const duration = currentItem.track.durationSeconds;
+    if (autoCrossfadeStartedForRef.current === currentItem.id) {
+      if (currentPosition >= duration - cfg.crossfadeSeconds - 1) return;
+      autoCrossfadeStartedForRef.current = null;
+    }
+
+    let alignmentLeadSeconds = 0;
+    if (cfg.mode === "beat" || cfg.mode === "bar") {
+      const aligned = beatAlignedTransitionStart(
+        currentItem.analysis?.beatGridMs ?? null,
+        nextItem.analysis?.beatGridMs ?? null,
+        currentPosition * 1000,
+        cfg.mode,
+      );
+      if (aligned.ok && aligned.startInCurrentMs !== null) {
+        alignmentLeadSeconds = Math.max(0, aligned.startInCurrentMs / 1000 - currentPosition);
+      }
+    }
+    const remaining = duration - currentPosition;
+    if (remaining > cfg.crossfadeSeconds + alignmentLeadSeconds + 0.35) return;
+
+    autoCrossfadeStartedForRef.current = currentItem.id;
+    void beginTransition();
+  }, [
+    autoCrossfadeEnabled, phase, playingByDeck, activeDeck, currentItem, nextItem,
+    transitions, beginTransition, positions,
+  ]);
+
   // ---------------------------------------------------------------- render
   if (loadError !== null && session === null) {
     if (variant === "compact") return null;
@@ -1370,6 +1424,15 @@ export default function SessionExperience({
                   <input id="sess-fade" type="range" min={0} max={15} step={0.5} value={transition.crossfadeSeconds} onChange={(event) => setTransition({ crossfadeSeconds: Number(event.target.value) })} />
                   <span>{transition.crossfadeSeconds === 0 ? "cut" : `${transition.crossfadeSeconds.toFixed(1)}s`}</span>
                 </div>
+                <label className="sess-keep-option" title="Uses the selected transition mode and length at the end of each song.">
+                  <input
+                    type="checkbox"
+                    data-testid="session-auto-crossfade"
+                    checked={autoCrossfadeEnabled}
+                    onChange={(event) => setAutoCrossfadeEnabled(event.target.checked)}
+                  />
+                  Auto-crossfade queued songs
+                </label>
                 {currentItem !== null && currentItem.stems.length > 0 && (
                   <fieldset className="sess-keep">
                     <legend>Keep from current</legend>

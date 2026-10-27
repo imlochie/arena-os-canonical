@@ -10,7 +10,7 @@ const sourceId = "550e8400-e29b-41d4-a716-446655440020";
 const ids = ["550e8400-e29b-41d4-a716-446655440001", "550e8400-e29b-41d4-a716-446655440002", "550e8400-e29b-41d4-a716-446655440003"];
 const library = ids.map((id, i) => ({
   id, title: `Queue fixture ${i + 1}`, artist: "Synthetic test",
-  album: "", durationSeconds: 12, rating: 0, playCount: 0, labels: [],
+  album: "", durationSeconds: 4, rating: 0, playCount: 0, labels: [],
   addedAt: new Date().toISOString(), lastPlayedAt: null,
   stemAvailability: { status: "source-only" }, studioProjectId: null,
 }));
@@ -22,7 +22,7 @@ const session = {
 let savedQueue = [];
 
 function wav() {
-  const count = 22050 * 12;
+  const count = 22050 * 4;
   const bytes = Buffer.alloc(44 + count * 2);
   bytes.write("RIFF"); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write("WAVEfmt ", 8);
   bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22);
@@ -81,7 +81,7 @@ try {
         id: `session-track-${session.tracks.length + 1}`, position,
         track: { id: track.id, title: track.title, artist: track.artist, durationSeconds: track.durationSeconds },
         stems: [], playback: { assetIds: [sourceId], kind: "source" }, stemMix: {},
-        transition: { mode: "manual", crossfadeSeconds: 0, keepStems: [] }, analysis: null,
+        transition: { mode: "manual", crossfadeSeconds: 1, keepStems: [] }, analysis: null,
       });
     } else if (request.method() === "PUT" && url.pathname.endsWith("/state")) {
       const body = request.postDataJSON();
@@ -110,7 +110,17 @@ try {
   assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[0], ids[1], ids[2]], "playlist order appends intact");
   assert.equal(session.currentSessionTrackId, "session-track-1", "appending the playlist leaves the current song playing");
   assert.equal(savedQueue.length, 1, "the library's saved queue remains intact too");
-  console.log("PASS: queue starts an idle session; playlist appends in order without interrupting playback");
+  const autoCrossfade = page.getByTestId("session-auto-crossfade");
+  assert.equal(await autoCrossfade.isChecked(), false, "auto-crossfade stays opt-in");
+  await page.getByTestId("session-transition").click();
+  await page.getByRole("button", { name: "Finish", exact: true }).click();
+  await waitForFixture(() => session.currentSessionTrackId === "session-track-2", "the existing manual mix control");
+  await autoCrossfade.check();
+  await page.locator(".wy-now .eyebrow").filter({ hasText: "Mixing" }).waitFor({ timeout: 8000 });
+  await waitForFixture(() => session.currentSessionTrackId === "session-track-3", "automatic handoff at the selected fade length");
+  await page.reload();
+  assert.equal(await page.getByTestId("session-auto-crossfade").isChecked(), true, "the auto-crossfade preference survives reload");
+  console.log("PASS: queue order, manual mix, opt-in automatic crossfade, and preference persistence");
 } finally {
   await browser.close();
 }
