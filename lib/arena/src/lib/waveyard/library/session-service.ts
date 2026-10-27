@@ -483,13 +483,23 @@ export async function recordStemSwap(input: {
   const validation = validateStemSwap(currentDetail.stems, donorDetail.stems, input.stemType);
   if (!validation.ok) throw new StemSwapRefusedError(validation.reason);
 
-  await db.insert(listenSessionSwaps).values({
-    sessionId: input.sessionId,
-    sessionTrackId: input.sessionTrackId,
-    stemType: input.stemType,
-    fromTrackId: sessionTrack.trackId,
-    toTrackId: input.toTrackId,
-    atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
+  await db.transaction(async (tx) => {
+    // A stem has one current donor. Repeated live selections must not leave
+    // shadow swaps that reappear when the user restores Original.
+    await tx.update(listenSessions).set({ updatedAt: new Date() }).where(eq(listenSessions.id, input.sessionId));
+    await tx.delete(listenSessionSwaps).where(and(
+      eq(listenSessionSwaps.sessionId, input.sessionId),
+      eq(listenSessionSwaps.sessionTrackId, input.sessionTrackId),
+      eq(listenSessionSwaps.stemType, input.stemType),
+    ));
+    await tx.insert(listenSessionSwaps).values({
+      sessionId: input.sessionId,
+      sessionTrackId: input.sessionTrackId,
+      stemType: input.stemType,
+      fromTrackId: sessionTrack.trackId,
+      toTrackId: input.toTrackId,
+      atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
+    });
   });
   await touchSession(input.sessionId);
   return sessionPayload(input.sessionId);
@@ -497,9 +507,17 @@ export async function recordStemSwap(input: {
 
 export async function removeStemSwap(ownerId: string, sessionId: string, swapId: string): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
+  const [selection] = await db.select().from(listenSessionSwaps).where(and(
+    eq(listenSessionSwaps.id, swapId), eq(listenSessionSwaps.sessionId, sessionId),
+  )).limit(1);
+  if (!selection) return sessionPayload(sessionId);
   await db
     .delete(listenSessionSwaps)
-    .where(and(eq(listenSessionSwaps.id, swapId), eq(listenSessionSwaps.sessionId, sessionId)));
+    .where(and(
+      eq(listenSessionSwaps.sessionId, sessionId),
+      eq(listenSessionSwaps.sessionTrackId, selection.sessionTrackId),
+      eq(listenSessionSwaps.stemType, selection.stemType),
+    ));
   return sessionPayload(sessionId);
 }
 

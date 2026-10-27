@@ -1001,6 +1001,8 @@
 .music-home-surface .add-music{padding:10px 12px;margin-top:8px}
 .library-url-import{margin-top:8px;font-size:13px;color:var(--muted)}
 .library-url-import summary{cursor:pointer}
+.wy-stem-source{grid-column:1/-1;min-width:0;width:100%;max-width:100%;min-height:32px;padding:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:11px}
+@media(max-width:1000px){.wy-stem-source{min-height:44px}}
 @media(max-width:1000px){.wy-decks .wy-deck{flex:0 0 auto}}
 .wy-host-full .wy-transport{position:fixed;z-index:45;bottom:12px;left:50%;transform:translateX(-50%);width:min(1180px,calc(100% - 32px));padding:12px 16px;border:1px solid var(--line);background:var(--wy-glass);backdrop-filter:blur(16px);box-shadow:0 12px 40px rgba(0,0,0,.45)}
 .wy-under-host{padding-bottom:190px}

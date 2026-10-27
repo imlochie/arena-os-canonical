@@ -596,11 +596,14 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
     () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "vocals", toTrackId: trackA.id, atSeconds: 1 }),
     (error: Error) => error instanceof sessions.StemSwapRefusedError && /current track has no real/i.test(error.message),
   );
-  // Refusal: donor A has no "piano" stem.
-  await assert.rejects(
-    () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "drums", toTrackId: trackA.id === trackA.id ? trackA.id : trackA.id, atSeconds: 1 }),
-    /donor/i,
-  ).catch(() => undefined); // (A DOES have drums — this call succeeds; the real refusal case is below)
+  const replaced = await sessions.recordStemSwap({
+    ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB,
+    stemType: "drums", toTrackId: trackA.id, atSeconds: 18,
+  });
+  assert.equal(replaced.swaps.length, 1, "one active donor per stem after repeated live selections");
+  assert.equal(replaced.swaps[0].atSeconds, 18);
+  const restored = await sessions.removeStemSwap(OWNER, created.id, replaced.swaps[0].id);
+  assert.equal(restored.swaps.length, 0, "Original must not reveal an older shadow swap");
   await sessions.deleteSession(OWNER, created.id);
 });
 

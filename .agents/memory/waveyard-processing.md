@@ -20,3 +20,9 @@ Treat a physical playback deck's audio graph as longer-lived than its selected s
 **Why:** HTML media time can advance even when its Web Audio graph is closed or disconnected. Element volume is not proof that gain, mute, or solo still works.
 
 **How to apply:** Recheck actual graph state and gains when changing/revisiting songs. Swapping a media URL also resets its clock/play state, so verify clock alignment and resumed playback, not just a successful saved swap record.
+
+Live stem swapping must leave the recipient's transport clock independent of its audible layers. Prepare replacements while the existing layer remains audible, then blend only that channel; restoring Original must not restart the song.
+
+**Why:** The user wants stem.fm-style live swapping, not a separate remix step. Replacing a playing media URL interrupts that layer, and using a short donor as the deck clock breaks all-layer swaps.
+
+**How to apply:** Exercise independent donors, all four layers replaced, short donors, failed/late downloads, and pause/seek/resume. Verify actual signal routing and gain changes, not only source labels or saved records.

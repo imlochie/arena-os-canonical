@@ -143,12 +143,28 @@ function SessionDeck({
   const transport = useStemTransport(assetIds, duration);
   const mediaElements = useRef<Record<string, HTMLAudioElement | null>>({});
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [loadingLayers, setLoadingLayers] = useState(false);
+  const [swapRetry, setSwapRetry] = useState(0);
 
   const stemTypeByAsset = useMemo(() => {
     const map = new Map<string, string>();
     for (const stem of item?.stems ?? []) map.set(stem.id, stem.stemType);
     return map;
   }, [item?.stems]);
+
+  const swapKey = JSON.stringify(assetIds.map((id) => [id, swaps[stemTypeByAsset.get(id) ?? "source"] ?? null]));
+  useEffect(() => {
+    let stale = false;
+    const layers = JSON.parse(swapKey) as Array<[string, string | null]>;
+    setLoadingLayers(layers.some(([, donor]) => donor !== null));
+    void Promise.all(layers.map(([id, donor]) => transport.replaceStem(id, donor ? `/api/assets/${donor}` : null)))
+      .then(() => { if (!stale) setMediaError(null); })
+      .catch((error: unknown) => {
+        if (!stale) setMediaError(`${error instanceof Error ? error.message : "Live stem loading failed."} The previous layer was kept.`);
+      })
+      .finally(() => { if (!stale) setLoadingLayers(false); });
+    return () => { stale = true; };
+  }, [swapKey, transport.replaceStem, swapRetry]);
 
   const applyStemVolumes = useCallback(
     (volumes: Record<string, number>) => {
@@ -248,7 +264,7 @@ function SessionDeck({
               mediaElements.current[assetId] = element;
               transport.register(assetId, element);
             }}
-            src={`/api/assets/${donorAssetId ?? assetId}`}
+            src={`/api/assets/${assetId}`}
             preload="auto"
             onLoadedMetadata={(event) => {
               // Replacing a playing element's src (Swap/Undo) resets its
@@ -273,6 +289,8 @@ function SessionDeck({
           />
         );
       })}
+      {loadingLayers && <p className="wy-deck-note" role="status">Preparing live layers — the current audio keeps playing.</p>}
+      {mediaError && <button type="button" className="sess-small-btn" onClick={() => setSwapRetry((n) => n + 1)}>Retry live stems</button>}
       {item === null ? (
         <div className="wy-deck-empty">
           <span className="eyebrow">{`Deck ${deckIndex === 0 ? "A" : "B"} · ${active ? "current" : "next"}`}</span>
@@ -310,6 +328,7 @@ function SessionDeck({
             <p className="wy-deck-note">Full source — stem controls unlock once separation finishes.</p>
           ) : (
             <div className="wy-stems" role="group" aria-label={`${active ? "Current" : "Next"} deck stems`}>
+              {active && <p className="wy-deck-note wy-live-note">Live sources · shorter layers loop · no automatic tempo/key matching</p>}
               {item.stems.map((stem) => {
                 const level = levels[stem.stemType] ?? 1;
                 const muted = flags.muted.includes(stem.stemType);
@@ -373,6 +392,7 @@ export default function SessionExperience({
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [activeDeck, setActiveDeck] = useState<0 | 1>(0);
   const [phase, setPhase] = useState<FadePhase>("idle");
+  const [savingSwap, setSavingSwap] = useState(false);
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
   const [flags, setFlags] = useState<Record<string, StemFlags>>({});
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
@@ -937,33 +957,39 @@ export default function SessionExperience({
 
   // ------------------------------------------------------------------ swaps
   const requestSwap = useCallback(
-    (stemType: string) => {
-      if (session === null || currentItem === null || nextItem === null) return;
-      const validation = validateStemSwap(currentItem.stems, nextItem.stems, stemType);
+    async (stemType: string, donor: SessionTrackItem) => {
+      if (session === null || currentItem === null) return;
+      const validation = validateStemSwap(currentItem.stems, donor.stems, stemType);
       if (!validation.ok) {
         setStatus(validation.reason);
         return;
       }
-      void mutate(`/api/library/sessions/${session.id}/swaps`, {
+      setSavingSwap(true);
+      try {
+      const detail = await mutate(`/api/library/sessions/${session.id}/swaps`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           sessionTrackId: currentItem.id,
           stemType,
-          toTrackId: nextItem.track.id,
+          toTrackId: donor.track.id,
           atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
         }),
-      }).then((detail) => detail && setStatus(`${stemType} now comes from “${nextItem.track.title}”.`));
+      });
+      if (detail) setStatus(`${stemType} source saved: “${donor.track.title}”.`);
+      } finally { setSavingSwap(false); }
     },
-    [session, currentItem, nextItem, mutate, activeDeck],
+    [session, currentItem, mutate, activeDeck],
   );
 
   const revertSwap = useCallback(
-    (swapId: string) => {
+    async (swapId: string) => {
       if (session === null) return;
-      void mutate(`/api/library/sessions/${session.id}/swaps?swapId=${swapId}`, { method: "DELETE" }).then(
-        (detail) => detail && setStatus("Swap reverted."),
-      );
+      setSavingSwap(true);
+      try {
+        const detail = await mutate(`/api/library/sessions/${session.id}/swaps?swapId=${swapId}`, { method: "DELETE" });
+        if (detail) setStatus("Original stem restored.");
+      } finally { setSavingSwap(false); }
     },
     [session, mutate],
   );
@@ -1157,21 +1183,27 @@ export default function SessionExperience({
   };
 
   const swapExtra = (stemType: string) => {
-    if (currentItem === null || nextItem === null) return null;
-    const swap = session.swaps.find((s) => s.sessionTrackId === currentItem.id && s.stemType === stemType);
-    const ready = validateStemSwap(currentItem.stems, nextItem.stems, stemType);
+    if (currentItem === null) return null;
+    const swap = session.swaps.filter((s) => s.sessionTrackId === currentItem.id && s.stemType === stemType).at(-1);
+    const donors = session.tracks.filter((item) =>
+      item.track.id !== currentItem.track.id && validateStemSwap(currentItem.stems, item.stems, stemType).ok,
+    );
     return (
-      <button
-        type="button"
-        className={`wy-toggle swap${swap ? " on" : ""}`}
-        aria-pressed={swap !== undefined}
-        aria-label={swap ? `Revert ${stemType} swap` : `Swap ${stemType} with next track`}
-        title={swap ? "Revert swap" : ready.ok ? `Take ${stemType} from “${nextItem.track.title}”` : ready.reason}
-        disabled={!swap && !ready.ok}
-        onClick={() => (swap ? revertSwap(swap.id) : requestSwap(stemType))}
+      <select
+        className="wy-stem-source"
+        aria-label={`${stemType} source`}
+        value={swap?.toTrackId ?? ""}
+        disabled={savingSwap}
+        title={donors.length ? "Choose a live layer from a song in this session" : "Add another separated song to this session to swap live"}
+        onChange={(event) => {
+          const donor = donors.find((item) => item.track.id === event.target.value);
+          if (donor) requestSwap(stemType, donor);
+          else if (!event.target.value && swap) revertSwap(swap.id);
+        }}
       >
-        {swap ? "Undo" : "Swap"}
-      </button>
+        <option value="">Original</option>
+        {donors.map((donor) => <option key={donor.id} value={donor.track.id}>{donor.track.title}</option>)}
+      </select>
     );
   };
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { LiveStemLayers } from "./live-stem-layers";
 
 export type MixerValues = {
   volume: number;
@@ -14,6 +15,7 @@ export type MixerValues = {
 };
 type AudioGraph = {
   source: MediaElementAudioSourceNode;
+  inputGain: GainNode;
   gain: GainNode;
   pan: StereoPannerNode | null;
   /** Explicit-channel-count downmix node: 1 = mono monitor, 2 = stereo. */
@@ -254,7 +256,9 @@ export function useStemTransport(ids: string[], duration: number) {
       mono.channelInterpretation = "speakers";
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
-      source.connect(gain);
+      const inputGain = ctx.createGain();
+      source.connect(inputGain);
+      inputGain.connect(gain);
       const tail: AudioNode = pan ?? gain;
       if (pan) gain.connect(pan);
       let insertSubgraph: InsertSubgraph | null = null;
@@ -268,10 +272,43 @@ export function useStemTransport(ids: string[], duration: number) {
       }
       mono.connect(analyser);
       analyser.connect(masterGain.current!);
-      graphs.current[id] = { source, gain, pan, mono, analyser, inserts: insertSubgraph, tail };
+      graphs.current[id] = { source, inputGain, gain, pan, mono, analyser, inserts: insertSubgraph, tail };
     }
     return graphs.current[id];
   }, []);
+
+  const liveLayers = useRef<LiveStemLayers | null>(null);
+  if (!liveLayers.current) {
+    liveLayers.current = new LiveStemLayers(
+      () => {
+        if (!context.current) throw new Error("Load a stem channel before swapping.");
+        return context.current;
+      },
+      (id) => ensureGraph(id),
+    );
+  }
+  const replaceStem = useCallback((id: string, url: string | null) => {
+    if (url) ensureGraph(id);
+    return liveLayers.current!.replace(id, url);
+  }, [ensureGraph]);
+
+  useEffect(() => {
+    for (const [id, graph] of Object.entries(graphs.current)) {
+      if (ids.includes(id)) continue;
+      liveLayers.current?.remove(id);
+      graph.source.mediaElement.pause();
+      graph.source.disconnect();
+      graph.inputGain.disconnect();
+      graph.gain.disconnect();
+      graph.pan?.disconnect();
+      graph.mono.disconnect();
+      graph.analyser.disconnect();
+      graph.inserts?.input.disconnect();
+      graph.inserts?.output.disconnect();
+      delete graphs.current[id];
+      delete media.current[id];
+    }
+  }, [ids]);
 
   const register = useCallback(
     (id: string, element: HTMLAudioElement | null) => {
@@ -279,7 +316,9 @@ export function useStemTransport(ids: string[], duration: number) {
       if (element && graph && graph.source.mediaElement !== element) {
         // Returning to a track creates new media elements. A source node
         // belongs to its original element, not merely to its asset id.
+        liveLayers.current?.remove(id);
         graph.source.disconnect();
+        graph.inputGain.disconnect();
         graph.gain.disconnect();
         graph.pan?.disconnect();
         graph.mono.disconnect();
@@ -305,6 +344,7 @@ export function useStemTransport(ids: string[], duration: number) {
           element.currentTime = next;
       }
       setPosition(next);
+      liveLayers.current?.sync(ids);
     },
     [duration, ids],
   );
@@ -386,6 +426,7 @@ export function useStemTransport(ids: string[], duration: number) {
   }, []);
   const pause = useCallback(() => {
     for (const id of ids) media.current[id]?.pause();
+    liveLayers.current?.pause();
     stopClock();
     setPlaying(false);
   }, [ids, stopClock]);
@@ -410,6 +451,7 @@ export function useStemTransport(ids: string[], duration: number) {
         if (element) element.currentTime = start;
       }
       await Promise.all(ids.map(async (id) => media.current[id]?.play()));
+      liveLayers.current?.sync(ids);
       setPlaying(true);
     } catch {
       setError("Browser playback was blocked or one stem could not be loaded.");
@@ -461,6 +503,7 @@ export function useStemTransport(ids: string[], duration: number) {
       // Track changes replace ids/pause callbacks, but must NOT close this
       // physical deck's AudioContext. Close only when the deck unmounts.
       for (const element of Object.values(media.current)) element?.pause();
+      liveLayers.current?.dispose();
       stopClock();
       context.current?.close().catch(() => undefined);
       context.current = null;
@@ -577,6 +620,7 @@ export function useStemTransport(ids: string[], duration: number) {
 
   return {
     register,
+    replaceStem,
     readSpectrum,
     readMasterSpectrum,
     readWaveform,
