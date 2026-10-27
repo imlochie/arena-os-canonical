@@ -3,7 +3,7 @@
  * id a new separation job targets. The UI never hardcodes engine ids: it
  * omits the model and the server resolves by what THIS machine can run.
  *
- * Desktop (local worker active): the app's own MDX registry model. Server
+ * Desktop (local worker active): the four-stem MDX recipe. Server
  * (Redis configured): the Python worker's Demucs model, as before.
  * SEPARATION_MODEL still overrides both for explicit deployments.
  */
@@ -14,11 +14,11 @@ import { localWorkerActive } from "../worker-local/broker";
 
 export function defaultSeparationModel(): string {
   if (process.env.SEPARATION_MODEL) return process.env.SEPARATION_MODEL;
-  if (localWorkerActive()) return MDX_MODELS[0].id;
+  if (localWorkerActive()) return "stems_4";
   return "htdemucs";
 }
 
-/** What the UI offers for "separate into" — the fast 2-stem default, every
+/** What the UI offers for "separate into" — the fast 2-stem option, every
  *  registered recipe, and (when the mode is enabled) the deep six-source
  *  pass. Ids are accepted by the intake (server-validated). */
 export function separationModelChoices(): Array<{

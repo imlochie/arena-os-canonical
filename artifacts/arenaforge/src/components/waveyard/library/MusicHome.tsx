@@ -12,6 +12,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "@/routing/Link";
 import { useRouter } from "@/routing/navigation";
+import StemEngineSetup from "./StemEngineSetup";
 
 import { formatPlayClock } from "@workspace/arena/lib/waveyard/library/model";
 import {
@@ -344,10 +345,11 @@ export function MusicHome() {
             ? `Added ${added} track${added === 1 ? "" : "s"} to your library. Stems separate in the background.`
             : "That audio is already in your library.",
       );
-      await refresh(search);
+      await refresh(search).catch(() => setMessage("The audio was saved, but the library could not refresh. Reload to see it."));
+      if (trackIds.length === 1 && failures.length === 0) router.push(`/waveyard/play/${trackIds[0]}`);
       return trackIds;
     },
-    [adding, refresh, search],
+    [adding, refresh, router, search],
   );
 
   /** Dropped files use the exact same music ingest path as the Add Music button. */
@@ -367,13 +369,12 @@ export function MusicHome() {
       setDropBusy(audio.map((file) => file.name).join(", "));
       setMessage(null);
       try {
-        const trackIds = await addMusic(audio);
-        if (trackIds[0]) router.push(`/waveyard/play/${trackIds[0]}`);
+        await addMusic(audio);
       } finally {
         setDropBusy(null);
       }
     },
-    [addMusic, adding, router],
+    [addMusic, adding],
   );
 
   const onQueue = useCallback(async (track: TrackSummary) => {
@@ -597,8 +598,9 @@ export function MusicHome() {
               }}
             />
             <b>{adding ? "ADDING…" : "+ ADD MUSIC"}</b>
-            <small>MP3 · WAV · FLAC · M4A · AAC · OGG — local and private</small>
+            <small>MP3 · WAV · FLAC · M4A · AAC · OGG</small>
           </label>
+          <StemEngineSetup />
           <div className="add-music" style={{ display: "flex", gap: 8, marginTop: 8, padding: "10px 14px" }}>
             <input
               aria-label="Import from URL with yt-dlp"
@@ -705,25 +707,6 @@ export function MusicHome() {
           ) : (
             <div className="first-run" aria-label="Welcome to Waveyard">
               <p className="empty">Your library is empty — add music to begin.</p>
-              <ol>
-                <li>
-                  <b>Add music you own or are authorized to use.</b> Files stay on this machine — nothing is uploaded,
-                  and there is no demo catalogue.
-                </li>
-                <li>
-                  <b>Tracks become stem-aware.</b> When separation runs, Waveyard splits them into stems — vocals,
-                  drums, bass, melody — that you can mute, solo and rebalance live. When separation can&rsquo;t run,
-                  the track plays as its full source and says so.
-                </li>
-                <li>
-                  <b>Play, queue and build playlists.</b> The studio — arrangement, cleanup, mastering, exports — is
-                  one click deeper, and never changes your originals.
-                </li>
-                <li>
-                  <b>Perform with sessions.</b> Line up several songs, crossfade between them with live stem control,
-                  and route the result to Stem2 hardware when you have one.
-                </li>
-              </ol>
             </div>
           )
         ) : (

@@ -487,7 +487,7 @@
 .library-hero p{color:var(--muted);font-size:15px;line-height:1.55;max-width:520px}
 .add-music{display:grid;gap:6px;border:1px dashed #465126;background:#141810;padding:18px;margin-top:18px;cursor:pointer;position:relative}
 .add-music:hover{border-color:var(--acid)}
-.add-music input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.add-music input[type="file"]{position:absolute;inset:0;opacity:0;cursor:pointer}
 .add-music b{color:var(--acid);font-size:13px;letter-spacing:.08em}
 .add-music small{color:var(--muted);font-size:11px}
 .library-message{color:var(--acid);font-size:12px;margin-top:10px}

@@ -10,7 +10,7 @@ import {
   detectGameType,
   extractGameCode,
   generateGameOffline,
-  parseMods,
+  isClassicCorePrompt,
   validateGameCode,
   LLM_GAME_SYSTEM,
   type GameType,
@@ -30,7 +30,7 @@ import {
 type Strategy = "auto" | "instant" | "ai";
 
 const SHOWCASE: { label: string; prompt: string }[] = [
-  { label: "Pong", prompt: "Pong, first to seven, mouse or arrow controls" },
+  { label: "Pong", prompt: "Pong" },
   { label: "Platform adventure", prompt: "A platform adventure with wall jumps, moving platforms, and three short levels" },
   { label: "Twin-stick survival", prompt: "A twin-stick survival game with enemy waves, dashes, and upgrade choices" },
   { label: "A new game idea", prompt: "" },
@@ -227,11 +227,11 @@ export default function ArcadeForge() {
     try {
       const type = detectGameType(q);
       if (strategy === "instant") {
-        if (type === "arena") throw new Error("Quick cores cover the built-in classics. Choose Automatic or connect an AI model for this original game idea.");
+        if (!isClassicCorePrompt(q)) throw new Error("Quick cores start standard classics such as Pong or Snake. Choose Automatic for custom mechanics.");
         await runInstant(q, type);
       } else if (strategy === "ai") {
         await runAI(q);
-      } else if (type === "arena") {
+      } else if (!isClassicCorePrompt(q)) {
         if (privacyFlags().localOnly || isEngineLoaded()) {
           await runAI(q);
         } else {
@@ -260,30 +260,9 @@ export default function ArcadeForge() {
     setNotice(null);
     try {
       const combined = `${game.prompt} — CHANGE: ${ins}`;
-      const mods = parseMods(ins);
-      // A history entry can have legacy engine metadata. Only rewrite a core
-      // if its source is actually the known core; custom code must be preserved.
-      const isVerifiedCore = generateGameOffline(game.prompt, game.gameType).code === game.code;
-      const offlineModifier =
-        isVerifiedCore &&
-        (mods.lives !== undefined ||
-          mods.speed !== "normal" ||
-          mods.accent !== undefined ||
-          mods.difficulty !== undefined ||
-          /\b(?:wrap|portal|no walls|no hold|no ghost|4096|1024|512)\b/i.test(ins));
-      if (offlineModifier) {
-        const t0 = performance.now();
-        const g = generateGameOffline(combined, game.gameType);
-        const saved = await persistGame({ prompt: combined, clientCode: g.code, gameType: g.gameType, parentId: game.id });
-        setGame({ ...saved, code: g.code, genMs: Math.round(performance.now() - t0), engine: g.engine });
-        fetchHistory();
-        setNotice(`Updated the game and saved a new version.`);
-      } else if (game.engine === "ai-codegen" && !privacyFlags().localOnly) {
-        await runServerAI(ins, game.id, game.code);
-      } else {
-        if (privacyFlags().localOnly) await runAI(combined, game.id, game.code);
-        else await runServerAI(ins, game.id, game.code);
-      }
+      if (privacyFlags().localOnly || (game.engine === "on-device-ai" && isEngineLoaded())) {
+        await runAI(combined, game.id, game.code);
+      } else await runServerAI(ins, game.id, game.code);
       setInstruction("");
     } catch (e: any) {
       setError(e.message ?? "iterate failed");
@@ -342,7 +321,11 @@ export default function ArcadeForge() {
     <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
       <div className="min-w-0">
         {/* Engine status */}
-        <div className="glass rounded-2xl p-4">
+        <details className="glass rounded-2xl p-4">
+          <summary className="cursor-pointer text-sm font-bold text-slate-200">
+            Model setup <span className="ml-2 text-xs font-normal text-slate-400">{engineOn ? "On-device model loaded" : "Connections and on-device AI"}</span>
+          </summary>
+          <div className="mt-3">
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-full px-2.5 py-1 text-[11px] font-extrabold ring-1 ${gpu === null ? "bg-white/5 text-slate-400 ring-white/10" : gpu.ok ? "bg-emerald-500/15 text-emerald-200 ring-emerald-400/40" : "bg-red-500/15 text-red-200 ring-red-400/40"}`}>
               {gpu === null ? "🔍 checking WebGPU…" : gpu.ok ? "⚡ WebGPU ready" : "🚫 WebGPU unavailable"}
@@ -404,7 +387,8 @@ export default function ArcadeForge() {
             </div>
           )}
           {gpu && !gpu.ok && <p className="mt-2 text-[11px] text-slate-500">On-device GPU unavailable. Classic cores still work; custom games can use a model connected in Settings.</p>}
-        </div>
+          </div>
+        </details>
 
         {/* Composer */}
         <div className="glass mt-4 rounded-2xl p-4 sm:p-5">
@@ -422,7 +406,7 @@ export default function ArcadeForge() {
             </select>
             {detected && (
               <span className="text-[11px] font-bold text-slate-400">
-                {detected === "arena" ? "A game-writing model will build this" : `Quick core: ${GAME_TYPES.find((g) => g.id === detected)?.name}`}
+                {!isClassicCorePrompt(prompt) ? "A game-writing model will build this" : `Quick core: ${GAME_TYPES.find((g) => g.id === detected)?.name}`}
               </span>
             )}
           </div>
@@ -456,12 +440,12 @@ export default function ArcadeForge() {
             <button onClick={() => run()} disabled={busy || !prompt.trim()} className="btn-arena rounded-xl px-6 py-2.5 text-sm font-extrabold text-white">
               {busy ? `🎮 ${phase || "Building…"}` : "🎮 Create & play"}
             </button>
-            {busy && strategy !== "instant" && (
+            {(busy || iterating) && abortRef.current && (
               <button
                 onClick={() => abortRef.current?.abort()}
                 className="rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-2.5 text-sm font-bold text-red-200 hover:bg-red-500/20"
               >
-                ⏹ Stop
+                ⏹ Stop local generation
               </button>
             )}
             {game && !busy && (

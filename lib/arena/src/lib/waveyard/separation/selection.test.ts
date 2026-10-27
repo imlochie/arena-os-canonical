@@ -10,13 +10,29 @@ import { defaultSeparationModel, isAcceptableSeparationModel, separationModelCho
 import { MDX_MODELS } from "./mdx";
 import { DEEP_MODEL_ID, DEEP_STEM_TYPES, separationTargetOptions } from "./modes";
 
-test("the offered choices are the fast default plus every recipe", () => {
+test("the offered choices include the fast two-stem option plus every recipe", () => {
   const choices = separationModelChoices();
   assert.equal(choices[0].id, MDX_MODELS[0].id);
   assert.equal(choices[0].stemCount, 2);
   const fourStem = choices.find((choice) => choice.id === "stems_4");
   assert.ok(fourStem !== undefined);
   assert.equal(fourStem.stemCount, 4);
+});
+
+test("normal local imports target the four playable music stems", () => {
+  const keys = ["ARENA_DESKTOP_MODE", "REDIS_URL", "SEPARATION_MODEL"] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.ARENA_DESKTOP_MODE = "1";
+    delete process.env.REDIS_URL;
+    delete process.env.SEPARATION_MODEL;
+    assert.equal(defaultSeparationModel(), "stems_4");
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
 });
 
 test("the deep pass is offered with its six lanes and its own engine", () => {

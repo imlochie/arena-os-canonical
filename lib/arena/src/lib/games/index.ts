@@ -30,6 +30,12 @@ export const GAME_TYPES: GameMeta[] = [
   { id: "arena", name: "Neon Arena", emoji: "🚀", desc: "Parametric survival — themed from ANY words" },
 ];
 
+/** Only standard classic requests can bypass code generation. Mentioning
+ * "Pong" inside a request for new mechanics does not make that request a core. */
+export function isClassicCorePrompt(prompt: string): boolean {
+  return /^\s*(?:(?:make|create|build|play)\s+(?:(?:a|an|the)\s+)?)?(?:pong|snake|breakout|tetris|2048|pac-?man|maze chase|space invaders|invaders)(?:\s+game)?[.!]?\s*$/i.test(prompt);
+}
+
 export function detectGameType(prompt: string): GameType {
   const p = prompt.toLowerCase();
   const has = (...ks: string[]) => ks.some((k) => p.includes(k));

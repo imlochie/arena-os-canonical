@@ -46,6 +46,9 @@ export interface GenerateOpts {
   localOnly?: boolean;
   // Assigned-worker execution disables the legacy provider/fallback cascade.
   strictRoute?: boolean;
+  /** Artifact generation must not silently try unrelated public services
+   * when the user's configured providers are absent or unavailable. */
+  allowPublicFallback?: boolean;
   // Optional user-supplied keys (BYOK) — sent from client, never stored
   keys?: {
     openrouter?: string;
@@ -627,6 +630,10 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
     } catch {
       /* fall through */
     }
+  }
+
+  if (opts.allowPublicFallback === false) {
+    throw Object.assign(new Error("No connected code-writing provider succeeded. Connect a provider in Settings or load an on-device model."), { noModel: true });
   }
 
   // Pollinations OpenAI-compatible endpoint, then GET style, then the

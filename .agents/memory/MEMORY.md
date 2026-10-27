@@ -1,2 +1,3 @@
 - [Migration verification](migration-verification.md) — preserve server/client boundaries and validate detail-page data, not just builds and homepages.
 - [Browser workspace privacy](browser-workspaces.md) — private browser runtime state is not task output or agent context.
+- [Arcade model routing](arcade-model-routing.md) — use connected code-writing models; no implicit public-service cascade for game prompts or source.
