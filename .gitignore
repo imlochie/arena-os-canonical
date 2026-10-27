@@ -1,24 +1,55 @@
-*.log
-.arena-data/
-.data/
-.env
-.env.*.local
-.env.local
-.next/
-node_modules/
+# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
 
-# Electron desktop shell build output
-desktop/dist/
+# compiled output
+dist
+tmp
+out-tsc
+*.tsbuildinfo
+.expo
+.expo-shared
+.next
+.turbo
+.svelte-kit
+.nuxt
+.output
+.vercel
 
-desktop-package/
-desktop-release/
-desktop-e2e-report.json
-tsconfig.tsbuildinfo
+# dependencies
+node_modules
 
-desktop-acceptance-headless-report.json
-desktop-windows-acceptance-report.json
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
 
-# Local tool caches (content-hash based; never committed)
-.eslintcache
-playwright-report/
-tsconfig.tsbuildinfo
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# misc
+/.sass-cache
+/connect.lock
+/coverage
+/libpeerconnection.log
+npm-debug.log
+yarn-error.log
+testem.log
+/typings
+
+# System Files
+.DS_Store
+Thumbs.db
+
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md
+
+# Replit
+.cache/
+.local/
