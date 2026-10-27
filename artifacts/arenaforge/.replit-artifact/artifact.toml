@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "ArenaForge Personal"
+description = "A private, local-first AI workspace with blind model battles, chat, creative tools, collaborative workflows, and music production."
+version = "1.0.0"
+id = "artifacts/arenaforge"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19744
+
+[services.development]
+run = "pnpm --filter @workspace/arenaforge run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/arenaforge", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/arenaforge/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19744"
+BASE_PATH = "/"

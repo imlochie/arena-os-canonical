@@ -1,0 +1,180 @@
+import { db } from "@workspace/db";
+import { chats, chatMessages, assistants } from "@workspace/db/schema";
+import { desc, eq } from "drizzle-orm";
+import { generate, type ChatMsg, type GenerateResult } from "@workspace/arena/lib/ai";
+import { getModel } from "@workspace/arena/lib/models";
+
+/**
+ * WebLLM runs only in a WebGPU-capable browser. When the client executes a
+ * WebLLM model itself, it sends what actually executed; the server persists
+ * exactly that (marked honestly) instead of re-running the cascade, which
+ * could only fall back. localOnly stays authoritative: server-side generate
+ * decides in that case.
+ */
+async function replyFor(
+  body: any,
+  opts: { modelId: string; messages: ChatMsg[]; system?: string; temperature?: number; keys?: any; localOnly: boolean },
+): Promise<GenerateResult> {
+  // Research mode (Perplexity-style): the answer is grounded in real sources
+  // (local chats + archive, plus SearXNG when configured and not localOnly),
+  // with the numbered source list appended — persisted with the message.
+  if (body.research === true) {
+    const lastUser = [...opts.messages].reverse().find((m) => m.role === "user")?.content ?? "";
+    const { researchAnswer, researchSourcesFooter } = await import("@workspace/arena/lib/creative/research");
+    const result = await researchAnswer(lastUser, { keys: opts.keys, modelId: opts.modelId, localOnly: opts.localOnly });
+    return {
+      text: result.answer + researchSourcesFooter([...result.sources, ...result.webSources]),
+      runtimeLevel: opts.localOnly ? "arena-local" : "remote",
+      backend: result.backend as GenerateResult["backend"],
+      modelId: opts.modelId,
+      via: `research+${result.via}`,
+      ms: 0,
+      fallback: result.fallback,
+      note: result.note ?? `grounded in ${result.sources.length + result.webSources.length} source(s)`,
+    };
+  }
+  if (!opts.localOnly && typeof body.clientReply === "string" && body.clientReply && body.clientRuntime?.backend === "webllm") {
+    const model = getModel(opts.modelId);
+    if (model.pollinationsId.startsWith("__webllm__")) {
+      return {
+        text: body.clientReply,
+        runtimeLevel: "on-device",
+        backend: "webllm",
+        modelId: model.id,
+        via: "webllm",
+        ms: Number(body.clientRuntime.ms) || 0,
+        fallback: false,
+        note: "executed in your browser via WebGPU",
+      };
+    }
+  }
+  return generate(opts);
+}
+import { isEphemeralBody, isLocalOnlyBody, logPrivacyEvent } from "@workspace/arena/lib/privacy";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+export async function GET() {
+  try {
+    const rows = await db.select().from(chats).orderBy(desc(chats.createdAt)).limit(30);
+    return Response.json({ chats: rows });
+  } catch (e) {
+    console.error(e);
+    return Response.json({ chats: [] });
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const mode = body.mode as "create" | "message";
+    const keys = body.keys;
+    const localOnly = isLocalOnlyBody(body);
+    const ephemeral = isEphemeralBody(body);
+    const genKeys = localOnly ? undefined : keys;
+
+    // Ephemeral chats: stateless, never persisted. Client keeps the transcript.
+    if (ephemeral) {
+      const history: ChatMsg[] = Array.isArray(body.history) ? body.history : [];
+      const message: string = (body.message ?? "").toString().trim();
+      if (!message && history.length === 0) {
+        return Response.json({ error: "message required" }, { status: 400 });
+      }
+      const modelId = (body.modelId ?? "openai").toString();
+      getModel(modelId);
+      let system: string | undefined;
+      let effectiveModel = modelId;
+      if (body.assistantId) {
+        const [a] = await db
+          .select()
+          .from(assistants)
+          .where(eq(assistants.id, String(body.assistantId)))
+          .limit(1);
+        if (a) {
+          system = a.systemPrompt;
+          effectiveModel = a.baseModel;
+        }
+      }
+      const full: ChatMsg[] = [...history.slice(-20), ...(message ? [{ role: "user" as const, content: message }] : [])];
+      const result = await replyFor(body, {
+        modelId: effectiveModel,
+        messages: full,
+        system,
+        temperature: body.temperature ?? 0.7,
+        keys: genKeys,
+        localOnly,
+      });
+      await logPrivacyEvent("ephemeral_chat", `localOnly=${localOnly}`);
+      return Response.json({ ephemeral: true, reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { level: result.runtimeLevel, backend: result.backend, provider: result.provider, modelId: result.modelId, requestedModelId: result.requestedModelId ?? null, via: result.via, ms: result.ms, latencyMs: result.latencyMs ?? result.ms, firstTokenMs: result.firstTokenMs ?? null, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, fallbackReason: result.fallbackReason ?? null, note: result.note ?? null } }, { status: 201 });
+    }
+
+    if (mode === "create" || (!body.chatId && body.message)) {
+      const modelId = (body.modelId ?? "openai").toString();
+      const assistantId: string | undefined = body.assistantId;
+      const message: string = (body.message ?? "").toString().trim();
+      if (!message) return Response.json({ error: "message required" }, { status: 400 });
+      getModel(modelId);
+
+      let system: string | undefined;
+      let effectiveModel = modelId;
+      if (assistantId) {
+        const [a] = await db.select().from(assistants).where(eq(assistants.id, assistantId)).limit(1);
+        if (a) {
+          system = a.systemPrompt;
+          effectiveModel = a.baseModel;
+        }
+      }
+
+      const title = message.length > 60 ? message.slice(0, 60) + "…" : message;
+      const [chat] = await db
+        .insert(chats)
+        .values({ title, modelId: effectiveModel, assistantId: assistantId ?? null, projectId: body.projectId ? String(body.projectId) : null })
+        .returning();
+      await db.insert(chatMessages).values({ chatId: chat.id, role: "user", content: message });
+
+      const history: ChatMsg[] = [{ role: "user", content: message }];
+      const temp = body.temperature ?? 0.7;
+      const result = await replyFor(body, { modelId: effectiveModel, messages: history, system, temperature: temp, keys: genKeys, localOnly });
+      await db.insert(chatMessages).values({ chatId: chat.id, role: "assistant", content: result.text });
+
+      return Response.json({ chat, reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { level: result.runtimeLevel, backend: result.backend, provider: result.provider, modelId: result.modelId, requestedModelId: result.requestedModelId ?? null, via: result.via, ms: result.ms, latencyMs: result.latencyMs ?? result.ms, firstTokenMs: result.firstTokenMs ?? null, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, fallbackReason: result.fallbackReason ?? null, note: result.note ?? null } }, { status: 201 });
+    }
+
+    // mode === 'message'
+    const chatId: string = body.chatId;
+    const message: string = (body.message ?? "").toString().trim();
+    if (!chatId || !message) return Response.json({ error: "chatId + message required" }, { status: 400 });
+
+    const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (!chat) return Response.json({ error: "chat not found" }, { status: 404 });
+
+    let system: string | undefined;
+    if (chat.assistantId) {
+      const [a] = await db.select().from(assistants).where(eq(assistants.id, chat.assistantId)).limit(1);
+      if (a) system = a.systemPrompt;
+    }
+
+    await db.insert(chatMessages).values({ chatId, role: "user", content: message });
+    const prior = await db.select().from(chatMessages).where(eq(chatMessages.chatId, chatId));
+    // sort by createdAt asc and take last 20
+    prior.sort((a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime());
+    const history: ChatMsg[] = prior
+      .slice(-20)
+      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+    const result = await replyFor(body, {
+      modelId: chat.modelId,
+      messages: history,
+      system,
+      temperature: body.temperature ?? 0.7,
+      keys: genKeys,
+      localOnly,
+    });
+    await db.insert(chatMessages).values({ chatId, role: "assistant", content: result.text });
+    return Response.json({ reply: result.text, via: result.via, ms: result.ms, localOnly, runtime: { level: result.runtimeLevel, backend: result.backend, provider: result.provider, modelId: result.modelId, requestedModelId: result.requestedModelId ?? null, via: result.via, ms: result.ms, latencyMs: result.latencyMs ?? result.ms, firstTokenMs: result.firstTokenMs ?? null, fallback: result.fallback, fallbackFrom: result.fallbackFrom ?? null, fallbackReason: result.fallbackReason ?? null, note: result.note ?? null } });
+  } catch (e) {
+    console.error(e);
+    return Response.json({ error: "chat failed" }, { status: 500 });
+  }
+}

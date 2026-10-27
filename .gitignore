@@ -53,3 +53,7 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+.migration-backup/
+.arena-data/
+.data/
+/generated-artifacts/

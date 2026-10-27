@@ -1,0 +1,926 @@
+/**
+ * Waveyard schema — ported verbatim from the original Waveyard project
+ * (packages/database/src/schema.ts on the canonical Waveyard branch).
+ * Adaptations for Arena OS: no auth subsystem (users/sessions/projectMembers
+ * removed; actor columns are plain uuids — Arena is a local-first single-user
+ * app), and `projects` is exported as `wyProjects` (table wy_projects) to
+ * avoids colliding with Arena's own projects table.
+ *
+ * This module is NOT re-exported from schema.ts; Waveyard code imports tables
+ * from "@/db/waveyardSchema" directly. drizzle.config.ts points at both files.
+ */
+import { sql, type SQL } from "drizzle-orm";
+import { boolean, index, integer, pgTable, real, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+
+const timestamps = {
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+};
+
+
+
+export const projects = pgTable("wy_projects", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  artworkKey: text("artwork_key"),
+  genre: text("genre"),
+  tags: text("tags").notNull().default("[]"),
+  licenseCode: text("license_code").notNull().default("all-rights-reserved"),
+  remixPermission: text("remix_permission").notNull().default("owner-only"),
+  downloadPermission: text("download_permission").notNull().default("owner-only"),
+  visibility: text("visibility").notNull().default("private"),
+  publicationStatus: text("publication_status").notNull().default("draft"),
+  moderationStatus: text("moderation_status").notNull().default("active"),
+  // Waveyard evolution: how this project entered the world. NULL (all
+  // pre-existing rows) and "studio" = a user-created production project
+  // (the original surface). "library" = an auto-created container project
+  // backing a listening Track (wy_tracks) — implementation detail of the
+  // library/player layer, never shown as a studio project. The storage
+  // model (sources/stems/analyses) is shared either way.
+  kind: text("kind"),
+  // SQL migration owns this forward foreign key because export_assets is declared
+  // later in this module; application publication logic also verifies project scope.
+  publishedExportAssetId: uuid("published_export_asset_id"),
+  ...timestamps,
+}, (table) => [index("projects_owner_id_idx").on(table.ownerId), index("projects_visibility_idx").on(table.visibility)]);
+
+
+export const sourceAssets = pgTable("source_assets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  originalFilename: text("original_filename").notNull(),
+  mimeType: text("mime_type").notNull(),
+  storageKey: text("storage_key").notNull(),
+  checksumSha256: text("checksum_sha256").notNull(),
+  durationSeconds: integer("duration_seconds").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  channels: integer("channels").notNull(),
+  codec: text("codec").notNull(),
+  bitrate: integer("bitrate"),
+  fileSizeBytes: integer("file_size_bytes").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("source_assets_storage_key_unique").on(table.storageKey), index("source_assets_project_id_idx").on(table.projectId)]);
+
+/** Processing-job statuses after which the row is history: its work is
+ *  over, nothing will touch it again, and — the point — its idempotency key
+ *  is FREE for a fresh attempt at the same target. */
+export const PROCESSING_JOB_TERMINAL_STATUSES = ["complete", "failed", "cancelled"] as const;
+
+/**
+ * The predicate behind `processing_jobs_active_idempotency_unique`: the
+ * idempotency key is unique among ACTIVE jobs only. One place for it, so an
+ * `onConflictDoNothing({ target, where })` carries the exact expression the
+ * partial index was built with and PostgreSQL can infer that index — a
+ * conflict then means "an attempt at this target is queued or running",
+ * never "this target was done once".
+ */
+export function processingJobIsActive(status: AnyPgColumn): SQL {
+  return sql`${status} not in ('complete', 'failed', 'cancelled')`;
+}
+
+export const processingJobs = pgTable("processing_jobs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  type: text("type").notNull(),
+  status: text("status").notNull().default("queued"),
+  priority: integer("priority").notNull().default(0),
+  attempts: integer("attempts").notNull().default(0),
+  stage: text("stage").notNull().default("queued"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  model: text("model").notNull(),
+  requestedDevice: text("requested_device").notNull(),
+  resolvedDevice: text("resolved_device"),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  metadata: text("metadata").notNull().default("{}"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  // Idempotency is per ACTIVE attempt: a target has at most one queued/running
+  // job, while its completed and failed attempts stay as history and never
+  // block the next one (migrations 0015 desktop / 0022 server).
+  uniqueIndex("processing_jobs_active_idempotency_unique").on(table.idempotencyKey).where(processingJobIsActive(table.status)),
+  index("processing_jobs_project_id_idx").on(table.projectId),
+  index("processing_jobs_status_idx").on(table.status),
+]);
+
+export const stemAssets = pgTable("stem_assets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  separationJobId: uuid("separation_job_id").notNull().references(() => processingJobs.id, { onDelete: "cascade" }),
+  stemType: text("stem_type").notNull(),
+  engine: text("engine").notNull(),
+  model: text("model").notNull(),
+  modelVersion: text("model_version").notNull(),
+  storageKey: text("storage_key").notNull(),
+  // Kept for backwards-compatible inspection. Canonical waveform metadata and
+  // state live in waveform_assets, where source and stem assets share one model.
+  waveformKey: text("waveform_key"),
+  checksumSha256: text("checksum_sha256").notNull(),
+  durationSeconds: integer("duration_seconds").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  channels: integer("channels").notNull(),
+  codec: text("codec").notNull(),
+  format: text("format").notNull(),
+  fileSizeBytes: integer("file_size_bytes").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("stem_assets_job_stem_unique").on(table.separationJobId, table.stemType), uniqueIndex("stem_assets_storage_key_unique").on(table.storageKey), index("stem_assets_project_id_idx").on(table.projectId)]);
+
+// Waveforms are derived assets. Their JSON payload is kept in private object
+// storage; PostgreSQL records the authenticated relationship and validation
+// metadata only.
+export const waveformJobs = pgTable("waveform_jobs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").references(() => stemAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [uniqueIndex("waveform_jobs_idempotency_unique").on(table.idempotencyKey), index("waveform_jobs_project_id_idx").on(table.projectId), index("waveform_jobs_status_idx").on(table.status)]);
+
+export const waveformAssets = pgTable("waveform_assets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").references(() => stemAssets.id, { onDelete: "cascade" }),
+  waveformJobId: uuid("waveform_job_id").notNull().references(() => waveformJobs.id, { onDelete: "cascade" }),
+  storageKey: text("storage_key").notNull(),
+  checksumSha256: text("checksum_sha256").notNull(),
+  format: text("format").notNull().default("waveyard-peaks-v1"),
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("waveform_assets_storage_key_unique").on(table.storageKey), uniqueIndex("waveform_assets_job_unique").on(table.waveformJobId), index("waveform_assets_project_id_idx").on(table.projectId)]);
+
+export const sourceAnalyses = pgTable("source_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  bpm: real("bpm"),
+  bpmConfidence: real("bpm_confidence"),
+  musicalKey: text("musical_key"),
+  keyConfidence: real("key_confidence"),
+  // Canonical JSON list of beat positions in source milliseconds. It is source
+  // metadata, deliberately independent from RemixSession's timing model.
+  beatGrid: text("beat_grid"),
+  beatConfidence: real("beat_confidence"),
+  analysisError: text("analysis_error"),
+  errorCode: text("error_code"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_analyses_source_asset_unique").on(table.sourceAssetId),
+  uniqueIndex("source_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("source_analyses_project_id_idx").on(table.projectId),
+  index("source_analyses_status_idx").on(table.status),
+]);
+
+export const sourceSectionAnalyses = pgTable("source_section_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceAnalysisId: uuid("source_analysis_id").notNull().references(() => sourceAnalyses.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_section_analyses_source_asset_unique").on(table.sourceAssetId),
+  uniqueIndex("source_section_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("source_section_analyses_project_id_idx").on(table.projectId),
+  index("source_section_analyses_status_idx").on(table.status),
+]);
+
+// Structural metadata stays in source coordinates and deliberately references
+// the existing analysis rather than duplicating BPM, key, or beat-grid values.
+export const sourceSections = pgTable("source_sections", {
+  id: text("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceAnalysisId: uuid("source_analysis_id").notNull().references(() => sourceAnalyses.id, { onDelete: "cascade" }),
+  sourceSectionAnalysisId: uuid("source_section_analysis_id").notNull().references(() => sourceSectionAnalyses.id, { onDelete: "cascade" }),
+  sectionIndex: integer("section_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  startBeatIndex: integer("start_beat_index").notNull(),
+  endBeatIndex: integer("end_beat_index").notNull(),
+  startBar: integer("start_bar").notNull(),
+  endBar: integer("end_bar").notNull(),
+  label: text("label").notNull().default("section"),
+  labelConfidence: real("label_confidence").notNull().default(0),
+  structuralConfidence: real("structural_confidence").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_sections_source_index_unique").on(table.sourceAssetId, table.sectionIndex),
+  index("source_sections_source_order_idx").on(table.sourceAssetId, table.sectionIndex),
+  index("source_sections_project_id_idx").on(table.projectId),
+]);
+
+// Deterministic onset/event analysis is provenance-bound to a source identity.
+export const sourceEventAnalyses = pgTable("source_event_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_event_analyses_source_asset_unique").on(table.sourceAssetId),
+  uniqueIndex("source_event_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("source_event_analyses_project_id_idx").on(table.projectId),
+]);
+
+export const sourceEvents = pgTable("source_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceEventAnalysisId: uuid("source_event_analysis_id").notNull().references(() => sourceEventAnalyses.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  timestampMs: integer("timestamp_ms").notNull(),
+  strength: real("strength").notNull(),
+  confidence: real("confidence").notNull().default(0),
+  rhythmicClass: text("rhythmic_class"),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("source_events_analysis_index_unique").on(table.sourceEventAnalysisId, table.eventIndex),
+  index("source_events_source_time_idx").on(table.sourceAssetId, table.timestampMs),
+  index("source_events_project_id_idx").on(table.projectId),
+]);
+
+// Source-relative harmonic evidence augments rather than overwrites global source key.
+export const harmonyAnalyses = pgTable("harmony_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("harmony_analyses_source_asset_unique").on(table.sourceAssetId),
+  uniqueIndex("harmony_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("harmony_analyses_project_id_idx").on(table.projectId),
+]);
+
+export const harmonyEvents = pgTable("harmony_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  harmonyAnalysisId: uuid("harmony_analysis_id").notNull().references(() => harmonyAnalyses.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  root: text("root"),
+  quality: text("quality").notNull(),
+  confidence: real("confidence").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("harmony_events_analysis_index_unique").on(table.harmonyAnalysisId, table.eventIndex),
+  index("harmony_events_analysis_start_idx").on(table.harmonyAnalysisId, table.startMs),
+]);
+
+// Stem-scoped V1 vocal evidence never claims that the original mixed source is vocal.
+// Stem-scoped deterministic drum/percussion transient evidence. This preserves
+// generic source events while enforcing the exact separated stem provenance.
+export const drumAnalyses = pgTable("drum_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  stemChecksumSha256: text("stem_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("drum_analyses_stem_asset_unique").on(table.stemAssetId),
+  uniqueIndex("drum_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("drum_analyses_project_id_idx").on(table.projectId),
+  index("drum_analyses_source_stem_idx").on(table.sourceAssetId, table.stemAssetId),
+]);
+
+export const drumEvents = pgTable("drum_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  drumAnalysisId: uuid("drum_analysis_id").notNull().references(() => drumAnalyses.id, { onDelete: "cascade" }),
+  eventIndex: integer("event_index").notNull(),
+  timestampMs: integer("timestamp_ms").notNull(),
+  strength: real("strength").notNull(),
+  confidence: real("confidence").notNull(),
+  rhythmicClass: text("rhythmic_class"),
+  nearestBeatIndex: integer("nearest_beat_index"),
+  beatOffsetMs: integer("beat_offset_ms"),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("drum_events_analysis_index_unique").on(table.drumAnalysisId, table.eventIndex),
+  index("drum_events_analysis_time_idx").on(table.drumAnalysisId, table.timestampMs),
+]);
+
+export const vocalAnalyses = pgTable("vocal_analyses", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  analysisEngine: text("analysis_engine").notNull(),
+  analysisEngineVersion: text("analysis_engine_version").notNull(),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  stemChecksumSha256: text("stem_checksum_sha256").notNull(),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  analyzedAt: timestamp("analyzed_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("vocal_analyses_stem_asset_unique").on(table.stemAssetId),
+  uniqueIndex("vocal_analyses_idempotency_unique").on(table.idempotencyKey),
+  index("vocal_analyses_project_id_idx").on(table.projectId),
+  index("vocal_analyses_source_stem_idx").on(table.sourceAssetId, table.stemAssetId),
+]);
+
+export const vocalPitchFrames = pgTable("vocal_pitch_frames", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  vocalAnalysisId: uuid("vocal_analysis_id").notNull().references(() => vocalAnalyses.id, { onDelete: "cascade" }),
+  frameIndex: integer("frame_index").notNull(),
+  timestampMs: integer("timestamp_ms").notNull(),
+  frequencyHz: real("frequency_hz"),
+  midiFloat: real("midi_float"),
+  nearestMidiNote: integer("nearest_midi_note"),
+  confidence: real("confidence").notNull(),
+  voiced: boolean("voiced").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("vocal_pitch_frames_analysis_index_unique").on(table.vocalAnalysisId, table.frameIndex),
+  index("vocal_pitch_frames_analysis_time_idx").on(table.vocalAnalysisId, table.timestampMs),
+]);
+
+export const vocalPhrases = pgTable("vocal_phrases", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  vocalAnalysisId: uuid("vocal_analysis_id").notNull().references(() => vocalAnalyses.id, { onDelete: "cascade" }),
+  phraseIndex: integer("phrase_index").notNull(),
+  startMs: integer("start_ms").notNull(),
+  endMs: integer("end_ms").notNull(),
+  confidence: real("confidence").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("vocal_phrases_analysis_index_unique").on(table.vocalAnalysisId, table.phraseIndex),
+  index("vocal_phrases_analysis_start_idx").on(table.vocalAnalysisId, table.startMs),
+]);
+
+// A remix is non-destructive arrangement metadata over existing stems. No clip
+// operation copies or mutates original separated audio.
+
+export const arrangementLayers = pgTable("arrangement_layers", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  sourceChecksumSha256: text("source_checksum_sha256").notNull(),
+  /** The user's original prompt (empty when an explicit instruction was sent). */
+  originalPrompt: text("original_prompt").notNull().default(""),
+  /** Validated ArrangementInstruction JSON (waveyard-arrangement-instruction-v1). */
+  instruction: text("instruction").notNull(),
+  instrument: text("instrument").notNull(),
+  mood: text("mood").notNull(),
+  density: text("density").notNull(),
+  registerKind: text("register_kind").notNull(),
+  targetSections: text("target_sections").notNull(),
+  level: real("level").notNull(),
+  seed: integer("seed").notNull(),
+  /** Composed note events JSON (the actual musical content). */
+  events: text("events").notNull(),
+  /** Realization + interpretation notes JSON. */
+  notes: text("notes").notNull(),
+  storageKey: text("storage_key").notNull(),
+  renderer: text("renderer").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  durationSeconds: real("duration_seconds").notNull(),
+  /** Full provenance JSON (engine, renderer, requestedBy, createdAt). */
+  provenance: text("provenance").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("arrangement_layers_project_idx").on(table.projectId),
+  uniqueIndex("arrangement_layers_storage_key_unique").on(table.storageKey),
+]);
+
+
+
+// Vocal chops — one-shot vocal notes sampled out of a separated vocal stem
+// (the chipmunk-soul sampler, vision §V4). Each row is a detected, ranked,
+// trimmed chop; the WAV lives in project storage. Never mutated after
+// creation — rescan replaces the set.
+
+export const vocalChops = pgTable("vocal_chops", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  /** The separated vocal stem this chop was cut from. */
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "cascade" }),
+  /** Position + length in the stem (ms). */
+  startMs: integer("start_ms").notNull(),
+  durationMs: integer("duration_ms").notNull(),
+  /** Detected root pitch (MIDI) + signed cents deviation. */
+  rootMidi: integer("root_midi").notNull(),
+  cents: integer("cents").notNull(),
+  /** Detection quality score (0–1) — the ranking key. */
+  confidence: real("confidence").notNull(),
+  /** Full detection breakdown JSON (clarity, stability, voicedRatio, engine). */
+  detection: text("detection").notNull(),
+  storageKey: text("storage_key").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("vocal_chops_project_idx").on(table.projectId),
+  uniqueIndex("vocal_chops_storage_key_unique").on(table.storageKey),
+]);
+
+export const soundDesignAssets = pgTable("sound_design_assets", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  /** Full recipe JSON (waveyard-sound-design-v1) — the provenance record. */
+  recipe: text("recipe").notNull(),
+  storageKey: text("storage_key").notNull(),
+  durationSeconds: real("duration_seconds").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  /** Playback mute flag (persisted, not React-only). */
+  muted: boolean("muted").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("sound_design_project_idx").on(table.projectId),
+  uniqueIndex("sound_design_storage_key_unique").on(table.storageKey),
+]);
+
+export const cleanupVersions = pgTable("cleanup_versions", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  /** Applied operations JSON (processor + params + reason per op). */
+  operations: text("operations").notNull(),
+  storageKey: text("storage_key").notNull(),
+  /** Measured before/after JSON — the honest proof the repair did something. */
+  measurementsBefore: text("measurements_before").notNull(),
+  measurementsAfter: text("measurements_after").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("cleanup_versions_project_idx").on(table.projectId),
+  uniqueIndex("cleanup_versions_storage_key_unique").on(table.storageKey),
+]);
+
+export const remixSessions = pgTable("remix_sessions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  ownerId: uuid("owner_id").notNull(),
+  name: text("name").notNull(),
+  masterVolume: real("master_volume").notNull().default(1),
+  /** Master insert chain JSON (waveyard-inserts-v1). */
+  masterInserts: text("master_inserts").notNull().default("[]"),
+  loopStartMs: integer("loop_start_ms").notNull().default(0),
+  loopEndMs: integer("loop_end_ms"),
+  tempoBpm: real("tempo_bpm").notNull().default(120),
+  timeSignatureNumerator: integer("time_signature_numerator").notNull().default(4),
+  timeSignatureDenominator: integer("time_signature_denominator").notNull().default(4),
+  gridDivision: text("grid_division").notNull().default("beat"),
+  snapEnabled: boolean("snap_enabled").notNull().default(true),
+  // A user-selected canonical key; source keys remain authoritative analyses.
+  targetKey: text("target_key"),
+  version: integer("version").notNull().default(1),
+  ...timestamps,
+}, (table) => [index("remix_sessions_project_id_idx").on(table.projectId), index("remix_sessions_owner_id_idx").on(table.ownerId)]);
+
+// Source acquisition is provenance over a normal SourceAsset. It is never used
+// as audio identity: checksums remain the source-analysis/version identity.
+export const sourceAcquisitions = pgTable("source_acquisitions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  method: text("method").notNull(),
+  sourceUrl: text("source_url"),
+  title: text("title"),
+  artist: text("artist"),
+  resolver: text("resolver"),
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("source_acquisitions_source_unique").on(table.sourceAssetId),
+  index("source_acquisitions_method_idx").on(table.method),
+]);
+
+// A build is orchestration/progress provenance, not a second arrangement. Its
+// completed remix pointer points at ordinary RemixSession/Version state.
+export const projectBuilds = pgTable("project_builds", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  requestedById: uuid("requested_by_id").notNull(),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("resolving-sources"),
+  requestedSourceCount: integer("requested_source_count").notNull().default(0),
+  acceptedSourceCount: integer("accepted_source_count").notNull().default(0),
+  failedSourceCount: integer("failed_source_count").notNull().default(0),
+  details: text("details").notNull().default("{}"),
+  remixSessionId: uuid("remix_session_id").references(() => remixSessions.id, { onDelete: "set null" }),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("project_builds_project_updated_idx").on(table.projectId, table.updatedAt)]);
+
+// Explainable provenance for a deterministic automatic starting arrangement.
+// This never owns musical state: RemixTrack/RemixClip remain the sole editable
+// arrangement model and this row only records why they were initially created.
+export const automaticRemixGenerations = pgTable("automatic_remix_generations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "cascade" }),
+  engine: text("engine").notNull(),
+  engineVersion: text("engine_version").notNull(),
+  variant: text("variant").notNull(),
+  constraints: text("constraints").notNull(),
+  provenance: text("provenance").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("automatic_remix_generations_session_unique").on(table.remixSessionId),
+  index("automatic_remix_generations_session_idx").on(table.remixSessionId),
+]);
+
+export const remixTracks = pgTable("remix_tracks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "restrict" }),
+  name: text("name").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  volume: real("volume").notNull().default(1),
+  pan: real("pan").notNull().default(0),
+  muted: boolean("muted").notNull().default(false),
+  solo: boolean("solo").notNull().default(false),
+  /** Insert chain JSON (waveyard-inserts-v1) — validated at the persistence boundary. */
+  inserts: text("inserts").notNull().default("[]"),
+  /** Persisted polarity inversion per channel (drives the live Ø flip). */
+  phaseInverted: boolean("phase_inverted").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("remix_tracks_session_id_idx").on(table.remixSessionId), index("remix_tracks_session_stem_idx").on(table.remixSessionId, table.stemAssetId)]);
+
+export const remixClips = pgTable("remix_clips", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  remixTrackId: uuid("remix_track_id").notNull().references(() => remixTracks.id, { onDelete: "cascade" }),
+  stemAssetId: uuid("stem_asset_id").notNull().references(() => stemAssets.id, { onDelete: "restrict" }),
+  timelineStartMs: integer("timeline_start_ms").notNull().default(0),
+  durationMs: integer("duration_ms").notNull(),
+  sourceOffsetMs: integer("source_offset_ms").notNull().default(0),
+  gain: real("gain").notNull().default(1),
+  fadeInMs: integer("fade_in_ms").notNull().default(0),
+  fadeOutMs: integer("fade_out_ms").notNull().default(0),
+  // Intent only. The worker derives source BPM and the effective ratio at render time.
+  tempoSyncEnabled: boolean("tempo_sync_enabled").notNull().default(false),
+  // Intent only. The worker derives source/target semitones while rendering.
+  keySyncEnabled: boolean("key_sync_enabled").notNull().default(false),
+  // Source-editing intent; snapping resolves metadata only and adds no DSP.
+  beatSnapEnabled: boolean("beat_snap_enabled").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("remix_clips_track_id_idx").on(table.remixTrackId), index("remix_clips_asset_id_idx").on(table.stemAssetId)]);
+
+// V1 arrangement automation is deliberately limited to ordered volume/pan points.
+// It is scoped through the remix and track rather than introducing groups or DSP state.
+export const remixAutomationPoints = pgTable("remix_automation_points", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "cascade" }),
+  remixTrackId: uuid("remix_track_id").notNull().references(() => remixTracks.id, { onDelete: "cascade" }),
+  parameter: text("parameter").notNull(),
+  timelineMs: integer("timeline_ms").notNull(),
+  value: real("value").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("remix_automation_points_track_parameter_time_unique").on(table.remixTrackId, table.parameter, table.timelineMs),
+  index("remix_automation_points_session_track_idx").on(table.remixSessionId, table.remixTrackId),
+]);
+
+export const remixVersions = pgTable("remix_versions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "cascade" }),
+  createdById: uuid("created_by_id").notNull(),
+  name: text("name").notNull(),
+  snapshot: text("snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("remix_versions_session_id_idx").on(table.remixSessionId)]);
+
+// An export request is immutable provenance over a named persisted remix
+// version. The worker is the only process allowed to render its output.
+export const exportJobs = pgTable("export_jobs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  remixSessionId: uuid("remix_session_id").notNull().references(() => remixSessions.id, { onDelete: "restrict" }),
+  remixVersionId: uuid("remix_version_id").notNull().references(() => remixVersions.id, { onDelete: "restrict" }),
+  requestedById: uuid("requested_by_id").notNull(),
+  status: text("status").notNull().default("queued"),
+  stage: text("stage").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  format: text("format").notNull().default("wav"),
+  midiKind: text("midi_kind"),
+  midiSourceAssetId: uuid("midi_source_asset_id").references(() => sourceAssets.id, { onDelete: "restrict" }),
+  midiStemAssetId: uuid("midi_stem_asset_id").references(() => stemAssets.id, { onDelete: "restrict" }),
+  midiPpq: integer("midi_ppq"),
+  midiAnalysisId: text("midi_analysis_id"),
+  midiSourceChecksumSha256: text("midi_source_checksum_sha256"),
+  midiAnalysisEngine: text("midi_analysis_engine"),
+  midiAnalysisEngineVersion: text("midi_analysis_engine_version"),
+  sampleRate: integer("sample_rate").notNull().default(44100),
+  channels: integer("channels").notNull().default(2),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("export_jobs_idempotency_unique").on(table.idempotencyKey),
+  index("export_jobs_project_id_idx").on(table.projectId),
+  index("export_jobs_version_id_idx").on(table.remixVersionId),
+  index("export_jobs_status_idx").on(table.status),
+]);
+
+// An export asset exists only after the worker stored and validated the exact
+// output of its linked export job. It never contains a browser-only render.
+export const exportAssets = pgTable("export_assets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  exportJobId: uuid("export_job_id").notNull().references(() => exportJobs.id, { onDelete: "cascade" }),
+  remixVersionId: uuid("remix_version_id").notNull().references(() => remixVersions.id, { onDelete: "restrict" }),
+  storageKey: text("storage_key").notNull(),
+  filename: text("filename").notNull(),
+  checksumSha256: text("checksum_sha256").notNull(),
+  durationSeconds: integer("duration_seconds").notNull(),
+  sampleRate: integer("sample_rate").notNull(),
+  channels: integer("channels").notNull(),
+  codec: text("codec").notNull(),
+  format: text("format").notNull(),
+  fileSizeBytes: integer("file_size_bytes").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("export_assets_job_unique").on(table.exportJobId),
+  uniqueIndex("export_assets_storage_key_unique").on(table.storageKey),
+  index("export_assets_project_id_idx").on(table.projectId),
+  index("export_assets_version_id_idx").on(table.remixVersionId),
+]);
+
+// Publication history is append-only. Current public state remains canonical on
+// projects; these events preserve the actor, reason, and normalized transition.
+export const projectAuditEvents = pgTable("project_audit_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  actorId: uuid("actor_id").notNull(),
+  eventType: text("event_type").notNull(),
+  reason: text("reason"),
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("project_audit_events_project_created_idx").on(table.projectId, table.createdAt),
+  index("project_audit_events_type_created_idx").on(table.eventType, table.createdAt),
+]);
+
+// ============================================================================
+// Waveyard evolution — the LISTENING layer (docs/waveyard-evolution-plan.md).
+//
+// Additive only: no existing table, column, or relation changes (besides the
+// nullable `kind` column above). The listening layer references the existing
+// source/stem/analysis infrastructure — audio is NEVER duplicated: a track
+// points at the same source_assets / stem_assets rows the studio uses.
+// ============================================================================
+
+/**
+ * A Music Track — the playable listening object, separate from the
+ * production Project. One track per source audio (unique). The container
+ * project (wy_projects.kind='library') holds the sources/stems/analyses and
+ * makes "Open in Studio" a plain link to the existing workspace.
+ */
+export const tracks = pgTable("wy_tracks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  title: text("title").notNull(),
+  artist: text("artist").notNull().default(""),
+  album: text("album").notNull().default(""),
+  artworkKey: text("artwork_key"),
+  sourceAssetId: uuid("source_asset_id").notNull().references(() => sourceAssets.id, { onDelete: "cascade" }),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  durationSeconds: integer("duration_seconds").notNull(),
+  playCount: integer("play_count").notNull().default(0),
+  /** Star rating 0 (unrated) .. 5. */
+  rating: integer("rating").notNull().default(0),
+  /** Curated labels, stored as a JSON array of strings. */
+  labels: text("labels"),
+  lastPlayedAt: timestamp("last_played_at", { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("wy_tracks_source_asset_unique").on(table.sourceAssetId),
+  index("wy_tracks_owner_last_played_idx").on(table.ownerId, table.lastPlayedAt),
+  index("wy_tracks_project_id_idx").on(table.projectId),
+]);
+
+/** Persistent smart collection: a saved rule set evaluated live against the
+ * library (lightcraft-style). Rules are stored as JSON in the
+ * waveyard-collections-v1 rule vocabulary. */
+export const smartCollections = pgTable("wy_smart_collections", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  name: text("name").notNull(),
+  match: text("match").notNull().default("all"),
+  rulesJson: text("rules_json").notNull().default("[]"),
+  ...timestamps,
+}, (table) => [index("wy_smart_collections_owner_id_idx").on(table.ownerId)]);
+
+/** User playlist (listening context, ordered). */
+export const playlists = pgTable("wy_playlists", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  name: text("name").notNull(),
+  ...timestamps,
+}, (table) => [index("wy_playlists_owner_id_idx").on(table.ownerId)]);
+
+/** Ordered playlist membership. Duplicates allowed (a song twice is a
+ * legitimate playlist decision); order is the `position` integer. */
+export const playlistItems = pgTable("wy_playlist_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  playlistId: uuid("playlist_id").notNull().references(() => playlists.id, { onDelete: "cascade" }),
+  trackId: uuid("track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("wy_playlist_items_playlist_pos_idx").on(table.playlistId, table.position),
+  index("wy_playlist_items_track_id_idx").on(table.trackId),
+]);
+
+/** The play queue (per owner, ordered). Rebuilt freely by the player. */
+export const queueItems = pgTable("wy_queue_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  trackId: uuid("track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("wy_queue_items_owner_pos_idx").on(table.ownerId, table.position)]);
+
+/**
+ * Durable playback state — one row per owner. Live transport (position
+ * ticks, meter data) stays client-side; ONLY the state worth restoring
+ * across app restarts persists here. stemMix is JSON text
+ * ({"vocals":0.8,...}) matching the repo's text-JSON column convention.
+ */
+export const playbackState = pgTable("wy_playback_state", {
+  ownerId: uuid("owner_id").primaryKey(),
+  currentTrackId: uuid("current_track_id").references(() => tracks.id, { onDelete: "cascade" }),
+  positionSeconds: real("position_seconds").notNull().default(0),
+  stemMix: text("stem_mix").notNull().default("{}"),
+  masterVolume: real("master_volume").notNull().default(1),
+  repeatMode: text("repeat_mode").notNull().default("off"),
+  shuffle: boolean("shuffle").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * A listening SESSION — multiple tracks played together with per-track stem
+ * mixes and transitions (the layer above the player, below the studio).
+ * Distinct from production remix_sessions on purpose: sessions are cheap,
+ * playful, and instant; the studio remains where deep arrangement lives.
+ * "Send to Studio" generates explicit derived versions through the existing
+ * automatic-remix pipeline — never destructive.
+ */
+export const listenSessions = pgTable("wy_listen_sessions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  name: text("name").notNull(),
+  /** Restore point: which session track (wy_listen_session_tracks.id) was
+   * playing when the app closed. Plain uuid — the session-tracks table is
+   * declared later in this module (same pattern as projects.publishedExportAssetId);
+   * scope is validated at the service boundary. */
+  currentTrackId: uuid("current_track_id"),
+  /** Restore point: position within the current track (seconds). */
+  positionSeconds: real("position_seconds").notNull().default(0),
+  ...timestamps,
+}, (table) => [index("wy_listen_sessions_owner_id_idx").on(table.ownerId)]);
+
+/**
+ * Provenance for stem swaps performed in a session: which stem layer of which
+ * track was replaced by which donor track's stem, at what session context.
+ * The original tracks and their stems are never modified — a swap is a
+ * recorded listening-time decision, replayed/inspected from this ledger.
+ */
+export const listenSessionSwaps = pgTable("wy_listen_session_swaps", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sessionId: uuid("session_id").notNull().references(() => listenSessions.id, { onDelete: "cascade" }),
+  sessionTrackId: uuid("session_track_id").notNull().references(() => listenSessionTracks.id, { onDelete: "cascade" }),
+  stemType: text("stem_type").notNull(),
+  fromTrackId: uuid("from_track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  toTrackId: uuid("to_track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  atSeconds: real("at_seconds").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("wy_listen_session_swaps_session_idx").on(table.sessionId, table.createdAt),
+]);
+
+/** Ordered session membership with per-track stem mix + transition config
+ * (both JSON text; see src/lib/waveyard/library/model.ts for shapes). */
+export const listenSessionTracks = pgTable("wy_listen_session_tracks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  sessionId: uuid("session_id").notNull().references(() => listenSessions.id, { onDelete: "cascade" }),
+  trackId: uuid("track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  stemMix: text("stem_mix").notNull().default("{}"),
+  transition: text("transition").notNull().default("{}"),
+  ...timestamps,
+}, (table) => [
+  index("wy_listen_session_tracks_session_pos_idx").on(table.sessionId, table.position),
+  index("wy_listen_session_tracks_track_id_idx").on(table.trackId),
+]);
+
+// ---------------------------------------------------------------- streaming
+// The streaming-library bridge (vision §V6): connected Spotify/Apple/
+// YouTube accounts and their library SNAPSHOTS — the Songify/TuneMyMusic
+// ground (sync, diff, backup, export). Snapshots are pulled client-side
+// (PKCE / MusicKit / user tokens never touch this server) and stored
+// validated; audio itself never comes from these services (licensing).
+
+/** One connected streaming account (one per service per owner). */
+export const streamingAccounts = pgTable("wy_streaming_accounts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  service: text("service").notNull(),
+  displayName: text("display_name").notNull(),
+  ...timestamps,
+}, (table) => [
+  uniqueIndex("wy_streaming_accounts_owner_service_unique").on(table.ownerId, table.service),
+]);
+
+/** A full library snapshot — the backup unit, JSON-validated on intake. */
+export const librarySnapshots = pgTable("wy_library_snapshots", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ownerId: uuid("owner_id").notNull(),
+  accountId: uuid("account_id").notNull().references(() => streamingAccounts.id, { onDelete: "cascade" }),
+  service: text("service").notNull(),
+  takenAt: timestamp("taken_at", { withTimezone: true }).notNull(),
+  playlistCount: integer("playlist_count").notNull(),
+  trackCount: integer("track_count").notNull(),
+  /** backupToJson output (format "waveyard-library-backup", version 1). */
+  snapshotJson: text("snapshot_json").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("wy_library_snapshots_account_taken_idx").on(table.accountId, table.takenAt),
+  index("wy_library_snapshots_owner_idx").on(table.ownerId),
+]);

@@ -1,0 +1,5 @@
+import { verifyAuthenticationResponse, verifyRegistrationResponse, type AuthenticationResponseJSON, type RegistrationResponseJSON } from "@simplewebauthn/server";
+import { identityConfig } from "./identityConfig";
+
+export async function verifyOwnerRegistration(response:RegistrationResponseJSON,challenge:string,env:NodeJS.ProcessEnv=process.env){const c=identityConfig(env);return verifyRegistrationResponse({response,expectedChallenge:challenge,expectedOrigin:c.origin,expectedRPID:c.rpId,requireUserVerification:true})}
+export async function verifyOwnerAuthentication(input:{response:AuthenticationResponseJSON;challenge:string;credential:{id:string;publicKey:Uint8Array<ArrayBuffer>;counter:number;transports?:AuthenticatorTransport[]}},env:NodeJS.ProcessEnv=process.env){const c=identityConfig(env);return verifyAuthenticationResponse({response:input.response,expectedChallenge:input.challenge,expectedOrigin:c.origin,expectedRPID:c.rpId,credential:input.credential,requireUserVerification:true})}
