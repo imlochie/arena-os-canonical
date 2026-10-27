@@ -365,6 +365,17 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
     [trackA.id, trackA.id, trackB.id],
     "removing one repeated queued song keeps the direct session copies and other songs",
   );
+  const removedCurrent = await service.removeQueueItem(OWNER, addedA.addedQueueItemId);
+  assert.deepEqual(removedCurrent.queue.map((item) => item.track.id), [trackB.id]);
+  assert.deepEqual(removedCurrent.affectedSessionIds, [session.id]);
+  sessionDetail = await sessionService.getSession(OWNER, session.id);
+  assert.equal(sessionDetail.currentTrackId, null, "removing the current linked row clears its server pointer");
+  assert.equal(sessionDetail.positionSeconds, 0, "removing the current linked row resets its saved position");
+  assert.deepEqual(
+    sessionDetail.tracks.map((item) => item.id),
+    directSessionTrackIds,
+    "removing the current linked row leaves direct playlist entries intact",
+  );
 
   // Another owner's queue is independent.
   writeWav(path.join(root!, "other-owner.wav"), 2, 440); // distinct content
@@ -379,15 +390,15 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
 
   const cleared = await service.clearQueue(OWNER);
   assert.equal(cleared.queue.length, 0);
-  assert.deepEqual(cleared.affectedSessionIds, [session.id]);
+  assert.deepEqual(cleared.affectedSessionIds, [], "clearing the remaining unlinked saved row does not affect the session");
   sessionDetail = await sessionService.getSession(OWNER, session.id);
   assert.deepEqual(
     sessionDetail.tracks.map((item) => item.track.id),
     [trackA.id, trackB.id],
     "clearing the saved queue keeps only session-only entries",
   );
-  assert.equal(sessionDetail.currentTrackId, null, "removing the current linked row clears the stale server pointer");
-  assert.equal(sessionDetail.positionSeconds, 0, "removing the current linked row resets its stale saved position");
+  assert.equal(sessionDetail.currentTrackId, null, "clearing later unlinked queue rows keeps the valid empty current pointer");
+  assert.equal(sessionDetail.positionSeconds, 0, "clearing later unlinked queue rows keeps the reset position");
   assert.equal((await service.listQueue(OTHER)).length, 1, "clearing one owner never touches another");
 
   const savedForSession = await service.addToQueue({ ownerId: OWNER, trackId: trackA.id });

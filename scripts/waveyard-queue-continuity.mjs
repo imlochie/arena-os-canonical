@@ -253,7 +253,13 @@ try {
   );
   assert.ok(session.tracks.some((item) => item.id === session.currentSessionTrackId), "the new current pointer resolves to a remaining session entry");
   assert.equal(session.tracks.find((item) => item.id === session.currentSessionTrackId)?.track.id, ids[1]);
-  await page.getByRole("button", { name: "Pause", exact: true }).waitFor();
+  await page.waitForFunction(() => {
+    const current = document.querySelector('.sess-deck[data-role="current"] audio');
+    const state = document.querySelector(".wy-now .eyebrow")?.textContent ?? "";
+    return current instanceof HTMLAudioElement
+      && !current.paused
+      && /^playing/i.test(state);
+  }, undefined, { timeout: 5000 });
   assert.match(await page.locator(".wy-now .eyebrow").innerText(), /^Playing/i, "playback resumes on a valid remaining entry");
 
   await page.getByRole("button", { name: "Clear", exact: true }).click();
@@ -267,7 +273,7 @@ try {
   assert.equal(await autoCrossfade.isChecked(), false, "auto-crossfade stays opt-in");
   await page.getByTestId("session-transition").click();
   await page.getByRole("button", { name: "Finish", exact: true }).click();
-  await waitForFixture(() => session.currentSessionTrackId === "session-track-6", "the existing manual mix control");
+  await waitForFixture(() => session.currentSessionTrackId === "session-track-5", "the existing manual mix control");
   await autoCrossfade.check();
   await page.locator(".wy-now .eyebrow").filter({ hasText: "Mixing" }).waitFor({ timeout: 16000 });
   await waitForFixture(() => session.currentSessionTrackId === "session-track-6", "automatic handoff at the selected fade length", 18000);
