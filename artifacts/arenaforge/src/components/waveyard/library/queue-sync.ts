@@ -11,7 +11,9 @@ export interface WaveyardTransportSnapshot {
   positionSeconds: number;
   playing: boolean;
   action: "state" | "seek";
+  priority: "control" | "heartbeat";
   clock: number;
+  updatedAt: number;
 }
 
 export interface WaveyardRemoteTransport extends WaveyardTransportSnapshot {
@@ -71,9 +73,12 @@ function parseChange(value: unknown): WaveyardQueueChange | null {
       || value.positionSeconds < 0
       || typeof value.playing !== "boolean"
       || (value.action !== "state" && value.action !== "seek")
+      || (value.priority !== "control" && value.priority !== "heartbeat")
       || typeof value.clock !== "number"
       || !Number.isSafeInteger(value.clock)
       || value.clock < 1
+      || typeof value.updatedAt !== "number"
+      || !Number.isFinite(value.updatedAt)
     ) return null;
     transport = {
       sessionId: value.sessionId,
@@ -81,7 +86,9 @@ function parseChange(value: unknown): WaveyardQueueChange | null {
       positionSeconds: value.positionSeconds,
       playing: value.playing,
       action: value.action,
+      priority: value.priority,
       clock: value.clock,
+      updatedAt: value.updatedAt,
     };
   }
   return {
@@ -124,12 +131,13 @@ export function publishWaveyardQueueChange(affectedSessionIds: string[] = []) {
 
 /** Publish a causally ordered transport snapshot to the other session tabs. */
 export function publishWaveyardTransportChange(
-  snapshot: Omit<WaveyardTransportSnapshot, "clock">,
+  snapshot: Omit<WaveyardTransportSnapshot, "clock" | "updatedAt">,
 ): WaveyardRemoteTransport | null {
   if (typeof window === "undefined") return null;
-  logicalClock += 1;
+  if (snapshot.priority === "control") logicalClock += 1;
+  if (logicalClock < 1) logicalClock = 1;
   const sender = getClientId();
-  const transport = { ...snapshot, clock: logicalClock };
+  const transport = { ...snapshot, clock: logicalClock, updatedAt: Date.now() };
   sendToOtherTabs({
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     sender,

@@ -453,10 +453,16 @@ export default function SessionExperience({
   const masterRef = useRef(1);
   const playingRef = useRef(false);
   const remoteTransportRef = useRef<WaveyardRemoteTransport | null>(null);
-  const transportOrderRef = useRef<{ clock: number; sender: string } | null>(null);
+  const transportOrderRef = useRef<{
+    clock: number;
+    sender: string;
+    priority: "control" | "heartbeat";
+    updatedAt: number;
+  } | null>(null);
   const applyingRemoteTransportRef = useRef(false);
   const remoteApplyTimerRef = useRef<number | null>(null);
   const lastProgressBroadcastAtRef = useRef(0);
+  const lastReportedPlayingRef = useRef<[boolean | null, boolean | null]>([null, null]);
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { currentIdRef.current = currentId; }, [currentId]);
   useEffect(() => { activeDeckRef.current = activeDeck; }, [activeDeck]);
@@ -636,10 +642,22 @@ export default function SessionExperience({
     positionSeconds: number;
     playing: boolean;
     action: "state" | "seek";
+    priority?: "control" | "heartbeat";
   }) => {
     if (applyingRemoteTransportRef.current) return null;
-    const published = publishWaveyardTransportChange({ sessionId, ...snapshot });
-    if (published !== null) transportOrderRef.current = { clock: published.clock, sender: published.sender };
+    const published = publishWaveyardTransportChange({
+      sessionId,
+      ...snapshot,
+      priority: snapshot.priority ?? "control",
+    });
+    if (published !== null && published.priority === "control") {
+      transportOrderRef.current = {
+        clock: published.clock,
+        sender: published.sender,
+        priority: published.priority,
+        updatedAt: published.updatedAt,
+      };
+    }
     return published;
   }, [sessionId]);
 
@@ -652,13 +670,20 @@ export default function SessionExperience({
     decksRef.current[deckIndex] = api;
   }, []);
   const handleDeckPlaying = useCallback((deckIndex: number, playing: boolean) => {
+    const previousReported = lastReportedPlayingRef.current[deckIndex];
+    lastReportedPlayingRef.current[deckIndex] = playing;
     setPlayingByDeck((prev) => {
       if (prev[deckIndex] === playing) return prev;
       const next: [boolean, boolean] = [prev[0], prev[1]];
       next[deckIndex] = playing;
       return next;
     });
-    if (deckIndex === activeDeckRef.current && !applyingRemoteTransportRef.current) {
+    if (
+      previousReported !== null
+      && previousReported !== playing
+      && deckIndex === activeDeckRef.current
+      && !applyingRemoteTransportRef.current
+    ) {
       clearRemoteTransport();
       publishTransport({
         trackId: currentIdRef.current,
@@ -685,7 +710,7 @@ export default function SessionExperience({
     ) {
       lastProgressBroadcastAtRef.current = now;
       clearRemoteTransport();
-      publishTransport({ trackId: currentIdRef.current, positionSeconds: position, playing: true, action: "state" });
+      publishTransport({ trackId: currentIdRef.current, positionSeconds: position, playing: true, action: "state", priority: "heartbeat" });
     }
   }, [clearRemoteTransport, publishTransport]);
 
@@ -1013,11 +1038,24 @@ export default function SessionExperience({
   const receiveRemoteTransport = useCallback((incoming: WaveyardRemoteTransport) => {
     if (incoming.sessionId !== sessionId) return;
     const previous = transportOrderRef.current;
-    if (previous && (
+    if (incoming.priority === "heartbeat") {
+      if (previous && (
+        incoming.sender !== previous.sender
+        || incoming.clock !== previous.clock
+        || incoming.updatedAt <= previous.updatedAt
+      )) return;
+    } else if (previous && (
       incoming.clock < previous.clock
-      || (incoming.clock === previous.clock && incoming.sender <= previous.sender)
+      || (incoming.clock === previous.clock
+        && previous.priority === "control"
+        && incoming.sender <= previous.sender)
     )) return;
-    transportOrderRef.current = { clock: incoming.clock, sender: incoming.sender };
+    transportOrderRef.current = {
+      clock: incoming.clock,
+      sender: incoming.sender,
+      priority: incoming.priority,
+      updatedAt: incoming.updatedAt,
+    };
     remoteTransportRef.current = incoming;
     setRemoteTransport(incoming);
     if (fadeRef.current !== null) abortTransition("The other Waveyard tab changed playback.");
@@ -1132,6 +1170,8 @@ export default function SessionExperience({
             currentIdRef.current = null;
             setCurrentId(null);
             setAutoPlayId(null);
+            clearRemoteTransport();
+            publishTransport({ trackId: null, positionSeconds: 0, playing: false, action: "state" });
             void persistState({ id: null, position: 0 });
             setStatus("The listening order is empty.");
           }
@@ -1273,7 +1313,7 @@ export default function SessionExperience({
         }
       });
     },
-    [session, mutate, jumpTo, persistState],
+    [session, mutate, jumpTo, persistState, clearRemoteTransport, publishTransport],
   );
 
   // ------------------------------------------------------------------ swaps

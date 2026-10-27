@@ -2,5 +2,6 @@
 - [Browser workspace privacy](browser-workspaces.md) — private browser runtime state is not task output or agent context.
 - [Arcade model routing](arcade-model-routing.md) — use connected code-writing models; no implicit public-service cascade for game prompts or source.
 - [Waveyard processing evidence](waveyard-processing.md) — model readiness is not processing proof; verify pinned input shapes and bound native session lifetimes.
+- [Waveyard cross-tab transport](waveyard-transport-sync.md) — mirror playhead and track state between tabs without autoplaying a second audio engine; passive heartbeats must not override newer controls.
 - [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.
 - [Waveyard database test runtime](waveyard-db-tests.md) — temporary PostgreSQL test failures before assertions are runtime failures, not evidence about queue behavior.
