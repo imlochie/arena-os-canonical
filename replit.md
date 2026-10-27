@@ -32,6 +32,8 @@ A private, local-first AI workspace with blind model battles, chat, collaborativ
 - WanGP integrations require attribution: “powered by WanGP (Wan2GP) by DeepBeepMeep”.
 - The user prioritizes working flows over more descriptions of what each tool is intended to do. Suggestions for rooms must become capabilities, not just presets; existing capabilities must be reachable through usable controls.
 - As of 2026-10-27, Waveyard and Arcade are the user's main priorities. For these products, code quality and passing tests do not prove the experience matches their intent; use the actual experience and the creative direction they state as the standard. Ask before making major directional changes when that intent is unclear.
+- Waveyard's target is a stem.fm replacement with extra capabilities; make the path from source audio through separation, remixing, and the next creative step feel like one coherent session rather than disconnected UI stages.
+- Arcade's target is prompt-driven emulation, creation, and modding of arbitrary games. Treat presets as optional starting examples, never the ceiling; the prompt workflow must produce playable, editable games.
 - Spaces must provide “automated browser tasks in its own workspace.” A task preset alone does not satisfy this requirement.
 
 ## Scope and limits

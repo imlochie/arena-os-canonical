@@ -307,41 +307,51 @@ export function MusicHome() {
   );
 
   const addMusic = useCallback(
-    async (files: FileList | null) => {
-      if (files === null || files.length === 0) return;
+    async (files: FileList | File[] | null): Promise<string[]> => {
+      if (files === null || files.length === 0 || adding) return [];
       setAdding(true);
       setMessage(null);
       const failures: string[] = [];
+      const trackIds: string[] = [];
       let added = 0;
+      let separationUnavailable = false;
       for (const file of Array.from(files)) {
-        const payload = new FormData();
-        payload.set("file", file);
-        const response = await fetch("/api/library/tracks", { method: "POST", body: payload });
-        if (response.ok) {
+        try {
+          const payload = new FormData();
+          payload.set("file", file);
+          const response = await fetch("/api/library/tracks", { method: "POST", body: payload });
           const body = await response.json().catch(() => ({}));
-          if (body.created !== false) added += 1;
-        } else {
-          failures.push(`${file.name}: ${(await response.json().catch(() => ({}))).error ?? "could not add"}`);
+          if (!response.ok) {
+            failures.push(`${file.name}: ${body.error ?? "could not add"}`);
+            continue;
+          }
+          if (typeof body.track?.id === "string") trackIds.push(body.track.id);
+          if (body.created !== false) {
+            added += 1;
+            if (body.separationQueued === false) separationUnavailable = true;
+          }
+        } catch (error) {
+          failures.push(`${file.name}: ${error instanceof Error ? error.message : "could not add"}`);
         }
       }
       setAdding(false);
       setMessage(
         failures.length > 0
           ? `Added ${added}; ${failures.length} failed — ${failures[0]}`
+          : separationUnavailable
+            ? `Added ${added} track${added === 1 ? "" : "s"}, but the stem worker did not accept the separation job.`
           : added > 0
             ? `Added ${added} track${added === 1 ? "" : "s"} to your library. Stems separate in the background.`
             : "That audio is already in your library.",
       );
       await refresh(search);
+      return trackIds;
     },
-    [refresh, search],
+    [adding, refresh, search],
   );
 
-  /** The cold-open promise (vision Principle 1): drop a song anywhere on
-   *  this page → a project is created with the default separation → the file
-   *  uploads → you land in the workspace watching stems appear. Zero
-   *  configuration, zero navigation decisions. */
-  const dropToStudio = useCallback(
+  /** Dropped files use the exact same music ingest path as the Add Music button. */
+  const dropIntoLibrary = useCallback(
     async (files: FileList | File[]) => {
       const audio = Array.from(files).filter(
         (file) => file.type.startsWith("audio/") || /\.(wav|mp3|flac|m4a|aac|ogg)$/i.test(file.name),
@@ -350,36 +360,20 @@ export function MusicHome() {
         setMessage("That file is not audio — drop an MP3, WAV, FLAC, M4A, AAC, or OGG.");
         return;
       }
-      const file = audio[0];
-      setDropBusy(file.name);
+      if (adding) {
+        setMessage("Finish the current import before dropping more audio.");
+        return;
+      }
+      setDropBusy(audio.map((file) => file.name).join(", "));
       setMessage(null);
       try {
-        const created = await fetch("/api/waveyard/projects", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: file.name.replace(/\.[^.]+$/, "") }),
-        });
-        const createdBody = await created.json().catch(() => ({}));
-        if (!created.ok) {
-          setMessage(createdBody.error ?? "Could not start the project.");
-          return;
-        }
-        const projectId: string = createdBody.project.id;
-        const payload = new FormData();
-        payload.set("projectId", projectId);
-        payload.set("file", file);
-        const uploaded = await fetch("/api/uploads", { method: "POST", body: payload });
-        if (!uploaded.ok) {
-          const uploadedBody = await uploaded.json().catch(() => ({}));
-          setMessage(uploadedBody.error ?? "The upload failed — the project stays; try again from Studio.");
-          return;
-        }
-        router.push(`/waveyard/projects/${projectId}`);
+        const trackIds = await addMusic(audio);
+        if (trackIds[0]) router.push(`/waveyard/play/${trackIds[0]}`);
       } finally {
         setDropBusy(null);
       }
     },
-    [router],
+    [addMusic, adding, router],
   );
 
   const onQueue = useCallback(async (track: TrackSummary) => {
@@ -580,7 +574,7 @@ export function MusicHome() {
           event.preventDefault();
           dragDepth.current = 0;
           setDragActive(false);
-          void dropToStudio(event.dataTransfer.files);
+          void dropIntoLibrary(event.dataTransfer.files);
         }}
       >
       <section className="library-hero" aria-label="Your music">
@@ -588,8 +582,7 @@ export function MusicHome() {
           <span className="eyebrow">Your music, stem-aware</span>
           <h1>Listen first.</h1>
           <p>
-            Drop a song anywhere on this page and Waveyard separates it into stems — right here on your machine —
-            then hands you the player. Add audio you own or are authorized to use; the studio is one click deeper.
+            Drop audio to add it to your library and open it in the stem player. Sessions and Studio start from there.
           </p>
           <label className="add-music">
             <input
@@ -904,7 +897,7 @@ export function MusicHome() {
       {dragActive && (
         <div className="drop-overlay" role="status" aria-live="polite">
           <b>{dropBusy !== null ? `Adding ${dropBusy}…` : "Drop to separate"}</b>
-          <small>The stems start building the moment it lands — no setup.</small>
+          <small>Track import and separation start through the same library workflow.</small>
         </div>
       )}
       </>

@@ -22,7 +22,11 @@ export async function POST(req: Request) {
   }
   const user = await requireUser();
   const prompt = String(body?.prompt ?? "").trim();
-  if (!prompt) return Response.json({ error: "prompt is required" }, { status: 400 });
+  if (!prompt || prompt.length > 2000) return Response.json({ error: "Prompt must contain 1–2,000 characters." }, { status: 400 });
+  const priorCode = typeof body?.priorCode === "string" ? body.priorCode : undefined;
+  if (priorCode && priorCode.length > 50_000) {
+    return Response.json({ error: "This game file is too large to revise in one pass (limit: 50KB)." }, { status: 413 });
+  }
 
   const localOnly = body?.localOnly === true;
   try {
@@ -30,12 +34,13 @@ export async function POST(req: Request) {
       keys: localOnly ? undefined : body?.keys,
       localOnly,
       modelId: body?.modelId ? String(body.modelId) : undefined,
+      priorCode,
     });
     let game: any = null;
     // Persist only code that passed validation. The response still carries
     // the generated code either way — the code is the deliverable — but a
     // failed validation never becomes a stored catalogue entry.
-    if (result.validation?.ok) {
+    if (result.validation?.ok && body?.ephemeral !== true) {
       try {
         game = await insertArcadeGame(db, {
           prompt: prompt.slice(0, 2000),
@@ -65,7 +70,7 @@ export async function POST(req: Request) {
       return Response.json(
         {
           error:
-            "No model is reachable for generative codegen. Add a free key (Groq/OpenRouter) in Settings, load on-device WebLLM, or run with your own model — or use the instant offline forge for template cores.",
+            "No code-writing model is reachable. Connect one in Settings or load an on-device game model. Quick offline cores cover the built-in classics.",
         },
         { status: 503 },
       );

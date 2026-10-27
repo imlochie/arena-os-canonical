@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import PrivacyControls from "./PrivacyControls";
-import { privacyFlags, usePrivacySettings } from "@workspace/arena/lib/privacyClient";
+import { privacyFlags } from "@workspace/arena/lib/privacyClient";
 import { loadKeys } from "./KeysBar";
 import BrainCard from "@/components/BrainCard";
 import {
@@ -29,17 +29,14 @@ import {
 type Strategy = "auto" | "instant" | "ai";
 
 const SHOWCASE: { label: string; prompt: string }[] = [
-  { label: "👻 Pac-Man", prompt: "pacman with 3 lives" },
-  { label: "👾 Space Invaders", prompt: "space invaders with shields" },
-  { label: "🐍 Snake, turbo", prompt: "snake turbo fast with wrap portals" },
-  { label: "🧱 Breakout neon", prompt: "breakout neon theme, 5 lives" },
-  { label: "🏓 Pong hard", prompt: "pong hard mode, first to 7" },
-  { label: "🚀 Anything…", prompt: "lava volcano survival arena with meteors" },
+  { label: "Pong", prompt: "Pong, first to seven, mouse or arrow controls" },
+  { label: "Platform adventure", prompt: "A platform adventure with wall jumps, moving platforms, and three short levels" },
+  { label: "Twin-stick survival", prompt: "A twin-stick survival game with enemy waves, dashes, and upgrade choices" },
+  { label: "A new game idea", prompt: "" },
 ];
 
 export default function ArcadeForge() {
   const [prompt, setPrompt] = useState("");
-  const [gameType, setGameType] = useState<GameType | "auto">("auto");
   const [strategy, setStrategy] = useState<Strategy>("auto");
   const [modelId, setModelId] = useState<string>(WEBLLM_MODELS[0].id);
 
@@ -66,7 +63,6 @@ export default function ArcadeForge() {
   const [streamed, setStreamed] = useState("");
   const [offlineReady, setOfflineReady] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const privacy = usePrivacySettings();
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -133,7 +129,7 @@ export default function ArcadeForge() {
     const t0 = performance.now();
     // Instant path runs 100% locally in this browser tab — not even a server
     // round-trip is needed for generation. Then we persist the result.
-    const g = generateGameOffline(p, type === "arena" && gameType === "auto" ? undefined : type);
+    const g = generateGameOffline(p, type);
     const v = validateGameCode(g.code);
     if (!v.ok) throw new Error("core validation failed: " + v.issues.join("; "));
     const ms = Math.round(performance.now() - t0);
@@ -150,35 +146,42 @@ export default function ArcadeForge() {
     setNotice(`⚡ ${g.title} forged in ${ms}ms (${g.engine}) — validated, ${(g.code.length / 1024).toFixed(1)}KB single file.`);
   }
 
-  async function runServerAI(p: string) {
-    // Generative path: ANY game, built by a real model with the construction
-    // knowledge base. Works with free keys (Groq/OpenRouter), BYOK, or a
-    // TurboAgent local server. Honest 503 when nothing is reachable.
+  async function runServerAI(p: string, parentId?: string, priorCode?: string) {
     setPhase("✨ AI writing your game (server)…");
+    const flags = privacyFlags();
     const res = await fetch("/api/arcade/forge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: p, keys: loadKeys(), ...privacyFlags() }),
+      body: JSON.stringify({ prompt: p, keys: flags.localOnly ? undefined : loadKeys(), parentId, priorCode, ...flags }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setNotice(`✨ Generative forge unavailable — ${body.error ?? "no model reachable"}. The offline forge below still delivers instantly.`);
-      return;
+      throw new Error(body.error ?? "No game-writing model is reachable.");
     }
+    if (typeof body.code !== "string") throw new Error("The model did not return a complete playable game.");
     const rt = body.runtime ?? {};
-    setGame({ ...(body.game ?? {}), code: body.code, engine: "ai-codegen", genMs: rt.ms });
-    fetchHistory();
+    setGame({
+      ...(body.game ?? {}),
+      id: body.game?.id ?? crypto.randomUUID(),
+      prompt: p,
+      gameType: body.game?.gameType ?? detectGameType(p),
+      code: body.code,
+      engine: "ai-codegen",
+      genMs: rt.ms,
+      ephemeral: flags.ephemeral,
+    });
+    if (!flags.ephemeral) fetchHistory();
     setNotice(
-      `✨ ${body.title} built by AI (${rt.backend ?? "?"}${rt.fallback ? " · fallback" : ""}) — validated${body.repairsUsed ? " after 1 repair" : ""}, ${(body.code.length / 1024).toFixed(1)}KB. This is generated code, not a template.`
+      `${body.title ?? "Game"} is playable${body.repairsUsed ? " (repaired after validation)" : ""}. You can now ask for a specific change.`
     );
   }
 
-  async function runAI(p: string, parentId?: string, priorCode?: string) {
+  async function runAI(p: string, parentId?: string, priorCode?: string, requireModel = false) {
     const ok = await ensureEngine();
     if (!ok) {
-      // Graceful downgrade: still deliver a game, instantly.
-      const type = gameType === "auto" ? detectGameType(p) : gameType;
-      setNotice("🧠 On-device AI unavailable — delivered an instant verified core instead. Zero boundaries, zero waiting.");
+      if (requireModel) throw new Error("A custom game needs a working code-writing model. Load the on-device model or connect a model in Settings.");
+      const type = detectGameType(p);
+      setNotice("On-device model unavailable — using the matching offline classic core instead.");
       await runInstant(p, type, parentId);
       return;
     }
@@ -200,11 +203,10 @@ export default function ArcadeForge() {
       const code = extractGameCode(res.text);
       if (!code) throw new Error("AI output wasn't a complete game file");
       const v = validateGameCode(code);
-      const type = gameType === "auto" ? detectGameType(p) : gameType;
       if (!v.ok) {
-        // Auto-repair attempt failed → honest fallback, still instant.
+        if (requireModel) throw new Error(`The generated game did not pass validation: ${v.issues.join("; ")}`);
         setNotice(`⚠️ AI draft had issues (${v.issues.join("; ")}). Delivered a verified core instead — guaranteed playable.`);
-        await runInstant(p, type, parentId);
+        await runInstant(p, detectGameType(p), parentId);
         return;
       }
       const saved = await persistGame({ prompt: p, clientCode: code, gameType: type, parentId });
@@ -228,28 +230,20 @@ export default function ArcadeForge() {
     setTab("play");
     setPhase("Forging…");
     try {
-      const type = gameType === "auto" ? detectGameType(q) : gameType;
+      const type = detectGameType(q);
       if (strategy === "instant") {
+        if (type === "arena") throw new Error("Quick cores cover the built-in classics. Choose Automatic or connect an AI model for this original game idea.");
         await runInstant(q, type);
       } else if (strategy === "ai") {
-        await runAI(q);
-      } else {
-        // Auto: classics → instant verified (fastest + most reliable);
-        // novel/arena prompts → on-device AI if available, else parametric arena.
-        if (type === "arena") {
-          if (gpu?.ok === false) {
-            await runInstant(q, "arena");
-          } else if (isEngineLoaded() || privacy.localMode || !privacy.online) {
-            if (isEngineLoaded()) await runAI(q);
-            else await runInstant(q, "arena");
-          } else {
-            // Online + engine not loaded: ask-free fast path first is wrong for
-            // novel ideas — try AI, auto-falls back to arena core.
-            await runAI(q);
-          }
+        await runAI(q, undefined, undefined, true);
+      } else if (type === "arena") {
+        if (privacyFlags().localOnly || isEngineLoaded()) {
+          await runAI(q, undefined, undefined, true);
         } else {
-          await runInstant(q, type);
+          await runServerAI(q);
         }
+      } else {
+        await runInstant(q, type);
       }
     } catch (e: any) {
       setError(e.message ?? "forge failed");
@@ -271,16 +265,27 @@ export default function ArcadeForge() {
     setError(null);
     setNotice(null);
     try {
-      const combined = `${game.prompt} — ITERATION: ${ins}`;
-      if (game.engine === "on-device-ai") {
-        await runAI(combined, game.id, game.code);
-      } else {
+      const combined = `${game.prompt} — CHANGE: ${ins}`;
+      const mods = parseMods(ins);
+      const offlineModifier =
+        game.engine !== "ai-codegen" &&
+        (mods.lives !== undefined ||
+          mods.speed !== "normal" ||
+          mods.accent !== undefined ||
+          mods.difficulty !== undefined ||
+          /\b(?:wrap|portal|no walls|no hold|no ghost|4096|1024|512)\b/i.test(ins));
+      if (offlineModifier) {
         const t0 = performance.now();
         const g = generateGameOffline(combined, game.gameType);
         const saved = await persistGame({ prompt: combined, clientCode: g.code, gameType: g.gameType, parentId: game.id });
         setGame({ ...saved, code: g.code, genMs: Math.round(performance.now() - t0), engine: g.engine });
         fetchHistory();
-        setNotice(`⚡ Remixed in ${Math.round(performance.now() - t0)}ms — modifiers re-applied to the verified core.`);
+        setNotice(`Updated the game and saved a new version.`);
+      } else if (game.engine === "ai-codegen" && !privacyFlags().localOnly) {
+        await runServerAI(ins, game.id, game.code);
+      } else {
+        if (privacyFlags().localOnly) await runAI(combined, game.id, game.code, true);
+        else await runServerAI(ins, game.id, game.code);
       }
     } catch (e: any) {
       setError(e.message ?? "iterate failed");
@@ -333,7 +338,7 @@ export default function ArcadeForge() {
   const filtered = history.filter((h: any) =>
     search.trim() ? h.prompt.toLowerCase().includes(search.toLowerCase()) : true
   );
-  const detected = gameType === "auto" && prompt.trim() ? detectGameType(prompt) : null;
+  const detected = prompt.trim() ? detectGameType(prompt) : null;
 
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
@@ -358,7 +363,7 @@ export default function ArcadeForge() {
               </span>
             )}
             <span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11px] font-extrabold text-emerald-200 ring-1 ring-emerald-400/40">
-              ⚡ Cores: instant, always
+              ⚡ Classic cores: instant
             </span>
           </div>
 
@@ -406,31 +411,20 @@ export default function ArcadeForge() {
         {/* Composer */}
         <div className="glass mt-4 rounded-2xl p-4 sm:p-5">
           <div className="flex flex-wrap items-center gap-2">
-            {[{ id: "auto", label: "Auto", emoji: "🎯" }, ...GAME_TYPES].map((t: any) => (
-              <button
-                key={t.id}
-                onClick={() => setGameType(t.id)}
-                className={`rounded-full px-3 py-1.5 text-xs font-bold ${gameType === t.id ? "bg-violet-600 text-white" : "bg-white/5 text-slate-300 ring-1 ring-white/10 hover:bg-white/10"}`}
-              >
-                {t.emoji} {t.label ?? t.name}
-              </button>
-            ))}
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <div className="flex overflow-hidden rounded-full ring-1 ring-white/10">
-              {([["auto", "🎯 Auto"], ["instant", "⚡ Instant core"], ["ai", "🧠 On-device AI"]] as [Strategy, string][]).map(([s, label]) => (
-                <button
-                  key={s}
-                  onClick={() => setStrategy(s)}
-                  className={`px-3.5 py-1.5 text-xs font-bold ${strategy === s ? "bg-cyan-500/25 text-cyan-200" : "text-slate-400 hover:text-white"}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <label htmlFor="arcade-generation-mode" className="text-xs font-bold text-slate-400">Generation</label>
+            <select
+              id="arcade-generation-mode"
+              value={strategy}
+              onChange={(event) => setStrategy(event.target.value as Strategy)}
+              className="rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs font-bold text-white"
+            >
+              <option value="auto">Automatic — model for new games</option>
+              <option value="instant">Quick cores — classic games</option>
+              <option value="ai">On-device model</option>
+            </select>
             {detected && (
               <span className="text-[11px] font-bold text-slate-400">
-                detected: {GAME_TYPES.find((g) => g.id === detected)?.emoji} {GAME_TYPES.find((g) => g.id === detected)?.name}
+                {detected === "arena" ? "A game-writing model will build this" : `Quick core: ${GAME_TYPES.find((g) => g.id === detected)?.name}`}
               </span>
             )}
           </div>
@@ -441,32 +435,27 @@ export default function ArcadeForge() {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) run();
             }}
             rows={2}
-            placeholder="Describe any game… 'pacman', 'space invaders with 5 lives, neon theme', 'lava survival arena with meteors' (Ctrl+Enter)"
+            placeholder="Describe a game or a change you want to make. (Ctrl+Enter)"
             className="mt-3 min-h-[64px] w-full resize-y rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-[15px] text-white placeholder:text-slate-500 focus:border-violet-500 focus:outline-none"
           />
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {SHOWCASE.map((s) => (
-              <button key={s.label} onClick={() => run(s.prompt)} className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 ring-1 ring-white/10 hover:bg-white/10">
-                {s.label}
-              </button>
-            ))}
-          </div>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-xs font-bold text-slate-400">Prompt examples</summary>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {SHOWCASE.map((example) => (
+                <button
+                  key={example.label}
+                  type="button"
+                  onClick={() => setPrompt(example.prompt)}
+                  className="rounded-full bg-white/5 px-2.5 py-1 text-[11px] font-bold text-slate-300 ring-1 ring-white/10 hover:bg-white/10"
+                >
+                  {example.label}
+                </button>
+              ))}
+            </div>
+          </details>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button onClick={() => run()} disabled={busy || !prompt.trim()} className="btn-arena rounded-xl px-6 py-2.5 text-sm font-extrabold text-white">
-              {busy ? `🎮 ${phase || "Forging…"}` : "🎮 Forge game"}
-            </button>
-            <button
-              onClick={async () => {
-                const q = prompt.trim();
-                if (!q || busy) return;
-                setBusy(true); setError(null); setNotice(null); setGame(null); setTab("play"); setPhase("✨ AI writing your game (server)…");
-                try { await runServerAI(q); } catch (e: any) { setError(e.message ?? "generative forge failed"); } finally { setBusy(false); setPhase(""); }
-              }}
-              disabled={busy || !prompt.trim()}
-              className="rounded-xl bg-gradient-to-r from-violet-500/80 to-fuchsia-500/80 px-6 py-2.5 text-sm font-extrabold text-white ring-1 ring-violet-300/40 hover:from-violet-500 hover:to-fuchsia-500 disabled:opacity-50"
-              title="Generative: a real model writes any game you describe (free keys work). Falls back honestly if no model is reachable."
-            >
-              ✨ Generate any game
+              {busy ? `🎮 ${phase || "Building…"}` : "🎮 Create & play"}
             </button>
             {busy && strategy !== "instant" && (
               <button
@@ -492,7 +481,7 @@ export default function ArcadeForge() {
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
             <PrivacyControls compact />
-            <span className="text-[11px] text-slate-500">Arcade is offline-by-design — cores, remix and on-device AI never touch the cloud.</span>
+            <span className="text-[11px] text-slate-500">Classics run offline. Online game generation uses the model you connect.</span>
           </div>
           {busy && streamed && (
             <div className="mt-3 rounded-xl border border-violet-500/30 bg-black/40 p-3">
@@ -545,17 +534,17 @@ export default function ArcadeForge() {
 
             {!game.ephemeral ? (
               <div className="glass mt-3 rounded-2xl p-4">
-                <p className="text-xs font-extrabold text-white">🔁 Iterate — remix or rewrite (saved as a child revision)</p>
+                <p className="text-xs font-extrabold text-white">Change this game</p>
                 <div className="mt-2 flex gap-2">
                   <input
                     value={instruction}
                     onChange={(e) => setInstruction(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && iterate()}
-                    placeholder="e.g. 'faster ghosts, neon theme, 5 lives'…"
+                    placeholder="Add a level, change the movement, or add co-op…"
                     className="flex-1 rounded-xl border border-white/10 bg-black/40 px-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-violet-500 focus:outline-none"
                   />
                   <button onClick={iterate} disabled={iterating || busy || !instruction.trim()} className="btn-arena rounded-xl px-5 py-2.5 text-sm font-extrabold text-white">
-                    {iterating ? "…" : "Forge v2"}
+                    {iterating ? "…" : "Apply change"}
                   </button>
                 </div>
               </div>

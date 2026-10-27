@@ -58,17 +58,23 @@ function titleFromPrompt(prompt: string): string {
 
 export async function forgeGameWithAI(
   prompt: string,
-  opts: { keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string }; localOnly?: boolean; modelId?: string } = {},
+  opts: { keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string }; localOnly?: boolean; modelId?: string; priorCode?: string } = {},
   deps: { generate?: typeof generate } = {}
 ): Promise<ForgeAIResult> {
   const gen = deps.generate ?? generate;
   const modelId = opts.modelId ?? "openai";
   const mods: Mods = parseMods(prompt);
+  const priorCode = opts.priorCode?.trim();
+  if (priorCode && priorCode.length > 50_000) {
+    throw new Error("This game file is too large to revise in one pass (limit: 50KB).");
+  }
 
-  const userPrompt =
-    `Build this game: "${prompt}"\n\n` +
-    (Object.keys(mods).length ? `Detected mods to honor: ${JSON.stringify(mods)}\n` : "") +
-    `Return ONLY the complete HTML document. No commentary, no fences around anything else.`;
+  const userPrompt = priorCode
+    ? `Modify the existing game according to this instruction: "${prompt}"\n\n` +
+      `Preserve its working controls and mechanics unless the instruction changes them. Return the complete updated game file, not a patch.\n\nEXISTING GAME:\n${priorCode}`
+    : `Build this game: "${prompt}"\n\n` +
+      (Object.keys(mods).length ? `Detected mods to honor: ${JSON.stringify(mods)}\n` : "") +
+      `Return ONLY the complete HTML document. No commentary, no fences around anything else.`;
 
   const call = async (extra?: string) =>
     gen({
