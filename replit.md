@@ -31,6 +31,8 @@ A private, local-first AI workspace with blind model battles, chat, collaborativ
 - Before a battle is voted on, all browser-facing endpoints must hide model and assistant identities.
 - WanGP integrations require attribution: “powered by WanGP (Wan2GP) by DeepBeepMeep”.
 - The user prioritizes working flows over more descriptions of what each tool is intended to do. Suggestions for rooms must become capabilities, not just presets; existing capabilities must be reachable through usable controls.
+- As of 2026-10-27, Waveyard and Arcade are the user's main priorities. For these products, code quality and passing tests do not prove the experience matches their intent; use the actual experience and the creative direction they state as the standard. Ask before making major directional changes when that intent is unclear.
+- Spaces must provide “automated browser tasks in its own workspace.” A task preset alone does not satisfy this requirement.
 
 ## Scope and limits
 

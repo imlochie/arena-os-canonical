@@ -1,1 +1,2 @@
 - [Migration verification](migration-verification.md) — preserve server/client boundaries and validate detail-page data, not just builds and homepages.
+- [Browser workspace privacy](browser-workspaces.md) — private browser runtime state is not task output or agent context.

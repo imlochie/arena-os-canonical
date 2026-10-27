@@ -23,9 +23,10 @@
  * never claims to.
  */
 
-import { mkdir } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { WORKSPACE_ROOT } from "./tools";
+import { assertOutboundUrl } from "../security/outbound-url";
 
 export interface PageSnapshot {
   url: string;
@@ -46,87 +47,116 @@ export interface BrowserEngine {
 
 // ---------------- real engine (playwright-core, lazily imported) ----------------
 
-export const playwrightEngine: BrowserEngine = {
-  async ensure(profileDir: string) {
-    await mkdir(profileDir, { recursive: true });
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { chromium } = await import("playwright-core").catch(() => {
-      throw new Error(
-        "browser automation is unavailable: playwright-core is not installed in this environment",
-      );
-    });
-    if (!realBrowser) {
+/** Each instance belongs to one space: context, cookies and active page never cross workspaces. */
+export function createPlaywrightEngine(
+  loadChromium: () => Promise<{ chromium: any }> = () => import("playwright-core"),
+): BrowserEngine {
+  let context: any = null;
+  let page: any = null;
+
+  const activePage = () => {
+    if (!context || !page || page.isClosed()) {
+      throw new Error("no browser page is open in this workspace; navigate to a page first");
+    }
+    return page;
+  };
+
+  return {
+    async ensure(profileDir: string) {
+      await mkdir(profileDir, { recursive: true });
+      if (context) return;
+      const { chromium } = await loadChromium().catch(() => {
+        throw new Error(
+          "browser automation is unavailable: playwright-core is not installed in this environment",
+        );
+      });
       try {
-        realBrowser = await chromium.launchPersistentContext(profileDir, {
+        const replitChromium = await access("/repl/tools/bin/chromium").then(() => "/repl/tools/bin/chromium").catch(() => undefined);
+        const executablePath = process.env.CHROMIUM_PATH ?? replitChromium;
+        context = await chromium.launchPersistentContext(profileDir, {
           headless: true,
           viewport: { width: 1280, height: 800 },
+          ...(executablePath ? { executablePath } : {}),
+          ...(process.platform === "linux" ? { args: ["--no-sandbox", "--disable-dev-shm-usage"] } : {}),
         });
+        // Browser pages can follow redirects or load subresources. Apply the
+        // outbound policy to every request, not just the initial navigation,
+        // so a public page cannot reach local services or private networks.
+        await context.route("**/*", async (route: any) => {
+          const requestUrl = route.request().url();
+          if (!/^https?:\/\//i.test(requestUrl)) {
+            await route.abort("blockedbyclient");
+            return;
+          }
+          try {
+            await assertOutboundUrl(requestUrl, "public");
+            await route.continue();
+          } catch {
+            await route.abort("blockedbyclient");
+          }
+        });
+        page = context.pages()[0] ?? await context.newPage();
       } catch (e) {
+        context = null;
+        page = null;
         throw new Error(
-          "browser automation is unavailable: no Chromium binary found — run `npx playwright install chromium` once on this machine " +
+          "browser automation is unavailable: Chromium could not start — install Chromium with `npx playwright install chromium` or set CHROMIUM_PATH " +
             `(detail: ${e instanceof Error ? e.message.split("\n")[0] : "launch failed"})`,
         );
       }
-    }
-  },
-  async navigate(url: string) {
-    const page = await newPage();
-    const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    const title = await page.title();
-    const text = (await page.evaluate(() => document.body?.innerText ?? "")).slice(0, 20_000);
-    const finalUrl = page.url();
-    await page.close();
-    return { url: finalUrl, title, text, status: response?.status() };
-  },
-  async extract(selector: string, limit: number) {
-    const page = await activePage();
-    const found = await page.locator(selector).allInnerTexts();
-    return found.slice(0, limit);
-  },
-  async screenshot(workspaceDir: string) {
-    const page = await activePage();
-    const file = path.join(workspaceDir, `browser-${Date.now()}.png`);
-    await page.screenshot({ path: file, fullPage: false });
-    return file;
-  },
-  async click(selector: string) {
-    const page = await activePage();
-    await page.click(selector, { timeout: 15_000 });
-    return `clicked ${selector} — page is now: ${page.url()}`;
-  },
-  async fill(selector: string, value: string) {
-    const page = await activePage();
-    await page.fill(selector, value, { timeout: 15_000 });
-    return `filled ${selector}`;
-  },
-  async close() {
-    await realBrowser?.close();
-    realBrowser = null;
-  },
-};
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let realBrowser: any = null;
-let pages: { spaceId: string; page: any }[] = [];
-
-async function newPage() {
-  if (!realBrowser) throw new Error("browser engine not launched — call ensure() first");
-  const page = await realBrowser.newPage();
-  return page;
-}
-
-async function activePage(): Promise<any> {
-  if (!realBrowser) throw new Error("browser engine not launched — call ensure() first");
-  const existing = pages.filter((p) => p.page).at(-1);
-  if (existing && !existing.page.isClosed?.()) return existing.page;
-  const page = await realBrowser.newPage();
-  pages.push({ spaceId: "default", page });
-  return page;
+    },
+    async navigate(url: string) {
+      if (!context) throw new Error("browser engine not launched — call ensure() first");
+      const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      const title = await page.title();
+      const text = (await page.evaluate(() => document.body?.innerText ?? "")).slice(0, 20_000);
+      return { url: page.url(), title, text, status: response?.status() };
+    },
+    async extract(selector: string, limit: number) {
+      const found = await activePage().locator(selector).allInnerTexts();
+      return found.slice(0, limit);
+    },
+    async screenshot(workspaceDir: string) {
+      const file = path.join(workspaceDir, `browser-${Date.now()}.png`);
+      await activePage().screenshot({ path: file, fullPage: false });
+      return file;
+    },
+    async click(selector: string) {
+      await activePage().click(selector, { timeout: 15_000 });
+      return `clicked ${selector} — page is now: ${page.url()}`;
+    },
+    async fill(selector: string, value: string) {
+      await activePage().fill(selector, value, { timeout: 15_000 });
+      return `filled ${selector}`;
+    },
+    async close() {
+      await context?.close();
+      context = null;
+      page = null;
+    },
+  };
 }
 
 // ---------------- per-space session ----------------
 
 const engines = new Map<string, BrowserEngine>();
+const busyWorkspaces = new Set<string>();
+
+export function claimBrowserWorkspace(spaceId: string): (() => void) | null {
+  if (busyWorkspaces.has(spaceId)) return null;
+  busyWorkspaces.add(spaceId);
+  return () => { busyWorkspaces.delete(spaceId); };
+}
+
+export function browserWorkspaceBusy(spaceId: string): boolean {
+  return busyWorkspaces.has(spaceId);
+}
+
+export async function closeBrowserSession(spaceId: string): Promise<void> {
+  const engine = engines.get(spaceId);
+  engines.delete(spaceId);
+  await engine?.close();
+}
 
 export function browserProfileDir(spaceId: string): string {
   if (!/^[a-zA-Z0-9-]+$/.test(spaceId)) throw new Error("bad space id");
@@ -138,10 +168,10 @@ export function workspaceDirFor(spaceId: string): string {
 }
 
 /** Get (or create) the space's browser engine. Injectable for tests. */
-export function engineFor(spaceId: string, engine: BrowserEngine = playwrightEngine): BrowserEngine {
+export function engineFor(spaceId: string, engine?: BrowserEngine): BrowserEngine {
   let e = engines.get(spaceId);
   if (!e) {
-    e = engine;
+    e = engine ?? createPlaywrightEngine();
     engines.set(spaceId, e);
   }
   return e;
@@ -159,6 +189,7 @@ export async function toolBrowserNavigate(spaceId: string, url: string, engine?:
   const target = String(url ?? "").trim();
   if (!URL_OK.test(target)) return "error: browser_navigate needs an absolute http(s) URL";
   try {
+    await assertOutboundUrl(target, "public");
     const e = engineFor(spaceId, engine);
     await e.ensure(browserProfileDir(spaceId));
     const snap = await e.navigate(target);

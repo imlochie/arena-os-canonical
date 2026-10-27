@@ -294,6 +294,7 @@ export interface CreateSpaceInput {
   intervalMinutes?: number;
   briefcase?: string;
   projectId?: string | null;
+  status?: "running" | "paused";
 }
 
 function validModel(id: string): string {
@@ -317,7 +318,7 @@ export async function createSpace(input: CreateSpaceInput): Promise<SpaceState> 
     prompt,
     modelId: validModel(input.modelId ?? "openai"),
     intervalMinutes,
-    status: "running",
+    status: input.status === "paused" ? "paused" : "running",
     briefcase: (input.briefcase ?? "").slice(0, 8000),
     lastOutput: null,
     lastRunAt: null,
@@ -343,6 +344,7 @@ export async function createSpace(input: CreateSpaceInput): Promise<SpaceState> 
         prompt: row.prompt,
         modelId: row.modelId,
         intervalMinutes: row.intervalMinutes,
+        status: row.status,
         briefcase: row.briefcase,
         projectId: row.projectId,
         watchType: row.watchType,

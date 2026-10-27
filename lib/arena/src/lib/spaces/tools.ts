@@ -92,7 +92,9 @@ export async function toolListFiles(dir: string): Promise<string> {
   const out: string[] = [];
   const walk = async (d: string, prefix: string) => {
     for (const e of await readdir(d, { withFileTypes: true })) {
-      if (e.name === ".git") continue;
+      // Runtime profiles contain private session data, caches and Chromium
+      // lock/socket symlinks. They are not task artifacts or agent context.
+      if (e.name === ".git" || e.name === "browser-profile" || e.isSymbolicLink()) continue;
       const rel = prefix ? prefix + "/" + e.name : e.name;
       if (e.isDirectory()) await walk(path.join(d, e.name), rel);
       else {

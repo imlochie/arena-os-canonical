@@ -1,4 +1,5 @@
 import { deleteSpace, getSpace, getSpaceRuns, updateSpace } from "@workspace/arena/lib/spaces";
+import { browserWorkspaceBusy, closeBrowserSession } from "@workspace/arena/lib/spaces/browser";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   try {
+    if (browserWorkspaceBusy(id)) return Response.json({ error: "Wait for this workspace's running task to finish before deleting it" }, { status: 409 });
+    await closeBrowserSession(id);
     const existed = await deleteSpace(id);
     if (!existed) return Response.json({ error: "space not found" }, { status: 404 });
     return Response.json({ ok: true });

@@ -97,6 +97,20 @@ test("browser input validation is honest — no engine touched for bad input", a
   assert.deepEqual(events, [], "the engine was never launched for invalid input");
 });
 
+test("browser navigation rejects private-network targets before starting Chromium", async (t) => {
+  const spaceId = `browser-ssrf-${Date.now()}`;
+  t.after(() => cleanup(spaceId));
+  const events: string[] = [];
+  const nav = await executeTool(
+    spaceId,
+    { tool: "browser_navigate", args: { url: "http://127.0.0.1:8080/api/health" } },
+    { browserEngine: fakeEngine(events) },
+  );
+  assert.equal(nav.ok, false);
+  assert.match(nav.output, /destination address is loopback/);
+  assert.deepEqual(events, [], "private destinations are rejected before browser launch");
+});
+
 test("mission gate: browser_click is approval-gated — it cannot even LAUNCH a browser before a human decides", async (t) => {
   const spaceId = `browsertest3-${Date.now()}`;
   t.after(() => cleanup(spaceId));
@@ -180,4 +194,31 @@ test("per-space profile isolation: each space gets its own browser-profile direc
   assert.notEqual(a, b);
   assert.ok(a.endsWith(path.join("space-a", "browser-profile")));
   assert.ok(b.endsWith(path.join("space-b", "browser-profile")));
+});
+
+test("browser missions cannot execute shell commands or claim a failed page visit completed", async (t) => {
+  const spaceId = `browser-mode-${Date.now()}`;
+  t.after(() => cleanup(spaceId));
+  const engine = fakeEngine([]);
+  engine.navigate = async () => { throw new Error("page unavailable"); };
+  const mission = await runMission(spaceId, {
+    goal: "read a page", mode: "browser", localOnly: true,
+    agentPlan: [{ name: "Browser operator", role: "read page", modelId: "local-engine" }],
+    maxTurnsPerAgent: 1,
+  }, {
+    browserEngine: engine,
+    generate: async () => ({
+      text: JSON.stringify({
+        actions: [
+          { tool: "run_command", args: { command: "echo forbidden" } },
+          { tool: "browser_navigate", args: { url: "https://example.com" } },
+        ],
+        done: true,
+      }),
+      runtimeLevel: "arena-local", backend: "arena-local-engine", modelId: "local-engine", via: "test-script", ms: 0, fallback: false,
+    }),
+  });
+  assert.equal(mission.status, "failed");
+  assert.match(mission.journal[0].actions[0].output, /refused: browser tasks/);
+  assert.equal(mission.journal[0].actions.every(action => !action.ok), true);
 });

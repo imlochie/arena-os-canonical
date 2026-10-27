@@ -30,6 +30,7 @@ export async function POST(req: Request) {
       watchType: body?.watchType ? String(body.watchType) : undefined,
       watchSource: body?.watchSource ? String(body.watchSource) : undefined,
       projectId: body?.projectId ? String(body.projectId) : null,
+      status: body?.status === "paused" ? "paused" : undefined,
     });
     return Response.json({ space }, { status: 201 });
   } catch (e) {

@@ -1,5 +1,7 @@
 import { getLatestMission, runMission } from "@workspace/arena/lib/spaces/mission";
 import { getSpace } from "@workspace/arena/lib/spaces";
+import { getModel } from "@workspace/arena/lib/models";
+import { claimBrowserWorkspace } from "@workspace/arena/lib/spaces/browser";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -16,6 +18,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 // (goal/plan from the row; approval decisions apply on the resumed run).
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  let releaseWorkspace: (() => void) | null = null;
   let body: any = {};
   try {
     body = await req.json();
@@ -33,10 +36,21 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     }
 
     const localOnly = body?.localOnly === true;
+    const browserMode = body?.mode === "browser";
+    if (browserMode) {
+      releaseWorkspace = claimBrowserWorkspace(id);
+      if (!releaseWorkspace) return Response.json({ error: "This browser workspace is already running a task" }, { status: 409 });
+    }
+    const browserModel = browserMode ? getModel(String(body?.modelId ?? space.modelId)) : null;
+    if (browserModel && browserModel.kind !== "text") return Response.json({ error: "Browser tasks require a text model" }, { status: 400 });
     const mission = await runMission(id, {
       goal: String(body?.goal ?? existing?.goal ?? "").trim(),
+      mode: browserMode ? "browser" : undefined,
+      resume: continuing,
       timeBudgetMs: body?.timeBudgetMinutes ? Math.round(Number(body.timeBudgetMinutes) * 60_000) : undefined,
-      agentPlan: Array.isArray(body?.agentPlan) ? body.agentPlan : undefined,
+      agentPlan: browserMode
+        ? [{ name: "Browser operator", role: "carry out the requested browser task and save its observed results", modelId: browserModel!.id }]
+        : Array.isArray(body?.agentPlan) ? body.agentPlan : undefined,
       keys: localOnly ? undefined : body?.keys,
       localOnly,
       githubToken: body?.githubToken || undefined,
@@ -53,5 +67,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   } catch (e) {
     const message = e instanceof Error ? e.message : "mission failed";
     return Response.json({ error: message }, { status: 500 });
+  } finally {
+    releaseWorkspace?.();
   }
 }

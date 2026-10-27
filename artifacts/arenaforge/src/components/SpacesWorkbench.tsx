@@ -12,6 +12,7 @@ import { privacyFlags } from "@workspace/arena/lib/privacyClient";
 import { SPACE_TEMPLATES, SPACE_TEMPLATE_GROUPS, getSpaceTemplate } from "@workspace/arena/lib/spaceTemplates";
 import BrainCard from "@/components/BrainCard";
 import { readBrain } from "@workspace/arena/lib/connectedBrain";
+import SpaceBrowserPanel from "./SpaceBrowserPanel";
 
 interface SpaceState {
   id: string;
@@ -60,6 +61,8 @@ export default function SpacesWorkbench() {
   const [spaces, setSpaces] = useState<SpaceState[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [creating, setCreating] = useState(false);
+  const [openingBrowserWorkspace, setOpeningBrowserWorkspace] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -183,6 +186,33 @@ export default function SpacesWorkbench() {
     }
   };
 
+  const openBrowserWorkspace = async () => {
+    setOpeningBrowserWorkspace(true);
+    setWorkspaceError(null);
+    try {
+      const res = await fetch("/api/spaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "Browser workspace",
+          emoji: "🌐",
+          prompt: "Run browser tasks only when I start a mission. Keep page observations and saved files in this workspace.",
+          modelId: readBrain().modelId,
+          intervalMinutes: 1440,
+          status: "paused",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.space?.id) throw new Error(data?.error ?? "Could not create browser workspace");
+      await refresh();
+      setExpanded(data.space.id);
+    } catch (e) {
+      setWorkspaceError(e instanceof Error ? e.message : "Could not create browser workspace");
+    } finally {
+      setOpeningBrowserWorkspace(false);
+    }
+  };
+
   const patch = async (id: string, body: Record<string, unknown>) => {
     setBusyId(id);
     try {
@@ -244,31 +274,41 @@ export default function SpacesWorkbench() {
             🪟 Spaces · agents at work, in windows
           </p>
           <h1 className="mt-3 text-3xl font-black tracking-tight text-white sm:text-4xl">
-            A workbench of{" "}
             <span className="bg-gradient-to-r from-cyan-300 to-violet-300 bg-clip-text text-transparent">
-              small repetitive tasks
+              Browser tasks in private workspaces
             </span>
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-slate-300">
-            Each space is one recurring agent task on its own clock — with a persistent <em>briefcase</em> of notes it
-            carries between runs. Pop spaces out into real browser windows; each open window keeps its agent ticking.
+            Each workspace keeps its own browser session, task history, and files. Page changes wait for your approval.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs font-bold">
+          <button
+            type="button"
+            onClick={() => void openBrowserWorkspace()}
+            disabled={openingBrowserWorkspace}
+            className="rounded-xl bg-cyan-500/15 px-3 py-2 text-cyan-100 ring-1 ring-cyan-400/30 disabled:opacity-40"
+          >
+            {openingBrowserWorkspace ? "Creating workspace…" : "New browser workspace"}
+          </button>
           <span className="rounded-full bg-emerald-400/10 px-3 py-1.5 text-emerald-300 ring-1 ring-emerald-400/30">
-            ● {runningCount} running
+            ● {runningCount} scheduled
           </span>
           <span className="rounded-full bg-white/5 px-3 py-1.5 text-slate-400 ring-1 ring-white/10">
             {spaces.length} space{spaces.length === 1 ? "" : "s"}
           </span>
         </div>
       </div>
+      {workspaceError && <p role="alert" className="mt-3 text-sm text-red-300">{workspaceError}</p>}
 
       <div className="mt-6 grid gap-5 lg:grid-cols-[330px_1fr]">
         {/* ---- left: new space ---- */}
         <div className="glass h-fit rounded-2xl p-4">
           <BrainCard context="spaces" />
-          <h2 className="mt-3 text-sm font-extrabold text-white">➕ New space</h2>
+          <details className="mt-3">
+          <summary className="cursor-pointer text-sm font-extrabold text-white">Recurring agents</summary>
+          <div className="mt-3">
+          <h2 className="text-sm font-extrabold text-white">➕ New recurring agent</h2>
           <div className="mt-3 space-y-2.5">
             {SPACE_TEMPLATE_GROUPS.map((g) => (
               <div key={g.id}>
@@ -392,21 +432,31 @@ export default function SpacesWorkbench() {
               {error}
             </p>
           )}
+          </div>
+          </details>
         </div>
 
         {/* ---- right: the windows ---- */}
         <div>
           {spaces.length === 0 ? (
             <div className="glass rounded-2xl p-10 text-center">
-              <p className="text-4xl">🪟</p>
-              <p className="mt-3 text-sm font-bold text-slate-300">No spaces yet</p>
-              <p className="mx-auto mt-1 max-w-sm text-xs text-slate-500">
-                Pick a template on the left, give it a briefcase of notes, and the agent starts working its schedule —
-                drafting while you do other things.
+              <p className="text-4xl">🌐</p>
+              <h2 className="mt-3 text-xl font-extrabold text-white">Create a browser workspace</h2>
+              <p className="mx-auto mt-2 max-w-md text-sm text-slate-400">
+                Give it a task, and its agent can browse pages, save observations, and keep files here.
+                Clicks and form entries require your approval.
               </p>
+              <button
+                type="button"
+                onClick={() => void openBrowserWorkspace()}
+                disabled={openingBrowserWorkspace}
+                className="mt-5 rounded-xl bg-gradient-to-r from-cyan-600 to-violet-600 px-5 py-3 text-sm font-black text-white disabled:opacity-50"
+              >
+                {openingBrowserWorkspace ? "Creating workspace…" : "Create browser workspace"}
+              </button>
             </div>
           ) : (
-            <div className={`grid gap-4 ${expanded ? "grid-cols-1" : "xl:grid-cols-2"}`}>
+            <div className="grid gap-4">
               {spaces.map((s) => (
                 <SpaceWindow
                   key={s.id}
@@ -426,8 +476,7 @@ export default function SpacesWorkbench() {
             </div>
           )}
           <p className="mt-4 text-center text-[11px] leading-relaxed text-slate-500">
-            Spaces tick when a workbench window is open (every ~20s, a couple of due agents per tick) · agents draft,
-            you act — no auto-posting by design.
+            Browser workspaces run only when you start a task. Recurring agents run while their workbench is open.
           </p>
         </div>
       </div>
@@ -465,7 +514,7 @@ function SpaceWindow({
   const nextIn = space.nextRunAt ? new Date(space.nextRunAt).getTime() - now : 0;
   const modelName = models.find((m) => m.id === space.modelId)?.name ?? space.modelId;
   return (
-    <div className="glass overflow-hidden rounded-2xl">
+    <div className="glass overflow-hidden rounded-2xl" data-space-id={space.id}>
       {/* title bar */}
       <div className="flex items-center gap-2 border-b border-white/10 bg-white/[0.03] px-3 py-2">
         <span className="flex gap-1.5">
@@ -481,7 +530,7 @@ function SpaceWindow({
             space.status === "running" ? (space.due ? "text-amber-300" : "text-emerald-300") : "text-slate-500"
           }`}
         >
-          {space.status === "running" ? (space.due ? "● due" : `● ${fmtCountdown(nextIn)}`) : "⏸ paused"}
+            {space.status === "running" ? (space.due ? "● scheduled: due" : `● scheduled in ${fmtCountdown(nextIn)}`) : "Schedule off"}
         </span>
       </div>
 
@@ -494,7 +543,7 @@ function SpaceWindow({
           <span>· last {timeAgo(space.lastRunAt, now)}</span>
         </p>
 
-        <div className={`scroll-thin mt-2.5 overflow-y-auto rounded-xl bg-black/30 p-3 ring-1 ring-white/5 ${expanded ? "max-h-[420px]" : "max-h-40"}`}>
+        {(space.lastOutput || space.status === "running") && <div className={`scroll-thin mt-2.5 overflow-y-auto rounded-xl bg-black/30 p-3 ring-1 ring-white/5 ${expanded ? "max-h-[420px]" : "max-h-40"}`}>
           {space.lastOutput ? (
             <div className="text-xs">
               <Markdown text={space.lastOutput} />
@@ -504,10 +553,14 @@ function SpaceWindow({
               no output yet — {space.status === "running" ? "first run on the next tick (or hit ⚡)" : "paused"}
             </p>
           )}
-        </div>
+        </div>}
 
-        <AgentFleet spaceId={space.id} models={models} />
+        <SpaceBrowserPanel spaceId={space.id} />
         <MissionPanel spaceId={space.id} />
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs font-bold text-slate-400">Multi-agent setup</summary>
+          <AgentFleet spaceId={space.id} models={models} />
+        </details>
         <ApprovalsPanel spaceId={space.id} onDecided={onRefresh} />
 
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
@@ -517,14 +570,14 @@ function SpaceWindow({
             className="rounded-lg bg-cyan-500/15 px-2.5 py-1.5 text-xs font-bold text-cyan-200 ring-1 ring-cyan-400/30 hover:bg-cyan-500/25 disabled:opacity-40"
             title="Run once now"
           >
-            ⚡ Run
+            Run recurring draft
           </button>
           <button
             onClick={() => onPatch({ status: space.status === "running" ? "paused" : "running" })}
             disabled={busy}
             className="rounded-lg bg-white/5 px-2.5 py-1.5 text-xs font-bold text-slate-300 ring-1 ring-white/10 hover:bg-white/10 disabled:opacity-40"
           >
-            {space.status === "running" ? "⏸ Pause" : "▶ Resume"}
+            {space.status === "running" ? "Pause schedule" : "Enable schedule"}
           </button>
           <button
             onClick={onPopOut}
@@ -802,6 +855,7 @@ interface MissionLite {
 }
 
 function MissionPanel({ spaceId }: { spaceId: string }) {
+  const [taskMode, setTaskMode] = useState<"browser" | "build">("browser");
   const [goal, setGoal] = useState("");
   const [budget, setBudget] = useState(5);
   const [turns, setTurns] = useState(3);
@@ -824,7 +878,28 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
     return () => { alive = false; };
   }, [spaceId]);
 
+  useEffect(() => {
+    if (!running) return;
+    let alive = true;
+    const timer = setInterval(() => {
+      fetch(`/api/spaces/${spaceId}/mission`, { cache: "no-store" })
+        .then(response => response.json())
+        .then(data => { if (alive && data.mission) setMission(data.mission); })
+        .catch(() => {});
+    }, 1500);
+    return () => { alive = false; clearInterval(timer); };
+  }, [running, spaceId]);
+
   async function start(continueMission: boolean) {
+    const brain = readBrain();
+    if (brain.provider === "local") {
+      setError("Agent-planned browser tasks need a connected model. Open page above works without one; the offline engine cannot automate the task.");
+      return;
+    }
+    if (privacyFlags().localOnly && brain.provider !== "turboagent") {
+      setError("Local Mode is on, so remote AI models are disabled. Change the AI mode before starting an agent-planned browser task.");
+      return;
+    }
     setRunning(true);
     setError(null);
     try {
@@ -832,6 +907,8 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          mode: taskMode === "browser" ? "browser" : undefined,
+          modelId: brain.modelId,
           keys: loadKeys(),
           ...privacyFlags(),
           githubToken: githubToken || undefined,
@@ -864,7 +941,10 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
   return (
     <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-200/70">Build mission</span>
+        <select aria-label="Task capability" value={taskMode} onChange={event => setTaskMode(event.target.value as "browser" | "build")} className="rounded-lg border border-white/15 bg-[#0c1428] px-2 py-1 text-xs font-bold text-cyan-100">
+          <option value="browser">Browser automation</option>
+          <option value="build">Build files</option>
+        </select>
         {mission && (
           <span
             className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
@@ -881,23 +961,23 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
             {mission.status}
           </span>
         )}
-        <button
+        {taskMode === "build" && <button
           onClick={() => setShowGit((v) => !v)}
           className="rounded-lg bg-white/5 px-2 py-1 text-[11px] font-bold text-slate-400 ring-1 ring-white/10 hover:bg-white/10"
           title="Connect GitHub (token stays in this browser)"
         >
           {showGit ? "× GitHub" : "🐙 GitHub"}
-        </button>
-        <button
+        </button>}
+        {taskMode === "build" && <button
           onClick={() => setShowAdv((v) => !v)}
           className="rounded-lg bg-white/5 px-2 py-1 text-[11px] font-bold text-slate-400 ring-1 ring-white/10 hover:bg-white/10"
           title="Agent iteration budget + extra command allowlist"
         >
           {showAdv ? "× ⚙" : "⚙"}
-        </button>
+        </button>}
       </div>
 
-      {showAdv && (
+      {showAdv && taskMode === "build" && (
         <div className="mt-2 grid gap-1.5 sm:grid-cols-[110px_1fr]">
           <select
             value={turns}
@@ -940,7 +1020,11 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
         </div>
       )}
 
-      {showGit && (
+      <p className="mt-1 text-[11px] text-slate-400">
+        Needs a connected AI model. Uses this workspace’s browser, pauses for approval before clicks or typing, and saves its results to downloadable reports.
+      </p>
+
+      {showGit && taskMode === "build" && (
         <input
           value={githubToken}
           onChange={(e) => setGithubToken(e.target.value)}
@@ -951,10 +1035,12 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
       )}
 
       <div className="mt-2 grid gap-1.5 sm:grid-cols-[1fr_90px_auto]">
-        <input
+        <textarea
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
-          placeholder={checkpointed ? `resume: ${mission?.goal.slice(0, 60)}…` : "Mission goal — e.g. 'build tetris in index.html, publish to my repo'"}
+          aria-label={taskMode === "browser" ? "Browser task" : "Build task"}
+          rows={3}
+          placeholder={checkpointed ? `resume: ${mission?.goal.slice(0, 60)}…` : taskMode === "browser" ? "Describe the browser task, the page URL, and the result you need." : "Describe the files or application to build."}
           className="rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none placeholder:text-slate-600"
         />
         <select
@@ -990,7 +1076,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
             className="rounded-lg bg-cyan-500/15 px-3 py-1.5 text-xs font-bold text-cyan-200 ring-1 ring-cyan-400/30 hover:bg-cyan-500/25 disabled:opacity-40"
             title="Agents get a real workspace: files, allowlisted commands, fetch, and GitHub publish — journaled, time-budgeted, checkpointable"
           >
-            {running ? "Running…" : "🚀 Run mission"}
+            {running ? "Running task…" : taskMode === "browser" ? "Run browser task" : "Run build mission"}
           </button>
         )}
       </div>
@@ -1021,9 +1107,17 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
             </div>
           ))}
           {mission.artifacts.length > 0 && (
-            <p className="text-[11px] text-slate-500">
-              workspace: {mission.artifacts.map((a) => a.path).join(", ")}
-            </p>
+            <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
+              {mission.artifacts.map(artifact => {
+                const report = artifact.path.replaceAll("\\", "/").startsWith("reports/");
+                const image = /^browser-\d+\.png$/.test(artifact.path);
+                return report || image ? (
+                  <a key={artifact.path} className="rounded-lg bg-cyan-500/10 px-2 py-1 font-bold text-cyan-200 underline" href={`/api/spaces/${spaceId}/browser?${report ? "file" : "image"}=${encodeURIComponent(artifact.path)}`} target="_blank" rel="noreferrer">
+                    {report ? "Download" : "View"} {artifact.path}
+                  </a>
+                ) : <span key={artifact.path}>{artifact.path}</span>;
+              })}
+            </div>
           )}
           {mission.handoff && (
             <p className="rounded-lg bg-white/[0.03] p-2 text-[11px] text-slate-400 ring-1 ring-white/5">

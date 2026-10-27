@@ -157,6 +157,7 @@ export const importedRoutes = [
   { path: "/spaces/:id/agents", methods: ["GET","POST"], load: () => import("./imported/spaces/[id]/agents/route.ts") },
   { path: "/spaces/:id/fleet", methods: ["POST"], load: () => import("./imported/spaces/[id]/fleet/route.ts") },
   { path: "/spaces/:id/mission", methods: ["GET","POST"], load: () => import("./imported/spaces/[id]/mission/route.ts") },
+  { path: "/spaces/:id/browser", methods: ["GET","POST"], load: () => import("./imported/spaces/[id]/browser/route.ts") },
   { path: "/spaces/:id/run", methods: ["POST"], load: () => import("./imported/spaces/[id]/run/route.ts") },
   { path: "/spaces/approvals", methods: ["GET","POST"], load: () => import("./imported/spaces/approvals/route.ts") },
   { path: "/spaces/tick", methods: ["POST"], load: () => import("./imported/spaces/tick/route.ts") },
