@@ -37,6 +37,8 @@ interface ModelInfo {
   name: string;
   emoji: string;
   kind: string;
+  backend?: string;
+  level?: string;
 }
 
 function fmtCountdown(ms: number): string {
@@ -556,7 +558,7 @@ function SpaceWindow({
         </div>}
 
         <SpaceBrowserPanel spaceId={space.id} />
-        <MissionPanel spaceId={space.id} />
+        <MissionPanel spaceId={space.id} models={models} />
         <details className="mt-3">
           <summary className="cursor-pointer text-xs font-bold text-slate-400">Multi-agent setup</summary>
           <AgentFleet spaceId={space.id} models={models} />
@@ -852,9 +854,10 @@ interface MissionLite {
   journal: MissionStepLite[];
   artifacts: { path: string; bytes: number }[];
   handoff: string;
+  mode?: "browser";
 }
 
-function MissionPanel({ spaceId }: { spaceId: string }) {
+function MissionPanel({ spaceId, models }: { spaceId: string; models: ModelInfo[] }) {
   const [taskMode, setTaskMode] = useState<"browser" | "build">("browser");
   const [goal, setGoal] = useState("");
   const [budget, setBudget] = useState(5);
@@ -868,12 +871,21 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
   const [running, setRunning] = useState(false);
   const [mission, setMission] = useState<MissionLite | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [taskModel, setTaskModel] = useState(() => {
+    try { return localStorage.getItem(`af_browser_model_${spaceId}`) || ""; } catch { return ""; }
+  });
+  const taskModels = models.filter(model => model.kind === "text" && model.id !== "local-engine");
 
   useEffect(() => {
     let alive = true;
     fetch(`/api/spaces/${spaceId}/mission`, { cache: "no-store" })
       .then((r) => r.json())
-      .then((b) => { if (alive && b.mission) setMission(b.mission); })
+      .then((b) => {
+        if (alive && b.mission) {
+          setMission(b.mission);
+          if (b.mission.mode === "browser") setTaskMode("browser");
+        }
+      })
       .catch(() => {});
     return () => { alive = false; };
   }, [spaceId]);
@@ -892,11 +904,14 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
 
   async function start(continueMission: boolean) {
     const brain = readBrain();
-    if (brain.provider === "local") {
+    const selected = taskModels.find(model => model.id === taskModel);
+    const modelId = selected?.id ?? brain.modelId;
+    const localInference = selected?.backend === "local-server" || selected?.backend === "turboagent";
+    if (!selected && brain.provider === "local" && !continueMission) {
       setError("Agent-planned browser tasks need a connected model. Open page above works without one; the offline engine cannot automate the task.");
       return;
     }
-    if (privacyFlags().localOnly && brain.provider !== "turboagent") {
+    if (privacyFlags().localOnly && !localInference && brain.provider !== "turboagent" && !continueMission) {
       setError("Local Mode is on, so remote AI models are disabled. Change the AI mode before starting an agent-planned browser task.");
       return;
     }
@@ -908,7 +923,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: taskMode === "browser" ? "browser" : undefined,
-          modelId: brain.modelId,
+          modelId,
           keys: loadKeys(),
           ...privacyFlags(),
           githubToken: githubToken || undefined,
@@ -1023,6 +1038,25 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
       <p className="mt-1 text-[11px] text-slate-400">
         Needs a connected AI model. Uses this workspace’s browser, pauses for approval before clicks or typing, and saves its results to downloadable reports.
       </p>
+      <label className="mt-2 block text-xs font-bold text-slate-300">
+        Task model
+        <select
+          aria-label="Task model"
+          value={taskModel}
+          disabled={running || checkpointed}
+          onChange={event => {
+            setTaskModel(event.target.value);
+            try { localStorage.setItem(`af_browser_model_${spaceId}`, event.target.value); } catch { /* storage unavailable */ }
+          }}
+          className="mt-1 w-full rounded-lg border border-white/10 bg-[#0c1428] px-2 py-1.5 text-xs text-white"
+        >
+          <option value="">Use connected brain</option>
+          {taskModels.map(model => <option key={model.id} value={model.id}>{model.name}{model.backend === "local-server" ? " · on this computer" : ""}</option>)}
+        </select>
+      </label>
+      <p className="mt-1 text-[11px] text-slate-400">
+        For free local inference, connect Ollama in <a className="text-cyan-200 underline" href="/model-hub">Model Hub</a>, register an installed model, then choose it here. No API key is needed. Resuming keeps the mission’s original model.
+      </p>
 
       {showGit && taskMode === "build" && (
         <input
@@ -1112,7 +1146,7 @@ function MissionPanel({ spaceId }: { spaceId: string }) {
                 const report = artifact.path.replaceAll("\\", "/").startsWith("reports/");
                 const image = /^browser-\d+\.png$/.test(artifact.path);
                 return report || image ? (
-                  <a key={artifact.path} className="rounded-lg bg-cyan-500/10 px-2 py-1 font-bold text-cyan-200 underline" href={`/api/spaces/${spaceId}/browser?${report ? "file" : "image"}=${encodeURIComponent(artifact.path)}`} target="_blank" rel="noreferrer">
+                  <a key={artifact.path} className="rounded-lg bg-cyan-500/10 px-2 py-1 font-bold text-cyan-200 underline" href={`/api/spaces/${spaceId}/browser?${report ? "file" : "image"}=${encodeURIComponent(artifact.path)}`} download={report ? artifact.path.split("/").at(-1) : undefined} target={report ? undefined : "_blank"} rel="noreferrer">
                     {report ? "Download" : "View"} {artifact.path}
                   </a>
                 ) : <span key={artifact.path}>{artifact.path}</span>;
@@ -1155,6 +1189,7 @@ const APPROVAL_CLASS_LABELS: Record<string, string> = {
 function ApprovalsPanel({ spaceId, onDecided }: { spaceId: string; onDecided: () => void }) {
   const [approvals, setApprovals] = useState<ApprovalLite[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     fetch(`/api/spaces/approvals?spaceId=${spaceId}`, { cache: "no-store" })
@@ -1171,14 +1206,19 @@ function ApprovalsPanel({ spaceId, onDecided }: { spaceId: string; onDecided: ()
 
   async function decide(id: string, decision: "approve" | "deny") {
     setBusyId(id);
+    setDecisionError(null);
     try {
-      await fetch("/api/spaces/approvals", {
+      const response = await fetch("/api/spaces/approvals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, decision, decidedBy: "workbench" }),
       });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "The approval decision could not be saved");
       load();
       onDecided();
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : "The approval decision could not be saved");
     } finally {
       setBusyId(null);
     }
@@ -1190,6 +1230,7 @@ function ApprovalsPanel({ spaceId, onDecided }: { spaceId: string; onDecided: ()
 
   return (
     <div className="mt-2.5 rounded-xl bg-black/20 p-3 ring-1 ring-white/5">
+      {decisionError && <p role="alert" className="mb-2 text-xs text-red-300">{decisionError}</p>}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[10px] font-bold uppercase tracking-wider text-amber-200/70">Check-in required</span>
         {pending.length > 0 && (

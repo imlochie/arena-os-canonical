@@ -20,11 +20,9 @@
 import { spawn } from "node:child_process";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { resolveWorkspaceRoot } from "./runtime-paths";
 
-export const WORKSPACE_ROOT = path.resolve(
-  /*turbopackIgnore: true*/ process.cwd(),
-  ".data/space-workspaces",
-);
+export const WORKSPACE_ROOT = resolveWorkspaceRoot();
 
 /** Windows: npm/npx/py launchers are .cmd shims — spawn() needs a shell to
  *  execute them (raw spawn dies with ENOENT). posix: no shell, unchanged. */

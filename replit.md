@@ -40,6 +40,8 @@ A private, local-first AI workspace with blind model battles, chat, collaborativ
 
 This migration targets the Replit web runtime. The original Windows/Electron packaging source is retained in the backup, but no Windows installer has been built or verified here. External local-model servers, GPU bridges, and WebGPU model downloads still require their real runtime resources. Passing the web smoke tests is not evidence that those tools or the Windows desktop build work.
 
+`desktop/` now contains the tracked Vite/Express Windows packaging source and an owner-run live Ollama acceptance check; see `desktop/README.md`. Build on Windows x64 with `desktop/Start-Windows.ps1`. Actual Windows installation and live-model acceptance remain unverified until that check runs on a Windows machine. The retired Next.js launcher in the backup is not used. The native data root retains `%LOCALAPPDATA%\Arena` and PostgreSQL major 16; never reinitialise existing data to address a startup failure. Local Mode blocks cloud AI but permits registered loopback-only inference.
+
 File-backed features retain their original local storage providers; Replit's server filesystem is not the user's Windows filesystem. No existing remote database contents were imported.
 
 Strict type cleanup of imported code is outside the port scope. Verify runtime behavior and artifact builds; do not claim the full monorepo typecheck is clean.

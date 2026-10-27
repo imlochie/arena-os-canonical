@@ -1,4 +1,5 @@
 /generated-artifacts/
+/desktop/stage/
 .migration-backup/
 .arena-data/
 .data/

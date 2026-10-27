@@ -1,0 +1,61 @@
+import { build } from "esbuild";
+import { createRequire } from "node:module";
+import { cp, mkdir, rm, access } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.dirname(here);
+const require = createRequire(import.meta.url);
+
+export function runPnpm(args, env = {}) {
+  // Resolve the pnpm JS entry rather than invoking a .cmd shim through a shell.
+  const entry = process.env.npm_execpath;
+  if (!entry || !/\.(?:c?js|mjs)$/.test(entry)) throw new Error("Run this build through pnpm");
+  const result = spawnSync(process.execPath, [entry, ...args], {
+    cwd: root, env: { ...process.env, ...env }, stdio: "inherit",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`pnpm ${args.join(" ")} failed (${result.status})`);
+}
+
+async function main() {
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    throw new Error("Build the Windows package on Windows x64. Linux builds cannot verify the shipped native dependencies.");
+  }
+  runPnpm(["--filter", "@workspace/arenaforge", "run", "build"], {
+    NODE_ENV: "production", BASE_PATH: "/", PORT: "5173",
+  });
+  runPnpm(["--filter", "@workspace/api-server", "run", "build"]);
+
+  const stage = path.join(here, "stage");
+  await rm(stage, { recursive: true, force: true });
+  await mkdir(path.join(stage, "server", "node_modules"), { recursive: true });
+  await cp(path.join(root, "artifacts/api-server/dist"), path.join(stage, "server"), { recursive: true });
+  await cp(path.join(root, "artifacts/arenaforge/dist/public"), path.join(stage, "web"), { recursive: true });
+  const playwrightRoot = path.dirname(require.resolve("playwright-core/package.json"));
+  await cp(playwrightRoot, path.join(stage, "server/node_modules/playwright-core"), { recursive: true });
+
+  // Download the Chromium revision matching the exact installed Playwright.
+  runPnpm(["--filter", "@workspace/desktop", "exec", "playwright-core", "install", "chromium"]);
+  const { chromium } = require("playwright-core");
+  const chrome = chromium.executablePath();
+  await access(chrome);
+  await cp(path.dirname(chrome), path.join(stage, "chromium"), { recursive: true });
+  const postgresRoot = path.dirname(require.resolve("@embedded-postgres/windows-x64/package.json"));
+  await cp(path.join(postgresRoot, "native"), path.join(stage, "embedded-postgres"), { recursive: true });
+  for (const binary of ["postgres.exe", "initdb.exe", "pg_ctl.exe"]) {
+    await access(path.join(stage, "embedded-postgres", "bin", binary));
+  }
+  await access(path.join(stage, "chromium", "chrome.exe"));
+  await build({
+    entryPoints: [path.join(here, "main.mjs")], outfile: path.join(here, "dist/main.cjs"),
+    bundle: true, platform: "node", format: "cjs",
+    external: ["electron", "pg-native"], target: "node22",
+  });
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(error => { console.error(error.message); process.exitCode = 1; });
+}

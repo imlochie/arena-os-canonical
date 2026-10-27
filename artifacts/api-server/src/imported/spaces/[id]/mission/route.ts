@@ -2,6 +2,7 @@ import { getLatestMission, runMission } from "@workspace/arena/lib/spaces/missio
 import { getSpace } from "@workspace/arena/lib/spaces";
 import { getModel } from "@workspace/arena/lib/models";
 import { claimBrowserWorkspace } from "@workspace/arena/lib/spaces/browser";
+import { ensureHubModelsLoaded } from "@workspace/arena/lib/modelHub/registry";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -36,13 +37,18 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     }
 
     const localOnly = body?.localOnly === true;
-    const browserMode = body?.mode === "browser";
+    const browserMode = (continuing ? existing?.mode : body?.mode) === "browser"
+      || (continuing && body?.mode === "browser");
     if (browserMode) {
       releaseWorkspace = claimBrowserWorkspace(id);
       if (!releaseWorkspace) return Response.json({ error: "This browser workspace is already running a task" }, { status: 409 });
     }
+    await ensureHubModelsLoaded(true);
     const browserModel = browserMode ? getModel(String(body?.modelId ?? space.modelId)) : null;
     if (browserModel && browserModel.kind !== "text") return Response.json({ error: "Browser tasks require a text model" }, { status: 400 });
+    if (browserModel && !continuing && browserModel.level === "arena-local") {
+      return Response.json({ error: "Browser tasks need a real model. Connect an installed Ollama model in Model Hub; the deterministic Local Engine cannot carry out browser tasks." }, { status: 422 });
+    }
     const mission = await runMission(id, {
       goal: String(body?.goal ?? existing?.goal ?? "").trim(),
       mode: browserMode ? "browser" : undefined,

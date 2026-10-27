@@ -1,0 +1,24 @@
+{
+  "name": "@workspace/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ArenaForge Windows shell for the Vite and Express runtime",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "prepare-app": "node build.mjs",
+    "dist:win": "node build.mjs && electron-builder --win nsis --x64 --config electron-builder.cjs",
+    "test": "node --test *.test.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.23.1",
+    "playwright-core": "^1.64.1"
+  },
+  "optionalDependencies": {
+    "@embedded-postgres/windows-x64": "16.14.0-beta.17"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "0.28.2"
+  }
+}

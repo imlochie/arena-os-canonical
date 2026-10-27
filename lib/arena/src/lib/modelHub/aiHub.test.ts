@@ -82,6 +82,20 @@ test("generate(): a tampered public routing id is refused at execution time (SSR
   }
 });
 
+test("Local Mode allows registered loopback inference, not cloud egress", async () => {
+  await withOpenAiCompatFake(() => JSON.stringify({
+    choices: [{ message: { content: "local inference test double" } }],
+  }), async port => {
+    const entry = hubModelFor("ollama", `http://127.0.0.1:${port}`, `local-only-${port}`, "Test");
+    registerDynamicModels([entry]);
+    try {
+      const result = await generate({ modelId: entry.id, messages: [{ role: "user", content: "hi" }], localOnly: true });
+      assert.equal(result.backend, "local-server");
+      assert.equal(result.fallback, false);
+    } finally { clearDynamicModels(); }
+  });
+});
+
 test("generate(): agent-bridge model answers via the injected executor with honest labeling", async () => {
   const result = await generate(
     { modelId: "arena-agent", messages: [{ role: "user", content: "who are you?" }] },

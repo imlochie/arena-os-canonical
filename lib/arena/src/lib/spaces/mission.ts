@@ -52,6 +52,7 @@ export interface MissionStep {
 
 export interface MissionJournal {
   steps: MissionStep[];
+  mode?: "browser";
 }
 
 export interface MissionSummary {
@@ -68,6 +69,7 @@ export interface MissionSummary {
   startedAt: string;
   updatedAt: string;
   endedAt: string | null;
+  mode?: "browser";
 }
 
 export interface MissionOpts {
@@ -194,6 +196,7 @@ function rowToSummary(row: typeof spaceMissions.$inferSelect): MissionSummary {
     startedAt: (row.startedAt ?? new Date()).toISOString(),
     updatedAt: (row.updatedAt ?? new Date()).toISOString(),
     endedAt: row.endedAt ? row.endedAt.toISOString() : null,
+    mode: (row.journal as MissionJournal | null)?.mode,
   };
 }
 
@@ -212,12 +215,14 @@ export async function getLatestMission(spaceId: string): Promise<MissionSummary 
         .orderBy(desc(spaceMissions.startedAt))
         .limit(1);
       if (rows.length) return rowToSummary(rows[0]);
-      return memoryMissions.get(spaceId) ?? null;
+      const memory = memoryMissions.get(spaceId);
+      return memory ? rowToSummary(memory) : null;
     } catch {
       missionDbHealthy = false;
     }
   }
-  return memoryMissions.get(spaceId) ?? null;
+  const memory = memoryMissions.get(spaceId);
+  return memory ? rowToSummary(memory) : null;
 }
 
 export async function runMission(
@@ -225,6 +230,10 @@ export async function runMission(
   opts: MissionOpts,
   deps: MissionDeps = {}
 ): Promise<MissionSummary> {
+  const previous = opts.resume !== false ? await getLatestMission(spaceId) : null;
+  if (previous && (previous.status === "checkpointed" || previous.status === "awaiting_approval")) {
+    opts = { ...opts, mode: previous.mode ?? opts.mode };
+  }
 
   // Phase B — real workspace isolation: start the mission container when the
   // policy and the machine allow it. Honest fallback: no runtime → host jail,
@@ -327,7 +336,7 @@ async function runMissionInner(
       try {
         const [inserted] = await db.insert(spaceMissions).values({
           spaceId: fresh.spaceId, goal: fresh.goal, timeBudgetMs, agentPlan: plan,
-          journal: { steps: [] }, artifacts: [], handoff: "",
+          journal: { steps: [], mode: opts.mode }, artifacts: [], handoff: "",
         }).returning();
         row = inserted;
       } catch {
@@ -349,12 +358,13 @@ async function runMissionInner(
   let statusDetail = "";
 
   const save = async (patch: Partial<typeof spaceMissions.$inferInsert>) => {
-    const apply = (r: any) => rowToSummary({ ...r, ...patch, journal: { steps }, updatedAt: new Date() });
+    const journal = { steps, mode: opts.mode };
+    const apply = (r: any) => rowToSummary({ ...r, ...patch, journal, updatedAt: new Date() });
     if (missionDbHealthy) {
       try {
         const [updated] = await db
           .update(spaceMissions)
-          .set({ ...patch, journal: { steps }, updatedAt: new Date() })
+          .set({ ...patch, journal, updatedAt: new Date() })
           .where(eq(spaceMissions.id, mission.id))
           .returning();
         if (updated) {
@@ -368,10 +378,39 @@ async function runMissionInner(
     }
     const mem = memoryMissions.get(spaceId) ?? row;
     const next = apply(mem);
-    memoryMissions.set(spaceId, { ...mem, ...patch, journal: { steps } });
+    memoryMissions.set(spaceId, { ...mem, ...patch, journal });
     mission = next;
     return mission;
   };
+
+  // Approval is permission for the exact persisted action, not a request for
+  // the model to guess it again. This also works after the native API restarts.
+  if (resuming && opts.mode === "browser" && existing.status === "awaiting_approval") {
+    const waiting = steps.at(-1)?.actions.find(action =>
+      !action.ok && action.output.includes("awaiting human approval")
+      && (action.tool === "browser_click" || action.tool === "browser_fill"));
+    if (waiting) {
+      const approval = await findLatestBySignature(actionSignature(mission.id, waiting.tool, waiting.input));
+      if (!approval || approval.status === "pending") {
+        return save({ status: "awaiting_approval", statusDetail: "Waiting for your approval before resuming", endedAt: null });
+      }
+      let output: ToolOutcome;
+      if (approval.status === "approved" && await claimExecution(approval.id)) {
+        output = await executeTool(spaceId, { tool: waiting.tool, args: waiting.input }, { browserEngine: deps.browserEngine });
+        await completeExecution(approval.id, output.ok, { tool: output.tool, output: output.output.slice(0, 2000) }, output.ok ? undefined : output.output.slice(0, 500));
+      } else {
+        output = {
+          tool: waiting.tool, input: waiting.input, ok: false, ms: 0,
+          output: `Action was ${approval.status}; it was not repeated. Do not retry a denied or previously executed action.`,
+        };
+      }
+      steps.push({
+        agent: plan[0].name, turn: 0, actions: [output], handoff: "", done: false,
+        thought: "Resumed the exact saved approval decision; no model call was used for this step.", ms: output.ms,
+      });
+      await save({ status: "running" });
+    }
+  }
 
   agentLoop: for (let ai = 0; ai < plan.length; ai++) {
     const agent = plan[ai];
@@ -430,7 +469,7 @@ async function runMissionInner(
               "Never claim an action you did not emit. " +
               (opts.mode === "browser" ? BROWSER_DISCIPLINE : AGENT_KNOWLEDGE + "\n\n" + TOOL_DOC),
             temperature: 0.3,
-            maxTokens: 8_000,
+            maxTokens: opts.mode === "browser" ? 2_000 : 8_000,
             keys: opts.localOnly ? undefined : opts.keys,
             localOnly: opts.localOnly,
           },
@@ -446,6 +485,17 @@ async function runMissionInner(
         break agentLoop;
       }
 
+      if (opts.mode === "browser" && (result.fallback || result.backend === "arena-local-engine")) {
+        steps.push({
+          agent: agent.name, turn, actions: [], handoff: "", done: false,
+          thought: "The selected model did not execute. No browser actions were taken.",
+          runtime: { backend: result.backend, modelId: result.modelId, fallback: result.fallback },
+          ms: Date.now() - t0,
+        });
+        status = "failed";
+        statusDetail = "The selected model was unavailable. Start the local runtime or reconnect your provider; the offline fallback cannot automate this browser task.";
+        break agentLoop;
+      }
       const parsed = parseAgentJson(result.text);
       const actions = Array.isArray(parsed?.actions) ? parsed!.actions!.slice(0, maxActions) : [];
       const outcomes: ToolOutcome[] = [];
@@ -563,7 +613,8 @@ async function runMissionInner(
       steps.push(step);
       if (step.handoff) handoff = step.handoff;
 
-      if (status === "checkpointed") break agentLoop;
+      await save({ status: status === "awaiting_approval" ? status : "running", statusDetail, handoff });
+      if (status === "checkpointed" || status === "awaiting_approval") break agentLoop;
       if (step.done) break; // next agent
     }
   }

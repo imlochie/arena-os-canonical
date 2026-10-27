@@ -215,10 +215,64 @@ test("browser missions cannot execute shell commands or claim a failed page visi
         ],
         done: true,
       }),
-      runtimeLevel: "arena-local", backend: "arena-local-engine", modelId: "local-engine", via: "test-script", ms: 0, fallback: false,
+      runtimeLevel: "on-device", backend: "local-server", modelId: "test-only-model", via: "test-script", ms: 0, fallback: false,
     }),
   });
   assert.equal(mission.status, "failed");
   assert.match(mission.journal[0].actions[0].output, /refused: browser tasks/);
   assert.equal(mission.journal[0].actions.every(action => !action.ok), true);
+});
+
+test("browser missions refuse deterministic fallback before touching tools", async (t) => {
+  const spaceId = `browser-fallback-${Date.now()}`;
+  t.after(() => cleanup(spaceId));
+  const events: string[] = [];
+  const mission = await runMission(spaceId, {
+    goal: "read example.com", mode: "browser", isolation: "host",
+    agentPlan: [{ name: "Browser operator", role: "read page", modelId: "local-engine" }],
+    maxTurnsPerAgent: 1,
+  }, {
+    browserEngine: fakeEngine(events),
+    generate: async () => ({
+      text: JSON.stringify({ actions: [{ tool: "browser_navigate", args: { url: "https://example.com" } }], done: true }),
+      runtimeLevel: "arena-local", backend: "arena-local-engine", modelId: "local-engine", via: "test-double", ms: 0, fallback: true,
+    }),
+  });
+  assert.equal(mission.status, "failed");
+  assert.match(mission.statusDetail, /selected model was unavailable/);
+  assert.equal(mission.mode, "browser");
+  assert.deepEqual(events, []);
+});
+
+test("browser resume executes the saved approval without requiring the model to repeat it", async (t) => {
+  const spaceId = `browser-resume-${Date.now()}`;
+  t.after(() => cleanup(spaceId));
+  const events: string[] = [];
+  const engine = fakeEngine(events);
+  const m1 = await runMission(spaceId, {
+    goal: "read example.com and save report", mode: "browser", isolation: "host",
+    agentPlan: [{ name: "Browser operator", role: "read page", modelId: "test-only-model" }],
+    maxTurnsPerAgent: 1,
+  }, {
+    browserEngine: engine,
+    generate: async () => ({
+      text: JSON.stringify({ actions: [{ tool: "browser_click", args: { selector: "a" } }], done: true }),
+      runtimeLevel: "on-device", backend: "local-server", modelId: "test-only-model", via: "test-double", ms: 0, fallback: false,
+    }),
+  });
+  assert.equal(m1.status, "awaiting_approval");
+  assert.equal(m1.endedAt, null);
+  const pending = (await listApprovals(spaceId, "pending")).find(item => item.missionId === m1.id)!;
+  await decideApproval(pending.id, "approve", "test-owner");
+  const m2 = await runMission(spaceId, { goal: "", resume: true, maxTurnsPerAgent: 1 }, {
+    browserEngine: engine,
+    generate: async () => ({
+      text: JSON.stringify({ actions: [{ tool: "write_file", args: { path: "reports/result.md", content: "Test-only report" } }], done: true }),
+      runtimeLevel: "on-device", backend: "local-server", modelId: "test-only-model", via: "test-double", ms: 0, fallback: false,
+    }),
+  });
+  assert.equal(m2.mode, "browser", "browser restrictions persist even when the resume request omits the mode");
+  assert.equal(m2.status, "done");
+  assert.equal(events.filter(event => event === "click:a").length, 1);
+  assert.equal((await listApprovals(spaceId)).find(item => item.id === pending.id)?.status, "executed");
 });

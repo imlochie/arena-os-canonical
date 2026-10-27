@@ -23,10 +23,11 @@
  * never claims to.
  */
 
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { WORKSPACE_ROOT } from "./tools";
 import { assertOutboundUrl } from "../security/outbound-url";
+import { configuredChromiumPath } from "./runtime-paths";
 
 export interface PageSnapshot {
   url: string;
@@ -53,11 +54,19 @@ export function createPlaywrightEngine(
 ): BrowserEngine {
   let context: any = null;
   let page: any = null;
+  let sessionFile: string | null = null;
+  let restoreError: string | null = null;
+  const saveLocation = async () => {
+    if (sessionFile && page && /^https?:\/\//i.test(page.url())) {
+      await writeFile(sessionFile, JSON.stringify({ url: page.url() }), { mode: 0o600 });
+    }
+  };
 
   const activePage = () => {
     if (!context || !page || page.isClosed()) {
       throw new Error("no browser page is open in this workspace; navigate to a page first");
     }
+    if (restoreError) throw new Error(restoreError);
     return page;
   };
 
@@ -72,9 +81,11 @@ export function createPlaywrightEngine(
       });
       try {
         const replitChromium = await access("/repl/tools/bin/chromium").then(() => "/repl/tools/bin/chromium").catch(() => undefined);
-        const executablePath = process.env.CHROMIUM_PATH ?? replitChromium;
+        const executablePath = configuredChromiumPath() ?? replitChromium;
+        if (executablePath) await access(executablePath);
         context = await chromium.launchPersistentContext(profileDir, {
           headless: true,
+          serviceWorkers: "block",
           viewport: { width: 1280, height: 800 },
           ...(executablePath ? { executablePath } : {}),
           ...(process.platform === "linux" ? { args: ["--no-sandbox", "--disable-dev-shm-usage"] } : {}),
@@ -96,7 +107,18 @@ export function createPlaywrightEngine(
           }
         });
         page = context.pages()[0] ?? await context.newPage();
+        sessionFile = path.join(profileDir, "arena-session.json");
+        try {
+          const saved = JSON.parse(await readFile(sessionFile, "utf8"));
+          await assertOutboundUrl(saved.url, "public");
+          await page.goto(saved.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            restoreError = "The last workspace page could not be restored; open a page before resuming";
+          }
+        }
       } catch (e) {
+        await context?.close().catch(() => {});
         context = null;
         page = null;
         throw new Error(
@@ -108,8 +130,10 @@ export function createPlaywrightEngine(
     async navigate(url: string) {
       if (!context) throw new Error("browser engine not launched — call ensure() first");
       const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      restoreError = null;
       const title = await page.title();
       const text = (await page.evaluate(() => document.body?.innerText ?? "")).slice(0, 20_000);
+      await saveLocation();
       return { url: page.url(), title, text, status: response?.status() };
     },
     async extract(selector: string, limit: number) {
@@ -123,6 +147,7 @@ export function createPlaywrightEngine(
     },
     async click(selector: string) {
       await activePage().click(selector, { timeout: 15_000 });
+      await saveLocation();
       return `clicked ${selector} — page is now: ${page.url()}`;
     },
     async fill(selector: string, value: string) {
@@ -130,9 +155,13 @@ export function createPlaywrightEngine(
       return `filled ${selector}`;
     },
     async close() {
-      await context?.close();
-      context = null;
-      page = null;
+      try { await saveLocation(); }
+      finally {
+        await context?.close();
+        context = null;
+        page = null;
+        restoreError = null;
+      }
     },
   };
 }
@@ -141,6 +170,10 @@ export function createPlaywrightEngine(
 
 const engines = new Map<string, BrowserEngine>();
 const busyWorkspaces = new Set<string>();
+
+export async function closeAllBrowserSessions(): Promise<void> {
+  await Promise.allSettled([...engines.keys()].map(closeBrowserSession));
+}
 
 export function claimBrowserWorkspace(spaceId: string): (() => void) | null {
   if (busyWorkspaces.has(spaceId)) return null;

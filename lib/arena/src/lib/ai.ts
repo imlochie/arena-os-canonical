@@ -24,6 +24,7 @@ import { NO_TRAIN_HEADERS } from "./privacy";
 import type { GenerateResult, RuntimeExecution } from "./runtime";
 import { BACKEND_PROVIDER, localEngineResult } from "./runtime";
 import { assertLoopbackUrl, parseServerRoutingId } from "./modelHub/runtimes";
+import { assertUrlDestination } from "./security/outbound-url";
 
 export interface ChatMsg {
   role: "system" | "user" | "assistant";
@@ -40,9 +41,8 @@ export interface GenerateOpts {
   maxTokens?: number;
   imageSize?: string; // e.g. "768x768" for image-kind models
   category?: string;
-  // Privacy: localOnly forces the offline engine (zero network egress).
-  // If the selected model is NOT the Local Engine, the result is an honest,
-  // clearly-labelled fallback.
+  // Privacy: localOnly blocks remote AI. Registered local-server models may
+  // still run on literal loopback; never use the optional Model Hub LAN opt-in.
   localOnly?: boolean;
   // Assigned-worker execution disables the legacy provider/fallback cascade.
   strictRoute?: boolean;
@@ -370,7 +370,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
   }
 
   // localOnly + a non-local-engine selection → forced, visible fallback.
-  if (opts.localOnly) {
+  if (opts.localOnly && model.backend !== "local-server") {
     if (model.kind === "image") {
       const style = model.pollinationsId.split(":")[1] === "turbo" ? "turbo" : "flux";
       const { text } = localImage(model.id, opts, style);
@@ -426,8 +426,9 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
     const wanted = requestedExecution(model.id, model.backend, model.level);
     if (route !== null) {
       try {
-        assertLoopbackUrl(route.baseUrl);
-        const text = await tryTurboAgent(fetchImpl, route.baseUrl, route.remoteModel, fullMessages, temperature, opts.maxTokens);
+        if (opts.localOnly) assertUrlDestination(new URL(route.baseUrl), "loopback");
+        else assertLoopbackUrl(route.baseUrl);
+        const text = await tryTurboAgent(fetchImpl, route.baseUrl, route.remoteModel, fullMessages, temperature, opts.maxTokens, 180_000);
         return {
           text,
           runtimeLevel: "on-device",

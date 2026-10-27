@@ -2,3 +2,4 @@
 - [Browser workspace privacy](browser-workspaces.md) — private browser runtime state is not task output or agent context.
 - [Arcade model routing](arcade-model-routing.md) — use connected code-writing models; no implicit public-service cascade for game prompts or source.
 - [Waveyard processing evidence](waveyard-processing.md) — model readiness is not processing proof; verify pinned input shapes and bound native session lifetimes.
+- [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.
