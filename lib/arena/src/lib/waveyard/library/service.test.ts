@@ -349,6 +349,7 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
     "playlist-only session rows remain distinct and in order",
   );
   assert.equal(sessionDetail.currentTrackId, currentSessionTrackId, "queue moves never reset the current playback row");
+  assert.equal(sessionDetail.positionSeconds, 73.5, "queue moves never reset the saved playback position");
 
   const retainedPlaybackTrackId = sessionDetail.tracks[0].id;
   await sessionService.saveSessionState(OWNER, session.id, retainedPlaybackTrackId, 73.5);

@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "@/routing/Link";
 import { useRouter } from "@/routing/navigation";
 import { useListeningHost } from "@/components/waveyard/listening/ListeningHost";
+import { publishWaveyardQueueChange, subscribeToWaveyardQueueChanges } from "./queue-sync";
 
 import { formatPlayClock, STEM_CHANNEL_LABELS } from "@workspace/arena/lib/waveyard/library/model";
 import {
@@ -437,16 +438,16 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
       setQueue(loaded);
       queueRef.current = loaded;
       host.refreshSession(result.affectedSessionIds ?? []);
+      publishWaveyardQueueChange(result.affectedSessionIds ?? []);
     }
   }, [host]);
 
   useEffect(() => {
-    const reloadQueue = () => {
+    return subscribeToWaveyardQueueChanges(({ affectedSessionIds }) => {
       void refreshQueue().catch(() => setStatus("The saved queue could not be refreshed."));
-    };
-    window.addEventListener("waveyard:queue-changed", reloadQueue);
-    return () => window.removeEventListener("waveyard:queue-changed", reloadQueue);
-  }, [refreshQueue]);
+      host.refreshSession(affectedSessionIds);
+    });
+  }, [host, refreshQueue]);
 
   const playNow = useCallback(
     async (itemId: string, targetTrackId: string) => {
@@ -470,6 +471,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
       const result = await response.json();
       setQueue(result.queue ?? []);
       queueRef.current = result.queue ?? [];
+      publishWaveyardQueueChange();
       if (typeof result.addedQueueItemId !== "string") {
         setStatus("Saved to the queue, but the listening entry could not be linked.");
         return;
@@ -481,6 +483,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
           const restored = (await rollback.json()).queue ?? [];
           setQueue(restored);
           queueRef.current = restored;
+          publishWaveyardQueueChange();
         }
         setStatus("Could not add the song to the listening order.");
         return;

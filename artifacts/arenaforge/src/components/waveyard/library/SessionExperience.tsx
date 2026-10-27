@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useStemTransport, type ChannelMeter, type MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
+import CamelotWheel from "./CamelotWheel";
 import {
   beatAlignedTransitionStart,
   compatibilityEvidence,
@@ -17,6 +18,7 @@ import {
   type TransitionConfig,
   type TransitionMode,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
+import { publishWaveyardQueueChange } from "./queue-sync";
 
 // ---------------------------------------------------------------------------
 // Types mirrored from the session API payload.
@@ -118,6 +120,7 @@ function SessionDeck({
   flags,
   onLevel,
   onFlag,
+  onReset,
   stemExtra,
   onApi,
   onPlaying,
@@ -136,6 +139,7 @@ function SessionDeck({
   flags: StemFlags;
   onLevel: (stemType: string, value: number) => void;
   onFlag: (stemType: string, flag: "muted" | "solo") => void;
+  onReset: () => void;
   stemExtra?: (stemType: string) => ReactNode;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
   onPlaying: (deckIndex: number, playing: boolean) => void;
@@ -248,6 +252,9 @@ function SessionDeck({
 
   const separated = item?.playback?.kind === "stems" && (item?.stems.length ?? 0) > 0;
   const anySolo = flags.solo.length > 0;
+  const mixChanged = (item?.stems ?? []).some((stem) => Math.abs((levels[stem.stemType] ?? 1) - 1) > 0.001)
+    || flags.muted.length > 0
+    || anySolo;
 
   return (
     <section
@@ -332,7 +339,22 @@ function SessionDeck({
             <p className="wy-deck-note">Full source — stem controls unlock once separation finishes.</p>
           ) : (
             <div className="wy-stems" role="group" aria-label={`${active ? "Current" : "Next"} deck stems`}>
-              {active && <p className="wy-deck-note wy-live-note">Live sources · shorter layers loop · no automatic tempo/key matching</p>}
+              {active && <p className="wy-deck-note wy-live-note">Live swaps stay on this song&rsquo;s clock · shorter layers loop; use the Camelot wheel to cue compatible tracks.</p>}
+              {mixChanged && (
+                <div className="wy-stem-toolbar">
+                  <span role="status">
+                    {anySolo ? `Isolating ${flags.solo.join(", ")}` : flags.muted.length > 0 ? `Muted ${flags.muted.join(", ")}` : "Stem levels adjusted"}
+                  </span>
+                  <button
+                    type="button"
+                    className="wy-stem-reset"
+                    aria-label={`Restore all ${active ? "current" : "next"} stems`}
+                    onClick={onReset}
+                  >
+                    Restore all
+                  </button>
+                </div>
+              )}
               {item.stems.map((stem) => {
                 const level = levels[stem.stemType] ?? 1;
                 const muted = flags.muted.includes(stem.stemType);
@@ -355,8 +377,8 @@ function SessionDeck({
                       onChange={(event) => onLevel(stem.stemType, Number(event.target.value))}
                     />
                     <span className="wy-stem-value">{level.toFixed(2)}</span>
-                    <button type="button" className={`wy-toggle${muted ? " on" : ""}`} aria-pressed={muted} aria-label={`Mute ${stem.stemType}`} onClick={() => onFlag(stem.stemType, "muted")}>M</button>
-                    <button type="button" className={`wy-toggle solo${solo ? " on" : ""}`} aria-pressed={solo} aria-label={`Solo ${stem.stemType}`} onClick={() => onFlag(stem.stemType, "solo")}>S</button>
+                    <button type="button" className={`wy-toggle${muted ? " on" : ""}`} aria-pressed={muted} aria-label={`Mute ${stem.stemType}`} onClick={() => onFlag(stem.stemType, "muted")}>Mute</button>
+                    <button type="button" className={`wy-toggle solo${solo ? " on" : ""}`} aria-pressed={solo} aria-label={`Isolate ${stem.stemType}`} onClick={() => onFlag(stem.stemType, "solo")}>Isolate</button>
                     {stemExtra?.(stem.stemType)}
                   </div>
                 );
@@ -1045,6 +1067,27 @@ export default function SessionExperience({
     setAddTrackId("");
   }, [addTrackId, session, mutate]);
 
+  const setSessionTrackAsNext = useCallback(async (itemId: string) => {
+    if (session === null || itemId === currentIdRef.current) return;
+    const currentPosition = session.tracks.findIndex((item) => item.id === currentIdRef.current);
+    const targetPosition = session.tracks.findIndex((item) => item.id === itemId);
+    if (targetPosition < 0) return;
+    const position = currentPosition < 0
+      ? 0
+      : targetPosition < currentPosition
+        ? currentPosition
+        : currentPosition + 1;
+    const detail = await mutate(`/api/library/sessions/${session.id}/tracks`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionTrackId: itemId, position }),
+    });
+    if (detail === null) return;
+    const title = detail.tracks.find((item) => item.id === itemId)?.track.title ?? "Track";
+    publishWaveyardQueueChange([session.id]);
+    setStatus(`Up next: ${title}.`);
+  }, [session, mutate]);
+
   const moveTrack = useCallback(
     (itemId: string, position: number) => {
       if (session === null) return;
@@ -1064,7 +1107,7 @@ export default function SessionExperience({
       const wasPlaying = playingRef.current;
       void mutate(`/api/library/sessions/${session.id}/tracks?sessionTrackId=${itemId}`, { method: "DELETE" }).then((detail) => {
         if (detail === null) return;
-        window.dispatchEvent(new Event("waveyard:queue-changed"));
+        publishWaveyardQueueChange([session.id]);
         if (currentIdRef.current !== itemId) return;
         const fallbackIndex = Math.min(Math.max(previousIndex, 0), detail.tracks.length - 1);
         const fallback = detail.tracks[fallbackIndex]?.id ?? null;
@@ -1361,26 +1404,30 @@ export default function SessionExperience({
     const libraryDonors = library.filter((item) => !inSession.has(item.id) &&
       item.id !== currentItem.track.id && item.stemAvailability?.status === "separated");
     return (
-      <select
-        className="wy-stem-source"
-        aria-label={`${stemType} source`}
-        value={swap?.toTrackId ?? ""}
-        disabled={savingSwap}
-        title="Choose any separated song in your library as a live stem source"
-        onChange={(event) => {
-          const donor = donors.find((item) => item.track.id === event.target.value);
-          if (donor) requestSwap(stemType, { id: donor.track.id, title: donor.track.title, stems: donor.stems });
-          else {
-            const source = libraryDonors.find((item) => item.id === event.target.value);
-            if (source) requestSwap(stemType, { id: source.id, title: source.title });
-            else if (!event.target.value && swap) revertSwap(swap.id);
-          }
-        }}
-      >
-        <option value="">Original</option>
-        {donors.map((donor) => <option key={donor.id} value={donor.track.id}>{donor.track.title}</option>)}
-        {libraryDonors.map((donor) => <option key={donor.id} value={donor.id}>{donor.title}</option>)}
-      </select>
+      <div className="wy-stem-source-control">
+        <span>Live source</span>
+        <select
+          className="wy-stem-source"
+          aria-label={`${stemType} source`}
+          value={swap?.toTrackId ?? ""}
+          disabled={savingSwap || (donors.length === 0 && libraryDonors.length === 0)}
+          title="Choose a separated song in your library as a live stem source"
+          onChange={(event) => {
+            const donor = donors.find((item) => item.track.id === event.target.value);
+            if (donor) requestSwap(stemType, { id: donor.track.id, title: donor.track.title, stems: donor.stems });
+            else {
+              const source = libraryDonors.find((item) => item.id === event.target.value);
+              if (source) requestSwap(stemType, { id: source.id, title: source.title });
+              else if (!event.target.value && swap) revertSwap(swap.id);
+            }
+          }}
+        >
+          <option value="">Original</option>
+          {donors.map((donor) => <option key={donor.id} value={donor.track.id}>{donor.track.title}</option>)}
+          {libraryDonors.map((donor) => <option key={donor.id} value={donor.id}>{donor.title}</option>)}
+        </select>
+        {donors.length === 0 && libraryDonors.length === 0 && <small>Separate another track to swap in a layer.</small>}
+      </div>
     );
   };
 
@@ -1403,6 +1450,14 @@ export default function SessionExperience({
       flags: item ? flags[item.id] ?? emptyFlags : emptyFlags,
       onLevel: item ? setLevel(item.id) : () => undefined,
       onFlag: item ? toggleFlag(item.id) : () => undefined,
+      onReset: () => {
+        if (!item) return;
+        setMixes((prev) => ({
+          ...prev,
+          [item.id]: Object.fromEntries(item.stems.map((stem) => [stem.stemType, 1])),
+        }));
+        setFlags((prev) => ({ ...prev, [item.id]: { muted: [], solo: [] } }));
+      },
       stemExtra: isActive ? swapExtra : undefined,
       onApi: handleDeckApi,
       onPlaying: handleDeckPlaying,
@@ -1549,7 +1604,24 @@ export default function SessionExperience({
                 )}
               </div>
             )}
-            <p className="wy-fine">Mute and solo save as level 0 — what you hear is what restores.</p>
+            {currentItem !== null && (
+              <CamelotWheel
+                key={currentItem.id}
+                currentTrackId={currentItem.id}
+                currentKey={currentItem.analysis?.musicalKey ?? null}
+                nextTrackId={nextItem?.id ?? null}
+                nextKey={nextItem?.analysis?.musicalKey ?? null}
+                tracks={session.tracks.map((item) => ({
+                  id: item.id,
+                  title: item.track.title,
+                  artist: item.track.artist,
+                  key: item.analysis?.musicalKey ?? null,
+                }))}
+                disabled={phase === "fading"}
+                onSetNext={setSessionTrackAsNext}
+              />
+            )}
+            <p className="wy-fine">Mute or isolate a stem to audition it. Restore all returns every layer to the full mix.</p>
           </div>
           <SessionDeck {...deckProps(1)} />
         </div>

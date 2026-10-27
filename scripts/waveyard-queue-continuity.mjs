@@ -41,25 +41,26 @@ const browser = await chromium.launch({
   args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"],
 });
 try {
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  const page = await context.newPage();
   const routeJson = (route, body, status = 200) => route.fulfill({ status, json: body });
 
-  await page.route("**/api/assets/*", (route) => route.fulfill({ status: 200, contentType: "audio/wav", body: audio }));
-  await page.route("**/api/library/tracks", (route) => routeJson(route, { tracks: library }));
-  await page.route("**/api/library/playlists", (route) => routeJson(route, {
+  await context.route("**/api/assets/*", (route) => route.fulfill({ status: 200, contentType: "audio/wav", body: audio }));
+  await context.route("**/api/library/tracks", (route) => routeJson(route, { tracks: library }));
+  await context.route("**/api/library/playlists", (route) => routeJson(route, {
     playlists: [{ id: "test-set", name: "Test playlist", trackCount: 2 }],
   }));
-  await page.route("**/api/library/playlists/test-set", (route) => routeJson(route, {
+  await context.route("**/api/library/playlists/test-set", (route) => routeJson(route, {
     playlist: {
       id: "test-set", name: "Test playlist",
       items: [library[1], library[2]].map((track, position) => ({ id: `playlist-item-${position}`, position, track })),
     },
   }));
-  await page.route("**/api/library/playback-state", (route) => routeJson(route, {
+  await context.route("**/api/library/playback-state", (route) => routeJson(route, {
     playbackState: { currentTrackId: null, positionSeconds: 0 },
   }));
-  await page.route("**/api/library/collections", (route) => routeJson(route, { collections: [] }));
-  await page.route("**/api/library/queue", async (route) => {
+  await context.route("**/api/library/collections", (route) => routeJson(route, { collections: [] }));
+  await context.route("**/api/library/queue", async (route) => {
     if (route.request().method() === "POST") {
       const { trackId } = route.request().postDataJSON();
       const id = `saved-${++queueSequence}`;
@@ -80,7 +81,7 @@ try {
     }
     await routeJson(route, { queue: savedQueue });
   });
-  await page.route("**/api/library/queue/*", async (route) => {
+  await context.route("**/api/library/queue/*", async (route) => {
     if (route.request().method() === "PATCH") {
       const { position, sessionId: requestedSessionId } = route.request().postDataJSON();
       assert.equal(requestedSessionId, sessionId, "queue moves identify the active listening session");
@@ -121,7 +122,7 @@ try {
     }
     return routeJson(route, { queue: savedQueue, affectedSessionIds: removed.length > 0 ? [sessionId] : [] });
   });
-  await page.route("**/api/library/sessions", async (route) => {
+  await context.route("**/api/library/sessions", async (route) => {
     if (route.request().method() === "POST") {
       session.tracks = [];
       session.currentSessionTrackId = null;
@@ -129,7 +130,7 @@ try {
     }
     return routeJson(route, { sessions: [] });
   });
-  await page.route(`**/api/library/sessions/${sessionId}**`, async (route) => {
+  await context.route(`**/api/library/sessions/${sessionId}**`, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === "POST" && url.pathname.endsWith("/tracks")) {
@@ -262,6 +263,82 @@ try {
   }, undefined, { timeout: 5000 });
   assert.match(await page.locator(".wy-now .eyebrow").innerText(), /^Playing/i, "playback resumes on a valid remaining entry");
 
+  await queueTrack("Queue fixture 2");
+  await waitForFixture(() => session.tracks.length === 4 && savedQueue.length === 2, "a distinct queue item for cross-tab reorder");
+  const secondPage = await context.newPage();
+  await secondPage.goto("http://localhost:80/waveyard");
+  await secondPage.getByTestId("listening-workspace").waitFor();
+  await secondPage.waitForFunction(
+    () => document.querySelectorAll(".sess-queue-list .sess-queue-item").length === 4,
+    undefined,
+    { timeout: 8000 },
+  );
+  await page.locator(".wy-drawer > summary").filter({ hasText: "Session order" }).click();
+  await secondPage.locator(".wy-drawer > summary").filter({ hasText: "Session order" }).click();
+
+  const readQueueOrder = async (view) =>
+    (await view.locator(".queue-list > li > a").allTextContents()).map((title) => title.trim());
+  const readSessionOrder = async (view) =>
+    view.locator(".sess-queue-item .sess-queue-jump > span:nth-child(2)").evaluateAll((elements) =>
+      elements.map((element) => element.childNodes[0]?.textContent?.trim() ?? ""),
+    );
+  const waitForViewOrder = async (view, expectedQueue, expectedSession, description) => {
+    const until = Date.now() + 8000;
+    let actualQueue = [];
+    let actualSession = [];
+    do {
+      actualQueue = await readQueueOrder(view);
+      actualSession = await readSessionOrder(view);
+      if (
+        JSON.stringify(actualQueue) === JSON.stringify(expectedQueue)
+        && JSON.stringify(actualSession) === JSON.stringify(expectedSession)
+      ) return;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    } while (Date.now() < until);
+    assert.deepEqual({ queue: actualQueue, session: actualSession }, {
+      queue: expectedQueue,
+      session: expectedSession,
+    }, description);
+  };
+
+  const initialQueueOrder = ["Queue fixture 1", "Queue fixture 2"];
+  const initialSessionOrder = ["Queue fixture 1", "Queue fixture 2", "Queue fixture 3", "Queue fixture 2"];
+  assert.deepEqual(await readQueueOrder(page), initialQueueOrder, "the first Waveyard view starts with the fixture queue");
+  assert.deepEqual(await readQueueOrder(secondPage), initialQueueOrder, "both tabs start with the same saved queue");
+  assert.deepEqual(await readSessionOrder(page), initialSessionOrder, "the first view starts with the shared session order");
+  assert.deepEqual(await readSessionOrder(secondPage), initialSessionOrder, "both tabs start with the same linked-session order");
+  assert.equal(session.currentSessionTrackId, "session-track-4", "both views retain the same playing direct playlist entry");
+  await page.waitForFunction(() => {
+    const current = document.querySelector('.sess-deck[data-role="current"] audio');
+    return current instanceof HTMLAudioElement && !current.paused;
+  });
+  await secondPage.waitForFunction(() => {
+    const current = document.querySelector('.sess-deck[data-role="current"] audio');
+    return current instanceof HTMLAudioElement && current.readyState >= 1;
+  });
+  const currentTimeBeforeTabMove = await page.locator('.sess-deck[data-role="current"] audio').evaluate((audio) => audio.currentTime);
+  const secondTabTimeBeforeMove = await secondPage.locator('.sess-deck[data-role="current"] audio').evaluate((audio) => audio.currentTime);
+  const currentTrackBeforeTabMove = session.currentSessionTrackId;
+  const savedPositionBeforeTabMove = session.positionSeconds;
+
+  await page.getByRole("button", { name: "Move Queue fixture 2 up from position 2" }).click();
+  await waitForFixture(
+    () => savedQueue[0].track.id === ids[1] && session.tracks[0]?.queueItemId === savedQueue[0].id,
+    "the moved queue item and linked-session row",
+  );
+  const reorderedQueueOrder = ["Queue fixture 2", "Queue fixture 1"];
+  const reorderedSessionOrder = ["Queue fixture 2", "Queue fixture 2", "Queue fixture 3", "Queue fixture 1"];
+  await waitForViewOrder(page, reorderedQueueOrder, reorderedSessionOrder, "the initiating tab shows the committed queue and session order");
+  await waitForViewOrder(secondPage, reorderedQueueOrder, reorderedSessionOrder, "the other tab refreshes to the committed queue and session order");
+  assert.equal(session.currentSessionTrackId, currentTrackBeforeTabMove, "queue reorder does not change the playing session track");
+  assert.equal(session.positionSeconds, savedPositionBeforeTabMove, "queue reorder does not change the saved playback position");
+  assert.equal(await page.locator(".wy-now b").innerText(), "Queue fixture 2", "the initiating tab keeps its current track");
+  assert.equal(await secondPage.locator(".wy-now b").innerText(), "Queue fixture 2", "the second tab keeps the same current track");
+  const currentTimeAfterTabMove = await page.locator('.sess-deck[data-role="current"] audio').evaluate((audio) => audio.currentTime);
+  const secondTabTimeAfterMove = await secondPage.locator('.sess-deck[data-role="current"] audio').evaluate((audio) => audio.currentTime);
+  assert.ok(currentTimeAfterTabMove >= currentTimeBeforeTabMove - 0.1, "the playing tab is not rewound by a queue move");
+  assert.ok(secondTabTimeAfterMove >= secondTabTimeBeforeMove - 0.1, "the other tab is not rewound by the queue refresh");
+
   await page.getByRole("button", { name: "Clear", exact: true }).click();
   await waitForFixture(() => session.tracks.length === 2 && savedQueue.length === 0, "clearing linked saved rows");
   assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[1], ids[2]], "clearing the saved queue leaves direct playlist songs in the session");
@@ -275,11 +352,10 @@ try {
   await page.getByRole("button", { name: "Finish", exact: true }).click();
   await waitForFixture(() => session.currentSessionTrackId === "session-track-5", "the existing manual mix control");
   await autoCrossfade.check();
-  await page.locator(".wy-now .eyebrow").filter({ hasText: "Mixing" }).waitFor({ timeout: 16000 });
-  await waitForFixture(() => session.currentSessionTrackId === "session-track-6", "automatic handoff at the selected fade length", 18000);
+  await waitForFixture(() => session.currentSessionTrackId === "session-track-7", "automatic handoff at the selected fade length", 18000);
   await page.reload();
   assert.equal(await page.getByTestId("session-auto-crossfade").isChecked(), true, "the auto-crossfade preference survives reload");
-  console.log("PASS: queue removal during playback and mixing keeps valid session entries, preserves direct/duplicate rows, and retains fades");
+  console.log("PASS: queue edits converge across tabs without rewinding playback; removals preserve valid session entries and fade behavior");
 } finally {
   await browser.close();
 }

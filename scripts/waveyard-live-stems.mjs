@@ -26,7 +26,8 @@ const tracks = ["a", "b", "c"].map((id, index) => {
   });
   return { id, position: index, track: { id, title: `Test ${id}`, artist: "Synthetic fixture", durationSeconds: duration },
     stems, playback: { kind: "stems", assetIds: stems.map(s => s.id) }, stemMix: {},
-    transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] }, analysis: null };
+    transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
+    analysis: { bpm: 120, musicalKey: ["A minor", "C major", "C# major"][index], beatGridMs: null } };
 });
 const externalStemKeys = types.map(stem => {
   const key = `d-${stem}`;
@@ -122,6 +123,14 @@ try {
     } else if (url.pathname.endsWith("/tracks") && request.method() === "POST") {
       const item = tracks.find(t => t.track.id === body.trackId);
       session.tracks.push({ ...item, id: `session-${session.tracks.length + 1}`, position: body.position });
+    } else if (url.pathname.endsWith("/tracks") && request.method() === "PATCH") {
+      const from = session.tracks.findIndex(item => item.id === body.sessionTrackId);
+      const to = Math.max(0, Math.min(session.tracks.length - 1, Number(body.position)));
+      if (from >= 0) {
+        const [item] = session.tracks.splice(from, 1);
+        session.tracks.splice(to, 0, item);
+        session.tracks.forEach((track, index) => { track.position = index; });
+      }
     } else if (request.method() === "DELETE") {
       session.swaps = session.swaps.filter(s => s.id !== url.searchParams.get("swapId"));
     } else if (url.pathname.endsWith("/state") && body) Object.assign(session, body);
@@ -141,6 +150,34 @@ try {
     await page.waitForFunction((before) => document.querySelector('[data-testid="session-play"]').getAttribute("aria-pressed") !== before, before);
   };
   await toggle();
+  const wheel = page.getByTestId("session-camelot-wheel");
+  assert.equal(await wheel.getByTestId("camelot-key-8A").getAttribute("aria-pressed"), "true", "the current A minor track maps to 8A");
+  assert.match(await wheel.getByTestId("camelot-key-8B").getAttribute("class"), /compatible/, "the relative-major 8B cell is highlighted");
+  await wheel.getByTestId("camelot-key-3B").click();
+  await wheel.getByRole("button", { name: "Set Test c as next" }).click();
+  assert.equal(session.tracks[1].id, "c", "selecting a Camelot key can reorder a compatible session track to next");
+
+  await current.getByLabel("Isolate vocals", { exact: true }).click();
+  await page.waitForFunction(() => {
+    const get = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    return get("vocals") > 0.9 && ["drums", "bass", "other"].every(type => get(type) < 0.01);
+  });
+  await current.getByLabel("Isolate vocals", { exact: true }).click();
+  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type => {
+    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));
+    return source?.inputNode?.nextNode?.gain?.value > 0.9;
+  }));
+  await current.getByLabel("Mute drums", { exact: true }).click();
+  await page.waitForFunction(() => {
+    const get = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    return get("drums") < 0.01 && ["vocals", "bass", "other"].every(type => get(type) > 0.9);
+  });
+  await current.getByLabel("Restore all current stems", { exact: true }).click();
+  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type => {
+    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));
+    return source?.inputNode?.nextNode?.gain?.value > 0.9;
+  }));
+
   await current.getByLabel("vocals source", { exact: true }).selectOption("b");
   await page.waitForFunction(() => window.audioProbe.buffers.length === 1);
   await page.waitForTimeout(250);
@@ -185,6 +222,5 @@ try {
   await page.waitForFunction(() => !document.querySelector('[data-role="current"] [role="alert"]'));
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile must not overflow");
-  console.log("PASS: live swaps, seek/resume, failure/retry, mobile width");
   console.log("PASS: live swaps, seek/resume, failure/retry, mobile width");
 } finally { await browser.close(); }

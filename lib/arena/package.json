@@ -307,6 +307,8 @@
     "./lib/waveyard/library/service": "./src/lib/waveyard/library/service.ts",
     "./lib/waveyard/library/session-logic.test": "./src/lib/waveyard/library/session-logic.test.ts",
     "./lib/waveyard/library/session-logic": "./src/lib/waveyard/library/session-logic.ts",
+    "./lib/waveyard/library/camelot-wheel.test": "./src/lib/waveyard/library/camelot-wheel.test.ts",
+    "./lib/waveyard/library/camelot-wheel": "./src/lib/waveyard/library/camelot-wheel.ts",
     "./lib/waveyard/library/session-service": "./src/lib/waveyard/library/session-service.ts",
     "./lib/waveyard/local-context": "./src/lib/waveyard/local-context.ts",
     "./lib/waveyard/measure/cleanup-workflow.test": "./src/lib/waveyard/measure/cleanup-workflow.test.ts",

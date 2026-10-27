@@ -13,6 +13,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import Link from "@/routing/Link";
 import { useListeningHost } from "@/components/waveyard/listening/ListeningHost";
 import StemEngineSetup from "./StemEngineSetup";
+import { publishWaveyardQueueChange, subscribeToWaveyardQueueChanges } from "./queue-sync";
 
 import { formatPlayClock } from "@workspace/arena/lib/waveyard/library/model";
 import {
@@ -277,9 +278,11 @@ export function MusicHome() {
         setQueue((await response.json()).queue ?? []);
       }).catch(() => setMessage("The saved queue could not be refreshed."));
     };
-    window.addEventListener("waveyard:queue-changed", reloadQueue);
-    return () => window.removeEventListener("waveyard:queue-changed", reloadQueue);
-  }, []);
+    return subscribeToWaveyardQueueChanges(({ affectedSessionIds }) => {
+      reloadQueue();
+      host.refreshSession(affectedSessionIds);
+    });
+  }, [host]);
 
   // Debounced live search over real persisted metadata.
   useEffect(() => {
@@ -431,6 +434,7 @@ export function MusicHome() {
     }
     const result = await response.json();
     setQueue(result.queue ?? []);
+    publishWaveyardQueueChange();
     if (typeof result.addedQueueItemId !== "string") {
       setMessage(`${track.title} was saved, but its listening entry could not be linked.`);
       return;
@@ -439,7 +443,10 @@ export function MusicHome() {
     const addedToListening = await host.enqueueTracks([track.id], [result.addedQueueItemId]);
     if (!addedToListening) {
       const rollback = await fetch(`/api/library/queue/${result.addedQueueItemId}`, { method: "DELETE" });
-      if (rollback.ok) setQueue((await rollback.json()).queue ?? []);
+      if (rollback.ok) {
+        setQueue((await rollback.json()).queue ?? []);
+        publishWaveyardQueueChange();
+      }
       setMessage("The song could not be added to the listening order.");
       return;
     }
@@ -606,6 +613,7 @@ export function MusicHome() {
       const result = await response.json();
       setQueue(result.queue ?? []);
       host.refreshSession(result.affectedSessionIds ?? []);
+      publishWaveyardQueueChange(result.affectedSessionIds ?? []);
     }
   }, [host]);
 
@@ -615,6 +623,7 @@ export function MusicHome() {
       const result = await response.json();
       setQueue(result.queue ?? []);
       host.refreshSession(result.affectedSessionIds ?? []);
+      publishWaveyardQueueChange(result.affectedSessionIds ?? []);
     }
   }, [host]);
 
@@ -628,6 +637,7 @@ export function MusicHome() {
       const result = await response.json();
       setQueue(result.queue ?? []);
       host.refreshSession(result.affectedSessionIds ?? []);
+      publishWaveyardQueueChange(result.affectedSessionIds ?? []);
     } else {
       setMessage("Could not update the saved queue order.");
     }
