@@ -28,6 +28,11 @@ const tracks = ["a", "b", "c"].map((id, index) => {
     stems, playback: { kind: "stems", assetIds: stems.map(s => s.id) }, stemMix: {},
     transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] }, analysis: null };
 });
+const externalStemKeys = types.map(stem => {
+  const key = `d-${stem}`;
+  assets.set(key, wav(4, 530 + types.indexOf(stem) * 40));
+  return { id: key, stemType: stem, engine: "synthetic-test" };
+});
 const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 const browser = await chromium.launch({ executablePath: "/repl/tools/bin/chromium",
@@ -71,12 +76,16 @@ try {
         ...(range ? { "Content-Range": `bytes ${start}-${end}/${body.length}` } : {}) },
     });
   });
+  await page.route("**/api/library/tracks", route => route.fulfill({ json: { tracks: [
+    { id: "d", title: "Test D", artist: "Synthetic fixture", stemAvailability: { status: "separated" } },
+  ] } }));
   await page.route(`**/api/library/sessions/${sessionId}**`, async route => {
     const request = route.request(), url = new URL(request.url());
     const body = request.postDataJSON();
     if (url.pathname.endsWith("/swaps") && request.method() === "POST") {
       session.swaps = session.swaps.filter(s => !(s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType));
-      session.swaps.push({ ...body, id: `swap-${body.stemType}`, fromTrackId: "a", createdAt: new Date().toISOString() });
+      session.swaps.push({ ...body, id: `swap-${body.stemType}`, fromTrackId: "a", createdAt: new Date().toISOString(),
+        donorTrack: body.toTrackId === "d" ? { id: "d", title: "Test D", stems: externalStemKeys } : undefined });
     } else if (request.method() === "DELETE") {
       session.swaps = session.swaps.filter(s => s.id !== url.searchParams.get("swapId"));
     } else if (url.pathname.endsWith("/state") && body) Object.assign(session, body);
@@ -122,6 +131,13 @@ try {
   await toggle();
   const offsets = await page.evaluate(() => window.audioProbe.buffers.slice(-4).map(b => b.startedOffset));
   assert.ok(offsets.every(t => Math.abs(t - 3) < 0.1), `all four donors must follow original clock modulo duration: ${offsets}`);
+  const currentVocals = page.locator('[data-role="current"]').getByLabel("vocals source", { exact: true });
+  await currentVocals.selectOption("d");
+  await page.waitForFunction(() => window.audioProbe.buffers.length >= 7 &&
+    [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > 10));
+  assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "d", "library donor is saved without being added to the session queue");
+  const externalOffset = await page.evaluate(() => window.audioProbe.buffers.at(-1).startedOffset);
+  assert.ok(Math.abs(externalOffset - 3) < 0.1, `external library donor follows recipient clock: ${externalOffset}`);
   failAsset = "c-bass";
   await current.getByLabel("bass source", { exact: true }).selectOption("c");
   await current.getByRole("alert").waitFor();

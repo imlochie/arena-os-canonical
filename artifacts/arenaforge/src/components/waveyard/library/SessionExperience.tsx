@@ -47,6 +47,7 @@ interface SessionDetail {
     toTrackId: string;
     atSeconds: number;
     createdAt: string;
+    donorTrack?: { id: string; title: string; stems: Array<{ id: string; stemType: string }> } | null;
   }>;
   createdAt: string;
   updatedAt: string;
@@ -56,6 +57,7 @@ interface LibraryTrackOption {
   id: string;
   title: string;
   artist: string;
+  stemAvailability?: { status: "separated" | "source-only" | "processing" | "unavailable" };
 }
 
 export type HostCommandKind = "play" | "load" | "next";
@@ -572,7 +574,8 @@ export default function SessionExperience({
     for (const swap of session.swaps) {
       if (swap.sessionTrackId !== currentItem.id) continue;
       const donor = session.tracks.find((t) => t.track.id === swap.toTrackId);
-      const donorStem = donor?.stems.find((s) => s.stemType === swap.stemType);
+      const donorStem = donor?.stems.find((s) => s.stemType === swap.stemType)
+        ?? swap.donorTrack?.stems.find((s) => s.stemType === swap.stemType);
       if (donorStem) map[swap.stemType] = donorStem.id;
     }
     return map;
@@ -957,27 +960,29 @@ export default function SessionExperience({
 
   // ------------------------------------------------------------------ swaps
   const requestSwap = useCallback(
-    async (stemType: string, donor: SessionTrackItem) => {
+    async (stemType: string, donor: { id: string; title: string; stems?: SessionTrackItem["stems"] }) => {
       if (session === null || currentItem === null) return;
-      const validation = validateStemSwap(currentItem.stems, donor.stems, stemType);
-      if (!validation.ok) {
+      const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
+      if (validation && !validation.ok) {
         setStatus(validation.reason);
         return;
       }
       setSavingSwap(true);
       try {
-      const detail = await mutate(`/api/library/sessions/${session.id}/swaps`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          sessionTrackId: currentItem.id,
-          stemType,
-          toTrackId: donor.track.id,
-          atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
-        }),
-      });
-      if (detail) setStatus(`${stemType} source saved: “${donor.track.title}”.`);
-      } finally { setSavingSwap(false); }
+        const detail = await mutate(`/api/library/sessions/${session.id}/swaps`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            sessionTrackId: currentItem.id,
+            stemType,
+            toTrackId: donor.id,
+            atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
+          }),
+        });
+        if (detail) setStatus(`${stemType} source saved: “${donor.title}”.`);
+      } finally {
+        setSavingSwap(false);
+      }
     },
     [session, currentItem, mutate, activeDeck],
   );
@@ -989,7 +994,9 @@ export default function SessionExperience({
       try {
         const detail = await mutate(`/api/library/sessions/${session.id}/swaps?swapId=${swapId}`, { method: "DELETE" });
         if (detail) setStatus("Original stem restored.");
-      } finally { setSavingSwap(false); }
+      } finally {
+        setSavingSwap(false);
+      }
     },
     [session, mutate],
   );
@@ -1188,21 +1195,29 @@ export default function SessionExperience({
     const donors = session.tracks.filter((item) =>
       item.track.id !== currentItem.track.id && validateStemSwap(currentItem.stems, item.stems, stemType).ok,
     );
+    const inSession = new Set(session.tracks.map((item) => item.track.id));
+    const libraryDonors = library.filter((item) => !inSession.has(item.id) &&
+      item.id !== currentItem.track.id && item.stemAvailability?.status === "separated");
     return (
       <select
         className="wy-stem-source"
         aria-label={`${stemType} source`}
         value={swap?.toTrackId ?? ""}
         disabled={savingSwap}
-        title={donors.length ? "Choose a live layer from a song in this session" : "Add another separated song to this session to swap live"}
+        title="Choose any separated song in your library as a live stem source"
         onChange={(event) => {
           const donor = donors.find((item) => item.track.id === event.target.value);
-          if (donor) requestSwap(stemType, donor);
-          else if (!event.target.value && swap) revertSwap(swap.id);
+          if (donor) requestSwap(stemType, { id: donor.track.id, title: donor.track.title, stems: donor.stems });
+          else {
+            const source = libraryDonors.find((item) => item.id === event.target.value);
+            if (source) requestSwap(stemType, { id: source.id, title: source.title });
+            else if (!event.target.value && swap) revertSwap(swap.id);
+          }
         }}
       >
         <option value="">Original</option>
         {donors.map((donor) => <option key={donor.id} value={donor.track.id}>{donor.track.title}</option>)}
+        {libraryDonors.map((donor) => <option key={donor.id} value={donor.id}>{donor.title}</option>)}
       </select>
     );
   };

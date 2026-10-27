@@ -172,6 +172,14 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
     .from(listenSessionSwaps)
     .where(eq(listenSessionSwaps.sessionId, sessionId))
     .orderBy(asc(listenSessionSwaps.createdAt));
+  // A live donor can be any track in the owner's library, not just a queued
+  // session track. Include only the stem identities needed to restore audio.
+  for (const donorId of new Set(swapRows.map((row) => row.toTrackId))) {
+    if (!details.has(donorId)) {
+      const donor = await getTrack(session.ownerId, donorId);
+      if (donor) details.set(donorId, donor);
+    }
+  }
   return {
     id: session.id,
     name: session.name,
@@ -198,6 +206,11 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
       toTrackId: row.toTrackId,
       atSeconds: row.atSeconds,
       createdAt: row.createdAt.toISOString(),
+      donorTrack: details.has(row.toTrackId) ? {
+        id: row.toTrackId,
+        title: details.get(row.toTrackId)!.track.title,
+        stems: details.get(row.toTrackId)!.stems,
+      } : null,
     })),
     createdAt: session.createdAt.toISOString(),
     updatedAt: session.updatedAt.toISOString(),
