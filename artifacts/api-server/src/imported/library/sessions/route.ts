@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { createSession, listSessions } from "@workspace/arena/lib/waveyard/library/session-service";
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const user = await requireUser();
-    return NextResponse.json({ sessions: await listSessions(user.id) });
+    return Response.json({ sessions: await listSessions(user.id) });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;
@@ -23,9 +23,9 @@ export async function POST(request: Request) {
   try {
     const user = await requireUser();
     const parsed = createSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "A session name is required." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "A session name is required." }, { status: 400 });
     const session = await createSession(user.id, parsed.data.name);
-    return NextResponse.json({ session }, { status: 201 });
+    return Response.json({ session }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

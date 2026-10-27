@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -32,35 +32,35 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({}));
     const clipId = String(body.clipId ?? "");
     const startBeatIndex = Number(body.startBeatIndex);
     const endBeatIndex = Number(body.endBeatIndex);
     
     const [remix] = await db.select().from(remixSessions).where(eq(remixSessions.id, id)).limit(1);
-    if (!remix) return NextResponse.json({ error: "Remix session not found." }, { status: 404 });
+    if (!remix) return Response.json({ error: "Remix session not found." }, { status: 404 });
     await requireProjectRole(user.id, remix.projectId, "editor");
     const [clip] = await db.select().from(remixClips).where(eq(remixClips.id, clipId)).limit(1);
-    if (!clip) return NextResponse.json({ error: "Clip not found." }, { status: 404 });
+    if (!clip) return Response.json({ error: "Clip not found." }, { status: 404 });
     const [track] = await db.select().from(remixTracks).where(eq(remixTracks.id, clip.remixTrackId)).limit(1);
     if (!track || track.remixSessionId !== remix.id)
-      return NextResponse.json({ error: "Clip is outside this remix session." }, { status: 403 });
+      return Response.json({ error: "Clip is outside this remix session." }, { status: 403 });
     const [stem] = await db.select().from(stemAssets).where(eq(stemAssets.id, clip.stemAssetId)).limit(1);
     if (!stem || stem.projectId !== remix.projectId)
-      return NextResponse.json({ error: "Clip source stem is unavailable." }, { status: 409 });
+      return Response.json({ error: "Clip source stem is unavailable." }, { status: 409 });
     const [analysis] = await db
       .select()
       .from(sourceAnalyses)
       .where(eq(sourceAnalyses.sourceAssetId, stem.sourceAssetId))
       .limit(1);
     if (!analysis || analysis.projectId !== remix.projectId || analysis.status !== "complete")
-      return NextResponse.json({ errorCode: "beat_grid_unavailable", error: "Beat slicing requires complete source beat analysis." }, { status: 422 });
+      return Response.json({ errorCode: "beat_grid_unavailable", error: "Beat slicing requires complete source beat analysis." }, { status: 422 });
     let ratio = 1;
     if (clip.tempoSyncEnabled) {
       ratio = tempoRatioForBpm(remix.tempoBpm, analysis.bpm ?? Number.NaN) ?? 0;
       if (!ratio || analysis.bpm! < 40 || analysis.bpm! > 300)
-        return NextResponse.json({ errorCode: "tempo_sync_bpm_unavailable", error: "Tempo-synced slicing requires a usable source BPM." }, { status: 422 });
+        return Response.json({ errorCode: "tempo_sync_bpm_unavailable", error: "Tempo-synced slicing requires a usable source BPM." }, { status: 422 });
     }
     const result = sliceClipToBeatRange(
       clip,
@@ -71,10 +71,10 @@ export async function POST(
       ratio,
     );
     if (!result.ok)
-      return NextResponse.json({ errorCode: result.reason, error: "The requested beat range is unavailable or invalid." }, { status: 422 });
+      return Response.json({ errorCode: result.reason, error: "The requested beat range is unavailable or invalid." }, { status: 422 });
     const count = await db.select({ id: remixClips.id }).from(remixClips).where(eq(remixClips.remixTrackId, track.id));
     if (count.length >= 256)
-      return NextResponse.json({ error: "This track has reached the 256-clip limit." }, { status: 422 });
+      return Response.json({ error: "This track has reached the 256-clip limit." }, { status: 422 });
     const [created] = await db.transaction(async (tx) => {
       const [inserted] = await tx.insert(remixClips).values({
         remixTrackId: track.id,
@@ -92,10 +92,10 @@ export async function POST(
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
       return [inserted];
     });
-    return NextResponse.json({ clip: created }, { status: 201 });
+    return Response.json({ clip: created }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("beat slice failed", error);
-    return NextResponse.json({ error: "Could not create the beat-aligned slice." }, { status: 500 });
+    return Response.json({ error: "Could not create the beat-aligned slice." }, { status: 500 });
   }
 }

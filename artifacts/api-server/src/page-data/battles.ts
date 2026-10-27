@@ -47,5 +47,8 @@ export async function loadPage(params: Record<string,string>) {
   const outcome =
     battle.winner === "a" ? `🏆 ${nameA} won` : battle.winner === "b" ? `🏆 ${nameB} won` : battle.winner === "tie" ? "🤝 Tie" : battle.winner === "both-bad" ? "👎 Both bad" : "🎭 Awaiting vote";
 
-  return Response.json({ battle, turns, outcome, nameA, nameB, voted });
+  return Response.json({
+    battle: voted ? battle : { ...battle, modelAId: "???", modelBId: "???", assistantAId: null, assistantBId: null },
+    turns, outcome, nameA, nameB, voted,
+  });
 }

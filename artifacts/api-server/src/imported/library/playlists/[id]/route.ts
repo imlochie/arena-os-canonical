@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
@@ -11,10 +11,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
-    return NextResponse.json({ playlist: await getPlaylist(user.id, id) });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
+    return Response.json({ playlist: await getPlaylist(user.id, id) });
   } catch (error) {
-    if (error instanceof PlaylistNotFoundError) return NextResponse.json({ error: "Playlist not found." }, { status: 404 });
+    if (error instanceof PlaylistNotFoundError) return Response.json({ error: "Playlist not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }
@@ -27,13 +27,13 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = renameSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "A playlist name is required." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "A playlist name is required." }, { status: 400 });
     const playlist = await renamePlaylist(user.id, id, parsed.data.name);
-    return NextResponse.json({ playlist });
+    return Response.json({ playlist });
   } catch (error) {
-    if (error instanceof PlaylistNotFoundError) return NextResponse.json({ error: "Playlist not found." }, { status: 404 });
+    if (error instanceof PlaylistNotFoundError) return Response.json({ error: "Playlist not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }
@@ -45,11 +45,11 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await deletePlaylist(user.id, id);
-    return NextResponse.json({ ok: true });
+    return Response.json({ ok: true });
   } catch (error) {
-    if (error instanceof PlaylistNotFoundError) return NextResponse.json({ error: "Playlist not found." }, { status: 404 });
+    if (error instanceof PlaylistNotFoundError) return Response.json({ error: "Playlist not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }

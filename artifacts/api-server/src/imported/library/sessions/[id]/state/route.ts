@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
@@ -17,18 +17,18 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = stateSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "Invalid session state." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "Invalid session state." }, { status: 400 });
     const session = await saveSessionState(
       user.id,
       id,
       parsed.data.currentSessionTrackId,
       parsed.data.positionSeconds,
     );
-    return NextResponse.json({ session });
+    return Response.json({ session });
   } catch (error) {
-    if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
+    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }

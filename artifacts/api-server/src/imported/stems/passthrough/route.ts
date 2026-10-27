@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { processingJobs, sourceAssets, stemAssets } from "@workspace/db/waveyardSchema";
@@ -23,20 +23,20 @@ export async function POST(request: Request) {
     const user = await requireUser();
     const body = await request.json().catch(() => null);
     const sourceAssetId = typeof body?.sourceAssetId === "string" ? body.sourceAssetId : "";
-    if (!sourceAssetId) return NextResponse.json({ error: "A source asset id is required." }, { status: 400 });
+    if (!sourceAssetId) return Response.json({ error: "A source asset id is required." }, { status: 400 });
 
     const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, sourceAssetId)).limit(1);
-    if (!source) return NextResponse.json({ error: "Source asset not found." }, { status: 404 });
+    if (!source) return Response.json({ error: "Source asset not found." }, { status: 404 });
     await requireProjectRole(user.id, source.projectId, "editor");
 
     // Only when real separation did not produce stems for this source.
     const realStems = await db.select().from(stemAssets).where(and(eq(stemAssets.sourceAssetId, source.id), eq(stemAssets.projectId, source.projectId)));
     if (realStems.some((stem) => stem.engine !== "passthrough-unseparated")) {
-      return NextResponse.json({ error: "This source already has separated stems." }, { status: 409 });
+      return Response.json({ error: "This source already has separated stems." }, { status: 409 });
     }
     if (realStems.length) {
       const existing = realStems[0];
-      return NextResponse.json({ stem: existing }, { status: 200 });
+      return Response.json({ stem: existing }, { status: 200 });
     }
 
     // Provenance: attach to this source's separation job (the failed one).
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
       .where(and(eq(processingJobs.sourceAssetId, source.id), eq(processingJobs.type, "separation")))
       .limit(1);
     if (!separationJob) {
-      return NextResponse.json({ error: "No separation job exists for this source yet." }, { status: 409 });
+      return Response.json({ error: "No separation job exists for this source yet." }, { status: 409 });
     }
 
     const [stem] = await db.insert(stemAssets).values({
@@ -64,10 +64,10 @@ export async function POST(request: Request) {
       format: source.mimeType,
       fileSizeBytes: source.fileSizeBytes,
     }).returning();
-    return NextResponse.json({ stem }, { status: 201 });
+    return Response.json({ stem }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("passthrough stem failed", error);
-    return NextResponse.json({ error: "Unseparated source track could not be created." }, { status: 500 });
+    return Response.json({ error: "Unseparated source track could not be created." }, { status: 500 });
   }
 }

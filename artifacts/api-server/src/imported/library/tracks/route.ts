@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,7 +24,7 @@ export async function GET(request: Request) {
       search: url.searchParams.get("q") ?? undefined,
       limit: url.searchParams.get("limit") !== null ? Number(url.searchParams.get("limit")) : undefined,
     });
-    return NextResponse.json({ tracks });
+    return Response.json({ tracks });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;
@@ -45,12 +45,12 @@ export async function POST(request: Request) {
     if (!guard.ok && guard.error) return guard.error;
     const form = guard.form!;
     const upload = form.get("file");
-    if (!(upload instanceof File)) return NextResponse.json({ error: "An audio file is required." }, { status: 400 });
+    if (!(upload instanceof File)) return Response.json({ error: "An audio file is required." }, { status: 400 });
     if (!acceptedAudioFilename(upload.name)) {
-      return NextResponse.json({ error: "Supported formats are WAV, MP3, FLAC, M4A, AAC, and OGG." }, { status: 415 });
+      return Response.json({ error: "Supported formats are WAV, MP3, FLAC, M4A, AAC, and OGG." }, { status: 415 });
     }
     if (upload.size <= 0 || upload.size > MAX_UPLOAD_BYTES) {
-      return NextResponse.json({ error: `Audio must be between 1 byte and ${MAX_UPLOAD_BYTES} bytes.` }, { status: 413 });
+      return Response.json({ error: `Audio must be between 1 byte and ${MAX_UPLOAD_BYTES} bytes.` }, { status: 413 });
     }
 
     const cleanName = sanitizedFilename(upload.name);
@@ -66,7 +66,7 @@ export async function POST(request: Request) {
       title: typeof form.get("title") === "string" ? String(form.get("title")) : undefined,
       artist: typeof form.get("artist") === "string" ? String(form.get("artist")) : undefined,
     });
-    return NextResponse.json(
+    return Response.json(
       {
         track: result.track,
         created: result.created,
@@ -77,7 +77,7 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof Response) return error;
     const message = error instanceof Error ? error.message : "Adding music failed.";
-    return NextResponse.json({ error: message }, { status: 422 });
+    return Response.json({ error: message }, { status: 422 });
   } finally {
     if (temporaryDirectory !== undefined) await rm(temporaryDirectory, { recursive: true, force: true });
   }

@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { desc, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -15,7 +15,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, id, "editor");
     const events = await db
       .select({
@@ -29,7 +29,7 @@ export async function GET(
       .from(projectAuditEvents)
       .where(eq(projectAuditEvents.projectId, id))
       .orderBy(desc(projectAuditEvents.createdAt));
-    return NextResponse.json({
+    return Response.json({
       events: events.map((event) => ({
         ...event,
         metadata: JSON.parse(event.metadata),

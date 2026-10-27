@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { and, desc, eq, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -90,10 +90,10 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     const editable = role === "editor" || role === "owner";
-    return NextResponse.json({
+    return Response.json({
       role,
       publication: {
         ...publicationState(project),
@@ -117,13 +117,13 @@ export async function PUT(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project } = await requireProjectRole(user.id, id, "editor");
     const parsed = publicationSchema.safeParse(
       await request.json().catch(() => null),
     );
     if (!parsed.success)
-      return NextResponse.json(
+      return Response.json(
         { error: "Provide a valid publication state.", code: "invalid_publication_state" },
         { status: 422 },
       );
@@ -135,22 +135,22 @@ export async function PUT(
 
     if (publish) {
       if (input.rightsAcknowledged !== true)
-        return NextResponse.json(
+        return Response.json(
           { error: "A rights acknowledgement is required before publication.", code: "rights_acknowledgement_required" },
           { status: 422 },
         );
       if (!licenseCode.trim())
-        return NextResponse.json(
+        return Response.json(
           { error: "A license is required before publication.", code: "license_required" },
           { status: 422 },
         );
       if (!input.publishedExportAssetId)
-        return NextResponse.json(
+        return Response.json(
           { error: "Select a completed export before publication.", code: "published_export_required" },
           { status: 422 },
         );
       if (project.moderationStatus !== "active")
-        return NextResponse.json(
+        return Response.json(
           { error: "This project's moderation state does not permit publication.", code: "moderation_status_not_publishable" },
           { status: 409 },
         );
@@ -165,17 +165,17 @@ export async function PUT(
         .where(eq(exportAssets.id, input.publishedExportAssetId))
         .limit(1);
       if (!candidate)
-        return NextResponse.json(
+        return Response.json(
           { error: "The selected export does not exist.", code: "published_export_not_found" },
           { status: 422 },
         );
       if (candidate.projectId !== project.id)
-        return NextResponse.json(
+        return Response.json(
           { error: "The selected export belongs to another project.", code: "published_export_wrong_project" },
           { status: 422 },
         );
       if (candidate.status !== "complete")
-        return NextResponse.json(
+        return Response.json(
           { error: "The selected export has not completed rendering.", code: "published_export_not_complete" },
           { status: 422 },
         );
@@ -241,7 +241,7 @@ export async function PUT(
       }
       return updated;
     });
-    return NextResponse.json({
+    return Response.json({
       publication: {
         ...publicationState(result),
         rightsAcknowledgementVersion: RIGHTS_ACKNOWLEDGEMENT_VERSION,
@@ -254,7 +254,7 @@ export async function PUT(
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("publication update failed", error);
-    return NextResponse.json(
+    return Response.json(
       { error: "Publication could not be updated." },
       { status: 500 },
     );

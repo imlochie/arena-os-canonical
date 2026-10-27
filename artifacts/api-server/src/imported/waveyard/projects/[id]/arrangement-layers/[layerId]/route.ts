@@ -13,7 +13,7 @@
  * hear is exactly what the notes say — no stale WAV can survive an edit.
  */
 
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -43,16 +43,16 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id: projectId, layerId } = await params;
-    if (!isUuid(projectId) || !isUuid(layerId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId) || !isUuid(layerId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     if (!UUID_RE.test(layerId))
-      return NextResponse.json({ error: "Invalid layer id." }, { status: 400 });
+      return Response.json({ error: "Invalid layer id." }, { status: 400 });
 
     const storageKey = `projects/${projectId}/generated/${layerId}.wav`;
     const storage = getStorage();
     try {
       const buffer = await storage.getBuffer(storageKey, MAX_WAV_BYTES);
-      return new NextResponse(new Uint8Array(buffer), {
+      return new Response(new Uint8Array(buffer), {
         status: 200,
         headers: {
           "content-type": "audio/wav",
@@ -60,11 +60,11 @@ export async function GET(
         },
       });
     } catch {
-      return NextResponse.json({ error: "Layer not found." }, { status: 404 });
+      return Response.json({ error: "Layer not found." }, { status: 404 });
     }
   } catch (error) {
     if (error instanceof Response) return error;
-    return NextResponse.json({ error: "Could not load the layer." }, { status: 500 });
+    return Response.json({ error: "Could not load the layer." }, { status: 500 });
   }
 }
 
@@ -73,7 +73,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   try {
     const user = await requireUser();
     const { id: projectId, layerId } = await params;
-    if (!isUuid(projectId) || !isUuid(layerId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId) || !isUuid(layerId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     const body = (await request.json().catch(() => ({}))) as { events?: unknown };
@@ -82,11 +82,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       .from(arrangementLayers)
       .where(and(eq(arrangementLayers.id, layerId), eq(arrangementLayers.projectId, projectId)))
       .limit(1);
-    if (!layer) return NextResponse.json({ error: "Arrangement layer not found." }, { status: 404 });
+    if (!layer) return Response.json({ error: "Arrangement layer not found." }, { status: 404 });
 
     const plan = planLayerEdit({ durationSeconds: layer.durationSeconds }, body.events);
     if (plan === null) {
-      return NextResponse.json(
+      return Response.json(
         { error: "The edited notes failed validation — every note needs a valid time, pitch, and velocity.", errorCode: "INPUT_INVALID" },
         { status: 400 },
       );
@@ -94,7 +94,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
     // Re-render: the stored audio always matches the persisted notes.
     if (!(SYNTH_INSTRUMENTS as readonly string[]).includes(layer.instrument)) {
-      return NextResponse.json({ error: `This layer's instrument "${layer.instrument}" is not renderable on this machine.` }, { status: 422 });
+      return Response.json({ error: `This layer's instrument "${layer.instrument}" is not renderable on this machine.` }, { status: 422 });
     }
     const pcm = renderNotes(plan.synthEvents, layer.instrument as SynthInstrument, layer.sampleRate, plan.durationSeconds);
     const wav = encodeWav16(pcm, layer.sampleRate);
@@ -113,7 +113,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       .where(eq(arrangementLayers.id, layer.id))
       .returning();
 
-    return NextResponse.json({
+    return Response.json({
       layer: {
         id: updated.id,
         instrument: updated.instrument,
@@ -125,7 +125,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("arrangement layer edit failed", error);
-    return NextResponse.json({ error: "The layer edit could not be saved." }, { status: 500 });
+    return Response.json({ error: "The layer edit could not be saved." }, { status: 500 });
   } finally {
     if (tempPath !== null) await rm(tempPath, { force: true }).catch(() => undefined);
   }

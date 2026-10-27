@@ -3,7 +3,7 @@
  * previous backup of the same account ("what changed since last sync").
  */
 
-const NextResponse = Response;
+
 import { and, desc, eq, lt } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -18,17 +18,17 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const [snapshot] = await db
       .select()
       .from(librarySnapshots)
       .where(and(eq(librarySnapshots.id, id), eq(librarySnapshots.ownerId, user.id)))
       .limit(1);
-    if (snapshot === undefined) return NextResponse.json({ error: "No such snapshot." }, { status: 404 });
+    if (snapshot === undefined) return Response.json({ error: "No such snapshot." }, { status: 404 });
 
     const current = parseBackup(snapshot.snapshotJson);
     if (current === null) {
-      return NextResponse.json({ error: "This snapshot failed validation on read — it is corrupt." }, { status: 500 });
+      return Response.json({ error: "This snapshot failed validation on read — it is corrupt." }, { status: 500 });
     }
 
     // The previous backup of the same account (strictly older).
@@ -40,7 +40,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       .limit(1);
     const previous = previousRow === undefined ? null : parseBackup(previousRow.snapshotJson);
 
-    return NextResponse.json({
+    return Response.json({
       snapshot: {
         id: snapshot.id,
         service: snapshot.service,
@@ -55,6 +55,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("snapshot fetch failed", error);
-    return NextResponse.json({ error: "Could not load the snapshot." }, { status: 500 });
+    return Response.json({ error: "Could not load the snapshot." }, { status: 500 });
   }
 }

@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -22,10 +22,10 @@ export async function POST(
       .where(eq(sourceAnalyses.id, id))
       .limit(1);
     if (!analysis)
-      return NextResponse.json({ error: "Analysis job not found." }, { status: 404 });
+      return Response.json({ error: "Analysis job not found." }, { status: 404 });
     await requireProjectRole(user.id, analysis.projectId, "editor");
     if (analysis.status !== "failed")
-      return NextResponse.json(
+      return Response.json(
         { error: "Only a failed analysis job can be retried." },
         { status: 409 },
       );
@@ -60,11 +60,11 @@ export async function POST(
       })
       .where(eq(sourceAnalyses.id, analysis.id))
       .returning();
-    return NextResponse.json({ analysis: updated });
+    return Response.json({ analysis: updated });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("analysis retry failed", error);
-    return NextResponse.json(
+    return Response.json(
       { error: "Analysis retry could not be queued." },
       { status: 503 },
     );

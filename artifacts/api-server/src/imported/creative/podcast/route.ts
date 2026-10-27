@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 
 import { buildPodcastScript, synthesizePodcast } from "@workspace/arena/lib/creative/podcast";
 
@@ -22,23 +22,23 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
   const text = (body.text ?? "").slice(0, 20000);
-  if (!text.trim()) return NextResponse.json({ error: "text is required (paste notes, lyrics, a transcript…)" }, { status: 400 });
+  if (!text.trim()) return Response.json({ error: "text is required (paste notes, lyrics, a transcript…)" }, { status: 400 });
 
   const script = await buildPodcastScript(text, { title: body.title, style: body.style, keys: body.keys, modelId: body.modelId });
 
-  if (!body.synthesize) return NextResponse.json({ script });
+  if (!body.synthesize) return Response.json({ script });
   const audio = await synthesizePodcast(script, { keys: { elevenlabs: body.keys?.elevenlabs } });
   if (!audio.ok) {
-    return NextResponse.json({
+    return Response.json({
       script,
       audio: null,
       audioReason: audio.reason,
     });
   }
-  return NextResponse.json({
+  return Response.json({
     script,
     audio: { base64: audio.buffer.toString("base64"), mime: audio.mime, engine: audio.engine },
   });

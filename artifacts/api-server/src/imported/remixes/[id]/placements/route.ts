@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -59,12 +59,12 @@ async function proposalFor(remix: typeof remixSessions.$inferSelect, anchorClipI
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params; const remix = await access(user.id, id, "viewer");
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({})); const mode = modeFrom(body.mode);
-    if (!mode) return NextResponse.json({ error: "Choose an overlay or handoff mode." }, { status: 400 });
+    if (!mode) return Response.json({ error: "Choose an overlay or handoff mode." }, { status: 400 });
     const proposal = await proposalFor(remix, String(body.anchorClipId ?? ""), String(body.stemAssetId ?? ""), String(body.sourceSectionId ?? ""), mode);
-    if (!proposal) return NextResponse.json({ error: "Choose a verified source section and an existing arrangement clip." }, { status: 409 });
-    return NextResponse.json({ proposal });
+    if (!proposal) return Response.json({ error: "Choose a verified source section and an existing arrangement clip." }, { status: 409 });
+    return Response.json({ proposal });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 
@@ -72,12 +72,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params; const remix = await access(user.id, id, "editor");
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({})); const mode = modeFrom(body.mode);
-    if (!mode) return NextResponse.json({ error: "Choose an overlay or handoff mode." }, { status: 400 });
+    if (!mode) return Response.json({ error: "Choose an overlay or handoff mode." }, { status: 400 });
     const anchorClipId = String(body.anchorClipId ?? ""); const stemId = String(body.stemAssetId ?? ""); const sectionId = String(body.sourceSectionId ?? "");
     const proposal = await proposalFor(remix, anchorClipId, stemId, sectionId, mode);
-    if (!proposal || proposal.id !== String(body.proposalId ?? "")) return NextResponse.json({ error: "This placement is stale. Propose it again before adding." }, { status: 409 });
+    if (!proposal || proposal.id !== String(body.proposalId ?? "")) return Response.json({ error: "This placement is stale. Propose it again before adding." }, { status: 409 });
     
     await db.transaction(async (tx) => {
       const tracks = await tx.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id));
@@ -95,6 +95,6 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       await tx.insert(remixClips).values({ remixTrackId: track.id, stemAssetId: stem.id, timelineStartMs: proposal.timelineStartMs, durationMs: proposal.durationMs, sourceOffsetMs: proposal.source.startMs, gain: 1, fadeInMs: proposal.fadeInMs, fadeOutMs: 0, tempoSyncEnabled: proposal.tempoSyncEnabled, keySyncEnabled: proposal.keySyncEnabled, beatSnapEnabled: proposal.beatSnapEnabled });
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
     });
-    return NextResponse.json({ proposal }, { status: 201 });
-  } catch (error) { if (error instanceof Response) return error; console.error("multi-source placement failed", error); return NextResponse.json({ error: "Could not add this source placement." }, { status: 500 }); }
+    return Response.json({ proposal }, { status: 201 });
+  } catch (error) { if (error instanceof Response) return error; console.error("multi-source placement failed", error); return Response.json({ error: "Could not add this source placement." }, { status: 500 }); }
 }

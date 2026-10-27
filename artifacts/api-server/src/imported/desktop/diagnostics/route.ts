@@ -7,7 +7,7 @@
  * READY is only ever the result of a successful real interaction.
  */
 
-const NextResponse = Response;
+
 import { sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 
@@ -143,5 +143,5 @@ export async function GET() {
     : values.some((report) => report.status === "DEGRADED")
       ? "DEGRADED"
       : "READY";
-  return NextResponse.json({ overall, components, checkedAt: new Date().toISOString() });
+  return Response.json({ overall, components, checkedAt: new Date().toISOString() });
 }

@@ -9,7 +9,7 @@
  * DELETE → removes the row and the stored WAV.
  */
 
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -26,7 +26,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   try {
     const user = await requireUser();
     const { id: projectId, chopId } = await params;
-    if (!isUuid(projectId) || !isUuid(chopId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId) || !isUuid(chopId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
 
     const [row] = await db
@@ -34,13 +34,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       .from(vocalChops)
       .where(and(eq(vocalChops.id, chopId), eq(vocalChops.projectId, projectId)))
       .limit(1);
-    if (!row) return NextResponse.json({ error: "Vocal chop not found." }, { status: 404 });
+    if (!row) return Response.json({ error: "Vocal chop not found." }, { status: 404 });
 
     const buffer = await getStorage().getBuffer(row.storageKey, MAX_WAV_BYTES);
     const download = new URL(request.url).searchParams.get("download") === "1";
     const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
     const noteName = `${noteNames[row.rootMidi % 12]}${Math.floor(row.rootMidi / 12) - 1}`;
-    return new NextResponse(new Uint8Array(buffer), {
+    return new Response(new Uint8Array(buffer), {
       status: 200,
       headers: {
         "content-type": "audio/wav",
@@ -49,7 +49,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       },
     });
   } catch {
-    return NextResponse.json({ error: "Vocal chop not found." }, { status: 404 });
+    return Response.json({ error: "Vocal chop not found." }, { status: 404 });
   }
 }
 
@@ -57,7 +57,7 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   try {
     const user = await requireUser();
     const { id: projectId, chopId } = await params;
-    if (!isUuid(projectId) || !isUuid(chopId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId) || !isUuid(chopId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     const [row] = await db
@@ -65,14 +65,14 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
       .from(vocalChops)
       .where(and(eq(vocalChops.id, chopId), eq(vocalChops.projectId, projectId)))
       .limit(1);
-    if (!row) return NextResponse.json({ error: "Vocal chop not found." }, { status: 404 });
+    if (!row) return Response.json({ error: "Vocal chop not found." }, { status: 404 });
 
     await db.delete(vocalChops).where(eq(vocalChops.id, chopId));
     await getStorage().delete(row.storageKey).catch(() => undefined);
-    return NextResponse.json({ deleted: chopId }, { status: 200 });
+    return Response.json({ deleted: chopId }, { status: 200 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("vocal chop delete failed", error);
-    return NextResponse.json({ error: "Could not delete the vocal chop." }, { status: 500 });
+    return Response.json({ error: "Could not delete the vocal chop." }, { status: 500 });
   }
 }

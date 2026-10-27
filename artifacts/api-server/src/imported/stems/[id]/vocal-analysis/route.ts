@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -37,25 +37,25 @@ async function authorizedVocalStem(id: string, userId: string, role: "viewer" | 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const target = await authorizedVocalStem(id, user.id, "viewer");
-    if (!target) return NextResponse.json({ error: "Isolated vocal stem not found." }, { status: 404 });
+    if (!target) return Response.json({ error: "Isolated vocal stem not found." }, { status: 404 });
     
     const [analysis] = await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, target.stem.id)).limit(1);
     const [frames, phrases] = analysis ? await Promise.all([
       db.select().from(vocalPitchFrames).where(eq(vocalPitchFrames.vocalAnalysisId, analysis.id)).orderBy(vocalPitchFrames.frameIndex),
       db.select().from(vocalPhrases).where(eq(vocalPhrases.vocalAnalysisId, analysis.id)).orderBy(vocalPhrases.phraseIndex),
     ]) : [[], []];
-    return NextResponse.json({ analysis: analysis ?? null, frames, phrases });
+    return Response.json({ analysis: analysis ?? null, frames, phrases });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const target = await authorizedVocalStem(id, user.id, "editor");
-    if (!target) return NextResponse.json({ error: "Isolated vocal stem not found." }, { status: 404 });
+    if (!target) return Response.json({ error: "Isolated vocal stem not found." }, { status: 404 });
     const { stem, source } = target; 
     const [created] = await db.insert(vocalAnalyses).values({
       projectId: stem.projectId, sourceAssetId: source.id, stemAssetId: stem.id,
@@ -72,7 +72,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       stemChecksumSha256: analysis.stemChecksumSha256, expectedStemChecksumSha256: stem.checksumSha256,
       analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion,
     });
-    if (reason) return NextResponse.json({ error: "Existing vocal analysis provenance is stale; stem separation is required." }, { status: 409 });
+    if (reason) return Response.json({ error: "Existing vocal analysis provenance is stale; stem separation is required." }, { status: 409 });
     if (created || analysis.status === "failed") {
       if (!created) await db.update(vocalAnalyses).set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date() }).where(eq(vocalAnalyses.id, analysis.id));
       try {
@@ -85,6 +85,6 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         throw error;
       }
     }
-    return NextResponse.json({ analysis }, { status: created ? 201 : 200 });
-  } catch (error) { if (error instanceof Response) return error; console.error("vocal analysis request failed", error); return NextResponse.json({ error: "Could not queue vocal analysis." }, { status: 503 }); }
+    return Response.json({ analysis }, { status: created ? 201 : 200 });
+  } catch (error) { if (error instanceof Response) return error; console.error("vocal analysis request failed", error); return Response.json({ error: "Could not queue vocal analysis." }, { status: 503 }); }
 }

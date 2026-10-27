@@ -6,7 +6,7 @@
  *     the text as the model output, honestly labeled via "agent-bridge".
  */
 
-const NextResponse = Response;
+
 
 import { completeTask } from "@workspace/arena/lib/modelHub/agentBridge";
 
@@ -20,16 +20,16 @@ function authorized(request: Request): boolean {
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   if (!authorized(request)) {
-    return NextResponse.json({ error: "Bridge key required." }, { status: 401 });
+    return Response.json({ error: "Bridge key required." }, { status: 401 });
   }
   const { id } = await params;
   const body = (await request.json().catch(() => ({}))) as { text?: unknown; ok?: unknown };
   const text = typeof body.text === "string" ? body.text : "";
   const ok = body.ok !== false;
   if (text === "" && ok) {
-    return NextResponse.json({ error: "An answer requires text (or ok:false to fail the task)." }, { status: 400 });
+    return Response.json({ error: "An answer requires text (or ok:false to fail the task)." }, { status: 400 });
   }
   const completed = await completeTask(id, text.slice(0, 100_000), ok);
-  if (!completed) return NextResponse.json({ error: "Task not found or not taken." }, { status: 404 });
-  return NextResponse.json({ completed: true });
+  if (!completed) return Response.json({ error: "Task not found or not taken." }, { status: 404 });
+  return Response.json({ completed: true });
 }

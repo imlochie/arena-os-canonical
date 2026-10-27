@@ -2,7 +2,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -22,7 +22,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     
     const [job] = await db
       .select()
@@ -30,7 +30,7 @@ export async function GET(
       .where(eq(exportJobs.id, id))
       .limit(1);
     if (!job)
-      return NextResponse.json({ error: "Export job not found." }, { status: 404 });
+      return Response.json({ error: "Export job not found." }, { status: 404 });
     await requireProjectRole(user.id, job.projectId, "viewer");
     const [asset] = await db
       .select()
@@ -38,7 +38,7 @@ export async function GET(
       .where(eq(exportAssets.exportJobId, job.id))
       .limit(1);
     if (!asset)
-      return NextResponse.json(
+      return Response.json(
         { error: "Export media is not available." },
         { status: 409 },
       );
@@ -50,11 +50,11 @@ export async function GET(
       60,
       download ? asset.filename : undefined,
     );
-    if (signed) return NextResponse.redirect(signed);
+    if (signed) return Response.redirect(signed);
 
     const localPath = storage.getLocalPath(asset.storageKey);
     if (!localPath)
-      return NextResponse.json(
+      return Response.json(
         { error: "Storage cannot serve this export." },
         { status: 500 },
       );
@@ -108,7 +108,7 @@ export async function GET(
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("export stream failed", error);
-    return NextResponse.json(
+    return Response.json(
       { error: "Export media could not be read." },
       { status: 500 },
     );

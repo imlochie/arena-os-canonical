@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 
 import { createMindItem, deleteMindItem, listMindItems, toggleFavorite, updateItemTags } from "@workspace/arena/lib/mind";
 
@@ -15,9 +15,9 @@ export async function GET(req: Request) {
       tag: params.get("tag") ?? undefined,
       favoritesOnly: params.get("favorites") === "1",
     });
-    return NextResponse.json({ items });
+    return Response.json({ items });
   } catch {
-    return NextResponse.json({ items: [], error: "mind unavailable (database)" }, { status: 200 });
+    return Response.json({ items: [], error: "mind unavailable (database)" }, { status: 200 });
   }
 }
 
@@ -27,10 +27,10 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
   const text = (body.text ?? "").trim();
-  if (!text && !body.path) return NextResponse.json({ error: "text (or a file path) is required" }, { status: 400 });
+  if (!text && !body.path) return Response.json({ error: "text (or a file path) is required" }, { status: 400 });
   try {
     const item = await createMindItem(
       {
@@ -43,9 +43,9 @@ export async function POST(req: Request) {
       },
       { keys: body.keys },
     );
-    return NextResponse.json({ item }, { status: 201 });
+    return Response.json({ item }, { status: 201 });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "capture failed" }, { status: 500 });
+    return Response.json({ error: error instanceof Error ? error.message : "capture failed" }, { status: 500 });
   }
 }
 
@@ -55,26 +55,26 @@ export async function PATCH(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
-  if (!body.id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+  if (!body.id) return Response.json({ error: "id is required" }, { status: 400 });
   try {
     if (Array.isArray(body.tags)) {
       const item = await updateItemTags(body.id, body.tags);
-      if (!item) return NextResponse.json({ error: "item not found" }, { status: 404 });
-      return NextResponse.json({ item });
+      if (!item) return Response.json({ error: "item not found" }, { status: 404 });
+      return Response.json({ item });
     }
     const favorite = await toggleFavorite(body.id);
-    if (favorite === null) return NextResponse.json({ error: "item not found" }, { status: 404 });
-    return NextResponse.json({ favorite });
+    if (favorite === null) return Response.json({ error: "item not found" }, { status: 404 });
+    return Response.json({ favorite });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "update failed" }, { status: 500 });
+    return Response.json({ error: error instanceof Error ? error.message : "update failed" }, { status: 500 });
   }
 }
 
 /** DELETE ?id= */
 export async function DELETE(req: Request) {
   const id = new URL(req.url).searchParams.get("id");
-  if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
-  return NextResponse.json({ removed: await deleteMindItem(id) });
+  if (!id) return Response.json({ error: "id is required" }, { status: 400 });
+  return Response.json({ removed: await deleteMindItem(id) });
 }

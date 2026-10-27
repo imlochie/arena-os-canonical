@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { asc, desc, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -41,7 +41,7 @@ function parsedBeatGrid(value: string | null) {
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project, role } = await requireProjectRole(user.id, id, "viewer");
     
     const [sources, stems, jobs, waveformRows, waveformJobRows, analysisRows, sectionAnalysisRows, sectionRows, eventAnalysisRows, eventRows, harmonyAnalysisRows, harmonyEventRows, drumAnalysisRows, drumEventRows, vocalAnalysisRows, vocalFrameRows, vocalPhraseRows, acquisitionRows, buildRows] = await Promise.all([
@@ -117,7 +117,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       existing.push(row.vocal_phrases);
       phrasesByStem.set(stemId, existing);
     }
-    return NextResponse.json({
+    return Response.json({
       project,
       role,
       build: buildRows[0] ?? null,

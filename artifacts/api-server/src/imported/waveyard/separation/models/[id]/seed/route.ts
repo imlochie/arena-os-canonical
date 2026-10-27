@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 
 import { db } from "@workspace/db";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
@@ -20,19 +20,19 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     await requireUser();
     const { id } = await params;
     const spec = findMdxModel(decodeURIComponent(id));
-    if (!spec) return NextResponse.json({ error: "Unknown stem engine model." }, { status: 404 });
+    if (!spec) return Response.json({ error: "Unknown stem engine model." }, { status: 404 });
 
     const result = await seedModelFile(spec);
     const status = await getModelFileStatus(spec);
     if (!status.verified) {
       // Defensive: seedModelFile only returns success after verification.
-      return NextResponse.json({ error: "The model did not verify after installation." }, { status: 500 });
+      return Response.json({ error: "The model did not verify after installation." }, { status: 500 });
     }
     const requeued =
       result.outcome === "installed"
         ? await requeueFailedSeparationsForModel(db, spec.id)
         : { considered: 0, requeued: 0, failures: [] };
-    return NextResponse.json({
+    return Response.json({
       model: { id: spec.id, label: modelLabel(spec), ready: status.verified, sizeBytes: status.sizeBytes },
       outcome: result.outcome,
       ...requeued,
@@ -41,6 +41,6 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     if (error instanceof Response) return error;
     const message = error instanceof Error ? error.message : "The model could not be prepared.";
     console.error("model seed failed", error);
-    return NextResponse.json({ error: message }, { status: 502 });
+    return Response.json({ error: message }, { status: 502 });
   }
 }

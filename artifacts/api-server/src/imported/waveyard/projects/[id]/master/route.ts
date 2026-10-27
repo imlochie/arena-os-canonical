@@ -11,7 +11,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
  * worker-gated and is reported honestly.
  */
 
-const NextResponse = Response;
+
 import { asc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
@@ -82,11 +82,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     const source = await firstSource(projectId);
     if (source === undefined)
-      return NextResponse.json({ error: "This project has no source audio to master." }, { status: 409 });
+      return Response.json({ error: "This project has no source audio to master." }, { status: 409 });
     tempSource = join(tmpdir(), `arena-master-src-${randomUUID()}`);
     await getStorage().getToFile(source.storageKey, tempSource);
     const decoded = await decodeSourceToStereoPcm(tempSource, { sampleRate: source.sampleRate });
@@ -98,7 +98,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       .where(eq(remixSessions.projectId, projectId))
       .orderBy(asc(remixSessions.createdAt))
       .limit(1);
-    return NextResponse.json({
+    return Response.json({
       analysis: {
         measurements,
         spectral,
@@ -111,8 +111,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   } catch (error) {
     if (error instanceof Response) return error;
     if (error instanceof DependencyMissingError)
-      return NextResponse.json({ error: error.message, errorCode: error.errorCode }, { status: 424 });
-    return NextResponse.json({ error: "Master analysis failed." }, { status: 500 });
+      return Response.json({ error: error.message, errorCode: error.errorCode }, { status: 424 });
+    return Response.json({ error: "Master analysis failed." }, { status: 500 });
   } finally {
     if (tempSource !== null) await rm(tempSource, { force: true }).catch(() => undefined);
   }
@@ -133,14 +133,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const action = String(body.action ?? "");
 
     const source = await firstSource(projectId);
     if (source === undefined)
-      return NextResponse.json({ error: "This project has no source audio to master." }, { status: 409 });
+      return Response.json({ error: "This project has no source audio to master." }, { status: 409 });
 
     tempSource = join(tmpdir(), `arena-master-src-${randomUUID()}`);
     await getStorage().getToFile(source.storageKey, tempSource);
@@ -149,7 +149,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (action === "preview") {
       const chain = parseOperations(body.operations);
       if (chain === null || chain.length === 0)
-        return NextResponse.json({ error: "Operations failed validation — real registry processors with in-range parameters only." }, { status: 400 });
+        return Response.json({ error: "Operations failed validation — real registry processors with in-range parameters only." }, { status: 400 });
       const before: AudioMeasurements = measureAudio(decoded.pcm, decoded.sampleRate);
       const processed = processWithChain(Float32Array.from(decoded.pcm), chain, decoded.sampleRate);
       const after = measureAudio(processed, decoded.sampleRate);
@@ -158,7 +158,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       tempRender = join(tmpdir(), `arena-master-out-${renderId}.wav`);
       await writeFile(tempRender, encodeWav16(processed, decoded.sampleRate));
       await getStorage().putFile(storageKey, tempRender);
-      return NextResponse.json({
+      return Response.json({
         preview: {
           audioUrl: `/api/waveyard/projects/${projectId}/master/${`preview-${renderId}`}`,
           operations: chain.map((insert) => ({ processor: insert.processor, params: insert.params })),
@@ -171,7 +171,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (action === "apply") {
       const chain = parseOperations(body.operations);
       if (chain === null || chain.length === 0)
-        return NextResponse.json({ error: "Operations failed validation." }, { status: 400 });
+        return Response.json({ error: "Operations failed validation." }, { status: 400 });
       const [session] = await db
         .select({ id: remixSessions.id })
         .from(remixSessions)
@@ -179,24 +179,24 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         .orderBy(asc(remixSessions.createdAt))
         .limit(1);
       if (session === undefined)
-        return NextResponse.json({ error: "No remix session to hold the master chain." }, { status: 409 });
+        return Response.json({ error: "No remix session to hold the master chain." }, { status: 409 });
       await db
         .update(remixSessions)
         .set({ masterInserts: JSON.stringify(chain), updatedAt: new Date() })
         .where(eq(remixSessions.id, session.id));
-      return NextResponse.json({
+      return Response.json({
         applied: chain.map((insert) => ({ processor: insert.processor, params: insert.params })),
         sessionId: session.id,
       });
     }
 
-    return NextResponse.json({ error: "Unknown action — use preview or apply." }, { status: 400 });
+    return Response.json({ error: "Unknown action — use preview or apply." }, { status: 400 });
   } catch (error) {
     if (error instanceof Response) return error;
     if (error instanceof DependencyMissingError)
-      return NextResponse.json({ error: error.message, errorCode: error.errorCode }, { status: 424 });
+      return Response.json({ error: error.message, errorCode: error.errorCode }, { status: 424 });
     console.error("master route failed", error);
-    return NextResponse.json({ error: "Master operation failed." }, { status: 500 });
+    return Response.json({ error: "Master operation failed." }, { status: 500 });
   } finally {
     for (const temp of [tempSource, tempRender]) {
       if (temp !== null) await rm(temp, { force: true }).catch(() => undefined);

@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
@@ -13,13 +13,13 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = moveSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "A target position is required." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "A target position is required." }, { status: 400 });
     const queue = await moveQueueItem(user.id, id, parsed.data.position);
-    return NextResponse.json({ queue });
+    return Response.json({ queue });
   } catch (error) {
-    if (error instanceof QueueItemNotFoundError) return NextResponse.json({ error: "Queue item not found." }, { status: 404 });
+    if (error instanceof QueueItemNotFoundError) return Response.json({ error: "Queue item not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }
@@ -30,9 +30,9 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const queue = await removeQueueItem(user.id, id);
-    return NextResponse.json({ queue });
+    return Response.json({ queue });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

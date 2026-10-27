@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -24,20 +24,20 @@ export async function POST(
     const { id } = await params;
     const parsed = actionSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success)
-      return NextResponse.json(
+      return Response.json(
         { error: "Choose hide, restore, or remove and provide a reason.", code: "invalid_moderation_action" },
         { status: 422 },
       );
     
     const [project] = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
-    if (!project) return NextResponse.json({ error: "Project not found." }, { status: 404 });
+    if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
     const { action, reason } = parsed.data;
     if (action === "hide" && !["active", "reported"].includes(project.moderationStatus))
-      return NextResponse.json({ error: "Only active or reported projects can be hidden." }, { status: 409 });
+      return Response.json({ error: "Only active or reported projects can be hidden." }, { status: 409 });
     if (action === "restore" && !["hidden", "reported"].includes(project.moderationStatus))
-      return NextResponse.json({ error: "Only hidden or reported projects can be restored." }, { status: 409 });
+      return Response.json({ error: "Only hidden or reported projects can be restored." }, { status: 409 });
     if (action === "remove" && project.moderationStatus === "removed")
-      return NextResponse.json({ error: "Project is already removed." }, { status: 409 });
+      return Response.json({ error: "Project is already removed." }, { status: 409 });
     const before = publicationState(project);
     const nextStatus = TARGET_STATUS[action];
     const [updated] = await db.transaction(async (tx) => {
@@ -55,7 +55,7 @@ export async function POST(
       });
       return [next];
     });
-    return NextResponse.json({
+    return Response.json({
       project: {
         id: updated.id,
         moderationStatus: updated.moderationStatus,
@@ -66,6 +66,6 @@ export async function POST(
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("moderation action failed", error);
-    return NextResponse.json({ error: "Moderation action could not be saved." }, { status: 500 });
+    return Response.json({ error: "Moderation action could not be saved." }, { status: 500 });
   }
 }

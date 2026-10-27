@@ -1,4 +1,3 @@
-import "server-only";
 
 import { db } from "@workspace/db";
 import { collegeFacultyMemory, collegeMemory, collegeSessions } from "@workspace/db/college";

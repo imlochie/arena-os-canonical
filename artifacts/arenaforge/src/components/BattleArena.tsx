@@ -12,9 +12,9 @@ import { CATEGORIES } from "@workspace/arena/lib/models";
 
 interface BattleRuntime {
   runtimeLevel: "arena-local" | "on-device" | "remote";
-  backend: string;
-  provider: string;
-  modelId: string;
+  backend?: string;
+  provider?: string;
+  modelId?: string;
   via: string;
   ms: number;
   fallback: boolean;
@@ -875,8 +875,8 @@ function FighterPanel({
         {runtime.runtimeLevel === "arena-local" ? "🔒 LEVEL 0 · ARENA LOCAL" : runtime.runtimeLevel === "on-device" ? "💻 LEVEL 1 · ON-DEVICE" : "☁ LEVEL 2 · REMOTE"}
       </p>
       <p className="mt-0.5 font-bold">
-        {runtime.fallback ? "Arena Local Engine (fallback)" : `${runtime.modelId}`}
-        <span className="opacity-70"> · backend {runtime.backend} · provider {runtime.provider ?? runtime.backend}</span>
+        {runtime.fallback ? "Arena Local Engine (fallback)" : runtime.modelId ?? "Fighter identity hidden until vote"}
+        {runtime.backend && <span className="opacity-70"> · backend {runtime.backend} · provider {runtime.provider ?? runtime.backend}</span>}
       </p>
       <p className="opacity-70">
         {runtime.ms}ms measured{runtime.fallback ? ` · ${runtime.fallbackFrom?.modelId ?? "requested"} unavailable (${runtime.fallbackReason ?? "unavailable"})` : ""}

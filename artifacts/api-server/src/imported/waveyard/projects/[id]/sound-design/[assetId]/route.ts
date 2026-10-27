@@ -5,7 +5,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
  * by construction.
  */
 
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -25,28 +25,28 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id: projectId, assetId } = await params;
-    if (!isUuid(projectId) || !isUuid(assetId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId) || !isUuid(assetId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     if (!UUID_RE.test(assetId))
-      return NextResponse.json({ error: "Invalid asset id." }, { status: 400 });
+      return Response.json({ error: "Invalid asset id." }, { status: 400 });
     const [row] = await db
       .select({ storageKey: soundDesignAssets.storageKey })
       .from(soundDesignAssets)
       .where(and(eq(soundDesignAssets.id, assetId), eq(soundDesignAssets.projectId, projectId)))
       .limit(1);
     if (row === undefined)
-      return NextResponse.json({ error: "Asset not found." }, { status: 404 });
+      return Response.json({ error: "Asset not found." }, { status: 404 });
     try {
       const buffer = await getStorage().getBuffer(row.storageKey, MAX_WAV_BYTES);
-      return new NextResponse(new Uint8Array(buffer), {
+      return new Response(new Uint8Array(buffer), {
         status: 200,
         headers: { "content-type": "audio/wav", "cache-control": "private, max-age=60" },
       });
     } catch {
-      return NextResponse.json({ error: "Audio not found." }, { status: 404 });
+      return Response.json({ error: "Audio not found." }, { status: 404 });
     }
   } catch (error) {
     if (error instanceof Response) return error;
-    return NextResponse.json({ error: "Could not load the asset." }, { status: 500 });
+    return Response.json({ error: "Could not load the asset." }, { status: 500 });
   }
 }

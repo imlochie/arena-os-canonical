@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
@@ -19,11 +19,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const session = await getSession(user.id, id);
-    return NextResponse.json({ swaps: session.swaps });
+    return Response.json({ swaps: session.swaps });
   } catch (error) {
-    if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
+    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }
@@ -42,16 +42,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = swapSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "A session track, stem type, and donor track are required." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "A session track, stem type, and donor track are required." }, { status: 400 });
     const session = await recordStemSwap({ ownerId: user.id, sessionId: id, ...parsed.data, atSeconds: parsed.data.atSeconds ?? 0 });
-    return NextResponse.json({ session }, { status: 201 });
+    return Response.json({ session }, { status: 201 });
   } catch (error) {
-    if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
-    if (error instanceof SessionTrackNotFoundError) return NextResponse.json({ error: "Session track not found." }, { status: 404 });
-    if (error instanceof TrackNotInLibraryError) return NextResponse.json({ error: "Track not found." }, { status: 404 });
-    if (error instanceof StemSwapRefusedError) return NextResponse.json({ error: error.message }, { status: 409 });
+    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
+    if (error instanceof SessionTrackNotFoundError) return Response.json({ error: "Session track not found." }, { status: 404 });
+    if (error instanceof TrackNotInLibraryError) return Response.json({ error: "Track not found." }, { status: 404 });
+    if (error instanceof StemSwapRefusedError) return Response.json({ error: error.message }, { status: 409 });
     if (error instanceof Response) return error;
     throw error;
   }
@@ -63,11 +63,11 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     const user = await requireUser();
     const { id } = await params;
     const swapId = new URL(request.url).searchParams.get("swapId") ?? "";
-    if (!isUuid(id) || !isUuid(swapId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id) || !isUuid(swapId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const session = await removeStemSwap(user.id, id, swapId);
-    return NextResponse.json({ session });
+    return Response.json({ session });
   } catch (error) {
-    if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
+    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }

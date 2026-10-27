@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -17,11 +17,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser(); const { id } = await params; 
     const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, id)).limit(1);
-    if (!source) return NextResponse.json({ error: "Source not found." }, { status: 404 });
+    if (!source) return Response.json({ error: "Source not found." }, { status: 404 });
     await requireProjectRole(user.id, source.projectId, "viewer");
     const [analysis] = await db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.sourceAssetId, source.id)).limit(1);
     const events = analysis ? await db.select().from(harmonyEvents).where(eq(harmonyEvents.harmonyAnalysisId, analysis.id)).orderBy(harmonyEvents.eventIndex) : [];
-    return NextResponse.json({ analysis: analysis ?? null, events });
+    return Response.json({ analysis: analysis ?? null, events });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 
@@ -29,7 +29,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   try {
     const user = await requireUser(); const { id } = await params; 
     const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, id)).limit(1);
-    if (!source) return NextResponse.json({ error: "Source not found." }, { status: 404 });
+    if (!source) return Response.json({ error: "Source not found." }, { status: 404 });
     await requireProjectRole(user.id, source.projectId, "editor");
     const [created] = await db.insert(harmonyAnalyses).values({
       projectId: source.projectId, sourceAssetId: source.id, status: "queued", stage: "queued", idempotencyKey: idempotencyKey(source.id),
@@ -42,7 +42,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       sourceChecksumSha256: analysis.sourceChecksumSha256, expectedSourceChecksumSha256: source.checksumSha256,
       analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion,
     });
-    if (reason) return NextResponse.json({ error: "Existing harmony analysis provenance is stale; source reanalysis is required." }, { status: 409 });
+    if (reason) return Response.json({ error: "Existing harmony analysis provenance is stale; source reanalysis is required." }, { status: 409 });
     if (created || analysis.status === "failed") {
       if (!created) await db.update(harmonyAnalyses).set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date() }).where(eq(harmonyAnalyses.id, analysis.id));
       try { await enqueueHarmonyAnalysis({ harmonyAnalysisId: analysis.id, projectId: analysis.projectId, sourceAssetId: analysis.sourceAssetId, analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion }); }
@@ -51,6 +51,6 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         throw error;
       }
     }
-    return NextResponse.json({ analysis }, { status: created ? 201 : 200 });
-  } catch (error) { if (error instanceof Response) return error; console.error("harmony analysis request failed", error); return NextResponse.json({ error: "Could not queue harmony analysis." }, { status: 503 }); }
+    return Response.json({ analysis }, { status: created ? 201 : 200 });
+  } catch (error) { if (error instanceof Response) return error; console.error("harmony analysis request failed", error); return Response.json({ error: "Could not queue harmony analysis." }, { status: 503 }); }
 }

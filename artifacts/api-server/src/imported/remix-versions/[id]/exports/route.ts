@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -46,13 +46,13 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const { version } = await accessVersion(user.id, id, "viewer");
     const jobs = await db
       .select()
       .from(exportJobs)
       .where(eq(exportJobs.remixVersionId, version.id));
-    return NextResponse.json({ exports: jobs });
+    return Response.json({ exports: jobs });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;
@@ -66,11 +66,11 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({}));
     const format = body.format ?? "wav";
     if (format !== "wav" && format !== "midi")
-      return NextResponse.json({ error: "Export format is unsupported." }, { status: 422 });
+      return Response.json({ error: "Export format is unsupported." }, { status: 422 });
     const { version, session } = await accessVersion(user.id, id, "editor");
     
     let midi: { kind: "vocal" | "drums" | "harmony"; sourceAssetId: string; stemAssetId: string | null; analysisId: string; sourceChecksumSha256: string; analysisEngine: string; analysisEngineVersion: string } | null = null;
@@ -79,27 +79,27 @@ export async function POST(
       const sourceAssetId = body.sourceAssetId;
       const stemAssetId = body.stemAssetId;
       if ((kind !== "vocal" && kind !== "drums" && kind !== "harmony") || typeof sourceAssetId !== "string")
-        return NextResponse.json({ error: "MIDI export requires a supported analysis target." }, { status: 422 });
+        return Response.json({ error: "MIDI export requires a supported analysis target." }, { status: 422 });
       const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, sourceAssetId)).limit(1);
       if (!source || source.projectId !== session.projectId)
-        return NextResponse.json({ error: "MIDI source is unavailable in this project." }, { status: 404 });
+        return Response.json({ error: "MIDI source is unavailable in this project." }, { status: 404 });
       if (kind === "harmony") {
         const [analysis] = await db.select().from(harmonyAnalyses).where(eq(harmonyAnalyses.sourceAssetId, source.id)).limit(1);
         if (!analysis || analysis.projectId !== session.projectId || analysis.status !== "complete")
-          return NextResponse.json({ error: "Complete current harmony analysis is required for MIDI export." }, { status: 409 });
+          return Response.json({ error: "Complete current harmony analysis is required for MIDI export." }, { status: 409 });
         midi = { kind, sourceAssetId, stemAssetId: null, analysisId: analysis.id, sourceChecksumSha256: source.checksumSha256, analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion };
       } else {
-        if (typeof stemAssetId !== "string") return NextResponse.json({ error: "Stem MIDI export requires an isolated stem." }, { status: 422 });
+        if (typeof stemAssetId !== "string") return Response.json({ error: "Stem MIDI export requires an isolated stem." }, { status: 422 });
         const [stem] = await db.select().from(stemAssets).where(eq(stemAssets.id, stemAssetId)).limit(1);
         if (!stem || stem.projectId !== session.projectId || stem.sourceAssetId !== source.id
           || (kind === "vocal" && stem.stemType !== "vocals")
           || (kind === "drums" && stem.stemType !== "drums" && stem.stemType !== "percussion"))
-          return NextResponse.json({ error: "MIDI stem is unavailable or unsupported." }, { status: 422 });
+          return Response.json({ error: "MIDI stem is unavailable or unsupported." }, { status: 422 });
         const [analysis] = kind === "vocal"
           ? await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1)
           : await db.select().from(drumAnalyses).where(eq(drumAnalyses.stemAssetId, stem.id)).limit(1);
         if (!analysis || analysis.projectId !== session.projectId || analysis.status !== "complete")
-          return NextResponse.json({ error: "Complete current stem analysis is required for MIDI export." }, { status: 409 });
+          return Response.json({ error: "Complete current stem analysis is required for MIDI export." }, { status: 409 });
         midi = { kind, sourceAssetId, stemAssetId, analysisId: analysis.id, sourceChecksumSha256: source.checksumSha256, analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion };
       }
     }
@@ -138,7 +138,7 @@ export async function POST(
           .where(eq(exportJobs.idempotencyKey, idempotencyKey))
           .limit(1);
     if (!job) throw new Error("Export job idempotency lookup failed.");
-    if (!created) return NextResponse.json({ job, reused: true });
+    if (!created) return Response.json({ job, reused: true });
 
     try {
       await enqueueExport({
@@ -163,16 +163,16 @@ export async function POST(
           updatedAt: new Date(),
         })
         .where(eq(exportJobs.id, job.id));
-      return NextResponse.json(
+      return Response.json(
         { error: "Export request was saved, but processing could not be queued." },
         { status: 503 },
       );
     }
-    return NextResponse.json({ job, reused: false }, { status: 201 });
+    return Response.json({ job, reused: false }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("export request failed", error);
-    return NextResponse.json(
+    return Response.json(
       { error: "Export could not be requested." },
       { status: 500 },
     );

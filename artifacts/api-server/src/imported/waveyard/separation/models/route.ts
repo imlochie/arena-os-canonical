@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 
 import { MDX_MODELS } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { DEEP_CHECKPOINT_FILE, deepEngineStatusForThisRuntime } from "@workspace/arena/lib/waveyard/separation/deep";
@@ -32,7 +32,7 @@ export async function GET() {
       }),
     );
     const deepStatus = deepEngineStatusForThisRuntime();
-    return NextResponse.json({
+    return Response.json({
       models,
       deep: {
         enabled: deepStemsEnabled(),
@@ -47,6 +47,6 @@ export async function GET() {
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("model status failed", error);
-    return NextResponse.json({ error: "Model status could not be read." }, { status: 500 });
+    return Response.json({ error: "Model status could not be read." }, { status: 500 });
   }
 }

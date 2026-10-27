@@ -5,7 +5,7 @@
  * artists, album, isrc, duration, service, id).
  */
 
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -20,27 +20,27 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const format = new URL(request.url).searchParams.get("format") === "csv" ? "csv" : "json";
     const [row] = await db
       .select()
       .from(librarySnapshots)
       .where(and(eq(librarySnapshots.id, id), eq(librarySnapshots.ownerId, user.id)))
       .limit(1);
-    if (row === undefined) return NextResponse.json({ error: "No such snapshot." }, { status: 404 });
+    if (row === undefined) return Response.json({ error: "No such snapshot." }, { status: 404 });
     const snapshot = parseBackup(row.snapshotJson);
-    if (snapshot === null) return NextResponse.json({ error: "This snapshot is corrupt." }, { status: 500 });
+    if (snapshot === null) return Response.json({ error: "This snapshot is corrupt." }, { status: 500 });
 
     const stamp = snapshot.takenAt.slice(0, 10);
     if (format === "csv") {
-      return new NextResponse(snapshotToCsv(snapshot), {
+      return new Response(snapshotToCsv(snapshot), {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
           "Content-Disposition": `attachment; filename="waveyard-${row.service}-library-${stamp}.csv"`,
         },
       });
     }
-    return new NextResponse(row.snapshotJson, {
+    return new Response(row.snapshotJson, {
       headers: {
         "Content-Type": "application/json",
         "Content-Disposition": `attachment; filename="waveyard-${row.service}-library-${stamp}.json"`,
@@ -49,6 +49,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("snapshot export failed", error);
-    return NextResponse.json({ error: "Could not export the snapshot." }, { status: 500 });
+    return Response.json({ error: "Could not export the snapshot." }, { status: 500 });
   }
 }

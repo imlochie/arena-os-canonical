@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context";
@@ -64,13 +64,13 @@ export async function GET(_request: Request, { params }: Params) {
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, id, "viewer");
     const link = await findRoomProjectLink(id);
-    if (!link) return NextResponse.json({ linked: false });
+    if (!link) return Response.json({ linked: false });
     const arenaProject = await arenaProjectForLink(link);
-    if (!arenaProject) return NextResponse.json({ linked: false });
-    return NextResponse.json({ linked: true, link, arenaProject });
+    if (!arenaProject) return Response.json({ linked: false });
+    return Response.json({ linked: true, link, arenaProject });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;
@@ -81,18 +81,18 @@ export async function POST(request: Request, { params }: Params) {
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const { project } = await requireProjectRole(user.id, id, "editor");
     const body = await request.json().catch(() => ({})) as { action?: string; title?: unknown; summary?: unknown };
     const attachment = await attachRoomProject(project);
 
     if (body.action !== "handoff") {
-      return NextResponse.json({ linked: true, ...attachment }, attachment.created ? { status: 201 } : undefined);
+      return Response.json({ linked: true, ...attachment }, attachment.created ? { status: 201 } : undefined);
     }
 
     const title = typeof body.title === "string" ? body.title.trim().slice(0, 180) : "Waveyard handoff";
     const summary = typeof body.summary === "string" ? body.summary.trim().slice(0, 8_000) : "";
-    if (!summary) return NextResponse.json({ error: "Describe the decision or output to hand off." }, { status: 400 });
+    if (!summary) return Response.json({ error: "Describe the decision or output to hand off." }, { status: 400 });
 
     const [artifact] = await arenaDb
       .insert(arenaArtifacts)
@@ -118,7 +118,7 @@ export async function POST(request: Request, { params }: Params) {
         payload: JSON.stringify({ version: 1, room: ROOM, artifactId: artifact.id, transport: "metadata-only" }),
       })
       .returning();
-    return NextResponse.json({ linked: true, ...attachment, artifact, handoff }, { status: 201 });
+    return Response.json({ linked: true, ...attachment, artifact, handoff }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

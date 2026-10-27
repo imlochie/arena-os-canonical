@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { asc, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -44,7 +44,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const constraints = constraintsFrom(await request.json().catch(() => ({})));
     
@@ -92,7 +92,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         stems: stems.filter((stem) => stem.sourceAssetId === source.id).map((stem) => ({ id: stem.id, sourceAssetId: stem.sourceAssetId, stemType: stem.stemType, durationMs: stem.durationSeconds * 1000 })),
       };
     }), constraints);
-    if (!plan.ok) return NextResponse.json({ error: plan.reason === "no_stems" ? "No usable stems remain for this automatic arrangement." : "A completed source with real stems is required before Waveyard can build an arrangement." }, { status: 409 });
+    if (!plan.ok) return Response.json({ error: plan.reason === "no_stems" ? "No usable stems remain for this automatic arrangement." : "A completed source with real stems is required before Waveyard can build an arrangement." }, { status: 409 });
 
     const result = await db.transaction(async (tx) => {
       const [remix] = await tx.insert(remixSessions).values({
@@ -162,10 +162,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       }).returning({ id: remixVersions.id, name: remixVersions.name, createdAt: remixVersions.createdAt });
       return { remix, version };
     });
-    return NextResponse.json({ remix: result.remix, version: result.version, plan: { notices: plan.plan.notices, provenance: plan.plan.provenance } }, { status: 201 });
+    return Response.json({ remix: result.remix, version: result.version, plan: { notices: plan.plan.notices, provenance: plan.plan.provenance } }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("automatic remix creation failed", error);
-    return NextResponse.json({ error: "Could not build an automatic arrangement." }, { status: 500 });
+    return Response.json({ error: "Could not build an automatic arrangement." }, { status: 500 });
   }
 }

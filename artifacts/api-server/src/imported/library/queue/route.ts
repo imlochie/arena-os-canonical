@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { addToQueue, clearQueue, listQueue, TrackNotFoundError } from "@workspace/arena/lib/waveyard/library/service";
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const user = await requireUser();
-    return NextResponse.json({ queue: await listQueue(user.id) });
+    return Response.json({ queue: await listQueue(user.id) });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;
@@ -27,11 +27,11 @@ export async function POST(request: Request) {
   try {
     const user = await requireUser();
     const parsed = addSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "A track id is required." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "A track id is required." }, { status: 400 });
     const queue = await addToQueue({ ownerId: user.id, ...parsed.data });
-    return NextResponse.json({ queue }, { status: 201 });
+    return Response.json({ queue }, { status: 201 });
   } catch (error) {
-    if (error instanceof TrackNotFoundError) return NextResponse.json({ error: "Track not found." }, { status: 404 });
+    if (error instanceof TrackNotFoundError) return Response.json({ error: "Track not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }
@@ -42,7 +42,7 @@ export async function DELETE() {
   try {
     const user = await requireUser();
     await clearQueue(user.id);
-    return NextResponse.json({ queue: [] });
+    return Response.json({ queue: [] });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

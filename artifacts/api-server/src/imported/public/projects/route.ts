@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { and, desc, eq, ilike, lt, or, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -37,7 +37,7 @@ export async function GET(request: Request) {
     : DEFAULT_LIMIT;
   const cursor = decodeCursor(url.searchParams.get("cursor"));
   if (url.searchParams.get("cursor") && !cursor)
-    return NextResponse.json({ error: "Invalid discovery cursor." }, { status: 400 });
+    return Response.json({ error: "Invalid discovery cursor." }, { status: 400 });
 
   const conditions = [
     eq(projects.visibility, "public"),
@@ -81,7 +81,7 @@ export async function GET(request: Request) {
     .limit(limit + 1);
   const page = rows.slice(0, limit);
   const last = page.at(-1);
-  return NextResponse.json({
+  return Response.json({
     projects: page.map((project) => ({ ...project, tags: parseProjectTags(project.tags) })),
     nextCursor:
       rows.length > limit && last

@@ -9,7 +9,7 @@
  * Ollama's tag charset so it can never smuggle path segments.
  */
 
-const NextResponse = Response;
+
 
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { assertLoopbackUrl } from "@workspace/arena/lib/modelHub/runtimes";
@@ -26,10 +26,10 @@ export async function POST(request: Request) {
     const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : "";
     const model = typeof body.model === "string" ? body.model.trim() : "";
     if (baseUrl === "" || model === "") {
-      return NextResponse.json({ error: "baseUrl and model are required." }, { status: 400 });
+      return Response.json({ error: "baseUrl and model are required." }, { status: 400 });
     }
     if (!OLLAMA_TAG.test(model)) {
-      return NextResponse.json({ error: "That is not a valid model tag." }, { status: 400 });
+      return Response.json({ error: "That is not a valid model tag." }, { status: 400 });
     }
     const url = assertLoopbackUrl(baseUrl);
 
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
     });
     if (!upstream.ok || upstream.body === null) {
       const detail = await upstream.text().catch(() => "");
-      return NextResponse.json(
+      return Response.json(
         { error: `The runtime refused the pull (HTTP ${upstream.status}). ${detail.slice(0, 200)}`.trim() },
         { status: 502 },
       );
@@ -60,6 +60,6 @@ export async function POST(request: Request) {
     if (error instanceof Response) return error;
     const message = error instanceof Error ? error.message : "The pull could not be started.";
     console.error("model pull failed", error);
-    return NextResponse.json({ error: message }, { status: 400 });
+    return Response.json({ error: message }, { status: 400 });
   }
 }

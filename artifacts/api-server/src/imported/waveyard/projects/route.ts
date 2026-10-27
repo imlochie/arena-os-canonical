@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { projects } from "@workspace/db/waveyardSchema";
@@ -16,16 +16,16 @@ export async function GET() {
     // out of this list — they remain reachable directly by id ("Open in
     // Studio" from the library player).
     const rows = await listStudioProjects(user.id);
-    return NextResponse.json({ projects: rows.map((row) => ({ ...row, role: "owner" })) });
+    return Response.json({ projects: rows.map((row) => ({ ...row, role: "owner" })) });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 export async function POST(request: Request) {
   try {
     const user = await requireUser();
     const parsed = createSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "A project title is required." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "A project title is required." }, { status: 400 });
     
     const [project] = await db.insert(projects).values({ ownerId: user.id, title: parsed.data.title, description: parsed.data.description ?? "", genre: parsed.data.genre || null, licenseCode: parsed.data.licenseCode || "all-rights-reserved" }).returning();
-    return NextResponse.json({ project }, { status: 201 });
+    return Response.json({ project }, { status: 201 });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }

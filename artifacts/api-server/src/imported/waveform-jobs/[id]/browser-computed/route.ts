@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
@@ -23,18 +23,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const user = await requireUser();
     const { id } = await params;
     const [job] = await db.select().from(waveformJobs).where(eq(waveformJobs.id, id)).limit(1);
-    if (!job) return NextResponse.json({ error: "Waveform job not found." }, { status: 404 });
+    if (!job) return Response.json({ error: "Waveform job not found." }, { status: 404 });
     await requireProjectRole(user.id, job.projectId, "editor");
-    if (!job.sourceAssetId) return NextResponse.json({ error: "Only source waveforms can be browser-computed." }, { status: 409 });
-    if (job.status === "complete") return NextResponse.json({ error: "This waveform already exists." }, { status: 409 });
+    if (!job.sourceAssetId) return Response.json({ error: "Only source waveforms can be browser-computed." }, { status: 409 });
+    if (job.status === "complete") return Response.json({ error: "This waveform already exists." }, { status: 409 });
 
     const body = await request.json().catch(() => null);
     const document = body?.waveform as WaveformDocument | undefined;
-    if (!document) return NextResponse.json({ error: "A waveform document is required." }, { status: 400 });
+    if (!document) return Response.json({ error: "A waveform document is required." }, { status: 400 });
     try {
       validateWaveform(document);
     } catch {
-      return NextResponse.json({ error: "The browser waveform failed validation." }, { status: 422 });
+      return Response.json({ error: "The browser waveform failed validation." }, { status: 422 });
     }
 
     const serialized = JSON.stringify(document);
@@ -59,10 +59,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       completedAt: new Date(),
       updatedAt: new Date(),
     }).where(eq(waveformJobs.id, job.id)).returning();
-    return NextResponse.json({ waveformAsset: asset, waveformJob: updated }, { status: 201 });
+    return Response.json({ waveformAsset: asset, waveformJob: updated }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("browser waveform failed", error);
-    return NextResponse.json({ error: "Browser waveform could not be stored." }, { status: 500 });
+    return Response.json({ error: "Browser waveform could not be stored." }, { status: 500 });
   }
 }

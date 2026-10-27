@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 
 import { buildRepoMap, repoMapToPrompt } from "@workspace/arena/lib/repoMap";
 
@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const map = await buildRepoMap();
   if (new URL(req.url).searchParams.get("format") === "prompt") {
-    return new NextResponse(repoMapToPrompt(map), { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    return new Response(repoMapToPrompt(map), { headers: { "Content-Type": "text/plain; charset=utf-8" } });
   }
-  return NextResponse.json(map);
+  return Response.json(map);
 }

@@ -10,7 +10,7 @@
  * server stores only what the library APIs let us keep — snapshots.
  */
 
-const NextResponse = Response;
+
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -44,11 +44,11 @@ export async function GET() {
       .from(streamingAccounts)
       .where(eq(streamingAccounts.ownerId, user.id))
       .orderBy(desc(streamingAccounts.createdAt));
-    return NextResponse.json({ accounts });
+    return Response.json({ accounts });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("streaming accounts list failed", error);
-    return NextResponse.json({ error: "Could not list connected libraries." }, { status: 500 });
+    return Response.json({ error: "Could not list connected libraries." }, { status: 500 });
   }
 }
 
@@ -59,10 +59,10 @@ export async function POST(request: Request) {
     const service = typeof body.service === "string" ? body.service : "";
     const displayName = typeof body.displayName === "string" ? body.displayName.trim().slice(0, 200) : "";
     if (!isStreamingService(service)) {
-      return NextResponse.json({ error: "Pick Spotify, Apple Music, or YouTube." }, { status: 400 });
+      return Response.json({ error: "Pick Spotify, Apple Music, or YouTube." }, { status: 400 });
     }
     if (displayName.length === 0) {
-      return NextResponse.json({ error: "Name this connection (any label you like)." }, { status: 400 });
+      return Response.json({ error: "Name this connection (any label you like)." }, { status: 400 });
     }
     const [existing] = await db
       .select()
@@ -75,16 +75,16 @@ export async function POST(request: Request) {
         .set({ displayName, updatedAt: new Date() })
         .where(eq(streamingAccounts.id, existing.id))
         .returning({ id: streamingAccounts.id, service: streamingAccounts.service, displayName: streamingAccounts.displayName });
-      return NextResponse.json({ account: updated }, { status: 200 });
+      return Response.json({ account: updated }, { status: 200 });
     }
     const [created] = await db
       .insert(streamingAccounts)
       .values({ ownerId: user.id, service, displayName })
       .returning({ id: streamingAccounts.id, service: streamingAccounts.service, displayName: streamingAccounts.displayName });
-    return NextResponse.json({ account: created }, { status: 201 });
+    return Response.json({ account: created }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("streaming account connect failed", error);
-    return NextResponse.json({ error: "Could not connect the library." }, { status: 500 });
+    return Response.json({ error: "Could not connect the library." }, { status: 500 });
   }
 }

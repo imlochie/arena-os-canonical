@@ -15,7 +15,7 @@
  * with no singable notes (422), unreadable stem audio (500).
  */
 
-const NextResponse = Response;
+
 import { and, desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
@@ -55,7 +55,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
 
     const rows = await db
@@ -63,11 +63,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       .from(vocalChops)
       .where(eq(vocalChops.projectId, projectId))
       .orderBy(desc(vocalChops.confidence));
-    return NextResponse.json({ chops: rows.map((row) => chopRowToResponse(projectId, row)) }, { status: 200 });
+    return Response.json({ chops: rows.map((row) => chopRowToResponse(projectId, row)) }, { status: 200 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("vocal chop list failed", error);
-    return NextResponse.json({ error: "Could not load vocal chops." }, { status: 500 });
+    return Response.json({ error: "Could not load vocal chops." }, { status: 500 });
   }
 }
 
@@ -76,7 +76,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     const body = (await request.json().catch(() => ({}))) as { sourceAssetId?: unknown; stemType?: unknown };
@@ -96,7 +96,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .orderBy(desc(stemAssets.createdAt))
       .limit(1);
     if (!stem) {
-      return NextResponse.json(
+      return Response.json(
         {
           error: `No separated “${stemType}” stem in this project yet — separate a source first, then the scan reads that stem.`,
           errorCode: "STEM_MISSING",
@@ -108,7 +108,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const stemBytes = await getStorage().getBuffer(stem.storageKey, MAX_STEM_BYTES);
     const decoded = decodeWav16(new Uint8Array(stemBytes));
     if (decoded === null) {
-      return NextResponse.json({ error: "The vocal stem could not be decoded as WAV audio." }, { status: 500 });
+      return Response.json({ error: "The vocal stem could not be decoded as WAV audio." }, { status: 500 });
     }
 
     const scanned = scanVocalStemForChops(
@@ -116,7 +116,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       { maxChops: MAX_CHOPS },
     );
     if (scanned.length === 0) {
-      return NextResponse.json(
+      return Response.json(
         { error: "No singable vocal notes were found in this vocal stem." },
         { status: 422 },
       );
@@ -165,14 +165,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       inserted.push(row);
     }
 
-    return NextResponse.json(
+    return Response.json(
       { chops: inserted.map((row) => chopRowToResponse(projectId, row)), scannedCount: inserted.length },
       { status: 201 },
     );
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("vocal chop scan failed", error);
-    return NextResponse.json({ error: "The vocal chop scan failed." }, { status: 500 });
+    return Response.json({ error: "The vocal chop scan failed." }, { status: 500 });
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
   }

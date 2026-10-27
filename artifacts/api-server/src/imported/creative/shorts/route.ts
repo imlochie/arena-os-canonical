@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 
 import { buildSrt, segmentsFromText } from "@workspace/arena/lib/creative/captions";
 import { dubAudio, renderCaptionedShort } from "@workspace/arena/lib/creative/shorts";
@@ -16,17 +16,17 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
   const audio = body.audioBase64 ? Buffer.from(body.audioBase64, "base64") : null;
-  if (!audio || audio.byteLength < 128) return NextResponse.json({ error: "audioBase64 is required" }, { status: 400 });
+  if (!audio || audio.byteLength < 128) return Response.json({ error: "audioBase64 is required" }, { status: 400 });
 
   if (body.dub) {
     const result = await dubAudio(audio, "audio.wav", body.dub.slice(0, 40), { keys: body.keys as never });
     if (!result.ok) {
-      return NextResponse.json({ stages: result.stages, failedAt: result.failedAt, error: result.reason }, { status: 503 });
+      return Response.json({ stages: result.stages, failedAt: result.failedAt, error: result.reason }, { status: 503 });
     }
-    return NextResponse.json({
+    return Response.json({
       stages: result.stages,
       translatedText: result.translatedText,
       engine: result.engine,
@@ -36,8 +36,8 @@ export async function POST(req: Request) {
   }
 
   const srt = body.srt?.trim() ? body.srt : body.text?.trim() ? buildSrt(segmentsFromText(body.text)) : null;
-  if (!srt) return NextResponse.json({ error: "provide srt or text for the captions" }, { status: 400 });
+  if (!srt) return Response.json({ error: "provide srt or text for the captions" }, { status: 400 });
   const short = await renderCaptionedShort(audio, srt);
-  if (!short.ok) return NextResponse.json({ error: short.reason }, { status: 500 });
-  return NextResponse.json({ mp4Base64: short.buffer.toString("base64"), bytes: short.buffer.byteLength });
+  if (!short.ok) return Response.json({ error: short.reason }, { status: 500 });
+  return Response.json({ mp4Base64: short.buffer.toString("base64"), bytes: short.buffer.byteLength });
 }

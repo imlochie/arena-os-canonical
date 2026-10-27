@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-const NextResponse = Response;
+
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { publicProjectResolution } from "@workspace/arena/lib/waveyard/publication";
 
@@ -25,7 +25,7 @@ export async function GET(
     const { project, asset } = await publicProjectResolution(id);
     const wantsDownload = new URL(request.url).searchParams.get("download") === "1";
     if (wantsDownload && project.downloadPermission !== "public")
-      return NextResponse.json({ error: "Public download is not enabled for this release." }, { status: 403 });
+      return Response.json({ error: "Public download is not enabled for this release." }, { status: 403 });
     const range = parseRange(request.headers.get("range"), asset.fileSizeBytes);
     if (range === undefined)
       return new Response(null, {
@@ -50,6 +50,6 @@ export async function GET(
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("public release stream failed", error);
-    return NextResponse.json({ error: "Public release could not be read." }, { status: 500 });
+    return Response.json({ error: "Public release could not be read." }, { status: 500 });
   }
 }

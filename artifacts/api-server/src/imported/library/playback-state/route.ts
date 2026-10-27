@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getPlaybackState, savePlaybackState } from "@workspace/arena/lib/waveyard/library/service";
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const user = await requireUser();
-    return NextResponse.json({ playbackState: await getPlaybackState(user.id) });
+    return Response.json({ playbackState: await getPlaybackState(user.id) });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;
@@ -32,10 +32,10 @@ export async function PUT(request: Request) {
     const user = await requireUser();
     const parsed = patchSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) {
-      return NextResponse.json({ error: "Invalid playback state patch." }, { status: 400 });
+      return Response.json({ error: "Invalid playback state patch." }, { status: 400 });
     }
     const state = await savePlaybackState(user.id, parsed.data);
-    return NextResponse.json({ playbackState: state });
+    return Response.json({ playbackState: state });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

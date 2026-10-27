@@ -4,7 +4,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
  * construction (preview-UUID format) and confined to the project prefix.
  */
 
-const NextResponse = Response;
+
 
 import { requireProjectRole, requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
@@ -21,21 +21,21 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id: projectId, audioId } = await params;
-    if (!isUuid(projectId) || !isUuid(audioId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId) || !isUuid(audioId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     if (!PREVIEW_RE.test(audioId))
-      return NextResponse.json({ error: "Invalid audio id." }, { status: 400 });
+      return Response.json({ error: "Invalid audio id." }, { status: 400 });
     try {
       const buffer = await getStorage().getBuffer(`projects/${projectId}/master/${audioId}.wav`, MAX_WAV_BYTES);
-      return new NextResponse(new Uint8Array(buffer), {
+      return new Response(new Uint8Array(buffer), {
         status: 200,
         headers: { "content-type": "audio/wav", "cache-control": "private, max-age=60" },
       });
     } catch {
-      return NextResponse.json({ error: "Audio not found." }, { status: 404 });
+      return Response.json({ error: "Audio not found." }, { status: 404 });
     }
   } catch (error) {
     if (error instanceof Response) return error;
-    return NextResponse.json({ error: "Could not load master audio." }, { status: 500 });
+    return Response.json({ error: "Could not load master audio." }, { status: 500 });
   }
 }

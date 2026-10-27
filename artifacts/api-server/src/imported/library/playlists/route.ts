@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { createPlaylist, listPlaylists } from "@workspace/arena/lib/waveyard/library/service";
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const user = await requireUser();
-    return NextResponse.json({ playlists: await listPlaylists(user.id) });
+    return Response.json({ playlists: await listPlaylists(user.id) });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;
@@ -23,9 +23,9 @@ export async function POST(request: Request) {
   try {
     const user = await requireUser();
     const parsed = createSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "A playlist name is required." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "A playlist name is required." }, { status: 400 });
     const playlist = await createPlaylist(user.id, parsed.data.name);
-    return NextResponse.json({ playlist }, { status: 201 });
+    return Response.json({ playlist }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

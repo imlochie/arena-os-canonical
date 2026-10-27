@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
@@ -20,7 +20,7 @@ export async function POST(
     const { id } = await params;
     const parsed = reportSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success)
-      return NextResponse.json(
+      return Response.json(
         { error: "Provide a report reason between 3 and 1000 characters." },
         { status: 422 },
       );
@@ -44,10 +44,10 @@ export async function POST(
           .where(eq(projects.id, project.id));
       return Boolean(created);
     });
-    return NextResponse.json({ reported: true, reused: !result }, { status: result ? 201 : 200 });
+    return Response.json({ reported: true, reused: !result }, { status: result ? 201 : 200 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("public project report failed", error);
-    return NextResponse.json({ error: "Project report could not be saved." }, { status: 500 });
+    return Response.json({ error: "Project report could not be saved." }, { status: 500 });
   }
 }

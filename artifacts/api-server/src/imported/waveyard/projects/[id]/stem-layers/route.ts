@@ -22,7 +22,7 @@
  * job (pitch-agnostic, works on any tonal layer).
  */
 
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -46,16 +46,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     const body = (await request.json().catch(() => ({}))) as { stemAssetId?: unknown; target?: unknown };
     const stemAssetId = typeof body.stemAssetId === "string" ? body.stemAssetId : "";
     const target = typeof body.target === "string" ? body.target : "";
-    if (!isUuid(stemAssetId)) return NextResponse.json({ error: "Pick a stem to separate into layers." }, { status: 400 });
+    if (!isUuid(stemAssetId)) return Response.json({ error: "Pick a stem to separate into layers." }, { status: 400 });
     const known = LAYER_TARGETS.find((option) => option.id === target);
     if (known === undefined || (findMdxModel(target) === undefined && findSeparationRecipe(target) === undefined)) {
-      return NextResponse.json({ error: "Unknown layer target." }, { status: 400 });
+      return Response.json({ error: "Unknown layer target." }, { status: 400 });
     }
 
     const [stem] = await db
@@ -63,11 +63,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .from(stemAssets)
       .where(and(eq(stemAssets.id, stemAssetId), eq(stemAssets.projectId, projectId)))
       .limit(1);
-    if (!stem) return NextResponse.json({ error: "That stem is not in this project." }, { status: 404 });
+    if (!stem) return Response.json({ error: "That stem is not in this project." }, { status: 404 });
     // Layering a layer ("other/vocals") is legal but rarely what anyone
     // wants by accident — refuse one level deep to keep names sane.
     if (stem.stemType.includes("/")) {
-      return NextResponse.json(
+      return Response.json(
         { error: "This stem is already a layer — separate the parent stem instead." },
         { status: 422 },
       );
@@ -97,7 +97,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       }),
     );
     if (started.outcome === "active") {
-      return NextResponse.json(
+      return Response.json(
         {
           error: "These layers are already separating — they will appear as new lanes when done.",
           job: started.active ? { id: started.active.id, status: started.active.status, stage: started.active.stage } : null,
@@ -106,7 +106,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       );
     }
     if (started.outcome === "not-queued") {
-      return NextResponse.json(
+      return Response.json(
         {
           error: `These layers could not be queued on this runtime: ${started.reason}`,
           job: { id: started.job.id, status: started.job.status, errorCode: started.job.errorCode },
@@ -116,13 +116,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
     const job = started.job;
 
-    return NextResponse.json(
+    return Response.json(
       { job: { id: job.id }, layering: { stemType: stem.stemType, target: known.label } },
       { status: 202 },
     );
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("stem layer request failed", error);
-    return NextResponse.json({ error: "The layer separation could not be started." }, { status: 500 });
+    return Response.json({ error: "The layer separation could not be started." }, { status: 500 });
   }
 }

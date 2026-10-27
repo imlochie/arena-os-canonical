@@ -11,7 +11,7 @@
  *        through the layer PATCH (one authority for writes).
  */
 
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -48,17 +48,17 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId, layerId } = await params;
-    if (!isUuid(projectId) || !isUuid(layerId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId) || !isUuid(layerId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
 
     const layer = await loadLayer(projectId, layerId);
-    if (!layer) return NextResponse.json({ error: "Arrangement layer not found." }, { status: 404 });
+    if (!layer) return Response.json({ error: "Arrangement layer not found." }, { status: 404 });
 
     const bpm = (await projectBpm(layer.sourceAssetId)) ?? 120;
     const notes = fromSynthEvents(JSON.parse(layer.events));
     const bytes = buildStandardMidiFile(toMidiNoteEvents(notes), bpm);
     const filename = `${layer.instrument.replace(/[^a-zA-Z0-9_-]+/g, "-").toLowerCase()}-layer.mid`;
-    return new NextResponse(bytes as unknown as BodyInit, {
+    return new Response(bytes as unknown as BodyInit, {
       status: 200,
       headers: {
         "Content-Type": "audio/midi",
@@ -69,7 +69,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("layer midi export failed", error);
-    return NextResponse.json({ error: "The MIDI file could not be exported." }, { status: 500 });
+    return Response.json({ error: "The MIDI file could not be exported." }, { status: 500 });
   }
 }
 
@@ -77,25 +77,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId, layerId } = await params;
-    if (!isUuid(projectId) || !isUuid(layerId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId) || !isUuid(layerId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     const layer = await loadLayer(projectId, layerId);
-    if (!layer) return NextResponse.json({ error: "Arrangement layer not found." }, { status: 404 });
+    if (!layer) return Response.json({ error: "Arrangement layer not found." }, { status: 404 });
 
     const buffer = await request.arrayBuffer();
     if (buffer.byteLength === 0 || buffer.byteLength > MAX_MIDI_UPLOAD_BYTES) {
-      return NextResponse.json({ error: "Attach a .mid file between 1 byte and 4 MB." }, { status: 413 });
+      return Response.json({ error: "Attach a .mid file between 1 byte and 4 MB." }, { status: 413 });
     }
     const parsed = parseStandardMidiFile(new Uint8Array(buffer));
     if (parsed === null) {
-      return NextResponse.json(
+      return Response.json(
         { error: "This file is not a readable Standard MIDI File (format 0 or 1 with PPQ timing)." },
         { status: 422 },
       );
     }
     if (parsed.notes.length === 0) {
-      return NextResponse.json({ error: "This MIDI file contains no notes to import." }, { status: 422 });
+      return Response.json({ error: "This MIDI file contains no notes to import." }, { status: 422 });
     }
 
     // SMF events (velocity 1–127) become editable piano-roll notes.
@@ -106,7 +106,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       midi: Math.max(MIDI_LOW, Math.min(MIDI_HIGH, event.midiNote)),
       velocity: Math.max(VELOCITY_MIN, Math.min(VELOCITY_MAX, event.velocity)),
     }));
-    return NextResponse.json({
+    return Response.json({
       notes,
       fileBpm: parsed.tempoChanges[0]?.bpm ?? 120,
       fileTempoChanges: parsed.tempoChanges,
@@ -115,6 +115,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("layer midi import failed", error);
-    return NextResponse.json({ error: "The MIDI file could not be imported." }, { status: 500 });
+    return Response.json({ error: "The MIDI file could not be imported." }, { status: 500 });
   }
 }

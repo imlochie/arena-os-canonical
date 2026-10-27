@@ -10,7 +10,7 @@
  * backup format. 8 MB is the honest ceiling: ~50k tracks.
  */
 
-const NextResponse = Response;
+
 import { and, desc, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -27,13 +27,13 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const [account] = await db
       .select()
       .from(streamingAccounts)
       .where(and(eq(streamingAccounts.id, id), eq(streamingAccounts.ownerId, user.id)))
       .limit(1);
-    if (account === undefined) return NextResponse.json({ error: "No such connected library." }, { status: 404 });
+    if (account === undefined) return Response.json({ error: "No such connected library." }, { status: 404 });
     const snapshots = await db
       .select({
         id: librarySnapshots.id,
@@ -44,11 +44,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       .from(librarySnapshots)
       .where(eq(librarySnapshots.accountId, id))
       .orderBy(desc(librarySnapshots.takenAt));
-    return NextResponse.json({ snapshots });
+    return Response.json({ snapshots });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("snapshot list failed", error);
-    return NextResponse.json({ error: "Could not list snapshots." }, { status: 500 });
+    return Response.json({ error: "Could not list snapshots." }, { status: 500 });
   }
 }
 
@@ -56,25 +56,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const [account] = await db
       .select()
       .from(streamingAccounts)
       .where(and(eq(streamingAccounts.id, id), eq(streamingAccounts.ownerId, user.id)))
       .limit(1);
-    if (account === undefined) return NextResponse.json({ error: "No such connected library." }, { status: 404 });
+    if (account === undefined) return Response.json({ error: "No such connected library." }, { status: 404 });
 
     const body = (await request.json().catch(() => null)) as { snapshot?: unknown } | null;
     const snapshot = parseLibrarySnapshot(body?.snapshot);
     if (snapshot === null) {
-      return NextResponse.json({ error: "That snapshot is not a valid library backup (shape, limits, or timestamps failed validation)." }, { status: 422 });
+      return Response.json({ error: "That snapshot is not a valid library backup (shape, limits, or timestamps failed validation)." }, { status: 422 });
     }
     if (snapshot.service !== account.service) {
-      return NextResponse.json({ error: `This connection expects a ${account.service} snapshot.` }, { status: 422 });
+      return Response.json({ error: `This connection expects a ${account.service} snapshot.` }, { status: 422 });
     }
     const json = backupToJson(snapshot);
     if (json.length > MAX_SNAPSHOT_JSON_BYTES) {
-      return NextResponse.json({ error: "That library snapshot is too large to store (8 MB ceiling)." }, { status: 413 });
+      return Response.json({ error: "That library snapshot is too large to store (8 MB ceiling)." }, { status: 413 });
     }
     const stats = snapshotStats(snapshot);
     const [stored] = await db
@@ -89,10 +89,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         snapshotJson: json,
       })
       .returning({ id: librarySnapshots.id, takenAt: librarySnapshots.takenAt, playlistCount: librarySnapshots.playlistCount, trackCount: librarySnapshots.trackCount });
-    return NextResponse.json({ snapshot: stored }, { status: 201 });
+    return Response.json({ snapshot: stored }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("snapshot store failed", error);
-    return NextResponse.json({ error: "Could not store the snapshot." }, { status: 500 });
+    return Response.json({ error: "Could not store the snapshot." }, { status: 500 });
   }
 }

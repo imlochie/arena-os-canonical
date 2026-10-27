@@ -30,7 +30,7 @@
  * a 202 over a row nothing will run.
  */
 
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -47,7 +47,7 @@ export async function GET() {
   try {
     await requireUser();
     const status = deepEngineStatusForThisRuntime();
-    return NextResponse.json({
+    return Response.json({
       deep: {
         enabled: deepStemsEnabled(),
         modelId: status.modelId,
@@ -63,7 +63,7 @@ export async function GET() {
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("deep engine status failed", error);
-    return NextResponse.json({ error: "The deep engine status could not be read." }, { status: 500 });
+    return Response.json({ error: "The deep engine status could not be read." }, { status: 500 });
   }
 }
 
@@ -71,15 +71,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     if (!deepStemsEnabled()) {
-      return NextResponse.json({ error: "The deep pass is not enabled in this build." }, { status: 404 });
+      return Response.json({ error: "The deep pass is not enabled in this build." }, { status: 404 });
     }
     const status = deepEngineStatusForThisRuntime();
     if (!status.prepared) {
-      return NextResponse.json({ error: status.reason, deep: { prepared: false } }, { status: 503 });
+      return Response.json({ error: status.reason, deep: { prepared: false } }, { status: 503 });
     }
 
     const body = (await request.json().catch(() => ({}))) as { sourceAssetId?: unknown; stemAssetId?: unknown };
@@ -91,17 +91,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     let parentStem: typeof stemAssets.$inferSelect | null = null;
     let targetSourceAssetId = "";
     if (stemAssetId !== "") {
-      if (!isUuid(stemAssetId)) return NextResponse.json({ error: "Pick a stem to run deeper." }, { status: 400 });
+      if (!isUuid(stemAssetId)) return Response.json({ error: "Pick a stem to run deeper." }, { status: 400 });
       const [stem] = await db
         .select()
         .from(stemAssets)
         .where(and(eq(stemAssets.id, stemAssetId), eq(stemAssets.projectId, projectId)))
         .limit(1);
-      if (!stem) return NextResponse.json({ error: "That stem is not in this project." }, { status: 404 });
+      if (!stem) return Response.json({ error: "That stem is not in this project." }, { status: 404 });
       // Same honesty rule as stem-layers: layering a layer is legal but
       // rarely what anyone means — refuse one level deep to keep names sane.
       if (stem.stemType.includes("/")) {
-        return NextResponse.json(
+        return Response.json(
           { error: "This stem is already a layer — go deeper on the parent stem instead." },
           { status: 422 },
         );
@@ -109,13 +109,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       parentStem = stem;
       targetSourceAssetId = stem.sourceAssetId;
     } else {
-      if (!isUuid(sourceAssetId)) return NextResponse.json({ error: "Pick the song to run deeper." }, { status: 400 });
+      if (!isUuid(sourceAssetId)) return Response.json({ error: "Pick the song to run deeper." }, { status: 400 });
       const [source] = await db
         .select()
         .from(sourceAssets)
         .where(and(eq(sourceAssets.id, sourceAssetId), eq(sourceAssets.projectId, projectId)))
         .limit(1);
-      if (!source) return NextResponse.json({ error: "That source is not in this project." }, { status: 404 });
+      if (!source) return Response.json({ error: "That source is not in this project." }, { status: 404 });
       targetSourceAssetId = source.id;
     }
 
@@ -155,7 +155,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       }),
     );
     if (started.outcome === "active") {
-      return NextResponse.json(
+      return Response.json(
         {
           error: "This deep pass is already running — its lanes appear when it finishes.",
           job: started.active ? { id: started.active.id, status: started.active.status, stage: started.active.stage } : null,
@@ -166,7 +166,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (started.outcome === "not-queued") {
       // Claimed, but no executor took it: the row is a failed, retryable
       // attempt (queue_unavailable) and the target is free again.
-      return NextResponse.json(
+      return Response.json(
         {
           error: `The deep pass could not be queued on this runtime: ${started.reason}`,
           job: { id: started.job.id, status: started.job.status, errorCode: started.job.errorCode },
@@ -176,7 +176,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
     const job = started.job;
 
-    return NextResponse.json(
+    return Response.json(
       {
         job: { id: job.id },
         deep: {
@@ -191,6 +191,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("deep stem request failed", error);
-    return NextResponse.json({ error: "The deep separation could not be started." }, { status: 500 });
+    return Response.json({ error: "The deep separation could not be started." }, { status: 500 });
   }
 }

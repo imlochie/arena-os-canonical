@@ -6,6 +6,7 @@ import { generateStream } from "@workspace/arena/lib/stream";
 import { battleRateable, comparisonVerdict, executionsSameEngine } from "@workspace/arena/lib/runtime";
 import type { GenerateResult } from "@workspace/arena/lib/ai";
 import { ensureSeeded } from "@workspace/arena/lib/seed";
+import { publicBattlePayload } from "../../../lib/blind-battle";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 90;
@@ -67,7 +68,7 @@ export async function POST(req: Request) {
       const enc = new TextEncoder();
       const send = (obj: any) => {
         try {
-          controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+          controller.enqueue(enc.encode(`data: ${JSON.stringify(publicBattlePayload(obj, true))}\n\n`));
         } catch {
           /* closed */
         }

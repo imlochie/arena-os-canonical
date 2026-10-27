@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { asc, desc, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -15,17 +15,17 @@ import { requireProjectRole } from "@workspace/arena/lib/waveyard/local-context"
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, id, "viewer");
     const sessions = await db.select().from(remixSessions).where(eq(remixSessions.projectId, id)).orderBy(desc(remixSessions.updatedAt));
-    return NextResponse.json({ remixes: sessions });
+    return Response.json({ remixes: sessions });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const name = String(body.name ?? "Untitled remix").trim().slice(0, 120) || "Untitled remix";
@@ -36,7 +36,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .innerJoin(sourceAssets, eq(stemAssets.sourceAssetId, sourceAssets.id))
       .where(eq(stemAssets.projectId, projectId))
       .orderBy(asc(stemAssets.createdAt));
-    if (!availableStems.length) return NextResponse.json({ error: "A completed project with real stems is required before creating a remix." }, { status: 409 });
+    if (!availableStems.length) return Response.json({ error: "A completed project with real stems is required before creating a remix." }, { status: 409 });
     const [session] = await db.transaction(async (tx) => {
       const [created] = await tx.insert(remixSessions).values({ projectId, ownerId: user.id, name }).returning();
       // A session is a creation-time snapshot. Later source uploads remain separate
@@ -53,6 +53,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       }));
       return [created];
     });
-    return NextResponse.json({ remix: session }, { status: 201 });
-  } catch (error) { if (error instanceof Response) return error; console.error("remix creation failed", error); return NextResponse.json({ error: "Could not create the remix session." }, { status: 500 }); }
+    return Response.json({ remix: session }, { status: 201 });
+  } catch (error) { if (error instanceof Response) return error; console.error("remix creation failed", error); return Response.json({ error: "Could not create the remix session." }, { status: 500 }); }
 }

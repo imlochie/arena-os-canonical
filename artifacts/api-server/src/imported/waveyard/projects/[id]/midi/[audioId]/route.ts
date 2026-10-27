@@ -6,7 +6,7 @@
  */
 
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -47,13 +47,13 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id: projectId, audioId } = await params;
-    if (!isUuid(projectId) || !isUuid(audioId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId) || !isUuid(audioId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
 
     const url = new URL(request.url);
     const kind = (url.searchParams.get("kind") ?? "vocal") as MidiExportKind;
     if (!(KINDS as readonly string[]).includes(kind)) {
-      return NextResponse.json({ error: `kind must be one of ${KINDS.join(", ")}.` }, { status: 400 });
+      return Response.json({ error: `kind must be one of ${KINDS.join(", ")}.` }, { status: 400 });
     }
     const bpm = parseBpm(url.searchParams.get("bpm"));
 
@@ -62,12 +62,12 @@ export async function GET(
       .from(stemAssets)
       .where(and(eq(stemAssets.id, audioId), eq(stemAssets.projectId, projectId)))
       .limit(1);
-    if (!stem) return NextResponse.json({ error: "Stem not found." }, { status: 404 });
+    if (!stem) return Response.json({ error: "Stem not found." }, { status: 404 });
 
     let notes: MidiNoteEvent[];
     if (kind === "vocal") {
       const [analysis] = await db.select().from(vocalAnalyses).where(eq(vocalAnalyses.stemAssetId, stem.id)).limit(1);
-      if (!analysis) return NextResponse.json({ error: "No vocal analysis for this stem yet. Run vocal analysis first." }, { status: 404 });
+      if (!analysis) return Response.json({ error: "No vocal analysis for this stem yet. Run vocal analysis first." }, { status: 404 });
       const rows = await db
         .select()
         .from(vocalPitchFrames)
@@ -84,7 +84,7 @@ export async function GET(
       notes = vocalFramesToMidiNotes(frames);
     } else if (kind === "drums") {
       const [analysis] = await db.select().from(drumAnalyses).where(eq(drumAnalyses.stemAssetId, stem.id)).limit(1);
-      if (!analysis) return NextResponse.json({ error: "No drum analysis for this stem yet. Run drum analysis first." }, { status: 404 });
+      if (!analysis) return Response.json({ error: "No drum analysis for this stem yet. Run drum analysis first." }, { status: 404 });
       const rows = await db
         .select()
         .from(drumEvents)
@@ -105,7 +105,7 @@ export async function GET(
         .from(harmonyAnalyses)
         .where(eq(harmonyAnalyses.sourceAssetId, stem.sourceAssetId))
         .limit(1);
-      if (!analysis) return NextResponse.json({ error: "No harmony analysis for this source yet. Run harmony analysis first." }, { status: 404 });
+      if (!analysis) return Response.json({ error: "No harmony analysis for this source yet. Run harmony analysis first." }, { status: 404 });
       const rows = await db
         .select()
         .from(harmonyEvents)
@@ -122,7 +122,7 @@ export async function GET(
     }
 
     const file = buildStandardMidiFile(notes, bpm);
-    return new NextResponse(new Uint8Array(file), {
+    return new Response(new Uint8Array(file), {
       status: 200,
       headers: {
         "content-type": "audio/midi",
@@ -132,6 +132,6 @@ export async function GET(
     });
   } catch (error) {
     if (error instanceof Response) return error;
-    return NextResponse.json({ error: "Could not build MIDI export." }, { status: 500 });
+    return Response.json({ error: "Could not build MIDI export." }, { status: 500 });
   }
 }

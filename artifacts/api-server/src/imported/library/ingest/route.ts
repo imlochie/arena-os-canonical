@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-const NextResponse = Response;
+
 
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { addTrackFromAudioFile } from "@workspace/arena/lib/waveyard/library/service";
@@ -75,7 +75,7 @@ async function resolveYtDlp(): Promise<string | null> {
 export async function GET(req: Request) {
   const denied = await requireApiAccess(req);
   if (denied) return denied;
-  return NextResponse.json({ available: (await resolveYtDlp()) !== null, hint: "Set ARENA_YTDLP_PATH or install yt-dlp on the PATH." });
+  return Response.json({ available: (await resolveYtDlp()) !== null, hint: "Set ARENA_YTDLP_PATH or install yt-dlp on the PATH." });
 }
 
 export async function POST(req: Request) {
@@ -83,23 +83,23 @@ export async function POST(req: Request) {
   if (denied) return denied;
   const declared = Number(req.headers.get("content-length") ?? 0);
   if (Number.isFinite(declared) && declared > REQUEST_BODY_LIMIT) {
-    return NextResponse.json({ error: "request body too large" }, { status: 413 });
+    return Response.json({ error: "request body too large" }, { status: 413 });
   }
   let body: { url?: string; title?: string; artist?: string } = {};
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
   const raw = typeof body.url === "string" ? body.url.trim() : "";
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    return NextResponse.json({ error: "a valid http(s) URL is required" }, { status: 400 });
+    return Response.json({ error: "a valid http(s) URL is required" }, { status: 400 });
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return NextResponse.json({ error: "only http(s) URLs are supported" }, { status: 400 });
+    return Response.json({ error: "only http(s) URLs are supported" }, { status: 400 });
   }
   // SSRF gate: ingest fetches a caller-controlled URL through a child
   // process, so the destination is validated (public endpoints only, every
@@ -110,12 +110,12 @@ export async function POST(req: Request) {
     await assertOutboundUrl(url, "public");
   } catch (error) {
     const detail = error instanceof OutboundUrlError ? error.message : "destination refused";
-    return NextResponse.json({ error: `Ingest refused: ${detail}` }, { status: 400 });
+    return Response.json({ error: `Ingest refused: ${detail}` }, { status: 400 });
   }
 
   const bin = await resolveYtDlp();
   if (!bin) {
-    return NextResponse.json(
+    return Response.json(
       { error: "yt-dlp is not installed. Install it (https://github.com/yt-dlp/yt-dlp) or set ARENA_YTDLP_PATH — ingest never fakes a download." },
       { status: 503 },
     );
@@ -133,17 +133,17 @@ export async function POST(req: Request) {
       { dir, maxBytes: MAX_BYTES },
     );
     if (download.exceededLimit) {
-      return NextResponse.json({ error: `download exceeded the ${MAX_BYTES}-byte limit and was stopped` }, { status: 413 });
+      return Response.json({ error: `download exceeded the ${MAX_BYTES}-byte limit and was stopped` }, { status: 413 });
     }
     if (download.code !== 0) {
-      return NextResponse.json({ error: `yt-dlp failed: ${download.stderr.trim().slice(0, 500) || "unknown error"}` }, { status: 422 });
+      return Response.json({ error: `yt-dlp failed: ${download.stderr.trim().slice(0, 500) || "unknown error"}` }, { status: 422 });
     }
     const files = await readdir(dir);
     const media = files.filter((f) => /\.(mp3|wav|flac|m4a|aac|ogg|opus|webm|mp4)$/i.test(f));
-    if (media.length === 0) return NextResponse.json({ error: "yt-dlp produced no media file" }, { status: 422 });
+    if (media.length === 0) return Response.json({ error: "yt-dlp produced no media file" }, { status: 422 });
     const file = media[0];
     const info = await stat(join(dir, file));
-    if (info.size <= 0 || info.size > MAX_BYTES) return NextResponse.json({ error: `file out of size bounds (${info.size} bytes)` }, { status: 413 });
+    if (info.size <= 0 || info.size > MAX_BYTES) return Response.json({ error: `file out of size bounds (${info.size} bytes)` }, { status: 413 });
 
     const result = await addTrackFromAudioFile({
       ownerId: user.id,
@@ -153,7 +153,7 @@ export async function POST(req: Request) {
       title: typeof body.title === "string" ? body.title.slice(0, 200) : undefined,
       artist: typeof body.artist === "string" ? body.artist.slice(0, 200) : undefined,
     });
-    return NextResponse.json({ track: result.track, created: result.created, separationQueued: result.separationQueued }, { status: 201 });
+    return Response.json({ track: result.track, created: result.created, separationQueued: result.separationQueued }, { status: 201 });
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }

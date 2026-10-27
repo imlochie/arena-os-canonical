@@ -10,7 +10,7 @@
  *     up, render, or throw away. Their ears are the authority.
  */
 
-const NextResponse = Response;
+
 import { desc, eq } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -27,7 +27,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     const body = (await request.json().catch(() => ({}))) as { seed?: unknown; bars?: unknown; style?: unknown };
@@ -37,7 +37,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .where(eq(vocalChops.projectId, projectId))
       .orderBy(desc(vocalChops.confidence));
     if (chops.length === 0) {
-      return NextResponse.json(
+      return Response.json(
         { error: "No vocal chops in this project yet — scan the vocal stem first." },
         { status: 409 },
       );
@@ -50,7 +50,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .where(eq(sourceAnalyses.sourceAssetId, chops[0].sourceAssetId))
       .limit(1);
     if (analysis?.bpm == null || analysis.bpm <= 0) {
-      return NextResponse.json(
+      return Response.json(
         { error: "The vocal source's tempo analysis is not complete — the chef needs the real grid." },
         { status: 422 },
       );
@@ -66,7 +66,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       { seed, bars, style },
     );
 
-    return NextResponse.json(
+    return Response.json(
       {
         notes,
         rationale,
@@ -78,6 +78,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("chop auto-sequence failed", error);
-    return NextResponse.json({ error: "The pattern could not be sequenced." }, { status: 500 });
+    return Response.json({ error: "The pattern could not be sequenced." }, { status: 500 });
   }
 }

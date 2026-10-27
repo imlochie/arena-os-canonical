@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -59,14 +59,14 @@ async function proposalFor(remix: typeof remixSessions.$inferSelect, anchorClipI
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "viewer");
     const body = await request.json().catch(() => ({}));
     const intent = intentFrom(body.intent);
-    if (!intent) return NextResponse.json({ error: "Choose a supported extension intent." }, { status: 400 });
+    if (!intent) return Response.json({ error: "Choose a supported extension intent." }, { status: 400 });
     const proposal = await proposalFor(remix, String(body.anchorClipId ?? ""), intent);
-    if (!proposal) return NextResponse.json({ error: "Choose an existing arrangement clip as the extension anchor." }, { status: 409 });
-    return NextResponse.json({ proposal });
+    if (!proposal) return Response.json({ error: "Choose an existing arrangement clip as the extension anchor." }, { status: 409 });
+    return Response.json({ proposal });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 
@@ -74,14 +74,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "editor");
     const body = await request.json().catch(() => ({}));
     const intent = intentFrom(body.intent);
-    if (!intent) return NextResponse.json({ error: "Choose a supported extension intent." }, { status: 400 });
+    if (!intent) return Response.json({ error: "Choose a supported extension intent." }, { status: 400 });
     const anchorClipId = String(body.anchorClipId ?? "");
     const proposal = await proposalFor(remix, anchorClipId, intent);
-    if (!proposal || proposal.id !== String(body.proposalId ?? "")) return NextResponse.json({ error: "This extension proposal is stale. Propose it again before adding." }, { status: 409 });
+    if (!proposal || proposal.id !== String(body.proposalId ?? "")) return Response.json({ error: "This extension proposal is stale. Propose it again before adding." }, { status: 409 });
     
     await db.transaction(async (tx) => {
       const tracks = await tx.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id));
@@ -105,6 +105,6 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       });
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
     });
-    return NextResponse.json({ proposal }, { status: 201 });
-  } catch (error) { if (error instanceof Response) return error; console.error("extension acceptance failed", error); return NextResponse.json({ error: "Could not extend this arrangement." }, { status: 500 }); }
+    return Response.json({ proposal }, { status: 201 });
+  } catch (error) { if (error instanceof Response) return error; console.error("extension acceptance failed", error); return Response.json({ error: "Could not extend this arrangement." }, { status: 500 }); }
 }

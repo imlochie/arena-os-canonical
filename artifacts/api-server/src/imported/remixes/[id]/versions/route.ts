@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { asc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -35,33 +35,33 @@ function snapshot(remix: typeof remixSessions.$inferSelect) {
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await access(user.id, id, "viewer");
     const versions = await db.select({ id: remixVersions.id, name: remixVersions.name, createdAt: remixVersions.createdAt, createdById: remixVersions.createdById }).from(remixVersions).where(eq(remixVersions.remixSessionId, id)).orderBy(asc(remixVersions.createdAt));
-    return NextResponse.json({ versions });
+    return Response.json({ versions });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "editor");
     const body = await request.json().catch(() => ({}));
     const name = String(body.name ?? `Version ${remix.version}`).trim().slice(0, 120) || `Version ${remix.version}`;
     const versionSnapshot = await snapshot(remix);
     const state = normaliseRemixState(versionSnapshot);
     if (!state)
-      return NextResponse.json({ error: "Current remix state cannot be versioned." }, { status: 422 });
+      return Response.json({ error: "Current remix state cannot be versioned." }, { status: 422 });
     const crossfadeMessage = state.tracks.map(crossfadeError).find(Boolean);
     if (crossfadeMessage)
-      return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
+      return Response.json({ error: crossfadeMessage }, { status: 422 });
     const [version] = await db.insert(remixVersions).values({
       remixSessionId: remix.id,
       createdById: user.id,
       name,
       snapshot: JSON.stringify(versionSnapshot),
     }).returning({ id: remixVersions.id, name: remixVersions.name, createdAt: remixVersions.createdAt });
-    return NextResponse.json({ version }, { status: 201 });
-  } catch (error) { if (error instanceof Response) return error; console.error("remix version failed", error); return NextResponse.json({ error: "Could not create a remix version." }, { status: 500 }); }
+    return Response.json({ version }, { status: 201 });
+  } catch (error) { if (error instanceof Response) return error; console.error("remix version failed", error); return Response.json({ error: "Could not create a remix version." }, { status: 500 }); }
 }

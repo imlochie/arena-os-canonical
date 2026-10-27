@@ -15,7 +15,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
  * before/after — the proof the repair did something real.
  */
 
-const NextResponse = Response;
+
 import { asc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
@@ -65,14 +65,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     const rows = await db
       .select()
       .from(cleanupVersions)
       .where(eq(cleanupVersions.projectId, projectId))
       .orderBy(asc(cleanupVersions.createdAt));
-    return NextResponse.json({
+    return Response.json({
       versions: rows.map((row) => ({
         id: row.id,
         operations: JSON.parse(row.operations),
@@ -84,7 +84,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     });
   } catch (error) {
     if (error instanceof Response) return error;
-    return NextResponse.json({ error: "Could not list cleanup versions." }, { status: 500 });
+    return Response.json({ error: "Could not list cleanup versions." }, { status: 500 });
   }
 }
 
@@ -94,7 +94,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const action = String(body.action ?? "");
@@ -106,7 +106,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .orderBy(asc(sourceAssets.createdAt))
       .limit(1);
     if (source === undefined)
-      return NextResponse.json({ error: "This project has no source audio to clean." }, { status: 409 });
+      return Response.json({ error: "This project has no source audio to clean." }, { status: 409 });
 
     tempSource = join(tmpdir(), `arena-cleanup-src-${randomUUID()}`);
     await getStorage().getToFile(source.storageKey, tempSource);
@@ -114,7 +114,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     if (action === "scan") {
       const report: CleanupReport = scanAudioForProblems(decoded.pcm, decoded.sampleRate);
-      return NextResponse.json({
+      return Response.json({
         report,
         recommendations: recommendationsForFindings(report),
         sourceAssetId: source.id,
@@ -124,12 +124,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (action === "preview" || action === "apply") {
       const operations = parseOperations(body.operations);
       if (operations === null)
-        return NextResponse.json(
+        return Response.json(
           { error: "Operations failed validation — only real registry processors with in-range parameters are accepted.", errorCode: "INPUT_INVALID" },
           { status: 400 },
         );
       if (operations.length === 0)
-        return NextResponse.json({ error: "No operations selected." }, { status: 400 });
+        return Response.json({ error: "No operations selected." }, { status: 400 });
 
       const before: AudioMeasurements = measureAudio(decoded.pcm, decoded.sampleRate);
       const chain: InsertChain = operations.map((operation, index) => {
@@ -153,7 +153,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       await getStorage().putFile(storageKey, tempRender);
 
       if (action === "preview") {
-        return NextResponse.json({
+        return Response.json({
           preview: {
             audioUrl: `/api/waveyard/projects/${projectId}/cleanup/preview-${versionId}`,
             operations,
@@ -175,7 +175,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           measurementsAfter: JSON.stringify(after),
         })
         .returning();
-      return NextResponse.json(
+      return Response.json(
         {
           version: {
             id: row.id,
@@ -190,16 +190,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       );
     }
 
-    return NextResponse.json({ error: "Unknown action — use scan, preview, or apply." }, { status: 400 });
+    return Response.json({ error: "Unknown action — use scan, preview, or apply." }, { status: 400 });
   } catch (error) {
     if (error instanceof Response) return error;
     if (error instanceof DependencyMissingError)
-      return NextResponse.json(
+      return Response.json(
         { error: error.message, errorCode: error.errorCode },
         { status: 424 },
       );
     console.error("cleanup failed", error);
-    return NextResponse.json({ error: "Cleanup failed." }, { status: 500 });
+    return Response.json({ error: "Cleanup failed." }, { status: 500 });
   } finally {
     for (const temp of [tempSource, tempRender]) {
       if (temp !== null) await rm(temp, { force: true }).catch(() => undefined);
@@ -211,21 +211,21 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const versionId = new URL(request.url).searchParams.get("versionId") ?? "";
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(versionId))
-      return NextResponse.json({ error: "Invalid version id." }, { status: 400 });
+      return Response.json({ error: "Invalid version id." }, { status: 400 });
     const deleted = await db
       .delete(cleanupVersions)
       .where(eq(cleanupVersions.id, versionId))
       .returning({ id: cleanupVersions.id, storageKey: cleanupVersions.storageKey });
     if (deleted.length === 0)
-      return NextResponse.json({ error: "Version not found." }, { status: 404 });
+      return Response.json({ error: "Version not found." }, { status: 404 });
     await getStorage().delete(deleted[0].storageKey).catch(() => undefined);
-    return NextResponse.json({ deleted: deleted[0].id }, { status: 200 });
+    return Response.json({ deleted: deleted[0].id }, { status: 200 });
   } catch (error) {
     if (error instanceof Response) return error;
-    return NextResponse.json({ error: "Could not revert the cleanup version." }, { status: 500 });
+    return Response.json({ error: "Could not revert the cleanup version." }, { status: 500 });
   }
 }

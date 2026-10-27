@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { asc, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -131,12 +131,12 @@ async function discover(remix: typeof remixSessions.$inferSelect, stemId: string
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "viewer");
     const body = await request.json().catch(() => ({}));
     const result = await discover(remix, String(body.stemAssetId ?? ""), String(body.sourceSectionId ?? ""));
-    if (!result) return NextResponse.json({ error: "This selected source region is not currently verified for meeting-point discovery." }, { status: 409 });
-    return NextResponse.json({ points: result.points });
+    if (!result) return Response.json({ error: "This selected source region is not currently verified for meeting-point discovery." }, { status: 409 });
+    return Response.json({ points: result.points });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 
@@ -144,16 +144,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await access(user.id, id, "editor");
     const body = await request.json().catch(() => ({}));
     const stemId = String(body.stemAssetId ?? ""); const sectionId = String(body.sourceSectionId ?? ""); const pointId = String(body.meetingPointId ?? "");
     const discovery = await discover(remix, stemId, sectionId);
     const point = discovery?.points.find((candidate) => candidate.id === pointId);
-    if (!point) return NextResponse.json({ error: "That recommendation is no longer available. Find placements again." }, { status: 409 });
+    if (!point) return Response.json({ error: "That recommendation is no longer available. Find placements again." }, { status: 409 });
     
     const [stem] = await db.select().from(stemAssets).where(eq(stemAssets.id, stemId)).limit(1);
-    if (!stem || stem.projectId !== remix.projectId) return NextResponse.json({ error: "Selected stem is unavailable." }, { status: 404 });
+    if (!stem || stem.projectId !== remix.projectId) return Response.json({ error: "Selected stem is unavailable." }, { status: 404 });
     await db.transaction(async (tx) => {
       const existing = await tx.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id));
       let track = existing.find((candidate) => candidate.stemAssetId === stem.id);
@@ -174,6 +174,6 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       });
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
     });
-    return NextResponse.json({ accepted: point }, { status: 201 });
-  } catch (error) { if (error instanceof Response) return error; console.error("meeting point acceptance failed", error); return NextResponse.json({ error: "Could not add this meeting point to the arrangement." }, { status: 500 }); }
+    return Response.json({ accepted: point }, { status: 201 });
+  } catch (error) { if (error instanceof Response) return error; console.error("meeting point acceptance failed", error); return Response.json({ error: "Could not add this meeting point to the arrangement." }, { status: 500 }); }
 }

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { Readable } from "node:stream";
 import { importedRoutes } from "../imported-routes";
 import { isLocalMutationAllowed } from "@workspace/arena/lib/security/local-request-gate";
+import { publicBattlePayload } from "../lib/blind-battle";
 
 const router = Router();
 
@@ -40,6 +41,19 @@ for (const route of importedRoutes) {
       } as RequestInit);
       const handlers = await route.load();
       const response = await (handlers as any)[req.method](request, { params: Promise.resolve(req.params) });
+      const beforeVote = req.path.startsWith("/battles")
+        && !/\/(?:vote|reveal)$/.test(req.path)
+        && req.method === "POST";
+      if (response.headers.get("content-type")?.includes("application/json")) {
+        const payload = publicBattlePayload(await response.json(), beforeVote);
+        response.headers.forEach((value: string, key: string) => {
+          if (!["content-length", "set-cookie", "content-type"].includes(key)) res.setHeader(key, value);
+        });
+        const cookies = response.headers.getSetCookie();
+        if (cookies.length) res.setHeader("set-cookie", cookies);
+        res.status(response.status).json(payload);
+        return;
+      }
       res.status(response.status);
       response.headers.forEach((value: string, key: string) => {
         if (key !== "set-cookie") res.setHeader(key, value);
@@ -67,7 +81,7 @@ router.get("/page-data/:kind/:id", async (req, res) => {
   try {
     const { loadPage } = await load();
     const response = await loadPage({ id: String(req.params.id), roomId: String(req.params.id) });
-    res.status(response.status).type("json").send(await response.text());
+    res.status(response.status).json(publicBattlePayload(await response.json()));
   } catch (err) {
     req.log.error({ err }, "Page data failed");
     res.status(500).json({ error: "Could not load this page" });

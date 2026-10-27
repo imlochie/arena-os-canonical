@@ -14,7 +14,7 @@
  * Honest limits: ≤128 notes, ≤16 distinct chops, ≤300 s of audio.
  */
 
-const NextResponse = Response;
+
 import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -45,17 +45,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     const body = (await request.json().catch(() => ({}))) as { events?: unknown };
     const notes = validatePianoNotes(body.events);
     if (notes === null) {
-      return NextResponse.json({ error: "The pattern notes failed validation." }, { status: 400 });
+      return Response.json({ error: "The pattern notes failed validation." }, { status: 400 });
     }
-    if (notes.length === 0) return NextResponse.json({ error: "The pattern is empty — draw some notes first." }, { status: 400 });
+    if (notes.length === 0) return Response.json({ error: "The pattern is empty — draw some notes first." }, { status: 400 });
     if (notes.length > MAX_EVENTS) {
-      return NextResponse.json({ error: `Patterns are limited to ${MAX_EVENTS} notes.` }, { status: 413 });
+      return Response.json({ error: `Patterns are limited to ${MAX_EVENTS} notes.` }, { status: 413 });
     }
 
     // Every note must carry its chop in the id.
@@ -63,7 +63,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     for (const note of notes) {
       const chopId = parseChopNoteId(note.id);
       if (chopId === null) {
-        return NextResponse.json(
+        return Response.json(
           { error: "Every pattern note must be drawn with an armed vocal chop (the note ids carry the chop)." },
           { status: 400 },
         );
@@ -71,13 +71,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (!chopIds.includes(chopId)) chopIds.push(chopId);
     }
     if (chopIds.length > MAX_DISTINCT_CHOPS) {
-      return NextResponse.json({ error: `Patterns are limited to ${MAX_DISTINCT_CHOPS} different chops.` }, { status: 413 });
+      return Response.json({ error: `Patterns are limited to ${MAX_DISTINCT_CHOPS} different chops.` }, { status: 413 });
     }
 
     const lastEndMs = notes.reduce((latest, note) => Math.max(latest, note.startMs + note.durationMs), 0);
     const durationSeconds = Math.max(1, Math.ceil(lastEndMs / 1000) + 1);
     if (durationSeconds > MAX_DURATION_SECONDS) {
-      return NextResponse.json({ error: `Pattern renders are limited to ${MAX_DURATION_SECONDS} seconds.` }, { status: 413 });
+      return Response.json({ error: `Pattern renders are limited to ${MAX_DURATION_SECONDS} seconds.` }, { status: 413 });
     }
 
     const rows = await db
@@ -85,7 +85,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .from(vocalChops)
       .where(and(eq(vocalChops.projectId, projectId), inArray(vocalChops.id, chopIds)));
     if (rows.length !== chopIds.length) {
-      return NextResponse.json({ error: "The pattern references a vocal chop that no longer exists — rescan and redraw." }, { status: 404 });
+      return Response.json({ error: "The pattern references a vocal chop that no longer exists — rescan and redraw." }, { status: 404 });
     }
 
     const storage = getStorage();
@@ -94,7 +94,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const bytes = await storage.getBuffer(row.storageKey, MAX_WAV_BYTES);
       const decoded = decodeWav16(new Uint8Array(bytes));
       if (decoded === null) {
-        return NextResponse.json({ error: "A stored vocal chop could not be decoded." }, { status: 500 });
+        return Response.json({ error: "A stored vocal chop could not be decoded." }, { status: 500 });
       }
       samples.set(row.id, chopSampleFromDecoded(decoded, row.rootMidi));
     }
@@ -112,7 +112,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const pcm = renderChopPattern(events, chops, RENDER_SAMPLE_RATE, durationSeconds);
     const wav = encodeWav16(pcm, RENDER_SAMPLE_RATE);
-    return new NextResponse(wav as unknown as BodyInit, {
+    return new Response(wav as unknown as BodyInit, {
       status: 200,
       headers: {
         "content-type": "audio/wav",
@@ -123,6 +123,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("chop pattern render failed", error);
-    return NextResponse.json({ error: "The chop pattern could not be rendered." }, { status: 500 });
+    return Response.json({ error: "The chop pattern could not be rendered." }, { status: 500 });
   }
 }

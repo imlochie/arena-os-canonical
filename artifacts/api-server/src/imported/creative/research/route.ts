@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 
 import { researchAnswer } from "@workspace/arena/lib/creative/research";
 
@@ -11,10 +11,10 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
   const query = (body.query ?? "").slice(0, 1000);
-  if (!query.trim()) return NextResponse.json({ error: "query is required" }, { status: 400 });
+  if (!query.trim()) return Response.json({ error: "query is required" }, { status: 400 });
   const result = await researchAnswer(query, { keys: body.keys, modelId: body.modelId });
-  return NextResponse.json(result);
+  return Response.json(result);
 }

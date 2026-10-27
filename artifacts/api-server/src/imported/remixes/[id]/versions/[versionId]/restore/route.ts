@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -22,7 +22,7 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id, versionId } = await params;
-    if (!isUuid(id) || !isUuid(versionId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id) || !isUuid(versionId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     
     const [remix] = await db
       .select()
@@ -30,7 +30,7 @@ export async function POST(
       .where(eq(remixSessions.id, id))
       .limit(1);
     if (!remix)
-      return NextResponse.json({ error: "Remix session not found." }, { status: 404 });
+      return Response.json({ error: "Remix session not found." }, { status: 404 });
     await requireProjectRole(user.id, remix.projectId, "editor");
     const [version] = await db
       .select()
@@ -38,21 +38,21 @@ export async function POST(
       .where(eq(remixVersions.id, versionId))
       .limit(1);
     if (!version || version.remixSessionId !== remix.id)
-      return NextResponse.json({ error: "Remix version not found." }, { status: 404 });
+      return Response.json({ error: "Remix version not found." }, { status: 404 });
     const state = normaliseRemixState(JSON.parse(version.snapshot));
     if (!state)
-      return NextResponse.json({ error: "Stored remix version is invalid." }, { status: 422 });
+      return Response.json({ error: "Stored remix version is invalid." }, { status: 422 });
     const projectStems = await db
       .select({ id: stemAssets.id, durationSeconds: stemAssets.durationSeconds })
       .from(stemAssets)
       .where(eq(stemAssets.projectId, remix.projectId));
     const durationByAssetId = new Map(projectStems.map((asset) => [asset.id, asset.durationSeconds * 1000]));
     if (state.tracks.some((track) => !durationByAssetId.has(track.stemAssetId) || track.clips.some((clip) => !durationByAssetId.has(clip.stemAssetId))))
-      return NextResponse.json({ error: "This version references a removed asset." }, { status: 409 });
+      return Response.json({ error: "This version references a removed asset." }, { status: 409 });
     if (state.tracks.some((track) => track.clips.some((clip) => !clip.tempoSyncEnabled && clip.sourceOffsetMs + clip.durationMs > durationByAssetId.get(clip.stemAssetId)!)))
-      return NextResponse.json({ error: "This version extends beyond its source stem." }, { status: 422 });
+      return Response.json({ error: "This version extends beyond its source stem." }, { status: 422 });
     const crossfadeMessage = state.tracks.map(crossfadeError).find(Boolean);
-    if (crossfadeMessage) return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
+    if (crossfadeMessage) return Response.json({ error: crossfadeMessage }, { status: 422 });
 
     const currentTracks = await db.select().from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id));
     const currentIds = new Set(currentTracks.map((track) => track.id));
@@ -94,10 +94,10 @@ export async function POST(
       if (clips.length) await tx.insert(remixClips).values(clips);
       await tx.update(remixSessions).set(restoredSessionFields(state, remix)).where(eq(remixSessions.id, remix.id));
     });
-    return NextResponse.json({ ok: true });
+    return Response.json({ ok: true });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("remix restore failed", error);
-    return NextResponse.json({ error: "Could not restore this remix version." }, { status: 500 });
+    return Response.json({ error: "Could not restore this remix version." }, { status: 500 });
   }
 }

@@ -16,7 +16,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
  * The source is never touched; layers are derived artifacts.
  */
 
-const NextResponse = Response;
+
 import { asc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
@@ -65,7 +65,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     const rows = await db
       .select()
@@ -84,11 +84,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
         .limit(1);
       bpm = analysis?.bpm ?? null;
     }
-    return NextResponse.json({ layers: rows.map(layerRowToResponse), bpm }, { status: 200 });
+    return Response.json({ layers: rows.map(layerRowToResponse), bpm }, { status: 200 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("arrangement layer listing failed", error);
-    return NextResponse.json({ error: "Could not list arrangement layers." }, { status: 500 });
+    return Response.json({ error: "Could not list arrangement layers." }, { status: 500 });
   }
 }
 
@@ -121,7 +121,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     const body = await request.json().catch(() => ({}));
@@ -136,12 +136,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .limit(1);
 
     if (source === undefined)
-      return NextResponse.json(
+      return Response.json(
         { error: "This project has no source audio to arrange against." },
         { status: 409 },
       );
     if (source.analysis?.status !== "complete" || !source.analysis.bpm || !source.analysis.musicalKey)
-      return NextResponse.json(
+      return Response.json(
         {
           error:
             "Source analysis (tempo + key) is not complete yet — the composer only writes against real analysis. Try again once analysis finishes.",
@@ -152,7 +152,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const beatGridMs = parsedBeatGrid(source.analysis.beatGrid);
     if (beatGridMs === null)
-      return NextResponse.json(
+      return Response.json(
         { error: "No usable beat grid in the analysis — placement cannot be quantized honestly.", errorCode: "ANALYSIS_MISSING" },
         { status: 409 },
       );
@@ -163,7 +163,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .where(eq(sourceSections.sourceAssetId, source.asset.id))
       .orderBy(asc(sourceSections.startMs));
     if (sectionRows.length === 0)
-      return NextResponse.json(
+      return Response.json(
         { error: "No section analysis available — placement cannot be scoped honestly.", errorCode: "ANALYSIS_MISSING" },
         { status: 409 },
       );
@@ -190,7 +190,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (body.instruction !== undefined) {
       instruction = validateArrangementInstruction(body.instruction);
       if (instruction === null)
-        return NextResponse.json(
+        return Response.json(
           { error: "Instruction failed contract validation.", errorCode: "INPUT_INVALID" },
           { status: 400 },
         );
@@ -198,7 +198,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     } else {
       const prompt = typeof body.prompt === "string" ? body.prompt.trim().slice(0, MAX_PROMPT_CHARS) : "";
       if (prompt.length === 0)
-        return NextResponse.json(
+        return Response.json(
           { error: "Provide a prompt or an instruction.", errorCode: "INPUT_INVALID" },
           { status: 400 },
         );
@@ -213,7 +213,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     try {
       layer = composeArrangementLayer(instruction, evidence);
     } catch (error) {
-      return NextResponse.json(
+      return Response.json(
         {
           error: error instanceof Error ? error.message : "Composition failed.",
           errorCode: "ANALYSIS_INCOMPATIBLE",
@@ -268,11 +268,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       })
       .returning();
 
-    return NextResponse.json({ layer: layerRowToResponse(row) }, { status: 201 });
+    return Response.json({ layer: layerRowToResponse(row) }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("arrangement layer generation failed", error);
-    return NextResponse.json({ error: "Could not generate the arrangement layer." }, { status: 500 });
+    return Response.json({ error: "Could not generate the arrangement layer." }, { status: 500 });
   } finally {
     if (tempPath !== null) {
       await rm(tempPath, { force: true }).catch(() => undefined);
@@ -284,24 +284,24 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const url = new URL(request.url);
     const layerId = url.searchParams.get("layerId") ?? "";
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(layerId))
-      return NextResponse.json({ error: "Invalid layer id." }, { status: 400 });
+      return Response.json({ error: "Invalid layer id." }, { status: 400 });
     const deleted = await db
       .delete(arrangementLayers)
       .where(eq(arrangementLayers.id, layerId))
       .returning({ id: arrangementLayers.id, storageKey: arrangementLayers.storageKey });
     if (deleted.length === 0)
-      return NextResponse.json({ error: "Layer not found." }, { status: 404 });
+      return Response.json({ error: "Layer not found." }, { status: 404 });
     // Remove the derived WAV too; the source asset is never touched.
     await getStorage().delete(deleted[0].storageKey).catch(() => undefined);
-    return NextResponse.json({ deleted: deleted[0].id }, { status: 200 });
+    return Response.json({ deleted: deleted[0].id }, { status: 200 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("arrangement layer deletion failed", error);
-    return NextResponse.json({ error: "Could not delete the layer." }, { status: 500 });
+    return Response.json({ error: "Could not delete the layer." }, { status: 500 });
   }
 }

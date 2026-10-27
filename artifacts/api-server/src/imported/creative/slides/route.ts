@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 
 import { buildDeck, deckToHtml, deckToPptx } from "@workspace/arena/lib/creative/slides";
 
@@ -11,14 +11,14 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
   const prompt = (body.prompt ?? "").slice(0, 4000);
-  if (!prompt.trim()) return NextResponse.json({ error: "prompt is required" }, { status: 400 });
+  if (!prompt.trim()) return Response.json({ error: "prompt is required" }, { status: 400 });
 
   const deck = await buildDeck(prompt, { count: body.count, keys: body.keys, modelId: body.modelId });
   const [html, pptx] = await Promise.all([deckToHtml(deck), deckToPptx(deck)]);
-  return NextResponse.json({
+  return Response.json({
     deck,
     html,
     pptxBase64: pptx.toString("base64"),

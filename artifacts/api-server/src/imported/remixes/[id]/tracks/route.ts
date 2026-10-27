@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { desc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -43,17 +43,17 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     
     const [remix] = await db.select().from(remixSessions).where(eq(remixSessions.id, id)).limit(1);
-    if (!remix) return NextResponse.json({ error: "Remix session not found." }, { status: 404 });
+    if (!remix) return Response.json({ error: "Remix session not found." }, { status: 404 });
     await requireProjectRole(user.id, remix.projectId, "editor");
     const { sourceTrackId } = await request.json().catch(() => ({}));
     const [source] = await db.select().from(remixTracks).where(eq(remixTracks.id, String(sourceTrackId ?? ""))).limit(1);
     if (!source || source.remixSessionId !== remix.id)
-      return NextResponse.json({ error: "Source track not found." }, { status: 404 });
+      return Response.json({ error: "Source track not found." }, { status: 404 });
     const [stem] = await db.select({ id: stemAssets.id }).from(stemAssets).where(eq(stemAssets.id, source.stemAssetId)).limit(1);
-    if (!stem) return NextResponse.json({ error: "Source stem not found." }, { status: 409 });
+    if (!stem) return Response.json({ error: "Source stem not found." }, { status: 409 });
     const sourceClips = await db.select().from(remixClips).where(eq(remixClips.remixTrackId, source.id));
     const [last] = await db.select({ sortOrder: remixTracks.sortOrder }).from(remixTracks).where(eq(remixTracks.remixSessionId, remix.id)).orderBy(desc(remixTracks.sortOrder)).limit(1);
     await db.transaction(async (tx) => {
@@ -84,10 +84,10 @@ export async function POST(
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
     });
     const [updated] = await db.select().from(remixSessions).where(eq(remixSessions.id, remix.id)).limit(1);
-    return NextResponse.json(await stateFor(updated), { status: 201 });
+    return Response.json(await stateFor(updated), { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("track duplication failed", error);
-    return NextResponse.json({ error: "Track could not be duplicated." }, { status: 500 });
+    return Response.json({ error: "Track could not be duplicated." }, { status: 500 });
   }
 }

@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { publicProjectResolution, safePublicProject } from "@workspace/arena/lib/waveyard/publication";
 
 export async function GET(
@@ -7,12 +7,12 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    return NextResponse.json(safePublicProject(await publicProjectResolution(id)), {
+    return Response.json(safePublicProject(await publicProjectResolution(id)), {
       headers: { "Cache-Control": "public, max-age=60" },
     });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("public project read failed", error);
-    return NextResponse.json({ error: "Public project could not be read." }, { status: 500 });
+    return Response.json({ error: "Public project could not be read." }, { status: 500 });
   }
 }

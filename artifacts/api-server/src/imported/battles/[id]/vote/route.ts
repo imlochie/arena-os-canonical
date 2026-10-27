@@ -33,7 +33,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // (visible fallback, or an Arena Local Engine side), the vote still counts
     // for the record — but no model rating moves.
     if (battle.rated === false) {
-      return Response.json({ battle, alreadyVoted: false, unrated: true, reason: "fallback or local-engine execution — ELO unchanged" });
+      return Response.json({ battle: { ...battle, winner }, alreadyVoted: false, unrated: true, reason: "fallback or local-engine execution — ELO unchanged" });
     }
 
     if (rowA) {

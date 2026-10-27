@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -49,7 +49,7 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const body = await request.json().catch(() => ({}));
     const sectionId = String(body.sectionId ?? "");
     const stemAssetId = String(body.stemAssetId ?? "");
@@ -60,16 +60,16 @@ export async function POST(
     const timelineStartMs = Number.isFinite(position) ? Math.round(position) : Number.NaN;
     const repetitions = Number(body.repetitions ?? 1);
     if (!sectionId || !stemAssetId || !remixTrackId || !action)
-      return NextResponse.json({ error: "A section, stem, arrangement track, and action are required." }, { status: 400 });
+      return Response.json({ error: "A section, stem, arrangement track, and action are required." }, { status: 400 });
 
     
     const [remix] = await db.select().from(remixSessions).where(eq(remixSessions.id, id)).limit(1);
-    if (!remix) return NextResponse.json({ error: "Remix session not found." }, { status: 404 });
+    if (!remix) return Response.json({ error: "Remix session not found." }, { status: 404 });
     await requireProjectRole(user.id, remix.projectId, "editor");
 
     const [section] = await db.select().from(sourceSections).where(eq(sourceSections.id, sectionId)).limit(1);
     if (!section || section.projectId !== remix.projectId)
-      return NextResponse.json({ errorCode: "section_action_unavailable", error: "This source section is unavailable in the remix project." }, { status: 422 });
+      return Response.json({ errorCode: "section_action_unavailable", error: "This source section is unavailable in the remix project." }, { status: 422 });
     const [[source], [analysis], [sectionAnalysis], [stem], [track]] = await Promise.all([
       db.select().from(sourceAssets).where(and(eq(sourceAssets.id, section.sourceAssetId), eq(sourceAssets.projectId, remix.projectId))).limit(1),
       db.select().from(sourceAnalyses).where(and(eq(sourceAnalyses.id, section.sourceAnalysisId), eq(sourceAnalyses.projectId, remix.projectId))).limit(1),
@@ -78,7 +78,7 @@ export async function POST(
       db.select().from(remixTracks).where(and(eq(remixTracks.id, remixTrackId), eq(remixTracks.remixSessionId, remix.id))).limit(1),
     ]);
     if (!source || !analysis || !sectionAnalysis || !stem || !track)
-      return NextResponse.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must belong to one project." }, { status: 422 });
+      return Response.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must belong to one project." }, { status: 422 });
     const scopeError = sectionActionScopeReason({
       remixProjectId: remix.projectId,
       sectionProjectId: section.projectId,
@@ -97,9 +97,9 @@ export async function POST(
       stemAssetId: stem.id,
     });
     if (scopeError || sectionAnalysis.sourceAnalysisId !== analysis.id || sectionAnalysis.sourceChecksumSha256 !== source.checksumSha256)
-      return NextResponse.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must belong to one project." }, { status: 422 });
+      return Response.json({ errorCode: "section_action_unavailable", error: "The section, source, stem, and arrangement track must belong to one project." }, { status: 422 });
     if (analysis.status !== "complete")
-      return NextResponse.json({ errorCode: "section_action_unavailable", error: "A complete current source beat analysis is required." }, { status: 422 });
+      return Response.json({ errorCode: "section_action_unavailable", error: "A complete current source beat analysis is required." }, { status: 422 });
     const provenanceError = sectionActionProvenanceReason({
       sourceChecksumSha256: source.checksumSha256,
       sectionChecksumSha256: section.sourceChecksumSha256,
@@ -112,18 +112,18 @@ export async function POST(
       sectionEngineVersion: section.analysisEngineVersion,
     });
     if (provenanceError)
-      return NextResponse.json({ errorCode: provenanceError, error: "This structural analysis is stale or no longer complete. Re-run section analysis before arranging it." }, { status: 422 });
+      return Response.json({ errorCode: provenanceError, error: "This structural analysis is stale or no longer complete. Re-run section analysis before arranging it." }, { status: 422 });
     const beatGrid = parsedBeatGrid(analysis.beatGrid);
     if (!beatGrid)
-      return NextResponse.json({ errorCode: "section_action_unavailable", error: "The current source beat grid is unavailable." }, { status: 422 });
+      return Response.json({ errorCode: "section_action_unavailable", error: "The current source beat grid is unavailable." }, { status: 422 });
 
     let context: typeof remixClips.$inferSelect | null = null;
     if (contextClipId) {
       const [found] = await db.select().from(remixClips).where(eq(remixClips.id, contextClipId)).limit(1);
-      if (!found) return NextResponse.json({ error: "The selected arrangement context clip no longer exists." }, { status: 409 });
+      if (!found) return Response.json({ error: "The selected arrangement context clip no longer exists." }, { status: 409 });
       const [contextTrack] = await db.select().from(remixTracks).where(eq(remixTracks.id, found.remixTrackId)).limit(1);
       if (!contextTrack || contextTrack.remixSessionId !== remix.id)
-        return NextResponse.json({ error: "The selected arrangement context clip is outside this remix." }, { status: 403 });
+        return Response.json({ error: "The selected arrangement context clip is outside this remix." }, { status: 403 });
       // Only a context clip on this destination track inherits intent. This is
       // deterministic and avoids copying another source's editing context.
       if (contextTrack.id === track.id && found.stemAssetId === stem.id) context = found;
@@ -159,7 +159,7 @@ export async function POST(
     if (template.tempoSyncEnabled) {
       ratio = tempoRatioForBpm(remix.tempoBpm, analysis.bpm ?? Number.NaN) ?? 0;
       if (!ratio || analysis.bpm! < 40 || analysis.bpm! > 300)
-        return NextResponse.json({ errorCode: "tempo_sync_bpm_unavailable", error: "Tempo-synced section placement requires a usable current source BPM." }, { status: 422 });
+        return Response.json({ errorCode: "tempo_sync_bpm_unavailable", error: "Tempo-synced section placement requires a usable current source BPM." }, { status: 422 });
     }
     const current = await db.select({ id: remixClips.id }).from(remixClips).where(eq(remixClips.remixTrackId, track.id));
     const result = createSectionArrangementClips(
@@ -181,7 +181,7 @@ export async function POST(
           : result.reason === "timeline_bounds_invalid"
             ? "Section placement exceeds the arrangement timeline limit."
             : "The selected section no longer resolves to a valid source beat range.";
-      return NextResponse.json({ errorCode: result.reason, error: message }, { status: 422 });
+      return Response.json({ errorCode: result.reason, error: message }, { status: 422 });
     }
     const created = await db.transaction(async (tx) => {
       const clips = await tx.insert(remixClips).values(result.clips.map((clip) => ({
@@ -200,10 +200,10 @@ export async function POST(
       await tx.update(remixSessions).set({ version: remix.version + 1, updatedAt: new Date() }).where(eq(remixSessions.id, remix.id));
       return clips;
     });
-    return NextResponse.json({ clips: created, trackId: track.id, action }, { status: 201 });
+    return Response.json({ clips: created, trackId: track.id, action }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("section arrangement action failed", error);
-    return NextResponse.json({ error: "Could not create clips from the selected source section." }, { status: 500 });
+    return Response.json({ error: "Could not create clips from the selected source section." }, { status: 500 });
   }
 }

@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
@@ -30,16 +30,16 @@ export async function PATCH(
   try {
     const user = await requireUser();
     const { id, itemId } = await params;
-    if (!isUuid(id) || !isUuid(itemId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id) || !isUuid(itemId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = patchSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "Invalid stem mix or transition." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "Invalid stem mix or transition." }, { status: 400 });
     const session = await updateSessionTrack(user.id, id, itemId, parsed.data);
-    return NextResponse.json({ session });
+    return Response.json({ session });
   } catch (error) {
-    if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
-    if (error instanceof SessionTrackNotFoundError) return NextResponse.json({ error: "Session track not found." }, { status: 404 });
+    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
+    if (error instanceof SessionTrackNotFoundError) return Response.json({ error: "Session track not found." }, { status: 404 });
     if (error instanceof Error && error.message.startsWith("The ")) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return Response.json({ error: error.message }, { status: 400 });
     }
     if (error instanceof Response) return error;
     throw error;

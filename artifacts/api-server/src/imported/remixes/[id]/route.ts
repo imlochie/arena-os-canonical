@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { nearestBeat } from "@workspace/arena/lib/waveyard/types";
 import { asc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
@@ -120,8 +120,8 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
-    return NextResponse.json(
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
+    return Response.json(
       await stateFor(await getRemixAccess(user.id, id, "viewer")),
     );
   } catch (error) {
@@ -148,11 +148,11 @@ export async function PUT(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const remix = await getRemixAccess(user.id, id, "editor");
     let input = normaliseRemixState(await request.json());
     if (!input)
-      return NextResponse.json(
+      return Response.json(
         { error: "Invalid remix arrangement." },
         { status: 400 },
       );
@@ -170,7 +170,7 @@ export async function PUT(
           trackById.get(track.id)!.stemAssetId !== track.stemAssetId,
       )
     ) {
-      return NextResponse.json(
+      return Response.json(
         { error: "Remix tracks do not match this session." },
         { status: 409 },
       );
@@ -213,7 +213,7 @@ export async function PUT(
         track.clips.some((clip) => !durationByAssetId.has(clip.stemAssetId)),
       )
     )
-      return NextResponse.json(
+      return Response.json(
         { error: "A clip references an asset outside this project." },
         { status: 403 },
       );
@@ -226,13 +226,13 @@ export async function PUT(
         ),
       )
     )
-      return NextResponse.json(
+      return Response.json(
         { error: "A clip extends beyond its source stem." },
         { status: 422 },
       );
     const crossfadeMessage = input.tracks.map(crossfadeError).find(Boolean);
     if (crossfadeMessage)
-      return NextResponse.json({ error: crossfadeMessage }, { status: 422 });
+      return Response.json({ error: crossfadeMessage }, { status: 422 });
     await db.transaction(async (tx) => {
       await tx
         .update(remixSessions)
@@ -313,11 +313,11 @@ export async function PUT(
       .from(remixSessions)
       .where(eq(remixSessions.id, remix.id))
       .limit(1);
-    return NextResponse.json(await stateFor(updated));
+    return Response.json(await stateFor(updated));
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("remix save failed", error);
-    return NextResponse.json(
+    return Response.json(
       { error: "Remix could not be saved." },
       { status: 500 },
     );

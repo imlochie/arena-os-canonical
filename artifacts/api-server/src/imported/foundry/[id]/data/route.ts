@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "@workspace/db";
@@ -21,22 +21,22 @@ async function appExists(appId: string): Promise<boolean> {
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  if (!(await appExists(id))) return NextResponse.json({ error: "app not found" }, { status: 404 });
+  if (!(await appExists(id))) return Response.json({ error: "app not found" }, { status: 404 });
   const key = new URL(req.url).searchParams.get("key");
   if (key !== null) {
-    if (!KV_KEY_PATTERN.test(key)) return NextResponse.json({ error: "bad key" }, { status: 400 });
+    if (!KV_KEY_PATTERN.test(key)) return Response.json({ error: "bad key" }, { status: 400 });
     const [row] = await db
       .select()
       .from(foundryAppData)
       .where(and(eq(foundryAppData.appId, id), eq(foundryAppData.key, key)))
       .limit(1);
-    return NextResponse.json({ value: row?.value ?? null });
+    return Response.json({ value: row?.value ?? null });
   }
   const rows = await db
     .select({ key: foundryAppData.key, value: foundryAppData.value })
     .from(foundryAppData)
     .where(eq(foundryAppData.appId, id));
-  return NextResponse.json({ keys: rows.map((r) => r.key), entries: rows.length, bytes: rows.reduce((n, r) => n + Buffer.byteLength(r.value), 0) });
+  return Response.json({ keys: rows.map((r) => r.key), entries: rows.length, bytes: rows.reduce((n, r) => n + Buffer.byteLength(r.value), 0) });
 }
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -45,14 +45,14 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
   }
   const key = body.key ?? "";
   const value = body.value ?? "";
-  if (!KV_KEY_PATTERN.test(key)) return NextResponse.json({ error: "key must match ^[a-zA-Z0-9_.-]{1,64}$" }, { status: 400 });
+  if (!KV_KEY_PATTERN.test(key)) return Response.json({ error: "key must match ^[a-zA-Z0-9_.-]{1,64}$" }, { status: 400 });
   if (Buffer.byteLength(value, "utf8") > KV_MAX_VALUE_BYTES)
-    return NextResponse.json({ error: `value exceeds ${KV_MAX_VALUE_BYTES} bytes` }, { status: 413 });
-  if (!(await appExists(id))) return NextResponse.json({ error: "app not found" }, { status: 404 });
+    return Response.json({ error: `value exceeds ${KV_MAX_VALUE_BYTES} bytes` }, { status: 413 });
+  if (!(await appExists(id))) return Response.json({ error: "app not found" }, { status: 404 });
 
   const totals = await db
     .select({ keys: sql<number>`count(*)::int`, bytes: sql<number>`coalesce(sum(octet_length(value)),0)::int` })
@@ -66,23 +66,23 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   const isNew = row === undefined;
   const currentKeys = (totals[0]?.keys ?? 0) + (isNew ? 1 : 0);
   const currentBytes = (totals[0]?.bytes ?? 0) + (isNew ? 0 : -Buffer.byteLength(row.value, "utf8")) + Buffer.byteLength(value, "utf8");
-  if (currentKeys > KV_MAX_KEYS) return NextResponse.json({ error: `app storage is capped at ${KV_MAX_KEYS} keys` }, { status: 413 });
-  if (currentBytes > KV_MAX_TOTAL_BYTES) return NextResponse.json({ error: `app storage is capped at ${KV_MAX_TOTAL_BYTES} bytes` }, { status: 413 });
+  if (currentKeys > KV_MAX_KEYS) return Response.json({ error: `app storage is capped at ${KV_MAX_KEYS} keys` }, { status: 413 });
+  if (currentBytes > KV_MAX_TOTAL_BYTES) return Response.json({ error: `app storage is capped at ${KV_MAX_TOTAL_BYTES} bytes` }, { status: 413 });
 
   await db
     .insert(foundryAppData)
     .values({ appId: id, key, value })
     .onConflictDoUpdate({ target: [foundryAppData.appId, foundryAppData.key], set: { value, updatedAt: new Date() } });
-  return NextResponse.json({ ok: true, keys: currentKeys, bytes: currentBytes });
+  return Response.json({ ok: true, keys: currentKeys, bytes: currentBytes });
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const key = new URL(req.url).searchParams.get("key");
-  if (key === null || !KV_KEY_PATTERN.test(key)) return NextResponse.json({ error: "bad key" }, { status: 400 });
+  if (key === null || !KV_KEY_PATTERN.test(key)) return Response.json({ error: "bad key" }, { status: 400 });
   const removed = await db
     .delete(foundryAppData)
     .where(and(eq(foundryAppData.appId, id), eq(foundryAppData.key, key)))
     .returning({ key: foundryAppData.key });
-  return NextResponse.json({ ok: true, removed: removed.length > 0 });
+  return Response.json({ ok: true, removed: removed.length > 0 });
 }

@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { recordPlay } from "@workspace/arena/lib/waveyard/library/service";
@@ -14,10 +14,10 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const track = await recordPlay(user.id, id);
-    if (track === null) return NextResponse.json({ error: "Track not found." }, { status: 404 });
-    return NextResponse.json({ track });
+    if (track === null) return Response.json({ error: "Track not found." }, { status: 404 });
+    return Response.json({ track });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

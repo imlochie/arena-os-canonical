@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -16,7 +16,7 @@ export async function GET(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     
     const [job] = await db
       .select()
@@ -24,7 +24,7 @@ export async function GET(
       .where(eq(exportJobs.id, id))
       .limit(1);
     if (!job)
-      return NextResponse.json({ error: "Export job not found." }, { status: 404 });
+      return Response.json({ error: "Export job not found." }, { status: 404 });
     await requireProjectRole(user.id, job.projectId, "viewer");
     const [asset] = await db
       .select()
@@ -34,7 +34,7 @@ export async function GET(
     const safeAsset = asset
       ? (({ storageKey: _storageKey, ...value }) => value)(asset)
       : null;
-    return NextResponse.json({ job, asset: safeAsset });
+    return Response.json({ job, asset: safeAsset });
   } catch (error) {
     if (error instanceof Response) return error;
     throw error;

@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { z } from "zod";
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
@@ -21,14 +21,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = addSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "A track id is required." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "A track id is required." }, { status: 400 });
     const session = await addTrackToSession({ ownerId: user.id, sessionId: id, ...parsed.data });
-    return NextResponse.json({ session }, { status: 201 });
+    return Response.json({ session }, { status: 201 });
   } catch (error) {
-    if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
-    if (error instanceof TrackNotInLibraryError) return NextResponse.json({ error: "Track not found." }, { status: 404 });
+    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
+    if (error instanceof TrackNotInLibraryError) return Response.json({ error: "Track not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }
@@ -41,14 +41,14 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = moveSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return NextResponse.json({ error: "A session track id and position are required." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "A session track id and position are required." }, { status: 400 });
     const session = await moveSessionTrack(user.id, id, parsed.data.sessionTrackId, parsed.data.position);
-    return NextResponse.json({ session });
+    return Response.json({ session });
   } catch (error) {
-    if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
-    if (error instanceof SessionTrackNotFoundError) return NextResponse.json({ error: "Session track not found." }, { status: 404 });
+    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
+    if (error instanceof SessionTrackNotFoundError) return Response.json({ error: "Session track not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }
@@ -60,12 +60,12 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     const user = await requireUser();
     const { id } = await params;
     const sessionTrackId = new URL(request.url).searchParams.get("sessionTrackId") ?? "";
-    if (!isUuid(id) || !isUuid(sessionTrackId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id) || !isUuid(sessionTrackId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const session = await removeSessionTrack(user.id, id, sessionTrackId);
-    return NextResponse.json({ session });
+    return Response.json({ session });
   } catch (error) {
-    if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
-    if (error instanceof SessionTrackNotFoundError) return NextResponse.json({ error: "Session track not found." }, { status: 404 });
+    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
+    if (error instanceof SessionTrackNotFoundError) return Response.json({ error: "Session track not found." }, { status: 404 });
     if (error instanceof Response) return error;
     throw error;
   }

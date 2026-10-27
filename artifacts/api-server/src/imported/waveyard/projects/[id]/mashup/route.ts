@@ -15,7 +15,7 @@
  * the render is stateless. The user's own arrangement stays theirs.
  */
 
-const NextResponse = Response;
+
 import { and, desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
@@ -94,7 +94,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     const body = (await request.json().catch(() => ({}))) as MashupBody;
@@ -104,10 +104,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       const vocalsId = typeof body.vocalsSourceId === "string" ? body.vocalsSourceId : "";
       const bedId = typeof body.instrumentalSourceId === "string" ? body.instrumentalSourceId : "";
       if (!isUuid(vocalsId) || !isUuid(bedId)) {
-        return NextResponse.json({ error: "Pick both a vocal track and an instrumental track." }, { status: 400 });
+        return Response.json({ error: "Pick both a vocal track and an instrumental track." }, { status: 400 });
       }
       if (vocalsId === bedId) {
-        return NextResponse.json({ error: "Pick two different tracks — the mashup needs a vocal source and an instrumental source." }, { status: 400 });
+        return Response.json({ error: "Pick two different tracks — the mashup needs a vocal source and an instrumental source." }, { status: 400 });
       }
 
       const [vocals, bed] = await Promise.all([
@@ -115,20 +115,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         loadSourceProfile(projectId, bedId, "instrumental"),
       ]);
       if (vocals === null || bed === null) {
-        return NextResponse.json({ error: "One of the tracks is not in this project." }, { status: 404 });
+        return Response.json({ error: "One of the tracks is not in this project." }, { status: 404 });
       }
 
       const planned = planMashup(vocals, bed);
       if (!planned.ok) {
-        return NextResponse.json({ error: planned.reason }, { status: 422 });
+        return Response.json({ error: planned.reason }, { status: 422 });
       }
       if (action === "plan") {
-        return NextResponse.json({ plan: planned.plan }, { status: 200 });
+        return Response.json({ plan: planned.plan }, { status: 200 });
       }
 
       // Render: vocals stem over the bed's instrumental stem (or its original).
       if (planned.plan.durationMs / 1000 > MAX_RENDER_SECONDS) {
-        return NextResponse.json({ error: `Renders are limited to ${MAX_RENDER_SECONDS / 60} minutes.` }, { status: 413 });
+        return Response.json({ error: `Renders are limited to ${MAX_RENDER_SECONDS / 60} minutes.` }, { status: 413 });
       }
       await mkdir(tempDir, { recursive: true });
       const vocalsStem = await latestStem(projectId, vocalsId, "vocals");
@@ -142,10 +142,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           bedPcm === null ? sourcePcm(projectId, bedId, tempDir) : Promise.resolve(null),
         ]);
         if (vocalsPcm === null && vocalsFile === null) {
-          return NextResponse.json({ error: "The vocal track's audio could not be decoded." }, { status: 500 });
+          return Response.json({ error: "The vocal track's audio could not be decoded." }, { status: 500 });
         }
         if (bedPcm === null && bedFile === null) {
-          return NextResponse.json({ error: "The instrumental's audio could not be decoded." }, { status: 500 });
+          return Response.json({ error: "The instrumental's audio could not be decoded." }, { status: 500 });
         }
         const mixed = renderMashup(planned.plan, {
           vocals: (vocalsPcm ?? vocalsFile!.pcm) as Float32Array,
@@ -162,40 +162,40 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (action === "extend") {
       const sourceAssetId = typeof body.sourceAssetId === "string" ? body.sourceAssetId : "";
       if (!isUuid(sourceAssetId)) {
-        return NextResponse.json({ error: "Pick the track to extend." }, { status: 400 });
+        return Response.json({ error: "Pick the track to extend." }, { status: 400 });
       }
       const profile = await loadSourceProfile(projectId, sourceAssetId, "instrumental");
-      if (profile === null) return NextResponse.json({ error: "That track is not in this project." }, { status: 404 });
+      if (profile === null) return Response.json({ error: "That track is not in this project." }, { status: 404 });
 
       const sectionLabel = typeof body.sectionLabel === "string" && body.sectionLabel.trim().length > 0 ? body.sectionLabel.trim() : undefined;
       const repeats = typeof body.repeats === "number" && Number.isFinite(body.repeats) ? Math.round(body.repeats) : 2;
       const plan = planSongExtension(profile, { sectionLabel, repeats });
       if (plan === null) {
-        return NextResponse.json({ error: "This track has no analyzed sections to loop — run analysis first." }, { status: 422 });
+        return Response.json({ error: "This track has no analyzed sections to loop — run analysis first." }, { status: 422 });
       }
       if (plan.durationMs / 1000 > MAX_RENDER_SECONDS) {
-        return NextResponse.json({ error: `Renders are limited to ${MAX_RENDER_SECONDS / 60} minutes.` }, { status: 413 });
+        return Response.json({ error: `Renders are limited to ${MAX_RENDER_SECONDS / 60} minutes.` }, { status: 413 });
       }
 
       await mkdir(tempDir, { recursive: true });
       const decoded = await sourcePcm(projectId, sourceAssetId, tempDir);
-      if (decoded === null) return NextResponse.json({ error: "The track's audio could not be decoded." }, { status: 500 });
+      if (decoded === null) return Response.json({ error: "The track's audio could not be decoded." }, { status: 500 });
       const extended = renderSongExtension(plan, decoded.pcm, RENDER_SAMPLE_RATE);
       return wavResponse(encodeWav16(extended, RENDER_SAMPLE_RATE), "extended");
     }
 
-    return NextResponse.json({ error: "Unknown action — use plan, render, or extend." }, { status: 400 });
+    return Response.json({ error: "Unknown action — use plan, render, or extend." }, { status: 400 });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("mashup route failed", error);
-    return NextResponse.json({ error: "The mashup could not be produced." }, { status: 500 });
+    return Response.json({ error: "The mashup could not be produced." }, { status: 500 });
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
-function wavResponse(wav: Uint8Array, kind: string): NextResponse {
-  return new NextResponse(wav as unknown as BodyInit, {
+function wavResponse(wav: Uint8Array, kind: string): Response {
+  return new Response(wav as unknown as BodyInit, {
     status: 200,
     headers: {
       "content-type": "audio/wav",

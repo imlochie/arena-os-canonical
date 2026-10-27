@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { isUuid } from "@workspace/arena/lib/api/ids";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import {
@@ -19,12 +19,12 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter." }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const result = await sendSessionToStudio(user.id, id);
-    return NextResponse.json({ handoff: result }, { status: 201 });
+    return Response.json({ handoff: result }, { status: 201 });
   } catch (error) {
-    if (error instanceof SessionNotFoundError) return NextResponse.json({ error: "Session not found." }, { status: 404 });
-    if (error instanceof StemSwapRefusedError) return NextResponse.json({ error: error.message }, { status: 409 });
+    if (error instanceof SessionNotFoundError) return Response.json({ error: "Session not found." }, { status: 404 });
+    if (error instanceof StemSwapRefusedError) return Response.json({ error: error.message }, { status: 409 });
     if (error instanceof Response) return error;
     throw error;
   }

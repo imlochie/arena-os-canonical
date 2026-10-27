@@ -10,7 +10,7 @@
  * when no process can complete it.
  */
 
-const NextResponse = Response;
+
 
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { localWorkerStats } from "@workspace/arena/lib/waveyard/worker-local";
@@ -23,7 +23,7 @@ export async function GET() {
   await requireUser(); // same guard as every other waveyard route
   const mode = resolveProcessingMode();
   const localStats = localWorkerStats(); // null when not running (or no handlers)
-  return NextResponse.json({
+  return Response.json({
     mode,
     explanation: processingModeExplanation(mode),
     queueConfigured: queueConfigured(),

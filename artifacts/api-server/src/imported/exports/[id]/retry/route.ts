@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -41,7 +41,7 @@ export async function POST(
   try {
     const user = await requireUser();
     const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     
     const [job] = await db
       .select()
@@ -49,10 +49,10 @@ export async function POST(
       .where(eq(exportJobs.id, id))
       .limit(1);
     if (!job)
-      return NextResponse.json({ error: "Export job not found." }, { status: 404 });
+      return Response.json({ error: "Export job not found." }, { status: 404 });
     await requireProjectRole(user.id, job.projectId, "editor");
     if (job.status !== "failed")
-      return NextResponse.json(
+      return Response.json(
         { error: "Only a failed export can be retried." },
         { status: 409 },
       );
@@ -74,7 +74,7 @@ export async function POST(
       .where(and(eq(exportJobs.id, job.id), eq(exportJobs.status, "failed")))
       .returning();
     if (!updated)
-      return NextResponse.json(
+      return Response.json(
         { error: "Export retry is already in progress." },
         { status: 409 },
       );
@@ -107,11 +107,11 @@ export async function POST(
         .where(and(eq(exportJobs.id, job.id), eq(exportJobs.status, "queued")));
       throw queueError;
     }
-    return NextResponse.json({ job: updated });
+    return Response.json({ job: updated });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("export retry failed", error);
-    return NextResponse.json(
+    return Response.json(
       { error: "Export retry could not be queued." },
       { status: 503 },
     );

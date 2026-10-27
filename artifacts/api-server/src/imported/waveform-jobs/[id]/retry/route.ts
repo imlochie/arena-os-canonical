@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -22,18 +22,18 @@ export async function POST(
       .where(eq(waveformJobs.id, id))
       .limit(1);
     if (!job)
-      return NextResponse.json(
+      return Response.json(
         { error: "Waveform job not found." },
         { status: 404 },
       );
     await requireProjectRole(user.id, job.projectId, "editor");
     if (job.status !== "failed")
-      return NextResponse.json(
+      return Response.json(
         { error: "Only a failed waveform job can be retried." },
         { status: 409 },
       );
     if ((job.sourceAssetId ? 1 : 0) + (job.stemAssetId ? 1 : 0) !== 1)
-      return NextResponse.json(
+      return Response.json(
         { error: "Waveform job target is invalid." },
         { status: 422 },
       );
@@ -61,11 +61,11 @@ export async function POST(
       })
       .where(eq(waveformJobs.id, id))
       .returning();
-    return NextResponse.json({ job: updated });
+    return Response.json({ job: updated });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("waveform retry failed", error);
-    return NextResponse.json(
+    return Response.json(
       { error: "Waveform retry could not be queued." },
       { status: 503 },
     );

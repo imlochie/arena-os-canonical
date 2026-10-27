@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -29,9 +29,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   try {
     const user = await requireUser(); const { id } = await params;
     const [job] = await db.select().from(processingJobs).where(eq(processingJobs.id, id)).limit(1);
-    if (!job) return NextResponse.json({ error: "Job not found." }, { status: 404 });
+    if (!job) return Response.json({ error: "Job not found." }, { status: 404 });
     await requireProjectRole(user.id, job.projectId, "editor");
-    if (job.status !== "failed") return NextResponse.json({ error: "Only a failed job can be retried." }, { status: 409 });
+    if (job.status !== "failed") return Response.json({ error: "Only a failed job can be retried." }, { status: 409 });
 
     let options: RetryOptions = {};
     if (!localWorkerActive()) {
@@ -41,14 +41,14 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
     const result = await retrySeparationJob(db, job.id, options);
     if (!result.queued) {
-      return NextResponse.json({ error: result.reason }, { status: result.kind === "queue-refused" ? 503 : 409 });
+      return Response.json({ error: result.reason }, { status: result.kind === "queue-refused" ? 503 : 409 });
     }
     const [updated] = await db.select().from(processingJobs).where(eq(processingJobs.id, id)).limit(1);
-    return NextResponse.json({ job: updated });
+    return Response.json({ job: updated });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("retry failed", error);
-    return NextResponse.json({ error: "Retry could not be queued." }, { status: 503 });
+    return Response.json({ error: "Retry could not be queued." }, { status: 503 });
   } finally {
     await queue?.close().catch(() => undefined);
   }

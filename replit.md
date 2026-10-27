@@ -1,45 +1,41 @@
-# [Project name]
+# ArenaForge Personal
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A private, local-first AI workspace with blind model battles, chat, collaborative workflows, creative tools, and Waveyard music production.
 
-## Run & Operate
+## Run and verify
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Frontend: managed workflow `artifacts/arenaforge: web`, preview `/`.
+- Backend: managed workflow `artifacts/api-server: API Server`, API prefix `/api`.
+- Browser smoke test: `node scripts/arena-smoke.mjs` (also registered as validation `test`). Requires both workflows running and Chromium at `/repl/tools/bin/chromium`, or `CHROMIUM_PATH`.
+- Runtime/privacy unit checks: `pnpm --filter @workspace/scripts exec tsx --test ../lib/arena/src/lib/security/local-request-gate.test.ts ../lib/arena/src/lib/security/loopback-host.test.ts ../lib/arena/src/lib/runtime.test.ts`.
+- Development schema: `pnpm --filter @workspace/db run push`.
+- Replit supplies `DATABASE_URL`. `SESSION_SECRET` remains server-only.
 
-## Stack
+## Structure
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- `artifacts/arenaforge/src/app/`: preserved route views; `src/routes.ts` maps all original page URLs.
+- `artifacts/arenaforge/src/components/`: original UI; `src/app/globals.css` and `src/app/waveyard/waveyard.css` preserve its design.
+- `artifacts/api-server/src/imported/`: original API logic converted to standard Web Request/Response handlers.
+- `artifacts/api-server/src/routes/imported.ts`: Express adapter for streaming, multipart, range responses, aborts, and same-origin mutation protection.
+- `artifacts/api-server/src/page-data/`: database/bridge data formerly loaded by server-rendered detail pages.
+- `lib/arena/`: shared imported business logic, provider integrations, SQL history, and bridge source.
+- `lib/db/src/schema/`: original Arena, identity, college, and Waveyard database definitions.
+- `.migration-backup/`: untouched original reference, excluded from deployment.
+- `generated-artifacts/arena-smoke/`: ignored browser evidence and report.
 
-## Where things live
+## Product constraints
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- Preserve the existing interface and behaviors during this port. Do not replace original tools with explanatory placeholders.
+- The built-in Local Engine is deterministic, **not an LLM**. Keep its execution/fallback metadata honest, and do not move model Elo for local-engine/fallback battles.
+- Local Mode must make no outbound AI calls. Optional BYOK credentials live in the browser and are sent only per request; never store them in the database.
+- Before a battle is voted on, all browser-facing endpoints must hide model and assistant identities.
+- WanGP integrations require attribution: “powered by WanGP (Wan2GP) by DeepBeepMeep”.
+- The user prioritizes working flows over more descriptions of what each tool is intended to do. Suggestions for rooms must become capabilities, not just presets; existing capabilities must be reachable through usable controls.
 
-## Architecture decisions
+## Scope and limits
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+This migration targets the Replit web runtime. The original Windows/Electron packaging source is retained in the backup, but no Windows installer has been built or verified here. External local-model servers, GPU bridges, and WebGPU model downloads still require their real runtime resources. Passing the web smoke tests is not evidence that those tools or the Windows desktop build work.
 
-## Product
+File-backed features retain their original local storage providers; Replit's server filesystem is not the user's Windows filesystem. No existing remote database contents were imported.
 
-_Describe the high-level user-facing capabilities of this app once they exist._
-
-## User preferences
-
-_Populate as you build — explicit user instructions worth remembering across sessions._
-
-## Gotchas
-
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+Strict type cleanup of imported code is outside the port scope. Verify runtime behavior and artifact builds; do not claim the full monorepo typecheck is clean.

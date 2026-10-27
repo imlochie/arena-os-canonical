@@ -1,5 +1,5 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
-const NextResponse = Response;
+
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -33,22 +33,22 @@ async function authorizedDrumStem(id: string, userId: string, role: "viewer" | "
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const target = await authorizedDrumStem(id, user.id, "viewer");
-    if (!target) return NextResponse.json({ error: "Isolated drum stem not found." }, { status: 404 });
+    if (!target) return Response.json({ error: "Isolated drum stem not found." }, { status: 404 });
     
     const [analysis] = await db.select().from(drumAnalyses).where(eq(drumAnalyses.stemAssetId, target.stem.id)).limit(1);
     const events = analysis ? await db.select().from(drumEvents).where(eq(drumEvents.drumAnalysisId, analysis.id)).orderBy(drumEvents.eventIndex) : [];
-    return NextResponse.json({ analysis: analysis ?? null, events });
+    return Response.json({ analysis: analysis ?? null, events });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(); const { id } = await params;
-    if (!isUuid(id)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(id)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     const target = await authorizedDrumStem(id, user.id, "editor");
-    if (!target) return NextResponse.json({ error: "Isolated drum stem not found." }, { status: 404 });
+    if (!target) return Response.json({ error: "Isolated drum stem not found." }, { status: 404 });
     const { stem, source } = target; 
     const [created] = await db.insert(drumAnalyses).values({
       projectId: stem.projectId, sourceAssetId: source.id, stemAssetId: stem.id,
@@ -65,7 +65,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       stemChecksumSha256: analysis.stemChecksumSha256, expectedStemChecksumSha256: stem.checksumSha256,
       analysisEngine: analysis.analysisEngine, analysisEngineVersion: analysis.analysisEngineVersion,
     });
-    if (reason) return NextResponse.json({ error: "Existing drum analysis provenance is stale; stem separation is required." }, { status: 409 });
+    if (reason) return Response.json({ error: "Existing drum analysis provenance is stale; stem separation is required." }, { status: 409 });
     if (created || analysis.status === "failed") {
       if (!created) await db.update(drumAnalyses).set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date() }).where(eq(drumAnalyses.id, analysis.id));
       try {
@@ -75,6 +75,6 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         throw error;
       }
     }
-    return NextResponse.json({ analysis }, { status: created ? 201 : 200 });
-  } catch (error) { if (error instanceof Response) return error; console.error("drum analysis request failed", error); return NextResponse.json({ error: "Could not queue drum analysis." }, { status: 503 }); }
+    return Response.json({ analysis }, { status: created ? 201 : 200 });
+  } catch (error) { if (error instanceof Response) return error; console.error("drum analysis request failed", error); return Response.json({ error: "Could not queue drum analysis." }, { status: 503 }); }
 }

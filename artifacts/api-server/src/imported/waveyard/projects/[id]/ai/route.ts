@@ -15,7 +15,7 @@ import { isUuid } from "@workspace/arena/lib/api/ids";
  * untouched.
  */
 
-const NextResponse = Response;
+
 import { asc, desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
@@ -95,7 +95,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "viewer");
     const session = await loadSessionView(projectId);
     const channelMenu = session === null
@@ -104,7 +104,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
           ...session.view.tracks.map((track) => ({ id: `stem:${track.stemAssetId}`, name: track.name })),
           { id: "master", name: "Master" },
         ];
-    return NextResponse.json({
+    return Response.json({
       providers: listProviders(),
       defaultProviderId: defaultProviderId(),
       workflows: AI_WORKFLOWS,
@@ -117,7 +117,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     });
   } catch (error) {
     if (error instanceof Response) return error;
-    return NextResponse.json({ error: "Could not load AI studio state." }, { status: 500 });
+    return Response.json({ error: "Could not load AI studio state." }, { status: 500 });
   }
 }
 
@@ -126,7 +126,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id: projectId } = await params;
-    if (!isUuid(projectId)) return NextResponse.json({ error: "Invalid id parameter" }, { status: 400 });
+    if (!isUuid(projectId)) return Response.json({ error: "Invalid id parameter" }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
     const body = await request.json().catch(() => ({}));
     const action = String(body.action ?? "");
@@ -134,17 +134,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (action === "request") {
       const workflow = findWorkflow(String(body.workflowId ?? ""));
       if (workflow === null)
-        return NextResponse.json({ error: "Unknown workflow." }, { status: 400 });
+        return Response.json({ error: "Unknown workflow." }, { status: 400 });
       const providerId = (String(body.providerId ?? defaultProviderId()) as ProviderId);
       if (providerId !== "openai" && providerId !== "anthropic")
-        return NextResponse.json({ error: "Unknown provider." }, { status: 400 });
+        return Response.json({ error: "Unknown provider." }, { status: 400 });
 
       const session = await loadSessionView(projectId);
       if (session === null)
-        return NextResponse.json({ error: "This project has no remix session yet." }, { status: 409 });
+        return Response.json({ error: "This project has no remix session yet." }, { status: 409 });
       const { source, stems } = await loadPacketInputs(projectId);
       if (source === undefined)
-        return NextResponse.json({ error: "This project has no source audio to analyze." }, { status: 409 });
+        return Response.json({ error: "This project has no source audio to analyze." }, { status: 409 });
 
       // Real PCM → real measured packet. The model never receives audio.
       tempSource = join(tmpdir(), `arena-ai-src-${randomUUID()}`);
@@ -163,7 +163,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       ];
       const result = await requestFromProvider({ providerId, workflow, packet, channelMenu });
       if (!result.ok) {
-        return NextResponse.json(
+        return Response.json(
           { error: result.reason, errorCode: "PROVIDER_UNAVAILABLE" },
           { status: 503 },
         );
@@ -176,7 +176,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         if (application.status === "rejected") {
           // The model's output failed the contract — reported honestly with
           // the exact errors. Nothing was applied.
-          return NextResponse.json(
+          return Response.json(
             {
               capability: result.capability,
               model: result.model,
@@ -187,7 +187,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             { status: 422 },
           );
         }
-        return NextResponse.json({
+        return Response.json({
           capability: result.capability,
           model: result.model,
           workflowId: workflow.id,
@@ -198,7 +198,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           },
         });
       }
-      return NextResponse.json({
+      return Response.json({
         capability: result.capability,
         model: result.model,
         workflowId: workflow.id,
@@ -210,14 +210,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (action === "apply") {
       const workflow = findWorkflow(String(body.workflowId ?? ""));
       if (workflow === null)
-        return NextResponse.json({ error: "Unknown workflow." }, { status: 400 });
+        return Response.json({ error: "Unknown workflow." }, { status: 400 });
       const session = await loadSessionView(projectId);
       if (session === null)
-        return NextResponse.json({ error: "No remix session." }, { status: 409 });
+        return Response.json({ error: "No remix session." }, { status: 409 });
       const state = mixerStateFromRemix(session.view);
       const application = applyProposal(state, body.proposal);
       if (application.status === "rejected" || application.next === undefined) {
-        return NextResponse.json(
+        return Response.json(
           { error: "Proposal rejected by the validator.", errors: application.errors },
           { status: 422 },
         );
@@ -259,20 +259,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           })
           .where(eq(remixSessions.id, session.sessionId));
       });
-      return NextResponse.json({
+      return Response.json({
         applied: application.applied,
         clamped: application.clamped,
         sessionId: session.sessionId,
       });
     }
 
-    return NextResponse.json({ error: "Unknown action — use request or apply." }, { status: 400 });
+    return Response.json({ error: "Unknown action — use request or apply." }, { status: 400 });
   } catch (error) {
     if (error instanceof Response) return error;
     if (error instanceof DependencyMissingError)
-      return NextResponse.json({ error: error.message, errorCode: error.errorCode }, { status: 424 });
+      return Response.json({ error: error.message, errorCode: error.errorCode }, { status: 424 });
     console.error("ai route failed", error);
-    return NextResponse.json({ error: "AI assist failed." }, { status: 500 });
+    return Response.json({ error: "AI assist failed." }, { status: 500 });
   } finally {
     if (tempSource !== null) await rm(tempSource, { force: true }).catch(() => undefined);
   }

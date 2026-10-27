@@ -5,14 +5,14 @@ import Nav from "@/components/Nav";
 import DesktopRuntimeStatus from "@/components/DesktopRuntimeStatus";
 import { OfflineBanner, SwRegister } from "@/components/OfflineKit";
 
-export const metadata: Metadata = {
+export const metadata = {
   title: "ArenaForge Personal — Your Free Private AI Arena",
   description:
     "Blind battles, collab lab, leaderboards. Local Mode works fully offline. Never trained on. $0 forever.",
   manifest: "/manifest.json",
 };
 
-export const viewport: Viewport = {
+export const viewport = {
   themeColor: "#060a17",
 };
 

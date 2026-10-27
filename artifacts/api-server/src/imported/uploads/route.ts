@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { acceptedAudioFilename, checksumFile, MAX_UPLOAD_BYTES, probeAudio, sanitizedFilename } from "@workspace/arena/lib/waveyard/audio";
 import { db } from "@workspace/db";
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
     const modelField = form.get("model");
     const requestedModel = modelField !== null && String(modelField).trim() !== "" ? String(modelField) : defaultSeparationModel();
     if (!isAcceptableSeparationModel(requestedModel)) {
-      return NextResponse.json({ error: `Unknown separation target "${requestedModel}" — use the app's built-in choices.` }, { status: 400 });
+      return Response.json({ error: `Unknown separation target "${requestedModel}" — use the app's built-in choices.` }, { status: 400 });
     }
     // The deep pass needs the owner-prepared engine on THIS machine. Refuse
     // before a byte is stored (the queue would only fail later, after the
@@ -47,15 +47,15 @@ export async function POST(request: Request) {
     if (isDeepSeparationMode(requestedModel)) {
       const deep = deepEngineStatusForThisRuntime();
       if (!deep.prepared) {
-        return NextResponse.json({ error: deep.reason, deep: { prepared: false } }, { status: 503 });
+        return Response.json({ error: deep.reason, deep: { prepared: false } }, { status: 503 });
       }
     }
     const requestedDevice = String(form.get("device") ?? process.env.STEM_DEVICE ?? "auto");
     const upload = form.get("file");
-    if (!projectId || !(upload instanceof File)) return NextResponse.json({ error: "Project and audio file are required." }, { status: 400 });
-    if (!acceptedAudioFilename(upload.name)) return NextResponse.json({ error: "Supported formats are WAV, MP3, FLAC, M4A, AAC, and OGG." }, { status: 415 });
-    if (upload.size <= 0 || upload.size > MAX_UPLOAD_BYTES) return NextResponse.json({ error: `Audio must be between 1 byte and ${MAX_UPLOAD_BYTES} bytes.` }, { status: 413 });
-    if (!/^(auto|cpu|cuda)$/.test(requestedDevice)) return NextResponse.json({ error: "Invalid processing device." }, { status: 400 });
+    if (!projectId || !(upload instanceof File)) return Response.json({ error: "Project and audio file are required." }, { status: 400 });
+    if (!acceptedAudioFilename(upload.name)) return Response.json({ error: "Supported formats are WAV, MP3, FLAC, M4A, AAC, and OGG." }, { status: 415 });
+    if (upload.size <= 0 || upload.size > MAX_UPLOAD_BYTES) return Response.json({ error: `Audio must be between 1 byte and ${MAX_UPLOAD_BYTES} bytes.` }, { status: 413 });
+    if (!/^(auto|cpu|cuda)$/.test(requestedDevice)) return Response.json({ error: "Invalid processing device." }, { status: 400 });
     await requireProjectRole(user.id, projectId, "editor");
 
     // Honest offline probe fallback: when the server has no ffprobe, the
@@ -130,13 +130,13 @@ export async function POST(request: Request) {
       waveformQueued = false;
       await db.update(waveformJobs).set({ status: "failed", stage: "queue-unavailable", errorCode: "queue_unavailable", errorMessage: queueError instanceof Error ? queueError.message.slice(0, 1000) : "Queue unavailable.", completedAt: new Date(), updatedAt: new Date() }).where(eq(waveformJobs.id, waveformJob.id));
     }
-    return NextResponse.json({ source, job, separationQueued, waveformJob: { id: waveformJob.id, queued: waveformQueued } }, { status: 201 });
+    return Response.json({ source, job, separationQueued, waveformJob: { id: waveformJob.id, queued: waveformQueued } }, { status: 201 });
   } catch (error) {
     if (error instanceof Response) return error;
     const message = error instanceof Error ? error.message : "Upload failed.";
-    if (/ffprobe|decode|valid timed stream/i.test(message)) return NextResponse.json({ error: "The file could not be decoded as supported audio. Nothing was queued." }, { status: 422 });
+    if (/ffprobe|decode|valid timed stream/i.test(message)) return Response.json({ error: "The file could not be decoded as supported audio. Nothing was queued." }, { status: 422 });
     console.error("upload failed", error);
-    return NextResponse.json({ error: "Upload failed before processing started." }, { status: 500 });
+    return Response.json({ error: "Upload failed before processing started." }, { status: 500 });
   } finally {
     if (storedKey && !persisted) await getStorage().delete(storedKey).catch(() => undefined);
     if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true });

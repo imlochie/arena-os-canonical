@@ -1,4 +1,4 @@
-const NextResponse = Response;
+
 import { eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
@@ -24,11 +24,11 @@ export async function GET(
     const { id } = await params;
     
     const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, id)).limit(1);
-    if (!source) return NextResponse.json({ error: "Source not found." }, { status: 404 });
+    if (!source) return Response.json({ error: "Source not found." }, { status: 404 });
     await requireProjectRole(user.id, source.projectId, "viewer");
     const [analysis] = await db.select().from(sourceEventAnalyses).where(eq(sourceEventAnalyses.sourceAssetId, source.id)).limit(1);
     const events = analysis ? await db.select().from(sourceEvents).where(eq(sourceEvents.sourceEventAnalysisId, analysis.id)) : [];
-    return NextResponse.json({ analysis: analysis ?? null, events: events.sort((left, right) => left.timestampMs - right.timestampMs) });
+    return Response.json({ analysis: analysis ?? null, events: events.sort((left, right) => left.timestampMs - right.timestampMs) });
   } catch (error) { if (error instanceof Response) return error; throw error; }
 }
 
@@ -41,7 +41,7 @@ export async function POST(
     const { id } = await params;
     
     const [source] = await db.select().from(sourceAssets).where(eq(sourceAssets.id, id)).limit(1);
-    if (!source) return NextResponse.json({ error: "Source not found." }, { status: 404 });
+    if (!source) return Response.json({ error: "Source not found." }, { status: 404 });
     await requireProjectRole(user.id, source.projectId, "editor");
     const [created] = await db.insert(sourceEventAnalyses).values({
       projectId: source.projectId,
@@ -58,7 +58,7 @@ export async function POST(
     if (analysis.sourceChecksumSha256 !== source.checksumSha256
       || analysis.analysisEngine !== SOURCE_EVENT_ANALYSIS_ENGINE
       || analysis.analysisEngineVersion !== SOURCE_EVENT_ANALYSIS_ENGINE_VERSION)
-      return NextResponse.json({ error: "Existing event analysis provenance is stale; source reanalysis is required." }, { status: 409 });
+      return Response.json({ error: "Existing event analysis provenance is stale; source reanalysis is required." }, { status: 409 });
     if (created || analysis.status === "failed") {
       if (!created) await db.update(sourceEventAnalyses).set({ status: "queued", stage: "queued", errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date() }).where(eq(sourceEventAnalyses.id, analysis.id));
       await enqueueSourceEventAnalysis({
@@ -69,6 +69,6 @@ export async function POST(
         analysisEngineVersion: analysis.analysisEngineVersion,
       });
     }
-    return NextResponse.json({ analysis }, { status: created ? 201 : 200 });
-  } catch (error) { if (error instanceof Response) return error; console.error("event analysis request failed", error); return NextResponse.json({ error: "Could not queue event analysis." }, { status: 503 }); }
+    return Response.json({ analysis }, { status: created ? 201 : 200 });
+  } catch (error) { if (error instanceof Response) return error; console.error("event analysis request failed", error); return Response.json({ error: "Could not queue event analysis." }, { status: 503 }); }
 }
