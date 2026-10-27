@@ -33,12 +33,20 @@ const externalStemKeys = types.map(stem => {
   assets.set(key, wav(4, 530 + types.indexOf(stem) * 40));
   return { id: key, stemType: stem, engine: "synthetic-test" };
 });
+const libraryRows = tracks.map((item, index) => ({
+  id: item.track.id, title: item.track.title, artist: "Synthetic fixture", album: "",
+  durationSeconds: item.track.durationSeconds, playCount: 0, rating: 0, labels: [], lastPlayedAt: null,
+  addedAt: new Date().toISOString(), stemAvailability: { status: "separated", stemCount: 4 },
+  studioProjectId: `fixture-project-${index}`,
+}));
+let liveQueue = [];
 const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 const browser = await chromium.launch({ executablePath: "/repl/tools/bin/chromium",
   args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] });
 try {
   const page = await browser.newPage();
+  page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
   await page.addInitScript(() => {
     window.audioProbe = { sources: [], buffers: [] };
     const Base = window.AudioContext;
@@ -77,8 +85,33 @@ try {
     });
   });
   await page.route("**/api/library/tracks", route => route.fulfill({ json: { tracks: [
-    { id: "d", title: "Test D", artist: "Synthetic fixture", stemAvailability: { status: "separated" } },
+    ...libraryRows, { id: "d", title: "Test D", artist: "Synthetic fixture", stemAvailability: { status: "separated" } },
   ] } }));
+  await page.route("**/api/library/playlists", route => route.fulfill({ json: { playlists: [
+    { id: "test-playlist", name: "Test order", trackCount: 2 },
+  ] } }));
+  await page.route("**/api/library/playlists/test-playlist", route => route.fulfill({ json: { playlist: {
+    id: "test-playlist", name: "Test order", items: ["a", "b"].map((id, i) => ({ id: `playlist-${i}`, position: i, track: libraryRows.find(row => row.id === id) })),
+  } } }));
+  await page.route("**/api/library/queue", async route => {
+    if (route.request().method() === "POST") {
+      const { trackId } = route.request().postDataJSON();
+      const track = libraryRows.find(row => row.id === trackId);
+      liveQueue.push({ id: `queue-${trackId}`, position: liveQueue.length, track });
+    } else if (route.request().method() === "DELETE") liveQueue = [];
+    await route.fulfill({ json: { queue: liveQueue } });
+  });
+  await page.route("**/api/library/queue/*", route => {
+    liveQueue = liveQueue.filter(item => item.id !== new URL(route.request().url()).pathname.split("/").at(-1));
+    return route.fulfill({ json: { queue: liveQueue } });
+  });
+  await page.route("**/api/library/sessions", async route => {
+    if (route.request().method() === "POST") {
+      session.tracks = []; session.swaps = []; session.currentSessionTrackId = null; session.positionSeconds = 0;
+      return route.fulfill({ json: { session: { id: sessionId } } });
+    }
+    return route.fulfill({ json: { sessions: [] } });
+  });
   await page.route(`**/api/library/sessions/${sessionId}**`, async route => {
     const request = route.request(), url = new URL(request.url());
     const body = request.postDataJSON();
@@ -86,12 +119,17 @@ try {
       session.swaps = session.swaps.filter(s => !(s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType));
       session.swaps.push({ ...body, id: `swap-${body.stemType}`, fromTrackId: "a", createdAt: new Date().toISOString(),
         donorTrack: body.toTrackId === "d" ? { id: "d", title: "Test D", stems: externalStemKeys } : undefined });
+    } else if (url.pathname.endsWith("/tracks") && request.method() === "POST") {
+      const item = tracks.find(t => t.track.id === body.trackId);
+      session.tracks.push({ ...item, id: `session-${session.tracks.length + 1}`, position: body.position });
     } else if (request.method() === "DELETE") {
       session.swaps = session.swaps.filter(s => s.id !== url.searchParams.get("swapId"));
     } else if (url.pathname.endsWith("/state") && body) Object.assign(session, body);
     else if (request.method() === "PATCH" && body) Object.assign(tracks.find(t => t.id === url.pathname.split("/").at(-1)), body);
     await route.fulfill({ json: { session } });
   });
+  await page.goto("http://localhost:80/waveyard");
+  await page.evaluate(() => localStorage.clear());
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].length === 4 &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.readyState === 4));
@@ -147,5 +185,18 @@ try {
   await page.waitForFunction(() => !document.querySelector('[data-role="current"] [role="alert"]'));
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile must not overflow");
-  console.log("PASS: seek, resume offset, Original, all-four swap/loop, failure/retry, mobile width");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("http://localhost:80/waveyard");
+  try { await page.locator('[data-testid="button-play-a"]').waitFor({ timeout: 5000 }); }
+  catch {
+    console.log("PLAYLIST_DEBUG_URL", page.url());
+    console.log("PLAYLIST_DEBUG_BODY", (await page.locator("body").innerText()).slice(0, 1600));
+    throw new Error("Music library did not render during queue integration check.");
+  }
+  await page.locator('[data-testid="library-track"]').filter({ hasText: "Test a" }).getByRole("button", { name: "+ Queue" }).click();
+  await page.waitForFunction(() => session.tracks.length === 1 && session.tracks[0].track.id === "a");
+  await page.getByRole("button", { name: "Test order" }).click();
+  await page.getByTestId("playlist-live-test-playlist").click();
+  await page.waitForFunction(() => session.tracks.length === 3 && session.tracks[1].track.id === "a" && session.tracks[2].track.id === "b");
+  console.log("PASS: live swaps, seek/resume, failure/retry, mobile width, queue and ordered playlist enqueue");
 } finally { await browser.close(); }

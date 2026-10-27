@@ -60,11 +60,12 @@ interface LibraryTrackOption {
   stemAvailability?: { status: "separated" | "source-only" | "processing" | "unavailable" };
 }
 
-export type HostCommandKind = "play" | "load" | "next";
+export type HostCommandKind = "play" | "load" | "next" | "enqueue";
 export interface HostCommand {
   seq: number;
   kind: HostCommandKind;
   trackId: string;
+  trackIds?: string[];
 }
 
 type DeckApi = {
@@ -877,8 +878,30 @@ export default function SessionExperience({
     if (command === null || command.seq === lastCommandRef.current || session === null || session.id !== sessionId) return;
     lastCommandRef.current = command.seq;
     void (async () => {
-      const s = sessionRef.current;
+      let s = sessionRef.current;
       if (s === null) return;
+      if (command.kind === "enqueue") {
+        const ids = command.trackIds?.length ? command.trackIds : [command.trackId];
+        const startFirst = s.tracks.length === 0 && currentIdRef.current === null;
+        let firstAdded: string | null = null;
+        for (const trackId of ids) {
+          const latest = sessionRef.current;
+          if (latest === null) return;
+          const detail = await mutate(`/api/library/sessions/${latest.id}/tracks`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ trackId, position: latest.tracks.length }),
+          });
+          if (detail === null) return;
+          s = detail;
+          if (firstAdded === null) {
+            firstAdded = detail.tracks.at(-1)?.id ?? null;
+          }
+        }
+        if (startFirst && firstAdded !== null) jumpTo(firstAdded, true);
+        setStatus(`${ids.length} song${ids.length === 1 ? "" : "s"} added to the listening order.`);
+        return;
+      }
       const curIdx = s.tracks.findIndex((item) => item.id === currentIdRef.current);
       const existing = s.tracks.find((item) => item.track.id === command.trackId) ?? null;
       const insertAt = curIdx >= 0 ? curIdx + 1 : s.tracks.length;

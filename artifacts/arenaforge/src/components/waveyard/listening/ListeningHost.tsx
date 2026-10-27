@@ -22,6 +22,8 @@ interface ListeningHostApi {
   sessionId: string | null;
   /** Load a library track into the current listening session (creating one if needed). */
   sendTrack: (trackId: string, kind: HostCommandKind) => Promise<void>;
+  /** Append library tracks to the live listening order without interrupting playback. */
+  enqueueTracks: (trackIds: string[]) => Promise<boolean>;
   openSession: (sessionId: string) => void;
   hostError: string | null;
 }
@@ -112,6 +114,21 @@ export function ListeningHostProvider({ children }: { children: ReactNode }) {
     [ensureSession],
   );
 
+  const enqueueTracks = useCallback(async (trackIds: string[]) => {
+    const ids = trackIds.filter((id) => id.length > 0);
+    if (ids.length === 0) return false;
+    setHostError(null);
+    try {
+      await ensureSession();
+      seq.current += 1;
+      setCommand({ seq: seq.current, kind: "enqueue", trackId: ids[0], trackIds: ids });
+      return true;
+    } catch (error) {
+      setHostError(`Could not add to the listening order — ${error instanceof Error ? error.message : "network error"}.`);
+      return false;
+    }
+  }, [ensureSession]);
+
   const openSession = useCallback(
     (id: string) => {
       if (sessionIdRef.current !== id) selectSession(id);
@@ -121,7 +138,7 @@ export function ListeningHostProvider({ children }: { children: ReactNode }) {
 
   const setMissing = useCallback(() => selectSession(null), [selectSession]);
 
-  const api = useMemo(() => ({ sessionId, sendTrack, openSession, hostError }), [sessionId, sendTrack, openSession, hostError]);
+  const api = useMemo(() => ({ sessionId, sendTrack, enqueueTracks, openSession, hostError }), [sessionId, sendTrack, enqueueTracks, openSession, hostError]);
   const state = useMemo(() => ({ sessionId, command, setMissing }), [sessionId, command, setMissing]);
 
   return (

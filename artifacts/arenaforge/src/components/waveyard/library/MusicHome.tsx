@@ -181,7 +181,7 @@ function TrackRow({
       <div className="track-actions">
         <button type="button" className="button" onClick={() => onPlay(track)} data-testid={`button-play-${track.id}`}>Play</button>
         <button type="button" className="button secondary" onClick={() => onNext(track)} title="Line up on the next deck" data-testid={`button-next-${track.id}`}>Next</button>
-        <button type="button" className="button secondary" onClick={() => onQueue(track)}>+ Queue</button>
+        <button type="button" className="button secondary" title="Add to the saved queue and the live listening order" onClick={() => onQueue(track)}>+ Queue</button>
         {playlists.length > 0 && (
           <select
             aria-label={`Add ${track.title} to a playlist`}
@@ -409,13 +409,33 @@ export function MusicHome() {
   const nextTrack = useCallback((track: TrackSummary) => void host.sendTrack(track.id, "next"), [host]);
 
   const onQueue = useCallback(async (track: TrackSummary) => {
+    const addedToListening = await host.enqueueTracks([track.id]);
+    if (!addedToListening) {
+      setMessage("The song could not be added to the listening order.");
+      return;
+    }
     const response = await fetch("/api/library/queue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ trackId: track.id, at: "end", currentTrackId: playback?.currentTrackId ?? null }),
     });
-    if (response.ok) setQueue((await response.json()).queue ?? []);
-  }, [playback]);
+    if (response.ok) {
+      setQueue((await response.json()).queue ?? []);
+      setMessage(`${track.title} added to the listening order.`);
+    } else {
+      setMessage(`${track.title} is in the listening order; the saved queue could not be updated.`);
+    }
+  }, [playback, host]);
+
+  const enqueuePlaylist = useCallback(async (playlist: PlaylistDetail) => {
+    if (playlist.items.length === 0) {
+      setMessage("This playlist is empty.");
+      return;
+    }
+    const added = await host.enqueueTracks(playlist.items.map((item) => item.track.id));
+    if (added) setMessage(`${playlist.items.length} songs from ${playlist.name} added to the listening order.`);
+    else setMessage(`Could not add ${playlist.name} to the listening order.`);
+  }, [host]);
 
   const rateTrack = useCallback(async (track: TrackSummary, rating: number) => {
     const response = await fetch(`/api/library/tracks/${track.id}`, {
@@ -681,7 +701,7 @@ export function MusicHome() {
           )}
           {queue.length > 0 && <div className="queue-panel">
             <div className="library-panel-title">
-              <h2>Queue</h2>
+              <h2>Saved queue</h2>
               {queue.length > 0 && <button type="button" className="button secondary" onClick={() => void clearQueue()}>Clear</button>}
             </div>
             {queue.length === 0 ? (
@@ -781,19 +801,25 @@ export function MusicHome() {
                   <small>{playlist.trackCount} track{playlist.trackCount === 1 ? "" : "s"}</small>
                 </button>
                 {openPlaylist?.id === playlist.id && (
-                  <ol className="playlist-items">
-                    {openPlaylist.items.map((item, index) => (
-                      <li key={item.id}>
-                        <Link href={`/waveyard/play/${item.track.id}`}>{item.track.title}</Link>
-                        <span className="playlist-item-actions">
-                          <button type="button" aria-label="Move up" disabled={index === 0} onClick={() => void movePlaylistItem(playlist.id, item.id, index - 1)}>↑</button>
-                          <button type="button" aria-label="Move down" disabled={index === openPlaylist.items.length - 1} onClick={() => void movePlaylistItem(playlist.id, item.id, index + 1)}>↓</button>
-                          <button type="button" aria-label={`Remove ${item.track.title}`} onClick={() => void removePlaylistItem(playlist.id, item.id)}>×</button>
-                        </span>
-                      </li>
-                    ))}
-                    {openPlaylist.items.length === 0 && <li className="empty">Empty playlist.</li>}
-                  </ol>
+                  <>
+                    <button type="button" className="button secondary" disabled={openPlaylist.items.length === 0}
+                      onClick={() => void enqueuePlaylist(openPlaylist)} data-testid={`playlist-live-${playlist.id}`}>
+                      Add playlist to listening order
+                    </button>
+                    <ol className="playlist-items">
+                      {openPlaylist.items.map((item, index) => (
+                        <li key={item.id}>
+                          <Link href={`/waveyard/play/${item.track.id}`}>{item.track.title}</Link>
+                          <span className="playlist-item-actions">
+                            <button type="button" aria-label="Move up" disabled={index === 0} onClick={() => void movePlaylistItem(playlist.id, item.id, index - 1)}>↑</button>
+                            <button type="button" aria-label="Move down" disabled={index === openPlaylist.items.length - 1} onClick={() => void movePlaylistItem(playlist.id, item.id, index + 1)}>↓</button>
+                            <button type="button" aria-label={`Remove ${item.track.title}`} onClick={() => void removePlaylistItem(playlist.id, item.id)}>×</button>
+                          </span>
+                        </li>
+                      ))}
+                      {openPlaylist.items.length === 0 && <li className="empty">Empty playlist.</li>}
+                    </ol>
+                  </>
                 )}
               </li>
             ))}
