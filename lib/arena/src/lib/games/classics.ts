@@ -114,7 +114,7 @@ export function buildPong(o: PongOpts = {}): string {
     "var CONFIG={win:" + winScore + ",ai:" + aiSpeed + ",spd:" + ballSpeed + "};\n" +
     [
       "var cv=document.getElementById('game'),ctx=cv.getContext('2d'),W=cv.width,H=cv.height;",
-      "var you,cpu,ball,state='title',serveT=0,keys={},trail=[];",
+      "var you,cpu,ball,state='title',serveT=0,keys={},trail=[],high=__store.get('af_pong_high',0);",
       "function resetPositions(){you={x:16,y:H/2,w:10,h:74,vy:0};cpu={x:W-16,y:H/2,w:10,h:74};}",
       "function serve(toward){ball={x:W/2,y:H/2,r:7};var a=(toward||1)*(0.35+Math.random()*0.5)*(Math.random()<0.5?1:-1);var dir=toward||(Math.random()<0.5?1:-1);ball.vx=Math.cos(a)*CONFIG.spd*dir;ball.vy=Math.sin(a)*CONFIG.spd;trail=[];}",
       "function newGame(){resetPositions();you.s=0;cpu.s=0;serve();state='play';__hideOverlay();}",
@@ -126,7 +126,7 @@ export function buildPong(o: PongOpts = {}): string {
       "paddle(you,1);paddle(cpu,-1);",
       "if(ball.x<-20){cpu.s++;__sfx(160,0.25,'sawtooth',0.05,70);checkWinOrServe(-1);}else if(ball.x>W+20){you.s++;__sfx(700,0.12,'square',0.05);checkWinOrServe(1);}",
       "__hud('YOU '+you.s+' : '+cpu.s+' CPU','FIRST TO '+CONFIG.win);}",
-      "function checkWinOrServe(dir){if(you.s>=CONFIG.win||cpu.s>=CONFIG.win){state='over';var win=you.s>cpu.s;__sfx(win?880:150,0.4,'square',0.06);__overlay('<div class=\"big\">'+(win?'🏆':'🤖')+'</div><h2>'+(win?'YOU WIN!':'CPU WINS')+'</h2><p>'+you.s+' : '+cpu.s+'<br><br>Press R for rematch</p>');}else serve(-dir);}",
+      "function checkWinOrServe(dir){if(you.s>high){high=you.s;__store.set('af_pong_high',high);}if(you.s>=CONFIG.win||cpu.s>=CONFIG.win){state='over';var win=you.s>cpu.s;__sfx(win?880:150,0.4,'square',0.06);__overlay('<div class=\"big\">'+(win?'🏆':'🤖')+'</div><h2>'+(win?'YOU WIN!':'CPU WINS')+'</h2><p>'+you.s+' : '+cpu.s+'<br>Best score '+high+'<br><br>Press R for rematch</p>');}else serve(-dir);}",
       "function draw(){ctx.fillStyle='#05070f';ctx.fillRect(0,0,W,H);ctx.fillStyle='#1a2340';for(var y=8;y<H;y+=22){ctx.fillRect(W/2-2,y,4,12);}",
       "for(var t=0;t<trail.length;t++){ctx.globalAlpha=trail[t].t*2;ctx.fillStyle='#5df2ff';ctx.beginPath();ctx.arc(trail[t].x,trail[t].y,ball.r*trail[t].t*2.4,0,7);ctx.fill();}ctx.globalAlpha=1;",
       "ctx.fillStyle='#5df2ff';ctx.fillRect(you.x-you.w/2,you.y-you.h/2,you.w,you.h);ctx.fillStyle='#ff5d5d';ctx.fillRect(cpu.x-cpu.w/2,cpu.y-cpu.h/2,cpu.w,cpu.h);",
@@ -137,7 +137,7 @@ export function buildPong(o: PongOpts = {}): string {
       "window.__start=function(){resetPositions();you.s=0;cpu.s=0;serve();state='play';__hideOverlay();};",
       "window.addEventListener('keydown',function(e){keys[e.key.length===1?e.key.toLowerCase():e.key]=true;var k=e.key;if(k==='p'||k==='P'){if(state==='play'){state='pause';__overlay('<div class=\"big\">⏸</div><h2>PAUSED</h2><p>Press P to resume</p>');}else if(state==='pause'){state='play';__hideOverlay();}}else if(k==='m'||k==='M'){__muted=!__muted;}else if(k==='r'||k==='R'){if(state!=='title')__start();}else if((k===' '||k==='Enter')&&state==='title'){__start();}});",
       "window.addEventListener('keyup',function(e){keys[e.key.length===1?e.key.toLowerCase():e.key]=false;});",
-      "resetPositions();you.s=0;cpu.s=0;serve(1);state='title';__overlay('<div class=\"big\">🏓</div><h2>PONG</h2><p>First to '+CONFIG.win+'.<br>▲ ▼ / W S / mouse / touch.<br><br><button onclick=\"__start()\">▶ START</button></p>');__hud('YOU 0 : 0 CPU','FIRST TO '+CONFIG.win);requestAnimationFrame(loop);",
+      "resetPositions();you.s=0;cpu.s=0;serve(1);state='title';__overlay('<div class=\"big\">🏓</div><h2>PONG</h2><p>First to '+CONFIG.win+'.<br>▲ ▼ / W S / mouse / touch.<br><br><button onclick=\"__start()\">▶ START</button></p>');__hud('YOU 0 : 0 CPU','FIRST TO '+CONFIG.win+' · BEST '+high);requestAnimationFrame(loop);",
     ].join("\n");
   return gameShell({ title: "Pong", tagline: "arcade-classic · generated fully offline", width: 480, height: 360, accent: o.accent ?? "#5df2ff", js, help: ["▲ ▼ / W S / mouse — paddle", "Ball speeds up every rally", "P — pause · M — sound · R — restart"], actionLabel: "⏸" });
 }

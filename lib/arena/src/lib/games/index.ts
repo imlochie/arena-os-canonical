@@ -8,8 +8,9 @@ import { buildSnake, buildBreakout, buildPong } from "./classics";
 import { buildTetris } from "./tetris";
 import { build2048 } from "./twenty48";
 import { buildArena, themeFromPrompt } from "./arena";
+import { buildPlatformer } from "./platformer";
 
-export type GameType = "pacman" | "invaders" | "snake" | "breakout" | "pong" | "tetris" | "2048" | "arena";
+export type GameType = "pacman" | "invaders" | "snake" | "breakout" | "pong" | "tetris" | "2048" | "arena" | "platformer";
 export type GameEngine = "verified" | "remix" | "on-device-ai";
 
 export interface GameMeta {
@@ -28,12 +29,13 @@ export const GAME_TYPES: GameMeta[] = [
   { id: "tetris", name: "Falling Blocks", emoji: "🧱", desc: "Tetris-classic: 7-bag, hold, ghost, levels" },
   { id: "2048", name: "Merge Numbers", emoji: "🔢", desc: "2048-classic: slide, merge, reach the target" },
   { id: "arena", name: "Neon Arena", emoji: "🚀", desc: "Parametric survival — themed from ANY words" },
+  { id: "platformer", name: "Platform Adventure", emoji: "🏃", desc: "Run, jump, collect, and unlock three stages" },
 ];
 
 /** Only standard classic requests can bypass code generation. Mentioning
  * "Pong" inside a request for new mechanics does not make that request a core. */
 export function isClassicCorePrompt(prompt: string): boolean {
-  return /^\s*(?:(?:make|create|build|play)\s+(?:(?:a|an|the)\s+)?)?(?:pong|snake|breakout|tetris|2048|pac-?man|maze chase|space invaders|invaders)(?:\s+game)?[.!]?\s*$/i.test(prompt);
+  return /^\s*(?:(?:make|create|build|play)\s+(?:(?:a|an|the)\s+)?)?(?:pong|snake|breakout|tetris|2048|pac-?man|maze chase|space invaders|invaders|platformer|platform adventure)(?:\s+game)?[.!]?\s*$/i.test(prompt);
 }
 
 export function detectGameType(prompt: string): GameType {
@@ -50,6 +52,7 @@ export function detectGameType(prompt: string): GameType {
   if (has("maze", "chase", "ghost", "eat the dots", "dots")) return "pacman";
   if (has("paddle", "bounce", "blocks")) return "breakout";
   if (has("surviv", "arena", "waves", "horde", "vampire")) return "arena";
+  if (has("platform", "side-scroller", "side scroller", "jumping game")) return "platformer";
   return "arena"; // parametric fallback: every prompt yields a game
 }
 
@@ -196,6 +199,10 @@ export function generateGameOffline(prompt: string, forceType?: GameType): Offli
       title = theme.title;
       break;
     }
+    case "platformer":
+      code = buildPlatformer({ accent: mods.accent });
+      title = "Platform Adventure";
+      break;
   }
   return { code, gameType, engine: hasRemix || gameType === "arena" ? "remix" : "verified", title, ms: Date.now() - started, mods };
 }
@@ -264,4 +271,7 @@ export const LLM_GAME_SYSTEM = [
   "OUTPUT ONLY the HTML file. No explanations, no markdown fences if avoidable.",
   "Requirements: <canvas> rendering, requestAnimationFrame loop, keyboard (arrows/WASD/space) AND touch controls, score + lives + levels, start screen, pause (P), game-over and win states, restart (R), WebAudio bleeps with an M mute toggle, no localStorage crashes (wrap in try/catch).",
   "Keep it under ~1500 lines. Make it genuinely playable and fun, with real collision, difficulty ramp, and juice (particles, screen shake, floating text).",
+  "Persist player progress (at minimum high score; also levels, unlocks, or options when appropriate) with localStorage inside try/catch. Arcade supplies a private per-game localStorage bridge, so saved progress remains on this browser.",
 ].join(" ");
+
+export { extractImportedHtml, importedHtmlSafetyIssue } from "./imported-html";

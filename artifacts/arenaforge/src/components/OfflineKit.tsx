@@ -5,7 +5,10 @@ import { useEffect, useState } from "react";
 export function SwRegister() {
   useEffect(() => {
     if (typeof window !== "undefined" && "serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {});
+      const basePath = import.meta.env.BASE_URL.endsWith("/")
+        ? import.meta.env.BASE_URL
+        : `${import.meta.env.BASE_URL}/`;
+      navigator.serviceWorker.register(`${basePath}sw.js`, { scope: basePath }).catch(() => {});
     }
   }, []);
   return null;

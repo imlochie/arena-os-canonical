@@ -1,6 +1,8 @@
 - [Migration verification](migration-verification.md) — preserve server/client boundaries and validate detail-page data, not just builds and homepages.
 - [Browser workspace privacy](browser-workspaces.md) — private browser runtime state is not task output or agent context.
 - [Arcade model routing](arcade-model-routing.md) — use connected code-writing models; no implicit public-service cascade for game prompts or source.
+- [Arcade capability scope](arcade-capability-scope.md) — prompt-created games, authorized imports, gameplay edits, and local progress are core; presets are examples.
+- [EmulatorJS save handling](emulatorjs-save-handling.md) — telemetry-only save hooks can disable the runtime’s built-in browser persistence.
 - [Waveyard processing evidence](waveyard-processing.md) — model readiness is not processing proof; verify pinned input shapes and bound native session lifetimes.
 - [Waveyard cross-tab transport](waveyard-transport-sync.md) — mirror playhead and track state between tabs without autoplaying a second audio engine; passive heartbeats must not override newer controls.
 - [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.

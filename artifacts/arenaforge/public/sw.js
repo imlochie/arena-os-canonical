@@ -1,7 +1,8 @@
-// ArenaForge offline shell: network-first, cache fallback for navigations.
-// API routes are NEVER cached. Cache stores app shell only — no prompts,
-// no responses, no personal data.
-const VERSION = "arenaforge-v1";
+// ArenaForge offline shell and the pinned EmulatorJS runtime only.
+// API routes, prompts, responses, and imported ROMs are never cached here.
+const VERSION = "arenaforge-v2";
+const EMULATORJS_ORIGIN = "https://cdn.emulatorjs.org";
+const EMULATORJS_PATH = "/4.2.3/data/";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
@@ -11,7 +12,7 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("arenaforge-") && k !== VERSION).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -25,7 +26,31 @@ self.addEventListener("fetch", (event) => {
   } catch {
     return;
   }
-  // Never intercept API calls or cross-origin AI/image traffic.
+  const isPinnedEmulatorAsset = url.origin === EMULATORJS_ORIGIN &&
+    url.pathname.startsWith(EMULATORJS_PATH) &&
+    (!url.pathname.includes("/cores/") || url.pathname.includes("/cores/reports/"));
+  if (isPinnedEmulatorAsset) {
+    event.respondWith(
+      caches.open(VERSION).then(async (cache) => {
+        const cached = await cache.match(req);
+        if (cached) return cached;
+        try {
+          const response = await fetch(req);
+          if (response.ok || response.type === "opaque") {
+            await cache.put(req, response.clone()).catch(() => {});
+          }
+          return response;
+        } catch {
+          return new Response("EmulatorJS runtime is not cached yet. Connect once and start this game to download it.", {
+            status: 503,
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+      })
+    );
+    return;
+  }
+  // Never intercept API calls or unrelated cross-origin traffic.
   if (url.pathname.startsWith("/api/")) return;
   if (url.origin !== self.location.origin) return;
 

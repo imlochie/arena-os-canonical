@@ -52,7 +52,7 @@ export function buildArena(o: ArenaOpts = {}): string {
     "var CONFIG={ps:" + playerSpeed + ",rate:" + enemyRate + ",lives:" + lives + ",accent:'" + accent + "',enemy:'" + enemyColor + "',bg:'" + bg + "'};\n" +
     [
       "var cv=document.getElementById('game'),ctx=cv.getContext('2d'),W=cv.width,H=cv.height;",
-      "var px,py,enemies,shots,orbs,parts,score,hp,wave,waveT,spawnT,high=__store.get('af_arena_high',0),state='title',fireT=0,inv=0;",
+      "var px,py,enemies,shots,orbs,parts,score,hp,wave,waveT,spawnT,high=__store.get('af_arena_high',0),state='title',fireT=0,inv=0,pointer={x:W/2,y:H/2,active:false};",
       "var keys={};",
       "function reset(){px=W/2;py=H/2;enemies=[];shots=[];orbs=[];parts=[];score=0;hp=CONFIG.lives*2;wave=1;waveT=0;spawnT=0;inv=0;for(var i=0;i<4;i++)spawnOrb();}",
       "function spawnOrb(){orbs.push({x:30+Math.random()*(W-60),y:60+Math.random()*(H-100),ph:Math.random()*6});}",
@@ -61,7 +61,7 @@ export function buildArena(o: ArenaOpts = {}): string {
       "function newGame(){reset();state='play';__hideOverlay();}",
       "function nearest(){var best=null,bd=1e12;for(var i=0;i<enemies.length;i++){var e=enemies[i];var dx=e.x-px,dy=e.y-py;var d=dx*dx+dy*dy;if(d<bd){bd=d;best=e;}}return best;}",
       "function update(dt){var mx=0,my=0;if(keys['ArrowLeft']||keys['a'])mx-=1;if(keys['ArrowRight']||keys['d'])mx+=1;if(keys['ArrowUp']||keys['w'])my-=1;if(keys['ArrowDown']||keys['s'])my+=1;if(mx&&my){mx*=0.707;my*=0.707;}px=Math.max(14,Math.min(W-14,px+mx*CONFIG.ps*dt));py=Math.max(30,Math.min(H-14,py+my*CONFIG.ps*dt));if(inv>0)inv-=dt;",
-      "fireT-=dt;var tgt=nearest();if(tgt&&fireT<=0){fireT=0.22;var dx=tgt.x-px,dy=tgt.y-py;var d=Math.sqrt(dx*dx+dy*dy)||1;shots.push({x:px,y:py,vx:dx/d*460,vy:dy/d*460});__sfx(700+Math.random()*200,0.05,'square',0.025);}",
+      "fireT-=dt;var tgt=pointer.active?pointer:nearest();if(tgt&&fireT<=0){fireT=0.22;var dx=tgt.x-px,dy=tgt.y-py;var d=Math.sqrt(dx*dx+dy*dy)||1;shots.push({x:px,y:py,vx:dx/d*460,vy:dy/d*460});__sfx(700+Math.random()*200,0.05,'square',0.025);}",
       "waveT+=dt;if(waveT>14){waveT=0;wave++;__sfx(880,0.15,'square',0.05);spawnOrb();}",
       "spawnT-=dt;if(spawnT<=0){spawnT=Math.max(0.3,1.15-wave*0.08)/CONFIG.rate;spawnEnemy();if(wave>2&&Math.random()<0.4)spawnEnemy();}",
       "for(var i=enemies.length-1;i>=0;i--){var e=enemies[i];e.wob+=dt*4;var dx=px-e.x,dy=py-e.y;var d=Math.sqrt(dx*dx+dy*dy)||1;e.x+=dx/d*e.sp*dt+Math.cos(e.wob)*20*dt;e.y+=dy/d*e.sp*dt+Math.sin(e.wob)*20*dt;}",
@@ -78,11 +78,12 @@ export function buildArena(o: ArenaOpts = {}): string {
       "for(var p=0;p<parts.length;p++){var pt=parts[p];ctx.globalAlpha=Math.max(0,pt.t*2);ctx.fillStyle=pt.c;ctx.fillRect(pt.x-2,pt.y-2,4,4);}ctx.globalAlpha=1;}",
       "var last=0;",
       "function loop(ts){requestAnimationFrame(loop);var dt=Math.min(0.033,(ts-last)/1000||0.016);last=ts;if(state==='play')update(dt);if(state!=='title')draw();}",
-      "cv.addEventListener('pointermove',function(e){if(state!=='play')return;if(e.pointerType==='mouse'&&e.buttons!==1)return;var r=cv.getBoundingClientRect();px=(e.clientX-r.left)/r.width*W;py=(e.clientY-r.top)/r.height*H;});",
+      "cv.addEventListener('pointermove',function(e){var r=cv.getBoundingClientRect();pointer.x=(e.clientX-r.left)/r.width*W;pointer.y=(e.clientY-r.top)/r.height*H;pointer.active=true;if(state!=='play')return;if(e.pointerType!=='mouse'||e.buttons===1){px=pointer.x;py=pointer.y;}});",
       "window.__start=function(){newGame();};",
       "window.addEventListener('keydown',function(e){keys[e.key.length===1?e.key.toLowerCase():e.key]=true;var k=e.key;if(k==='p'||k==='P'){if(state==='play'){state='pause';__overlay('<div class=\"big\">⏸</div><h2>PAUSED</h2><p>Press P to resume</p>');}else if(state==='pause'){state='play';__hideOverlay();}}else if(k==='m'||k==='M'){__muted=!__muted;}else if(k==='r'||k==='R'){if(state!=='title')newGame();}else if((k===' '||k==='Enter')&&state==='title'){newGame();}});",
       "window.addEventListener('keyup',function(e){keys[e.key.length===1?e.key.toLowerCase():e.key]=false;});",
-      "reset();state='title';__overlay('<div class=\"big\">🚀</div><h2>" + title.toUpperCase() + "</h2><p>Survive the " + enemyName + ". Auto-blaster armed.<br>Grab " + orbName + " to score + heal.<br>WASD / arrows / drag to move.<br><br><button onclick=\"__start()\">▶ START</button></p>');__hud('SCORE 0  ♥'+(CONFIG.lives*2),'WAVE 1 · BEST '+high);requestAnimationFrame(loop);",
+      "cv.addEventListener('pointerleave',function(){pointer.active=false;});",
+      "reset();state='title';__overlay('<div class=\"big\">🚀</div><h2>" + title.toUpperCase() + "</h2><p>Survive the " + enemyName + ". Aim with your pointer; the blaster fires automatically.<br>Grab " + orbName + " to score + heal.<br>WASD / arrows / drag to move.<br><br><button onclick=\"__start()\">▶ START</button></p>');__hud('SCORE 0  ♥'+(CONFIG.lives*2),'WAVE 1 · BEST '+high);requestAnimationFrame(loop);",
     ].join("\n");
 
   return gameShell({

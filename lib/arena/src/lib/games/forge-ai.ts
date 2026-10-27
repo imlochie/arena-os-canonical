@@ -15,6 +15,7 @@
  */
 
 import { generate } from "@workspace/arena/lib/ai";
+import { extractImportedHtml, importedHtmlSafetyIssue } from "./imported-html";
 import { detectGameType, extractGameCode, validateGameCode, type Mods, parseMods } from "./index";
 
 const KNOWLEDGE = `You are a master single-file game developer. You build COMPLETE, PLAYABLE games in ONE HTML file: no imports, no CDNs, no external assets, no network calls — everything inline.
@@ -29,6 +30,7 @@ CONSTRUCTION KNOWLEDGE — every game you ship contains all of this, chosen to f
 - Juice: screen shake, particles, hit flashes, easing on menus — at least two.
 - WebAudio bleeps via a tiny synth helper (no audio files); mute toggle (M).
 - Persistence of the high score via localStorage (guard with try/catch).
+- Persist meaningful game progress—levels, unlocks, options, or a campaign checkpoint when the game has them—using localStorage inside try/catch. Arcade provides an isolated per-game localStorage bridge, so saves remain on this browser.
 - Aesthetic: dark theme, one accent color, readable HUD typography, canvas scaled responsively (CSS max-width, aspect kept).
 - Robustness: no unbounded arrays (cap particles), no NaN propagation, works at 60fps and 144fps (dt-based).
 - A short "how to play" block listing controls.
@@ -137,5 +139,57 @@ export async function forgeGameWithAI(
     runtime: { backend: first.backend, modelId: first.modelId, via: first.via, fallback: first.fallback, ms: first.ms },
     repairRuntime,
     title: titleFromPrompt(prompt),
+  };
+}
+
+export async function reviseImportedHtmlWithAI(
+  instruction: string,
+  source: string,
+  opts: {
+    keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string; openai?: string; mistral?: string };
+    localOnly?: boolean;
+    modelId?: string;
+  } = {},
+  deps: { generate?: typeof generate } = {},
+): Promise<{ code: string; runtime: { backend?: string; modelId: string; via?: string; fallback?: boolean; ms: number } }> {
+  const prompt = instruction.trim();
+  if (!prompt || prompt.length > 1000) throw new Error("Describe one game change in 1–1,000 characters.");
+  if (source.length > 50_000) throw new Error("Game source sent for revision is limited to 50 KB after media is removed.");
+  const sourceIssue = importedHtmlSafetyIssue(source);
+  if (sourceIssue) throw new Error(sourceIssue);
+
+  const gen = deps.generate ?? generate;
+  const result = await gen({
+    modelId: opts.modelId ?? "openai",
+    messages: [{
+      role: "user",
+      content:
+        `Change the existing authorized browser game to implement this gameplay request: "${prompt}"\n\n` +
+        `Return only the complete updated HTML document. Do not replace it with a generic template. Preserve existing controls and unrelated mechanics. ` +
+        `Keep every data:ARENA_ASSET_TOKEN_NNNN marker exactly once and in its original location; those stand for local bundled media. ` +
+        `Do not add network access, external files, imports, or parent-window access.\n\nEXISTING GAME:\n${source}`,
+    }],
+    system:
+      "You modify existing HTML5 games by editing their actual gameplay code. Return complete valid HTML, not a plan or patch. " +
+      "Preserve functionality that the change does not target. All required code and assets must remain in this one offline document.",
+    temperature: 0.2,
+    maxTokens: 16_000,
+    keys: opts.localOnly ? undefined : opts.keys,
+    localOnly: opts.localOnly,
+    allowPublicFallback: false,
+  });
+  if (result.fallback) {
+    const error = new Error("No connected code-writing model is available for this imported-game revision.");
+    (error as any).noModel = true;
+    throw error;
+  }
+
+  const code = extractImportedHtml(result.text);
+  if (!code) throw new Error("The model did not return a complete HTML game.");
+  const outputIssue = importedHtmlSafetyIssue(code);
+  if (outputIssue) throw new Error(`The revised game was declined by the import safety checks: ${outputIssue}`);
+  return {
+    code,
+    runtime: { backend: result.backend, modelId: result.modelId, via: result.via, fallback: result.fallback, ms: result.ms },
   };
 }

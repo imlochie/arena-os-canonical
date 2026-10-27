@@ -13,7 +13,9 @@ import assert from "node:assert/strict";
 
 import { buildTetris } from "./tetris";
 import { build2048 } from "./twenty48";
-import { detectGameType, generateGameOffline, validateGameCode } from "./index";
+import { buildPlatformer } from "./platformer";
+import { buildPong } from "./classics";
+import { detectGameType, generateGameOffline, isClassicCorePrompt, validateGameCode } from "./index";
 
 /** Parse-only syntax gate: the game's <script> must be valid JavaScript. */
 function scriptParses(html: string): boolean {
@@ -38,6 +40,25 @@ test("prompt detection routes tetris and 2048", () => {
   // existing detections must not regress
   assert.equal(detectGameType("snake game"), "snake");
   assert.equal(detectGameType("breakout with bricks"), "breakout");
+  assert.equal(detectGameType("platform adventure with checkpoints"), "platformer");
+  assert.equal(isClassicCorePrompt("platform adventure"), true);
+});
+
+test("platformer starter is playable offline and saves stage progress", () => {
+  const code = buildPlatformer();
+  assert.ok(validateGameCode(code).ok);
+  assert.ok(scriptParses(code), "emitted script must parse as JavaScript");
+  assert.match(code, /af_platform_unlocked/);
+  assert.match(code, /three-stage side-scroller/);
+  assert.match(code, /function jump/);
+  assert.match(code, /keydown/);
+});
+
+test("Pong starter keeps a saved high score", () => {
+  const code = buildPong();
+  assert.ok(validateGameCode(code).ok);
+  assert.ok(scriptParses(code), "emitted script must parse as JavaScript");
+  assert.match(code, /af_pong_high/);
 });
 
 test("tetris core is a complete, valid, offline game", () => {
