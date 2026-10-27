@@ -291,6 +291,20 @@ export function useStemTransport(ids: string[], duration: number) {
     if (url) ensureGraph(id);
     return liveLayers.current!.replace(id, url);
   }, [ensureGraph]);
+  const prepareChannels = useCallback((channelIds: string[]) => {
+    for (const id of channelIds) {
+      if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
+    }
+  }, [ensureGraph]);
+  const playChannels = useCallback(async (channelIds: string[], at: number) => {
+    prepareChannels(channelIds);
+    await Promise.all(channelIds.map(async (id) => {
+      const element = media.current[id];
+      if (!element) throw new Error("A prepared stem audio element is no longer available.");
+      element.currentTime = Math.max(0, Math.min(at, Number.isFinite(element.duration) ? element.duration - 0.01 : at));
+      await element.play();
+    }));
+  }, [prepareChannels]);
 
   useEffect(() => {
     for (const [id, graph] of Object.entries(graphs.current)) {
@@ -621,6 +635,8 @@ export function useStemTransport(ids: string[], duration: number) {
   return {
     register,
     replaceStem,
+    prepareChannels,
+    playChannels,
     readSpectrum,
     readMasterSpectrum,
     readWaveform,

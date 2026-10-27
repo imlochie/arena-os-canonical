@@ -80,6 +80,10 @@ type DeckApi = {
   transport: ReturnType<typeof useStemTransport>;
   hasStemChannels: boolean;
   applyStemVolumes: (volumes: Record<string, number>) => void;
+  prepareHandoff: (
+    target: SessionTrackItem,
+    volumes: Record<string, number>,
+  ) => Promise<{ position: number; playing: boolean } | null>;
 };
 
 type FadePhase = "idle" | "fading";
@@ -153,8 +157,28 @@ function SessionDeck({
 }) {
   const assetIds = useMemo(() => item?.playback?.assetIds ?? [], [item?.playback]);
   const duration = item?.track.durationSeconds ?? 0;
-  const transport = useStemTransport(assetIds, duration);
+  const [handoffTarget, setHandoffTarget] = useState<SessionTrackItem | null>(null);
+  const stagingTarget = handoffTarget !== null
+    && (handoffTarget.playback?.kind !== item?.playback?.kind
+      || JSON.stringify(handoffTarget.playback?.assetIds) !== JSON.stringify(item?.playback?.assetIds))
+    ? handoffTarget
+    : null;
+  const stagedIds = useMemo(
+    () => stagingTarget?.playback?.assetIds ?? [],
+    [stagingTarget?.playback],
+  );
+  const transportIds = useMemo(
+    () => [...new Set([...assetIds, ...stagedIds])],
+    [assetIds, stagedIds],
+  );
+  const transport = useStemTransport(transportIds, duration);
   const mediaElements = useRef<Record<string, HTMLAudioElement | null>>({});
+  const pendingHandoff = useRef<{
+    target: SessionTrackItem;
+    volumes: Record<string, number>;
+    resolve: (result: { position: number; playing: boolean } | null) => void;
+    running: boolean;
+  } | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [loadingLayers, setLoadingLayers] = useState(false);
   const [swapRetry, setSwapRetry] = useState(0);
@@ -162,8 +186,9 @@ function SessionDeck({
   const stemTypeByAsset = useMemo(() => {
     const map = new Map<string, string>();
     for (const stem of item?.stems ?? []) map.set(stem.id, stem.stemType);
+    for (const stem of stagingTarget?.stems ?? []) map.set(stem.id, stem.stemType);
     return map;
-  }, [item?.stems]);
+  }, [item?.stems, stagingTarget?.stems]);
 
   const swapKey = JSON.stringify(assetIds.map((id) => [id, swaps[stemTypeByAsset.get(id) ?? "source"] ?? null]));
   useEffect(() => {
@@ -189,14 +214,97 @@ function SessionDeck({
     },
     [item?.stems, transport],
   );
+  const prepareHandoff = useCallback(
+    (target: SessionTrackItem, volumes: Record<string, number>) => {
+      const targetIds = target.playback?.assetIds ?? [];
+      if (
+        item === null
+        || item.playback?.kind !== "source"
+        || target.playback?.kind !== "stems"
+        || target.stems.length === 0
+        || targetIds.length !== target.stems.length
+        || target.stems.some((stem) => !targetIds.includes(stem.id))
+        || pendingHandoff.current !== null
+      ) return Promise.resolve(null);
+      return new Promise<{ position: number; playing: boolean } | null>((resolve) => {
+        pendingHandoff.current = { target, volumes, resolve, running: false };
+        setMediaError(null);
+        setHandoffTarget(target);
+      });
+    },
+    [item],
+  );
+  useEffect(() => {
+    const request = pendingHandoff.current;
+    if (request !== null && (item === null || item.id !== request.target.id || item.playback?.kind !== "source")) {
+      pendingHandoff.current = null;
+      setHandoffTarget(null);
+      request.resolve(null);
+      return;
+    }
+    if (
+      handoffTarget !== null
+      && item?.id === handoffTarget.id
+      && item.playback?.kind === handoffTarget.playback?.kind
+      && JSON.stringify(item.playback?.assetIds) === JSON.stringify(handoffTarget.playback?.assetIds)
+    ) setHandoffTarget(null);
+  }, [handoffTarget, item]);
+  const finishHandoff = useCallback(async () => {
+    const request = pendingHandoff.current;
+    if (request === null || request.running) return;
+    const targetIds = request.target.playback?.assetIds ?? [];
+    const elements = targetIds.map((id) => mediaElements.current[id]);
+    if (elements.some((element) => !element || element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA)) return;
+    const validElements = elements as HTMLAudioElement[];
+    if (validElements.some((element) => !Number.isFinite(element.duration) || element.duration <= 0)) return;
+    request.running = true;
+    const anchor = assetIds
+      .map((id) => mediaElements.current[id])
+      .find((element) => element && !element.paused && !element.ended);
+    const at = anchor?.currentTime ?? transport.position;
+    try {
+      transport.seek(at);
+      transport.prepareChannels(targetIds);
+      // Start the new layers at the recipient's clock while muted. Only after
+      // all play promises resolve are the original and replacement gains
+      // changed together, avoiding a gap or a doubled section.
+      transport.applyMix(Object.fromEntries(targetIds.map((id) => [
+        id,
+        { volume: 0, pan: 0, muted: false, solo: false },
+      ])));
+      if (transport.playing) await transport.playChannels(targetIds, at);
+      const handoffMix: Record<string, MixerValues> = {
+        ...Object.fromEntries(assetIds.map((id) => [
+          id,
+          { volume: 0, pan: 0, muted: false, solo: false },
+        ])),
+        ...Object.fromEntries(request.target.stems.map((stem) => [
+          stem.id,
+          { volume: request.volumes[stem.stemType] ?? 1, pan: 0, muted: false, solo: false },
+        ])),
+      };
+      transport.applyMix(handoffMix);
+      pendingHandoff.current = null;
+      request.resolve({ position: at, playing: transport.playing });
+    } catch {
+      pendingHandoff.current = null;
+      setHandoffTarget(null);
+      setMediaError("The separated stems could not be prepared. The original track is still playing.");
+      request.resolve(null);
+    }
+  }, [assetIds, transport]);
+  useEffect(() => {
+    void finishHandoff();
+  }, [finishHandoff, stagingTarget]);
 
   useEffect(() => {
     onApi(deckIndex, {
       transport,
       applyStemVolumes,
       hasStemChannels: item?.playback?.kind === "stems" && (item?.stems ?? []).some((stem) => assetIds.includes(stem.id)),
+      prepareHandoff,
     });
-  }, [deckIndex, transport, applyStemVolumes, onApi]);
+  }, [deckIndex, transport, applyStemVolumes, prepareHandoff, onApi]);
   useEffect(() => () => onApi(deckIndex, null), [deckIndex, onApi]);
 
   useEffect(() => {
@@ -216,7 +324,7 @@ function SessionDeck({
   onAutoPlayedRef.current = onAutoPlayed;
 
   const loadedItemId = useRef<string | null>(null);
-  const loadKey = item === null ? null : `${item.id}:${assetIds.join(",")}`;
+  const loadKey = item?.id ?? null;
   useEffect(() => {
     if (item === null) {
       loadedItemId.current = null;
@@ -269,9 +377,10 @@ function SessionDeck({
       data-testid={`session-deck-${deckIndex === 0 ? "a" : "b"}`}
       data-role={active ? "current" : "next"}
     >
-      {assetIds.map((assetId) => {
+      {transportIds.map((assetId) => {
         const stemType = stemTypeByAsset.get(assetId) ?? "source";
         const donorAssetId = swaps[stemType];
+        const isStaged = stagedIds.includes(assetId);
         return (
           <audio
             key={assetId}
@@ -283,6 +392,10 @@ function SessionDeck({
             src={`/api/assets/${assetId}`}
             preload="auto"
             onLoadedMetadata={(event) => {
+              if (isStaged) {
+                void finishHandoff();
+                return;
+              }
               // Replacing a playing element's src (Swap/Undo) resets its
               // clock and pauses it. Join the running deck, not donor time 0.
               const element = event.currentTarget;
@@ -297,7 +410,18 @@ function SessionDeck({
                 });
               }
             }}
-            onError={() => setMediaError("An audio asset could not load. Check the connection and try playback again.")}
+            onCanPlay={() => { if (isStaged) void finishHandoff(); }}
+            onError={() => {
+              if (pendingHandoff.current?.target.playback?.assetIds.includes(assetId)) {
+                const pending = pendingHandoff.current;
+                pendingHandoff.current = null;
+                setHandoffTarget(null);
+                setMediaError("A separated stem could not load. The original track is still playing.");
+                pending.resolve(null);
+                return;
+              }
+              setMediaError("An audio asset could not load. Check the connection and try playback again.");
+            }}
             onEnded={(event) => {
               // A shorter donor stem must not finish the entire recipient song.
               if (item !== null && event.currentTarget.currentTime >= duration - 0.1) onEnded(deckIndex, item.id);
@@ -1487,16 +1611,23 @@ export default function SessionExperience({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- interval per session + pending state
   }, [session?.id, pending]);
 
-  const switchToStems = useCallback((itemId: string) => {
+  const switchToStems = useCallback(async (itemId: string) => {
     const ready = stemsReady[itemId];
     const s = sessionRef.current;
     if (ready === undefined || s === null) return;
     const deckIndex = deckItems[0]?.id === itemId ? 0 : deckItems[1]?.id === itemId ? 1 : -1;
     const api = deckIndex >= 0 ? decksRef.current[deckIndex] : null;
-    const wasPlaying = api?.transport.playing ?? false;
-    const at = api?.transport.position ?? 0;
-    setResumeAt({ itemId, seconds: at });
-    setAutoPlayId(wasPlaying ? itemId : null);
+    if (api === null) {
+      setStatus("Load this track onto a deck before switching to stems.");
+      return;
+    }
+    setStatus(`Preparing separated stems for “${ready.track.title}”…`);
+    const levels = effectiveMix(ready, mixes[itemId] ?? ready.stemMix, flags[itemId] ?? emptyFlags);
+    const prepared = await api.prepareHandoff(ready, levels);
+    if (prepared === null) {
+      setStatus("The separated stems could not be prepared. The original track keeps playing.");
+      return;
+    }
     const next = { ...s, tracks: s.tracks.map((t) => (t.id === itemId ? ready : t)) };
     sessionRef.current = next;
     setSession(next);
@@ -1505,8 +1636,8 @@ export default function SessionExperience({
       delete copy[itemId];
       return copy;
     });
-    setStatus(`Switched “${ready.track.title}” to stems at ${formatClock(at)} — expect a brief reload gap.`);
-  }, [stemsReady, deckItems]);
+    setStatus(`Switched “${ready.track.title}” to stems at ${formatClock(prepared.position)} without interrupting playback.`);
+  }, [stemsReady, deckItems, mixes, flags]);
 
   const compatibility = useMemo(() => {
     if (currentItem === null || nextItem === null) return null;

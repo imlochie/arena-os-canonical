@@ -17,6 +17,7 @@ function wav(seconds, frequency) {
   return data;
 }
 const assets = new Map();
+assets.set("a-source", wav(20, 130));
 const tracks = ["a", "b", "c"].map((id, index) => {
   const duration = [20, 8, 12][index];
   const stems = types.map((stemType, i) => {
@@ -29,6 +30,7 @@ const tracks = ["a", "b", "c"].map((id, index) => {
     transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
     analysis: { bpm: 120, musicalKey: ["A minor", "C major", "C# major"][index], beatGridMs: null } };
 });
+const sourceOnlyTrack = { ...tracks[0], stems: [], playback: { kind: "source", assetIds: ["a-source"] } };
 const externalStemKeys = types.map(stem => {
   const key = `d-${stem}`;
   assets.set(key, wav(4, 530 + types.indexOf(stem) * 40));
@@ -41,6 +43,7 @@ const libraryRows = tracks.map((item, index) => ({
   studioProjectId: `fixture-project-${index}`,
 }));
 let liveQueue = [];
+let exposeSeparatedSource = false;
 const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 const browser = await chromium.launch({ executablePath: "/repl/tools/bin/chromium",
@@ -117,6 +120,12 @@ try {
   await context.route(`**/api/library/sessions/${sessionId}**`, async route => {
     const request = route.request(), url = new URL(request.url());
     const body = request.postDataJSON();
+    if (request.method() === "GET" && exposeSeparatedSource) {
+      return route.fulfill({ json: { session: {
+        ...session,
+        tracks: session.tracks.map(item => item.id === "a" ? tracks[0] : item),
+      } } });
+    }
     if (url.pathname.endsWith("/swaps") && request.method() === "POST") {
       session.swaps = session.swaps.filter(s => !(s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType));
       session.swaps.push({ ...body, id: `swap-${body.stemType}`, fromTrackId: "a", createdAt: new Date().toISOString(),
@@ -248,7 +257,59 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");
   assert.ok(await page.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.paused)),
     "a pause command in the mirror tab pauses the active tab");
+  await secondPage.close();
+
+  // A source-only deck must keep playing while completed stems are prepared.
+  session.tracks = [sourceOnlyTrack];
+  session.swaps = [];
+  session.currentSessionTrackId = "a";
+  session.positionSeconds = 0;
+  exposeSeparatedSource = false;
+  await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+  await page.waitForFunction(() => {
+    const audio = document.querySelector('[data-role="current"] audio');
+    return audio?.src.endsWith("/a-source") && audio.readyState >= 2;
+  });
+  current = page.locator('[data-role="current"]');
+  await toggle();
+  await current.getByTestId("seek-deck-0").fill("2");
+  await page.waitForTimeout(150);
+  exposeSeparatedSource = true;
+  const switchButton = page.getByTestId("button-switch-stems-a");
+  await switchButton.waitFor({ timeout: 15000 });
+
+  failAsset = "a-bass";
+  await switchButton.click();
+  await page.getByRole("alert").filter({ hasText: "original track is still playing" }).waitFor();
+  const failedHandoff = await current.locator("audio").evaluateAll(elements => elements.map(e => ({
+    src: e.src, paused: e.paused, time: e.currentTime,
+  })));
+  assert.equal(failedHandoff.length, 1, "failed preparation must leave only the original source mounted");
+  assert.ok(failedHandoff[0].src.endsWith("/a-source") && !failedHandoff[0].paused,
+    "failed preparation must keep the original source playing");
+
+  failAsset = null;
+  const beforeHandoff = await current.locator("audio").evaluate(element => element.currentTime);
+  const handoffStarted = Date.now();
+  await page.getByTestId("button-switch-stems-a").click();
+  await page.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+    return audio.length === 4 && audio.every(element => element.readyState >= 2 && !element.paused);
+  });
+  const afterHandoff = await current.locator("audio").evaluateAll(elements => elements.map(element => element.currentTime));
+  const expectedPosition = beforeHandoff + (Date.now() - handoffStarted) / 1000;
+  assert.ok(afterHandoff.every(time => Math.abs(time - expectedPosition) < 0.4),
+    `successful handoff must preserve the live playhead; expected ${expectedPosition}, received ${afterHandoff}`);
+  const handoffGains = await page.evaluate(() => window.audioProbe.sources.map(source => ({
+    url: source.mediaElement.src,
+    gain: source.inputNode?.nextNode?.gain?.value,
+  })).filter(source => source.url.includes("/a-source") || ["vocals", "drums", "bass", "other"].some(type => source.url.endsWith(`/a-${type}`))));
+  assert.equal(handoffGains.find(source => source.url.endsWith("/a-source"))?.gain, 0,
+    "the original source must be silent after the stem handoff");
+  assert.ok(types.every(type => handoffGains.find(source => source.url.endsWith(`/a-${type}`))?.gain > 0),
+    "all prepared stems must be audible after the handoff");
+
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile must not overflow");
-  console.log("PASS: live swaps, seek/resume, failure/retry, mobile width");
+  console.log("PASS: live swaps, seek/resume, failed and gapless stem handoffs, mobile width");
 } finally { await browser.close(); }
