@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +16,6 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 
-import { applyMigrations } from "../../../../desktop/runtime/migrate";
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
@@ -80,14 +79,13 @@ export async function fixture(options: { model?: string } = {}) {
   const modelsDir = await mkdtemp(join(tmpdir(), "wy-sep-models-"));
   process.env.WAVEYARD_MODELS_DIR = modelsDir;
   const client = new PGlite();
-  // The canonical desktop migration path — the same runner the packaged app
-  // uses, all ordered files (0000 snapshot + deltas), on an in-memory PGlite.
+  // Apply the retained SQL snapshots to this disposable database. Tests must
+  // not import the desktop runtime, which is not part of the web workspace.
   const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
-  const outcome = await applyMigrations({
-    client: client as unknown as import("pg").Client,
-    migrationsDir: join(repoRoot, "desktop-migrations"),
-  });
-  if (outcome.applied.length < 2) throw new Error("canonical migrations must apply");
+  const migrationsDir = join(repoRoot, "desktop-migrations");
+  const migrations = (await readdir(migrationsDir)).filter((name) => name.endsWith(".sql")).sort();
+  if (migrations.length < 2) throw new Error("canonical migrations must exist");
+  for (const name of migrations) await client.exec(await readFile(join(migrationsDir, name), "utf8"));
   const database = drizzle(client) as unknown as NonNullable<import("./separation").SeparationHandlerDeps["db"]>;
 
   const [project] = await database

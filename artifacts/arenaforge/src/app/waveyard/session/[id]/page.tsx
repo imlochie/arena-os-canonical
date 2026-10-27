@@ -1,15 +1,19 @@
-import WaveyardNav from "@/components/waveyard/WaveyardNav";
-import SessionExperience from "@/components/waveyard/library/SessionExperience";
+import { useEffect } from "react";
+import { MusicHome } from "@/components/waveyard/library/MusicHome";
+import { useListeningHost } from "@/components/waveyard/listening/ListeningHost";
 
 export const metadata = { title: "Session · Waveyard" };
 
-/** The two-deck session experience for one listening session. */
+/** Legacy deep link: opens this session in the persistent host, library alongside. */
 export default function SessionPage({ params }: { params: { id: string } }) {
   const { id } = params;
+  const { openSession } = useListeningHost();
+  useEffect(() => {
+    openSession(id);
+  }, [id, openSession]);
   return (
-    <main className="shell session-shell">
-      <WaveyardNav />
-      <SessionExperience sessionId={id} />
+    <main className="shell wy-under-host">
+      <MusicHome />
     </main>
   );
 }

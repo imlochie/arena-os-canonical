@@ -265,11 +265,15 @@ test("4-stem recipe: four stems stored, each attributed to its own model", async
   const f = await fixture({ model: "stems_4" });
   try {
     const opened: string[] = [];
+    let liveEngines = 0;
     const engine: (spec: MdxModelSpec) => Promise<OpenedEngine> = async (spec) => {
+      assert.equal(liveEngines, 0, "the previous model must be released before opening another");
+      liveEngines += 1;
       opened.push(spec.id);
-      return { infer: (async (spek: Float32Array) => spek) as MdxInfer, release: async () => {}, resolvedDevice: "cpu" };
+      return { infer: (async (spek: Float32Array) => spek) as MdxInfer, release: async () => { liveEngines -= 1; }, resolvedDevice: "cpu" };
     };
     await handleSeparationJob(payloadOf(f), { db: f.database, openEngine: engine });
+    assert.equal(liveEngines, 0, "the final model is released too");
 
     const [row] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
     assert.equal(row.status, "complete");

@@ -991,3 +991,74 @@
 .export-jobs li{display:flex;gap:10px;align-items:baseline;font-size:13px}
 .export-jobs li.failed span{color:var(--danger,#ff6b6b)}
 .export-jobs span{color:var(--muted)}
+
+/* Waveyard continuous listening workspace — one persistent host, two stable decks. */
+.wy-host{--wy-a:#d6fb54;--wy-b:#7ae5e7;--wy-glass:rgba(16,19,14,.92)}
+.wy-shell-top{padding-bottom:0}
+.wy-under-host{padding-top:8px}
+.music-home-surface .library-hero{padding:12px 0 18px;gap:16px}
+.music-home-surface .library-hero h1{font-size:26px;letter-spacing:-.035em;line-height:1.15;margin:0 0 10px}
+.music-home-surface .add-music{padding:10px 12px;margin-top:8px}
+.library-url-import{margin-top:8px;font-size:13px;color:var(--muted)}
+.library-url-import summary{cursor:pointer}
+@media(max-width:1000px){.wy-decks .wy-deck{flex:0 0 auto}}
+.wy-host-full .wy-transport{position:fixed;z-index:45;bottom:12px;left:50%;transform:translateX(-50%);width:min(1180px,calc(100% - 32px));padding:12px 16px;border:1px solid var(--line);background:var(--wy-glass);backdrop-filter:blur(16px);box-shadow:0 12px 40px rgba(0,0,0,.45)}
+.wy-under-host{padding-bottom:190px}
+.wy-host-full{max-width:1400px;margin:0 auto;padding:0 28px}
+.wy-workspace{border:1px solid var(--line);background:linear-gradient(160deg,rgba(214,251,84,.06),transparent 40%),var(--panel-deep);padding:16px;display:grid;gap:14px;margin:14px 0}
+.wy-workspace-empty{color:var(--muted);font-size:14px}
+.wy-workspace-empty p{margin:6px 0 0;max-width:62ch}
+.wy-skeleton{height:62px;background:linear-gradient(90deg,#171a14,#20251a,#171a14);background-size:200% 100%;animation:wy-shimmer 1.4s linear infinite}
+.wy-skeleton.short{height:180px}
+@keyframes wy-shimmer{to{background-position:-200% 0}}
+.wy-transport{display:grid;grid-template-columns:minmax(150px,1.1fr) auto minmax(180px,1.6fr) minmax(110px,.6fr) auto auto;gap:14px;align-items:center}
+.wy-now{display:grid;gap:2px;min-width:0}
+.wy-now b{font-size:17px;letter-spacing:-.03em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wy-now small{color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wy-buttons{display:flex;gap:8px;align-items:center}
+.wy-icon,.wy-play{display:grid;place-items:center;border:1px solid var(--line);background:transparent;color:var(--ink);width:38px;height:38px;border-radius:50%}
+.wy-icon svg,.wy-play svg{width:16px;height:16px;fill:currentColor}
+.wy-play{width:48px;height:48px;background:var(--wy-a);border-color:var(--wy-a);color:#11130e}
+.wy-play[aria-pressed="true"]{background:var(--ink);border-color:var(--ink)}
+.wy-icon:disabled,.wy-play:disabled,.wy-mixbtn:disabled{opacity:.4;cursor:not-allowed}
+.wy-mixbtn{border:1px solid var(--wy-b);color:var(--wy-b);background:transparent;padding:9px 12px;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+.wy-seek,.wy-deck-seek{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;font:11px ui-monospace,monospace;color:var(--muted)}
+.wy-seek input,.wy-deck-seek input,.wy-master input,.wy-stem input{width:100%;accent-color:var(--wy-a);min-height:24px}
+.wy-master{display:grid;gap:2px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}
+.wy-save{border:0;background:transparent;font:11px ui-monospace,monospace;color:var(--wy-a);padding:6px}
+.wy-save.bad{color:var(--red)}
+.wy-open{font-size:11px;font-weight:800;color:var(--ink);border:1px solid var(--line);padding:8px 10px;white-space:nowrap}
+.wy-decks{display:flex;gap:14px;align-items:stretch}
+.wy-deck{flex:1 1 0;min-width:0;transition:border-color .3s ease}
+.wy-deck.sess-deck-active{border-color:var(--wy-a)}
+.wy-deck[data-role="next"]{border-style:dashed}
+.wy-transition{flex:0 0 250px;border:1px solid var(--line);background:var(--panel);padding:14px;display:grid;gap:10px;align-content:start}
+.wy-deck-empty p,.wy-deck-note,.wy-fine{color:var(--muted);font-size:12px;margin:4px 0}
+.wy-fine{font-size:10px}
+.wy-stems{display:grid;gap:6px}
+.wy-stem{display:grid;grid-template-columns:72px 44px minmax(60px,1fr) 34px 30px 30px auto;gap:6px;align-items:center;font-size:12px}
+.wy-stem.silent{opacity:.5}
+.wy-stem-name{text-transform:capitalize;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wy-stem-meter{height:6px;background:#22261d;overflow:hidden}
+.wy-stem-meter i{display:block;height:100%;background:var(--wy-b);transform-origin:left;transition:transform 60ms linear}
+.wy-stem-vocals .wy-stem-meter i{background:var(--stem-vocals)}.wy-stem-drums .wy-stem-meter i{background:var(--stem-drums)}.wy-stem-bass .wy-stem-meter i{background:var(--stem-bass)}
+.wy-stem-value{font:10px ui-monospace,monospace;color:var(--muted)}
+.wy-toggle{min-width:30px;height:30px;border:1px solid var(--line);background:#11130e;color:var(--muted);font-size:11px;font-weight:800}
+.wy-toggle.on{background:var(--orange);color:#11130e;border-color:var(--orange)}
+.wy-toggle.solo.on{background:var(--wy-b);border-color:var(--wy-b)}
+.wy-toggle.swap{padding:0 8px}.wy-toggle.swap.on{background:var(--wy-a);border-color:var(--wy-a)}
+.wy-toggle:disabled{opacity:.35;cursor:not-allowed}
+.wy-drawer{border-top:1px solid var(--line);padding-top:10px}
+.wy-drawer summary{cursor:pointer;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.wy-drawer[open] summary{color:var(--ink);margin-bottom:10px}
+.wy-drawer-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.wy-ready{border-left:2px solid var(--wy-a)}
+/* Compact dock: same tree, full-only parts hidden; audio elements keep playing. */
+.wy-host-compact{position:fixed;left:12px;right:12px;bottom:12px;z-index:60;max-width:980px;margin:0 auto}
+.wy-host-compact .wy-workspace{margin:0;padding:10px 14px;background:var(--wy-glass);backdrop-filter:blur(16px);box-shadow:0 18px 50px rgba(0,0,0,.4)}
+.wy-host-compact .wy-full-only{display:none}
+.wy-host-compact .wy-master{display:none}
+.wy-host-compact .wy-transport{grid-template-columns:minmax(120px,1fr) auto minmax(140px,1.4fr) auto auto}
+@media(max-width:1000px){.wy-decks{flex-direction:column}.wy-transition{flex-basis:auto}.wy-transport{grid-template-columns:1fr auto;}.wy-seek{grid-column:1/-1}}
+@media(max-width:640px){.wy-host-full{padding:0 12px}.wy-stem{grid-template-columns:64px 1fr 30px 30px auto}.wy-stem-meter,.wy-stem-value{display:none}.wy-host-compact .wy-transport{grid-template-columns:1fr auto}.wy-host-compact .wy-save{display:none}}
+@media(prefers-reduced-motion:reduce){.wy-skeleton{animation:none}.wy-stem-meter i{transition:none}}

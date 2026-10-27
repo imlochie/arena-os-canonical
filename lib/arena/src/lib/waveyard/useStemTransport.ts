@@ -215,6 +215,9 @@ export function useStemTransport(ids: string[], duration: number) {
   const lastUiUpdate = useRef(0);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
+  // Commands such as seek(0); play() run in one event/effect. React state
+  // has not rerendered between them, so playback must use a synchronous clock.
+  const positionRef = useRef(0);
   const [masterVolume, setMasterVolume] = useState(1);
   const [loop, setLoop] = useState({ enabled: false, start: 0, end: 0 });
   const [error, setError] = useState<string | null>(null);
@@ -272,6 +275,19 @@ export function useStemTransport(ids: string[], duration: number) {
 
   const register = useCallback(
     (id: string, element: HTMLAudioElement | null) => {
+      const graph = graphs.current[id];
+      if (element && graph && graph.source.mediaElement !== element) {
+        // Returning to a track creates new media elements. A source node
+        // belongs to its original element, not merely to its asset id.
+        graph.source.disconnect();
+        graph.gain.disconnect();
+        graph.pan?.disconnect();
+        graph.mono.disconnect();
+        graph.analyser.disconnect();
+        graph.inserts?.input.disconnect();
+        graph.inserts?.output.disconnect();
+        delete graphs.current[id];
+      }
       media.current[id] = element;
     },
     [],
@@ -282,6 +298,7 @@ export function useStemTransport(ids: string[], duration: number) {
         duration || Number.MAX_SAFE_INTEGER,
         Math.max(0, seconds),
       );
+      positionRef.current = next;
       for (const id of ids) {
         const element = media.current[id];
         if (element && Math.abs(element.currentTime - next) > 0.015)
@@ -385,7 +402,9 @@ export function useStemTransport(ids: string[], duration: number) {
       applyMix(mixValues.current);
       if (context.current?.state === "suspended")
         await context.current.resume();
-      const start = position;
+      const start = duration > 0 && positionRef.current >= duration - 0.01 ? 0 : positionRef.current;
+      positionRef.current = start;
+      setPosition(start);
       for (const id of ids) {
         const element = media.current[id];
         if (element) element.currentTime = start;
@@ -396,7 +415,7 @@ export function useStemTransport(ids: string[], duration: number) {
       setError("Browser playback was blocked or one stem could not be loaded.");
       pause();
     }
-  }, [applyMix, ensureGraph, ids, masterVolume, pause, position]);
+  }, [applyMix, ensureGraph, ids, masterVolume, pause, duration]);
 
   useEffect(() => {
     if (!playing) return;
@@ -411,6 +430,7 @@ export function useStemTransport(ids: string[], duration: number) {
         return;
       }
       const current = anchor.currentTime;
+      positionRef.current = current;
       if (loop.enabled && loop.end > loop.start && current >= loop.end) {
         seek(loop.start);
         void play();
@@ -438,10 +458,15 @@ export function useStemTransport(ids: string[], duration: number) {
 
   useEffect(
     () => () => {
-      pause();
+      // Track changes replace ids/pause callbacks, but must NOT close this
+      // physical deck's AudioContext. Close only when the deck unmounts.
+      for (const element of Object.values(media.current)) element?.pause();
+      stopClock();
       context.current?.close().catch(() => undefined);
+      context.current = null;
+      graphs.current = {};
     },
-    [pause],
+    [stopClock],
   );
   /**
    * Frequency-domain tap for one stem (post gain/pan/inserts — the signal

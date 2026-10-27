@@ -62,7 +62,13 @@ export function setOrtLoaderForTests(loader: (() => Promise<OrtModuleLike | null
 
 export interface OrtModuleLike {
   InferenceSession: {
-    create(path: string, options?: { executionProviders?: string[] }): Promise<MdxSessionLike>;
+    create(path: string, options?: {
+      executionProviders?: string[];
+      intraOpNumThreads?: number;
+      interOpNumThreads?: number;
+      enableCpuMemArena?: boolean;
+      enableMemPattern?: boolean;
+    }): Promise<MdxSessionLike>;
   };
   Tensor: new (type: "float32", data: Float32Array, dims: number[]) => { data: Float32Array; dims: number[] };
 }

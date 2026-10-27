@@ -11,7 +11,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "@/routing/Link";
-import { useRouter } from "@/routing/navigation";
+import { useListeningHost } from "@/components/waveyard/listening/ListeningHost";
 import StemEngineSetup from "./StemEngineSetup";
 
 import { formatPlayClock } from "@workspace/arena/lib/waveyard/library/model";
@@ -92,12 +92,16 @@ function StemBadge({ availability }: { availability: TrackSummary["stemAvailabil
 function TrackRow({
   track,
   onQueue,
+  onPlay,
+  onNext,
   playlists,
   onAddToPlaylist,
   onRate,
   onLabels,
 }: {
   track: TrackSummary;
+  onPlay: (track: TrackSummary) => void;
+  onNext: (track: TrackSummary) => void;
   onQueue: (track: TrackSummary) => void;
   playlists: PlaylistSummary[];
   onAddToPlaylist: (playlistId: string, track: TrackSummary) => void;
@@ -175,7 +179,8 @@ function TrackRow({
       <StemBadge availability={track.stemAvailability} />
       <span className="track-duration">{formatPlayClock(track.durationSeconds)}</span>
       <div className="track-actions">
-        <Link className="button" href={`/waveyard/play/${track.id}`}>Play</Link>
+        <button type="button" className="button" onClick={() => onPlay(track)} data-testid={`button-play-${track.id}`}>Play</button>
+        <button type="button" className="button secondary" onClick={() => onNext(track)} title="Line up on the next deck" data-testid={`button-next-${track.id}`}>Next</button>
         <button type="button" className="button secondary" onClick={() => onQueue(track)}>+ Queue</button>
         {playlists.length > 0 && (
           <select
@@ -221,7 +226,7 @@ export function MusicHome() {
   /** Library clock for addedDaysAgo rules — set during refresh (never read
    * impurely during render); day granularity makes short staleness moot. */
   const [libraryClockMs, setLibraryClockMs] = useState(0);
-  const router = useRouter();
+  const host = useListeningHost();
   const [loaded, setLoaded] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [dropBusy, setDropBusy] = useState<string | null>(null);
@@ -257,7 +262,10 @@ export function MusicHome() {
     // Initial load deferred to a timer callback (repo lint pattern: no
     // synchronous setState chains from the effect body).
     const timer = setTimeout(() => {
-      void refresh("");
+      void refresh("").catch(() => {
+        setLoaded(true);
+        setMessage("Your library could not be loaded — check the connection and reload.");
+      });
     }, 0);
     return () => clearTimeout(timer);
   }, [refresh]);
@@ -296,15 +304,18 @@ export function MusicHome() {
               : "Imported through yt-dlp. Stems separate in the background.",
           );
           setImportUrl("");
+          if (typeof body.track?.id === "string") void host.sendTrack(body.track.id, "play");
         } else {
           setMessage(`Import failed — ${body.error ?? `HTTP ${response.status}`}`);
         }
+      } catch {
+        setMessage("Import failed — network error.");
       } finally {
         setAdding(false);
-        await refresh(search);
+        await refresh(search).catch(() => setMessage("Library could not refresh — check the connection."));
       }
     },
-    [adding, refresh, search],
+    [adding, refresh, search, host],
   );
 
   const addMusic = useCallback(
@@ -346,10 +357,10 @@ export function MusicHome() {
             : "That audio is already in your library.",
       );
       await refresh(search).catch(() => setMessage("The audio was saved, but the library could not refresh. Reload to see it."));
-      if (trackIds.length === 1 && failures.length === 0) router.push(`/waveyard/play/${trackIds[0]}`);
+      if (trackIds.length > 0) void host.sendTrack(trackIds[0], "play");
       return trackIds;
     },
-    [adding, refresh, router, search],
+    [adding, refresh, host, search],
   );
 
   /** Dropped files use the exact same music ingest path as the Add Music button. */
@@ -376,6 +387,26 @@ export function MusicHome() {
     },
     [addMusic, adding],
   );
+
+  // Keep stem badges honest while separation runs in the background.
+  const anyProcessing = tracks.some((track) => track.stemAvailability.status === "processing");
+  useEffect(() => {
+    if (!anyProcessing) return;
+    const interval = window.setInterval(() => {
+      void (async () => {
+        try {
+          const response = await fetch(`/api/library/tracks${search.trim() ? `?q=${encodeURIComponent(search.trim())}` : ""}`, { cache: "no-store" });
+          if (response.ok) setTracks((await response.json()).tracks ?? []);
+        } catch {
+          /* next tick retries */
+        }
+      })();
+    }, 8000);
+    return () => window.clearInterval(interval);
+  }, [anyProcessing, search]);
+
+  const playTrack = useCallback((track: TrackSummary) => void host.sendTrack(track.id, "play"), [host]);
+  const nextTrack = useCallback((track: TrackSummary) => void host.sendTrack(track.id, "next"), [host]);
 
   const onQueue = useCallback(async (track: TrackSummary) => {
     const response = await fetch("/api/library/queue", {
@@ -580,11 +611,7 @@ export function MusicHome() {
       >
       <section className="library-hero" aria-label="Your music">
         <div>
-          <span className="eyebrow">Your music, stem-aware</span>
-          <h1>Listen first.</h1>
-          <p>
-            Drop audio to add it to your library and open it in the stem player. Sessions and Studio start from there.
-          </p>
+          <h1>Your library</h1>
           <label className="add-music">
             <input
               aria-label="Add music files"
@@ -601,6 +628,8 @@ export function MusicHome() {
             <small>MP3 · WAV · FLAC · M4A · AAC · OGG</small>
           </label>
           <StemEngineSetup />
+          <details className="library-url-import">
+          <summary>Import from a link</summary>
           <div className="add-music" style={{ display: "flex", gap: 8, marginTop: 8, padding: "10px 14px" }}>
             <input
               aria-label="Import from URL with yt-dlp"
@@ -632,6 +661,7 @@ export function MusicHome() {
               IMPORT
             </button>
           </div>
+          </details>
           {message && <p className="library-message" role="status">{message}</p>}
         </div>
         <div className="library-side">
@@ -649,7 +679,7 @@ export function MusicHome() {
               <small>{formatPlayClock(playback?.positionSeconds ?? 0)} in</small>
             </Link>
           )}
-          <div className="queue-panel">
+          {queue.length > 0 && <div className="queue-panel">
             <div className="library-panel-title">
               <h2>Queue</h2>
               {queue.length > 0 && <button type="button" className="button secondary" onClick={() => void clearQueue()}>Clear</button>}
@@ -666,7 +696,7 @@ export function MusicHome() {
                 ))}
               </ol>
             )}
-          </div>
+          </div>}
         </div>
       </section>
 
@@ -716,6 +746,8 @@ export function MusicHome() {
                 key={track.id}
                 track={track}
                 onQueue={onQueue}
+                onPlay={playTrack}
+                onNext={nextTrack}
                 playlists={playlists}
                 onAddToPlaylist={onAddToPlaylist}
                 onRate={rateTrack}

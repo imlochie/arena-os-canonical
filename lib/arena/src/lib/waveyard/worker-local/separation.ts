@@ -89,7 +89,15 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
   let lastError: unknown = null;
   for (const executionProviders of attempts) {
     try {
-      const session: MdxSessionLike = await ort.InferenceSession.create(modelPath, { executionProviders });
+      const session: MdxSessionLike = await ort.InferenceSession.create(modelPath, {
+        executionProviders,
+        // The API shares memory/CPU with playback metadata and the desktop
+        // shell. Four retained ORT arenas can exhaust ordinary machines.
+        intraOpNumThreads: 2,
+        interOpNumThreads: 1,
+        enableCpuMemArena: false,
+        enableMemPattern: false,
+      });
       return {
         infer: sessionInfer(session, (type, data, dims) => new ort.Tensor(type, data, dims)),
         release: async () => {
@@ -342,25 +350,15 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         });
       }
     } else {
-      const enginesById = new Map<string, OpenedEngines>();
-      const openedEngines: OpenedEngines[] = [];
-      try {
-        const getEngine = async (modelSpec: MdxModelSpec): Promise<OpenedEngines> => {
-          const existing = enginesById.get(modelSpec.id);
-          if (existing !== undefined) return existing;
-          const engine = await openEngine(modelSpec, payload.requestedDevice);
-          enginesById.set(modelSpec.id, engine);
-          openedEngines.push(engine);
-          return engine;
-        };
-
+      {
         // Real progress across ALL runs (a recipe runs one model per stem):
         // chunk-level updates into the durable row's metadata, throttled to
         // whole GLOBAL percents + the first and last chunk of each run.
         let lastReportedPercent = -1;
         for (let runIndex = 0; runIndex < runs.length; runIndex += 1) {
           const run = runs[runIndex];
-          const engine = await getEngine(run.spec);
+          const engine = await openEngine(run.spec, payload.requestedDevice);
+          try {
           resolvedDevice = engine.resolvedDevice;
           const separated = await demixMdx([left, right], run.spec, engine.infer, (done, total) => {
             const runFraction = total > 0 ? done / total : 1;
@@ -382,11 +380,11 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
             modelVersion: run.spec.sha256,
             sampleCount: separated.sampleCount,
           });
+          } finally {
+            // Release BEFORE opening the next model, including failed runs.
+            await engine.release().catch(() => undefined);
+          }
         }
-      } finally {
-        // Engines are released the moment their runs are done — the deep
-        // branch below must never hold an inference session open.
-        for (const engine of openedEngines) await engine.release().catch(() => undefined);
       }
       runModels = [...new Set(runs.map((run) => run.spec.id))];
     }

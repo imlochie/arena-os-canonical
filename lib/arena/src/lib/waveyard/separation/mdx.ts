@@ -97,7 +97,7 @@ export const MDX_MODELS: MdxModelSpec[] = [
     sizeBytes: 21_900_000,
     primaryStem: "drums",
     secondaryStem: "instrumental",
-    params: { nFft: 6144, dimF: 2048, dimT: 256, hop: 1024, compensate: 1.035, overlap: 0.25 },
+    params: { nFft: 6144, dimF: 2048, dimT: 128, hop: 1024, compensate: 1.035, overlap: 0.25 },
     sourceUrl: "https://huggingface.co/Politrees/UVR_resources/resolve/main/models/MDXNet/kuielab_b_drums.onnx",
     license: "verify-before-bundling (KUIELab MDX-Net challenge model via UVR resources)",
   },
@@ -130,8 +130,9 @@ export const MDX_MODELS: MdxModelSpec[] = [
 /**
  * Kuielab "b" models (MDX-challenge family, hosted in UVR resources):
  * geometry verified against the MDX Colab model-parameter table —
- * n_fft 6144, dim_f 2048, dim_t 2^8, hop 1024 (the kuielab_a_vocals-only
- * exception dim_t 9 does not apply to the _b set). The compensate value
+ * n_fft 6144, dim_f 2048, hop 1024. The pinned ONNX input shapes are
+ * [batch,4,2048,128] for drums and [batch,4,2048,256] for bass/other;
+ * the challenge family table alone is not sufficient. The compensate value
  * only scales the SECONDARY stem, which the 4-stem recipe never uses
  * (primary-only extraction) — recorded here for completeness, unused.
  * SHA256s verified from the Politrees/UVR_resources blob pages.

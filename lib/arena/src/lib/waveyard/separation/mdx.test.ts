@@ -217,10 +217,10 @@ test("kuielab b models are registered with verified checksums and the MDX-challe
   for (const id of ["kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"]) {
     const model = byId.get(id);
     assert.ok(model !== undefined, `${id} registered`);
-    // Geometry from the MDX Colab parameter table (kuielab b set).
+    // Time dimensions verified from each pinned ONNX input, not family defaults.
     assert.deepEqual(
       { nFft: model.params.nFft, dimF: model.params.dimF, dimT: model.params.dimT, hop: model.params.hop },
-      { nFft: 6144, dimF: 2048, dimT: 256, hop: 1024 },
+      { nFft: 6144, dimF: 2048, dimT: id === "kuielab_b_drums" ? 128 : 256, hop: 1024 },
       `${id} geometry`,
     );
     assert.ok(/^[0-9a-f]{64}$/.test(model.sha256), `${id} sha256 pinned`);

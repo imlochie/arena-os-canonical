@@ -5,6 +5,8 @@ import DesktopRuntimeStatus from "@/components/DesktopRuntimeStatus";
 import { OfflineBanner, SwRegister } from "@/components/OfflineKit";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { routes } from "./routes";
+import WaveyardNav from "@/components/waveyard/WaveyardNav";
+import { ListeningHostProvider, ListeningWorkspace, isWorkspaceRoute } from "@/components/waveyard/listening/ListeningHost";
 import "./app/globals.css";
 import "./app/waveyard/waveyard.css";
 
@@ -21,11 +23,18 @@ function Shell() {
       : "ArenaForge Personal — Your Free Private AI Arena";
     window.scrollTo(0, 0);
   }, [location.pathname]);
-  return <>
+  const workspaceRoute = isWorkspaceRoute(location.pathname);
+  return <ListeningHostProvider>
     <SwRegister />
     <OfflineBanner />
     <Nav />
-    <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-6 sm:px-6">
+    <main className={`mx-auto w-full max-w-7xl px-4 pt-6 sm:px-6 ${workspaceRoute ? "pb-16" : "pb-28"}`}>
+      {/* Persistent listening host: same tree position on EVERY route, outside
+          the routed subtree and its error/suspense boundaries, so audio survives navigation. */}
+      {workspaceRoute && <div className="waveyard-room shell wy-shell-top"><WaveyardNav /></div>}
+      <ErrorBoundary resetKey="waveyard-listening-host">
+        <ListeningWorkspace />
+      </ErrorBoundary>
       <ErrorBoundary resetKey={location.pathname}>
         <Suspense fallback={<p className="py-10 text-center text-slate-400">Loading…</p>}>
           <div className={location.pathname.startsWith("/waveyard") ? "waveyard-room" : undefined}>
@@ -48,7 +57,7 @@ function Shell() {
         <a href="/principles" className="font-bold text-slate-400 hover:underline">📜 Principles</a>
       </p>
     </footer>
-  </>;
+  </ListeningHostProvider>;
 }
 export default function App() {
   return <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "")}><Shell /></BrowserRouter>;
