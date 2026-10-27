@@ -2,9 +2,26 @@ export interface WaveyardQueueChange {
   id: string;
   sender: string;
   affectedSessionIds: string[];
+  transport?: WaveyardTransportSnapshot;
 }
 
-type QueueChangeListener = (change: Pick<WaveyardQueueChange, "affectedSessionIds">) => void;
+export interface WaveyardTransportSnapshot {
+  sessionId: string;
+  trackId: string | null;
+  positionSeconds: number;
+  playing: boolean;
+  action: "state" | "seek";
+  clock: number;
+}
+
+export interface WaveyardRemoteTransport extends WaveyardTransportSnapshot {
+  sender: string;
+}
+
+type QueueChangeListener = (change: {
+  affectedSessionIds: string[];
+  transport?: WaveyardRemoteTransport;
+}) => void;
 
 const LOCAL_EVENT = "waveyard:queue-changed";
 const STORAGE_KEY = "waveyard:queue-change";
@@ -12,6 +29,7 @@ const CHANNEL_NAME = "waveyard:queue-sync";
 
 let clientId: string | null = null;
 let channel: BroadcastChannel | null = null;
+let logicalClock = 0;
 
 function getClientId() {
   if (clientId !== null) return clientId;
@@ -42,23 +60,40 @@ function parseChange(value: unknown): WaveyardQueueChange | null {
     || !Array.isArray(candidate.affectedSessionIds)
     || !candidate.affectedSessionIds.every((id) => typeof id === "string")
   ) return null;
+  let transport: WaveyardTransportSnapshot | undefined;
+  if (candidate.transport !== undefined) {
+    const value = candidate.transport as Partial<WaveyardTransportSnapshot>;
+    if (
+      typeof value.sessionId !== "string"
+      || (value.trackId !== null && typeof value.trackId !== "string")
+      || typeof value.positionSeconds !== "number"
+      || !Number.isFinite(value.positionSeconds)
+      || value.positionSeconds < 0
+      || typeof value.playing !== "boolean"
+      || (value.action !== "state" && value.action !== "seek")
+      || typeof value.clock !== "number"
+      || !Number.isSafeInteger(value.clock)
+      || value.clock < 1
+    ) return null;
+    transport = {
+      sessionId: value.sessionId,
+      trackId: value.trackId ?? null,
+      positionSeconds: value.positionSeconds,
+      playing: value.playing,
+      action: value.action,
+      clock: value.clock,
+    };
+  }
   return {
     id: candidate.id,
     sender: candidate.sender,
     affectedSessionIds: candidate.affectedSessionIds,
+    ...(transport ? { transport } : {}),
   };
 }
 
-/** Update other tabs while keeping the initiating tab's UI event compatible. */
-export function publishWaveyardQueueChange(affectedSessionIds: string[] = []) {
+function sendToOtherTabs(change: WaveyardQueueChange) {
   if (typeof window === "undefined") return;
-  const change: WaveyardQueueChange = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    sender: getClientId(),
-    affectedSessionIds: [...new Set(affectedSessionIds)],
-  };
-  window.dispatchEvent(new CustomEvent(LOCAL_EVENT, { detail: change }));
-
   try {
     const activeChannel = getChannel();
     if (activeChannel !== null) {
@@ -75,6 +110,35 @@ export function publishWaveyardQueueChange(affectedSessionIds: string[] = []) {
   }
 }
 
+/** Update other tabs while keeping the initiating tab's UI event compatible. */
+export function publishWaveyardQueueChange(affectedSessionIds: string[] = []) {
+  if (typeof window === "undefined") return;
+  const change: WaveyardQueueChange = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    sender: getClientId(),
+    affectedSessionIds: [...new Set(affectedSessionIds)],
+  };
+  window.dispatchEvent(new CustomEvent(LOCAL_EVENT, { detail: change }));
+  sendToOtherTabs(change);
+}
+
+/** Publish a causally ordered transport snapshot to the other session tabs. */
+export function publishWaveyardTransportChange(
+  snapshot: Omit<WaveyardTransportSnapshot, "clock">,
+): WaveyardRemoteTransport | null {
+  if (typeof window === "undefined") return null;
+  logicalClock += 1;
+  const sender = getClientId();
+  const transport = { ...snapshot, clock: logicalClock };
+  sendToOtherTabs({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    sender,
+    affectedSessionIds: [snapshot.sessionId],
+    transport,
+  });
+  return { ...transport, sender };
+}
+
 export function subscribeToWaveyardQueueChanges(listener: QueueChangeListener) {
   const seen = new Set<string>();
   const onLocal = () => listener({ affectedSessionIds: [] });
@@ -83,7 +147,11 @@ export function subscribeToWaveyardQueueChanges(listener: QueueChangeListener) {
     if (change === null || change.sender === getClientId() || seen.has(change.id)) return;
     seen.add(change.id);
     if (seen.size > 32) seen.delete(seen.values().next().value!);
-    listener({ affectedSessionIds: change.affectedSessionIds });
+    if (change.transport) logicalClock = Math.max(logicalClock, change.transport.clock);
+    listener({
+      affectedSessionIds: change.affectedSessionIds,
+      ...(change.transport ? { transport: { ...change.transport, sender: change.sender } } : {}),
+    });
   };
   const onStorage = (event: StorageEvent) => {
     if (event.key !== STORAGE_KEY || event.newValue === null) return;

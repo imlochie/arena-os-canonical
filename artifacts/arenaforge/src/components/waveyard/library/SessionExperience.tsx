@@ -18,7 +18,12 @@ import {
   type TransitionConfig,
   type TransitionMode,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
-import { publishWaveyardQueueChange } from "./queue-sync";
+import {
+  publishWaveyardQueueChange,
+  publishWaveyardTransportChange,
+  subscribeToWaveyardQueueChanges,
+  type WaveyardRemoteTransport,
+} from "./queue-sync";
 
 // ---------------------------------------------------------------------------
 // Types mirrored from the session API payload.
@@ -432,6 +437,7 @@ export default function SessionExperience({
     }
   });
   const [positions, setPositions] = useState<[number, number]>([0, 0]);
+  const [remoteTransport, setRemoteTransport] = useState<WaveyardRemoteTransport | null>(null);
   /** Items whose stems finished while their source was audible: held until the user switches. */
   const [stemsReady, setStemsReady] = useState<Record<string, SessionTrackItem>>({});
   const [resumeAt, setResumeAt] = useState<{ itemId: string; seconds: number } | null>(null);
@@ -446,6 +452,11 @@ export default function SessionExperience({
   const activeDeckRef = useRef<0 | 1>(0);
   const masterRef = useRef(1);
   const playingRef = useRef(false);
+  const remoteTransportRef = useRef<WaveyardRemoteTransport | null>(null);
+  const transportOrderRef = useRef<{ clock: number; sender: string } | null>(null);
+  const applyingRemoteTransportRef = useRef(false);
+  const remoteApplyTimerRef = useRef<number | null>(null);
+  const lastProgressBroadcastAtRef = useRef(0);
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { currentIdRef.current = currentId; }, [currentId]);
   useEffect(() => { activeDeckRef.current = activeDeck; }, [activeDeck]);
@@ -620,6 +631,23 @@ export default function SessionExperience({
     return map;
   }, [session, currentItem]);
 
+  const publishTransport = useCallback((snapshot: {
+    trackId: string | null;
+    positionSeconds: number;
+    playing: boolean;
+    action: "state" | "seek";
+  }) => {
+    if (applyingRemoteTransportRef.current) return null;
+    const published = publishWaveyardTransportChange({ sessionId, ...snapshot });
+    if (published !== null) transportOrderRef.current = { clock: published.clock, sender: published.sender };
+    return published;
+  }, [sessionId]);
+
+  const clearRemoteTransport = useCallback(() => {
+    remoteTransportRef.current = null;
+    setRemoteTransport(null);
+  }, []);
+
   const handleDeckApi = useCallback((deckIndex: number, api: DeckApi | null) => {
     decksRef.current[deckIndex] = api;
   }, []);
@@ -630,7 +658,16 @@ export default function SessionExperience({
       next[deckIndex] = playing;
       return next;
     });
-  }, []);
+    if (deckIndex === activeDeckRef.current && !applyingRemoteTransportRef.current) {
+      clearRemoteTransport();
+      publishTransport({
+        trackId: currentIdRef.current,
+        positionSeconds: decksRef.current[deckIndex]?.transport.position ?? 0,
+        playing,
+        action: "state",
+      });
+    }
+  }, [clearRemoteTransport, publishTransport]);
   const handleDeckProgress = useCallback((deckIndex: number, position: number) => {
     setPositions((prev) => {
       if (Math.abs(prev[deckIndex] - position) < 0.25) return prev;
@@ -638,7 +675,19 @@ export default function SessionExperience({
       next[deckIndex] = position;
       return next;
     });
-  }, []);
+    const api = decksRef.current[deckIndex];
+    const now = Date.now();
+    if (
+      deckIndex === activeDeckRef.current
+      && api?.transport.playing
+      && !applyingRemoteTransportRef.current
+      && now - lastProgressBroadcastAtRef.current >= 900
+    ) {
+      lastProgressBroadcastAtRef.current = now;
+      clearRemoteTransport();
+      publishTransport({ trackId: currentIdRef.current, positionSeconds: position, playing: true, action: "state" });
+    }
+  }, [clearRemoteTransport, publishTransport]);
 
   // Debounced mix + transition persistence for BOTH loaded items.
   const lastSentRef = useRef<Record<string, string>>({});
@@ -720,11 +769,18 @@ export default function SessionExperience({
         activeDeckRef.current = fade.toDeck;
         setCurrentId(decision.sessionTrackId);
         setActiveDeck(fade.toDeck);
+        clearRemoteTransport();
+        publishTransport({
+          trackId: decision.sessionTrackId,
+          positionSeconds: toApi?.transport.position ?? 0,
+          playing: true,
+          action: "state",
+        });
       }
     }
     setStatus("Transition complete.");
     void persistState();
-  }, [persistState]);
+  }, [persistState, clearRemoteTransport, publishTransport]);
 
   const runFade = useCallback(
     (cfg: TransitionConfig, fromDeck: 0 | 1, toDeck: 0 | 1, fromMix: Record<string, number>) => {
@@ -842,13 +898,29 @@ export default function SessionExperience({
     if (phase === "fading") cancelTransition();
     const api = decksRef.current[activeDeck];
     if (api === null) return;
+    const remote = remoteTransportRef.current;
+    if (!api.transport.playing && remote?.sessionId === sessionId && remote.playing) {
+      const paused = publishTransport({
+        trackId: remote.trackId,
+        positionSeconds: remote.positionSeconds,
+        playing: false,
+        action: "state",
+      });
+      if (paused !== null) {
+        remoteTransportRef.current = paused;
+        setRemoteTransport(paused);
+      }
+      return;
+    }
     if (api.transport.playing) {
+      clearRemoteTransport();
       api.transport.pause();
       void persistState();
     } else {
+      clearRemoteTransport();
       await api.transport.play();
     }
-  }, [activeDeck, phase, cancelTransition, persistState]);
+  }, [activeDeck, phase, cancelTransition, persistState, sessionId, publishTransport, clearRemoteTransport]);
 
   const handleDeckEnded = useCallback(
     (deckIndex: number, itemId: string) => {
@@ -869,6 +941,13 @@ export default function SessionExperience({
           toApi.transport.setMasterVolume(masterRef.current);
           void toApi.transport.play();
         }
+        clearRemoteTransport();
+        publishTransport({
+          trackId: decision.sessionTrackId,
+          positionSeconds: toApi?.transport.position ?? 0,
+          playing: true,
+          action: "state",
+        });
         setStatus("Track finished — the next deck took over.");
         void persistState({ id: decision.sessionTrackId, position: 0 });
       } else {
@@ -876,7 +955,7 @@ export default function SessionExperience({
         void persistState();
       }
     },
-    [persistState],
+    [persistState, clearRemoteTransport, publishTransport],
   );
 
   // ----------------------------------------------------------- queue edits
@@ -914,17 +993,90 @@ export default function SessionExperience({
       if (fadeRef.current !== null) cancelTransition();
       const api = decksRef.current[activeDeckRef.current];
       if (itemId === currentIdRef.current) {
-        if (autoplay && api && !api.transport.playing) void api.transport.play();
+        if (autoplay && api && !api.transport.playing) {
+          clearRemoteTransport();
+          void api.transport.play();
+        }
         return;
       }
       api?.transport.pause();
       currentIdRef.current = itemId;
       setAutoPlayId(autoplay ? itemId : null);
       setCurrentId(itemId);
+      clearRemoteTransport();
+      publishTransport({ trackId: itemId, positionSeconds: 0, playing: autoplay, action: "state" });
       void persistState({ id: itemId, position: 0 });
     },
-    [cancelTransition, persistState],
+    [cancelTransition, persistState, clearRemoteTransport, publishTransport],
   );
+
+  const receiveRemoteTransport = useCallback((incoming: WaveyardRemoteTransport) => {
+    if (incoming.sessionId !== sessionId) return;
+    const previous = transportOrderRef.current;
+    if (previous && (
+      incoming.clock < previous.clock
+      || (incoming.clock === previous.clock && incoming.sender <= previous.sender)
+    )) return;
+    transportOrderRef.current = { clock: incoming.clock, sender: incoming.sender };
+    remoteTransportRef.current = incoming;
+    setRemoteTransport(incoming);
+    if (fadeRef.current !== null) abortTransition("The other Waveyard tab changed playback.");
+
+    const matchingDeck = incoming.trackId === null
+      ? activeDeckRef.current
+      : deckItems[0]?.id === incoming.trackId
+        ? 0
+        : deckItems[1]?.id === incoming.trackId
+          ? 1
+          : activeDeckRef.current;
+    const api = decksRef.current[matchingDeck];
+    const sameTrack = incoming.trackId === currentIdRef.current;
+    const preservePlayingSeek = incoming.action === "seek" && incoming.playing && sameTrack && api?.transport.playing;
+    applyingRemoteTransportRef.current = true;
+    if (!preservePlayingSeek) api?.transport.pause();
+    if (sameTrack && incoming.trackId !== null) api?.transport.seek(incoming.positionSeconds);
+    if (remoteApplyTimerRef.current !== null) window.clearTimeout(remoteApplyTimerRef.current);
+    remoteApplyTimerRef.current = window.setTimeout(() => {
+      applyingRemoteTransportRef.current = false;
+      remoteApplyTimerRef.current = null;
+    }, 300);
+
+    activeDeckRef.current = matchingDeck;
+    setActiveDeck(matchingDeck);
+    currentIdRef.current = incoming.trackId;
+    setCurrentId(incoming.trackId);
+    setAutoPlayId(null);
+    setPositions((previousPositions) => {
+      const next: [number, number] = [previousPositions[0], previousPositions[1]];
+      next[matchingDeck] = incoming.positionSeconds;
+      return next;
+    });
+    if (!incoming.playing) void persistState({ id: incoming.trackId, position: incoming.positionSeconds });
+  }, [sessionId, deckItems, abortTransition, persistState]);
+
+  useEffect(() => {
+    if (remoteTransport === null || remoteTransport.sessionId !== sessionId) return;
+    const deckIndex = activeDeck;
+    if (remoteTransport.trackId !== null && deckItems[deckIndex]?.id !== remoteTransport.trackId) return;
+    const api = decksRef.current[deckIndex];
+    if (api === null) return;
+    const preservePlayingSeek = remoteTransport.action === "seek"
+      && remoteTransport.playing
+      && api.transport.playing;
+    applyingRemoteTransportRef.current = true;
+    if (!preservePlayingSeek) api.transport.pause();
+    if (remoteTransport.trackId !== null) api.transport.seek(remoteTransport.positionSeconds);
+    if (remoteApplyTimerRef.current !== null) window.clearTimeout(remoteApplyTimerRef.current);
+    remoteApplyTimerRef.current = window.setTimeout(() => {
+      applyingRemoteTransportRef.current = false;
+      remoteApplyTimerRef.current = null;
+    }, 300);
+    return () => {
+      if (remoteApplyTimerRef.current !== null) window.clearTimeout(remoteApplyTimerRef.current);
+      remoteApplyTimerRef.current = null;
+      applyingRemoteTransportRef.current = false;
+    };
+  }, [remoteTransport, sessionId, activeDeck, deckItems]);
 
   // Commands from the library (play now / load / line up next).
   const lastCommandRef = useRef(0);
@@ -1204,6 +1356,35 @@ export default function SessionExperience({
     },
   });
 
+  const refreshSessionFromOtherTab = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/library/sessions/${sessionId}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const fresh = (await response.json()).session as SessionDetail;
+      const previous = sessionRef.current;
+      if (previous === null || previous.id !== sessionId) return;
+      const audible = new Set<string>();
+      for (const [index, deck] of decksRef.current.entries()) {
+        const item = deckItems[index as 0 | 1];
+        if (deck?.transport.playing && item) audible.add(item.id);
+      }
+      const merged = fresh.tracks.map((item) => {
+        const old = previous.tracks.find((candidate) => candidate.id === item.id);
+        return old && old.playback?.kind !== item.playback?.kind && audible.has(item.id) ? old : item;
+      });
+      const next = { ...previous, ...fresh, tracks: merged };
+      sessionRef.current = next;
+      setSession(next);
+    } catch {
+      /* The next queue or transport update will retry the refresh. */
+    }
+  }, [sessionId, deckItems]);
+
+  useEffect(() => subscribeToWaveyardQueueChanges(({ affectedSessionIds, transport }) => {
+    if (transport !== undefined) receiveRemoteTransport(transport);
+    else if (affectedSessionIds.includes(sessionId)) void refreshSessionFromOtherTab();
+  }), [sessionId, receiveRemoteTransport, refreshSessionFromOtherTab]);
+
   // Background refresh: picks up finished separations and new library tracks.
   // A deck that is AUDIBLE keeps its source until the user switches.
   const pending = session?.tracks.some((item) => item.playback?.kind !== "stems") ?? false;
@@ -1361,8 +1542,10 @@ export default function SessionExperience({
     );
   }
 
-  const playing = playingByDeck[activeDeck];
-  const position = positions[activeDeck];
+  const remoteMatchesCurrent = remoteTransport?.sessionId === session.id
+    && (remoteTransport.trackId === null || remoteTransport.trackId === currentItem?.id);
+  const playing = remoteMatchesCurrent ? remoteTransport.playing : playingByDeck[activeDeck];
+  const position = remoteMatchesCurrent ? remoteTransport.positionSeconds : positions[activeDeck];
   const duration = currentItem?.track.durationSeconds ?? 0;
   const transition = currentTransition;
   const keepSet = new Set(transition?.keepStems ?? []);
@@ -1388,10 +1571,27 @@ export default function SessionExperience({
     setTransition({ keepStems: [...kept] });
   };
   const seekCurrent = (value: number) => {
-    decksRef.current[activeDeck]?.transport.seek(value);
+    const api = decksRef.current[activeDeck];
+    const remote = remoteTransportRef.current;
+    const usingRemoteState = remote?.sessionId === sessionId && !api?.transport.playing;
+    const trackId = usingRemoteState ? remote.trackId : currentItem?.id ?? null;
+    const shouldRemainPlaying = usingRemoteState ? remote.playing : (api?.transport.playing ?? false);
+    api?.transport.seek(value);
     setPositions((prev) => activeDeck === 0 ? [value, prev[1]] : [prev[0], value]);
     setStatus(null);
-    if (!playingByDeck[activeDeck]) void persistState({ position: value });
+    const published = publishTransport({
+      trackId,
+      positionSeconds: value,
+      playing: shouldRemainPlaying,
+      action: "seek",
+    });
+    if (usingRemoteState && published !== null) {
+      remoteTransportRef.current = published;
+      setRemoteTransport(published);
+    } else {
+      clearRemoteTransport();
+    }
+    if (!shouldRemainPlaying) void persistState({ id: trackId, position: value });
   };
 
   const swapExtra = (stemType: string) => {
