@@ -35,6 +35,7 @@ assert(reaAnalysisSmoke.includes("without executing source"), "REA analysis smok
 report.push(reaAnalysisSmoke);
 let createdProject;
 let createdSubscriptionName;
+let createdSpaceId;
 let battleId;
 let fallbackBattleId;
 function assertBlind(payload) {
@@ -236,6 +237,38 @@ try {
     assert.equal(errors.length, previousErrors, `${path} raised a browser error`);
   }
   report.push(`Control wiring audit passed across ${auditRoutes.length} routes: ${auditedButtons} visible buttons and ${auditedLinks} visible links.`);
+  await page.goto(`${base}/spaces`, { waitUntil: "networkidle" });
+  const roomLauncher = page.getByRole("button", { name: /Rooms/ });
+  assert.equal(await roomLauncher.count(), 1, "Spaces navigation should expose one room launcher");
+  const roomLauncherLabel = (await roomLauncher.innerText()).replace(/\s+/g, " ").trim();
+  assert.match(roomLauncherLabel, /Rooms/);
+  assert.doesNotMatch(roomLauncherLabel, /Spaces/, "The room launcher should not repeat the active primary tab");
+  const initialSpaceCount = await page.locator("[data-space-id]").count();
+  const newWorkspaceButton = initialSpaceCount === 0
+    ? page.getByRole("button", { name: "Create browser workspace", exact: true })
+    : page.getByRole("button", { name: "New browser workspace", exact: true });
+  if (initialSpaceCount === 0) {
+    assert.equal(await page.getByRole("button", { name: "New browser workspace", exact: true }).count(), 0,
+      "Empty Spaces screen should not show a duplicate workspace CTA");
+  }
+  const createSpaceResponse = page.waitForResponse(response =>
+    response.url().endsWith("/api/spaces") && response.request().method() === "POST",
+  );
+  await newWorkspaceButton.click();
+  const createdSpace = await (await createSpaceResponse).json();
+  createdSpaceId = createdSpace.space?.id;
+  assert(createdSpaceId, "Creating a browser workspace should return its id");
+  const createdSpaceCard = page.locator(`[data-space-id="${createdSpaceId}"]`);
+  const browserTask = createdSpaceCard.getByRole("textbox", { name: "Browser task" });
+  await browserTask.waitFor({ state: "visible", timeout: 10000 });
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Browser task", null, { timeout: 5000 });
+  const taskBeforeManualBrowser = await createdSpaceCard.evaluate(card => {
+    const task = card.querySelector('[aria-label="Browser task"]');
+    const browser = card.querySelector('section[aria-label="Workspace browser"]');
+    return Boolean(task && browser && (task.compareDocumentPosition(browser) & Node.DOCUMENT_POSITION_FOLLOWING));
+  });
+  assert(taskBeforeManualBrowser, "The mission task should appear before the manual browser control");
+  report.push("Spaces navigation is distinct from the room launcher; first-run creates one workspace CTA, focuses the browser task, and puts mission controls before manual browsing.");
   await page.goto(`${base}/arcade`, { waitUntil: "networkidle" });
   const platformerButton = page.getByRole("button", { name: "Open offline game Platform Adventure" });
   await platformerButton.waitFor({ timeout: 15000 });
@@ -565,6 +598,7 @@ try {
   throw error;
 } finally {
   if (createdProject) await context.request.delete(`${base}/api/projects/${createdProject}`);
+  if (createdSpaceId) await context.request.delete(`${base}/api/spaces/${createdSpaceId}`);
   if (createdSubscriptionName) {
     try {
       const response = await context.request.get(`${base}/api/subscriptions`);

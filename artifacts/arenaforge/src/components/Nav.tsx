@@ -156,6 +156,7 @@ export default function Nav() {
   }, [query]);
 
   const activeRoom = ALL_ROOMS.find((r) => r.href === pathname);
+  const primaryPageIsActive = PRIMARY.some((room) => room.href === pathname);
 
   return (
     <header className="sticky top-0 z-50 border-b border-white/10 bg-[#060a17]/85 backdrop-blur-xl">
@@ -200,7 +201,7 @@ export default function Nav() {
             }`}
             title="All rooms (Ctrl+K)"
           >
-            {activeRoom && !open ? (
+            {activeRoom && !primaryPageIsActive && !open ? (
               <>
                 <span>{activeRoom.emoji}</span>
                 {activeRoom.label}

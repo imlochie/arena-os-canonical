@@ -68,6 +68,7 @@ export default function SpacesWorkbench() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [focusMissionId, setFocusMissionId] = useState<string | null>(null);
 
   // new-space form (seeded from the default template via lazy initial state)
   const [watchType, setWatchType] = useState("");
@@ -208,6 +209,7 @@ export default function SpacesWorkbench() {
       if (!res.ok || !data.space?.id) throw new Error(data?.error ?? "Could not create browser workspace");
       await refresh();
       setExpanded(data.space.id);
+      setFocusMissionId(data.space.id);
     } catch (e) {
       setWorkspaceError(e instanceof Error ? e.message : "Could not create browser workspace");
     } finally {
@@ -285,14 +287,16 @@ export default function SpacesWorkbench() {
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs font-bold">
-          <button
-            type="button"
-            onClick={() => void openBrowserWorkspace()}
-            disabled={openingBrowserWorkspace}
-            className="rounded-xl bg-cyan-500/15 px-3 py-2 text-cyan-100 ring-1 ring-cyan-400/30 disabled:opacity-40"
-          >
-            {openingBrowserWorkspace ? "Creating workspace…" : "New browser workspace"}
-          </button>
+          {spaces.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void openBrowserWorkspace()}
+              disabled={openingBrowserWorkspace}
+              className="rounded-xl bg-cyan-500/15 px-3 py-2 text-cyan-100 ring-1 ring-cyan-400/30 disabled:opacity-40"
+            >
+              {openingBrowserWorkspace ? "Creating workspace…" : "New browser workspace"}
+            </button>
+          )}
           <span className="rounded-full bg-emerald-400/10 px-3 py-1.5 text-emerald-300 ring-1 ring-emerald-400/30">
             ● {runningCount} scheduled
           </span>
@@ -467,6 +471,7 @@ export default function SpacesWorkbench() {
                   busy={busyId === s.id}
                   now={now}
                   models={models}
+                  focusGoal={focusMissionId === s.id}
                   onToggleExpand={() => setExpanded(expanded === s.id ? null : s.id)}
                   onRunNow={() => void runNow(s.id)}
                   onPatch={(body) => void patch(s.id, body)}
@@ -494,6 +499,7 @@ function SpaceWindow({
   busy,
   now,
   models,
+  focusGoal,
   onToggleExpand,
   onRunNow,
   onPatch,
@@ -506,6 +512,7 @@ function SpaceWindow({
   busy: boolean;
   now: number;
   models: ModelInfo[];
+  focusGoal: boolean;
   onToggleExpand: () => void;
   onRunNow: () => void;
   onPatch: (body: Record<string, unknown>) => void;
@@ -557,8 +564,8 @@ function SpaceWindow({
           )}
         </div>}
 
+        <MissionPanel spaceId={space.id} models={models} focusGoal={focusGoal} />
         <SpaceBrowserPanel spaceId={space.id} />
-        <MissionPanel spaceId={space.id} models={models} />
         <details className="mt-3">
           <summary className="cursor-pointer text-xs font-bold text-slate-400">Multi-agent setup</summary>
           <AgentFleet spaceId={space.id} models={models} />
@@ -857,7 +864,7 @@ interface MissionLite {
   mode?: "browser";
 }
 
-function MissionPanel({ spaceId, models }: { spaceId: string; models: ModelInfo[] }) {
+function MissionPanel({ spaceId, models, focusGoal }: { spaceId: string; models: ModelInfo[]; focusGoal: boolean }) {
   const [taskMode, setTaskMode] = useState<"browser" | "build">("browser");
   const [goal, setGoal] = useState("");
   const [budget, setBudget] = useState(5);
@@ -874,7 +881,12 @@ function MissionPanel({ spaceId, models }: { spaceId: string; models: ModelInfo[
   const [taskModel, setTaskModel] = useState(() => {
     try { return localStorage.getItem(`af_browser_model_${spaceId}`) || ""; } catch { return ""; }
   });
+  const goalRef = useRef<HTMLTextAreaElement>(null);
   const taskModels = models.filter(model => model.kind === "text" && model.id !== "local-engine");
+
+  useEffect(() => {
+    if (focusGoal) goalRef.current?.focus();
+  }, [focusGoal]);
 
   useEffect(() => {
     let alive = true;
@@ -1070,6 +1082,7 @@ function MissionPanel({ spaceId, models }: { spaceId: string; models: ModelInfo[
 
       <div className="mt-2 grid gap-1.5 sm:grid-cols-[1fr_90px_auto]">
         <textarea
+          ref={goalRef}
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
           aria-label={taskMode === "browser" ? "Browser task" : "Build task"}
