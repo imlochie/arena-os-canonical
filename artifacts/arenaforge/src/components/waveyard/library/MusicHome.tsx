@@ -314,7 +314,9 @@ export function MusicHome() {
         if (response.ok) {
           setMessage(
             body.created === false
-              ? "Already in your library — nothing imported."
+              ? typeof body.track?.id === "string"
+                ? "Already in your library — opening it in the live mixer."
+                : "Already in your library — nothing imported."
               : "Imported through yt-dlp. Stems separate in the background.",
           );
           setImportUrl("");
@@ -368,7 +370,9 @@ export function MusicHome() {
             ? `Added ${added} track${added === 1 ? "" : "s"}, but the stem worker did not accept the separation job.`
           : added > 0
             ? `Added ${added} track${added === 1 ? "" : "s"} to your library. Stems separate in the background.`
-            : "That audio is already in your library.",
+            : trackIds.length > 0
+              ? "That audio is already in your library — loading it in the live mixer."
+              : "That audio is already in your library.",
       );
       await refresh(search).catch(() => setMessage("The audio was saved, but the library could not refresh. Reload to see it."));
       if (trackIds.length > 0) void host.sendTrack(trackIds[0], "play");
@@ -734,7 +738,14 @@ export function MusicHome() {
             </button>
           </div>
           </details>
-          {message && <p className="library-message" role="status">{message}</p>}
+          {message && (
+            <p className="library-message" role="status">
+              {message}
+              {host.sessionId !== null && (
+                <a className="library-message-link" href="#waveyard-live-mixer">Open live mixer</a>
+              )}
+            </p>
+          )}
         </div>
         <div className="library-side">
           <input

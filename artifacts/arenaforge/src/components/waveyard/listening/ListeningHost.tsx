@@ -179,7 +179,7 @@ export function ListeningWorkspace() {
   if (state === null || api === null) return null;
   const variant = isWorkspaceRoute(pathname) ? "full" : "compact";
   return (
-    <div className={`waveyard-room wy-host wy-host-${variant}`}>
+    <div id={variant === "full" ? "waveyard-live-mixer" : undefined} className={`waveyard-room wy-host wy-host-${variant}`}>
       {api.hostError !== null && variant === "full" && (
         <p className="sess-status wy-host-error" role="alert">{api.hostError}</p>
       )}

@@ -491,6 +491,7 @@
 .add-music b{color:var(--acid);font-size:13px;letter-spacing:.08em}
 .add-music small{color:var(--muted);font-size:11px}
 .library-message{color:var(--acid);font-size:12px;margin-top:10px}
+.library-message-link{display:inline-block;margin-left:8px;color:var(--ink);font-weight:800;text-decoration:underline;text-underline-offset:3px}
 .library-side{display:grid;gap:14px;align-content:start}
 .library-search{width:100%;background:#11130e;border:1px solid #3b3e38;color:var(--ink);padding:12px;font-size:14px}
 .continue-chip{display:grid;gap:4px;border:1px solid var(--line);background:var(--panel);padding:12px 14px}
@@ -1025,6 +1026,7 @@
 
 /* Waveyard continuous listening workspace — one persistent host, two stable decks. */
 .wy-host{--wy-a:#d6fb54;--wy-b:#7ae5e7;--wy-glass:rgba(16,19,14,.92)}
+#waveyard-live-mixer{scroll-margin-top:88px}
 .wy-shell-top{padding-bottom:0}
 .wy-under-host{padding-top:8px}
 .music-home-surface .library-hero{padding:12px 0 18px;gap:16px}

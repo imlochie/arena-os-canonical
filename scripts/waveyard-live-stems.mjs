@@ -105,9 +105,14 @@ try {
         ...(range ? { "Content-Range": `bytes ${start}-${end}/${body.length}` } : {}) },
     });
   });
-  await context.route("**/api/library/tracks", route => route.fulfill({ json: { tracks: [
-    ...libraryRows, { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4 }, studioProjectId: "fixture-project-d" },
-  ] } }));
+  await context.route("**/api/library/tracks", route => {
+    if (route.request().method() === "POST") {
+      return route.fulfill({ status: 201, json: { track: libraryRows[0], created: true, separationQueued: true } });
+    }
+    return route.fulfill({ json: { tracks: [
+      ...libraryRows, { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4 }, studioProjectId: "fixture-project-d" },
+    ] } });
+  });
   await context.route("**/api/library/playlists", route => route.fulfill({ json: { playlists: [
     { id: "test-playlist", name: "Test order", trackCount: 2 },
   ] } }));
@@ -165,6 +170,27 @@ try {
   });
   await page.goto("http://localhost:80/waveyard");
   await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  const uploadTrackIntoSession = page.waitForResponse(response =>
+    response.url().endsWith(`/api/library/sessions/${sessionId}/tracks`) && response.request().method() === "POST",
+  );
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: "upload-test.wav",
+    mimeType: "audio/wav",
+    buffer: wav(2, 140),
+  });
+  const openMixerLink = page.getByRole("link", { name: "Open live mixer", exact: true });
+  await openMixerLink.waitFor({ timeout: 15000 });
+  assert.equal(await openMixerLink.getAttribute("href"), "#waveyard-live-mixer");
+  await uploadTrackIntoSession;
+  await openMixerLink.click();
+  await page.waitForFunction(() => window.location.hash === "#waveyard-live-mixer");
+  assert.equal(await page.locator("#waveyard-live-mixer").count(), 1, "the upload action must lead back to the persistent live mixer");
+  session.tracks = tracks;
+  session.swaps = [];
+  session.currentSessionTrackId = "a";
+  session.positionSeconds = 0;
+  exposeSeparatedSource = false;
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].length === 4 &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.readyState === 4));
@@ -444,5 +470,5 @@ try {
 
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile must not overflow");
-  console.log("PASS: live swaps, seek/resume, gapless handoffs, failed-source recovery, mobile width");
+  console.log("PASS: upload-to-mixer handoff, live swaps, seek/resume, gapless handoffs, failed-source recovery, mobile width");
 } finally { await browser.close(); }
