@@ -8,3 +8,4 @@
 - [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.
 - [Waveyard database test runtime](waveyard-db-tests.md) — temporary PostgreSQL test failures before assertions are runtime failures, not evidence about queue behavior.
 - [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.
+- [Waveyard CPU worker packaging](waveyard-cpu-worker.md) — bundle CPU-intensive worker code separately; source workers can inherit unsupported runtime flags.

@@ -27,7 +27,10 @@
 
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { Worker } from "node:worker_threads";
+import { fileURLToPath } from "node:url";
 import { and, eq } from "drizzle-orm";
 
 import type { drizzle } from "drizzle-orm/node-postgres";
@@ -39,7 +42,14 @@ import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/stor
 import { enqueueWaveform } from "@workspace/arena/lib/waveyard/queue";
 import { decodeSourceToStereoPcm } from "@workspace/arena/lib/waveyard/measure/pcm";
 import type { SeparationJobPayload } from "@workspace/arena/lib/waveyard/types";
-import { demixMdx, findMdxModel, findSeparationRecipe, type MdxInfer, type MdxModelSpec } from "@workspace/arena/lib/waveyard/separation/mdx";
+import {
+  demixMdx,
+  findMdxModel,
+  findSeparationRecipe,
+  type MdxInfer,
+  type MdxModelSpec,
+  type SeparatedStems,
+} from "@workspace/arena/lib/waveyard/separation/mdx";
 import { runDeepSeparation } from "@workspace/arena/lib/waveyard/separation/deep";
 import { DEEP_MODEL_ID, isDeepSeparationMode } from "@workspace/arena/lib/waveyard/separation/modes";
 import {
@@ -114,6 +124,80 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
       lastError instanceof Error ? lastError.message : String(lastError)
     }`,
   );
+}
+
+type WorkerDemixResult = {
+  separated: SeparatedStems;
+  resolvedDevice: string;
+};
+
+function separationWorkerLocation(): { filename: string } {
+  const currentFile = fileURLToPath(import.meta.url);
+  const candidates = [
+    join(dirname(currentFile), "waveyard-separation-worker.mjs"),
+    resolve(process.cwd(), "artifacts/api-server/dist/waveyard-separation-worker.mjs"),
+    resolve(process.cwd(), "../artifacts/api-server/dist/waveyard-separation-worker.mjs"),
+    resolve(process.cwd(), "../../artifacts/api-server/dist/waveyard-separation-worker.mjs"),
+  ];
+  const bundledWorker = candidates.find((candidate) => existsSync(candidate));
+  if (bundledWorker !== undefined) return { filename: bundledWorker };
+  throw new SeparationUnavailableError(
+    "The isolated separation worker is not installed in this API build. Rebuild the API server and retry separation.",
+  );
+}
+
+export function demixMdxInWorker(
+  spec: MdxModelSpec,
+  requestedDevice: "auto" | "cpu" | "cuda",
+  mix: Float32Array[],
+  onProgress: (done: number, total: number) => void,
+): Promise<WorkerDemixResult> {
+  const target = separationWorkerLocation();
+  // Keep the decoded mix available for every model in a multi-stem recipe.
+  const left = mix[0].slice();
+  const right = mix[1].slice();
+
+  return new Promise((resolveResult, rejectResult) => {
+    const worker = new Worker(target.filename, {
+      workerData: { spec, requestedDevice, left: left.buffer, right: right.buffer },
+      transferList: [left.buffer, right.buffer],
+    });
+    let settled = false;
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      callback();
+    };
+
+    worker.on("message", (message: Record<string, unknown>) => {
+      if (message.type === "progress") {
+        onProgress(Number(message.done), Number(message.total));
+        return;
+      }
+      if (message.type === "error") {
+        const error =
+          message.errorCode === "SEPARATION_UNAVAILABLE"
+            ? new SeparationUnavailableError(String(message.message))
+            : new Error(String(message.message));
+        settle(() => rejectResult(error));
+        return;
+      }
+      if (message.type === "result") {
+        settle(() =>
+          resolveResult({
+            separated: message.separated as SeparatedStems,
+            resolvedDevice: String(message.resolvedDevice),
+          }),
+        );
+      }
+    });
+    worker.once("error", (error) => settle(() => rejectResult(error)));
+    worker.once("exit", (code) => {
+      if (!settled) {
+        rejectResult(new Error(`Separation inference worker exited before returning a result (code ${code}).`));
+      }
+    });
+  });
 }
 
 async function updateJob(
@@ -357,6 +441,31 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         let lastReportedPercent = -1;
         for (let runIndex = 0; runIndex < runs.length; runIndex += 1) {
           const run = runs[runIndex];
+          if (deps.openEngine === undefined) {
+            const separated = await demixMdxInWorker(run.spec, payload.requestedDevice, [left, right], (done, total) => {
+              const runFraction = total > 0 ? done / total : 1;
+              const percent = Math.floor(((runIndex + runFraction) / runs.length) * 100);
+              if (done !== 1 && done !== total && percent === lastReportedPercent) return;
+              lastReportedPercent = percent;
+              const base = jobMetadata(job.metadata);
+              void updateJob(database, job.id, {
+                metadata: JSON.stringify({
+                  ...base,
+                  progress: { done, total, percent, phase: `${runIndex + 1}/${runs.length}`, model: run.spec.id },
+                }),
+              }).catch(() => undefined);
+            });
+            resolvedDevice = separated.resolvedDevice;
+            stemOutputs.push({
+              stemType: run.stemType,
+              channels: run.take === "primary" ? separated.separated.primary : separated.separated.secondary,
+              model: run.spec.id,
+              modelVersion: run.spec.sha256,
+              sampleCount: separated.separated.sampleCount,
+            });
+            continue;
+          }
+
           const engine = await openEngine(run.spec, payload.requestedDevice);
           try {
           resolvedDevice = engine.resolvedDevice;

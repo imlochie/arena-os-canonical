@@ -38,11 +38,12 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 
 import { decodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
+import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { stemAssets, processingJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
 import type { OpenedEngine } from "./separation";
-import { handleSeparationJob } from "./separation";
+import { demixMdxInWorker, handleSeparationJob } from "./separation";
 import { fixture, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 
 const KIM = findMdxModel("kim_vocal_2")!;
@@ -207,6 +208,75 @@ test("real onnxruntime session: the separation pipeline executes and reconstruct
     // the real model's conv nets are the missing variable. Recorded for the
     // acceptance protocol's baseline comparison.
     assert.ok(elapsedMs > 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a real-length CPU demix leaves library requests and playback timers responsive", { timeout: 120_000 }, async () => {
+  const f = await fixture();
+  try {
+    // This padded Identity model is real ONNX and passes the same integrity
+    // check as a seeded model, without downloading or fabricating model weights.
+    const modelBytes = craftPassthroughOnnx(KIM.params.dimF, KIM.params.dimT);
+    const padding = Buffer.alloc(1_000_100);
+    const paddedModel = Buffer.concat([
+      modelBytes,
+      Buffer.from([...tag(100, 2), ...varint(padding.length)]),
+      padding,
+    ]);
+    const modelPath = join(f.modelsDir, "long-form-probe.onnx");
+    await writeFile(modelPath, paddedModel);
+    const probe = {
+      ...KIM,
+      id: "long_form_probe",
+      file: "long-form-probe.onnx",
+      sizeBytes: paddedModel.length,
+      sha256: await checksumFile(modelPath),
+    };
+
+    // One minute forces multiple actual STFT/inference/overlap-add chunks,
+    // rather than testing only the one-chunk pipeline smoke case.
+    const sampleCount = 60 * 44_100;
+    const left = new Float32Array(sampleCount);
+    const right = new Float32Array(sampleCount);
+    const cycle = Float32Array.from({ length: 441 }, (_, index) => Math.sin((2 * Math.PI * index) / 441) * 0.35);
+    for (let index = 0; index < sampleCount; index += 1) {
+      left[index] = cycle[index % cycle.length];
+      right[index] = cycle[(index + 110) % cycle.length];
+    }
+
+    let playbackTicks = 0;
+    let lastPlaybackTick = Date.now();
+    let maxPlaybackGapMs = 0;
+    const playbackTimer = setInterval(() => {
+      const now = Date.now();
+      maxPlaybackGapMs = Math.max(maxPlaybackGapMs, now - lastPlaybackTick);
+      lastPlaybackTick = now;
+      playbackTicks += 1;
+    }, 20);
+
+    const separation = demixMdxInWorker(probe, "cpu", [left, right], () => {});
+    const requestStarted = Date.now();
+    const request = await Promise.race([
+      f.database.select().from(processingJobs),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("library request stalled during separation")), 1_000)),
+    ]);
+    const requestLatencyMs = Date.now() - requestStarted;
+    assert.equal(request.length, 1);
+    assert.ok(requestLatencyMs < 1_000, `library query returned in ${requestLatencyMs}ms`);
+
+    try {
+      const result = await separation;
+      assert.equal(result.resolvedDevice, "cpu");
+      assert.equal(result.separated.sampleCount, sampleCount);
+      assert.equal(result.separated.primary[0].length, sampleCount);
+    } finally {
+      clearInterval(playbackTimer);
+    }
+
+    assert.ok(playbackTicks >= 5, `playback timer advanced ${playbackTicks} times during CPU separation`);
+    assert.ok(maxPlaybackGapMs < 1_000, `playback timer's longest pause was ${maxPlaybackGapMs}ms`);
   } finally {
     await f.close();
   }

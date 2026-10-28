@@ -15,7 +15,13 @@ async function buildAll() {
   await rm(distDir, { recursive: true, force: true });
 
   await esbuild({
-    entryPoints: [path.resolve(artifactDir, "src/index.ts")],
+    entryPoints: {
+      index: path.resolve(artifactDir, "src/index.ts"),
+      "waveyard-separation-worker": path.resolve(
+        artifactDir,
+        "../../lib/arena/src/lib/waveyard/worker-local/separation-inference-worker.ts",
+      ),
+    },
     platform: "node",
     bundle: true,
     format: "esm",
