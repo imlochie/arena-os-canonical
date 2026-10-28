@@ -181,6 +181,8 @@ try {
   }
   let mockStemState = "rejected";
   let mockRetryCount = 0;
+  let mockNotStartedState = "not-started";
+  let mockStartCount = 0;
   const recoveryTrack = {
     id: "arena-smoke-stem-recovery",
     title: "Retryable track",
@@ -210,12 +212,28 @@ try {
             ? { status: "processing", reason: "Stem separation is still running." }
             : { status: "separated", stemCount: 4 },
       },
-      { ...notStartedTrack, stemAvailability: { status: "not-started", reason: "No job started." } },
+      {
+        ...notStartedTrack,
+        stemAvailability: mockNotStartedState === "processing"
+          ? { status: "processing", reason: "Separation is running." }
+          : mockNotStartedState === "separated"
+            ? { status: "separated", stemCount: 4 }
+            : { status: "not-started", reason: "No job started." },
+      },
     ],
   });
   await page.route("**/api/library/**", async route => {
     const url = new URL(route.request().url());
-    if (url.pathname.endsWith("/tracks") && route.request().method() === "GET") {
+    if (url.pathname.endsWith("/separation") && route.request().method() === "POST") {
+      mockStartCount += 1;
+      mockNotStartedState = "processing";
+      setTimeout(() => { mockNotStartedState = "separated"; }, 1500);
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({ state: "queued", jobId: "arena-smoke-new-separation" }),
+      });
+    } else if (url.pathname.endsWith("/tracks") && route.request().method() === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mockTrackPayload()) });
     } else if (url.pathname.endsWith("/playback-state")) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ playbackState: { currentTrackId: null, positionSeconds: 0 } }) });
@@ -252,7 +270,7 @@ try {
   const notStartedRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Not started track" });
   await recoveryRow.getByText("SEPARATION REJECTED", { exact: true }).waitFor();
   await notStartedRow.getByText("NOT STARTED", { exact: true }).waitFor();
-  assert.equal(await notStartedRow.getByRole("link", { name: "Open project to start" }).getAttribute("href"), "/waveyard/projects/arena-smoke-not-started-project");
+  assert.equal(await notStartedRow.getByRole("link", { name: "Studio ↗" }).getAttribute("href"), "/waveyard/projects/arena-smoke-not-started-project");
   const retrySeparationButton = recoveryRow.getByRole("button", { name: "Retry separation for Retryable track" });
   await retrySeparationButton.click();
   await recoveryRow.getByText("SEPARATING…", { exact: true }).waitFor();
@@ -261,6 +279,16 @@ try {
   await recoveryRow.getByText("4 STEMS", { exact: true }).waitFor({ timeout: 12000 });
   assert.equal(await page.getByRole("button", { name: "Retry separation for Retryable track" }).count(), 0);
   report.push("The library identifies a rejected stem job, retries it in place, and updates from processing to separated without a reload.");
+  const startSeparationButton = notStartedRow.getByRole("button", { name: "Start separation for Not started track" });
+  await startSeparationButton.click();
+  await notStartedRow.getByText("SEPARATING…", { exact: true }).waitFor();
+  await page.getByRole("status").filter({ hasText: "Not started track: separation started." }).waitFor();
+  assert.equal(mockStartCount, 1, "starting separation for an unprocessed track must submit one job");
+  await page.reload({ waitUntil: "networkidle" });
+  const reloadedNotStartedRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Not started track" });
+  await reloadedNotStartedRow.getByText("4 STEMS", { exact: true }).waitFor({ timeout: 12000 });
+  assert.equal(await reloadedNotStartedRow.getByRole("button", { name: "Start separation for Not started track" }).count(), 0);
+  report.push("A library track with no separation job can start work directly, then shows the persisted result after reload.");
   await page.unroute("**/api/library/**");
   await page.unroute("**/api/waveyard/projects");
   await page.unroute("**/api/jobs/arena-smoke-stem-job/retry");

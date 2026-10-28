@@ -10,7 +10,50 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: waveyard
+    description: Waveyard library operations
 paths:
+  /library/tracks/{id}/separation:
+    post:
+      operationId: startLibraryTrackSeparation
+      tags: [waveyard]
+      summary: Start separation for a library track
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Separation is already running or available
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryTrackSeparationStartResponse"
+        "202":
+          description: Separation job accepted by a worker
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryTrackSeparationStartResponse"
+        "400":
+          description: Invalid track identifier
+        "404":
+          description: Track not found
+        "409":
+          description: A previous separation attempt already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryTrackSeparationStartResponse"
+        "503":
+          description: No worker accepted the job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryTrackSeparationStartResponse"
   /healthz:
     get:
       operationId: healthCheck
@@ -33,4 +76,18 @@ components:
           type: string
       required:
         - status
+    LibraryTrackSeparationStartResponse:
+      type: object
+      properties:
+        state:
+          type: string
+          enum: [queued, processing, separated, previous-attempt, failed]
+        jobId:
+          type: [string, "null"]
+          format: uuid
+        stemCount:
+          type: [integer, "null"]
+        error:
+          type: [string, "null"]
+      required: [state, jobId, stemCount, error]
 

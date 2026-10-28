@@ -16,6 +16,7 @@ import StemEngineSetup from "./StemEngineSetup";
 import { publishWaveyardQueueChange, subscribeToWaveyardQueueChanges } from "./queue-sync";
 
 import { formatPlayClock } from "@workspace/arena/lib/waveyard/library/model";
+import type { LibraryTrackSeparationStartResponse } from "@workspace/api-client-react";
 import {
   SMART_RULE_FIELDS,
   SMART_RULE_OPS,
@@ -102,7 +103,9 @@ function TrackRow({
   onAddToPlaylist,
   onRate,
   onLabels,
+  onStartSeparation,
   onRetrySeparation,
+  starting,
   retrying,
 }: {
   track: TrackSummary;
@@ -113,7 +116,9 @@ function TrackRow({
   onAddToPlaylist: (playlistId: string, track: TrackSummary) => void;
   onRate: (track: TrackSummary, rating: number) => void;
   onLabels: (track: TrackSummary, labels: string[]) => void;
+  onStartSeparation: (track: TrackSummary) => void;
   onRetrySeparation: (track: TrackSummary) => void;
+  starting: boolean;
   retrying: boolean;
 }) {
   const [addingLabel, setAddingLabel] = useState(false);
@@ -190,6 +195,18 @@ function TrackRow({
         <button type="button" className="button" onClick={() => onPlay(track)} data-testid={`button-play-${track.id}`}>Play</button>
         <button type="button" className="button secondary" onClick={() => onNext(track)} title="Line up on the next deck" data-testid={`button-next-${track.id}`}>Next</button>
         <button type="button" className="button secondary" title="Add to the saved queue and the live listening order" onClick={() => onQueue(track)}>+ Queue</button>
+        {track.stemAvailability.status === "not-started" && (
+          <button
+            type="button"
+            className="button secondary"
+            aria-label={`Start separation for ${track.title}`}
+            data-testid={`button-start-separation-${track.id}`}
+            disabled={starting}
+            onClick={() => onStartSeparation(track)}
+          >
+            {starting ? "Starting…" : "Start separation"}
+          </button>
+        )}
         {(track.stemAvailability.status === "rejected" || track.stemAvailability.status === "failed") && (
           <button
             type="button"
@@ -218,7 +235,7 @@ function TrackRow({
           </select>
         )}
         <Link className="button secondary" href={`/waveyard/projects/${track.studioProjectId}`}>
-          {track.stemAvailability.status === "not-started" ? "Open project to start" : "Studio ↗"}
+          Studio ↗
         </Link>
       </div>
     </article>
@@ -251,7 +268,7 @@ export function MusicHome() {
   const [loaded, setLoaded] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [dropBusy, setDropBusy] = useState<string | null>(null);
-  const [retryingTrackIds, setRetryingTrackIds] = useState<Set<string>>(() => new Set());
+  const [busySeparationTrackIds, setBusySeparationTrackIds] = useState<Set<string>>(() => new Set());
   const dragDepth = useRef(0);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -516,10 +533,64 @@ export function MusicHome() {
     }
   }, []);
 
+  const startSeparation = useCallback(async (track: TrackSummary) => {
+    if (busySeparationTrackIds.has(track.id)) return;
+    setBusySeparationTrackIds((previous) => new Set(previous).add(track.id));
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/library/tracks/${track.id}/separation`, { method: "POST" });
+      const body = await response.json().catch(() => ({})) as Partial<LibraryTrackSeparationStartResponse> & { error?: string };
+      if (body.state === "queued" || body.state === "processing") {
+        setTracks((previous) => previous.map((existing) => existing.id === track.id
+          ? {
+              ...existing,
+              stemAvailability: {
+                status: "processing",
+                reason: "Stem separation is running — playback uses the full source until it completes.",
+              },
+            }
+          : existing));
+        setMessage(body.state === "queued"
+          ? `${track.title}: separation started. You can keep listening while it runs.`
+          : `${track.title}: separation is already running.`);
+        return;
+      }
+      if (body.state === "separated") {
+        await refresh(search);
+        setMessage(`${track.title}: stems are already available.`);
+        return;
+      }
+      if (body.state === "failed" && typeof body.jobId === "string") {
+        setTracks((previous) => previous.map((existing) => existing.id === track.id
+          ? {
+              ...existing,
+              stemAvailability: {
+                status: "rejected",
+                reason: body.error ?? "The stem worker did not accept this job.",
+                retryJobId: body.jobId,
+              },
+            }
+          : existing));
+        setMessage(`${track.title}: ${body.error ?? "Separation could not be queued."}`);
+        return;
+      }
+      if (body.state === "previous-attempt") await refresh(search);
+      setMessage(`${track.title}: ${body.error ?? "Separation could not be started."}`);
+    } catch {
+      setMessage(`${track.title}: separation could not be started — check the connection.`);
+    } finally {
+      setBusySeparationTrackIds((previous) => {
+        const next = new Set(previous);
+        next.delete(track.id);
+        return next;
+      });
+    }
+  }, [busySeparationTrackIds, refresh, search]);
+
   const retrySeparation = useCallback(async (track: TrackSummary) => {
     const jobId = track.stemAvailability.retryJobId;
-    if (!jobId || retryingTrackIds.has(track.id)) return;
-    setRetryingTrackIds((previous) => new Set(previous).add(track.id));
+    if (!jobId || busySeparationTrackIds.has(track.id)) return;
+    setBusySeparationTrackIds((previous) => new Set(previous).add(track.id));
     setMessage(null);
     try {
       const response = await fetch(`/api/jobs/${jobId}/retry`, { method: "POST" });
@@ -541,13 +612,13 @@ export function MusicHome() {
     } catch {
       setMessage(`${track.title}: separation retry could not be started — check the connection.`);
     } finally {
-      setRetryingTrackIds((previous) => {
+      setBusySeparationTrackIds((previous) => {
         const next = new Set(previous);
         next.delete(track.id);
         return next;
       });
     }
-  }, [retryingTrackIds]);
+  }, [busySeparationTrackIds]);
 
   const collectionTrack = useCallback((track: TrackSummary): CollectionTrack => ({
     id: track.id,
@@ -901,8 +972,10 @@ export function MusicHome() {
                 onAddToPlaylist={onAddToPlaylist}
                 onRate={rateTrack}
                 onLabels={setTrackLabels}
+                onStartSeparation={startSeparation}
                 onRetrySeparation={retrySeparation}
-                retrying={retryingTrackIds.has(track.id)}
+                starting={busySeparationTrackIds.has(track.id) && track.stemAvailability.status === "not-started"}
+                retrying={busySeparationTrackIds.has(track.id) && (track.stemAvailability.status === "rejected" || track.stemAvailability.status === "failed")}
               />
             ))}
           </div>

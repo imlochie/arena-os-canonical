@@ -25,6 +25,7 @@ const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..", "..", 
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
 const RECOVERY_OWNER = "33333333-3333-4333-8333-333333333333";
+const START_OWNER = "44444444-4444-4444-8444-444444444444";
 
 type ServiceModule = typeof import("./service");
 type SessionServiceModule = typeof import("./session-service");
@@ -229,6 +230,57 @@ test("duplicate audio is idempotent: same checksum returns the same track, no se
     1,
     "exactly one stored audio object",
   );
+});
+
+test("a library track with no separation job starts once and reports the active job", async () => {
+  const [project] = await db.db
+    .insert(schema.projects)
+    .values({ ownerId: START_OWNER, title: "Unprocessed track", kind: "library", visibility: "private" })
+    .returning({ id: schema.projects.id });
+  const [source] = await db.db
+    .insert(schema.sourceAssets)
+    .values({
+      projectId: project.id,
+      originalFilename: "Unprocessed.wav",
+      mimeType: "audio/wav",
+      storageKey: `${project.id}/source/unprocessed.wav`,
+      checksumSha256: "4".repeat(64),
+      durationSeconds: 30,
+      sampleRate: 44100,
+      channels: 2,
+      codec: "pcm_s16le",
+      bitrate: 1411200,
+      fileSizeBytes: 5_292_000,
+    })
+    .returning({ id: schema.sourceAssets.id });
+  const [track] = await db.db
+    .insert(schema.tracks)
+    .values({
+      ownerId: START_OWNER,
+      sourceChecksumSha256: "4".repeat(64),
+      title: "Unprocessed",
+      artist: "Test",
+      album: "",
+      sourceAssetId: source.id,
+      projectId: project.id,
+      durationSeconds: 30,
+    })
+    .returning({ id: schema.tracks.id });
+
+  let enqueueCount = 0;
+  const enqueue = async (payload: { sourceAssetId: string }) => {
+    enqueueCount += 1;
+    assert.equal(payload.sourceAssetId, source.id);
+  };
+  const started = await service.startSeparationForTrack(START_OWNER, track.id, { enqueue });
+  assert.equal(started.outcome, "queued");
+  assert.equal(enqueueCount, 1);
+  const detail = await service.getTrack(START_OWNER, track.id);
+  assert.equal(detail?.stemAvailability.status, "processing");
+
+  const duplicate = await service.startSeparationForTrack(START_OWNER, track.id, { enqueue });
+  assert.equal(duplicate.outcome, "already-active");
+  assert.equal(enqueueCount, 1, "a repeat start must not submit a second worker job");
 });
 
 test("concurrent same-file uploads create one source, track, and separation job", async () => {

@@ -28,6 +28,7 @@ import {
   playbackState,
   playlistItems,
   playlists,
+  PROCESSING_JOB_TERMINAL_STATUSES,
   processingJobs,
   projects,
   queueItems,
@@ -47,6 +48,7 @@ import {
 } from "./collections";
 import { ingestSourceFile } from "@workspace/arena/lib/waveyard/source-ingest"
 import { defaultSeparationModel } from "@workspace/arena/lib/waveyard/separation/selection";
+import { startSeparationJob, type ProcessingJobRow, type StartSeparationDeps } from "../separation/claim";
 import {
   deriveTrackMetadata,
   libraryContainerProjectName,
@@ -105,6 +107,14 @@ export interface TrackDetail extends TrackSummary {
    * source asset itself otherwise — honest, always real audio. */
   playback: { assetIds: string[]; kind: "stems" | "source" };
 }
+
+export type StartTrackSeparationResult =
+  | { outcome: "not-found" }
+  | { outcome: "already-separated"; stemCount: number }
+  | { outcome: "already-active"; job: ProcessingJobRow | null }
+  | { outcome: "previous-attempt"; job: ProcessingJobRow }
+  | { outcome: "queued"; job: ProcessingJobRow }
+  | { outcome: "not-queued"; job: ProcessingJobRow; reason: string };
 
 interface TrackRow {
   id: string;
@@ -481,6 +491,82 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
     analysis: analysis ?? null,
     playback,
   };
+}
+
+/**
+ * Start the normal separation pipeline for a library track that has never
+ * had a separation job. The claim helper makes duplicate clicks idempotent
+ * and records queue refusal as a retryable failure instead of leaving a
+ * queued row with no worker.
+ */
+export async function startSeparationForTrack(
+  ownerId: string,
+  trackId: string,
+  deps?: StartSeparationDeps,
+): Promise<StartTrackSeparationResult> {
+  const [track] = await db
+    .select({ projectId: tracks.projectId, sourceAssetId: tracks.sourceAssetId })
+    .from(tracks)
+    .where(and(eq(tracks.ownerId, ownerId), eq(tracks.id, trackId)))
+    .limit(1);
+  if (!track) return { outcome: "not-found" };
+
+  const [stemRows, previousJobs] = await Promise.all([
+    db
+      .select({ engine: stemAssets.engine })
+      .from(stemAssets)
+      .where(eq(stemAssets.sourceAssetId, track.sourceAssetId)),
+    db
+      .select()
+      .from(processingJobs)
+      .where(and(
+        eq(processingJobs.sourceAssetId, track.sourceAssetId),
+        eq(processingJobs.type, "separation"),
+      ))
+      .orderBy(desc(processingJobs.updatedAt), desc(processingJobs.createdAt))
+      .limit(1),
+  ]);
+
+  const realStemCount = stemRows.filter((stem) => stem.engine !== "passthrough-unseparated").length;
+  if (realStemCount > 0) return { outcome: "already-separated", stemCount: realStemCount };
+
+  const previousJob = previousJobs[0];
+  if (previousJob && !PROCESSING_JOB_TERMINAL_STATUSES.includes(previousJob.status as typeof PROCESSING_JOB_TERMINAL_STATUSES[number])) {
+    return { outcome: "already-active", job: previousJob };
+  }
+  if (previousJob && previousJob.status !== "cancelled") {
+    return { outcome: "previous-attempt", job: previousJob };
+  }
+
+  const model = defaultSeparationModel();
+  const started = await startSeparationJob(
+    db,
+    {
+      projectId: track.projectId,
+      sourceAssetId: track.sourceAssetId,
+      type: "separation",
+      status: "queued",
+      stage: "queued",
+      idempotencyKey: `separation:${track.sourceAssetId}:${model}`,
+      model,
+      requestedDevice: "auto",
+      metadata: JSON.stringify({ intake: "waveyard-library", trigger: "direct-start" }),
+    },
+    (job) => ({
+      processingJobId: job.id,
+      projectId: track.projectId,
+      sourceAssetId: track.sourceAssetId,
+      model,
+      requestedDevice: "auto",
+    }),
+    deps,
+  );
+
+  if (started.outcome === "active") return { outcome: "already-active", job: started.active };
+  if (started.outcome === "not-queued") {
+    return { outcome: "not-queued", job: started.job, reason: started.reason };
+  }
+  return { outcome: "queued", job: started.job };
 }
 
 // ------------------------------------------------------- play count + state
