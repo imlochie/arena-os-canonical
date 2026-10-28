@@ -136,6 +136,10 @@ before(async () => {
     appliedMigrations.rows.some((row) => row.name === "0017_library_track_checksum_idempotency.sql"),
     "the upload checksum uniqueness migration must apply",
   );
+  assert.ok(
+    appliedMigrations.rows.some((row) => row.name === "0018_waveyard_session_queue_link.sql"),
+    "queue/session linkage migration must apply",
+  );
 
   // --- env BEFORE any app module import (db reads DATABASE_URL at load) ---
   process.env.DATABASE_URL = `postgresql://arena:arena-test@127.0.0.1:${port}/arena_library_test`;
@@ -470,7 +474,7 @@ test("durable playback state round-trips (stem mix, volume, position)", async ()
   assert.equal(guarded.currentTrackId, null);
 });
 
-test("queue: add end/next, move, remove, clear — ordered and owner-scoped", async () => {
+test("queue: add end/next, move, remove, clear — ordered and owner-scoped", async (t) => {
   const addedA = await service.addToQueue({ ownerId: OWNER, trackId: trackA.id });
   let queue = addedA.queue;
   assert.equal(queue.length, 1);
@@ -489,6 +493,7 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
   assert.equal(moved.queue.map((item) => item.track.id).join(","), [trackB.id, trackA.id, trackB.id].join(","));
 
   const session = await sessionService.createSession(OWNER, "Queue provenance test");
+  t.after(() => sessionService.deleteSession(OWNER, session.id));
   let sessionDetail = await sessionService.addTrackToSession({
     ownerId: OWNER, sessionId: session.id, trackId: trackB.id, queueItemId: moved.queue[0].id,
   });
@@ -508,7 +513,7 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
   assert.deepEqual(reordered.queue.map((item) => item.id), [
     addedA.addedQueueItemId,
     moved.queue[0].id,
-    moved.queue[1].id,
+    moved.queue[2].id,
   ]);
   assert.deepEqual(reordered.affectedSessionIds, [session.id]);
   sessionDetail = await sessionService.getSession(OWNER, session.id);
@@ -522,7 +527,7 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
     directSessionTrackIds,
     "playlist-only session rows remain distinct and in order",
   );
-  assert.equal(sessionDetail.currentTrackId, currentSessionTrackId, "queue moves never reset the current playback row");
+  assert.equal(sessionDetail.currentSessionTrackId, currentSessionTrackId, "queue moves never reset the current playback row");
   assert.equal(sessionDetail.positionSeconds, 73.5, "queue moves never reset the saved playback position");
 
   const retainedPlaybackTrackId = sessionDetail.tracks[0].id;
@@ -533,7 +538,7 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
   assert.deepEqual(removed.queue.map((item) => item.position), [0, 1], "positions resequence without gaps");
   assert.deepEqual(removed.affectedSessionIds, [session.id]);
   sessionDetail = await sessionService.getSession(OWNER, session.id);
-  assert.equal(sessionDetail.currentTrackId, retainedPlaybackTrackId, "removing a non-current mix target preserves the playing session row");
+  assert.equal(sessionDetail.currentSessionTrackId, retainedPlaybackTrackId, "removing a non-current mix target preserves the playing session row");
   assert.equal(sessionDetail.positionSeconds, 73.5, "removing a non-current mix target preserves playback position");
   assert.deepEqual(
     sessionDetail.tracks.map((item) => item.track.id),
@@ -544,7 +549,7 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
   assert.deepEqual(removedCurrent.queue.map((item) => item.track.id), [trackB.id]);
   assert.deepEqual(removedCurrent.affectedSessionIds, [session.id]);
   sessionDetail = await sessionService.getSession(OWNER, session.id);
-  assert.equal(sessionDetail.currentTrackId, null, "removing the current linked row clears its server pointer");
+  assert.equal(sessionDetail.currentSessionTrackId, null, "removing the current linked row clears its server pointer");
   assert.equal(sessionDetail.positionSeconds, 0, "removing the current linked row resets its saved position");
   assert.deepEqual(
     sessionDetail.tracks.map((item) => item.id),
@@ -561,7 +566,7 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
     mimeType: "audio/wav",
   })).track.id });
   assert.equal(otherQueue.queue.length, 1);
-  assert.equal((await service.listQueue(OWNER)).length, 2);
+  assert.equal((await service.listQueue(OWNER)).length, 1);
 
   const cleared = await service.clearQueue(OWNER);
   assert.equal(cleared.queue.length, 0);
@@ -572,7 +577,7 @@ test("queue: add end/next, move, remove, clear — ordered and owner-scoped", as
     [trackA.id, trackB.id],
     "clearing the saved queue keeps only session-only entries",
   );
-  assert.equal(sessionDetail.currentTrackId, null, "clearing later unlinked queue rows keeps the valid empty current pointer");
+  assert.equal(sessionDetail.currentSessionTrackId, null, "clearing later unlinked queue rows keeps the valid empty current pointer");
   assert.equal(sessionDetail.positionSeconds, 0, "clearing later unlinked queue rows keeps the reset position");
   assert.equal((await service.listQueue(OTHER)).length, 1, "clearing one owner never touches another");
 
@@ -854,11 +859,21 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
     atSeconds: 12.5,
   });
   assert.equal(swapped.swaps.length, 1);
+  const swap = swapped.swaps[0];
   assert.deepEqual(
-    { ...swapped.swaps[0], createdAt: undefined },
-    { id: swapped.swaps[0].id, sessionTrackId: sessionTrackB, stemType: "drums", fromTrackId: trackB.id, toTrackId: trackA.id, atSeconds: 12.5, createdAt: undefined },
+    {
+      id: swap.id,
+      sessionTrackId: swap.sessionTrackId,
+      stemType: swap.stemType,
+      fromTrackId: swap.fromTrackId,
+      toTrackId: swap.toTrackId,
+      atSeconds: swap.atSeconds,
+    },
+    { id: swap.id, sessionTrackId: sessionTrackB, stemType: "drums", fromTrackId: trackB.id, toTrackId: trackA.id, atSeconds: 12.5 },
     "provenance: source track, donor track, stem type, session context",
   );
+  assert.equal(swap.donorTrack?.id, trackA.id, "restored swap includes the donor track");
+  assert.ok(swap.donorTrack?.stems.some((stem) => stem.stemType === "drums"), "restored donor includes the real replacement stem");
 
   // Refusal: B has no real "vocals" layer to replace.
   await assert.rejects(

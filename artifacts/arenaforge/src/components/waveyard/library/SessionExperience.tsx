@@ -32,9 +32,10 @@ import {
 interface SessionTrackItem {
   id: string;
   position: number;
+  queueItemId: string | null;
   track: { id: string; title: string; artist: string; durationSeconds: number };
   sourceAssetId: string | null;
-  stems: Array<{ id: string; stemType: string; engine: string }>;
+  stems: Array<{ id: string; stemType: string; engine: string; durationSeconds: number }>;
   playback: { assetIds: string[]; kind: "stems" | "source" } | null;
   stemMix: Record<string, number>;
   transition: TransitionConfig;
@@ -55,7 +56,11 @@ interface SessionDetail {
     toTrackId: string;
     atSeconds: number;
     createdAt: string;
-    donorTrack?: { id: string; title: string; stems: Array<{ id: string; stemType: string }> } | null;
+    donorTrack?: {
+      id: string;
+      title: string;
+      stems: Array<{ id: string; stemType: string; durationSeconds: number }>;
+    } | null;
   }>;
   createdAt: string;
   updatedAt: string;

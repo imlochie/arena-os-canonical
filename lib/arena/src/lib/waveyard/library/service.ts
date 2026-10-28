@@ -84,6 +84,7 @@ export interface TrackStem {
   id: string;
   stemType: string;
   engine: string;
+  durationSeconds: number;
 }
 
 export interface TrackAnalysis {
@@ -441,7 +442,12 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
   if (source === undefined) return null;
 
   const stemRows = await db
-    .select({ id: stemAssets.id, stemType: stemAssets.stemType, engine: stemAssets.engine })
+    .select({
+      id: stemAssets.id,
+      stemType: stemAssets.stemType,
+      engine: stemAssets.engine,
+      durationSeconds: stemAssets.durationSeconds,
+    })
     .from(stemAssets)
     .where(eq(stemAssets.sourceAssetId, row.sourceAssetId));
 

@@ -560,14 +560,15 @@ export function MusicHome() {
         setMessage(`${track.title}: stems are already available.`);
         return;
       }
-      if (body.state === "failed" && typeof body.jobId === "string") {
+      const retryJobId = body.jobId;
+      if (body.state === "failed" && typeof retryJobId === "string") {
         setTracks((previous) => previous.map((existing) => existing.id === track.id
           ? {
               ...existing,
               stemAvailability: {
-                status: "rejected",
+                status: "rejected" as const,
                 reason: body.error ?? "The stem worker did not accept this job.",
-                retryJobId: body.jobId,
+                retryJobId,
               },
             }
           : existing));

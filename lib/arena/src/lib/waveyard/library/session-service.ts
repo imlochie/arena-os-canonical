@@ -75,6 +75,8 @@ export class StemSwapRefusedError extends Error {
 export interface SessionTrackPayload {
   id: string;
   position: number;
+  /** Saved queue row that created this entry; null for direct session additions. */
+  queueItemId: string | null;
   track: TrackSummary;
   /** Original uploaded asset, retained even after separated stems become the playback source. */
   sourceAssetId: string | null;
@@ -116,11 +118,13 @@ export interface SessionSwapPayload {
   toTrackId: string;
   atSeconds: number;
   createdAt: string;
+  donorTrack: { id: string; title: string; stems: TrackStem[] } | null;
 }
 
 interface SessionTrackRow {
   id: string;
   trackId: string;
+  queueItemId: string | null;
   position: number;
   stemMix: string;
   transition: string;
@@ -131,6 +135,7 @@ async function loadSessionTracks(sessionId: string): Promise<SessionTrackRow[]> 
     .select({
       id: listenSessionTracks.id,
       trackId: listenSessionTracks.trackId,
+      queueItemId: listenSessionTracks.queueItemId,
       position: listenSessionTracks.position,
       stemMix: listenSessionTracks.stemMix,
       transition: listenSessionTracks.transition,
@@ -194,6 +199,7 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
       return {
         id: row.id,
         position: row.position,
+        queueItemId: row.queueItemId,
         track: (detail as TrackSummary | null) ?? summaries.get(row.trackId) ?? failSummary(row.trackId),
         sourceAssetId: detail?.source.id ?? null,
         stems: detail?.stems ?? [],
@@ -625,15 +631,22 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
       continue;
     }
     for (const stem of playableStems) {
+      const stemDuration = Number.isFinite(stem.durationSeconds) && stem.durationSeconds > 0
+        ? stem.durationSeconds
+        : trackDetail.durationSeconds;
+      if (!Number.isFinite(stemDuration) || stemDuration <= 0) {
+        refused.push({ title: sessionTrack.track.title, reason: "Audio duration is unavailable for Studio placement." });
+        continue;
+      }
       bindable.push({
         sessionTrack,
         stemId: stem.id,
         stemType: stem.stemType,
         timelineStartMs,
-        durationMs: Math.max(1, Math.round(stem.durationSeconds * 1000)),
+        durationMs: Math.max(1, Math.round(stemDuration * 1000)),
       });
     }
-    timelineStartMs += Math.max(1, Math.round(sessionTrack.track.durationSeconds * 1000));
+    timelineStartMs += Math.max(1, Math.round(trackDetail.durationSeconds * 1000));
   }
   if (bindable.length === 0) {
     throw new StemSwapRefusedError(
