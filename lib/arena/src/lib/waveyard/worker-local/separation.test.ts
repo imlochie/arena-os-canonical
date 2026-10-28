@@ -157,6 +157,129 @@ test("waveform retries a transient storage failure and completes without manual 
   }
 });
 
+test("waveform recovery resumes the persisted retry after a local worker restart", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    let signalBackoffStarted!: () => void;
+    const backoffStarted = new Promise<void>((resolve) => { signalBackoffStarted = resolve; });
+    let stoppedDelay: number | null = null;
+    const stoppedBroker = new LocalJobBroker();
+    stoppedBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => {
+        throw Object.assign(new Error("Temporary failure before restart"), { code: "EIO" });
+      },
+      sleep: async (milliseconds) => {
+        stoppedDelay = milliseconds;
+        signalBackoffStarted();
+        // The old API process is stopped while its worker is in backoff.
+        await new Promise<void>(() => {});
+      },
+    }));
+    await stoppedBroker.submit(
+      "waveyard-waveform",
+      job.id,
+      sourceWaveformPayload(f, job.id),
+    );
+    await backoffStarted;
+
+    const [retrying] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    assert.equal(stoppedDelay, WAVEFORM_RETRY_BACKOFF_MS[0]);
+    assert.equal(retrying.status, "processing");
+    assert.equal(retrying.stage, "retrying");
+    assert.equal(retrying.attempts, 1, "the first failed attempt is persisted before backoff");
+
+    const restartedBroker = new LocalJobBroker();
+    restartedBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => validWaveformDocument(),
+    }));
+    const recovery = await recoverPendingLocalWaveformJobs(
+      f.database,
+      (payload) => restartedBroker.submit(
+        "waveyard-waveform",
+        payload.waveformJobId,
+        payload as unknown as Record<string, unknown>,
+      ),
+    );
+    assert.deepEqual(recovery.resetJobIds, [job.id]);
+    assert.deepEqual(recovery.requeuedJobIds, [job.id]);
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.equal(await restartedBroker.drain(10_000), true);
+
+    const [completed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(completed.status, "complete");
+    assert.equal(completed.attempts, 2, "recovery resumes at attempt two rather than resetting or exceeding the cap");
+    assert.equal(assets.length, 1, "recovered work creates at most one waveform asset");
+    assert.equal(await getStorage().exists(assets[0]!.storageKey), true);
+    assert.equal(restartedBroker.stats().submitted, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform recovery keeps the three-attempt limit and final error after a restart", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    let signalBackoffStarted!: () => void;
+    const backoffStarted = new Promise<void>((resolve) => { signalBackoffStarted = resolve; });
+    const stoppedBroker = new LocalJobBroker();
+    stoppedBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => {
+        throw Object.assign(new Error("Temporary failure before restart"), { code: "EIO" });
+      },
+      sleep: async () => {
+        signalBackoffStarted();
+        await new Promise<void>(() => {});
+      },
+    }));
+    await stoppedBroker.submit(
+      "waveyard-waveform",
+      job.id,
+      sourceWaveformPayload(f, job.id),
+    );
+    await backoffStarted;
+
+    const resumedDelays: number[] = [];
+    let resumedAttempts = 0;
+    const restartedBroker = new LocalJobBroker();
+    restartedBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => {
+        resumedAttempts += 1;
+        throw Object.assign(new Error("Temporary failure after restart"), { code: "EIO" });
+      },
+      sleep: async (milliseconds) => { resumedDelays.push(milliseconds); },
+    }));
+    const recovery = await recoverPendingLocalWaveformJobs(
+      f.database,
+      (payload) => restartedBroker.submit(
+        "waveyard-waveform",
+        payload.waveformJobId,
+        payload as unknown as Record<string, unknown>,
+      ),
+    );
+    assert.deepEqual(recovery.requeuedJobIds, [job.id]);
+    assert.equal(await restartedBroker.drain(10_000), true);
+
+    const [failed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(resumedAttempts, WAVEFORM_MAX_ATTEMPTS - 1, "only the two remaining attempts run after restart");
+    assert.deepEqual(resumedDelays, [WAVEFORM_RETRY_BACKOFF_MS[1]]);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.attempts, WAVEFORM_MAX_ATTEMPTS);
+    assert.equal(failed.errorCode, "waveform_retry_exhausted");
+    assert.match(failed.errorMessage ?? "", /failed after 3 attempts: Temporary failure after restart/i);
+    assert.equal(assets.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform stops after the bounded transient retry limit and keeps the failure visible", async () => {
   const f = await fixture();
   try {
