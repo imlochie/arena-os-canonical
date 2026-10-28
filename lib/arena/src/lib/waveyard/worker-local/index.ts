@@ -25,6 +25,7 @@ import { handleSectionAnalysisJob } from "./sections";
 import { handleExportJob } from "./export";
 
 export { getLocalJobBroker, localWorkerActive };
+export { recoverInterruptedLocalSeparationJobs } from "./recovery";
 export type { LocalJobBroker };
 
 export function startLocalWorker(): LocalJobBroker | null {

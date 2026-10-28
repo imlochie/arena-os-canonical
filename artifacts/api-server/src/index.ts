@@ -1,9 +1,11 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { startLocalWorker, drainLocalWorker } from "@workspace/arena/lib/waveyard/worker-local";
+import {
+  startLocalWorker,
+  drainLocalWorker,
+  recoverInterruptedLocalSeparationJobs,
+} from "@workspace/arena/lib/waveyard/worker-local";
 import { db, pool } from "@workspace/db";
-import { processingJobs } from "@workspace/db/waveyardSchema";
-import { and, eq, inArray } from "drizzle-orm";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
 
 const rawPort = process.env["PORT"];
@@ -24,21 +26,14 @@ if (Number.isNaN(port) || port <= 0) {
 // runtime before accepting uploads. Policy keeps hosted Redis deployments out.
 const worker = startLocalWorker();
 if (worker) {
-  // This policy exclusively owns the local queue (never used with Redis).
-  // The in-memory broker cannot still own jobs from a previous process.
-  // Make interrupted separation retryable instead of leaving it stuck forever.
-  const interrupted = await db.update(processingJobs).set({
-    status: "failed",
-    stage: "interrupted",
-    errorCode: "processor_interrupted",
-    errorMessage: "The local processor stopped before this job finished. Retry separation to continue.",
-    completedAt: new Date(),
-    updatedAt: new Date(),
-  }).where(and(
-    eq(processingJobs.type, "separation"),
-    inArray(processingJobs.status, ["queued", "preparing", "processing", "finalizing"]),
-  )).returning({ id: processingJobs.id });
-  logger.info({ queues: worker.registeredQueues(), interrupted: interrupted.length }, "Waveyard local processors ready");
+  // The in-memory broker and worker threads belonged to the previous API
+  // process. Mark its jobs retryable and remove only their abandoned temp dirs.
+  const recovery = await recoverInterruptedLocalSeparationJobs(db);
+  logger.info({
+    queues: worker.registeredQueues(),
+    interrupted: recovery.interruptedJobIds.length,
+    cleanedTempDirectories: recovery.cleanedTempDirectories.length,
+  }, "Waveyard local processors ready");
 }
 
 
@@ -68,7 +63,12 @@ async function shutdown() {
   const deadline = setTimeout(() => process.exit(1), 20_000);
   deadline.unref();
   try {
-    await drainLocalWorker();
+    const drained = await drainLocalWorker();
+    if (!drained) {
+      logger.warn(
+        "Local worker drain timed out; unfinished separation jobs will be marked interrupted on next start.",
+      );
+    }
     await closeAllBrowserSessions();
     await pool.end();
   } catch (err) {

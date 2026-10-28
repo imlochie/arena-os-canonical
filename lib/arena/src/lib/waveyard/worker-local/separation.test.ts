@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { eq } from "drizzle-orm";
 
@@ -14,9 +15,11 @@ import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@workspace/arena
 import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@workspace/arena/lib/waveyard/separation/deep";
 import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@workspace/arena/lib/waveyard/separation/deep-fixtures";
 import { DEEP_STEM_TYPES } from "@workspace/arena/lib/waveyard/separation/modes";
+import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
 import { handleSeparationJob } from "./separation";
 import { fixture, identityEngine, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
+import { recoverInterruptedLocalSeparationJobs } from "./recovery";
 
 const KIM = findMdxModel("kim_vocal_2")!;
 type Fixture = SeparationFixture;
@@ -177,6 +180,132 @@ test("engine failure mid-run: job fails honestly and uploaded stem objects are c
     const stems = await f.database.select().from(stemAssets);
     assert.equal(stems.length, 0);
   } finally {
+    await f.close();
+  }
+});
+
+test("API restart interrupts active separation, removes dead-worker temp output, and retry replaces one stem set", async () => {
+  const f = await fixture();
+  let child: ReturnType<typeof spawn> | null = null;
+  let childTempDirectory: string | null = null;
+  let liveTempDirectory: string | null = null;
+  let legacyTempDirectory: string | null = null;
+  try {
+    await f.database
+      .update(processingJobs)
+      .set({ status: "processing", stage: "separating", startedAt: new Date() })
+      .where(eq(processingJobs.id, f.job.id));
+
+    // A child process owns a live worker thread and a partial output directory.
+    // Terminating the API process must terminate all of its worker threads.
+    const childScript = [
+      `const { Worker } = require("node:worker_threads");`,
+      `const { mkdtemp, writeFile } = require("node:fs/promises");`,
+      `const { tmpdir } = require("node:os");`,
+      `const { join } = require("node:path");`,
+      `(async () => {`,
+      `  const directory = await mkdtemp(join(tmpdir(), "arena-separation-" + process.pid + "-"));`,
+      `  await writeFile(join(directory, "partial.wav"), "unfinished output");`,
+      `  const worker = new Worker("setInterval(() => {}, 1000)", { eval: true });`,
+      `  await new Promise(resolve => worker.once("online", resolve));`,
+      `  process.send({ pid: process.pid, threadId: worker.threadId, directory });`,
+      `})().catch(error => { console.error(error); process.exit(1); });`,
+    ].join("\n");
+    child = spawn(process.execPath, ["-e", childScript], {
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
+    });
+    const childReady = await new Promise<{ pid: number; threadId: number; directory: string }>((resolve, reject) => {
+      child!.once("message", (message) => resolve(message as { pid: number; threadId: number; directory: string }));
+      child!.once("error", reject);
+    });
+    childTempDirectory = childReady.directory;
+    assert.equal(childReady.pid, child.pid);
+    assert.ok(childReady.threadId > 0, "the child owns an active worker thread");
+
+    liveTempDirectory = await mkdtemp(join(tmpdir(), `arena-separation-${process.pid}-`));
+    await writeFile(join(liveTempDirectory, "active.wav"), "owned by this live process");
+    legacyTempDirectory = await mkdtemp(join(tmpdir(), "arena-separation-legacy-"));
+    await writeFile(join(legacyTempDirectory, "partial.wav"), "legacy output");
+
+    const childExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child!.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    assert.equal(child.kill("SIGTERM"), true, "the API process accepts the restart signal");
+    const exit = await childExit;
+    assert.equal(exit.signal, "SIGTERM", "the process exits with its worker thread");
+
+    const recovery = await recoverInterruptedLocalSeparationJobs(f.database);
+    assert.deepEqual(recovery.interruptedJobIds, [f.job.id]);
+    assert.ok(recovery.cleanedTempDirectories.includes(basename(childTempDirectory)),
+      "the abandoned worker's partial output directory is removed");
+    assert.ok(recovery.cleanedTempDirectories.includes(basename(legacyTempDirectory)),
+      "unscoped temporary outputs from older runs are also removed");
+    assert.ok(!recovery.cleanedTempDirectories.includes(basename(liveTempDirectory)),
+      "a directory owned by a live process is preserved");
+    await assert.rejects(() => stat(join(childTempDirectory!, "partial.wav")), /ENOENT/);
+    await assert.rejects(() => stat(join(legacyTempDirectory!, "partial.wav")), /ENOENT/);
+    assert.equal((await stat(join(liveTempDirectory, "active.wav"))).isFile(), true);
+
+    const [interrupted] = await f.database
+      .select()
+      .from(processingJobs)
+      .where(eq(processingJobs.id, f.job.id));
+    assert.equal(interrupted.status, "failed");
+    assert.equal(interrupted.stage, "interrupted");
+    assert.equal(interrupted.errorCode, "processor_interrupted");
+    assert.match(interrupted.errorMessage ?? "", /Retry separation to continue/);
+
+    // A partial row from the killed attempt is removed by the normal atomic
+    // retry transaction before the completed stem set is inserted.
+    await f.database.insert(stemAssets).values({
+      projectId: f.project.id,
+      sourceAssetId: f.source.id,
+      separationJobId: f.job.id,
+      stemType: "unfinished",
+      engine: "mdx",
+      model: f.job.model,
+      modelVersion: KIM.sha256,
+      storageKey: f.source.storageKey,
+      checksumSha256: f.source.checksumSha256,
+      durationSeconds: 1,
+      sampleRate: 44_100,
+      channels: 2,
+      codec: "pcm_s16le",
+      format: "wav",
+      fileSizeBytes: 1,
+    });
+    let retryRuns = 0;
+    const retry = await retrySeparationJob(f.database, f.job.id, {
+      handOff: async () => {
+        retryRuns += 1;
+        await handleSeparationJob(payloadOf(f), { db: f.database, openEngine: identityEngine() });
+      },
+    });
+    assert.deepEqual(retry, { queued: true });
+    assert.equal(retryRuns, 1);
+    const [completed] = await f.database
+      .select()
+      .from(processingJobs)
+      .where(eq(processingJobs.id, f.job.id));
+    assert.equal(completed.status, "complete");
+    const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+    assert.equal(stems.length, 2, "exactly one complete output set is stored");
+    assert.deepEqual(new Set(stems.map((stem) => stem.stemType)), new Set(["vocals", "instrumental"]));
+
+    const duplicateRetry = await retrySeparationJob(f.database, f.job.id, {
+      handOff: async () => { retryRuns += 1; },
+    });
+    assert.equal(duplicateRetry.queued, false, "a completed job cannot start a duplicate retry");
+    assert.equal(retryRuns, 1);
+    assert.equal(
+      (await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id))).length,
+      2,
+    );
+  } finally {
+    if (child !== null && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    if (childTempDirectory !== null) await rm(childTempDirectory, { recursive: true, force: true });
+    if (liveTempDirectory !== null) await rm(liveTempDirectory, { recursive: true, force: true });
+    if (legacyTempDirectory !== null) await rm(legacyTempDirectory, { recursive: true, force: true });
     await f.close();
   }
 });

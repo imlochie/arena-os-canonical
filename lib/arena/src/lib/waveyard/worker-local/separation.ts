@@ -331,7 +331,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
   /** Layer naming: deep stems get the same "<parent>/<child>" treatment. */
   const nameStem = (child: string) => (parentStem === null ? child : `${parentStem.stemType}/${child}`);
 
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "arena-separation-"));
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), `arena-separation-${process.pid}-`));
   const inputPath = join(temporaryDirectory, "source-upload");
   const storage = getStorage();
   const uploadedKeys: string[] = [];
