@@ -7,3 +7,4 @@
 - [Waveyard cross-tab transport](waveyard-transport-sync.md) — mirror playhead and track state between tabs without autoplaying a second audio engine; passive heartbeats must not override newer controls.
 - [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.
 - [Waveyard database test runtime](waveyard-db-tests.md) — temporary PostgreSQL test failures before assertions are runtime failures, not evidence about queue behavior.
+- [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.
