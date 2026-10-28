@@ -81,10 +81,14 @@ export type OpenedEngine = {
   resolvedDevice: string;
 };
 
+/** Explicit CPU skips GPU; auto and CUDA try it first, then honestly fall
+ *  back to CPU. resolvedDevice records what actually ran. */
+export function executionProviderAttempts(requestedDevice: "auto" | "cpu" | "cuda"): string[][] {
+  return requestedDevice === "cpu" ? [["cpu"]] : [["cuda"], ["cpu"]];
+}
+
 /** Production engine opener: verify the model file's checksum, then create
- *  an onnxruntime session. V1 executes on the CPU provider — a requested
- *  CUDA device honestly falls back (resolvedDevice records what actually
- *  ran, never silently pretending). */
+ *  an onnxruntime session using the requested device policy. */
 async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "cpu" | "cuda"): Promise<OpenedEngine> {
   // Throws the honest unavailable error before anything else when the model
   // is missing/corrupt (seeding is the model manager's job, not inference's).
@@ -96,7 +100,7 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
         "Reinstall the app; if it persists, this build is missing its inference runtime.",
     );
   }
-  const attempts: string[][] = requestedDevice === "cuda" ? [["cuda"], ["cpu"]] : [["cpu"]];
+  const attempts = executionProviderAttempts(requestedDevice);
   let lastError: unknown = null;
   for (const executionProviders of attempts) {
     try {

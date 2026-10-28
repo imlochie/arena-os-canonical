@@ -213,11 +213,21 @@ try {
   report.push("Local model verification stays unavailable—not falsely passed—until an on-device model is actually loaded.");
   await page.getByLabel("Connected model source").selectOption("openai");
   let promptGenerationSeen = false;
+  let failNextGeneration = false;
   const generatedPong = '<!doctype html><html><head><title>Generated Pong</title></head><body><p id="generated-pong">AI Pong</p><canvas width="320" height="180"></canvas><script>let x=0;const c=document.querySelector("canvas"),ctx=c.getContext("2d");addEventListener("keydown",e=>{if(e.key==="ArrowRight")x++});function loop(){ctx.fillStyle="#111";ctx.fillRect(0,0,320,180);ctx.fillStyle="#fff";ctx.fillRect(x,20,8,30);requestAnimationFrame(loop)}loop();</script></body></html>';
   const revisedOfflinePlatformer = '<!doctype html><html><head><title>Revised local platformer</title></head><body><p id="offline-revision-marker">Double jump added</p><canvas width="320" height="180"></canvas><script>let jumps=2;addEventListener("keydown",e=>{if(e.key===" ")jumps--});requestAnimationFrame(function loop(){requestAnimationFrame(loop)});</script></body></html>';
   await page.route("**/api/arcade/forge", async route => {
     const body = route.request().postDataJSON();
     assert.equal(body.modelId, "openai", "the selected model source must reach the game-generation route");
+    if (failNextGeneration) {
+      failNextGeneration = false;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "No game-writing model is reachable." }),
+      });
+      return;
+    }
     if (body.prompt === "Pong") {
       promptGenerationSeen = true;
     } else {
@@ -259,6 +269,12 @@ try {
   assert(promptGenerationSeen, "Automatic prompt generation must call the code-writing model instead of a preset core");
   await page.locator('iframe[title="Pong"]').waitFor();
   report.push("Automatic creation routes a bare Pong prompt and the selected model source to generated game code instead of a preset.");
+  failNextGeneration = true;
+  await page.getByLabel("Game prompt").fill("Keep my current game if this model is unavailable");
+  await page.getByRole("button", { name: "🎮 Create & play" }).click();
+  await page.getByText(/No game-writing model is reachable/).waitFor({ timeout: 10000 });
+  await page.locator('iframe[title="Pong"]').waitFor({ timeout: 10000 });
+  report.push("A failed new game prompt preserves the last playable game.");
   let reaAnalysisRequests = 0;
   page.on("request", request => {
     if (request.url().includes("/api/arcade/import/analyze")) reaAnalysisRequests += 1;

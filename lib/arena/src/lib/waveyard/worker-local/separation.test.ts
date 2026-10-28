@@ -222,6 +222,73 @@ test("waveform does not retry permanent decode failures", async () => {
   }
 });
 
+test("waveform retry resumes after local worker recovery with the remaining attempt budget", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    let interruptedCalls = 0;
+    await assert.rejects(
+      () => handleWaveformJob(sourceWaveformPayload(f, job.id), {
+        db: f.database,
+        generateWaveform: async () => {
+          interruptedCalls += 1;
+          throw Object.assign(new Error("Temporary FFmpeg resource failure"), { code: "EAGAIN" });
+        },
+        sleep: async () => { throw new Error("Worker stopped during retry backoff"); },
+      }),
+      /Worker stopped during retry backoff/,
+    );
+
+    const [interrupted] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    assert.equal(interrupted.status, "processing");
+    assert.equal(interrupted.stage, "retrying");
+    assert.equal(interrupted.attempts, 1);
+
+    const dispatched: Array<{
+      waveformJobId: string;
+      projectId: string;
+      sourceAssetId?: string;
+      stemAssetId?: string;
+    }> = [];
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async (payload) => {
+      dispatched.push(payload);
+    });
+    assert.deepEqual(recovery.resetJobIds, [job.id]);
+    assert.deepEqual(recovery.requeuedJobIds, [job.id]);
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.equal(dispatched.length, 1);
+
+    const [requeued] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    assert.equal(requeued.status, "queued");
+    assert.equal(requeued.attempts, 1, "recovery preserves the already-spent attempt");
+
+    const resumedDelays: number[] = [];
+    let resumedCalls = 0;
+    await handleWaveformJob(dispatched[0]!, {
+      db: f.database,
+      generateWaveform: async () => {
+        resumedCalls += 1;
+        if (resumedCalls === 1) {
+          throw Object.assign(new Error("Temporary FFmpeg resource failure"), { code: "EAGAIN" });
+        }
+        return validWaveformDocument();
+      },
+      sleep: async (milliseconds) => { resumedDelays.push(milliseconds); },
+    });
+
+    const [completed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(interruptedCalls + resumedCalls, WAVEFORM_MAX_ATTEMPTS);
+    assert.deepEqual(resumedDelays, [WAVEFORM_RETRY_BACKOFF_MS[1]]);
+    assert.equal(completed.status, "complete");
+    assert.equal(completed.attempts, WAVEFORM_MAX_ATTEMPTS);
+    assert.equal(assets.length, 1);
+    assert.equal(assets[0]?.waveformJobId, job.id);
+  } finally {
+    await f.close();
+  }
+});
+
 test("full pipeline: fake identity session → stems stored, decoded back, and arithmetically exact", async () => {
   const f = await fixture();
   try {

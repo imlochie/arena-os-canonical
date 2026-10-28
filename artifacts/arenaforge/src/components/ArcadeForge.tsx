@@ -662,7 +662,6 @@ export default function ArcadeForge() {
     setBusy(true);
     setError(null);
     setNotice(null);
-    setGame(null);
     setTab("play");
     setPhase("Forging…");
     try {
