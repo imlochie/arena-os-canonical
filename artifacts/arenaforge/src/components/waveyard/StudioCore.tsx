@@ -128,6 +128,8 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
   const arrangementHistory = useArrangementHistory();
   const { history, future, reset, record, undo: historyUndo, redo: historyRedo } = arrangementHistory;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const saveRevision = useRef(0);
   const transport = useStemTransport(ids, duration);
   const { setLoop, seek: seekTransport } = transport;
   const seekArrangementPosition = useCallback((milliseconds: number) => seekTransport(milliseconds / 1000), [seekTransport]);
@@ -255,16 +257,45 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
     return () => window.removeEventListener("keydown", escape);
   }, []);
 
-  const persist = useCallback(async (next = remixRef.current) => {
-    if (!next) return;
-    setSaveState("saving");
-    const response = await fetch(`/api/remixes/${next.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(remixState(next)) });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) { setSaveState("failed"); return; }
-    const persisted = remixFromResponse(body);
-    remixRef.current = persisted;
-    setRemix(persisted);
-    setSaveState("saved");
+  const persist = useCallback((next = remixRef.current): Promise<void> => {
+    if (!next) return Promise.resolve();
+    const revision = saveRevision.current;
+    const save = async () => {
+      if (remixRef.current?.id !== next.id || revision !== saveRevision.current) return;
+      setSaveState("saving");
+      let response: Response;
+      try {
+        response = await fetch(`/api/remixes/${next.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(remixState(next)),
+        });
+      } catch {
+        if (remixRef.current?.id === next.id) {
+          setSaveState(revision === saveRevision.current ? "failed" : "unsaved");
+        }
+        return;
+      }
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (remixRef.current?.id === next.id) {
+          setSaveState(revision === saveRevision.current ? "failed" : "unsaved");
+        }
+        return;
+      }
+      if (remixRef.current?.id !== next.id) return;
+      if (revision !== saveRevision.current) {
+        setSaveState("unsaved");
+        return;
+      }
+      const persisted = remixFromResponse(body);
+      remixRef.current = persisted;
+      setRemix(persisted);
+      setSaveState("saved");
+    };
+    const queuedSave = saveQueue.current.then(save, save);
+    saveQueue.current = queuedSave.then(() => undefined, () => undefined);
+    return queuedSave;
   }, []);
   const queuePersist = useCallback((next: Remix) => {
     setSaveState("unsaved");
@@ -283,10 +314,14 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
   }, [persist]);
 
   const loadRemix = useCallback(async (id: string) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    saveRevision.current += 1;
     const response = await fetch(`/api/remixes/${id}`, { cache: "no-store" });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) { setSaveState("failed"); return; }
     const next = remixFromResponse(body);
+    remixRef.current = next;
     setRemix(next);
     setAutomaticGeneration(body.generation ?? null);
     setClipSelection(null);
@@ -324,12 +359,15 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
     if (!current) return;
     const next = transform(current);
     remixRef.current = next;
+    saveRevision.current += 1;
     record(current);
     setRemix(next);
     queuePersist(next);
   }, [queuePersist, record]);
   const previewTimeline = useCallback((next: Remix) => { setRemix(next); setSaveState("unsaved"); }, []);
   const commitTimeline = useCallback((before: Remix, after: Remix) => {
+    remixRef.current = after;
+    saveRevision.current += 1;
     record(before);
     setRemix(after);
     queuePersist(after);
@@ -494,8 +532,30 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
     setRemix(next);
     setSaveState("saved");
   };
-  const undo = useCallback(() => { if (!remix) return; const prior = historyUndo(remix); if (!prior) return; setRemix(prior); void persist(prior); }, [historyUndo, persist, remix]);
-  const redo = useCallback(() => { if (!remix) return; const next = historyRedo(remix); if (!next) return; setRemix(next); void persist(next); }, [historyRedo, persist, remix]);
+  const undo = useCallback(() => {
+    if (!remix) return;
+    const prior = historyUndo(remix);
+    if (!prior) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    saveRevision.current += 1;
+    remixRef.current = prior;
+    setSaveState("unsaved");
+    setRemix(prior);
+    void persist(prior);
+  }, [historyUndo, persist, remix]);
+  const redo = useCallback(() => {
+    if (!remix) return;
+    const next = historyRedo(remix);
+    if (!next) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    saveRevision.current += 1;
+    remixRef.current = next;
+    setSaveState("unsaved");
+    setRemix(next);
+    void persist(next);
+  }, [historyRedo, persist, remix]);
   const toggleStemPreview = useCallback(() => {
     arrangementPreview.stop();
     if (transport.playing) transport.pause();

@@ -58,6 +58,10 @@ const studioRemixId = "00000000-0000-4000-8000-000000000009";
 let failStudioHandoff = false;
 let studioProjectData = null;
 let studioRemixData = null;
+let holdNextStudioRemixPut = false;
+let signalHeldStudioRemixPut = null;
+let releaseHeldStudioRemixPut = null;
+let studioRemixPutCount = 0;
 const assetSnapshot = () => [...assets.entries()]
   .map(([id, bytes]) => [id, createHash("sha256").update(bytes).digest("hex")])
   .sort(([left], [right]) => left.localeCompare(right));
@@ -323,8 +327,14 @@ try {
     route.fulfill({ json: { remixes: [{ id: studioRemixId }] } }));
   await context.route(`**/api/remixes/${studioRemixId}`, async route => {
     if (route.request().method() === "PUT" && studioRemixData !== null) {
+      studioRemixPutCount += 1;
       const input = route.request().postDataJSON();
       const { tracks: inputTracks, automation: inputAutomation, ...remixInput } = input;
+      if (holdNextStudioRemixPut) {
+        holdNextStudioRemixPut = false;
+        signalHeldStudioRemixPut?.();
+        await new Promise(resolve => { releaseHeldStudioRemixPut = resolve; });
+      }
       studioRemixData = {
         remix: { ...studioRemixData.remix, ...remixInput, version: studioRemixData.remix.version + 1 },
         tracks: inputTracks ?? studioRemixData.tracks,
@@ -775,6 +785,51 @@ try {
   await reloadedVocalsVolume.waitFor();
   assert.equal(await reloadedVocalsVolume.inputValue(), "0.55",
     "the session-derived arrangement fader survives leaving and reopening Studio");
+
+  const studioSaveHeld = new Promise(resolve => { signalHeldStudioRemixPut = resolve; });
+  holdNextStudioRemixPut = true;
+  studioRemixPutCount = 0;
+  const firstStudioSaveResponse = page.waitForResponse(response =>
+    response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
+  );
+  await reloadedVocalsVolume.fill("0.62");
+  await studioSaveHeld;
+  await reloadedVocalsVolume.fill("0.79");
+  await page.waitForTimeout(850);
+  const savesWhileFirstIsHeld = studioRemixPutCount;
+  const queuedStudioSaveResponse = savesWhileFirstIsHeld === 1
+    ? page.waitForResponse(response =>
+      response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
+    )
+    : null;
+  releaseHeldStudioRemixPut?.();
+  await firstStudioSaveResponse;
+  if (queuedStudioSaveResponse) await queuedStudioSaveResponse;
+  await page.locator(".save-state.saved").waitFor();
+  assert.equal(savesWhileFirstIsHeld, 1,
+    "Studio serializes saves rather than writing a newer arrangement before an older save finishes");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  assert.equal(
+    await page.getByLabel("Test a original.wav — Vocals arrangement volume").inputValue(),
+    "0.79",
+    "a slow earlier save cannot overwrite a newer Studio edit after reopening",
+  );
+  const undoTestVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
+  const undoSaveResponse = page.waitForResponse(response =>
+    response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
+  );
+  await undoTestVolume.fill("0.91");
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  assert.ok((await undoSaveResponse).ok(), "undo persists the restored arrangement");
+  await page.waitForTimeout(850);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  assert.equal(
+    await page.getByLabel("Test a original.wav — Vocals arrangement volume").inputValue(),
+    "0.79",
+    "a pending autosave cannot reapply the edit after undo",
+  );
   assert.deepEqual(assetSnapshot(), sourceAssetsBeforeHandoff,
     "creating and editing the derived arrangement leaves original audio assets unchanged");
 
