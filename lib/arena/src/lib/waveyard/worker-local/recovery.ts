@@ -9,6 +9,7 @@ import type { WaveformJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { processingJobs, waveformJobs } from "@workspace/db/waveyardSchema";
 
 const SEPARATION_TEMP_PREFIX = "arena-separation-";
+const PENDING_WAVEFORM_STATUSES = ["queued", "preparing", "processing", "finalizing"];
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -79,31 +80,53 @@ export async function recoverInterruptedLocalSeparationJobs(
   };
 }
 
+/**
+ * Re-submit waveform work after a local API restart. The database commit and
+ * local broker submission are separate operations, so queued rows may never
+ * have reached a worker. Active rows are also stale: their old in-memory
+ * worker no longer exists after this process starts.
+ */
 export async function recoverPendingLocalWaveformJobs(
   db: ReturnType<typeof drizzle>,
-  dispatch: (payload: WaveformJobPayload) => Promise<unknown> = enqueueWaveform,
-): Promise<{ resetJobIds: string[]; enqueuedJobIds: string[]; failedJobIds: string[] }> {
-  const reset = await db
-    .update(waveformJobs)
-    .set({
-      status: "queued",
-      stage: "queued",
-      startedAt: null,
-      completedAt: null,
-      errorCode: null,
-      errorMessage: null,
-      updatedAt: new Date(),
-    })
-    .where(inArray(waveformJobs.status, ["preparing", "processing", "finalizing"]))
-    .returning({ id: waveformJobs.id });
-
-  const pending = await db.select().from(waveformJobs).where(eq(waveformJobs.status, "queued"));
+  enqueue: (payload: WaveformJobPayload) => Promise<unknown> = enqueueWaveform,
+): Promise<{
+  resetJobIds: string[];
+  enqueuedJobIds: string[];
+  requeuedJobIds: string[];
+  failedJobIds: string[];
+}> {
+  const pending = await db
+    .select()
+    .from(waveformJobs)
+    .where(inArray(waveformJobs.status, PENDING_WAVEFORM_STATUSES));
+  const resetJobIds: string[] = [];
   const enqueuedJobIds: string[] = [];
+  const requeuedJobIds: string[] = [];
   const failedJobIds: string[] = [];
 
   for (const job of pending) {
-    const hasSource = job.sourceAssetId !== null;
-    const hasStem = job.stemAssetId !== null;
+    // Do not reset a row that became terminal after the initial query.
+    const [claimed] = await db
+      .update(waveformJobs)
+      .set({
+        status: "queued",
+        stage: "queued",
+        errorCode: null,
+        errorMessage: null,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(waveformJobs.id, job.id),
+        inArray(waveformJobs.status, PENDING_WAVEFORM_STATUSES),
+      ))
+      .returning();
+    if (!claimed) continue;
+    if (job.status !== "queued") resetJobIds.push(claimed.id);
+
+    const hasSource = claimed.sourceAssetId !== null;
+    const hasStem = claimed.stemAssetId !== null;
     if (hasSource === hasStem) {
       await db
         .update(waveformJobs)
@@ -115,20 +138,21 @@ export async function recoverPendingLocalWaveformJobs(
           completedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(waveformJobs.id, job.id));
-      failedJobIds.push(job.id);
+        .where(eq(waveformJobs.id, claimed.id));
+      failedJobIds.push(claimed.id);
       continue;
     }
 
     const payload: WaveformJobPayload = {
-      waveformJobId: job.id,
-      projectId: job.projectId,
-      ...(job.sourceAssetId ? { sourceAssetId: job.sourceAssetId } : {}),
-      ...(job.stemAssetId ? { stemAssetId: job.stemAssetId } : {}),
+      waveformJobId: claimed.id,
+      projectId: claimed.projectId,
+      ...(claimed.sourceAssetId ? { sourceAssetId: claimed.sourceAssetId } : {}),
+      ...(claimed.stemAssetId ? { stemAssetId: claimed.stemAssetId } : {}),
     };
     try {
-      await dispatch(payload);
-      enqueuedJobIds.push(job.id);
+      await enqueue(payload);
+      enqueuedJobIds.push(claimed.id);
+      requeuedJobIds.push(claimed.id);
     } catch (error) {
       await db
         .update(waveformJobs)
@@ -140,14 +164,10 @@ export async function recoverPendingLocalWaveformJobs(
           completedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(waveformJobs.id, job.id));
-      failedJobIds.push(job.id);
+        .where(eq(waveformJobs.id, claimed.id));
+      failedJobIds.push(claimed.id);
     }
   }
 
-  return {
-    resetJobIds: reset.map(({ id }) => id),
-    enqueuedJobIds,
-    failedJobIds,
-  };
+  return { resetJobIds, enqueuedJobIds, requeuedJobIds, failedJobIds };
 }

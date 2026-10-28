@@ -35,6 +35,8 @@ if (worker) {
     queues: worker.registeredQueues(),
     interrupted: recovery.interruptedJobIds.length,
     cleanedTempDirectories: recovery.cleanedTempDirectories.length,
+    requeuedWaveforms: waveformRecovery.requeuedJobIds.length,
+    failedWaveformRequeues: waveformRecovery.failedJobIds.length,
     resetWaveforms: waveformRecovery.resetJobIds.length,
     enqueuedWaveforms: waveformRecovery.enqueuedJobIds.length,
     waveformQueueFailures: waveformRecovery.failedJobIds.length,

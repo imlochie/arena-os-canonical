@@ -9,8 +9,8 @@ import { eq } from "drizzle-orm";
 
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
-import { getStorage } from "@workspace/arena/lib/waveyard/storage";
-import { processingJobs, stemAssets, waveformJobs } from "@workspace/db/waveyardSchema";
+import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
+import { processingJobs, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@workspace/arena/lib/waveyard/separation/deep";
 import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@workspace/arena/lib/waveyard/separation/deep-fixtures";
@@ -18,6 +18,8 @@ import { DEEP_STEM_TYPES } from "@workspace/arena/lib/waveyard/separation/modes"
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
 import { handleSeparationJob } from "./separation";
+import { handleWaveformJob } from "./waveform";
+import { LocalJobBroker } from "./broker";
 import { fixture, identityEngine, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 import { recoverInterruptedLocalSeparationJobs, recoverPendingLocalWaveformJobs } from "./recovery";
 
@@ -366,6 +368,93 @@ test("the local broker registers the separation queue alongside the other engine
     else process.env.ARENA_DESKTOP_MODE = prevDesktop;
     if (prevRedis !== undefined) process.env.REDIS_URL = prevRedis;
     resetLocalJobBrokerForTests();
+  }
+});
+
+test("startup recovery enqueues committed stem waveforms after a broker restart", async () => {
+  const f = await fixture();
+  try {
+    // These rows model the committed separation transaction immediately
+    // before its waveform jobs were submitted to the now-lost broker.
+    const stemBytes = await readFile(f.sourcePath);
+    const stems = [];
+    for (const stemType of ["vocals", "instrumental"]) {
+      const storageKey = privateObjectKey(f.project.id, "stem", "wav");
+      await getStorage().putFile(storageKey, f.sourcePath, "audio/wav");
+      const [stem] = await f.database
+        .insert(stemAssets)
+        .values({
+          projectId: f.project.id,
+          sourceAssetId: f.source.id,
+          separationJobId: f.job.id,
+          stemType,
+          engine: "mdx",
+          model: f.job.model,
+          modelVersion: KIM.sha256,
+          storageKey,
+          checksumSha256: f.source.checksumSha256,
+          durationSeconds: 1,
+          sampleRate: 44_100,
+          channels: 2,
+          codec: "pcm_s16le",
+          format: "wav",
+          fileSizeBytes: stemBytes.length,
+        })
+        .returning();
+      stems.push(stem);
+    }
+    const jobs = await f.database
+      .insert(waveformJobs)
+      .values(stems.map((stem, index) => ({
+        projectId: f.project.id,
+        stemAssetId: stem.id,
+        status: index === 0 ? "queued" : "processing",
+        stage: index === 0 ? "queued" : "decoding",
+        idempotencyKey: `waveform:stem:${stem.id}`,
+      })))
+      .returning();
+
+    // A fresh broker has no knowledge of the jobs that were in the old
+    // process. Register the real handler against this disposable database.
+    const restartedBroker = new LocalJobBroker();
+    restartedBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, { db: f.database }));
+    const recovery = await recoverPendingLocalWaveformJobs(
+      f.database,
+      (payload) => restartedBroker.submit(
+        "waveyard-waveform",
+        payload.waveformJobId,
+        payload as unknown as Record<string, unknown>,
+      ),
+    );
+    assert.deepEqual(new Set(recovery.requeuedJobIds), new Set(jobs.map((job) => job.id)));
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.equal(await restartedBroker.drain(10_000), true);
+
+    const completedJobs = await f.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.projectId, f.project.id));
+    const assets = await f.database
+      .select()
+      .from(waveformAssets)
+      .where(eq(waveformAssets.projectId, f.project.id));
+    assert.equal(assets.length, stems.length, "each committed stem receives exactly one waveform asset");
+    for (const stem of stems) {
+      const stemJobs = completedJobs.filter((job) => job.stemAssetId === stem.id);
+      assert.equal(stemJobs.length, 1, "there is one durable waveform job for each stem");
+      assert.equal(stemJobs[0]?.status, "complete");
+      const stemWaveforms = assets.filter((asset) => asset.stemAssetId === stem.id);
+      assert.equal(stemWaveforms.length, 1, "recovered work creates exactly one waveform per stem");
+      assert.equal(stemWaveforms[0]?.waveformJobId, stemJobs[0]?.id);
+    }
+    assert.equal(restartedBroker.stats().submitted, stems.length, "one broker submission per stem");
+    const secondRecovery = await recoverPendingLocalWaveformJobs(
+      f.database,
+      async () => { throw new Error("completed jobs must not be enqueued again"); },
+    );
+    assert.deepEqual(secondRecovery.requeuedJobIds, []);
+  } finally {
+    await f.close();
   }
 });
 
