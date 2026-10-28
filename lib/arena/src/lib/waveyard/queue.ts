@@ -169,7 +169,10 @@ async function enqueue(queueName: string, jobName: string, payload: Record<strin
   try {
     return await handle.queue.add(jobName, payload, {
       jobId,
-      attempts: 2,
+        // Waveform retries are owned by handleWaveformJob so local and Redis
+        // workers share the same bounded policy. Other queues keep BullMQ's
+        // two-attempt retry behavior.
+        attempts: queueName === WAVEFORM_QUEUE ? 1 : 2,
       backoff: { type: "exponential", delay: 5_000 },
       removeOnComplete: { age: 60 * 60 * 24, count: 5000 },
       removeOnFail: { age: 60 * 60 * 24 * 7, count: 5000 },

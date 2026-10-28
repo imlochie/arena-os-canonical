@@ -1,5 +1,5 @@
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   waveformJobs,
@@ -38,18 +38,7 @@ export async function POST(
         { status: 422 },
       );
 
-    const queue = await getWaveformQueue();
-    const queueJob = await queue.getJob(job.id);
-    if (queueJob) await queueJob.retry();
-    else
-      await enqueueWaveform({
-        waveformJobId: job.id,
-        projectId: job.projectId,
-        sourceAssetId: job.sourceAssetId ?? undefined,
-        stemAssetId: job.stemAssetId ?? undefined,
-      });
-
-    const [updated] = await db
+    const [queued] = await db
       .update(waveformJobs)
       .set({
         status: "queued",
@@ -57,11 +46,47 @@ export async function POST(
         errorCode: null,
         errorMessage: null,
         completedAt: null,
+        attempts: 0,
         updatedAt: new Date(),
       })
-      .where(eq(waveformJobs.id, id))
+      .where(and(eq(waveformJobs.id, id), eq(waveformJobs.status, "failed")))
       .returning();
-    return Response.json({ job: updated });
+    if (!queued)
+      return Response.json(
+        { error: "Waveform job is no longer failed and cannot be retried." },
+        { status: 409 },
+      );
+
+    try {
+      const queue = await getWaveformQueue();
+      const queueJob = await queue.getJob(job.id);
+      if (queueJob) await queueJob.retry();
+      else
+        await enqueueWaveform({
+          waveformJobId: job.id,
+          projectId: job.projectId,
+          sourceAssetId: job.sourceAssetId ?? undefined,
+          stemAssetId: job.stemAssetId ?? undefined,
+        });
+    } catch (error) {
+      await db
+        .update(waveformJobs)
+        .set({
+          status: "failed",
+          stage: "queue-unavailable",
+          attempts: job.attempts,
+          errorCode: "queue_unavailable",
+          errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(waveformJobs.id, id), eq(waveformJobs.status, "queued")));
+      return Response.json(
+        { error: "Waveform retry could not be queued." },
+        { status: 503 },
+      );
+    }
+    return Response.json({ job: queued });
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("waveform retry failed", error);

@@ -29,7 +29,25 @@ import type { WaveformJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "./analysis-engine";
 
 export const ORPHAN_WAVEFORM_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000;
+export const WAVEFORM_MAX_ATTEMPTS = 3;
+export const WAVEFORM_RETRY_BACKOFF_MS = [1_000, 5_000] as const;
 const GENERATED_WAVEFORM_KEY = /^projects\/[^/]+\/waveform\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/i;
+const TRANSIENT_WAVEFORM_ERROR_CODES = new Set([
+  "EAGAIN",
+  "EBUSY",
+  "EIO",
+  "EMFILE",
+  "ENFILE",
+  "ENOSPC",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EPIPE",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "EAI_AGAIN",
+]);
 
 export function desktopAnalysisIdempotencyKey(sourceAssetId: string) {
   return `analysis:${sourceAssetId}:${DESKTOP_ANALYSIS_ENGINE}:${DESKTOP_ANALYSIS_ENGINE_VERSION}`;
@@ -79,6 +97,25 @@ export async function cleanupOrphanedWaveformObjects(
 
 async function updateJob(database: ReturnType<typeof drizzle>, id: string, patch: Partial<typeof waveformJobs.$inferInsert>) {
   await database.update(waveformJobs).set({ ...patch, updatedAt: new Date() }).where(eq(waveformJobs.id, id));
+}
+
+export function isTransientWaveformFailure(error: unknown): boolean {
+  const details = error && typeof error === "object"
+    ? error as { code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown; stderr?: unknown; signal?: unknown; cause?: unknown }
+    : {};
+  const code = typeof details.code === "string" ? details.code.toUpperCase() : "";
+  if (TRANSIENT_WAVEFORM_ERROR_CODES.has(code) || details.signal === "SIGKILL") return true;
+
+  const status = Number(details.statusCode ?? details.status);
+  if (Number.isInteger(status) && (status === 408 || status === 425 || status === 429 || status >= 500)) return true;
+
+  const causeMessage = details.cause instanceof Error ? details.cause.message : "";
+  const message = [
+    typeof details.message === "string" ? details.message : String(error ?? ""),
+    typeof details.stderr === "string" ? details.stderr : "",
+    causeMessage,
+  ].join("\n");
+  return /resource temporarily unavailable|temporarily unavailable|temporary failure|timed out|cannot allocate memory|device or resource busy/i.test(message);
 }
 
 type AssetTarget = {
@@ -173,9 +210,17 @@ async function maybeProvisionDesktopAnalysis(database: ReturnType<typeof drizzle
 /** Local waveform execution — same lifecycle the BullMQ worker drives. */
 export async function handleWaveformJob(
   payloadInput: Record<string, unknown>,
-  dependencies: { db?: ReturnType<typeof drizzle> } = {},
+  dependencies: {
+    db?: ReturnType<typeof drizzle>;
+    storage?: StorageProvider;
+    generateWaveform?: typeof generateWaveform;
+    sleep?: (milliseconds: number) => Promise<void>;
+  } = {},
 ): Promise<void> {
   const database = dependencies.db ?? db;
+  const storage = dependencies.storage ?? getStorage();
+  const generate = dependencies.generateWaveform ?? generateWaveform;
+  const sleep = dependencies.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const payload = payloadInput as unknown as WaveformJobPayload;
   const [job] = await database.select().from(waveformJobs).where(eq(waveformJobs.id, payload.waveformJobId)).limit(1);
   if (!job || job.status === "complete" || job.status === "cancelled") return;
@@ -191,70 +236,117 @@ export async function handleWaveformJob(
     throw new Error("The waveform audio asset is unavailable.");
   }
 
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "arena-waveform-"));
-  const inputPath = join(temporaryDirectory, "audio-input");
-  const pcmPath = join(temporaryDirectory, "decoded.pcm");
-  const documentPath = join(temporaryDirectory, "waveform.json");
-  const storage = getStorage();
-  let storedKey: string | undefined;
-  let complete = false;
-  try {
-    await updateJob(database, job.id, {
-      status: "preparing",
-      stage: "preparing",
-      startedAt: new Date(),
-      attempts: (job.attempts ?? 0) + 1,
-      errorCode: null,
-      errorMessage: null,
-      completedAt: null,
-    });
-    await storage.getToFile(asset.storageKey, inputPath);
-    await updateJob(database, job.id, { status: "processing", stage: "decoding" });
-    const waveform = await generateWaveform(inputPath, pcmPath);
-    await writeFile(documentPath, JSON.stringify(waveform));
-    const checksum = await checksumFile(documentPath);
-
-    await updateJob(database, job.id, { status: "finalizing", stage: "storing" });
-    storedKey = privateObjectKey(job.projectId, "waveform", "json");
-    await storage.putFile(storedKey, documentPath, "application/json");
-    const metadata = JSON.stringify({
-      format: waveform.format,
-      durationSeconds: waveform.durationSeconds,
-      sampleRate: waveform.sampleRate,
-      channels: waveform.channels,
-      resolutions: Object.keys(waveform.resolutions).map(Number),
-    });
-
-    await database.transaction(async (tx) => {
-      await tx.insert(waveformAssets).values({
-        projectId: job.projectId,
-        sourceAssetId: asset.sourceAssetId,
-        stemAssetId: asset.stemAssetId,
-        waveformJobId: job.id,
-        storageKey: storedKey!,
-        checksumSha256: checksum,
-        format: waveform.format,
-        metadata,
-      });
-      await tx
-        .update(waveformJobs)
-        .set({ status: "complete", stage: "complete", completedAt: new Date(), updatedAt: new Date() })
-        .where(eq(waveformJobs.id, job.id));
-    });
-    if (asset.sourceAssetId) await maybeProvisionDesktopAnalysis(database, job.projectId, asset.sourceAssetId);
-    complete = true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown waveform failure.";
+  const attemptsAlreadyMade = Math.max(0, job.attempts ?? 0);
+  if (attemptsAlreadyMade >= WAVEFORM_MAX_ATTEMPTS) {
+    const message = `Waveform generation exhausted its ${WAVEFORM_MAX_ATTEMPTS}-attempt automatic retry limit.`;
     await updateJob(database, job.id, {
       status: "failed",
       stage: "failed",
-      errorCode: "waveform_failed",
+      errorCode: "waveform_retry_exhausted",
       errorMessage: message,
       completedAt: new Date(),
     });
-    throw error;
-  } finally {
-    if (!complete && storedKey) await storage.delete(storedKey).catch(() => undefined);
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    throw new Error(message);
+  }
+
+  const runAttempt = async (attempt: number) => {
+    let temporaryDirectory: string | undefined;
+    let storedKey: string | undefined;
+    try {
+      await updateJob(database, job.id, {
+        status: "preparing",
+        stage: "preparing",
+        startedAt: new Date(),
+        attempts: attempt,
+        errorCode: null,
+        errorMessage: null,
+        completedAt: null,
+      });
+      temporaryDirectory = await mkdtemp(join(tmpdir(), "arena-waveform-"));
+      const inputPath = join(temporaryDirectory, "audio-input");
+      const pcmPath = join(temporaryDirectory, "decoded.pcm");
+      const documentPath = join(temporaryDirectory, "waveform.json");
+      await storage.getToFile(asset.storageKey, inputPath);
+      await updateJob(database, job.id, { status: "processing", stage: "decoding" });
+      const waveform = await generate(inputPath, pcmPath);
+      await writeFile(documentPath, JSON.stringify(waveform));
+      const checksum = await checksumFile(documentPath);
+
+      await updateJob(database, job.id, { status: "finalizing", stage: "storing" });
+      storedKey = privateObjectKey(job.projectId, "waveform", "json");
+      await storage.putFile(storedKey, documentPath, "application/json");
+      const metadata = JSON.stringify({
+        format: waveform.format,
+        durationSeconds: waveform.durationSeconds,
+        sampleRate: waveform.sampleRate,
+        channels: waveform.channels,
+        resolutions: Object.keys(waveform.resolutions).map(Number),
+      });
+
+      await database.transaction(async (tx) => {
+        await tx.insert(waveformAssets).values({
+          projectId: job.projectId,
+          sourceAssetId: asset.sourceAssetId,
+          stemAssetId: asset.stemAssetId,
+          waveformJobId: job.id,
+          storageKey: storedKey!,
+          checksumSha256: checksum,
+          format: waveform.format,
+          metadata,
+        });
+        await tx
+          .update(waveformJobs)
+          .set({ status: "complete", stage: "complete", completedAt: new Date(), updatedAt: new Date() })
+          .where(eq(waveformJobs.id, job.id));
+      });
+    } catch (error) {
+      if (storedKey) await storage.delete(storedKey).catch(() => undefined);
+      throw error;
+    } finally {
+      if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
+    }
+  };
+
+  for (let attempt = attemptsAlreadyMade + 1; attempt <= WAVEFORM_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await runAttempt(attempt);
+      if (asset.sourceAssetId) {
+        try {
+          await maybeProvisionDesktopAnalysis(database, job.projectId, asset.sourceAssetId);
+        } catch (error) {
+          console.error("Waveform completed but desktop source analysis could not be scheduled.", error);
+        }
+      }
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown waveform failure.";
+      const retryable = isTransientWaveformFailure(error);
+      if (retryable && attempt < WAVEFORM_MAX_ATTEMPTS) {
+        const delay = WAVEFORM_RETRY_BACKOFF_MS[Math.min(attempt - 1, WAVEFORM_RETRY_BACKOFF_MS.length - 1)];
+        await updateJob(database, job.id, {
+          status: "processing",
+          stage: "retrying",
+          attempts: attempt,
+          errorCode: "waveform_retrying",
+          errorMessage: `Temporary failure on attempt ${attempt}/${WAVEFORM_MAX_ATTEMPTS}; retrying after ${delay} ms: ${message}`,
+          completedAt: null,
+        });
+        await sleep(delay);
+        continue;
+      }
+
+      const exhausted = retryable && attempt >= WAVEFORM_MAX_ATTEMPTS;
+      await updateJob(database, job.id, {
+        status: "failed",
+        stage: "failed",
+        attempts: attempt,
+        errorCode: exhausted ? "waveform_retry_exhausted" : "waveform_failed",
+        errorMessage: exhausted
+          ? `Waveform generation failed after ${attempt} attempts: ${message}`
+          : message,
+        completedAt: new Date(),
+      });
+      throw error;
+    }
   }
 }

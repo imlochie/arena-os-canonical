@@ -16,15 +16,56 @@ import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@workspace/ar
 import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@workspace/arena/lib/waveyard/separation/deep-fixtures";
 import { DEEP_STEM_TYPES } from "@workspace/arena/lib/waveyard/separation/modes";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
+import { WAVEFORM_RESOLUTIONS, type WaveformDocument } from "@workspace/arena/lib/waveyard/types";
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
 import { handleSeparationJob } from "./separation";
-import { cleanupOrphanedWaveformObjects, handleWaveformJob, ORPHAN_WAVEFORM_GRACE_PERIOD_MS } from "./waveform";
+import {
+  cleanupOrphanedWaveformObjects,
+  handleWaveformJob,
+  ORPHAN_WAVEFORM_GRACE_PERIOD_MS,
+  WAVEFORM_MAX_ATTEMPTS,
+  WAVEFORM_RETRY_BACKOFF_MS,
+} from "./waveform";
 import { LocalJobBroker } from "./broker";
 import { fixture, identityEngine, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 import { recoverInterruptedLocalSeparationJobs, recoverPendingLocalWaveformJobs } from "./recovery";
 
 const KIM = findMdxModel("kim_vocal_2")!;
 type Fixture = SeparationFixture;
+
+function validWaveformDocument(): WaveformDocument {
+  return {
+    format: "waveyard-peaks-v1",
+    durationSeconds: 1,
+    sampleRate: 44_100,
+    channels: 1,
+    resolutions: Object.fromEntries(WAVEFORM_RESOLUTIONS.map((resolution) => [
+      String(resolution),
+      {
+        min: new Array<number>(resolution).fill(-0.25),
+        max: new Array<number>(resolution).fill(0.25),
+      },
+    ])) as WaveformDocument["resolutions"],
+  };
+}
+
+async function createSourceWaveformJob(f: Fixture) {
+  const [job] = await f.database
+    .insert(waveformJobs)
+    .values({
+      projectId: f.project.id,
+      sourceAssetId: f.source.id,
+      status: "queued",
+      stage: "queued",
+      idempotencyKey: `waveform:retry-test:${f.source.id}`,
+    })
+    .returning();
+  return job;
+}
+
+function sourceWaveformPayload(f: Fixture, waveformJobId: string) {
+  return { waveformJobId, projectId: f.project.id, sourceAssetId: f.source.id };
+}
 
 test("waveform cleanup removes only old unreferenced generated objects", async () => {
   const f = await fixture();
@@ -69,6 +110,113 @@ test("waveform cleanup removes only old unreferenced generated objects", async (
     assert.equal(await storage.exists(referencedKey), true, "an object with a matching asset row is retained");
     assert.equal(await storage.exists(recentKey), true, "a recently-created orphan is retained");
     assert.equal(await storage.exists(orphanKey), false, "an old unreferenced waveform object is removed");
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform retries a transient storage failure and completes without manual intervention", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    const baseStorage = getStorage();
+    const flakyStorage = Object.create(baseStorage) as typeof baseStorage;
+    const delays: number[] = [];
+    let storageReads = 0;
+    let generationCalls = 0;
+    flakyStorage.getToFile = async (key, localPath) => {
+      storageReads += 1;
+      if (storageReads === 1) {
+        throw Object.assign(new Error("Temporary storage read failure"), { code: "EIO" });
+      }
+      return baseStorage.getToFile(key, localPath);
+    };
+
+    await handleWaveformJob(sourceWaveformPayload(f, job.id), {
+      db: f.database,
+      storage: flakyStorage,
+      generateWaveform: async () => {
+        generationCalls += 1;
+        return validWaveformDocument();
+      },
+      sleep: async (milliseconds) => { delays.push(milliseconds); },
+    });
+
+    const [completed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(storageReads, 2);
+    assert.equal(generationCalls, 1);
+    assert.deepEqual(delays, [WAVEFORM_RETRY_BACKOFF_MS[0]]);
+    assert.equal(completed.status, "complete");
+    assert.equal(completed.attempts, 2);
+    assert.equal(completed.errorCode, null);
+    assert.equal(assets.length, 1);
+    assert.equal(await getStorage().exists(assets[0]!.storageKey), true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform stops after the bounded transient retry limit and keeps the failure visible", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    const delays: number[] = [];
+    let generationCalls = 0;
+
+    await assert.rejects(
+      () => handleWaveformJob(sourceWaveformPayload(f, job.id), {
+        db: f.database,
+        generateWaveform: async () => {
+          generationCalls += 1;
+          throw Object.assign(new Error("Temporary FFmpeg resource failure"), { code: "EAGAIN" });
+        },
+        sleep: async (milliseconds) => { delays.push(milliseconds); },
+      }),
+      /Temporary FFmpeg resource failure/,
+    );
+
+    const [failed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(generationCalls, WAVEFORM_MAX_ATTEMPTS);
+    assert.deepEqual(delays, [...WAVEFORM_RETRY_BACKOFF_MS]);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.stage, "failed");
+    assert.equal(failed.attempts, WAVEFORM_MAX_ATTEMPTS);
+    assert.equal(failed.errorCode, "waveform_retry_exhausted");
+    assert.match(failed.errorMessage ?? "", /failed after 3 attempts/i);
+    assert.equal(assets.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform does not retry permanent decode failures", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    const delays: number[] = [];
+    let generationCalls = 0;
+
+    await assert.rejects(
+      () => handleWaveformJob(sourceWaveformPayload(f, job.id), {
+        db: f.database,
+        generateWaveform: async () => {
+          generationCalls += 1;
+          throw new Error("Invalid data found when processing input.");
+        },
+        sleep: async (milliseconds) => { delays.push(milliseconds); },
+      }),
+      /Invalid data found when processing input/,
+    );
+
+    const [failed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    assert.equal(generationCalls, 1);
+    assert.deepEqual(delays, []);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.attempts, 1);
+    assert.equal(failed.errorCode, "waveform_failed");
+    assert.match(failed.errorMessage ?? "", /Invalid data found/);
   } finally {
     await f.close();
   }
