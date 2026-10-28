@@ -270,17 +270,24 @@ async function prepareEngine(model: string, jobId: string) {
     payload.set("device", "auto");
     const target = new FormData(form).get("separationTarget");
     if (target !== null && String(target) !== "") payload.set("model", String(target)); // empty = machine default
-    const response = await fetch("/api/uploads", { method: "POST", body: payload });
-    const body = await response.json().catch(() => ({}));
-    setAddingSource(false);
-    if (!response.ok) {
-      setSourceMessage(body.error ?? "The additional source could not be queued.");
-      return;
+    try {
+      const response = await fetch("/api/uploads", { method: "POST", body: payload });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setSourceMessage(body.error ?? "The additional source could not be queued.");
+        return;
+      }
+      form.reset();
+      setSelectedSourceName("");
+      setSourceMessage(`Queued ${selected.name}. It separates into stems on this machine — you can keep this page open or come back later.`);
+      setRefresh((value) => value + 1);
+    } catch (error) {
+      setSourceMessage(error instanceof Error
+        ? `Could not queue ${selected.name}: ${error.message}. Your selected file is still available to retry.`
+        : `Could not queue ${selected.name}. Your selected file is still available to retry.`);
+    } finally {
+      setAddingSource(false);
     }
-    form.reset();
-    setSelectedSourceName("");
-    setSourceMessage(`Queued ${selected.name}. It separates into stems on this machine — you can keep this page open or come back later.`);
-    setRefresh((value) => value + 1);
   }
 
   if (error)
