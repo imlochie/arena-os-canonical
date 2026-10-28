@@ -378,7 +378,61 @@ try {
   assert.equal(await page.getByTestId("session-play").getAttribute("aria-pressed"), "true",
     "the deck remains in the playing state after returning to the full track");
 
+  await page.getByTestId("button-switch-stems-a").click();
+  await page.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+    return audio.length === 4 && audio.every(element => !element.paused && element.src.includes("/a-"));
+  });
+  const beforeFailedReturn = await current.locator("audio").evaluateAll(elements => Math.max(...elements.map(element => element.currentTime)));
+  failAsset = "a-source";
+  await page.getByTestId("button-return-full-track-a").click();
+  const sourceError = page.getByRole("alert");
+  await sourceError.waitFor();
+  assert.match(await sourceError.textContent(), /full track could not load/i,
+    "the source failure message identifies the original track");
+  assert.match(await sourceError.textContent(), /current stem mix is still playing/i,
+    "the source failure message confirms stems remain active");
+  await page.getByTestId("button-retry-full-track-a").waitFor();
+  assert.equal(await page.getByText("Retry live stems", { exact: true }).count(), 0,
+    "a full-track load error does not offer the unrelated stem retry");
+  const afterFailedReturn = await current.locator("audio").evaluateAll(elements => ({
+    count: elements.length,
+    playing: elements.every(element => !element.paused),
+    position: Math.max(...elements.map(element => element.currentTime)),
+  }));
+  assert.equal(afterFailedReturn.count, 4, "a failed full-track load removes only the staged source");
+  assert.ok(afterFailedReturn.playing, "all original stems continue playing after the source fails");
+  assert.ok(afterFailedReturn.position > beforeFailedReturn, "the current stem mix advances while the source is unavailable");
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+    "a failed source load leaves the master level unchanged");
+  assert.equal(await page.getByTestId("session-play").getAttribute("aria-pressed"), "true",
+    "the transport remains in the playing state after the source fails");
+
+  failAsset = null;
+  const retryPosition = afterFailedReturn.position;
+  const retryStartedAt = Date.now();
+  await page.getByTestId("button-retry-full-track-a").click();
+  await page.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+    return audio.length === 1 && audio[0].src.endsWith("/a-source") && audio[0].readyState >= 2 && !audio[0].paused;
+  });
+  const afterRetry = await current.locator("audio").evaluate(element => element.currentTime);
+  const expectedRetryPosition = retryPosition + (Date.now() - retryStartedAt) / 1000;
+  assert.ok(Math.abs(afterRetry - expectedRetryPosition) < 0.5,
+    `retry returns to the full track at the live playhead; expected ${expectedRetryPosition}, received ${afterRetry}`);
+  assert.equal(await page.getByTestId("session-play").getAttribute("aria-pressed"), "true",
+    "successful retry keeps playback active");
+  assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
+    "successful retry also preserves the master level");
+  const retryGains = await page.evaluate(() => window.audioProbe.sources.map(source => ({
+    url: source.mediaElement.src, gain: source.inputNode?.nextNode?.gain?.value,
+  })));
+  assert.ok(retryGains.filter(source => source.url.endsWith("/a-source")).at(-1)?.gain > 0.9,
+    "the retried original source is audible");
+  assert.ok(types.every(type => retryGains.filter(source => source.url.endsWith(`/a-${type}`)).at(-1)?.gain < 0.01),
+    "the stem layers are silent after the retry completes");
+
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile must not overflow");
-  console.log("PASS: live swaps, seek/resume, gapless stem and full-track handoffs, mobile width");
+  console.log("PASS: live swaps, seek/resume, gapless handoffs, failed-source recovery, mobile width");
 } finally { await browser.close(); }

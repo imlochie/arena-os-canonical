@@ -461,6 +461,17 @@ function SessionDeck({
       {mediaError && /previous layer|replacement stem|live stem loading/i.test(mediaError) && (
         <button type="button" className="sess-small-btn" onClick={() => setSwapRetry((n) => n + 1)}>Retry live stems</button>
       )}
+      {mediaError && /full track could not (?:load|be prepared)/i.test(mediaError)
+        && item?.playback?.kind === "stems" && onReturnToSource && (
+        <button
+          type="button"
+          className="sess-small-btn"
+          data-testid={`button-retry-full-track-${item.id}`}
+          onClick={onReturnToSource}
+        >
+          Retry full track
+        </button>
+      )}
       {item === null ? (
         <div className="wy-deck-empty">
           <span className="eyebrow">{`Deck ${deckIndex === 0 ? "A" : "B"} · ${active ? "current" : "next"}`}</span>
