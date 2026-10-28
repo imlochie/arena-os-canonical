@@ -755,6 +755,9 @@ export const projectAuditEvents = pgTable("project_audit_events", {
 export const tracks = pgTable("wy_tracks", {
   id: uuid("id").defaultRandom().primaryKey(),
   ownerId: uuid("owner_id").notNull(),
+  // Nullable for tracks created before checksum-based intake was enforced.
+  // New library uploads always populate this and are unique per owner.
+  sourceChecksumSha256: text("source_checksum_sha256"),
   title: text("title").notNull(),
   artist: text("artist").notNull().default(""),
   album: text("album").notNull().default(""),
@@ -771,6 +774,9 @@ export const tracks = pgTable("wy_tracks", {
   ...timestamps,
 }, (table) => [
   uniqueIndex("wy_tracks_source_asset_unique").on(table.sourceAssetId),
+  uniqueIndex("wy_tracks_owner_source_checksum_unique")
+    .on(table.ownerId, table.sourceChecksumSha256)
+    .where(sql`${table.sourceChecksumSha256} is not null`),
   index("wy_tracks_owner_last_played_idx").on(table.ownerId, table.lastPlayedAt),
   index("wy_tracks_project_id_idx").on(table.projectId),
 ]);

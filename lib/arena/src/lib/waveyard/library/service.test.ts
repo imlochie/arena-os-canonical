@@ -18,11 +18,13 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 
 const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..", "..", "..", "..");
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
+const RECOVERY_OWNER = "33333333-3333-4333-8333-333333333333";
 
 type ServiceModule = typeof import("./service");
 type SessionServiceModule = typeof import("./session-service");
@@ -106,6 +108,9 @@ before(async () => {
 
   postgresProcess = spawn(embeddedBinary("postgres"), [
     "-D", dataDir, "-p", String(port), "-h", "127.0.0.1", "-F",
+    // The system PostgreSQL fallback may have no /run/postgresql directory;
+    // these tests connect over TCP, so disable its unused Unix socket.
+    "-c", "unix_socket_directories=",
   ], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
 
   // Retry-safe readiness (Windows acceptance fix on 9431870): a pg Client
@@ -122,9 +127,14 @@ before(async () => {
 
   client = new Client({ connectionString: `postgresql://arena:arena-test@127.0.0.1:${port}/arena_library_test` });
   await client.connect();
-  const { applyMigrations } = await import("../../../../desktop/runtime/migrate");
-  const outcome = await applyMigrations({ client, migrationsDir: path.join(repoRoot, "desktop-migrations") });
-  assert.ok(outcome.applied.length >= 2, "canonical migrations must apply (initial + listening layer)");
+  const { migrate } = await import("../../../../../../desktop/database.mjs");
+  await migrate(client, path.join(repoRoot, "desktop-migrations"));
+  const appliedMigrations = await client.query("select name from arena_schema_migrations");
+  assert.ok(appliedMigrations.rows.length >= 2, "canonical migrations must apply (initial + listening layer)");
+  assert.ok(
+    appliedMigrations.rows.some((row) => row.name === "0017_library_track_checksum_idempotency.sql"),
+    "the upload checksum uniqueness migration must apply",
+  );
 
   // --- env BEFORE any app module import (db reads DATABASE_URL at load) ---
   process.env.DATABASE_URL = `postgresql://arena:arena-test@127.0.0.1:${port}/arena_library_test`;
@@ -217,6 +227,116 @@ test("duplicate audio is idempotent: same checksum returns the same track, no se
     1,
     "exactly one stored audio object",
   );
+});
+
+test("concurrent same-file uploads create one source, track, and separation job", async () => {
+  const firstPath = path.join(root!, "concurrent-original.wav");
+  const retryPath = path.join(root!, "concurrent-retry.wav");
+  writeWav(firstPath, 2, 440);
+  writeWav(retryPath, 2, 440);
+
+  const results = await Promise.all([
+    service.addTrackFromAudioFile({
+      ownerId: OTHER,
+      filePath: firstPath,
+      filename: "Concurrent Original.wav",
+      mimeType: "audio/wav",
+    }),
+    service.addTrackFromAudioFile({
+      ownerId: OTHER,
+      filePath: retryPath,
+      filename: "Concurrent Retry.wav",
+      mimeType: "audio/wav",
+    }),
+  ]);
+
+  assert.equal(results.filter((result) => result.created).length, 1);
+  assert.equal(results[0].track.id, results[1].track.id);
+
+  const ownerTracks = await db.db.select().from(schema.tracks).where(eq(schema.tracks.ownerId, OTHER));
+  assert.equal(ownerTracks.length, 1);
+  assert.ok(ownerTracks[0].sourceChecksumSha256);
+  const ownerSources = await db.db
+    .select({ id: schema.sourceAssets.id })
+    .from(schema.sourceAssets)
+    .innerJoin(schema.projects, eq(schema.sourceAssets.projectId, schema.projects.id))
+    .where(eq(schema.projects.ownerId, OTHER));
+  assert.equal(ownerSources.length, 1);
+  assert.equal(ownerTracks[0].sourceAssetId, ownerSources[0].id);
+  const separationJobs = await db.db
+    .select()
+    .from(schema.processingJobs)
+    .where(and(
+      eq(schema.processingJobs.sourceAssetId, ownerSources[0].id),
+      eq(schema.processingJobs.type, "separation"),
+    ));
+  assert.equal(separationJobs.length, 1);
+});
+
+test("retry links a committed source without creating a second separation job", async () => {
+  const filePath = path.join(root!, "interrupted-before-track.wav");
+  writeWav(filePath, 2, 550);
+  const checksum = await checksumFile(filePath);
+  const [project] = await db.db
+    .insert(schema.projects)
+    .values({
+      ownerId: RECOVERY_OWNER,
+      title: "Interrupted upload",
+      description: "Test recovery container",
+      kind: "library",
+      visibility: "private",
+    })
+    .returning({ id: schema.projects.id });
+  const [source] = await db.db
+    .insert(schema.sourceAssets)
+    .values({
+      projectId: project.id,
+      originalFilename: "Interrupted upload.wav",
+      mimeType: "audio/wav",
+      storageKey: `${project.id}/source/interrupted.wav`,
+      checksumSha256: checksum,
+      durationSeconds: 2,
+      sampleRate: 44100,
+      channels: 1,
+      codec: "pcm_s16le",
+      bitrate: null,
+      fileSizeBytes: 176444,
+    })
+    .returning({ id: schema.sourceAssets.id });
+  await db.db.insert(schema.processingJobs).values({
+    projectId: project.id,
+    sourceAssetId: source.id,
+    type: "separation",
+    status: "queued",
+    idempotencyKey: `separation:${source.id}:test-model`,
+    model: "test-model",
+    requestedDevice: "cpu",
+  });
+
+  const retried = await service.addTrackFromAudioFile({
+    ownerId: RECOVERY_OWNER,
+    filePath,
+    filename: "Recovered Track.wav",
+    mimeType: "audio/wav",
+  });
+  assert.equal(retried.created, true);
+  assert.equal(retried.separationQueued, true);
+
+  const recoveredTracks = await db.db
+    .select()
+    .from(schema.tracks)
+    .where(eq(schema.tracks.ownerId, RECOVERY_OWNER));
+  assert.equal(recoveredTracks.length, 1);
+  assert.equal(recoveredTracks[0].sourceAssetId, source.id);
+  assert.equal(recoveredTracks[0].sourceChecksumSha256, checksum);
+  const separationJobs = await db.db
+    .select()
+    .from(schema.processingJobs)
+    .where(and(
+      eq(schema.processingJobs.sourceAssetId, source.id),
+      eq(schema.processingJobs.type, "separation"),
+    ));
+  assert.equal(separationJobs.length, 1);
 });
 
 test("track detail resolves source, stems, analysis, and the studio handoff project", async () => {

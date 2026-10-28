@@ -21,7 +21,7 @@
 
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 
-import { db } from "@workspace/db";
+import { db, pool } from "@workspace/db";
 import {
   listenSessions,
   listenSessionTracks,
@@ -213,6 +213,34 @@ export interface AddTrackResult {
 }
 
 /**
+ * Serialize library intake for the same owner and audio content across API
+ * processes. The lock is session-scoped because ingestion uses the shared DB
+ * pool and must not hold an open transaction while writing files/enqueuing.
+ */
+async function withLibraryUploadLock<T>(
+  ownerId: string,
+  checksum: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  const lockKey = `waveyard-library-upload:${ownerId}:${checksum}`;
+  let locked = false;
+  try {
+    await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [lockKey]);
+    locked = true;
+    return await operation();
+  } finally {
+    try {
+      if (locked) {
+        await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [lockKey]);
+      }
+    } finally {
+      client.release();
+    }
+  }
+}
+
+/**
  * Add an audio FILE as MUSIC: create (or reuse) the library container
  * project, run the existing source-intake pipeline (probe, checksum, private
  * storage, separation/waveform jobs), and create the listening Track.
@@ -232,57 +260,102 @@ export async function addTrackFromAudioFile(input: {
 }): Promise<AddTrackResult> {
   const checksum = await checksumFile(input.filePath);
 
-  const [existing] = await db
-    .select(trackSelection)
-    .from(tracks)
-    .innerJoin(sourceAssets, eq(tracks.sourceAssetId, sourceAssets.id))
-    .where(and(eq(tracks.ownerId, input.ownerId), eq(sourceAssets.checksumSha256, checksum)))
-    .orderBy(desc(tracks.createdAt))
-    .limit(1);
-  if (existing !== undefined) {
-    const [summary] = await summariesFor([existing]);
-    return { track: summary, created: false, separationQueued: false };
-  }
+  return withLibraryUploadLock(input.ownerId, checksum, async () => {
+    const [existing] = await db
+      .select(trackSelection)
+      .from(tracks)
+      .innerJoin(sourceAssets, eq(tracks.sourceAssetId, sourceAssets.id))
+      .where(and(eq(tracks.ownerId, input.ownerId), eq(sourceAssets.checksumSha256, checksum)))
+      .orderBy(desc(tracks.createdAt))
+      .limit(1);
+    if (existing !== undefined) {
+      const [summary] = await summariesFor([existing]);
+      return { track: summary, created: false, separationQueued: false };
+    }
 
-  const derived = deriveTrackMetadata(input.filename);
-  const title = (input.title ?? "").trim() || derived.title;
-  const artist = (input.artist ?? "").trim() || derived.artist;
+    const derived = deriveTrackMetadata(input.filename);
+    const title = (input.title ?? "").trim() || derived.title;
+    const artist = (input.artist ?? "").trim() || derived.artist;
 
-  const [container] = await db
-    .insert(projects)
-    .values({
-      ownerId: input.ownerId,
-      title: libraryContainerProjectName(title),
-      description: "Waveyard library container — created automatically when this track was added as music.",
-      kind: "library",
-      visibility: "private",
-    })
-    .returning({ id: projects.id });
+    // A previous request may have completed source/job creation but lost its
+    // client before it inserted the library track. Reuse that committed intake
+    // rather than storing the same audio and scheduling another job.
+    const [orphanedIntake] = await db
+      .select({ source: sourceAssets, projectId: projects.id })
+      .from(sourceAssets)
+      .innerJoin(projects, eq(sourceAssets.projectId, projects.id))
+      .where(and(
+        eq(projects.ownerId, input.ownerId),
+        eq(projects.kind, "library"),
+        eq(sourceAssets.checksumSha256, checksum),
+      ))
+      .orderBy(asc(sourceAssets.createdAt))
+      .limit(1);
 
-  const ingest = await ingestSourceFile({
-    projectId: container.id,
-    filePath: input.filePath,
-    filename: input.filename,
-    mimeType: input.mimeType,
-    model: input.model ?? defaultSeparationModel(),
-    device: input.device ?? "auto",
-    provenance: { method: "local-upload", title, artist, metadata: { intake: "waveyard-library" } },
-  });
+    if (orphanedIntake !== undefined) {
+      const [row] = await db
+        .insert(tracks)
+        .values({
+          ownerId: input.ownerId,
+          sourceChecksumSha256: checksum,
+          title,
+          artist,
+          album: "",
+          sourceAssetId: orphanedIntake.source.id,
+          projectId: orphanedIntake.projectId,
+          durationSeconds: orphanedIntake.source.durationSeconds,
+        })
+        .returning(trackSelection);
+      const [summary] = await summariesFor([row]);
+      const [activeSeparation] = await db
+        .select({ id: processingJobs.id })
+        .from(processingJobs)
+        .where(and(
+          eq(processingJobs.sourceAssetId, orphanedIntake.source.id),
+          eq(processingJobs.type, "separation"),
+          inArray(processingJobs.status, ["queued", "running"]),
+        ))
+        .limit(1);
+      return { track: summary, created: true, separationQueued: activeSeparation !== undefined };
+    }
 
-  const [row] = await db
-    .insert(tracks)
-    .values({
-      ownerId: input.ownerId,
-      title,
-      artist,
-      album: "",
-      sourceAssetId: ingest.source.id,
+    const [container] = await db
+      .insert(projects)
+      .values({
+        ownerId: input.ownerId,
+        title: libraryContainerProjectName(title),
+        description: "Waveyard library container — created automatically when this track was added as music.",
+        kind: "library",
+        visibility: "private",
+      })
+      .returning({ id: projects.id });
+
+    const ingest = await ingestSourceFile({
       projectId: container.id,
-      durationSeconds: ingest.source.durationSeconds,
-    })
-    .returning(trackSelection);
-  const [summary] = await summariesFor([row]);
-  return { track: summary, created: true, separationQueued: ingest.separationQueued };
+      filePath: input.filePath,
+      filename: input.filename,
+      mimeType: input.mimeType,
+      model: input.model ?? defaultSeparationModel(),
+      device: input.device ?? "auto",
+      provenance: { method: "local-upload", title, artist, metadata: { intake: "waveyard-library" } },
+    });
+
+    const [row] = await db
+      .insert(tracks)
+      .values({
+        ownerId: input.ownerId,
+        sourceChecksumSha256: checksum,
+        title,
+        artist,
+        album: "",
+        sourceAssetId: ingest.source.id,
+        projectId: container.id,
+        durationSeconds: ingest.source.durationSeconds,
+      })
+      .returning(trackSelection);
+    const [summary] = await summariesFor([row]);
+    return { track: summary, created: true, separationQueued: ingest.separationQueued };
+  });
 }
 
 // ------------------------------------------------------------- track reading
