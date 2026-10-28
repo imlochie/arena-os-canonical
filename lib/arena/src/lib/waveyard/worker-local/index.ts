@@ -18,7 +18,7 @@ import {
   WAVEFORM_QUEUE,
 } from "@workspace/arena/lib/waveyard/queue";
 import { getLocalJobBroker, localWorkerActive, type LocalJobBroker } from "./broker";
-import { handleWaveformJob } from "./waveform";
+import { cleanupOrphanedWaveformObjects, handleWaveformJob } from "./waveform";
 import { handleSeparationJob } from "./separation";
 import { handleSourceAnalysisJob } from "./analysis";
 import { handleSectionAnalysisJob } from "./sections";
@@ -35,6 +35,9 @@ export function startLocalWorker(): LocalJobBroker | null {
   if (!localWorkerActive()) return null;
   const broker = getLocalJobBroker();
   if (broker.hasHandler(WAVEFORM_QUEUE)) return broker; // idempotent across module graphs
+  void cleanupOrphanedWaveformObjects().catch((error) => {
+    console.warn("Waveform orphan cleanup failed; it will retry after the next worker restart.", error);
+  });
   broker.register(WAVEFORM_QUEUE, handleWaveformJob);
   broker.register(SEPARATION_QUEUE, handleSeparationJob);
   broker.register(SOURCE_ANALYSIS_QUEUE, handleSourceAnalysisJob);

@@ -23,6 +23,7 @@ import {
 import { randomUUID } from "node:crypto";
 
 export type StorageRead = { stream: Readable; size: number; start: number; end: number };
+export type StorageObject = { key: string; lastModified: Date };
 
 export interface StorageProvider {
   readonly kind: "local";
@@ -33,6 +34,7 @@ export interface StorageProvider {
   getBuffer(key: string, maxBytes: number): Promise<Buffer>;
   exists(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
+  listObjects(prefix: string): Promise<StorageObject[]>;
   createDownloadUrl(
     key: string,
     expiresInSeconds: number,
@@ -109,6 +111,31 @@ export class LocalStorageProvider implements StorageProvider {
   }
   async delete(key: string) {
     await fs.rm(safeLocalPath(this.root, key), { force: true });
+  }
+  async listObjects(prefix: string): Promise<StorageObject[]> {
+    const directory = safeLocalPath(this.root, prefix);
+    const objects: StorageObject[] = [];
+    const visit = async (currentDirectory: string) => {
+      let entries;
+      try {
+        entries = await fs.readdir(currentDirectory, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+      for (const entry of entries) {
+        const location = resolve(currentDirectory, entry.name);
+        if (entry.isDirectory()) {
+          await visit(location);
+        } else if (entry.isFile()) {
+          const details = await fs.stat(location);
+          const key = relative(this.root, location).split(sep).join("/");
+          objects.push({ key, lastModified: details.mtime });
+        }
+      }
+    };
+    await visit(directory);
+    return objects;
   }
   async createDownloadUrl(
     _key: string,

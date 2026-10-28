@@ -23,13 +23,58 @@ import type { drizzle } from "drizzle-orm/node-postgres";
 import { db } from "@workspace/db";
 import { sourceAnalyses, sourceAssets, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
 import { checksumFile, generateWaveform } from "@workspace/arena/lib/waveyard/audio";
-import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
+import { getStorage, privateObjectKey, type StorageProvider } from "@workspace/arena/lib/waveyard/storage";
 import { enqueueSourceAnalysis } from "@workspace/arena/lib/waveyard/queue";
 import type { WaveformJobPayload } from "@workspace/arena/lib/waveyard/types";
 import { DESKTOP_ANALYSIS_ENGINE, DESKTOP_ANALYSIS_ENGINE_VERSION } from "./analysis-engine";
 
+export const ORPHAN_WAVEFORM_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000;
+const GENERATED_WAVEFORM_KEY = /^projects\/[^/]+\/waveform\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/i;
+
 export function desktopAnalysisIdempotencyKey(sourceAssetId: string) {
   return `analysis:${sourceAssetId}:${DESKTOP_ANALYSIS_ENGINE}:${DESKTOP_ANALYSIS_ENGINE_VERSION}`;
+}
+
+/**
+ * Remove only old, generated waveform objects that have no canonical asset row.
+ * The grace period protects an upload while its finalization transaction is
+ * still in flight, including when the database query races with a new upload.
+ */
+export async function cleanupOrphanedWaveformObjects(
+  dependencies: {
+    db?: ReturnType<typeof drizzle>;
+    storage?: StorageProvider;
+    now?: Date;
+    gracePeriodMs?: number;
+  } = {},
+): Promise<string[]> {
+  const database = dependencies.db ?? db;
+  const storage = dependencies.storage ?? getStorage();
+  const now = dependencies.now ?? new Date();
+  const gracePeriodMs = dependencies.gracePeriodMs ?? ORPHAN_WAVEFORM_GRACE_PERIOD_MS;
+  if (!Number.isFinite(now.getTime()) || !Number.isSafeInteger(gracePeriodMs) || gracePeriodMs < 1) {
+    throw new Error("A valid cleanup time and positive grace period are required.");
+  }
+
+  const cutoff = now.getTime() - gracePeriodMs;
+  const [objects, assets] = await Promise.all([
+    storage.listObjects("projects"),
+    database.select({ storageKey: waveformAssets.storageKey }).from(waveformAssets),
+  ]);
+  const referencedKeys = new Set(assets.map((asset) => asset.storageKey));
+  const removed: string[] = [];
+  for (const object of objects) {
+    if (
+      !GENERATED_WAVEFORM_KEY.test(object.key) ||
+      object.lastModified.getTime() > cutoff ||
+      referencedKeys.has(object.key)
+    ) {
+      continue;
+    }
+    await storage.delete(object.key);
+    removed.push(object.key);
+  }
+  return removed;
 }
 
 async function updateJob(database: ReturnType<typeof drizzle>, id: string, patch: Partial<typeof waveformJobs.$inferInsert>) {

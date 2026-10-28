@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -18,13 +18,61 @@ import { DEEP_STEM_TYPES } from "@workspace/arena/lib/waveyard/separation/modes"
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
 import { handleSeparationJob } from "./separation";
-import { handleWaveformJob } from "./waveform";
+import { cleanupOrphanedWaveformObjects, handleWaveformJob, ORPHAN_WAVEFORM_GRACE_PERIOD_MS } from "./waveform";
 import { LocalJobBroker } from "./broker";
 import { fixture, identityEngine, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 import { recoverInterruptedLocalSeparationJobs, recoverPendingLocalWaveformJobs } from "./recovery";
 
 const KIM = findMdxModel("kim_vocal_2")!;
 type Fixture = SeparationFixture;
+
+test("waveform cleanup removes only old unreferenced generated objects", async () => {
+  const f = await fixture();
+  try {
+    const storage = getStorage();
+    const referencedKey = privateObjectKey(f.project.id, "waveform", "json");
+    const orphanKey = privateObjectKey(f.project.id, "waveform", "json");
+    const recentKey = privateObjectKey(f.project.id, "waveform", "json");
+    for (const key of [referencedKey, orphanKey, recentKey]) {
+      await storage.putBuffer(key, "{}");
+    }
+
+    const [waveformJob] = await f.database
+      .insert(waveformJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        status: "complete",
+        stage: "complete",
+        idempotencyKey: `waveform:cleanup-test:${f.source.id}`,
+      })
+      .returning();
+    await f.database.insert(waveformAssets).values({
+      projectId: f.project.id,
+      sourceAssetId: f.source.id,
+      waveformJobId: waveformJob.id,
+      storageKey: referencedKey,
+      checksumSha256: "a".repeat(64),
+    });
+
+    const oldTime = new Date(Date.now() - ORPHAN_WAVEFORM_GRACE_PERIOD_MS - 60_000);
+    const orphanPath = storage.getLocalPath(orphanKey)!;
+    await utimes(orphanPath, oldTime, oldTime);
+
+    const removed = await cleanupOrphanedWaveformObjects({
+      db: f.database,
+      storage,
+      now: new Date(),
+    });
+
+    assert.deepEqual(removed, [orphanKey]);
+    assert.equal(await storage.exists(referencedKey), true, "an object with a matching asset row is retained");
+    assert.equal(await storage.exists(recentKey), true, "a recently-created orphan is retained");
+    assert.equal(await storage.exists(orphanKey), false, "an old unreferenced waveform object is removed");
+  } finally {
+    await f.close();
+  }
+});
 
 test("full pipeline: fake identity session → stems stored, decoded back, and arithmetically exact", async () => {
   const f = await fixture();
