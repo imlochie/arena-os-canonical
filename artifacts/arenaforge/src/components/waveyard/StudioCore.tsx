@@ -130,6 +130,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const saveRevision = useRef(0);
+  const mountedRef = useRef(false);
   const transport = useStemTransport(ids, duration);
   const { setLoop, seek: seekTransport } = transport;
   const seekArrangementPosition = useCallback((milliseconds: number) => seekTransport(milliseconds / 1000), [seekTransport]);
@@ -250,7 +251,6 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
       end: (loopEndMs ?? 0) / 1000,
     });
   }, [loopEndMs, loopStartMs, setLoop]);
-  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setPlayerFullscreen(false); setVisualFullscreen(false); } };
     window.addEventListener("keydown", escape);
@@ -262,7 +262,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
     const revision = saveRevision.current;
     const save = async () => {
       if (remixRef.current?.id !== next.id || revision !== saveRevision.current) return;
-      setSaveState("saving");
+      if (mountedRef.current) setSaveState("saving");
       let response: Response;
       try {
         response = await fetch(`/api/remixes/${next.id}`, {
@@ -271,27 +271,29 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
           body: JSON.stringify(remixState(next)),
         });
       } catch {
-        if (remixRef.current?.id === next.id) {
+        if (mountedRef.current && remixRef.current?.id === next.id) {
           setSaveState(revision === saveRevision.current ? "failed" : "unsaved");
         }
         return;
       }
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        if (remixRef.current?.id === next.id) {
+        if (mountedRef.current && remixRef.current?.id === next.id) {
           setSaveState(revision === saveRevision.current ? "failed" : "unsaved");
         }
         return;
       }
       if (remixRef.current?.id !== next.id) return;
       if (revision !== saveRevision.current) {
-        setSaveState("unsaved");
+        if (mountedRef.current) setSaveState("unsaved");
         return;
       }
       const persisted = remixFromResponse(body);
       remixRef.current = persisted;
-      setRemix(persisted);
-      setSaveState("saved");
+      if (mountedRef.current) {
+        setRemix(persisted);
+        setSaveState("saved");
+      }
     };
     const queuedSave = saveQueue.current.then(save, save);
     saveQueue.current = queuedSave.then(() => undefined, () => undefined);
@@ -311,6 +313,18 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = null;
     void persist();
+  }, [persist]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (!saveTimer.current) return;
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      // An in-app route change should not discard an edit still inside the
+      // debounce window. Queue the latest arrangement before unmount completes.
+      void persist(remixRef.current);
+    };
   }, [persist]);
 
   const loadRemix = useCallback(async (id: string) => {

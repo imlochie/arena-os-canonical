@@ -70,6 +70,12 @@ export class StemSwapRefusedError extends Error {
   }
 }
 
+export class StudioHandoffSelectionError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
 // ------------------------------------------------------------------ shapes
 
 export interface SessionTrackPayload {
@@ -597,10 +603,29 @@ export interface StudioHandoffResult {
  * stem asset (separation never ran AND no passthrough bridge) are refused
  * honestly by name, because a remix track requires real audio to bind.
  */
-export async function sendSessionToStudio(ownerId: string, sessionId: string): Promise<StudioHandoffResult> {
+export async function sendSessionToStudio(
+  ownerId: string,
+  sessionId: string,
+  selectedSessionTrackIds?: string[],
+): Promise<StudioHandoffResult> {
   await requireUser();
   const detail = await sessionPayload(sessionId);
   await ownedSession(ownerId, sessionId);
+  let selectedTracks = detail.tracks;
+  if (selectedSessionTrackIds !== undefined) {
+    const selectedIds = new Set(selectedSessionTrackIds);
+    if (selectedIds.size === 0) {
+      throw new StudioHandoffSelectionError("Select at least one session track to send to Studio.");
+    }
+    if (selectedIds.size !== selectedSessionTrackIds.length) {
+      throw new StudioHandoffSelectionError("The Studio selection contains duplicate session tracks.");
+    }
+    const availableIds = new Set(detail.tracks.map((entry) => entry.id));
+    if (selectedSessionTrackIds.some((id) => !availableIds.has(id))) {
+      throw new StudioHandoffSelectionError("One or more selected entries no longer belong to this session. Refresh and try again.");
+    }
+    selectedTracks = detail.tracks.filter((entry) => selectedIds.has(entry.id));
+  }
 
   const bindable: Array<{
     sessionTrack: SessionTrackPayload;
@@ -611,7 +636,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
   }> = [];
   const refused: Array<{ title: string; reason: string }> = [];
   let timelineStartMs = 0;
-  for (const sessionTrack of detail.tracks) {
+  for (const sessionTrack of selectedTracks) {
     const trackDetail = await getTrack(ownerId, sessionTrack.track.id);
     if (trackDetail === null) {
       refused.push({ title: sessionTrack.track.title, reason: "The source track is no longer available." });
@@ -659,7 +684,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
     .values({
       ownerId,
       title: `Session · ${detail.name}`,
-      description: `Derived from listening session “${detail.name}” (${detail.tracks.length} tracks). Original tracks and stems are referenced, never copied or modified.`,
+      description: `Derived from listening session “${detail.name}” (${selectedTracks.length} of ${detail.tracks.length} entries selected). Original tracks and stems are referenced, never copied or modified.`,
       kind: "studio",
       visibility: "private",
     })

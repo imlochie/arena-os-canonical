@@ -7,4 +7,4 @@ Keep session fixture pages mounted while practical. When navigation is part of a
 
 **Why:** A pagehide keepalive can bypass Playwright routing and send fake session data to the real API. Browser media caching can bypass a simulated outage, and playback time advances after a seek before later assertions run.
 
-**How to apply:** Serve audio fixtures with `Cache-Control: no-store` for failure cases. Record recipient time when each donor buffer starts and compare offsets modulo donor duration. For cancellation, hold the donor fetch, cancel through the UI, verify the original clock and gain continue with no donor buffer created, then release the held route before teardown.
+**How to apply:** Serve audio fixtures with `Cache-Control: no-store` for failure cases. Record recipient time when each donor buffer starts; normalize both offset and recipient clock modulo donor duration, then compare circular distance so end-of-loop and start-of-loop values match. For cancellation, hold the donor fetch, cancel through the UI, verify the original clock and gain continue with no donor buffer created, then release the held route before teardown.

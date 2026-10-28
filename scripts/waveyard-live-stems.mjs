@@ -230,12 +230,16 @@ try {
     if (failStudioHandoff) {
       return route.fulfill({ status: 503, json: { error: "Studio is temporarily unavailable. Try again." } });
     }
+    const body = route.request().postDataJSON();
+    assert.ok(Array.isArray(body?.sessionTrackIds), "the handoff sends an explicit session-entry selection");
+    const selectedIds = new Set(body.sessionTrackIds);
+    assert.equal(selectedIds.size, body.sessionTrackIds.length, "a session entry can only be selected once");
     let timelineStartMs = 0;
     const sources = [];
     const stems = [];
     const remixTracks = [];
     const refused = [];
-    for (const item of session.tracks) {
+    for (const item of session.tracks.filter(entry => selectedIds.has(entry.id))) {
       if (item.stems.length === 0) {
         refused.push({ title: item.track.title, reason: "No separated stems or full-source audio are available." });
         continue;
@@ -510,11 +514,14 @@ try {
       offset: b.startedOffset, recipientTimeAtStart: b.recipientTimeAtStart,
     })),
   }));
-  const offsetError = (source) => Math.min(
-    Math.abs(source.offset - (source.recipientTimeAtStart % 8)),
-    8 - Math.abs(source.offset - (source.recipientTimeAtStart % 8)),
-  );
-  assert.ok(donorResume.sources.every(source => Number.isFinite(source.recipientTimeAtStart) && offsetError(source) < 0.15),
+  const loopOffsetError = (offset, recipientTime, duration) => {
+    const actual = ((offset % duration) + duration) % duration;
+    const expected = ((recipientTime % duration) + duration) % duration;
+    const difference = Math.abs(actual - expected);
+    return Math.min(difference, duration - difference);
+  };
+  assert.ok(donorResume.sources.every(source =>
+    Number.isFinite(source.recipientTimeAtStart) && loopOffsetError(source.offset, source.recipientTimeAtStart, 8) < 0.15),
     `all four donors must follow original clock modulo duration: ${JSON.stringify(donorResume)}`);
   const currentVocals = page.locator('[data-role="current"]').getByLabel("vocals source", { exact: true });
   await currentVocals.selectOption("d");
@@ -525,7 +532,7 @@ try {
     offset: window.audioProbe.buffers.at(-1).startedOffset,
     recipientTimeAtStart: window.audioProbe.buffers.at(-1).recipientTimeAtStart,
   }));
-  const externalOffsetError = Math.abs(externalResume.offset - (externalResume.recipientTimeAtStart % 4));
+  const externalOffsetError = loopOffsetError(externalResume.offset, externalResume.recipientTimeAtStart, 4);
   assert.ok(Number.isFinite(externalResume.recipientTimeAtStart) && externalOffsetError < 0.15,
     `external library donor follows recipient clock: ${JSON.stringify(externalResume)}`);
   failAsset = "c-bass";
@@ -744,14 +751,28 @@ try {
   assert.equal(await page.getByLabel("vocals level, current deck").inputValue(), "0.42",
     "the live session loads its saved stem mix before handoff");
   const sourceAssetsBeforeHandoff = assetSnapshot();
+  await page.getByRole("button", { name: "Current only" }).click();
+  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "1 of 3 selected");
+  assert.equal(await page.getByRole("checkbox", { name: /session entry 1/ }).isChecked(), true,
+    "Current only keeps the playing session entry");
+  assert.equal(await page.getByRole("checkbox", { name: /session entry 2/ }).isChecked(), false);
+  await page.getByRole("checkbox", { name: /session entry 1/ }).uncheck();
+  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "0 of 3 selected");
+  assert.equal(await page.getByTestId("session-handoff").isDisabled(), true,
+    "an empty selection cannot be submitted");
+  await page.getByRole("button", { name: "Select all" }).click();
+  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "3 of 3 selected");
+  await page.getByRole("checkbox", { name: /Unavailable session track/ }).uncheck();
+  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "2 of 3 selected",
+    "listeners can exclude a session entry before creating the arrangement");
   await page.getByTestId("session-handoff").click();
   const studioLink = page.getByRole("link", { name: "Open in Studio" });
   await studioLink.waitFor();
   const handoffResult = await page.getByTestId("session-status").textContent();
   assert.match(handoffResult, /Sent to Studio as a derived arrangement/);
   assert.match(await studioLink.locator("xpath=..").textContent(), /8 remix tracks/);
-  assert.match(await studioLink.locator("xpath=..").textContent(), /Unavailable session track/);
-  assert.match(await studioLink.locator("xpath=..").textContent(), /No separated stems or full-source audio are available/);
+  assert.doesNotMatch(await studioLink.locator("xpath=..").textContent(), /Unavailable session track/,
+    "an unchecked entry is not sent to Studio or reported as a refusal");
   assert.equal(await studioLink.getAttribute("href"),
     `/waveyard/projects/${studioProjectId}?view=studio`,
     "the handoff link opens the derived project directly in Studio");
@@ -829,6 +850,25 @@ try {
     await page.getByLabel("Test a original.wav — Vocals arrangement volume").inputValue(),
     "0.79",
     "a pending autosave cannot reapply the edit after undo",
+  );
+  const exitTestVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
+  const exitSaveResponse = page.waitForResponse(response =>
+    response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
+  );
+  await exitTestVolume.fill("0.84");
+  await page.goBack();
+  await page.waitForURL(url => url.pathname === `/waveyard/session/${sessionId}`);
+  assert.ok((await exitSaveResponse).ok(), "leaving Studio flushes an edit still inside the autosave delay");
+  await page.goForward();
+  await page.waitForURL(url =>
+    url.pathname === `/waveyard/projects/${studioProjectId}` && url.searchParams.get("view") === "studio",
+  );
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  assert.equal(
+    await page.getByLabel("Test a original.wav — Vocals arrangement volume").inputValue(),
+    "0.84",
+    "a just-edited Studio value survives navigating away and back",
   );
   assert.deepEqual(assetSnapshot(), sourceAssetsBeforeHandoff,
     "creating and editing the derived arrangement leaves original audio assets unchanged");

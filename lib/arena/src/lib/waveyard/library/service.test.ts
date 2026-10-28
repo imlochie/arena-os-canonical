@@ -942,10 +942,21 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   const sessionBeforeHandoff = await sessions.getSession(OWNER, created.id);
   const sourcesBeforeHandoff = await db.db.select().from(schema.sourceAssets);
   const stemsBeforeHandoff = await db.db.select().from(schema.stemAssets);
-  const handoff = await sessions.sendSessionToStudio(OWNER, created.id);
+  const selectedEntry = sessionBeforeHandoff.tracks[0];
+  await assert.rejects(
+    () => sessions.sendSessionToStudio(OWNER, created.id, []),
+    sessions.StudioHandoffSelectionError,
+    "an empty handoff selection is rejected before creating a project",
+  );
+  await assert.rejects(
+    () => sessions.sendSessionToStudio(OWNER, created.id, [OTHER]),
+    sessions.StudioHandoffSelectionError,
+    "session entries from outside this session cannot be included",
+  );
+  const handoff = await sessions.sendSessionToStudio(OWNER, created.id, [selectedEntry.id]);
   assert.ok(handoff.projectId);
   assert.ok(handoff.remixSessionId);
-  const expectedAssets = sessionBeforeHandoff.tracks.flatMap((entry) => {
+  const expectedAssets = [selectedEntry].flatMap((entry) => {
     const separated = entry.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
     const playable = separated.length
       ? separated
@@ -961,8 +972,13 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   // The remix tracks reference the EXISTING stem asset rows — no new audio.
   const remixTrackRows = await db.db.select().from(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
   assert.equal(remixTrackRows.length, expectedAssets.length);
+  assert.deepEqual(
+    new Set(remixTrackRows.map((row) => row.stemAssetId)),
+    new Set(expectedAssets.map((entry) => entry.stemId)),
+    "only the selected session entry contributes remix tracks",
+  );
   const expectedVolumeByStemId = new Map(
-    sessionBeforeHandoff.tracks.flatMap((entry) =>
+    [selectedEntry].flatMap((entry) =>
       entry.stems.map((stem) => [stem.id, entry.stemMix[stem.stemType] ?? 1] as const),
     ),
   );
@@ -977,7 +993,7 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   const clips = await db.db.select().from(schema.remixClips);
   const handoffClips = clips.filter((clip) => remixTrackRows.some((track) => track.id === clip.remixTrackId));
   assert.equal(handoffClips.length, remixTrackRows.length, "each mixer lane opens as a visible timeline clip");
-  assert.ok(handoffClips.some((clip) => clip.timelineStartMs > 0), "later session tracks are placed after earlier tracks on the timeline");
+  assert.ok(handoffClips.every((clip) => clip.timelineStartMs === 0), "the selected subset is laid out from the start of the arrangement");
   assert.deepEqual(
     (await db.db.select().from(schema.sourceAssets)).sort((left, right) => left.id.localeCompare(right.id)),
     sourcesBeforeHandoff.sort((left, right) => left.id.localeCompare(right.id)),

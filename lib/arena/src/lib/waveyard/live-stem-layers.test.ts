@@ -7,6 +7,7 @@ afterEach(() => { globalThis.fetch = originalFetch; });
 
 function fixture() {
   const sources: Array<{ offset: number; stopped: boolean; loop: boolean }> = [];
+  const gains: Array<{ automation: Array<{ type: string; value?: number; time: number }> }> = [];
   const context = {
     currentTime: 5,
     decodeAudioData: async () => ({ duration: 3 }),
@@ -21,15 +22,24 @@ function fixture() {
       return source;
     },
     createGain() {
-      return {
-        context, connect() {}, disconnect() {},
+      const automation: Array<{ type: string; value?: number; time: number }> = [];
+      const node = {
+        context, automation, connect() {}, disconnect() {},
         gain: {
           value: 1,
-          cancelScheduledValues() {},
-          setValueAtTime(value: number) { this.value = value; },
-          linearRampToValueAtTime(value: number) { this.value = value; },
+          cancelScheduledValues(time: number) { automation.push({ type: "cancel", time }); },
+          setValueAtTime(value: number, time: number) {
+            this.value = value;
+            automation.push({ type: "set", value, time });
+          },
+          linearRampToValueAtTime(value: number, time: number) {
+            this.value = value;
+            automation.push({ type: "ramp", value, time });
+          },
         },
       };
+      gains.push(node);
+      return node;
     },
   };
   const media = { currentTime: 7, paused: false, ended: false };
@@ -38,7 +48,7 @@ function fixture() {
     () => context as unknown as AudioContext,
     () => channel as unknown as ReturnType<ConstructorParameters<typeof LiveStemLayers>[1]>,
   );
-  return { layers, channel, media, sources };
+  return { layers, channel, media, sources, gains };
 }
 
 function response(ok = true) {
@@ -59,6 +69,10 @@ test("preparation leaves original audible; ready donor joins the unchanged recip
     assert.equal(f.channel.inputGain.gain.value, 0);
     assert.equal(f.sources[0].offset, 1, "short donor wraps to recipient time modulo donor length");
     assert.equal(f.sources[0].loop, true);
+    const originalFade = f.channel.inputGain.automation.find(event => event.type === "ramp");
+    const donorFade = f.gains[2].automation.find(event => event.type === "ramp");
+    assert.deepEqual(originalFade, { type: "ramp", value: 0, time: 5.04 });
+    assert.deepEqual(donorFade, { type: "ramp", value: 1, time: 5.04 });
   } finally { f.layers.dispose(); }
 });
 
@@ -116,6 +130,10 @@ test("Original crossfades back and releases donor playback", async () => {
     await f.layers.replace("vocals", "/donor");
     await f.layers.replace("vocals", null);
     assert.equal(f.channel.inputGain.gain.value, 1);
+    const originalFadeBack = f.channel.inputGain.automation.filter(event => event.type === "ramp").at(-1);
+    const donorFadeOut = f.gains[2].automation.filter(event => event.type === "ramp").at(-1);
+    assert.deepEqual(originalFadeBack, { type: "ramp", value: 1, time: 5.04 });
+    assert.deepEqual(donorFadeOut, { type: "ramp", value: 0, time: 5.04 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(f.sources[0].stopped, true);
     f.layers.sync(["vocals"]);

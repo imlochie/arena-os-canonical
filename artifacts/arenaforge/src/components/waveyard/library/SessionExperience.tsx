@@ -603,6 +603,14 @@ export default function SessionExperience({
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
   const [mixSaveError, setMixSaveError] = useState(false);
   const [handoff, setHandoff] = useState<{ projectId: string; remixTrackCount: number; refused?: Array<{ title: string; reason: string }> } | null>(null);
+  const [studioTrackSelection, setStudioTrackSelection] = useState<{ sessionId: string; trackIds: string[] } | null>(null);
+  const studioSessionTrackIds = useMemo(() => session?.tracks.map((item) => item.id) ?? [], [session?.tracks]);
+  const selectedStudioTrackIds = useMemo(() => {
+    if (session === null) return [];
+    if (studioTrackSelection?.sessionId !== session.id) return studioSessionTrackIds;
+    const availableIds = new Set(studioSessionTrackIds);
+    return studioTrackSelection.trackIds.filter((id) => availableIds.has(id));
+  }, [session?.id, studioSessionTrackIds, studioTrackSelection]);
 
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [activeDeck, setActiveDeck] = useState<0 | 1>(0);
@@ -1601,9 +1609,17 @@ export default function SessionExperience({
   // -------------------------------------------------------- studio handoff
   const sendToStudio = useCallback(() => {
     if (session === null) return;
+    if (selectedStudioTrackIds.length === 0) {
+      setStatus("Select at least one session track to send to Studio.");
+      return;
+    }
     void (async () => {
       try {
-        const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, { method: "POST" });
+        const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionTrackIds: selectedStudioTrackIds }),
+        });
         if (!response.ok) {
           const body = (await response.json().catch(() => null)) as { error?: string } | null;
           setStatus(body?.error ?? "The Studio handoff failed.");
@@ -1615,7 +1631,7 @@ export default function SessionExperience({
         setStatus("The Studio handoff could not be saved.");
       }
     })();
-  }, [session]);
+  }, [session, selectedStudioTrackIds]);
 
   // ------------------------------------- hardware media keys
   useHardwareMediaKeys({
@@ -2101,8 +2117,82 @@ export default function SessionExperience({
             <Link href={`/waveyard/projects/${handoff.projectId}?view=studio`}>Open in Studio</Link>
           </p>
         )}
+        <fieldset className="sess-studio-picker">
+          <legend>Tracks to send to Studio</legend>
+          <div className="sess-studio-picker-header">
+            <span data-testid="studio-track-selection-count">
+              {selectedStudioTrackIds.length} of {session.tracks.length} selected
+            </span>
+            <div className="sess-studio-picker-actions">
+              <button
+                type="button"
+                className="button tiny"
+                disabled={currentItem === null}
+                onClick={() => {
+                  if (currentItem === null) return;
+                  setStudioTrackSelection({ sessionId: session.id, trackIds: [currentItem.id] });
+                  setHandoff(null);
+                  setStatus(null);
+                }}
+              >
+                Current only
+              </button>
+              <button
+                type="button"
+                className="button tiny"
+                disabled={selectedStudioTrackIds.length === session.tracks.length}
+                onClick={() => {
+                  setStudioTrackSelection({ sessionId: session.id, trackIds: studioSessionTrackIds });
+                  setHandoff(null);
+                  setStatus(null);
+                }}
+              >
+                Select all
+              </button>
+            </div>
+          </div>
+          <div className="sess-studio-picker-list">
+            {session.tracks.map((item, index) => (
+              <label className="sess-studio-picker-option" key={item.id}>
+                <input
+                  type="checkbox"
+                  checked={selectedStudioTrackIds.includes(item.id)}
+                  aria-label={`Include session entry ${index + 1}, ${item.track.title} by ${item.track.artist}, in Studio`}
+                  onChange={(event) => {
+                    const checked = event.currentTarget.checked;
+                    setStudioTrackSelection((previous) => {
+                      const currentIds = previous?.sessionId === session.id
+                        ? previous.trackIds.filter((id) => studioSessionTrackIds.includes(id))
+                        : studioSessionTrackIds;
+                      return {
+                        sessionId: session.id,
+                        trackIds: checked
+                          ? [...new Set([...currentIds, item.id])]
+                          : currentIds.filter((id) => id !== item.id),
+                      };
+                    });
+                    setHandoff(null);
+                    setStatus(null);
+                  }}
+                />
+                <span>
+                  Entry {index + 1}: {item.track.title}
+                  <small>{item.track.artist}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
         <div className="wy-drawer-actions sess-studio-action">
-          <button type="button" className="button secondary" onClick={sendToStudio} data-testid="session-handoff">Send to Studio</button>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={sendToStudio}
+            disabled={selectedStudioTrackIds.length === 0}
+            data-testid="session-handoff"
+          >
+            Send {selectedStudioTrackIds.length} to Studio
+          </button>
         </div>
 
         <div className="wy-decks">
