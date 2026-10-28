@@ -319,7 +319,63 @@ test("waveform recovery does not requeue a job completed after its pending read"
       .from(waveformJobs)
       .where(eq(waveformJobs.id, stillPending.id));
     assert.equal(requeued.status, "queued");
-    assert.equal(requeued.stage, "queued");
+    assert.equal(requeued.stage, "recovery-submitting");
+  } finally {
+    await f.close();
+  }
+});
+
+test("overlapping waveform recovery calls submit each pending job only once", async () => {
+  const f = await fixture();
+  try {
+    const firstJob = await createSourceWaveformJob(f);
+    const [unrelatedJob] = await f.database
+      .insert(waveformJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        status: "queued",
+        stage: "queued",
+        idempotencyKey: `waveform:recovery-overlap-unrelated:${f.source.id}`,
+      })
+      .returning();
+
+    let signalFirstEnqueue!: () => void;
+    const firstEnqueueStarted = new Promise<void>((resolve) => { signalFirstEnqueue = resolve; });
+    let releaseFirstEnqueue!: () => void;
+    const holdFirstEnqueue = new Promise<void>((resolve) => { releaseFirstEnqueue = resolve; });
+    const enqueued: string[] = [];
+    let enqueueCalls = 0;
+    const enqueue = async (payload: { waveformJobId: string }) => {
+      enqueued.push(payload.waveformJobId);
+      enqueueCalls += 1;
+      if (enqueueCalls === 1) {
+        signalFirstEnqueue();
+        await holdFirstEnqueue;
+      }
+    };
+
+    const firstRecoveryPromise = recoverPendingLocalWaveformJobs(f.database, enqueue);
+    await firstEnqueueStarted;
+    const secondRecoveryPromise = recoverPendingLocalWaveformJobs(f.database, enqueue);
+    // Let the second pass reach its conditional claim while the first still
+    // holds the row lock through enqueue.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseFirstEnqueue();
+    const [firstRecovery, secondRecovery] = await Promise.all([firstRecoveryPromise, secondRecoveryPromise]);
+
+    assert.deepEqual(enqueued.sort(), [firstJob.id, unrelatedJob.id].sort());
+    assert.equal(enqueued.length, 2, "each eligible waveform is submitted once across both recoveries");
+    assert.equal(enqueued.filter((id) => id === firstJob.id).length, 1);
+    assert.equal(enqueued.filter((id) => id === unrelatedJob.id).length, 1, "the unrelated job still recovers");
+    assert.deepEqual(
+      [...firstRecovery.enqueuedJobIds, ...secondRecovery.enqueuedJobIds].sort(),
+      [firstJob.id, unrelatedJob.id].sort(),
+    );
+    assert.deepEqual(
+      [...firstRecovery.failedJobIds, ...secondRecovery.failedJobIds],
+      [],
+    );
   } finally {
     await f.close();
   }

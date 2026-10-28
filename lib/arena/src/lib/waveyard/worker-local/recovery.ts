@@ -1,7 +1,7 @@
 import { readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/node-postgres";
 
 import { enqueueWaveform } from "@workspace/arena/lib/waveyard/queue";
@@ -10,6 +10,7 @@ import { processingJobs, waveformJobs } from "@workspace/db/waveyardSchema";
 
 const SEPARATION_TEMP_PREFIX = "arena-separation-";
 const PENDING_WAVEFORM_STATUSES = ["queued", "preparing", "processing", "finalizing"];
+const WAVEFORM_RECOVERY_CLAIM_STAGE = "recovery-submitting";
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -105,68 +106,79 @@ export async function recoverPendingLocalWaveformJobs(
   const failedJobIds: string[] = [];
 
   for (const job of pending) {
-    // Do not reset a row that became terminal after the initial query.
-    const [claimed] = await db
-      .update(waveformJobs)
-      .set({
-        status: "queued",
-        stage: "queued",
-        errorCode: null,
-        errorMessage: null,
-        startedAt: null,
-        completedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(waveformJobs.id, job.id),
-        inArray(waveformJobs.status, PENDING_WAVEFORM_STATUSES),
-      ))
-      .returning();
-    if (!claimed) continue;
-    if (job.status !== "queued") resetJobIds.push(claimed.id);
-
-    const hasSource = claimed.sourceAssetId !== null;
-    const hasStem = claimed.stemAssetId !== null;
-    if (hasSource === hasStem) {
-      await db
+    const outcome = await db.transaction(async (tx) => {
+      // The row lock is held through enqueue. A competing recovery blocks on
+      // this conditional update, then sees the committed claim marker and
+      // skips the row. If this process dies before enqueue/commit, the claim
+      // rolls back with the transaction and a later startup can retry it.
+      const [claimed] = await tx
         .update(waveformJobs)
         .set({
-          status: "failed",
-          stage: "invalid-payload",
-          errorCode: "invalid_payload",
-          errorMessage: "The queued waveform job must reference exactly one source or stem.",
-          completedAt: new Date(),
+          status: "queued",
+          stage: WAVEFORM_RECOVERY_CLAIM_STAGE,
+          errorCode: null,
+          errorMessage: null,
+          startedAt: null,
+          completedAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(waveformJobs.id, claimed.id));
-      failedJobIds.push(claimed.id);
+        .where(and(
+          eq(waveformJobs.id, job.id),
+          inArray(waveformJobs.status, PENDING_WAVEFORM_STATUSES),
+          ne(waveformJobs.stage, WAVEFORM_RECOVERY_CLAIM_STAGE),
+        ))
+        .returning();
+      if (!claimed) return null;
+
+      const hasSource = claimed.sourceAssetId !== null;
+      const hasStem = claimed.stemAssetId !== null;
+      if (hasSource === hasStem) {
+        await tx
+          .update(waveformJobs)
+          .set({
+            status: "failed",
+            stage: "invalid-payload",
+            errorCode: "invalid_payload",
+            errorMessage: "The queued waveform job must reference exactly one source or stem.",
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(waveformJobs.id, claimed.id));
+        return { id: claimed.id, failed: true };
+      }
+
+      const payload: WaveformJobPayload = {
+        waveformJobId: claimed.id,
+        projectId: claimed.projectId,
+        ...(claimed.sourceAssetId ? { sourceAssetId: claimed.sourceAssetId } : {}),
+        ...(claimed.stemAssetId ? { stemAssetId: claimed.stemAssetId } : {}),
+      };
+      try {
+        await enqueue(payload);
+        return { id: claimed.id, failed: false };
+      } catch (error) {
+        await tx
+          .update(waveformJobs)
+          .set({
+            status: "failed",
+            stage: "queue-unavailable",
+            errorCode: "queue_unavailable",
+            errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(waveformJobs.id, claimed.id));
+        return { id: claimed.id, failed: true };
+      }
+    });
+    if (!outcome) continue;
+    if (job.status !== "queued") resetJobIds.push(outcome.id);
+    if (outcome.failed) {
+      failedJobIds.push(outcome.id);
       continue;
     }
-
-    const payload: WaveformJobPayload = {
-      waveformJobId: claimed.id,
-      projectId: claimed.projectId,
-      ...(claimed.sourceAssetId ? { sourceAssetId: claimed.sourceAssetId } : {}),
-      ...(claimed.stemAssetId ? { stemAssetId: claimed.stemAssetId } : {}),
-    };
-    try {
-      await enqueue(payload);
-      enqueuedJobIds.push(claimed.id);
-      requeuedJobIds.push(claimed.id);
-    } catch (error) {
-      await db
-        .update(waveformJobs)
-        .set({
-          status: "failed",
-          stage: "queue-unavailable",
-          errorCode: "queue_unavailable",
-          errorMessage: error instanceof Error ? error.message.slice(0, 1000) : "Queue unavailable.",
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(waveformJobs.id, claimed.id));
-      failedJobIds.push(claimed.id);
-    }
+    enqueuedJobIds.push(outcome.id);
+    requeuedJobIds.push(outcome.id);
   }
 
   return { resetJobIds, enqueuedJobIds, requeuedJobIds, failedJobIds };
