@@ -78,3 +78,24 @@ bundled. CUDA/GPU providers and FFmpeg are not bundled; use a PCM 44.1 kHz WAV
 for a CPU separation check unless FFmpeg is installed separately. This package
 still needs a real Windows Waveyard run before its speed or audio quality is
 verified.
+
+## Measure Waveyard on Windows
+
+After installing the rebuilt app, open Waveyard once and wait until it says
+“Stem engine ready” (use “Prepare stems” if needed), then close ArenaForge.
+Choose a real stereo PCM 16-bit, 44.1 kHz WAV under 15 minutes. With the
+workspace checkout and its installed dependencies on the Windows machine, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\desktop\Measure-Waveyard.ps1 `
+  -Executable "C:\path\to\ArenaForge.exe" `
+  -AudioPath "C:\path\to\song.wav"
+```
+
+The test uses a temporary app-data directory and reads the existing model cache;
+it does not modify the normal library or retain the audio. It measures import,
+separation, first playable stem timing, resolved model/device, machine and file
+metadata, process-tree memory, and verifies that four actual stems play while
+vocal isolation changes the live audio gains. It writes only that report to
+`generated-artifacts/windows-waveyard/report-<timestamp>.json`. Share the
+report, not the audio file, to finish the Windows measurement.
