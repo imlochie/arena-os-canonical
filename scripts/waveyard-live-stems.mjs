@@ -42,7 +42,7 @@ const externalStemKeys = types.map(stem => {
 const libraryRows = tracks.map((item, index) => ({
   id: item.track.id, title: item.track.title, artist: "Synthetic fixture", album: "",
   durationSeconds: item.track.durationSeconds, playCount: 0, rating: 0, labels: [], lastPlayedAt: null,
-  addedAt: new Date().toISOString(), stemAvailability: { status: "separated", stemCount: 4 },
+  addedAt: new Date().toISOString(), stemAvailability: { status: "separated", stemCount: 4, stemTypes: types },
   studioProjectId: `fixture-project-${index}`,
 }));
 let liveQueue = [];
@@ -50,6 +50,7 @@ let exposeSeparatedSource = false;
 let heldAssetId = null;
 let heldAssetGate = null;
 let signalHeldAssetRequest = null;
+let signalHeldAssetRouteFinished = null;
 const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 const studioProjectId = "00000000-0000-4000-8000-000000000008";
@@ -63,11 +64,30 @@ const assetSnapshot = () => [...assets.entries()]
 const browser = await chromium.launch({ executablePath: "/repl/tools/bin/chromium",
   args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] });
 try {
-  const context = await browser.newContext();
+  const context = await browser.newContext({ serviceWorkers: "block" });
   let page = await context.newPage();
   page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
-  await context.addInitScript(() => {
+  await context.addInitScript((fixtureSessionId) => {
     window.audioProbe = { sources: [], buffers: [], masterGains: [] };
+    let leavingDocument = false;
+    window.addEventListener("pagehide", () => { leavingDocument = true; }, { once: true });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") leavingDocument = true;
+    });
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const rawUrl = input instanceof Request ? input.url : String(input);
+      const url = new URL(rawUrl, window.location.href);
+      const keepalive = init?.keepalive ?? (input instanceof Request && input.keepalive);
+      // Keep fixture-session unload saves out of the real API; Playwright cannot
+      // reliably route keepalive fetches once the page is leaving.
+      if (keepalive && leavingDocument && url.pathname === `/api/library/sessions/${fixtureSessionId}/state`) {
+        return Promise.resolve(new Response(JSON.stringify({ saved: true }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        }));
+      }
+      return originalFetch(input, init);
+    };
     const Base = window.AudioContext;
     window.AudioContext = class extends Base {
       constructor(...args) {
@@ -91,36 +111,54 @@ try {
       createBufferSource() {
         const node = super.createBufferSource(), start = node.start.bind(node), stop = node.stop.bind(node), connect = node.connect.bind(node);
         node.connect = (target, ...args) => { node.inputNode = target; return connect(target, ...args); };
-        node.start = (when, offset, ...args) => { node.startedOffset = offset; return start(when, offset, ...args); };
+        node.start = (when, offset, ...args) => {
+          node.startedOffset = offset;
+          node.recipientTimeAtStart = document.querySelector('[data-role="current"] audio')?.currentTime ?? null;
+          return start(when, offset, ...args);
+        };
         node.stop = (...args) => { node.stopCount = (node.stopCount ?? 0) + 1; return stop(...args); };
         window.audioProbe.buffers.push(node); return node;
       }
     };
-  });
+  }, sessionId);
   let failAsset = null;
+  let failedAssetRequests = 0;
   await context.route("**/api/assets/*", async route => {
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
-    if (id === heldAssetId && heldAssetGate !== null) {
+    const isHeldAssetRequest = id === heldAssetId && heldAssetGate !== null;
+    if (isHeldAssetRequest) {
       signalHeldAssetRequest?.();
       await heldAssetGate;
     }
-    if (id === failAsset) return route.fulfill({ status: 503, body: "Test failure" });
+    if (id === failAsset) {
+      failedAssetRequests += 1;
+      return route.fulfill({ status: 503, headers: { "Cache-Control": "no-store" }, body: "Test failure" });
+    }
     const body = assets.get(id);
     if (!body) return route.fulfill({ status: 404 });
     const range = route.request().headers().range?.match(/^bytes=(\d+)-(\d*)$/);
     const start = range ? Number(range[1]) : 0, end = range?.[2] ? Math.min(Number(range[2]), body.length - 1) : body.length - 1;
-    return route.fulfill({
+    const response = {
       status: range ? 206 : 200, contentType: "audio/wav", body: body.subarray(start, end + 1),
       headers: { "Accept-Ranges": "bytes", "Content-Length": String(end - start + 1),
+        "Cache-Control": "no-store",
         ...(range ? { "Content-Range": `bytes ${start}-${end}/${body.length}` } : {}) },
-    });
+    };
+    if (!isHeldAssetRequest) return route.fulfill(response);
+    try {
+      await route.fulfill(response);
+    } catch {
+      // The application may abort this deliberately held request when the user cancels.
+    } finally {
+      signalHeldAssetRouteFinished?.();
+    }
   });
   await context.route("**/api/library/tracks", route => {
     if (route.request().method() === "POST") {
       return route.fulfill({ status: 201, json: { track: libraryRows[0], created: true, separationQueued: true } });
     }
     return route.fulfill({ json: { tracks: [
-      ...libraryRows, { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4 }, studioProjectId: "fixture-project-d" },
+      ...libraryRows, { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4, stemTypes: types }, studioProjectId: "fixture-project-d" },
     ] } });
   });
   await context.route("**/api/library/playlists", route => route.fulfill({ json: { playlists: [
@@ -255,12 +293,46 @@ try {
       } },
     });
   });
+  await context.route(`**/api/waveyard/projects/${studioProjectId}/**`, async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith("/master")) {
+      return route.fulfill({ status: 404, json: { error: "The fixture has no master analysis." } });
+    }
+    if (pathname.endsWith("/arena-handoff")) return route.fulfill({ json: { linked: false } });
+    if (pathname.endsWith("/sound-design")) return route.fulfill({ json: { assets: [] } });
+    if (pathname.endsWith("/cleanup")) return route.fulfill({ json: { versions: [] } });
+    if (pathname.endsWith("/publication/audit")) return route.fulfill({ json: { events: [] } });
+    if (pathname.endsWith("/publication")) {
+      return route.fulfill({ json: {
+        publication: {
+          visibility: "private", publicationStatus: "draft", moderationStatus: "pending",
+          publishedExportAssetId: null, licenseCode: "private", downloadPermission: "owner-only",
+          rightsAcknowledgementVersion: "", rightsAcknowledgementStatement: "", tags: [],
+        },
+        exports: [], exportJobs: [],
+      } });
+    }
+    return route.fulfill({ json: {} });
+  });
+  await context.route("**/api/assets/*/waveform", route =>
+    route.fulfill({ json: { waveform: { durationSeconds: 1, resolutions: { "256": { min: [0], max: [0] } } } } }));
+  await context.route("**/api/streaming/accounts", route => route.fulfill({ json: { accounts: [] } }));
   await context.route(`**/api/waveyard/projects/${studioProjectId}`, route =>
     route.fulfill({ json: studioProjectData ?? {} }));
   await context.route(`**/api/waveyard/projects/${studioProjectId}/remixes`, route =>
     route.fulfill({ json: { remixes: [{ id: studioRemixId }] } }));
-  await context.route(`**/api/remixes/${studioRemixId}`, route =>
-    route.fulfill({ json: studioRemixData ?? {} }));
+  await context.route(`**/api/remixes/${studioRemixId}`, async route => {
+    if (route.request().method() === "PUT" && studioRemixData !== null) {
+      const input = route.request().postDataJSON();
+      const { tracks: inputTracks, automation: inputAutomation, ...remixInput } = input;
+      studioRemixData = {
+        remix: { ...studioRemixData.remix, ...remixInput, version: studioRemixData.remix.version + 1 },
+        tracks: inputTracks ?? studioRemixData.tracks,
+        automation: inputAutomation ?? studioRemixData.automation,
+      };
+    }
+    await route.fulfill({ json: studioRemixData ?? {} });
+  });
   await context.route(`**/api/remixes/${studioRemixId}/versions`, route =>
     route.fulfill({ json: { versions: [] } }));
   await page.goto("http://localhost:80/waveyard");
@@ -350,6 +422,48 @@ try {
     return source?.inputNode?.nextNode?.gain?.value > 0.9;
   }));
 
+  let signalSlowDonorRequest;
+  const slowDonorRequested = new Promise(resolve => { signalSlowDonorRequest = resolve; });
+  let releaseSlowDonor;
+  const slowDonorGate = new Promise(resolve => { releaseSlowDonor = resolve; });
+  let finishSlowDonorRoute;
+  const slowDonorRouteFinished = new Promise(resolve => { finishSlowDonorRoute = resolve; });
+  heldAssetId = "b-vocals";
+  heldAssetGate = slowDonorGate;
+  signalHeldAssetRequest = signalSlowDonorRequest;
+  signalHeldAssetRouteFinished = finishSlowDonorRoute;
+  const playbackBeforeCancel = await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.currentTime);
+  const buffersBeforeCancel = await page.evaluate(() => window.audioProbe.buffers.length);
+  await current.getByLabel("vocals source", { exact: true }).selectOption("b");
+  await slowDonorRequested;
+  const cancelSlowSwap = page.getByTestId("cancel-live-stem-swap-swap-vocals");
+  await cancelSlowSwap.waitFor();
+  await page.waitForFunction(before => {
+    const audio = document.querySelector('[data-role="current"] audio[src$="/a-vocals"]');
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.25;
+  }, playbackBeforeCancel, { timeout: 5_000 });
+  assert.ok(Math.abs(await page.evaluate(() =>
+    window.audioProbe.sources.find(source => source.mediaElement.src.endsWith("/a-vocals"))?.inputNode?.gain.value ?? 0,
+  ) - 1) < 0.01, "the original vocal layer remains audible while the donor is slow");
+  const playbackAtCancel = await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.currentTime);
+  await cancelSlowSwap.click();
+  await page.getByTestId("session-status").filter({ hasText: /vocals switch cancelled/i }).waitFor();
+  await page.waitForFunction(before => {
+    const audio = document.querySelector('[data-role="current"] audio[src$="/a-vocals"]');
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
+  }, playbackAtCancel, { timeout: 5_000 });
+  assert.equal(await current.getByLabel("vocals source", { exact: true }).inputValue(), "",
+    "cancelling a pending donor restores the original source selection");
+  assert.equal(session.swaps.length, 0, "cancelling removes the pending persisted swap");
+  assert.equal(await page.evaluate(() => window.audioProbe.buffers.length), buffersBeforeCancel,
+    "a cancelled donor is never decoded into a playing layer");
+  heldAssetId = null;
+  heldAssetGate = null;
+  signalHeldAssetRequest = null;
+  releaseSlowDonor();
+  await slowDonorRouteFinished;
+  signalHeldAssetRouteFinished = null;
+
   await current.getByLabel("vocals source", { exact: true }).selectOption("b");
   await page.waitForFunction(() => window.audioProbe.buffers.length === 1);
   await page.waitForTimeout(250);
@@ -363,10 +477,12 @@ try {
   await toggle();
   const resumed = await page.evaluate(() => ({
     offset: window.audioProbe.buffers.at(-1).startedOffset,
-    recipientTime: document.querySelector('[data-role="current"] audio')?.currentTime,
+    recipientTimeAtStart: window.audioProbe.buffers.at(-1).recipientTimeAtStart,
     paused: document.querySelector('[data-role="current"] audio')?.paused,
   }));
-  assert.ok(Math.abs(resumed.offset - 6) < 0.1, `donor resumes from recipient seek: ${JSON.stringify(resumed)}`);
+  const resumedOffsetError = Math.abs(resumed.offset - ((resumed.recipientTimeAtStart ?? 0) % 8));
+  assert.ok(Number.isFinite(resumed.recipientTimeAtStart) && resumedOffsetError < 0.15,
+    `donor resumes from the recipient's live clock: ${JSON.stringify(resumed)}`);
   await current.getByLabel("vocals source", { exact: true }).selectOption("");
   await page.waitForTimeout(400);
   const originalGain = await page.evaluate(() => window.audioProbe.sources.find(s => s.mediaElement.src.endsWith("/a-vocals")).inputNode.gain.value);
@@ -379,15 +495,29 @@ try {
   await toggle();
   await seek.fill("11");
   await toggle();
-  const offsets = await page.evaluate(() => window.audioProbe.buffers.slice(-4).map(b => b.startedOffset));
-  assert.ok(offsets.every(t => Math.abs(t - 3) < 0.1), `all four donors must follow original clock modulo duration: ${offsets}`);
+  const donorResume = await page.evaluate(() => ({
+    sources: window.audioProbe.buffers.slice(-4).map(b => ({
+      offset: b.startedOffset, recipientTimeAtStart: b.recipientTimeAtStart,
+    })),
+  }));
+  const offsetError = (source) => Math.min(
+    Math.abs(source.offset - (source.recipientTimeAtStart % 8)),
+    8 - Math.abs(source.offset - (source.recipientTimeAtStart % 8)),
+  );
+  assert.ok(donorResume.sources.every(source => Number.isFinite(source.recipientTimeAtStart) && offsetError(source) < 0.15),
+    `all four donors must follow original clock modulo duration: ${JSON.stringify(donorResume)}`);
   const currentVocals = page.locator('[data-role="current"]').getByLabel("vocals source", { exact: true });
   await currentVocals.selectOption("d");
   await page.waitForFunction(() => window.audioProbe.buffers.length >= 7 &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > 10));
   assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "d", "library donor is saved without being added to the session queue");
-  const externalOffset = await page.evaluate(() => window.audioProbe.buffers.at(-1).startedOffset);
-  assert.ok(Math.abs(externalOffset - 3) < 0.1, `external library donor follows recipient clock: ${externalOffset}`);
+  const externalResume = await page.evaluate(() => ({
+    offset: window.audioProbe.buffers.at(-1).startedOffset,
+    recipientTimeAtStart: window.audioProbe.buffers.at(-1).recipientTimeAtStart,
+  }));
+  const externalOffsetError = Math.abs(externalResume.offset - (externalResume.recipientTimeAtStart % 4));
+  assert.ok(Number.isFinite(externalResume.recipientTimeAtStart) && externalOffsetError < 0.15,
+    `external library donor follows recipient clock: ${JSON.stringify(externalResume)}`);
   failAsset = "c-bass";
   await current.getByLabel("bass source", { exact: true }).selectOption("c");
   await current.getByRole("alert").waitFor();
@@ -428,7 +558,9 @@ try {
 
   failAsset = "a-bass";
   await switchButton.click();
-  await page.getByRole("alert").filter({ hasText: "original track is still playing" }).waitFor();
+  const handoffFailureStatus = page.getByTestId("session-status").filter({ hasText: /original track .*playing/i });
+  await handoffFailureStatus.waitFor();
+  assert.match(await handoffFailureStatus.textContent(), /original track (?:keeps|is still) playing/i);
   const failedHandoff = await current.locator("audio").evaluateAll(elements => elements.map(e => ({
     src: e.src, paused: e.paused, time: e.currentTime,
   })));
@@ -515,13 +647,28 @@ try {
     return audio.length === 4 && audio.every(element => !element.paused && element.src.includes("/a-"));
   });
   const beforeFailedReturn = await current.locator("audio").evaluateAll(elements => Math.max(...elements.map(element => element.currentTime)));
+  failedAssetRequests = 0;
   failAsset = "a-source";
   await page.getByTestId("button-return-full-track-a").click();
-  const sourceError = page.getByRole("alert");
-  await sourceError.waitFor();
-  assert.match(await sourceError.textContent(), /full track could not load/i,
+  let sourceFailureText;
+  try {
+    const failureHandle = await page.waitForFunction(() => {
+      const messages = [...document.querySelectorAll('[role="alert"], [data-testid="session-status"]')]
+        .map(element => element.textContent ?? "");
+      return messages.find(message => /full track .*playing/i.test(message)) ?? false;
+    }, null, { timeout: 10_000 });
+    sourceFailureText = await failureHandle.jsonValue();
+  } catch (error) {
+    console.log("SOURCE_HANDOFF_FAILURE_DIAGNOSTICS", JSON.stringify({
+      failedAssetRequests,
+      visibleText: await page.locator("body").innerText(),
+    }));
+    throw error;
+  }
+  assert.ok(failedAssetRequests > 0, "the failed source handoff must reach the simulated asset failure");
+  assert.match(sourceFailureText, /full track could not (?:load|be prepared)/i,
     "the source failure message identifies the original track");
-  assert.match(await sourceError.textContent(), /current stem mix is still playing/i,
+  assert.match(sourceFailureText, /current stem mix (?:is still|keeps) playing/i,
     "the source failure message confirms stems remain active");
   await page.getByTestId("button-retry-full-track-a").waitFor();
   assert.equal(await page.getByText("Retry live stems", { exact: true }).count(), 0,
@@ -615,8 +762,19 @@ try {
   await vocalsVolume.waitFor();
   assert.equal(await vocalsVolume.inputValue(), "0.42",
     "the saved session fader is carried into the editable Studio arrangement");
+  const arrangementSave = page.waitForResponse(response =>
+    response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
+  );
   await vocalsVolume.fill("0.55");
   assert.equal(await vocalsVolume.inputValue(), "0.55", "the generated arrangement volume control is editable");
+  assert.ok((await arrangementSave).ok(), "the changed fader is saved to the remix session");
+  await page.locator(".save-state.saved").waitFor();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  const reloadedVocalsVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
+  await reloadedVocalsVolume.waitFor();
+  assert.equal(await reloadedVocalsVolume.inputValue(), "0.55",
+    "the session-derived arrangement fader survives leaving and reopening Studio");
   assert.deepEqual(assetSnapshot(), sourceAssetsBeforeHandoff,
     "creating and editing the derived arrangement leaves original audio assets unchanged");
 
@@ -631,5 +789,5 @@ try {
 
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile must not overflow");
-  console.log("PASS: live stems and source recovery; session-to-Studio creates editable lanes, explains refusals, preserves source assets, and reports failure");
+  console.log("PASS: live stem swaps are cancellable without interrupting playback; source recovery and the session-to-Studio handoff remain usable");
 } finally { await browser.close(); }

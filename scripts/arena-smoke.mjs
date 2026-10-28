@@ -14,7 +14,10 @@ const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_PATH || "/repl/tools/bin/chromium",
   headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"],
 });
-const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const context = await browser.newContext({
+  viewport: { width: 1280, height: 900 },
+  serviceWorkers: "block",
+});
 await context.addInitScript(() => {
   if (window === window.top) {
     if (localStorage.getItem("af_local_mode") === null) localStorage.setItem("af_local_mode", "1");
@@ -22,7 +25,7 @@ await context.addInitScript(() => {
     if (localStorage.getItem("af_key_openrouter") === null) localStorage.setItem("af_key_openrouter", "arena-smoke-placeholder");
   }
 });
-const page = await context.newPage();
+let page = await context.newPage();
 const errors = [];
 page.on("pageerror", err => errors.push(err.message));
 const report = [];
@@ -250,9 +253,12 @@ try {
   const liveSessionTrackId = "arena-smoke-live-session-track";
   const liveCurrentTrackId = "arena-smoke-live-current-track";
   const liveDonorTrackId = "arena-smoke-live-donor-track";
+  const liveDrumsOnlyTrackId = "arena-smoke-live-drums-only-track";
+  const liveCamelotTrackId = "arena-smoke-live-camelot-track";
   const liveVocalsAssetId = "arena-smoke-live-vocals";
   const liveDrumsAssetId = "arena-smoke-live-drums";
   const liveDonorVocalsAssetId = "arena-smoke-live-donor-vocals";
+  const liveCamelotSourceAssetId = "arena-smoke-live-camelot-source";
   const liveCurrentItem = {
     id: liveSessionTrackId,
     position: 0,
@@ -266,37 +272,75 @@ try {
     playback: { kind: "stems", assetIds: [liveVocalsAssetId, liveDrumsAssetId] },
     stemMix: { vocals: 1, drums: 1 },
     transition: { mode: "manual", crossfadeSeconds: 0, keepStems: [] },
-    analysis: null,
+    analysis: { bpm: 120, musicalKey: "C major", beatGridMs: [0, 500, 1000, 1500] },
   };
+  const liveSessionTracks = [liveCurrentItem];
   let liveSwap = null;
   let liveSwapRequestCount = 0;
+  let liveTrackAddRequestCount = 0;
+  let liveTrackPatchRequestCount = 0;
   let liveDonorFetchCount = 0;
+  let resolveIsolatedMixSave;
+  const isolatedMixSaved = new Promise(resolve => { resolveIsolatedMixSave = resolve; });
   let mockLiveSessionActive = false;
   const liveSessionPayload = () => structuredClone({
     id: liveSessionId,
     name: "Live swap acceptance",
     currentSessionTrackId: liveSessionTrackId,
     positionSeconds: 0,
-    tracks: [liveCurrentItem],
+    tracks: liveSessionTracks,
     swaps: liveSwap === null ? [] : [liveSwap],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
   const liveLibraryPayload = () => ({
     tracks: [
-      { id: liveCurrentTrackId, title: "Live source track", artist: "Smoke test", durationSeconds: 8, stemAvailability: { status: "separated", stemCount: 2 } },
-      { id: liveDonorTrackId, title: "Donor track", artist: "Smoke test", durationSeconds: 8, stemAvailability: { status: "separated", stemCount: 1 } },
+      { ...recoveryTrack, id: liveCurrentTrackId, title: "Live source track", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 2, stemTypes: ["vocals", "drums"] } },
+      { ...recoveryTrack, id: liveDonorTrackId, title: "Donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["vocals"] } },
+      { ...recoveryTrack, id: liveDrumsOnlyTrackId, title: "Drums-only separated track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["drums"] } },
+      { ...recoveryTrack, id: liveCamelotTrackId, title: "Camelot library match", artist: "Smoke test", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "A minor" }, stemAvailability: { status: "source-only", reason: "Separation has not started." } },
     ],
   });
   const quietStemWav = makePcmWav(440, 0.08);
   const drumStemWav = makePcmWav(110, 0.25);
   const donorStemWav = makePcmWav(880, 0.8);
-  await page.route("**/api/library/**", async route => {
+  await context.route("**/api/library/**", async route => {
     const url = new URL(route.request().url());
     if (url.pathname === `/api/library/sessions/${liveSessionId}` && route.request().method() === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname === `/api/library/sessions/${liveSessionId}/state` && route.request().method() === "PUT") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ saved: true }) });
+    } else if (url.pathname.startsWith(`/api/library/sessions/${liveSessionId}/tracks/`) && route.request().method() === "PATCH") {
+      const itemId = url.pathname.split("/").at(-1);
+      const item = liveSessionTracks.find(candidate => candidate.id === itemId);
+      assert(item, `Cannot persist a mix for missing session item ${itemId}`);
+      const request = route.request().postDataJSON();
+      if (request.stemMix) item.stemMix = { ...request.stemMix };
+      if (request.transition) item.transition = { ...request.transition };
+      liveTrackPatchRequestCount += 1;
+      if (item.id === liveSessionTrackId && request.stemMix?.drums === 0) resolveIsolatedMixSave();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
+    } else if (/^\/api\/library\/sessions\/[^/]+\/state$/.test(url.pathname) && route.request().method() === "PUT") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ saved: true }) });
+    } else if (/^\/api\/library\/sessions\/[^/]+$/.test(url.pathname) && route.request().method() === "GET") {
+      await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "Session not found." }) });
+    } else if (url.pathname === `/api/library/sessions/${liveSessionId}/tracks` && route.request().method() === "POST") {
+      const request = route.request().postDataJSON();
+      assert.equal(request.trackId, liveCamelotTrackId);
+      assert.equal(request.position, 1, "a library cue must be inserted immediately after the current song");
+      liveTrackAddRequestCount += 1;
+      liveSessionTracks.splice(1, 0, {
+        ...liveCurrentItem,
+        id: "arena-smoke-live-camelot-session-track",
+        position: 1,
+        track: { id: liveCamelotTrackId, title: "Camelot library match", artist: "Smoke test", durationSeconds: 8 },
+        stems: [],
+        playback: { kind: "source", assetIds: [liveCamelotSourceAssetId] },
+        stemMix: {},
+        analysis: { bpm: 120, musicalKey: "A minor", beatGridMs: [0, 500, 1000, 1500] },
+      });
+      liveSessionTracks.forEach((item, index) => { item.position = index; });
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname === `/api/library/sessions/${liveSessionId}/swaps` && route.request().method() === "POST") {
       const request = route.request().postDataJSON();
       assert.equal(request.sessionTrackId, liveSessionTrackId);
@@ -349,6 +393,10 @@ try {
   });
   await page.route("**/api/assets/*", async route => {
     const assetId = new URL(route.request().url()).pathname.split("/").at(-1);
+    if (assetId === liveCamelotSourceAssetId) {
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: quietStemWav });
+      return;
+    }
     if (assetId === liveDonorVocalsAssetId) {
       liveDonorFetchCount += 1;
       await route.fulfill({ status: 200, contentType: "audio/wav", body: donorStemWav });
@@ -427,7 +475,9 @@ try {
   const originalVocalPeak = await vocalsMeter.evaluate((bar) => Number(
     bar.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0,
   ));
-  await page.getByLabel("vocals source").selectOption(liveDonorTrackId);
+  const vocalSource = page.getByLabel("vocals source");
+  assert.equal(await vocalSource.locator("option").filter({ hasText: "Drums-only separated track" }).count(), 0, "the vocal picker must hide separated tracks with no vocal stem");
+  await vocalSource.selectOption(liveDonorTrackId);
   await page.getByTestId("session-status").filter({ hasText: "vocals source saved" }).waitFor({ timeout: 8_000 });
   await page.waitForFunction((assetId) => {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);
@@ -444,8 +494,12 @@ try {
     bar.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0,
   ));
   assert(donorVocalPeak > originalVocalPeak * 2, "the live vocal meter must reflect the donor audio, not just the selected label");
+  await page.waitForFunction(({ assetId, after }) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && audio.currentTime > after + 0.2;
+  }, { assetId: liveVocalsAssetId, after: clockBeforeSwap }, { timeout: 5_000 });
   const clockAfterSwap = await sourceVocals.evaluate((audio) => audio.currentTime);
-  assert(clockAfterSwap > clockBeforeSwap + 0.2, "the recipient song clock must continue through a live stem swap");
+  assert(clockAfterSwap > clockBeforeSwap + 0.2, `the recipient song clock must continue through a live stem swap (${clockBeforeSwap.toFixed(2)} → ${clockAfterSwap.toFixed(2)})`);
   const isolateVocals = page.getByRole("button", { name: "Isolate vocals" });
   await isolateVocals.click();
   assert.equal(await isolateVocals.getAttribute("aria-pressed"), "true");
@@ -454,16 +508,31 @@ try {
     const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
     return peak < 0.02;
   }, null, { timeout: 5_000 });
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Isolated stem mix was not persisted")), 5_000);
+    isolatedMixSaved.then(() => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+  assert.equal(liveCurrentItem.stemMix.drums, 0, "isolation must persist the selected stem levels");
+  assert(liveTrackPatchRequestCount > 0, "stem mix and transition changes must reach the persistence route");
+  const addCamelotMatch = page.getByRole("button", { name: "Add Camelot library match as next" });
+  await addCamelotMatch.waitFor({ state: "visible", timeout: 8_000 });
+  await addCamelotMatch.click();
+  await page.getByTestId("session-status").filter({ hasText: "Up next: Camelot library match." }).waitFor({ timeout: 8_000 });
+  assert.equal(liveTrackAddRequestCount, 1, "the Camelot wheel must add a compatible library track directly to the next slot");
+  assert.equal(liveSessionTracks[1].track.id, liveCamelotTrackId);
   assert.equal(errors.length, errorsBeforeLiveSwap, "live swapping and isolation must not throw browser errors");
-  report.push("A live donor changes the audible vocal meter while playback keeps its clock; isolating vocals silences the drum stem.");
+  report.push("A live donor changes the audible vocal meter while playback keeps its clock; isolation silences drums, and the Camelot wheel cues a compatible library track directly.");
 
   mockLiveSessionActive = false;
-  await page.unroute("**/api/assets/*");
-  await page.evaluate(() => localStorage.removeItem("waveyard.listening.sessionId"));
-  await page.goto(`${base}/waveyard`, { waitUntil: "domcontentloaded" });
-  await page.unroute("**/api/library/**");
-  await page.unroute("**/api/waveyard/projects");
-  await page.unroute("**/api/jobs/arena-smoke-stem-job/retry");
+  const liveSessionPage = page;
+  await liveSessionPage.evaluate(() => localStorage.removeItem("waveyard.listening.sessionId"));
+  // Keep the fake session mounted until the context closes: its unmount saver
+  // intentionally persists, so unloading it mid-smoke would escape the fixture.
+  page = await context.newPage();
+  page.on("pageerror", err => errors.push(err.message));
   const routeSource = await readFile(new URL("../artifacts/arenaforge/src/routes.ts", import.meta.url), "utf8");
   const auditRoutes = [...routeSource.matchAll(/path:\s*"([^"]+)"/g)]
     .map((match) => match[1].replace(/:[^/]+/g, "audit-test"));
@@ -677,7 +746,7 @@ try {
   report.push("REA static analysis is optional, requires explicit authorization, and does not run during import.");
   await browserFrame.locator("#game").click();
   await page.keyboard.press("ArrowRight");
-  await page.waitForTimeout(50);
+  await browserFrame.getByText("Score 1", { exact: true }).waitFor({ timeout: 3_000 });
   assert.equal(await browserFrame.locator("#hud").innerText(), "Score 1");
   await page.waitForFunction(() =>
     Object.keys(localStorage).some((key) => key.startsWith("arenaforge.game-save.v1:"))

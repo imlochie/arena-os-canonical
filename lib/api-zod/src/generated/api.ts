@@ -9,6 +9,57 @@ import * as zod from 'zod';
 
 
 /**
+ * @summary List library tracks with available stem types
+ */
+export const getLibraryTracksQueryLimitMax = 500;
+
+
+
+export const GetLibraryTracksQueryParams = zod.object({
+  "q": zod.coerce.string().optional(),
+  "limit": zod.coerce.number().int().min(1).max(getLibraryTracksQueryLimitMax).optional()
+})
+
+export const getLibraryTracksResponseTracksItemRatingMin = 0;
+export const getLibraryTracksResponseTracksItemRatingMax = 5;
+
+
+
+export const GetLibraryTracksResponse = zod.object({
+  "tracks": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "title": zod.string(),
+  "artist": zod.string(),
+  "album": zod.string(),
+  "durationSeconds": zod.number(),
+  "playCount": zod.number().int(),
+  "rating": zod.number().int().min(getLibraryTracksResponseTracksItemRatingMin).max(getLibraryTracksResponseTracksItemRatingMax),
+  "labels": zod.array(zod.string()),
+  "lastPlayedAt": zod.coerce.date().nullable(),
+  "addedAt": zod.coerce.date(),
+  "stemAvailability": zod.union([zod.object({
+  "status": zod.enum(['separated']),
+  "stemCount": zod.number().int(),
+  "stemTypes": zod.array(zod.string())
+}),zod.object({
+  "status": zod.enum(['source-only', 'processing', 'not-started', 'unavailable']),
+  "reason": zod.string()
+}),zod.object({
+  "status": zod.enum(['rejected', 'failed']),
+  "reason": zod.string(),
+  "retryJobId": zod.string().uuid()
+})]),
+  "analysis": zod.object({
+  "status": zod.string(),
+  "bpm": zod.number().nullable(),
+  "musicalKey": zod.string().nullable()
+}).nullish(),
+  "studioProjectId": zod.string().uuid()
+}))
+})
+
+
+/**
  * @summary Start separation for a library track
  */
 export const StartLibraryTrackSeparationParams = zod.object({
@@ -30,3 +81,5 @@ export const StartLibraryTrackSeparationResponse = zod.object({
 export const HealthCheckResponse = zod.object({
   "status": zod.string()
 })
+
+

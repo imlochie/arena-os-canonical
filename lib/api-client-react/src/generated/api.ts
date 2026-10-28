@@ -20,7 +20,9 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  GetLibraryTracksParams,
   HealthStatus,
+  LibraryTrackListResponse,
   LibraryTrackSeparationStartResponse
 } from './api.schemas';
 
@@ -50,6 +52,90 @@ const withQueryKey = <T extends object, K>(query: T, queryKey: K): T & { queryKe
   }
   return result;
 };
+
+export const getGetLibraryTracksUrl = (params?: GetLibraryTracksParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/library/tracks?${stringifiedParams}` : `/api/library/tracks`
+}
+
+/**
+ * @summary List library tracks with available stem types
+ */
+export const getLibraryTracks = async (params?: GetLibraryTracksParams, options?: Parameters<typeof customFetch>[1]): Promise<LibraryTrackListResponse> => {
+
+  return customFetch<LibraryTrackListResponse>(getGetLibraryTracksUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLibraryTracksQueryKey = (params?: GetLibraryTracksParams,) => {
+    return [
+    `/api/library/tracks`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetLibraryTracksQueryOptions = <TData = Awaited<ReturnType<typeof getLibraryTracks>>, TError = ErrorType<unknown>>(params?: GetLibraryTracksParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryTracks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLibraryTracksQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLibraryTracks>>> = ({ signal }) => getLibraryTracks(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLibraryTracks>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetLibraryTracksQueryResult = NonNullable<Awaited<ReturnType<typeof getLibraryTracks>>>
+export type GetLibraryTracksQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List library tracks with available stem types
+ */
+
+export function useGetLibraryTracks<TData = Awaited<ReturnType<typeof getLibraryTracks>>, TError = ErrorType<unknown>>(
+ params?: GetLibraryTracksParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryTracks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetLibraryTracksQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export const getStartLibraryTrackSeparationUrl = (id: string,) => {
 
@@ -196,3 +282,10 @@ export function useHealthCheck<TData = Awaited<ReturnType<typeof healthCheck>>, 
 
   return withQueryKey(query, queryOptions.queryKey);
 }
+
+
+
+
+
+
+

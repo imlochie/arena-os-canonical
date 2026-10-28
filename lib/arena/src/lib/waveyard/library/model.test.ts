@@ -64,7 +64,11 @@ test("resolveStemAvailability: real separated stems", () => {
       { stemType: "other", engine: "demucs" },
     ],
   });
-  assert.deepEqual(availability, { status: "separated", stemCount: 4 });
+  assert.deepEqual(availability, {
+    status: "separated",
+    stemCount: 4,
+    stemTypes: ["bass", "drums", "other", "vocals"],
+  });
 });
 
 test("resolveStemAvailability: passthrough bridge = source-only, with the honest reason", () => {

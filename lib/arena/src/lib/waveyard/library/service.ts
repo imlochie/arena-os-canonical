@@ -76,6 +76,8 @@ export interface TrackSummary {
   lastPlayedAt: string | null;
   addedAt: string;
   stemAvailability: StemAvailability;
+  /** Tempo/key data used by the live mixer when available. */
+  analysis?: TrackAnalysis | null;
   /** The existing container project — "Open in Studio" routes here. */
   studioProjectId: string;
 }
@@ -210,8 +212,33 @@ function parseStoredLabels(raw: string | null): string[] {
 }
 
 async function summariesFor(rows: TrackRow[]): Promise<TrackSummary[]> {
-  const availability = await availabilityBySource(rows.map((row) => row.sourceAssetId));
-  return rows.map((row) => toSummary(row, availability.get(row.sourceAssetId) ?? resolveStemAvailability({ stems: [] })));
+  const sourceAssetIds = rows.map((row) => row.sourceAssetId);
+  const [availability, analyses] = await Promise.all([
+    availabilityBySource(sourceAssetIds),
+    analysisBySource(sourceAssetIds),
+  ]);
+  return rows.map((row) => ({
+    ...toSummary(row, availability.get(row.sourceAssetId) ?? resolveStemAvailability({ stems: [] })),
+    analysis: analyses.get(row.sourceAssetId) ?? null,
+  }));
+}
+
+async function analysisBySource(sourceAssetIds: string[]): Promise<Map<string, TrackAnalysis>> {
+  const uniqueIds = [...new Set(sourceAssetIds)];
+  if (uniqueIds.length === 0) return new Map();
+  const rows = await db
+    .select({
+      sourceAssetId: sourceAnalyses.sourceAssetId,
+      status: sourceAnalyses.status,
+      bpm: sourceAnalyses.bpm,
+      musicalKey: sourceAnalyses.musicalKey,
+    })
+    .from(sourceAnalyses)
+    .where(inArray(sourceAnalyses.sourceAssetId, uniqueIds));
+  return new Map(rows.map((row) => [
+    row.sourceAssetId,
+    { status: row.status, bpm: row.bpm, musicalKey: row.musicalKey },
+  ]));
 }
 
 const trackSelection = {

@@ -15,16 +15,20 @@ export default function CamelotWheel({
   nextTrackId,
   nextKey,
   tracks,
+  libraryTracks,
   disabled = false,
   onSetNext,
+  onAddNext,
 }: {
   currentTrackId: string;
   currentKey: string | null;
   nextTrackId: string | null;
   nextKey: string | null;
   tracks: CamelotTrack[];
+  libraryTracks: CamelotTrack[];
   disabled?: boolean;
   onSetNext: (sessionTrackId: string) => Promise<void>;
+  onAddNext: (trackId: string) => Promise<void>;
 }) {
   const [chosenCode, setChosenCode] = useState<CamelotCellCode | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -36,6 +40,10 @@ export default function CamelotWheel({
   const matches = tracks.filter((track) => {
     const code = camelotCodeForKey(track.key);
     return track.id !== currentTrackId && code !== null && compatibleCodes.has(code);
+  });
+  const libraryMatches = libraryTracks.filter((track) => {
+    const code = camelotCodeForKey(track.key);
+    return code !== null && compatibleCodes.has(code);
   });
 
   useEffect(() => setChosenCode(null), [currentTrackId]);
@@ -63,7 +71,7 @@ export default function CamelotWheel({
         <span aria-hidden="true">→</span>
         <span>Next <b>{nextCode ?? "—"}</b>{nextKey ? ` · ${nextKey}` : " · key unknown"}</span>
       </p>
-      <div className="wy-camelot-wheel" role="group" aria-label="Choose a key to find compatible session tracks">
+      <div className="wy-camelot-wheel" role="group" aria-label="Choose a key to find compatible session and library tracks">
         <div className="wy-camelot-core" aria-hidden="true"><b>KEY</b><span>A / B</span></div>
         {CAMELOT_CELLS.map((cell) => {
           const angle = ((cell.number - 1) * 30 - 90) * Math.PI / 180;
@@ -99,9 +107,15 @@ export default function CamelotWheel({
           );
         })}
       </div>
-      <p className="wy-camelot-hint">Tap a highlighted key to find tracks that fit this mix.</p>
-      {matches.length > 0 ? (
-        <ul className="wy-camelot-matches" aria-label="Compatible tracks in this session">
+      <p className="wy-camelot-hint">
+        {currentCode
+          ? "Tap a highlighted key to find tracks that fit this mix."
+          : "Current key is unknown. Tap any key to search that Camelot neighborhood."}
+      </p>
+      {matches.length > 0 && (
+        <>
+          <p className="wy-camelot-hint">In this session</p>
+          <ul className="wy-camelot-matches" aria-label="Compatible tracks in this session">
           {matches.map((track) => {
             const code = camelotCodeForKey(track.key);
             const alreadyNext = track.id === nextTrackId;
@@ -127,11 +141,45 @@ export default function CamelotWheel({
               </li>
             );
           })}
-        </ul>
-      ) : (
+          </ul>
+        </>
+      )}
+      {libraryMatches.length > 0 && (
+        <>
+          <p className="wy-camelot-hint">From your library</p>
+          <ul className="wy-camelot-matches" aria-label="Compatible tracks in your library">
+            {libraryMatches.map((track) => {
+              const code = camelotCodeForKey(track.key);
+              const pendingKey = `library:${track.id}`;
+              return (
+                <li key={track.id}>
+                  <span><b>{track.title}</b><small>{code} · {track.key}{track.artist ? ` · ${track.artist}` : ""}</small></span>
+                  <button
+                    type="button"
+                    className="wy-camelot-next"
+                    disabled={disabled || pendingId !== null}
+                    aria-label={`Add ${track.title} as next`}
+                    onClick={async () => {
+                      setPendingId(pendingKey);
+                      try {
+                        await onAddNext(track.id);
+                      } finally {
+                        setPendingId(null);
+                      }
+                    }}
+                  >
+                    {pendingId === pendingKey ? "Adding…" : "Add next"}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+      {matches.length === 0 && libraryMatches.length === 0 && (
         <p className="wy-camelot-empty">
           {focusCode
-            ? `No compatible analyzed tracks in this session for ${focusCode}.`
+            ? `No compatible analyzed tracks in the session or library for ${focusCode}.`
             : "Track keys will appear here after analysis completes."}
         </p>
       )}

@@ -56,7 +56,7 @@ export function buildStemChannels(stemTypes: readonly string[]): StemChannel[] {
 
 /** Honest stem availability for a track, derived from REAL stem rows. */
 export type StemAvailability =
-  | { status: "separated"; stemCount: number }
+  | { status: "separated"; stemCount: number; stemTypes: string[] }
   | { status: "source-only"; reason: string }
   | { status: "processing"; reason: string }
   | { status: "rejected"; reason: string; retryJobId: string }
@@ -79,7 +79,13 @@ export const PASSTHROUGH_ENGINE = "passthrough-unseparated";
 
 export function resolveStemAvailability(input: StemAvailabilityInput): StemAvailability {
   const real = input.stems.filter((stem) => stem.engine !== PASSTHROUGH_ENGINE);
-  if (real.length > 0) return { status: "separated", stemCount: real.length };
+  if (real.length > 0) {
+    return {
+      status: "separated",
+      stemCount: real.length,
+      stemTypes: [...new Set(real.map((stem) => stem.stemType))].sort(),
+    };
+  }
   if (input.stems.some((stem) => stem.engine === PASSTHROUGH_ENGINE)) {
     return {
       status: "source-only",

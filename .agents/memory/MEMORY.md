@@ -11,3 +11,4 @@
 - [Waveyard CPU worker packaging](waveyard-cpu-worker.md) — bundle CPU-intensive worker code separately; source workers can inherit unsupported runtime flags.
 - [Waveyard product expectation](waveyard-stemfm-expectation.md) — live stem replacement and isolation are core, and session-to-Studio handoff must lead to a usable arrangement.
 - [Arena product expectations](arena-product-expectations.md) — prioritize demonstrable local tools and open-source alternatives over claims, presets, and page-load checks.
+- [Waveyard browser audio tests](waveyard-browser-tests.md) — keep mock routes through teardown; compare live clocks and disable caching in simulated audio failures.

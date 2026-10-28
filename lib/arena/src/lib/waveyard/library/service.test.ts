@@ -657,10 +657,19 @@ test("real stems change availability and what the player loads", async () => {
   const detail = await service.getTrack(OWNER, trackA.id);
   assert.equal(detail!.stemAvailability.status, "separated");
   assert.equal((detail!.stemAvailability as { stemCount: number }).stemCount, 4);
+  assert.deepEqual(
+    detail!.stemAvailability.status === "separated" ? detail!.stemAvailability.stemTypes : [],
+    ["bass", "drums", "other", "vocals"],
+  );
   assert.equal(detail!.playback.kind, "stems");
   assert.deepEqual(detail!.playback.assetIds, stemIds);
   const listed = await service.listTracks({ ownerId: OWNER });
-  assert.equal(listed.find((track) => track.id === trackA.id)?.stemAvailability.status, "separated");
+  const listedTrack = listed.find((track) => track.id === trackA.id);
+  assert.equal(listedTrack?.stemAvailability.status, "separated");
+  assert.deepEqual(
+    listedTrack?.stemAvailability.status === "separated" ? listedTrack.stemAvailability.stemTypes : [],
+    ["bass", "drums", "other", "vocals"],
+  );
 });
 
 test("passthrough bridge = honest source-only playback", async () => {
@@ -708,6 +717,12 @@ test("analysis surfaces tempo and key when the engine completed it", async () =>
   assert.equal(detail!.analysis?.status, "complete");
   assert.equal(detail!.analysis?.bpm, 128.5);
   assert.equal(detail!.analysis?.musicalKey, "A minor");
+  const listed = await service.listTracks({ ownerId: OWNER });
+  const listedTrack = listed.find((track) => track.id === trackA.id);
+  assert.equal(listedTrack?.analysis?.status, "complete");
+  assert.equal(listedTrack?.analysis?.bpm, 128.5);
+  assert.equal(listedTrack?.analysis?.musicalKey, "A minor");
+  assert.equal(listed.find((track) => track.id === trackB.id)?.analysis, null);
 });
 
 test("library containers never pollute the studio project list; real projects stay", async () => {

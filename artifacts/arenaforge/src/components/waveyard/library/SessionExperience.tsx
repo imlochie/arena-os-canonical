@@ -2,6 +2,7 @@
 
 import Link from "@/routing/Link";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { LibraryTrackSummary } from "@workspace/api-client-react";
 import { useStemTransport, type ChannelMeter, type MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
@@ -66,12 +67,14 @@ interface SessionDetail {
   updatedAt: string;
 }
 
-interface LibraryTrackOption {
-  id: string;
-  title: string;
-  artist: string;
-  stemAvailability?: { status: "separated" | "source-only" | "processing" | "unavailable" };
+interface PendingLiveSwap {
+  swapId: string;
+  sessionTrackId: string;
+  stemType: string;
+  donorTitle: string;
 }
+
+type LibraryTrackOption = Pick<LibraryTrackSummary, "id" | "title" | "artist" | "analysis" | "stemAvailability">;
 
 export type HostCommandKind = "play" | "load" | "next" | "enqueue" | "refresh";
 export interface HostCommand {
@@ -137,6 +140,7 @@ function SessionDeck({
   onFlag,
   onReset,
   stemExtra,
+  onLiveLayerReady,
   onReturnToSource,
   onApi,
   onPlaying,
@@ -157,6 +161,7 @@ function SessionDeck({
   onFlag: (stemType: string, flag: "muted" | "solo") => void;
   onReset: () => void;
   stemExtra?: (stemType: string) => ReactNode;
+  onLiveLayerReady?: (sessionTrackId: string, stemType: string) => void;
   onReturnToSource?: () => void;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
   onPlaying: (deckIndex: number, playing: boolean) => void;
@@ -204,14 +209,20 @@ function SessionDeck({
     let stale = false;
     const layers = JSON.parse(swapKey) as Array<[string, string | null]>;
     setLoadingLayers(layers.some(([, donor]) => donor !== null));
-    void Promise.all(layers.map(([id, donor]) => transport.replaceStem(id, donor ? `/api/assets/${donor}` : null)))
+    const replacements = layers.map(([id, donor]) => {
+      const stemType = stemTypeByAsset.get(id) ?? "source";
+      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null).then(() => {
+        if (!stale && donor !== null && item !== null) onLiveLayerReady?.(item.id, stemType);
+      });
+    });
+    void Promise.all(replacements)
       .then(() => { if (!stale) setMediaError(null); })
       .catch((error: unknown) => {
         if (!stale) setMediaError(`${error instanceof Error ? error.message : "Live stem loading failed."} The previous layer was kept.`);
       })
       .finally(() => { if (!stale) setLoadingLayers(false); });
     return () => { stale = true; };
-  }, [swapKey, transport.replaceStem, swapRetry]);
+  }, [swapKey, stemTypeByAsset, transport.replaceStem, onLiveLayerReady, item?.id, swapRetry]);
 
   const applyStemVolumes = useCallback(
     (volumes: Record<string, number>) => {
@@ -466,17 +477,6 @@ function SessionDeck({
       {mediaError && /previous layer|replacement stem|live stem loading/i.test(mediaError) && (
         <button type="button" className="sess-small-btn" onClick={() => setSwapRetry((n) => n + 1)}>Retry live stems</button>
       )}
-      {mediaError && /full track could not (?:load|be prepared)/i.test(mediaError)
-        && item?.playback?.kind === "stems" && onReturnToSource && (
-        <button
-          type="button"
-          className="sess-small-btn"
-          data-testid={`button-retry-full-track-${item.id}`}
-          onClick={onReturnToSource}
-        >
-          Retry full track
-        </button>
-      )}
       {item === null ? (
         <div className="wy-deck-empty">
           <span className="eyebrow">{`Deck ${deckIndex === 0 ? "A" : "B"} · ${active ? "current" : "next"}`}</span>
@@ -608,6 +608,7 @@ export default function SessionExperience({
   const [activeDeck, setActiveDeck] = useState<0 | 1>(0);
   const [phase, setPhase] = useState<FadePhase>("idle");
   const [savingSwap, setSavingSwap] = useState(false);
+  const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
   const [flags, setFlags] = useState<Record<string, StemFlags>>({});
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
@@ -1464,6 +1465,32 @@ export default function SessionExperience({
     setStatus(`Up next: ${title}.`);
   }, [session, mutate]);
 
+  const setLibraryTrackAsNext = useCallback(async (trackId: string) => {
+    const latest = sessionRef.current;
+    if (latest === null) return;
+    const existing = latest.tracks.find((item) => item.track.id === trackId);
+    if (existing !== undefined) {
+      await setSessionTrackAsNext(existing.id);
+      return;
+    }
+    const currentPosition = latest.tracks.findIndex((item) => item.id === currentIdRef.current);
+    const position = currentPosition < 0 ? 0 : currentPosition + 1;
+    const previousIds = new Set(latest.tracks.map((item) => item.id));
+    const detail = await mutate(`/api/library/sessions/${latest.id}/tracks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ trackId, position }),
+    });
+    if (detail === null) return;
+    const added = detail.tracks.find((item) => !previousIds.has(item.id) && item.track.id === trackId);
+    if (added === undefined) {
+      setStatus("The track was added, but could not be placed in the session.");
+      return;
+    }
+    publishWaveyardQueueChange([latest.id]);
+    setStatus(`Up next: ${added.track.title}.`);
+  }, [mutate, setSessionTrackAsNext]);
+
   const moveTrack = useCallback(
     (itemId: string, position: number) => {
       if (session === null) return;
@@ -1510,6 +1537,7 @@ export default function SessionExperience({
         return;
       }
       setSavingSwap(true);
+      setStatus(`Saving ${stemType} source from “${donor.title}”… current playback continues.`);
       try {
         const detail = await mutate(`/api/library/sessions/${session.id}/swaps`, {
           method: "POST",
@@ -1521,7 +1549,20 @@ export default function SessionExperience({
             atSeconds: decksRef.current[activeDeck]?.transport.position ?? 0,
           }),
         });
-        if (detail) setStatus(`${stemType} source saved: “${donor.title}”.`);
+        if (detail) {
+          const savedSwap = [...detail.swaps].reverse().find((swap) =>
+            swap.sessionTrackId === currentItem.id && swap.stemType === stemType && swap.toTrackId === donor.id,
+          );
+          if (savedSwap) {
+            setPendingSwaps((previous) => [
+              ...previous.filter((pending) => !(pending.sessionTrackId === currentItem.id && pending.stemType === stemType)),
+              { swapId: savedSwap.id, sessionTrackId: currentItem.id, stemType, donorTitle: donor.title },
+            ]);
+            setStatus(`${stemType} source saved: “${donor.title}”. Playback continues while the layer loads.`);
+          } else {
+            setStatus(`${stemType} source saved: “${donor.title}”.`);
+          }
+        }
       } finally {
         setSavingSwap(false);
       }
@@ -1530,18 +1571,32 @@ export default function SessionExperience({
   );
 
   const revertSwap = useCallback(
-    async (swapId: string) => {
+    async (swapId: string, successMessage = "Original stem restored.") => {
       if (session === null) return;
       setSavingSwap(true);
       try {
         const detail = await mutate(`/api/library/sessions/${session.id}/swaps?swapId=${swapId}`, { method: "DELETE" });
-        if (detail) setStatus("Original stem restored.");
+        if (detail) {
+          setPendingSwaps((previous) => previous.filter((pending) => pending.swapId !== swapId));
+          setStatus(successMessage);
+        }
       } finally {
         setSavingSwap(false);
       }
     },
     [session, mutate],
   );
+
+  const markLiveLayerReady = useCallback((sessionTrackId: string, stemType: string) => {
+    setPendingSwaps((previous) => previous.filter(
+      (pending) => pending.sessionTrackId !== sessionTrackId || pending.stemType !== stemType,
+    ));
+  }, []);
+
+  useEffect(() => {
+    const savedSwapIds = new Set(session?.swaps.map((swap) => swap.id) ?? []);
+    setPendingSwaps((previous) => previous.filter((pending) => savedSwapIds.has(pending.swapId)));
+  }, [session?.swaps]);
 
   // -------------------------------------------------------- studio handoff
   const sendToStudio = useCallback(() => {
@@ -1855,12 +1910,15 @@ export default function SessionExperience({
   const swapExtra = (stemType: string) => {
     if (currentItem === null) return null;
     const swap = session.swaps.filter((s) => s.sessionTrackId === currentItem.id && s.stemType === stemType).at(-1);
+    const pendingSwap = pendingSwaps.find((pending) => pending.sessionTrackId === currentItem.id && pending.stemType === stemType);
     const donors = session.tracks.filter((item) =>
       item.track.id !== currentItem.track.id && validateStemSwap(currentItem.stems, item.stems, stemType).ok,
     );
     const inSession = new Set(session.tracks.map((item) => item.track.id));
     const libraryDonors = library.filter((item) => !inSession.has(item.id) &&
-      item.id !== currentItem.track.id && item.stemAvailability?.status === "separated");
+      item.id !== currentItem.track.id &&
+      item.stemAvailability?.status === "separated" &&
+      item.stemAvailability.stemTypes.includes(stemType));
     return (
       <div className="wy-stem-source-control">
         <span>Live source</span>
@@ -1868,7 +1926,7 @@ export default function SessionExperience({
           className="wy-stem-source"
           aria-label={`${stemType} source`}
           value={swap?.toTrackId ?? ""}
-          disabled={savingSwap || (donors.length === 0 && libraryDonors.length === 0)}
+          disabled={savingSwap || pendingSwap !== undefined || (donors.length === 0 && libraryDonors.length === 0)}
           title="Choose a separated song in your library as a live stem source"
           onChange={(event) => {
             const donor = donors.find((item) => item.track.id === event.target.value);
@@ -1884,7 +1942,7 @@ export default function SessionExperience({
           {donors.map((donor) => <option key={donor.id} value={donor.track.id}>{donor.track.title}</option>)}
           {libraryDonors.map((donor) => <option key={donor.id} value={donor.id}>{donor.title}</option>)}
         </select>
-        {donors.length === 0 && libraryDonors.length === 0 && <small>Separate another track to swap in a layer.</small>}
+        {donors.length === 0 && libraryDonors.length === 0 && <small>Separate a track with {stemType} to swap in a layer.</small>}
       </div>
     );
   };
@@ -1917,6 +1975,7 @@ export default function SessionExperience({
         setFlags((prev) => ({ ...prev, [item.id]: { muted: [], solo: [] } }));
       },
       stemExtra: isActive ? swapExtra : undefined,
+      onLiveLayerReady: isActive ? markLiveLayerReady : undefined,
       onReturnToSource: isActive && item?.playback?.kind === "stems" && item.sourceAssetId !== null
         ? () => void returnToFullTrack(item.id)
         : undefined,
@@ -1988,6 +2047,22 @@ export default function SessionExperience({
         )}
       </div>
 
+      {pendingSwaps.map((pending) => (
+        <p key={pending.swapId} className="sess-status wy-ready" role="status" data-testid={`live-swap-pending-${pending.stemType}`}>
+          Preparing {pending.stemType} from “{pending.donorTitle}”; current playback continues.{" "}
+          <button
+            type="button"
+            className="button tiny"
+            aria-label={`Cancel ${pending.stemType} switch to ${pending.donorTitle}`}
+            data-testid={`cancel-live-stem-swap-${pending.swapId}`}
+            disabled={savingSwap}
+            onClick={() => void revertSwap(pending.swapId, `${pending.stemType} switch cancelled; the previous audio continues.`)}
+          >
+            {savingSwap ? "Cancelling…" : "Cancel switch"}
+          </button>
+        </p>
+      ))}
+
       <div className="wy-full-only">
         {Object.values(stemsReady).map((item) => (
           <p key={item.id} className="sess-status wy-ready" role="status">
@@ -1995,7 +2070,27 @@ export default function SessionExperience({
             <button type="button" className="button tiny" onClick={() => switchToStems(item.id)} data-testid={`button-switch-stems-${item.id}`}>Switch to stems</button>
           </p>
         ))}
-        {status !== null && <p className="sess-status" role="status" data-testid="session-status">{status}</p>}
+        {status !== null && (
+          <p className="sess-status" role="status" data-testid="session-status">
+            {status}
+            {currentItem?.playback?.kind === "stems"
+              && currentItem.sourceAssetId !== null
+              && /full track could not (?:load|be prepared)/i.test(status)
+              && (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    className="button tiny"
+                    data-testid={`button-retry-full-track-${currentItem.id}`}
+                    onClick={() => void returnToFullTrack(currentItem.id)}
+                  >
+                    Retry full track
+                  </button>
+                </>
+              )}
+          </p>
+        )}
         {loadError !== null && <p className="sess-status" role="alert">{loadError}</p>}
         {handoff !== null && (
           <p className="sess-handoff" role="status">
@@ -2083,8 +2178,17 @@ export default function SessionExperience({
                   artist: item.track.artist,
                   key: item.analysis?.musicalKey ?? null,
                 }))}
+                libraryTracks={library
+                  .filter((track) => !session.tracks.some((item) => item.track.id === track.id))
+                  .map((track) => ({
+                    id: track.id,
+                    title: track.title,
+                    artist: track.artist,
+                    key: track.analysis?.musicalKey ?? null,
+                  }))}
                 disabled={phase === "fading"}
                 onSetNext={setSessionTrackAsNext}
+                onAddNext={setLibraryTrackAsNext}
               />
             )}
             <p className="wy-fine">Mute or isolate a stem to audition it. Restore all returns every layer to the full mix.</p>

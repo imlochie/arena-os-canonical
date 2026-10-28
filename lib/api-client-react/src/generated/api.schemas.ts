@@ -9,6 +9,55 @@ export interface HealthStatus {
   status: string;
 }
 
+export type StemAvailability = {
+  status: 'separated';
+  stemCount: number;
+  stemTypes: string[];
+} | {
+  status: 'source-only' | 'processing' | 'not-started' | 'unavailable';
+  reason: string;
+} | {
+  status: 'rejected' | 'failed';
+  reason: string;
+  retryJobId: string;
+};
+
+/**
+ * @nullable
+ */
+export type TrackAnalysis = {
+  status: string;
+  /** @nullable */
+  bpm: number | null;
+  /** @nullable */
+  musicalKey: string | null;
+} | null;
+
+export interface LibraryTrackSummary {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  durationSeconds: number;
+  playCount: number;
+  /**
+     * @minimum 0
+     * @maximum 5
+     */
+  rating: number;
+  labels: string[];
+  /** @nullable */
+  lastPlayedAt: string | null;
+  addedAt: string;
+  stemAvailability: StemAvailability;
+  analysis?: TrackAnalysis | null;
+  studioProjectId: string;
+}
+
+export interface LibraryTrackListResponse {
+  tracks: LibraryTrackSummary[];
+}
+
 export type LibraryTrackSeparationStartResponseState = typeof LibraryTrackSeparationStartResponseState[keyof typeof LibraryTrackSeparationStartResponseState];
 
 
@@ -29,3 +78,13 @@ export interface LibraryTrackSeparationStartResponse {
   /** @nullable */
   error: string | null;
 }
+
+export type GetLibraryTracksParams = {
+q?: string;
+/**
+ * @minimum 1
+ * @maximum 500
+ */
+limit?: number;
+};
+

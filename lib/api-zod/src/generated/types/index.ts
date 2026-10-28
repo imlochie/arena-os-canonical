@@ -6,6 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from './getLibraryTracksParams';
 export * from './healthStatus';
+export * from './libraryTrackListResponse';
 export * from './libraryTrackSeparationStartResponse';
 export * from './libraryTrackSeparationStartResponseState';
+export * from './libraryTrackSummary';
+export * from './stemAvailability';
+export * from './trackAnalysis';

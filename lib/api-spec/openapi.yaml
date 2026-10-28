@@ -13,6 +13,31 @@ tags:
   - name: waveyard
     description: Waveyard library operations
 paths:
+  /library/tracks:
+    get:
+      operationId: getLibraryTracks
+      tags: [waveyard]
+      summary: List library tracks with available stem types
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+      responses:
+        "200":
+          description: Library tracks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryTrackListResponse"
   /library/tracks/{id}/separation:
     post:
       operationId: startLibraryTrackSeparation
@@ -76,6 +101,95 @@ components:
           type: string
       required:
         - status
+    LibraryTrackListResponse:
+      type: object
+      properties:
+        tracks:
+          type: array
+          items:
+            $ref: "#/components/schemas/LibraryTrackSummary"
+      required: [tracks]
+    LibraryTrackSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        artist:
+          type: string
+        album:
+          type: string
+        durationSeconds:
+          type: number
+        playCount:
+          type: integer
+        rating:
+          type: integer
+          minimum: 0
+          maximum: 5
+        labels:
+          type: array
+          items:
+            type: string
+        lastPlayedAt:
+          type: ["string", "null"]
+          format: date-time
+        addedAt:
+          type: string
+          format: date-time
+        stemAvailability:
+          $ref: "#/components/schemas/StemAvailability"
+        analysis:
+          $ref: "#/components/schemas/TrackAnalysis"
+        studioProjectId:
+          type: string
+          format: uuid
+      required: [id, title, artist, album, durationSeconds, playCount, rating, labels, lastPlayedAt, addedAt, stemAvailability, studioProjectId]
+    TrackAnalysis:
+      type: ["object", "null"]
+      properties:
+        status:
+          type: string
+        bpm:
+          type: ["number", "null"]
+        musicalKey:
+          type: ["string", "null"]
+      required: [status, bpm, musicalKey]
+    StemAvailability:
+      oneOf:
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [separated]
+            stemCount:
+              type: integer
+            stemTypes:
+              type: array
+              items:
+                type: string
+          required: [status, stemCount, stemTypes]
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [source-only, processing, not-started, unavailable]
+            reason:
+              type: string
+          required: [status, reason]
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [rejected, failed]
+            reason:
+              type: string
+            retryJobId:
+              type: string
+              format: uuid
+          required: [status, reason, retryJobId]
     LibraryTrackSeparationStartResponse:
       type: object
       properties:
