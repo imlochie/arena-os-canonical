@@ -26,6 +26,30 @@ const page = await context.newPage();
 const errors = [];
 page.on("pageerror", err => errors.push(err.message));
 const report = [];
+function makePcmWav(frequency, amplitude, durationSeconds = 8) {
+  const sampleRate = 16_000;
+  const sampleCount = sampleRate * durationSeconds;
+  const pcm = Buffer.alloc(sampleCount * 2);
+  for (let index = 0; index < sampleCount; index += 1) {
+    const sample = Math.sin((2 * Math.PI * frequency * index) / sampleRate) * amplitude;
+    pcm.writeInt16LE(Math.round(sample * 32_767), index * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
 const reaAnalysisSmoke = execFileSync(
   "pnpm",
   ["--filter", "@workspace/scripts", "exec", "tsx", "./rea-analysis-smoke.ts"],
@@ -222,9 +246,79 @@ try {
       },
     ],
   });
+  const liveSessionId = "arena-smoke-live-swap";
+  const liveSessionTrackId = "arena-smoke-live-session-track";
+  const liveCurrentTrackId = "arena-smoke-live-current-track";
+  const liveDonorTrackId = "arena-smoke-live-donor-track";
+  const liveVocalsAssetId = "arena-smoke-live-vocals";
+  const liveDrumsAssetId = "arena-smoke-live-drums";
+  const liveDonorVocalsAssetId = "arena-smoke-live-donor-vocals";
+  const liveCurrentItem = {
+    id: liveSessionTrackId,
+    position: 0,
+    queueItemId: null,
+    track: { id: liveCurrentTrackId, title: "Live source track", artist: "Smoke test", durationSeconds: 8 },
+    sourceAssetId: null,
+    stems: [
+      { id: liveVocalsAssetId, stemType: "vocals", engine: "smoke-test", durationSeconds: 8 },
+      { id: liveDrumsAssetId, stemType: "drums", engine: "smoke-test", durationSeconds: 8 },
+    ],
+    playback: { kind: "stems", assetIds: [liveVocalsAssetId, liveDrumsAssetId] },
+    stemMix: { vocals: 1, drums: 1 },
+    transition: { mode: "manual", crossfadeSeconds: 0, keepStems: [] },
+    analysis: null,
+  };
+  let liveSwap = null;
+  let liveSwapRequestCount = 0;
+  let liveDonorFetchCount = 0;
+  let mockLiveSessionActive = false;
+  const liveSessionPayload = () => structuredClone({
+    id: liveSessionId,
+    name: "Live swap acceptance",
+    currentSessionTrackId: liveSessionTrackId,
+    positionSeconds: 0,
+    tracks: [liveCurrentItem],
+    swaps: liveSwap === null ? [] : [liveSwap],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  const liveLibraryPayload = () => ({
+    tracks: [
+      { id: liveCurrentTrackId, title: "Live source track", artist: "Smoke test", durationSeconds: 8, stemAvailability: { status: "separated", stemCount: 2 } },
+      { id: liveDonorTrackId, title: "Donor track", artist: "Smoke test", durationSeconds: 8, stemAvailability: { status: "separated", stemCount: 1 } },
+    ],
+  });
+  const quietStemWav = makePcmWav(440, 0.08);
+  const drumStemWav = makePcmWav(110, 0.25);
+  const donorStemWav = makePcmWav(880, 0.8);
   await page.route("**/api/library/**", async route => {
     const url = new URL(route.request().url());
-    if (url.pathname.endsWith("/separation") && route.request().method() === "POST") {
+    if (url.pathname === `/api/library/sessions/${liveSessionId}` && route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
+    } else if (url.pathname === `/api/library/sessions/${liveSessionId}/state` && route.request().method() === "PUT") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ saved: true }) });
+    } else if (url.pathname === `/api/library/sessions/${liveSessionId}/swaps` && route.request().method() === "POST") {
+      const request = route.request().postDataJSON();
+      assert.equal(request.sessionTrackId, liveSessionTrackId);
+      assert.equal(request.stemType, "vocals");
+      assert.equal(request.toTrackId, liveDonorTrackId);
+      liveSwapRequestCount += 1;
+      liveSwap = {
+        id: "arena-smoke-live-swap-record",
+        sessionTrackId: liveSessionTrackId,
+        stemType: "vocals",
+        fromTrackId: liveCurrentTrackId,
+        toTrackId: liveDonorTrackId,
+        atSeconds: request.atSeconds,
+        createdAt: new Date().toISOString(),
+        donorTrack: {
+          id: liveDonorTrackId,
+          title: "Donor track",
+          stems: [{ id: liveDonorVocalsAssetId, stemType: "vocals", durationSeconds: 8 }],
+        },
+      };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
+    } else if (url.pathname.endsWith("/separation") && route.request().method() === "POST") {
       mockStartCount += 1;
       mockNotStartedState = "processing";
       setTimeout(() => { mockNotStartedState = "separated"; }, 1500);
@@ -234,7 +328,11 @@ try {
         body: JSON.stringify({ state: "queued", jobId: "arena-smoke-new-separation" }),
       });
     } else if (url.pathname.endsWith("/tracks") && route.request().method() === "GET") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mockTrackPayload()) });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(mockLiveSessionActive ? liveLibraryPayload() : mockTrackPayload()),
+      });
     } else if (url.pathname.endsWith("/playback-state")) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ playbackState: { currentTrackId: null, positionSeconds: 0 } }) });
     } else if (url.pathname.endsWith("/playlists")) {
@@ -248,6 +346,23 @@ try {
     } else {
       await route.continue();
     }
+  });
+  await page.route("**/api/assets/*", async route => {
+    const assetId = new URL(route.request().url()).pathname.split("/").at(-1);
+    if (assetId === liveDonorVocalsAssetId) {
+      liveDonorFetchCount += 1;
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: donorStemWav });
+      return;
+    }
+    if (assetId === liveVocalsAssetId) {
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: quietStemWav });
+      return;
+    }
+    if (assetId === liveDrumsAssetId) {
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: drumStemWav });
+      return;
+    }
+    await route.fulfill({ status: 404, body: "Unknown smoke audio asset" });
   });
   await page.route("**/api/waveyard/projects", route => route.fulfill({
     status: 200,
@@ -289,6 +404,63 @@ try {
   await reloadedNotStartedRow.getByText("4 STEMS", { exact: true }).waitFor({ timeout: 12000 });
   assert.equal(await reloadedNotStartedRow.getByRole("button", { name: "Start separation for Not started track" }).count(), 0);
   report.push("A library track with no separation job can start work directly, then shows the persisted result after reload.");
+
+  mockLiveSessionActive = true;
+  await page.evaluate((id) => localStorage.setItem("waveyard.listening.sessionId", id), liveSessionId);
+  const errorsBeforeLiveSwap = errors.length;
+  await page.goto(`${base}/waveyard/session/${liveSessionId}`, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
+  await page.getByText("Live source track", { exact: true }).first().waitFor();
+  const sourceVocals = page.locator(`audio[src$="/${liveVocalsAssetId}"]`);
+  await page.getByTestId("session-play").click();
+  await page.waitForFunction((assetId) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
+  }, liveVocalsAssetId, { timeout: 12_000 });
+  const clockBeforeSwap = await sourceVocals.evaluate((audio) => audio.currentTime);
+  const vocalsMeter = page.locator(".wy-stem-vocals .wy-stem-meter i");
+  await page.waitForFunction(() => {
+    const bar = document.querySelector(".wy-stem-vocals .wy-stem-meter i");
+    const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
+    return peak > 0.02;
+  }, null, { timeout: 8_000 });
+  const originalVocalPeak = await vocalsMeter.evaluate((bar) => Number(
+    bar.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0,
+  ));
+  await page.getByLabel("vocals source").selectOption(liveDonorTrackId);
+  await page.getByTestId("session-status").filter({ hasText: "vocals source saved" }).waitFor({ timeout: 8_000 });
+  await page.waitForFunction((assetId) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio?.getAttribute("aria-label") === "vocals audio (swapped layer)";
+  }, liveVocalsAssetId, { timeout: 8_000 });
+  await page.waitForFunction(() => {
+    const bar = document.querySelector(".wy-stem-vocals .wy-stem-meter i");
+    const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
+    return peak > 0.4;
+  }, null, { timeout: 8_000 });
+  assert.equal(liveSwapRequestCount, 1, "choosing a live donor must persist exactly one swap");
+  assert.equal(liveDonorFetchCount, 1, "the selected donor's actual audio must be downloaded and decoded");
+  const donorVocalPeak = await vocalsMeter.evaluate((bar) => Number(
+    bar.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0,
+  ));
+  assert(donorVocalPeak > originalVocalPeak * 2, "the live vocal meter must reflect the donor audio, not just the selected label");
+  const clockAfterSwap = await sourceVocals.evaluate((audio) => audio.currentTime);
+  assert(clockAfterSwap > clockBeforeSwap + 0.2, "the recipient song clock must continue through a live stem swap");
+  const isolateVocals = page.getByRole("button", { name: "Isolate vocals" });
+  await isolateVocals.click();
+  assert.equal(await isolateVocals.getAttribute("aria-pressed"), "true");
+  await page.waitForFunction(() => {
+    const bar = document.querySelector(".wy-stem-drums .wy-stem-meter i");
+    const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
+    return peak < 0.02;
+  }, null, { timeout: 5_000 });
+  assert.equal(errors.length, errorsBeforeLiveSwap, "live swapping and isolation must not throw browser errors");
+  report.push("A live donor changes the audible vocal meter while playback keeps its clock; isolating vocals silences the drum stem.");
+
+  mockLiveSessionActive = false;
+  await page.unroute("**/api/assets/*");
+  await page.evaluate(() => localStorage.removeItem("waveyard.listening.sessionId"));
+  await page.goto(`${base}/waveyard`, { waitUntil: "domcontentloaded" });
   await page.unroute("**/api/library/**");
   await page.unroute("**/api/waveyard/projects");
   await page.unroute("**/api/jobs/arena-smoke-stem-job/retry");
