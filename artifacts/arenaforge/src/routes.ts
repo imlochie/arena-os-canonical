@@ -2,6 +2,7 @@ import { lazy } from "react";
 export const routes = [
   { path: "/college/faculty/builder", Component: lazy(() => import("./app/college/faculty/builder/page.tsx")) },
   { path: "/waveyard/projects/:id", Component: lazy(() => import("./app/waveyard/projects/[id]/page.tsx")) },
+  { path: "/waveyard/studio", Component: lazy(() => import("./app/waveyard/studio/page.tsx")) },
   { path: "/waveyard/session/:id", Component: lazy(() => import("./app/waveyard/session/[id]/page.tsx")) },
   { path: "/waveyard/moderation", Component: lazy(() => import("./app/waveyard/moderation/page.tsx")) },
   { path: "/college/curriculum", Component: lazy(() => import("./app/college/curriculum/page.tsx")) },

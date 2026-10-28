@@ -14,8 +14,8 @@ export function importedHtmlSafetyIssue(html: string): string | null {
     return "This file references an external resource. Only offline game files are supported.";
   }
   if (
-    /\b(?:src|srcset|poster|data)\s*=\s*(?:"(?!data:|blob:)[^"]*"|'(?!data:|blob:)[^']*'|(?!data:|blob:)[^\s>]+)/i.test(html) ||
-    /\bhref\s*=\s*(?:"(?!#|data:|blob:)[^"]*"|'(?!#|data:|blob:)[^']*'|(?!#|data:|blob:)[^\s>]+)/i.test(html) ||
+    /\b(?:src|srcset|poster|data)\s*=\s*(?:"(?!data:|blob:)[^"]*"|'(?!data:|blob:)[^']*'|(?!data:|blob:|["'])[^\s>]+)/i.test(html) ||
+    /\bhref\s*=\s*(?:"(?!#|data:|blob:)[^"]*"|'(?!#|data:|blob:)[^']*'|(?!#|data:|blob:|["'])[^\s>]+)/i.test(html) ||
     /url\(\s*(?:"(?!data:|blob:)[^"]*"|'(?!data:|blob:)[^']*'|(?!data:|blob:)[^)"']+)\s*\)/i.test(html) ||
     /@import\b/i.test(html)
   ) {

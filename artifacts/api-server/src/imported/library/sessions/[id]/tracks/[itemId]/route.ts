@@ -14,7 +14,7 @@ const patchSchema = z.object({
   stemMix: z.record(z.string(), z.number()).optional(),
   transition: z
     .object({
-      mode: z.enum(["manual", "beat", "bar", "meeting-point"]),
+      mode: z.enum(["manual", "beat", "bar"]),
       crossfadeSeconds: z.number().min(0).max(30),
       keepStems: z.array(z.string().min(1).max(64)).optional(),
     })

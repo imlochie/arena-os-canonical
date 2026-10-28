@@ -150,7 +150,9 @@ async function availabilityBySource(
         id: processingJobs.id,
         sourceAssetId: processingJobs.sourceAssetId,
         status: processingJobs.status,
+        stage: processingJobs.stage,
         errorCode: processingJobs.errorCode,
+        metadata: processingJobs.metadata,
       })
       .from(processingJobs)
       .where(
@@ -492,7 +494,9 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
     .select({
       id: processingJobs.id,
       status: processingJobs.status,
+      stage: processingJobs.stage,
       errorCode: processingJobs.errorCode,
+      metadata: processingJobs.metadata,
     })
     .from(processingJobs)
     .where(and(eq(processingJobs.sourceAssetId, row.sourceAssetId), eq(processingJobs.type, "separation")))

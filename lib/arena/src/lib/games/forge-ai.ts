@@ -60,7 +60,7 @@ function titleFromPrompt(prompt: string): string {
 
 export async function forgeGameWithAI(
   prompt: string,
-  opts: { keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string; openai?: string; mistral?: string }; localOnly?: boolean; modelId?: string; priorCode?: string } = {},
+  opts: { keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string; openai?: string; mistral?: string }; localOnly?: boolean; modelId?: string; priorCode?: string; signal?: AbortSignal } = {},
   deps: { generate?: typeof generate } = {}
 ): Promise<ForgeAIResult> {
   const gen = deps.generate ?? generate;
@@ -87,6 +87,7 @@ export async function forgeGameWithAI(
       maxTokens: 16_000,
       keys: opts.localOnly ? undefined : opts.keys,
       localOnly: opts.localOnly,
+      signal: opts.signal,
       allowPublicFallback: false,
     });
 

@@ -41,6 +41,7 @@ powershell -ExecutionPolicy Bypass -File desktop/Start-Windows.ps1 `
 The check:
 - starts the packaged executable on actual Windows;
 - connects a real installed Ollama model through Model Hub;
+- creates a Pong game in Arcade with that real model, verifies the selected model and validation result, and boots the game in the isolated preview;
 - submits a benign natural-language browser task in the Windows UI;
 - verifies a click waits for approval, restarts, approves and resumes it;
 - downloads the model's saved report through the UI;

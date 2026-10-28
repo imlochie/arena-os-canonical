@@ -14,6 +14,7 @@ import {
   beatAlignedTransitionStart,
   crossfadeCancel,
   crossfadeEnvelope,
+  scaleCrossfadeStemVolumes,
   defaultTransitionConfig,
   keyCompatibility,
   nextSessionTrack,
@@ -36,16 +37,27 @@ test("transition config: valid modes round-trip, invalid rejected", () => {
   assert.equal(normalizeTransitionConfig({ mode: "manual", crossfadeSeconds: MAX_CROSSFADE_SECONDS + 1 }), null);
   assert.equal(normalizeTransitionConfig(null), null);
   assert.equal(normalizeTransitionConfig("manual"), null);
+  assert.deepEqual(
+    normalizeTransitionConfig({ mode: "meeting-point", crossfadeSeconds: 6, keepStems: ["vocals"] }),
+    { mode: "manual", crossfadeSeconds: 6, keepStems: ["vocals"] },
+    "legacy stored meeting-point settings use the supported current-position crossfade",
+  );
   // junk keepStems entries are dropped, duplicates deduped
   const cleaned = normalizeTransitionConfig({ mode: "manual", crossfadeSeconds: 1, keepStems: ["drums", "drums", "", 42, "bass"] });
   assert.deepEqual(cleaned?.keepStems, ["drums", "bass"]);
   assert.deepEqual(defaultTransitionConfig(), { mode: "manual", crossfadeSeconds: 4, keepStems: [] });
 });
 
-test("crossfade envelope: linear, midpoint exact, completes exactly once at the end", () => {
+test("crossfade envelope: equal-power throughout with exact endpoints", () => {
   assert.deepEqual(crossfadeEnvelope(0, 4), { fromGain: 1, toGain: 0, done: false });
-  assert.deepEqual(crossfadeEnvelope(2, 4), { fromGain: 0.5, toGain: 0.5, done: false });
-  assert.deepEqual(crossfadeEnvelope(1, 4), { fromGain: 0.75, toGain: 0.25, done: false });
+  const midpoint = crossfadeEnvelope(2, 4);
+  assert.ok(Math.abs(midpoint.fromGain - Math.SQRT1_2) < 1e-12);
+  assert.ok(Math.abs(midpoint.toGain - Math.SQRT1_2) < 1e-12);
+  for (const progress of [0.1, 0.25, 0.5, 0.75, 0.9]) {
+    const state = crossfadeEnvelope(progress * 4, 4);
+    assert.ok(Math.abs(state.fromGain ** 2 + state.toGain ** 2 - 1) < 1e-12,
+      `crossfade power stays constant at ${progress * 100}%`);
+  }
   const end = crossfadeEnvelope(4, 4);
   assert.deepEqual(end, { fromGain: 0, toGain: 1, done: true });
   assert.deepEqual(crossfadeEnvelope(9, 4), { fromGain: 0, toGain: 1, done: true }, "stays done after the end");
@@ -57,9 +69,28 @@ test("crossfade envelope: zero duration is an immediate hard cut", () => {
   assert.deepEqual(crossfadeEnvelope(0, 0), { fromGain: 0, toGain: 1, done: true });
 });
 
+test("crossfade stem levels preserve balance and explicit keeps", () => {
+  const source = { vocals: 0.42, drums: 0.78, bass: 0.31, other: 1 };
+  assert.deepEqual(scaleCrossfadeStemVolumes(source, [], 0.5), {
+    vocals: 0.21,
+    drums: 0.39,
+    bass: 0.155,
+    other: 0.5,
+  });
+  assert.deepEqual(scaleCrossfadeStemVolumes(source, ["vocals"], 0.5), {
+    vocals: 0.42,
+    drums: 0.39,
+    bass: 0.155,
+    other: 0.5,
+  });
+});
+
 test("crossfade cancel: freezes both decks at the cancel point, never advances", () => {
   const at = crossfadeCancel(1, 4);
-  assert.deepEqual(at, { fromGain: 0.75, toGain: 0.25, done: false, advanced: false });
+  assert.ok(Math.abs(at.fromGain - Math.cos(Math.PI / 8)) < 1e-12);
+  assert.ok(Math.abs(at.toGain - Math.sin(Math.PI / 8)) < 1e-12);
+  assert.equal(at.done, false);
+  assert.equal(at.advanced, false);
   const beforeStart = crossfadeCancel(0, 4);
   assert.deepEqual(beforeStart, { fromGain: 1, toGain: 0, done: false, advanced: false });
   const hardCut = crossfadeCancel(0.01, 0);
@@ -231,13 +262,6 @@ test("evidence: beat/bar alignment REAL on verified grids, UNAVAILABLE without",
   assert.match(compatibilityEvidence(full, full, "bar").alignment?.label ?? "", /start-time alignment/);
   const partial = { ...full, beatGridMs: null };
   assert.equal(compatibilityEvidence(full, partial, "beat").alignment?.level, "unavailable");
-});
-
-test("evidence: meeting-point mode is honestly UNAVAILABLE (stored, not cued)", () => {
-  const full = { bpm: 124, musicalKey: "A minor", beatGridMs: [0, 480, 960] };
-  const evidence = compatibilityEvidence(full, full, "meeting-point");
-  assert.equal(evidence.alignment?.level, "unavailable");
-  assert.match(evidence.alignment?.label ?? "", /section-aware cueing/);
 });
 
 test("evidence: never claims phase-locked sync in any label", () => {

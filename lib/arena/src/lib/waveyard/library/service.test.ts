@@ -282,6 +282,30 @@ test("a library track with no separation job starts once and reports the active 
   const detail = await service.getTrack(START_OWNER, track.id);
   assert.equal(detail?.stemAvailability.status, "processing");
 
+  const [job] = await db.db
+    .select({ id: schema.processingJobs.id })
+    .from(schema.processingJobs)
+    .where(eq(schema.processingJobs.sourceAssetId, source.id))
+    .limit(1);
+  assert.ok(job, "starting separation persists a job that the library can query");
+  await db.db
+    .update(schema.processingJobs)
+    .set({
+      status: "processing",
+      stage: "separating",
+      metadata: JSON.stringify({ progress: { done: 2, total: 4, percent: 36, phase: "2/4" } }),
+    })
+    .where(eq(schema.processingJobs.id, job.id));
+  const progressDetail = await service.getTrack(START_OWNER, track.id);
+  assert.deepEqual(progressDetail?.stemAvailability, {
+    status: "processing",
+    reason: "Stem separation is still running — playback uses the full source until it completes.",
+    stage: "separating",
+    progress: { percent: 36, phase: "2/4" },
+  });
+  const [listedTrack] = await service.listTracks({ ownerId: START_OWNER, search: "Unprocessed" });
+  assert.deepEqual(listedTrack?.stemAvailability, progressDetail?.stemAvailability);
+
   const duplicate = await service.startSeparationForTrack(START_OWNER, track.id, { enqueue });
   assert.equal(duplicate.outcome, "already-active");
   assert.equal(enqueueCount, 1, "a repeat start must not submit a second worker job");
@@ -942,7 +966,8 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   const sessionBeforeHandoff = await sessions.getSession(OWNER, created.id);
   const sourcesBeforeHandoff = await db.db.select().from(schema.sourceAssets);
   const stemsBeforeHandoff = await db.db.select().from(schema.stemAssets);
-  const selectedEntry = sessionBeforeHandoff.tracks[0];
+  const selectedEntries = sessionBeforeHandoff.tracks.slice(0, 2);
+  assert.equal(selectedEntries.length, 2, "the fixture must contain two ready session entries");
   await assert.rejects(
     () => sessions.sendSessionToStudio(OWNER, created.id, []),
     sessions.StudioHandoffSelectionError,
@@ -953,15 +978,18 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
     sessions.StudioHandoffSelectionError,
     "session entries from outside this session cannot be included",
   );
-  const handoff = await sessions.sendSessionToStudio(OWNER, created.id, [selectedEntry.id]);
+  const handoff = await sessions.sendSessionToStudio(OWNER, created.id, selectedEntries.map((entry) => entry.id));
   assert.ok(handoff.projectId);
   assert.ok(handoff.remixSessionId);
-  const expectedAssets = [selectedEntry].flatMap((entry) => {
+  let expectedTimelineStartMs = 0;
+  const expectedAssets = selectedEntries.flatMap((entry) => {
     const separated = entry.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
     const playable = separated.length
       ? separated
       : entry.stems.filter((stem) => stem.engine === "passthrough-unseparated");
-    return playable.map((stem) => ({ stemId: stem.id, startMs: 0 }));
+    const assets = playable.map((stem) => ({ stemId: stem.id, startMs: expectedTimelineStartMs }));
+    expectedTimelineStartMs += Math.max(1, Math.round(entry.track.durationSeconds * 1000));
+    return assets;
   });
   assert.equal(handoff.remixTrackCount, expectedAssets.length, "every separated layer is retained; passthrough is used only when separation is absent");
 
@@ -975,10 +1003,10 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   assert.deepEqual(
     new Set(remixTrackRows.map((row) => row.stemAssetId)),
     new Set(expectedAssets.map((entry) => entry.stemId)),
-    "only the selected session entry contributes remix tracks",
+    "only the selected session entries contribute remix tracks",
   );
   const expectedVolumeByStemId = new Map(
-    [selectedEntry].flatMap((entry) =>
+    selectedEntries.flatMap((entry) =>
       entry.stems.map((stem) => [stem.id, entry.stemMix[stem.stemType] ?? 1] as const),
     ),
   );
@@ -993,7 +1021,11 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   const clips = await db.db.select().from(schema.remixClips);
   const handoffClips = clips.filter((clip) => remixTrackRows.some((track) => track.id === clip.remixTrackId));
   assert.equal(handoffClips.length, remixTrackRows.length, "each mixer lane opens as a visible timeline clip");
-  assert.ok(handoffClips.every((clip) => clip.timelineStartMs === 0), "the selected subset is laid out from the start of the arrangement");
+  const expectedStartByStemId = new Map(expectedAssets.map((entry) => [entry.stemId, entry.startMs]));
+  assert.ok(
+    handoffClips.every((clip) => clip.timelineStartMs === expectedStartByStemId.get(clip.stemAssetId)),
+    "each selected entry starts after the prior song while its stems stay aligned",
+  );
   assert.deepEqual(
     (await db.db.select().from(schema.sourceAssets)).sort((left, right) => left.id.localeCompare(right.id)),
     sourcesBeforeHandoff.sort((left, right) => left.id.localeCompare(right.id)),

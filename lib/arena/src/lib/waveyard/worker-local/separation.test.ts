@@ -157,6 +157,54 @@ test("waveform retries a transient storage failure and completes without manual 
   }
 });
 
+test("waveform save retry deletes a partially written object and leaves one asset", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    const baseStorage = getStorage();
+    const flakyStorage = Object.create(baseStorage) as typeof baseStorage;
+    const attemptedKeys: string[] = [];
+    const deletedKeys: string[] = [];
+    const delays: number[] = [];
+    let writeCalls = 0;
+
+    flakyStorage.putFile = async (key, localPath, contentType) => {
+      attemptedKeys.push(key);
+      await baseStorage.putFile(key, localPath, contentType);
+      writeCalls += 1;
+      if (writeCalls === 1) {
+        throw Object.assign(new Error("Temporary object-store write acknowledgement lost"), { code: "EIO" });
+      }
+    };
+    flakyStorage.delete = async (key) => {
+      deletedKeys.push(key);
+      return baseStorage.delete(key);
+    };
+
+    await handleWaveformJob(sourceWaveformPayload(f, job.id), {
+      db: f.database,
+      storage: flakyStorage,
+      generateWaveform: async () => validWaveformDocument(),
+      sleep: async (milliseconds) => { delays.push(milliseconds); },
+    });
+
+    const [completed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(attemptedKeys.length, 2);
+    assert.notEqual(attemptedKeys[0], attemptedKeys[1], "each attempt owns a distinct temporary object key");
+    assert.deepEqual(deletedKeys, [attemptedKeys[0]], "the object from the failed save attempt is removed");
+    assert.equal(await baseStorage.exists(attemptedKeys[0]!), false);
+    assert.equal(await baseStorage.exists(attemptedKeys[1]!), true);
+    assert.deepEqual(delays, [WAVEFORM_RETRY_BACKOFF_MS[0]]);
+    assert.equal(completed.status, "complete");
+    assert.equal(completed.attempts, 2);
+    assert.equal(assets.length, 1);
+    assert.equal(assets[0]!.storageKey, attemptedKeys[1]);
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform recovery resumes the persisted retry after a local worker restart", async () => {
   const f = await fixture();
   try {
@@ -828,6 +876,104 @@ test("full pipeline: fake identity session → stems stored, decoded back, and a
       assert.equal(j.status, "failed");
       assert.equal(j.errorCode, "queue_unavailable");
     }
+  } finally {
+    await f.close();
+  }
+});
+
+test("two-stem mode uses one model session to produce both outputs", async () => {
+  const f = await fixture();
+  try {
+    const openedModels: string[] = [];
+    let inferenceCalls = 0;
+    let releasedSessions = 0;
+    const openEngine = async (spec: MdxModelSpec): Promise<OpenedEngine> => {
+      openedModels.push(spec.id);
+      return {
+        infer: (async (input: Float32Array) => {
+          inferenceCalls += 1;
+          return input;
+        }) as MdxInfer,
+        release: async () => {
+          releasedSessions += 1;
+        },
+        resolvedDevice: "cpu",
+      };
+    };
+
+    await handleSeparationJob(payloadOf(f), { db: f.database, openEngine });
+
+    assert.deepEqual(openedModels, ["kim_vocal_2"], "one session is opened for the distinct model");
+    assert.equal(inferenceCalls, 2, "the fixture's two model windows are each demixed once, not once per output stem");
+    assert.equal(releasedSessions, 1, "the shared model session is released once");
+    const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+    assert.deepEqual(
+      stems.map((stem) => stem.stemType).sort(),
+      ["instrumental", "vocals"],
+      "the single demix result persists both requested outputs",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("separation progress writes complete in order before the job finalizes", async () => {
+  const f = await fixture();
+  const progressWriteOrder: number[] = [];
+  await f.database
+    .update(processingJobs)
+    .set({ metadata: JSON.stringify({ progress: { done: 2, total: 2, percent: 100, phase: "1/1" } }) })
+    .where(eq(processingJobs.id, f.job.id));
+  let staleProgressCleared = false;
+  try {
+    const delayedDatabase = new Proxy(f.database as object, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (property !== "update" || typeof value !== "function") {
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (table: unknown) => {
+          const builder = Reflect.apply(value, target, [table]) as {
+            set: (patch: unknown) => { where: (...args: unknown[]) => unknown };
+          };
+          return {
+            set(patch: unknown) {
+              const query = builder.set(patch);
+              const patchValue = patch as { metadata?: unknown; stage?: unknown } | null;
+              const metadata = patchValue?.metadata;
+              if (table === processingJobs && patchValue?.stage === "preparing" && typeof metadata === "string") {
+                staleProgressCleared = (JSON.parse(metadata) as { progress?: unknown }).progress === null;
+              }
+              const progress =
+                table === processingJobs && typeof metadata === "string"
+                  ? (JSON.parse(metadata) as { progress?: { percent?: number } }).progress
+                  : undefined;
+              if (progress?.percent === undefined) return query;
+              return {
+                where: async (...whereArgs: unknown[]) => {
+                  if (progress.percent < 100) {
+                    await new Promise((resolve) => setTimeout(resolve, 80));
+                  }
+                  const result = await query.where(...whereArgs);
+                  progressWriteOrder.push(progress.percent!);
+                  return result;
+                },
+              };
+            },
+          };
+        };
+      },
+    }) as typeof f.database;
+
+    await handleSeparationJob(payloadOf(f), {
+      db: delayedDatabase,
+      openEngine: identityEngine(),
+    });
+
+    assert.deepEqual(progressWriteOrder, [50, 100], "slower earlier writes must not overwrite later progress");
+    assert.equal(staleProgressCleared, true, "a retry must clear old progress before starting new inference");
+    const [completed] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    assert.equal(completed.status, "complete");
   } finally {
     await f.close();
   }

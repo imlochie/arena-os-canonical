@@ -133,7 +133,14 @@ try {
   await context.route(`**/api/library/sessions/${sessionId}**`, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
-    if (request.method() === "POST" && url.pathname.endsWith("/tracks")) {
+    if (request.method() === "PATCH" && url.pathname.endsWith("/tracks")) {
+      const { sessionTrackId, position } = request.postDataJSON();
+      const from = session.tracks.findIndex((item) => item.id === sessionTrackId);
+      assert.notEqual(from, -1, "the moved session row exists, including playlist-only rows");
+      const target = Math.min(Math.max(Math.trunc(position), 0), session.tracks.length - 1);
+      session.tracks.splice(target, 0, session.tracks.splice(from, 1)[0]);
+      session.tracks.forEach((item, index) => { item.position = index; });
+    } else if (request.method() === "POST" && url.pathname.endsWith("/tracks")) {
       const { trackId, position, queueItemId } = request.postDataJSON();
       const track = library.find((item) => item.id === trackId);
       assert.ok(track, `known fixture track ${trackId}`);
@@ -141,6 +148,7 @@ try {
         id: `session-track-${++sessionTrackSequence}`, position,
         queueItemId: queueItemId ?? null,
         track: { id: track.id, title: track.title, artist: track.artist, durationSeconds: track.durationSeconds },
+        sourceAssetId: `source-${track.id}`,
         stems: [], playback: { assetIds: [sourceId], kind: "source" }, stemMix: {},
         transition: { mode: "manual", crossfadeSeconds: 1, keepStems: [] }, analysis: null,
       });
@@ -151,10 +159,26 @@ try {
     }
     await routeJson(route, { session });
   });
+  let expectedStudioEntryIds = null;
+  let preparedFullSourceSessionTrackIds = [];
+  await context.route("**/api/stems/passthrough", async (route) => {
+    assert.equal(route.request().method(), "POST", "full-source Studio entries create an explicit passthrough bridge");
+    const { sourceAssetId: requestedSourceAssetId } = route.request().postDataJSON();
+    const item = session.tracks.find((entry) => entry.sourceAssetId === requestedSourceAssetId);
+    assert.ok(item, "the passthrough request belongs to a session entry with an original source");
+    assert.equal(item.stems.length, 0, "a source-only entry is bridged only when the user selected it");
+    const stem = { id: `passthrough-${item.id}`, stemType: "source", engine: "passthrough-unseparated" };
+    item.stems = [stem];
+    preparedFullSourceSessionTrackIds.push(item.id);
+    return routeJson(route, { stem }, 201);
+  });
   await context.route(`**/api/library/sessions/${sessionId}/studio-handoff`, async (route) => {
     assert.equal(route.request().method(), "POST", "the session handoff is explicitly requested");
+    const body = route.request().postDataJSON();
+    assert(expectedStudioEntryIds?.length, "the session fixture must contain selected entries");
+    assert.deepEqual(body.sessionTrackIds, expectedStudioEntryIds, "Studio receives every selected session entry and no others");
     return routeJson(route, {
-      handoff: { projectId: "derived-studio-project", remixTrackCount: 3, refused: [] },
+      handoff: { projectId: "derived-studio-project", remixTrackCount: body.sessionTrackIds.length, refused: [] },
     }, 201);
   });
 
@@ -263,11 +287,12 @@ try {
   await page.waitForFunction(() => {
     const current = document.querySelector('.sess-deck[data-role="current"] audio');
     const state = document.querySelector(".wy-now .eyebrow")?.textContent ?? "";
+    const title = document.querySelector(".wy-now b")?.textContent ?? "";
     return current instanceof HTMLAudioElement
       && !current.paused
+      && title === "Queue fixture 2"
       && /^playing/i.test(state);
   }, undefined, { timeout: 5000 });
-  assert.match(await page.locator(".wy-now .eyebrow").innerText(), /^Playing/i, "playback resumes on a valid remaining entry");
 
   await queueTrack("Queue fixture 2");
   await waitForFixture(() => session.tracks.length === 4 && savedQueue.length === 2, "a distinct queue item for cross-tab reorder");
@@ -359,11 +384,98 @@ try {
   await waitForFixture(() => session.currentSessionTrackId === "session-track-5", "the existing manual mix control");
   await autoCrossfade.check();
   await waitForFixture(() => session.currentSessionTrackId === "session-track-7", "automatic handoff at the selected fade length", 18000);
+  const directEntryToMove = session.tracks.find((item) => item.queueItemId === null && item.track.id === ids[2]);
+  const otherDirectEntry = session.tracks.find((item) => item.queueItemId === null && item.track.id === ids[1]);
+  assert.ok(directEntryToMove && otherDirectEntry, "the session has two independent playlist-only entries");
+  assert(
+    session.tracks.findIndex((item) => item.id === directEntryToMove.id)
+      > session.tracks.findIndex((item) => item.id === otherDirectEntry.id),
+    "the playlist-only fixture starts in a known order",
+  );
+  const currentTrackBeforeDirectReorder = session.currentSessionTrackId;
+  const currentAudioTimeBeforeDirectReorder = await page
+    .locator('.sess-deck[data-role="current"] audio')
+    .evaluate((audio) => audio.currentTime);
+  await page.getByRole("button", { name: "Move Queue fixture 3 earlier" }).click();
+  await waitForFixture(
+    () => session.tracks.findIndex((item) => item.id === directEntryToMove.id)
+      < session.tracks.findIndex((item) => item.id === otherDirectEntry.id),
+    "the playlist-only entry moves ahead of the other direct entry",
+  );
+  const directReorderedSessionOrder = session.tracks.map((item) => item.track.title);
+  const directReorderQueueOrder = savedQueue.map((item) => item.track.title);
+  await waitForViewOrder(page, directReorderQueueOrder, directReorderedSessionOrder, "the initiating tab shows the direct playlist reorder");
+  await waitForViewOrder(secondPage, directReorderQueueOrder, directReorderedSessionOrder, "the other tab receives the direct playlist reorder");
+  assert.equal(session.currentSessionTrackId, currentTrackBeforeDirectReorder, "moving a playlist-only entry does not change the playing track");
+  const currentAudioTimeAfterDirectReorder = await page
+    .locator('.sess-deck[data-role="current"] audio')
+    .evaluate((audio) => audio.currentTime);
+  assert.ok(currentAudioTimeAfterDirectReorder >= currentAudioTimeBeforeDirectReorder - 0.1, "moving a playlist-only entry does not rewind playback");
+  // Model the full-source bridge as available before testing Studio handoff.
+  // Queue entries remain source-only during the playback/removal assertions.
+  session.tracks.forEach((item) => {
+    item.stems = [{ id: `passthrough-${item.id}`, stemType: "other", engine: "passthrough-unseparated" }];
+  });
+  const sourceOnlyEntry = session.tracks.find((entry) => entry.id !== session.currentSessionTrackId);
+  assert.ok(sourceOnlyEntry, "the session fixture must contain a non-current entry");
+  const currentEntry = session.tracks.find((entry) => entry.id === session.currentSessionTrackId);
+  const notStartedEntry = session.tracks.find((entry) => (
+    entry.id !== session.currentSessionTrackId && entry.id !== sourceOnlyEntry.id
+  ));
+  assert.ok(currentEntry && notStartedEntry, "the fixture has a current entry and a separate not-started entry");
+  sourceOnlyEntry.stems = [];
+  sourceOnlyEntry.playback = { assetIds: [sourceId], kind: "source" };
+  library.find((track) => track.id === sourceOnlyEntry.track.id).stemAvailability = {
+    status: "failed", reason: "Stem separation failed.", retryJobId: "failed-separation-job",
+  };
+  notStartedEntry.stems = [];
+  notStartedEntry.playback = { assetIds: [sourceId], kind: "source" };
+  library.find((track) => track.id === notStartedEntry.track.id).stemAvailability = {
+    status: "not-started", reason: "Stem separation has not started.",
+  };
   await page.reload();
   assert.equal(await page.getByTestId("session-auto-crossfade").isChecked(), true, "the auto-crossfade preference survives reload");
+  const selectedStudioEntries = [sourceOnlyEntry, currentEntry];
+  assert.equal(selectedStudioEntries.length, 2, "the session fixture must contain two selectable entries");
+  await page.getByRole("button", { name: "Clear selection" }).click();
+  const notStartedIndex = session.tracks.findIndex((entry) => entry.id === notStartedEntry.id);
+  const notStartedCheckbox = page.getByLabel(
+    `Include session entry ${notStartedIndex + 1}, ${notStartedEntry.track.title} by ${notStartedEntry.track.artist}, in Studio`,
+  );
+  assert.equal(await notStartedCheckbox.isDisabled(), true, "full-source handoff is not offered before separation has started");
+  assert(
+    (await page.locator(`#studio-readiness-${notStartedEntry.id}`).innerText()).includes("Separation not started"),
+    "the disabled source-only track explains how to become eligible",
+  );
+  for (const entry of selectedStudioEntries) {
+    const index = session.tracks.findIndex((item) => item.id === entry.id);
+    await page.getByLabel(
+      `Include session entry ${index + 1}, ${entry.track.title} by ${entry.track.artist}, in Studio`,
+    ).check();
+  }
+  assert(
+    (await page.locator(`#studio-readiness-${sourceOnlyEntry.id}`).innerText()).includes("full source available"),
+    "the failed-separation source-only choice is labeled before it is sent",
+  );
+  expectedStudioEntryIds = selectedStudioEntries.map((entry) => entry.id);
+  assert.equal(
+    await page.getByTestId("studio-track-selection-count").innerText(),
+    `2 selected of ${session.tracks.length - 1} selectable tracks`,
+    "the UI selection count excludes the not-started source-only entry",
+  );
+  const currentEntryBeforeStudioHandoff = session.currentSessionTrackId;
+  const positionBeforeStudioHandoff = session.positionSeconds;
   await page.getByTestId("session-handoff").click();
   const studioLink = page.getByRole("link", { name: "Open in Studio" });
   await studioLink.waitFor();
+  assert.deepEqual(preparedFullSourceSessionTrackIds, [sourceOnlyEntry.id], "only the explicitly selected source-only entry gets a passthrough bridge");
+  assert.equal(session.currentSessionTrackId, currentEntryBeforeStudioHandoff, "preparing a source-only Studio entry does not change the playing session entry");
+  assert.equal(session.positionSeconds, positionBeforeStudioHandoff, "preparing a source-only Studio entry does not reset session position");
+  await page.getByText(/selected entry uses full-source audio, not separated/).waitFor();
+  assert(
+    (await page.locator(".sess-handoff").innerText()).includes("1 full-source session entry (not separated)"),
+    "the Studio result identifies the unseparated source entry",
+  );
   assert.equal(
     await studioLink.getAttribute("href"),
     "/waveyard/projects/derived-studio-project?view=studio",
@@ -374,8 +486,14 @@ try {
     role: "owner",
     build: null,
     sources: [],
-    studioSources: [{ id: "linked-source", originalFilename: "Session track A", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", mimeType: "audio/wav", fileSizeBytes: 1000, checksumSha256: "source-checksum", linkedFromLibrary: true }],
-    stems: [{ id: "linked-stem", sourceAssetId: "linked-source", stemType: "drums", engine: "test", model: "test", modelVersion: "1", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: 1000, checksumSha256: "stem-checksum" }],
+    studioSources: [
+      { id: "linked-source-a", originalFilename: "Session track A", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", mimeType: "audio/wav", fileSizeBytes: 1000, checksumSha256: "source-checksum-a", linkedFromLibrary: true },
+      { id: "linked-source-b", originalFilename: "Session track B", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", mimeType: "audio/wav", fileSizeBytes: 1000, checksumSha256: "source-checksum-b", linkedFromLibrary: true },
+    ],
+    stems: [
+      { id: "linked-stem-a", sourceAssetId: "linked-source-a", stemType: "drums", engine: "test", model: "test", modelVersion: "1", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: 1000, checksumSha256: "stem-checksum-a" },
+      { id: "linked-stem-b", sourceAssetId: "linked-source-b", stemType: "vocals", engine: "test", model: "test", modelVersion: "1", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: 1000, checksumSha256: "stem-checksum-b" },
+    ],
     waveforms: [],
     waveformJobs: [],
     jobs: [],
@@ -383,21 +501,81 @@ try {
   await context.route("**/api/waveyard/projects/derived-studio-project/remixes", async (route) => routeJson(route, {
     remixes: [{ id: "derived-studio-remix" }],
   }));
-  await context.route("**/api/remixes/derived-studio-remix", async (route) => routeJson(route, {
+  let persistedStudioRemix = {
     remix: { id: "derived-studio-remix", name: "Session handoff", masterVolume: 1, masterInserts: "[]", loopStartMs: 0, loopEndMs: null, tempoBpm: 120, timeSignatureNumerator: 4, timeSignatureDenominator: 4, gridDivision: "beat", snapEnabled: true, targetKey: null, version: 1 },
-    tracks: [{ id: "derived-remix-track", stemAssetId: "linked-stem", name: "Session track A — drums", sortOrder: 0, volume: 1, pan: 0, muted: false, solo: false, inserts: [], phaseInverted: false, clips: [] }],
+    tracks: [
+      { id: "derived-remix-track-a", stemAssetId: "linked-stem-a", name: "Session track A — drums", sortOrder: 0, volume: 1, pan: 0, muted: false, solo: false, inserts: [], phaseInverted: false, clips: [{ id: "handoff-clip-a", timelineStartMs: 0, sourceOffsetMs: 0, durationMs: 12000, gain: 1 }] },
+      { id: "derived-remix-track-b", stemAssetId: "linked-stem-b", name: "Session track B — vocals", sortOrder: 1, volume: 1, pan: 0, muted: false, solo: false, inserts: [], phaseInverted: false, clips: [{ id: "handoff-clip-b", timelineStartMs: 12000, sourceOffsetMs: 0, durationMs: 12000, gain: 1 }] },
+    ],
     automation: [],
-    stems: [{ id: "linked-stem", sourceAssetId: "linked-source", stemType: "drums", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: 1000, checksumSha256: "stem-checksum" }],
-  }));
+    stems: [
+      { id: "linked-stem-a", sourceAssetId: "linked-source-a", stemType: "drums", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: 1000, checksumSha256: "stem-checksum-a" },
+      { id: "linked-stem-b", sourceAssetId: "linked-source-b", stemType: "vocals", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: 1000, checksumSha256: "stem-checksum-b" },
+    ],
+  };
+  await context.route("**/api/remixes/derived-studio-remix", async (route) => {
+    if (route.request().method() === "PUT") {
+      const state = route.request().postDataJSON();
+      const { tracks, automation, ...remixFields } = state;
+      persistedStudioRemix = {
+        ...persistedStudioRemix,
+        remix: { ...persistedStudioRemix.remix, ...remixFields },
+        tracks: Array.isArray(tracks) ? tracks : persistedStudioRemix.tracks,
+        automation: Array.isArray(automation) ? automation : persistedStudioRemix.automation,
+      };
+    }
+    return routeJson(route, persistedStudioRemix);
+  });
   await context.route("**/api/remixes/derived-studio-remix/versions", async (route) => routeJson(route, { versions: [] }));
   await studioLink.click();
   await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  await page.waitForFunction(() => {
+    const editor = document.getElementById("studio-editor");
+    if (!editor) return false;
+    const { top } = editor.getBoundingClientRect();
+    return top >= 0 && top < window.innerHeight;
+  }, null, { timeout: 8000 });
   assert.equal(
     await page.getByTestId("waveyard-mode-studio").getAttribute("aria-selected"),
     "true",
-    "the handoff lands in the mixer, with linked session stems mounted",
+    "the handoff scrolls to the mixer with linked session stems mounted",
   );
-  console.log("PASS: queue continuity and session-to-Studio handoff preserve playback, link the real project, and open its mixer");
+  await page.waitForFunction(() => {
+    const timeline = document.getElementById("remix-timeline");
+    if (!timeline) return false;
+    const { top } = timeline.getBoundingClientRect();
+    return top >= 0 && top < window.innerHeight;
+  }, null, { timeout: 8000 });
+  await page.getByLabel("Session track A — drums arrangement volume").waitFor();
+  await page.getByLabel("Session track B — vocals arrangement volume").waitFor();
+  const cleanupDisclosure = page.locator("details.studio-disclosure").filter({ hasText: "Audio cleanup" });
+  assert.equal(await cleanupDisclosure.count(), 1, "advanced tools remain available in the Studio editor");
+  assert.equal(await cleanupDisclosure.evaluate((element) => element.open), false, "audio cleanup starts collapsed");
+  assert.equal(
+    await page.getByRole("region", { name: "Audio cleanup" }).count(),
+    0,
+    "optional cleanup UI is not mounted in the initial edit workflow",
+  );
+  await cleanupDisclosure.locator("summary").click();
+  await page.getByRole("region", { name: "Audio cleanup" }).waitFor();
+  await cleanupDisclosure.locator("summary").click();
+  await page.getByRole("region", { name: "Audio cleanup" }).waitFor({ state: "detached" });
+  await page.getByLabel("Tempo BPM").fill("132");
+  await page.getByRole("button", { name: "Save now" }).click();
+  await waitForFixture(
+    () => persistedStudioRemix.remix.tempoBpm === 132,
+    "Studio save request",
+  );
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  await page.getByLabel("Session track A — drums arrangement volume").waitFor();
+  await page.getByLabel("Session track B — vocals arrangement volume").waitFor();
+  assert.equal(
+    await page.getByLabel("Tempo BPM").inputValue(),
+    "132",
+    "a saved arrangement edit survives reopening its Studio project",
+  );
+  console.log("PASS: queue continuity, selected-track handoff, and Studio edits survive reopening the arrangement");
 } finally {
   await browser.close();
 }

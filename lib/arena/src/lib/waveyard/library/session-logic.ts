@@ -22,7 +22,7 @@ import { normaliseMusicalKey, semitoneShift } from "@workspace/arena/lib/waveyar
 
 // ------------------------------------------------------------- transitions
 
-export const TRANSITION_MODES = ["manual", "beat", "bar", "meeting-point"] as const;
+export const TRANSITION_MODES = ["manual", "beat", "bar"] as const;
 export type TransitionMode = (typeof TRANSITION_MODES)[number];
 
 export interface TransitionConfig {
@@ -39,7 +39,14 @@ export const MAX_CROSSFADE_SECONDS = 30;
 export function normalizeTransitionConfig(raw: unknown): TransitionConfig | null {
   if (typeof raw !== "object" || raw === null) return null;
   const value = raw as Record<string, unknown>;
-  const mode = TRANSITION_MODES.includes(value.mode as TransitionMode) ? (value.mode as TransitionMode) : null;
+  // Older sessions may still contain the previously exposed but nonfunctional
+  // meeting-point mode. Preserve their timing and stem settings while using
+  // the supported current-position crossfade behavior.
+  const mode: TransitionMode | null = value.mode === "meeting-point"
+    ? "manual"
+    : TRANSITION_MODES.includes(value.mode as TransitionMode)
+      ? value.mode as TransitionMode
+      : null;
   if (mode === null) return null;
   const seconds = Number(value.crossfadeSeconds);
   if (!Number.isFinite(seconds) || seconds < 0 || seconds > MAX_CROSSFADE_SECONDS) return null;
@@ -58,7 +65,7 @@ export function defaultTransitionConfig(): TransitionConfig {
  * transports' master gain nodes by the controller.
  *
  *   elapsed <= 0            → { from: 1, to: 0 }        (not started)
- *   0 < elapsed < duration  → linear interpolation
+ *   0 < elapsed < duration  → equal-power cosine/sine envelope
  *   elapsed >= duration     → { from: 0, to: 1, done }  (transition complete)
  *   duration <= 0           → immediate hard cut
  */
@@ -75,7 +82,24 @@ export function crossfadeEnvelope(elapsedSeconds: number, durationSeconds: numbe
   }
   if (elapsedSeconds === 0) return { fromGain: 1, toGain: 0, done: false };
   const progress = Math.min(1, elapsedSeconds / durationSeconds);
-  return { fromGain: 1 - progress, toGain: progress, done: progress >= 1 };
+  if (progress >= 1) return { fromGain: 0, toGain: 1, done: true };
+  const angle = progress * Math.PI / 2;
+  return { fromGain: Math.cos(angle), toGain: Math.sin(angle), done: false };
+}
+
+/** Apply one outgoing envelope to every stem while honoring explicit keep choices. */
+export function scaleCrossfadeStemVolumes(
+  volumes: Record<string, number>,
+  keepStems: readonly string[],
+  outgoingGain: number,
+): Record<string, number> {
+  const kept = new Set(keepStems);
+  return Object.fromEntries(
+    Object.entries(volumes).map(([stemType, volume]) => [
+      stemType,
+      kept.has(stemType) ? volume : volume * outgoingGain,
+    ]),
+  );
 }
 
 /**

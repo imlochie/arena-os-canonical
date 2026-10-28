@@ -1,8 +1,24 @@
 import Link from "@/routing/Link";
 import Markdown from "@/components/Markdown";
 import { usePageData } from "@/routing/page-data";
+
+type CollabPageData = {
+  collab: {
+    category: string;
+    createdAt: Date | null;
+    challenge: string;
+    rounds: number;
+    synthesis: string;
+    bestContributor: number | null;
+  };
+  strategy: { emoji: string; name: string };
+  drafts: Array<{ id: string; contribIndex: number; label: string; content: string }>;
+  critiques: Array<{ id: string; label: string; content: string }>;
+  rest: Array<{ id: string; round: number; label: string; kind: string; content: string }>;
+};
+
 export default function CollabPage({ params }: { params: Record<string,string> }) {
-  const state = usePageData("collabs", Object.values(params)[0]);
+  const state = usePageData<CollabPageData>("collabs", Object.values(params)[0]);
   if (state.loading) return <p className="text-center text-slate-400">Loading…</p>;
   if (state.error) return <p role="alert" className="text-center text-slate-400">{state.error}</p>;
   const { collab, strategy, drafts, critiques, rest } = state.data;

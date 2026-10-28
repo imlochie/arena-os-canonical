@@ -179,15 +179,18 @@ export function ListeningWorkspace() {
   if (state === null || api === null) return null;
   const variant = isWorkspaceRoute(pathname) ? "full" : "compact";
   return (
-    <div id={variant === "full" ? "waveyard-live-mixer" : undefined} className={`waveyard-room wy-host wy-host-${variant}`}>
+    <div
+      id={variant === "full" ? "waveyard-live-mixer" : undefined}
+      className={`waveyard-room wy-host wy-host-${variant}${variant === "full" && state.sessionId !== null ? " has-session" : ""}`}
+    >
       {api.hostError !== null && variant === "full" && (
         <p className="sess-status wy-host-error" role="alert">{api.hostError}</p>
       )}
       {state.sessionId === null ? (
         variant === "full" ? (
           <section className="wy-workspace wy-workspace-empty" aria-label="Listening workspace">
-            <span className="eyebrow">Now playing</span>
-            <p>Nothing loaded. Press Play on any song below — it starts here. Pick another with Next and it lines up on the second deck.</p>
+            <span className="eyebrow">Live mixer</span>
+            <p>No song is loaded. Play a library track to start; use Add Music if your library is empty.</p>
           </section>
         ) : null
       ) : (

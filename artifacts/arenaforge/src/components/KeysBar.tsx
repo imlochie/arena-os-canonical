@@ -76,8 +76,8 @@ export default function KeysBar() {
       </button>
       <p className="mt-1 text-xs text-slate-400">
         Works with <strong className="text-slate-200">$0 and no keys</strong>. Paste free-tier keys to add extra
-        quality headroom — stored only in your browser. In 🔒 Local Mode keys are ignored (zero egress wins).
-        Free third-party tiers may log for abuse prevention — Local Mode skips them entirely.
+        quality headroom — stored only in your browser. Local Mode ignores these keys and blocks cloud AI providers.
+        It is not network isolation: prompts still reach Arena’s API server. In the packaged desktop app that server runs on this PC; browser previews use the host server.
       </p>
       {open && (
         <div className="mt-3 grid gap-2 sm:grid-cols-2">

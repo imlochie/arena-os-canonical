@@ -81,6 +81,57 @@ try {
   report.model = model;
   pass("Installed real Ollama model is registered through Model Hub");
 
+  // Prove Arcade's actual prompt → selected local model → validated code →
+  // isolated game frame path. This uses the live Ollama model, not the browser
+  // smoke test's scripted inference response.
+  await page.goto(`${base}/arcade`);
+  await page.evaluate(() => localStorage.setItem("af_local_mode", "1"));
+  await page.reload();
+  const modelSource = page.getByLabel("Connected model source");
+  if (!(await modelSource.isVisible())) {
+    await page.locator("summary").filter({ hasText: "Model setup" }).click();
+  }
+  await modelSource.selectOption(modelId);
+  const gamePrompt = "Create an original single-screen Pong game with two paddles, a bouncing ball, visible score, arrow-key controls, and an immediate playable start.";
+  const generationRequestPromise = page.waitForRequest(value =>
+    value.url() === `${base}/api/arcade/forge` && value.method() === "POST",
+    { timeout: 210_000 },
+  );
+  const generationResponsePromise = page.waitForResponse(value =>
+    value.url() === `${base}/api/arcade/forge` && value.request().method() === "POST",
+    { timeout: 210_000 },
+  );
+  const gameRuntimeErrors = [];
+  page.on("pageerror", error => gameRuntimeErrors.push(error.message));
+  await page.getByLabel("Game prompt").fill(gamePrompt);
+  await page.getByRole("button", { name: "🎮 Create & play" }).click();
+  const [generationRequest, generationResponse] = await Promise.all([
+    generationRequestPromise,
+    generationResponsePromise,
+  ]);
+  const generationBody = generationRequest.postDataJSON();
+  assert.equal(generationBody.modelId, modelId, "Arcade must send the selected local model");
+  assert.equal(generationBody.localOnly, true, "Arcade must keep Local Mode enabled for the model call");
+  assert.equal(generationBody.keys, undefined, "Local Mode must not send provider keys");
+  const generatedGame = await generationResponse.json();
+  assert(generationResponse.ok(), generatedGame.error || `Arcade generation returned ${generationResponse.status()}`);
+  assert.equal(generatedGame.runtime?.backend, "local-server", "A real local Model Hub model must perform generation");
+  assert.equal(generatedGame.runtime?.modelId, modelId, "The selected model must be the model that actually ran");
+  assert.equal(generatedGame.runtime?.fallback, false, "A deterministic fallback is not a generation pass");
+  assert.equal(generatedGame.validation?.ok, true, "Generated HTML must pass Arcade validation");
+  assert.equal(typeof generatedGame.code, "string");
+  const gameFrame = page.locator('iframe[title]').last();
+  await gameFrame.waitFor({ timeout: 30_000 });
+  const generatedFrame = gameFrame.contentFrame();
+  await generatedFrame.locator("canvas").waitFor({ timeout: 30_000 });
+  assert(await generatedFrame.locator("canvas").evaluate(canvas => canvas.getContext("2d") !== null),
+    "The generated game must initialize its canvas in the isolated preview");
+  await page.waitForTimeout(500);
+  assert.deepEqual(gameRuntimeErrors, [], `Generated game runtime errors: ${gameRuntimeErrors.join("; ")}`);
+  pass("Real Ollama prompt returned validated game code that booted in Arcade's isolated preview");
+
+  await page.goto(`${base}/spaces`);
+  await page.getByRole("heading", { name: "Browser tasks in private workspaces" }).waitFor();
   const create = () => request("/api/spaces", {
     title: "Windows browser acceptance", prompt: "Only run browser tasks when requested.",
     modelId, intervalMinutes: 1440, status: "paused",

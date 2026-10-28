@@ -46,7 +46,7 @@ type CachedModelStatus = { fingerprint: string; status: ModelFileStatus };
 const modelStatusCache = new Map<string, CachedModelStatus>();
 const modelStatusChecks = new Map<string, Promise<ModelFileStatus>>();
 
-function modelFileFingerprint(details: Awaited<ReturnType<typeof stat>>): string {
+function modelFileFingerprint(details: NonNullable<Awaited<ReturnType<typeof stat>>>): string {
   return [details.dev, details.ino, details.size, details.mtimeMs, details.ctimeMs].join(":");
 }
 

@@ -87,12 +87,29 @@ export function ProjectWorkspace({
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [processorNotice, setProcessorNotice] = useState<string | null>(null);
   const processorChecked = useRef(false);
+  const studioFocusHandled = useRef(false);
 
   useEffect(() => {
     if (initialView === "studio" || new URLSearchParams(window.location.search).get("view") === "studio") {
       setOpenStudio(true);
     }
   }, [initialView]);
+
+  useEffect(() => {
+    if (!openStudio || !data?.stems.length || studioFocusHandled.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const editor = document.getElementById("studio-editor");
+      if (!editor) return;
+      editor.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "start",
+      });
+      editor.focus({ preventScroll: true });
+      studioFocusHandled.current = true;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [data?.stems.length, openStudio]);
+
   const finalizingBuild = useRef<string | null>(null);
 
   useEffect(() => {
@@ -188,6 +205,8 @@ export function ProjectWorkspace({
       const body = await response.json().catch(() => ({}));
       if (!response.ok) setSourceMessage(body.error ?? "Unseparated source track could not be created.");
       else setSourceMessage("Queued the full unseparated source as one track (engine: passthrough-unseparated).");
+    } catch {
+      setSourceMessage("The source could not reach the server. Your original audio is unchanged; try again when connected.");
     } finally {
       setPassthroughBusy(false);
       setRefresh((value) => value + 1);
@@ -207,65 +226,70 @@ async function prepareEngine(model: string, jobId: string) {
       // fall back to an explicit retry when it found none.
       if (result.requeued > 0) setRefresh((value) => value + 1);
       else await retry(jobId);
+    } catch {
+      setError("The stem engine could not be prepared. Check your connection and try again.");
     } finally {
       setPreparingEngine(false);
     }
   }
 
-  async function retry(jobId: string) {
+  async function postRetry(path: string, fallbackError: string, networkError: string) {
     setRetrying(true);
     setError(null);
-    const response = await fetch(`/api/jobs/${jobId}/retry`, {
-      method: "POST",
-    });
-    const json = await response.json().catch(() => ({}));
-    setRetrying(false);
-    if (!response.ok) setError(json.error ?? "Retry could not be started.");
-    else setRefresh((value) => value + 1);
+    try {
+      const response = await fetch(path, { method: "POST" });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) setError(json.error ?? fallbackError);
+      else setRefresh((value) => value + 1);
+    } catch {
+      setError(networkError);
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  async function retry(jobId: string) {
+    await postRetry(
+      `/api/jobs/${jobId}/retry`,
+      "Retry could not be started.",
+      "Separation retry could not reach the server. Your source audio remains available; check your connection and try again.",
+    );
   }
 
   async function retryWaveform(jobId: string) {
-    setRetrying(true);
-    setError(null);
-    const response = await fetch(`/api/waveform-jobs/${jobId}/retry`, {
-      method: "POST",
-    });
-    const json = await response.json().catch(() => ({}));
-    setRetrying(false);
-    if (!response.ok)
-      setError(json.error ?? "Waveform retry could not be started.");
-    else setRefresh((value) => value + 1);
+    await postRetry(
+      `/api/waveform-jobs/${jobId}/retry`,
+      "Waveform retry could not be started.",
+      "Waveform retry could not reach the server. Audio remains available; check your connection and try again.",
+    );
   }
 
   async function retryAnalysis(analysis: SourceAnalysis) {
-    setRetrying(true);
-    setError(null);
-    const response = await fetch(`/api/source-analyses/${analysis.id}/retry`, {
-      method: "POST",
-    });
-    const json = await response.json().catch(() => ({}));
-    setRetrying(false);
-    if (!response.ok)
-      setError(json.error ?? "Analysis retry could not be started.");
-    else setRefresh((value) => value + 1);
+    await postRetry(
+      `/api/source-analyses/${analysis.id}/retry`,
+      "Analysis retry could not be started.",
+      "Analysis retry could not reach the server. Try again when connected.",
+    );
   }
 
   async function retrySectionAnalysis(analysis: SourceSectionAnalysis) {
-    setRetrying(true);
-    setError(null);
-    const response = await fetch(`/api/source-section-analyses/${analysis.id}/retry`, { method: "POST" });
-    const json = await response.json().catch(() => ({}));
-    setRetrying(false);
-    if (!response.ok) setError(json.error ?? "Structural analysis retry could not be started.");
-    else setRefresh((value) => value + 1);
+    await postRetry(
+      `/api/source-section-analyses/${analysis.id}/retry`,
+      "Structural analysis retry could not be started.",
+      "Structural analysis retry could not reach the server. Try again when connected.",
+    );
   }
 
   async function requestVocalAnalysis(stemId: string) {
-    const response = await fetch(`/api/stems/${stemId}/vocal-analysis`, { method: "POST" });
-    const json = await response.json().catch(() => ({}));
-    if (!response.ok) return json.error ?? "Could not queue isolated-vocal analysis.";
-    setRefresh((value) => value + 1);
-    return null;
+    try {
+      const response = await fetch(`/api/stems/${stemId}/vocal-analysis`, { method: "POST" });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) return json.error ?? "Could not queue isolated-vocal analysis.";
+      setRefresh((value) => value + 1);
+      return null;
+    } catch {
+      return "Vocal analysis could not reach the server. Try again when connected.";
+    }
   }
 
   async function addSource(event: FormEvent<HTMLFormElement>) {
@@ -304,18 +328,17 @@ async function prepareEngine(model: string, jobId: string) {
     }
   }
 
-  if (error)
-    return (
-      <p className="error" role="alert">
-        {error}
-      </p>
-    );
-  if (!data) return <p className="notice">Opening private studio…</p>;
+  if (!data) {
+    return error
+      ? <p className="error" role="alert">{error}</p>
+      : <p className="notice">Opening private studio…</p>;
+  }
 
   const latest = data.jobs.at(-1);
   const editable = data.role === "owner" || data.role === "editor";
   return (
     <>
+      {error && <p className="error" role="alert" data-testid="project-workspace-error">{error}</p>}
       <header className="project-header">
         <div>
           <span className="eyebrow">Private project</span>
@@ -457,6 +480,7 @@ async function prepareEngine(model: string, jobId: string) {
       />
       {data.stems.length ? (
         <StudioCore
+          editorId="studio-editor"
           projectId={projectId}
           remixSessionId={data.build?.remixSessionId}
           stems={data.stems}
@@ -492,6 +516,7 @@ async function prepareEngine(model: string, jobId: string) {
               drawn.
             </p>
             {editable && <button
+              type="button"
               className="button secondary"
               disabled={retrying}
               onClick={() => void retryWaveform(job.id)}

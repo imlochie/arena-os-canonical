@@ -13,7 +13,7 @@ export default function StemEngineSetup() {
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
-    const response = await fetch("/api/waveyard/separation/models");
+    const response = await fetch("/api/waveyard/separation/models", { cache: "no-store" });
     const body = await response.json();
     if (!response.ok || !Array.isArray(body.models)) throw new Error(body.error ?? "Could not check the stem engine.");
     const required = REQUIRED.map((id) => body.models.find((model: Model) => model.id === id));
@@ -53,8 +53,8 @@ export default function StemEngineSetup() {
   return (
     <div className="library-message" style={{ padding: "10px 0" }}>
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-        <span role="status">
-          {preparing ? progress || "Checking stem engine…" : ready ? "Stem engine ready · vocals / drums / bass / other" : models ? `Prepare stems once (${downloadMb} MB) to enable separation.` : "Checking stem engine…"}
+        <span role="status" data-testid="stem-engine-status">
+          {preparing ? progress || "Checking stem models…" : ready ? "Four stem model files present · vocals / drums / bass / other" : models ? `Prepare stems once (${downloadMb} MB) to enable separation.` : "Checking stem models…"}
         </span>
         {!ready && (
           <button type="button" disabled={preparing} onClick={() => { if (models) void prepare(); else void refresh().catch((cause) => setError(cause.message)); }} className="btn-arena rounded-lg px-3 py-2 text-xs font-bold text-white">

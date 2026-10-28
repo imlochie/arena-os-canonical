@@ -5,14 +5,20 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { StemSeparationProgress } from './stemSeparationProgress';
 
 export type StemAvailability = {
   status: 'separated';
   stemCount: number;
   stemTypes: string[];
 } | {
-  status: 'source-only' | 'processing' | 'not-started' | 'unavailable';
+  status: 'source-only' | 'not-started' | 'unavailable';
   reason: string;
+} | {
+  status: 'processing';
+  reason: string;
+  stage?: string;
+  progress?: StemSeparationProgress;
 } | {
   status: 'rejected' | 'failed';
   reason: string;

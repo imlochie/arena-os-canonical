@@ -15,6 +15,7 @@
  */
 
 import { promises as fs } from "node:fs";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 
 import { checksumFile } from "../audio";
@@ -29,8 +30,13 @@ export class SeparationUnavailableError extends Error {
   }
 }
 
-/** Keep one model bounded while allowing a little CPU parallelism. */
-export const WAVEYARD_ORT_INTRA_OP_THREADS = 2;
+/** Scale inference without taking every CPU from playback and ordinary app work. */
+export function separationInferenceThreads(availableCpus = availableParallelism()): number {
+  const cores = Number.isFinite(availableCpus) ? Math.max(1, Math.floor(availableCpus)) : 1;
+  return cores <= 2 ? cores : Math.min(4, cores - 1);
+}
+
+export const WAVEYARD_ORT_INTRA_OP_THREADS = separationInferenceThreads();
 
 /** Auto prefers a supported GPU; CPU is the honest fallback. */
 export function executionProviderAttempts(requestedDevice: "auto" | "cpu" | "cuda"): string[][] {

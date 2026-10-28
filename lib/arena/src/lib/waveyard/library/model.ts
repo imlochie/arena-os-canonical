@@ -55,10 +55,16 @@ export function buildStemChannels(stemTypes: readonly string[]): StemChannel[] {
 }
 
 /** Honest stem availability for a track, derived from REAL stem rows. */
+export interface SeparationProgress {
+  percent: number;
+  /** Multi-model recipes identify the current pass as e.g. "2/4". */
+  phase?: string;
+}
+
 export type StemAvailability =
   | { status: "separated"; stemCount: number; stemTypes: string[] }
   | { status: "source-only"; reason: string }
-  | { status: "processing"; reason: string }
+  | { status: "processing"; reason: string; stage?: string; progress?: SeparationProgress }
   | { status: "rejected"; reason: string; retryJobId: string }
   | { status: "failed"; reason: string; retryJobId: string }
   | { status: "not-started"; reason: string }
@@ -70,12 +76,33 @@ export interface StemAvailabilityInput {
   /** A separation job for the source exists and has not finished/failed. */
   separationPending?: boolean;
   /** The newest separation attempt, when one exists. */
-  separationJob?: { id: string; status: string; errorCode: string | null };
+  separationJob?: {
+    id: string;
+    status: string;
+    errorCode: string | null;
+    stage?: string | null;
+    metadata?: string | null;
+  };
 }
 
 /** The passthrough bridge (POST /api/stems/passthrough) creates one
  * "source"-typed stem with this engine when separation cannot run. */
 export const PASSTHROUGH_ENGINE = "passthrough-unseparated";
+
+function parseSeparationProgress(metadata: string | null | undefined): SeparationProgress | undefined {
+  if (!metadata) return undefined;
+  try {
+    const value = JSON.parse(metadata) as { progress?: { percent?: unknown; phase?: unknown } };
+    const progress = value?.progress;
+    if (typeof progress?.percent !== "number" || !Number.isFinite(progress.percent)) return undefined;
+    return {
+      percent: Math.min(100, Math.max(0, Math.round(progress.percent))),
+      ...(typeof progress.phase === "string" ? { phase: progress.phase.slice(0, 32) } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 export function resolveStemAvailability(input: StemAvailabilityInput): StemAvailability {
   const real = input.stems.filter((stem) => stem.engine !== PASSTHROUGH_ENGINE);
@@ -93,7 +120,16 @@ export function resolveStemAvailability(input: StemAvailabilityInput): StemAvail
     };
   }
   if (input.separationPending === true) {
-    return { status: "processing", reason: "Stem separation is still running — playback uses the full source until it completes." };
+    const stage = input.separationJob?.stage ?? undefined;
+    const progress = stage === "separating" || stage === "finalizing"
+      ? parseSeparationProgress(input.separationJob?.metadata)
+      : undefined;
+    return {
+      status: "processing",
+      reason: "Stem separation is still running — playback uses the full source until it completes.",
+      ...(stage ? { stage } : {}),
+      ...(progress ? { progress } : {}),
+    };
   }
   if (input.separationJob?.status === "failed") {
     if (input.separationJob.errorCode === "queue_unavailable") {

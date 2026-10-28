@@ -129,6 +129,10 @@ export default function ArcadeForge() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [history, setHistory] = useState<any[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyAction, setHistoryAction] = useState<{ id: string; kind: "open" | "delete" } | null>(null);
+  const historyRetryRef = useRef<(() => void) | null>(null);
   const [offlineGames, setOfflineGames] = useState<SavedOfflineGame[]>([]);
   const [offlineShelfLoading, setOfflineShelfLoading] = useState(true);
   const [offlineShelfError, setOfflineShelfError] = useState<string | null>(null);
@@ -136,8 +140,9 @@ export default function ArcadeForge() {
   const [instruction, setInstruction] = useState("");
   const [iterating, setIterating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<ArcadeWorkspace>("create");
-  const [modelSetupOpen, setModelSetupOpen] = useState(true);
+  const [modelSetupOpen, setModelSetupOpen] = useState(false);
 
   // On-device AI state
   const [gpu, setGpu] = useState<{ ok: boolean; reason?: string } | null>(null);
@@ -163,11 +168,21 @@ export default function ArcadeForge() {
   const gameSaves = useArcadeGameSave(gameFrameRef, saveSlotId);
 
   const fetchHistory = useCallback(async () => {
+    setHistoryLoading(true);
     try {
       const r = await fetch("/api/arcade?limit=30");
-      const j = await r.json();
-      setHistory(j.games ?? []);
-    } catch {}
+      const j = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(j?.error ?? `Could not load saved games (${r.status}).`);
+      if (!Array.isArray(j?.games)) throw new Error("The saved-game list response was invalid.");
+      setHistory(j.games);
+      setHistoryError(null);
+      historyRetryRef.current = null;
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "Could not load saved games.");
+      historyRetryRef.current = () => { void fetchHistory(); };
+    } finally {
+      setHistoryLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -518,51 +533,61 @@ export default function ArcadeForge() {
     routeModelId: string | undefined = serverModelId || undefined,
     localOfflineId?: string,
   ) {
-    setPhase("✨ AI writing your game (server)…");
+    const routedModelId = routeModelId ?? serverModelId;
+    const selectedModel = serverModels.find((model) => model.id === routedModelId);
+    const controller = selectedModel?.backend === "local-server" ? new AbortController() : null;
+    if (controller) abortRef.current = controller;
+    setPhase(selectedModel?.backend === "local-server" ? "🖥️ Local model writing your game…" : "✨ AI writing your game (server)…");
     const flags = privacyFlags();
-    const res = await fetch("/api/arcade/forge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      const res = await fetch("/api/arcade/forge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: p,
+          keys: flags.localOnly ? undefined : loadKeys(),
+          modelId: routeModelId,
+          parentId: localOfflineId ? undefined : parentId,
+          priorCode,
+          ...flags,
+          ephemeral: flags.ephemeral || Boolean(localOfflineId),
+        }),
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.error ?? "No game-writing model is reachable.");
+      }
+      if (typeof body.code !== "string") throw new Error("The model did not return a complete playable game.");
+      const rt = body.runtime ?? {};
+      const temporaryLocalRevision = Boolean(localOfflineId && flags.ephemeral);
+      const gameId = temporaryLocalRevision ? crypto.randomUUID() : localOfflineId ?? body.game?.id ?? crypto.randomUUID();
+      const gameSaveSlot = temporaryLocalRevision ? gameId : inheritedSaveSlot ?? resolveSaveSlot(gameId);
+      rememberSaveSlot(gameId, gameSaveSlot);
+      const localSaved = localOfflineId && !flags.ephemeral
+        ? await saveOfflineRevision(localOfflineId, p, body.code, "remix")
+        : null;
+      setGame({
+        ...(localSaved ?? {}),
+        ...(body.game ?? {}),
+        id: gameId,
         prompt: p,
-        keys: flags.localOnly ? undefined : loadKeys(),
-        modelId: routeModelId,
-        parentId: localOfflineId ? undefined : parentId,
-        priorCode,
-        ...flags,
-        ephemeral: flags.ephemeral || Boolean(localOfflineId),
-      }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(body.error ?? "No game-writing model is reachable.");
+        gameType: localSaved?.gameType ?? body.game?.gameType ?? detectGameType(p),
+        code: body.code,
+        engine: "ai-codegen",
+        runtime: rt,
+        genMs: rt.ms,
+        ephemeral: flags.ephemeral,
+        saveSlotId: gameSaveSlot,
+        localOffline: Boolean(localSaved),
+      });
+      if (!flags.ephemeral && !localOfflineId) fetchHistory();
+      setNotice(localSaved
+        ? `Updated “${localSaved.title}” in your offline shelf. The original game slot and progress are preserved.`
+        : `${body.title ?? "Game"} is playable${body.repairsUsed ? " (repaired after validation)" : ""}. You can now ask for a specific change.`);
+    } finally {
+      if (controller && abortRef.current === controller) abortRef.current = null;
     }
-    if (typeof body.code !== "string") throw new Error("The model did not return a complete playable game.");
-    const rt = body.runtime ?? {};
-    const temporaryLocalRevision = Boolean(localOfflineId && flags.ephemeral);
-    const gameId = temporaryLocalRevision ? crypto.randomUUID() : localOfflineId ?? body.game?.id ?? crypto.randomUUID();
-    const gameSaveSlot = temporaryLocalRevision ? gameId : inheritedSaveSlot ?? resolveSaveSlot(gameId);
-    rememberSaveSlot(gameId, gameSaveSlot);
-    const localSaved = localOfflineId && !flags.ephemeral
-      ? await saveOfflineRevision(localOfflineId, p, body.code, "remix")
-      : null;
-    setGame({
-      ...(localSaved ?? {}),
-      ...(body.game ?? {}),
-      id: gameId,
-      prompt: p,
-      gameType: localSaved?.gameType ?? body.game?.gameType ?? detectGameType(p),
-      code: body.code,
-      engine: "ai-codegen",
-      genMs: rt.ms,
-      ephemeral: flags.ephemeral,
-      saveSlotId: gameSaveSlot,
-      localOffline: Boolean(localSaved),
-    });
-    if (!flags.ephemeral && !localOfflineId) fetchHistory();
-    setNotice(localSaved
-      ? `Updated “${localSaved.title}” in your offline shelf. The original game slot and progress are preserved.`
-      : `${body.title ?? "Game"} is playable${body.repairsUsed ? " (repaired after validation)" : ""}. You can now ask for a specific change.`);
   }
 
   async function runAI(
@@ -602,6 +627,12 @@ export default function ArcadeForge() {
         throw new Error(`The generated game did not pass validation: ${v.issues.join("; ")}`);
       }
       const type = detectGameType(p);
+      const runtime = {
+        backend: "webllm",
+        modelId: loadedModelId() ?? engineModel ?? modelId,
+        via: "webllm",
+        fallback: false,
+      };
       if (localOfflineId && !privacyFlags().ephemeral) {
         const saved = await saveOfflineRevision(localOfflineId, p, code, "on-device-ai");
         const gameSaveSlot = inheritedSaveSlot ?? saved.saveSlotId;
@@ -612,6 +643,7 @@ export default function ArcadeForge() {
           tokps: res.tokps,
           tokens: res.tokens,
           engine: "on-device-ai",
+          runtime,
           saveSlotId: gameSaveSlot,
           localOffline: true,
         });
@@ -629,6 +661,7 @@ export default function ArcadeForge() {
           tokps: res.tokps,
           tokens: res.tokens,
           engine: "on-device-ai",
+          runtime,
           ephemeral: true,
           saveSlotId: temporaryId,
         });
@@ -645,6 +678,7 @@ export default function ArcadeForge() {
         tokps: res.tokps,
         tokens: res.tokens,
         engine: "on-device-ai",
+        runtime,
         saveSlotId: gameSaveSlot,
       });
       if (!saved.ephemeral) fetchHistory();
@@ -653,6 +687,32 @@ export default function ArcadeForge() {
       setStreamed("");
       abortRef.current = null;
     }
+  }
+
+  function shouldRouteToServerModel(localOnly: boolean, hasConnectedProvider: boolean): boolean {
+    if (strategy === "ai") return false;
+    const hasSelectedModel = serverModelId.trim() !== "";
+    const selectedModelIsLocal = hasSelectedModel && serverModels.some(
+      (model) => model.id === serverModelId && model.backend === "local-server",
+    );
+    if (hasSelectedModel) return !localOnly || selectedModelIsLocal;
+    return !localOnly && !isEngineLoaded() && hasConnectedProvider;
+  }
+
+  function generationRuntimeLabel(runtime: any): string | null {
+    if (!runtime || typeof runtime.backend !== "string") return null;
+    if (runtime.fallback) return "Fallback runtime";
+    if (runtime.backend === "local-server") {
+      const selected = serverModels.find((model) => model.id === runtime.modelId);
+      const modelName = selected?.name ?? runtime.via?.split("/").at(-1) ?? runtime.modelId;
+      return `Local Model Hub · ${modelName}`;
+    }
+    if (runtime.backend === "webllm") return `Browser model · ${runtime.modelId}`;
+    if (runtime.backend === "offline-core" || runtime.backend === "arena-local-engine") {
+      return "Offline engine · not model-generated";
+    }
+    const selected = serverModels.find((model) => model.id === runtime.modelId);
+    return `Remote model · ${selected?.name ?? runtime.modelId ?? runtime.backend}`;
   }
 
   async function run(p?: string) {
@@ -674,11 +734,9 @@ export default function ArcadeForge() {
       } else {
         const flags = privacyFlags();
         const hasConnectedProvider = Object.values(loadKeys()).some((key) => typeof key === "string" && key.length > 0);
-        const explicitlySelectedServerModel = serverModelId.trim() !== "";
         if (
           strategy === "auto" &&
-          !flags.localOnly &&
-          (explicitlySelectedServerModel || (!isEngineLoaded() && hasConnectedProvider))
+          shouldRouteToServerModel(flags.localOnly, hasConnectedProvider)
         ) {
           await runServerAI(q);
         } else {
@@ -686,7 +744,21 @@ export default function ArcadeForge() {
         }
       }
     } catch (e: any) {
-      setError(e.message ?? "forge failed");
+      if (e?.name === "AbortError") {
+        setError(null);
+        setNotice(game ? "Generation stopped. Your current game is unchanged." : "Generation stopped. No game was saved.");
+        return;
+      }
+      const message = e.message ?? "forge failed";
+      setError(message);
+      if (/no game-writing model is reachable|not loaded|webgpu unavailable/i.test(message)) {
+        setModelSetupOpen(true);
+        window.requestAnimationFrame(() => {
+          const setupToggle = document.querySelector<HTMLElement>('[data-testid="arcade-model-setup-toggle"]');
+          setupToggle?.scrollIntoView({ block: "start" });
+          setupToggle?.focus();
+        });
+      }
     } finally {
       setBusy(false);
       setPhase("");
@@ -707,19 +779,7 @@ export default function ArcadeForge() {
       const combined = `${game.prompt} — CHANGE: ${ins}`;
       const flags = privacyFlags();
       const hasConnectedProvider = Object.values(loadKeys()).some((key) => typeof key === "string" && key.length > 0);
-      if (
-        flags.localOnly ||
-        strategy === "ai" ||
-        (!serverModelId && (isEngineLoaded() || !hasConnectedProvider))
-      ) {
-        await runAI(
-          combined,
-          game.localOffline ? undefined : game.id,
-          game.code,
-          game.saveSlotId ?? game.id,
-          game.localOffline ? game.id : undefined,
-        );
-      } else {
+      if (shouldRouteToServerModel(flags.localOnly, hasConnectedProvider)) {
         await runServerAI(
           ins,
           game.localOffline ? undefined : game.id,
@@ -728,10 +788,23 @@ export default function ArcadeForge() {
           undefined,
           game.localOffline ? game.id : undefined,
         );
+      } else {
+        await runAI(
+          combined,
+          game.localOffline ? undefined : game.id,
+          game.code,
+          game.saveSlotId ?? game.id,
+          game.localOffline ? game.id : undefined,
+        );
       }
       setInstruction("");
     } catch (e: any) {
-      setError(e.message ?? "iterate failed");
+      if (e?.name === "AbortError") {
+        setError(null);
+        setNotice("Revision stopped. Your current game is unchanged.");
+      } else {
+        setError(e.message ?? "iterate failed");
+      }
     } finally {
       setIterating(false);
     }
@@ -743,11 +816,8 @@ export default function ArcadeForge() {
     }
     const flags = privacyFlags();
     const hasConnectedProvider = Object.values(loadKeys()).some((key) => typeof key === "string" && key.length > 0);
-    const useOnDevice =
-      flags.localOnly ||
-      strategy === "ai" ||
-      (!serverModelId && (isEngineLoaded() || !hasConnectedProvider));
-    if (useOnDevice) {
+    const useServerModel = shouldRouteToServerModel(flags.localOnly, hasConnectedProvider);
+    if (!useServerModel) {
       const ready = await ensureEngine();
       if (!ready) {
         const status = await checkWebGPU();
@@ -807,28 +877,44 @@ export default function ArcadeForge() {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
 
-  function copyCode() {
+  async function copyCode() {
     if (!game?.code) return;
-    const done = () => {
+    setCopyError(null);
+    setCopied(false);
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard access is unavailable. Use the .html download instead.");
+      }
+      await navigator.clipboard.writeText(game.code);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    };
-    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(game.code).then(done).catch(done);
-    else done();
+    } catch (error) {
+      setCopyError(error instanceof Error
+        ? `Could not copy game source: ${error.message}`
+        : "Could not copy game source. Use the .html download instead.");
+    }
   }
 
   async function openGame(id: string) {
+    setHistoryError(null);
+    historyRetryRef.current = null;
+    setHistoryAction({ id, kind: "open" });
     try {
       const r = await fetch(`/api/arcade/${id}`);
-      const j = await r.json();
-      if (j.game) {
-        setGame({ ...j.game, saveSlotId: j.game.saveSlotId ?? resolveSaveSlot(j.game.id) });
-        setTab("play");
-        setNotice(null);
-        setError(null);
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      }
-    } catch {}
+      const j = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(j?.error ?? `Could not open saved game (${r.status}).`);
+      if (!j?.game) throw new Error("The server returned no saved game.");
+      setGame({ ...j.game, saveSlotId: j.game.saveSlotId ?? resolveSaveSlot(j.game.id) });
+      setTab("play");
+      setNotice(null);
+      setError(null);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "Could not open saved game.");
+      historyRetryRef.current = () => { void openGame(id); };
+    } finally {
+      setHistoryAction(null);
+    }
   }
 
   function openOfflineGame(saved: SavedOfflineGame) {
@@ -861,11 +947,25 @@ export default function ArcadeForge() {
     }
   }
 
-  async function deleteGame(id: string) {
-    if (!confirm("Delete this game?")) return;
-    await fetch(`/api/arcade/${id}`, { method: "DELETE" });
-    setHistory((h) => h.filter((x: any) => x.id !== id));
-    if (game?.id === id) setGame(null);
+  async function deleteGame(id: string, confirmed = false) {
+    if (!confirmed && !confirm("Delete this game?")) return;
+    setHistoryError(null);
+    historyRetryRef.current = null;
+    setHistoryAction({ id, kind: "delete" });
+    try {
+      const response = await fetch(`/api/arcade/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error ?? `Could not delete saved game (${response.status}).`);
+      }
+      setHistory((current) => current.filter((item: any) => item.id !== id));
+      if (game?.id === id) setGame(null);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "Could not delete saved game.");
+      historyRetryRef.current = () => { void deleteGame(id, true); };
+    } finally {
+      setHistoryAction(null);
+    }
   }
 
   const filtered = history.filter((h: any) =>
@@ -890,11 +990,11 @@ export default function ArcadeForge() {
           className="glass rounded-2xl p-4"
         >
           <summary data-testid="arcade-model-setup-toggle" className="cursor-pointer text-sm font-bold text-slate-200">
-            Model setup <span className="ml-2 text-xs font-normal text-slate-400">{engineOn ? "On-device model loaded" : "Connections and on-device AI"}</span>
+            Model setup <span className="ml-2 text-xs font-normal text-slate-400">{engineOn ? "On-device model loaded" : "Model Hub and browser models"}</span>
           </summary>
           <div className="mt-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`rounded-full px-2.5 py-1 text-[11px] font-extrabold ring-1 ${gpu === null ? "bg-white/5 text-slate-400 ring-white/10" : gpu.ok ? "bg-emerald-500/15 text-emerald-200 ring-emerald-400/40" : "bg-red-500/15 text-red-200 ring-red-400/40"}`}>
+            <span data-testid="arcade-webgpu-status" className={`rounded-full px-2.5 py-1 text-[11px] font-extrabold ring-1 ${gpu === null ? "bg-white/5 text-slate-400 ring-white/10" : gpu.ok ? "bg-emerald-500/15 text-emerald-200 ring-emerald-400/40" : "bg-red-500/15 text-red-200 ring-red-400/40"}`}>
               {gpu === null ? "🔍 checking WebGPU…" : gpu.ok ? "⚡ WebGPU ready" : "🚫 WebGPU unavailable"}
             </span>
             <span className={`rounded-full px-2.5 py-1 text-[11px] font-extrabold ring-1 ${engineOn ? "bg-violet-500/15 text-violet-200 ring-violet-400/40" : "bg-white/5 text-slate-400 ring-white/10"}`}>
@@ -914,6 +1014,9 @@ export default function ArcadeForge() {
               ⚡ Classic cores: instant
             </span>
           </div>
+          <p data-testid="arcade-model-runtime-explanation" className="mt-2 text-[11px] leading-relaxed text-slate-400">
+            The browser-loaded model needs WebGPU. Model Hub models do not; they run wherever Arena’s API server runs—on this PC in the packaged desktop app, on the host in a browser preview.
+          </p>
 
           <BrainCard context="arcade" />
 
@@ -974,7 +1077,7 @@ export default function ArcadeForge() {
               </a>
             </div>
             <p className="mt-2 text-[11px] leading-relaxed text-slate-400">
-              Select a listed provider or Model Hub runtime to route game code there. Automatic uses saved provider connections, then your on-device model. Local Mode always keeps prompts on-device.
+              Select a listed provider or Model Hub runtime to route game code there. Automatic uses an available model. Local Mode blocks remote AI providers and sends no provider keys, but prompts still reach Arena’s API server.
             </p>
           </div>
           {loadingModel && (
@@ -1076,7 +1179,7 @@ export default function ArcadeForge() {
               </div>
             )}
           </div>
-          {gpu && !gpu.ok && <p className="mt-2 text-[11px] text-slate-500">On-device GPU unavailable. Classic cores still work; custom games can use a model connected in Settings.</p>}
+          {gpu && !gpu.ok && <p className="mt-2 text-[11px] text-slate-500">On-device GPU unavailable. Quick cores still work; choose a reachable model source above for custom games.</p>}
           </div>
         </details>
 
@@ -1123,7 +1226,9 @@ export default function ArcadeForge() {
               <span className="text-[11px] font-bold text-slate-400">
                 {strategy === "instant"
                   ? `Quick core: ${GAME_TYPES.find((g) => g.id === detected)?.name}`
-                  : "A game-writing model will build this from your prompt"}
+                  : strategy === "ai"
+                    ? "Browser model path; requires WebGPU"
+                    : "Automatic model routing; no preset fallback"}
               </span>
             )}
           </div>
@@ -1182,7 +1287,11 @@ export default function ArcadeForge() {
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">
             <PrivacyControls compact />
             <span className="text-[11px] text-slate-500">
-              Every prompt uses a code-writing model; the first local run downloads about 1 GB. Quick cores are optional.
+              {strategy === "instant"
+                ? "Quick cores are fixed offline classics; custom mechanics need a code-writing model."
+                : strategy === "ai"
+                  ? "Browser AI requires WebGPU and a one-time model download."
+                  : "Automatic needs a reachable model and never substitutes a quick-core preset."}
             </span>
           </div>
           {busy && streamed && (
@@ -1218,16 +1327,42 @@ export default function ArcadeForge() {
                 {game.genMs !== undefined && game.engine !== "on-device-ai" ? ` · ${game.genMs}ms` : ""}
                 {game.tokps ? ` · ${game.tokps} tok/s` : ""} · {(game.code.length / 1024).toFixed(1)}KB
               </span>
+              {generationRuntimeLabel(game.runtime) && (
+                <span
+                  data-testid="game-runtime-provenance"
+                  title={game.runtime.via ?? game.runtime.backend}
+                  className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-[11px] font-bold text-cyan-100 ring-1 ring-cyan-300/20"
+                >
+                  {generationRuntimeLabel(game.runtime)}
+                </span>
+              )}
               {game.localOffline && (
                 <span className="rounded-full bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-200 ring-1 ring-emerald-400/20">
                   💾 saved in this browser
                 </span>
               )}
               <div className="ml-auto flex gap-1.5">
-                <button onClick={copyCode} className="rounded-lg bg-white/5 px-2.5 py-1.5 text-xs font-bold hover:bg-white/15">{copied ? "✓" : "📋"}</button>
-                <button onClick={download} className="rounded-lg bg-white/5 px-2.5 py-1.5 text-xs font-bold hover:bg-white/15">⬇️ .html</button>
+                <button
+                  type="button"
+                  onClick={() => void copyCode()}
+                  aria-label={copied ? "Game source copied" : "Copy game source"}
+                  title={copied ? "Game source copied" : "Copy game source"}
+                  className="rounded-lg bg-white/5 px-2.5 py-1.5 text-xs font-bold hover:bg-white/15"
+                >
+                  {copied ? "✓" : "📋"}
+                </button>
+                <button
+                  type="button"
+                  onClick={download}
+                  aria-label="Download game source as HTML"
+                  title="Download game source as HTML"
+                  className="rounded-lg bg-white/5 px-2.5 py-1.5 text-xs font-bold hover:bg-white/15"
+                >
+                  ⬇️ .html
+                </button>
               </div>
             </div>
+            {copyError && <p data-testid="arcade-copy-error" role="alert" className="mt-2 text-xs text-red-300">{copyError}</p>}
             <p className="mt-2 text-center text-sm font-semibold text-slate-300">“{game.prompt}”</p>
             {tab === "play" ? (
               <div className="glass mt-2 overflow-hidden rounded-2xl">
@@ -1339,24 +1474,51 @@ export default function ArcadeForge() {
             className="mt-2 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-1.5 text-xs text-white placeholder:text-slate-600 focus:border-violet-500 focus:outline-none"
           />
           <div className="scroll-thin mt-2 max-h-96 space-y-2 overflow-y-auto">
+            {historyError && (
+              <div data-testid="arcade-history-error" role="alert" className="rounded-lg border border-red-400/20 bg-red-500/10 p-2.5 text-xs text-red-200">
+                <p>{historyError}</p>
+                {historyRetryRef.current && (
+                  <button
+                    type="button"
+                    onClick={() => historyRetryRef.current?.()}
+                    className="mt-2 rounded-md bg-red-300/10 px-2.5 py-1 font-bold hover:bg-red-300/20"
+                  >
+                    Retry saved game action
+                  </button>
+                )}
+              </div>
+            )}
+            {historyLoading && history.length === 0 && <p className="text-xs text-slate-500">Loading saved games…</p>}
             {filtered.map((h: any) => (
-              <div key={h.id} className="group relative rounded-lg bg-white/[0.03] p-2.5 ring-1 ring-white/5 hover:ring-emerald-500/40">
-                <button onClick={() => openGame(h.id)} className="block w-full text-left">
+              <div key={h.id} data-game-id={h.id} className="group relative rounded-lg bg-white/[0.03] p-2.5 ring-1 ring-white/5 hover:ring-emerald-500/40">
+                <button
+                  type="button"
+                  onClick={() => void openGame(h.id)}
+                  aria-label={`Open saved game ${h.prompt}`}
+                  aria-busy={historyAction !== null && historyAction.id === h.id && historyAction.kind === "open"}
+                  disabled={historyAction !== null}
+                  className="block w-full text-left disabled:opacity-60"
+                >
                   <p className="pr-6 text-[10px] font-black text-emerald-300">
                     {GAME_TYPES.find((g) => g.id === h.gameType)?.emoji} {h.gameType} · {h.engine === "on-device-ai" ? "🧠 AI" : h.engine} · {(h.bytes / 1024).toFixed(0)}KB
                   </p>
-                  <p className="mt-0.5 line-clamp-2 text-xs font-semibold text-slate-200">{h.prompt}</p>
+                  <p className="mt-0.5 line-clamp-2 text-xs font-semibold text-slate-200">
+                    {historyAction !== null && historyAction.id === h.id && historyAction.kind === "open" ? "Opening… " : ""}{h.prompt}
+                  </p>
                 </button>
                 <button
-                  onClick={() => deleteGame(h.id)}
+                  type="button"
+                  onClick={() => void deleteGame(h.id)}
+                  aria-label={`Delete saved game ${h.prompt}`}
                   title="Delete (right to erasure)"
-                  className="absolute right-1.5 top-1.5 hidden rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-red-500/20 hover:text-red-300 group-hover:block"
+                  disabled={historyAction !== null}
+                  className="absolute right-1.5 top-1.5 block rounded px-1.5 py-0.5 text-[11px] text-slate-500 hover:bg-red-500/20 hover:text-red-300 disabled:opacity-50 sm:hidden sm:group-hover:block"
                 >
-                  ✕
+                  {historyAction !== null && historyAction.id === h.id && historyAction.kind === "delete" ? "…" : "✕"}
                 </button>
               </div>
             ))}
-            {filtered.length === 0 && <p className="text-xs text-slate-500">No games yet — forge the first.</p>}
+            {!historyLoading && !historyError && filtered.length === 0 && <p className="text-xs text-slate-500">No games yet — forge the first.</p>}
           </div>
         </div>
       </aside>

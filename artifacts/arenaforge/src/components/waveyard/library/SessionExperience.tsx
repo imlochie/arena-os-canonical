@@ -14,6 +14,7 @@ import {
   crossfadeEnvelope,
   keyCompatibility,
   nextSessionTrack,
+  scaleCrossfadeStemVolumes,
   tempoCompatibility,
   validateStemSwap,
   type TransitionConfig,
@@ -75,6 +76,53 @@ interface PendingLiveSwap {
 }
 
 type LibraryTrackOption = Pick<LibraryTrackSummary, "id" | "title" | "artist" | "analysis" | "stemAvailability">;
+
+function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOption[]) {
+  const separatedStems = item.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
+  if (separatedStems.length > 0) {
+    return { ready: true, canUseFullSource: false, label: `Ready · ${separatedStems.length} stems` };
+  }
+  if (item.stems.some((stem) => stem.engine === "passthrough-unseparated")) {
+    return { ready: true, canUseFullSource: false, label: "Ready · full-source audio" };
+  }
+
+  const availability = library.find((track) => track.id === item.track.id)?.stemAvailability;
+  if (availability?.status === "source-only") {
+    return {
+      ready: false,
+      canUseFullSource: item.sourceAssetId !== null,
+      label: item.sourceAssetId === null ? "Source unavailable" : "Full source only · not separated",
+    };
+  }
+  if (availability?.status === "processing") {
+    const finishing = availability.stage === "finalizing" || availability.progress?.percent === 100;
+    const percent = availability.progress ? ` · ${availability.progress.percent}%` : "";
+    const sourceLabel = item.sourceAssetId === null ? "" : " · full source available";
+    return { ready: false, canUseFullSource: item.sourceAssetId !== null, label: `${finishing ? "Finishing" : "Separating"}${percent}${sourceLabel}` };
+  }
+  if (availability?.status === "failed" || availability?.status === "rejected") {
+    const sourceLabel = item.sourceAssetId === null ? " · retry in Library" : " · full source available";
+    return { ready: false, canUseFullSource: item.sourceAssetId !== null, label: `Separation failed${sourceLabel}` };
+  }
+  if (availability?.status === "unavailable") {
+    return {
+      ready: false,
+      canUseFullSource: item.sourceAssetId !== null,
+      label: item.sourceAssetId === null ? "Source unavailable" : "No separated stems · full source available",
+    };
+  }
+  if (availability?.status === "not-started") {
+    return {
+      ready: false,
+      canUseFullSource: false,
+      label: item.sourceAssetId === null ? "Source unavailable" : "Separation not started · open Library",
+    };
+  }
+  if (item.sourceAssetId !== null) {
+    return { ready: false, canUseFullSource: false, label: "Checking separation status…" };
+  }
+  return { ready: false, canUseFullSource: false, label: "Source unavailable" };
+}
 
 export type HostCommandKind = "play" | "load" | "next" | "enqueue" | "refresh";
 export interface HostCommand {
@@ -602,15 +650,27 @@ export default function SessionExperience({
   const [status, setStatus] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
   const [mixSaveError, setMixSaveError] = useState(false);
-  const [handoff, setHandoff] = useState<{ projectId: string; remixTrackCount: number; refused?: Array<{ title: string; reason: string }> } | null>(null);
+  const [handoff, setHandoff] = useState<{ projectId: string; remixTrackCount: number; fullSourceCount?: number; refused?: Array<{ title: string; reason: string }> } | null>(null);
+  const [sendingToStudio, setSendingToStudio] = useState(false);
+  const studioHandoffInFlight = useRef(false);
   const [studioTrackSelection, setStudioTrackSelection] = useState<{ sessionId: string; trackIds: string[] } | null>(null);
-  const studioSessionTrackIds = useMemo(() => session?.tracks.map((item) => item.id) ?? [], [session?.tracks]);
+  const studioReadyTrackIds = useMemo(
+    () => session?.tracks.filter((item) => getStudioTrackReadiness(item, library).ready).map((item) => item.id) ?? [],
+    [session?.tracks, library],
+  );
+  const studioSelectableTrackIds = useMemo(
+    () => session?.tracks.filter((item) => {
+      const readiness = getStudioTrackReadiness(item, library);
+      return readiness.ready || readiness.canUseFullSource;
+    }).map((item) => item.id) ?? [],
+    [session?.tracks, library],
+  );
   const selectedStudioTrackIds = useMemo(() => {
     if (session === null) return [];
-    if (studioTrackSelection?.sessionId !== session.id) return studioSessionTrackIds;
-    const availableIds = new Set(studioSessionTrackIds);
+    if (studioTrackSelection?.sessionId !== session.id) return studioReadyTrackIds;
+    const availableIds = new Set(studioSelectableTrackIds);
     return studioTrackSelection.trackIds.filter((id) => availableIds.has(id));
-  }, [session?.id, studioSessionTrackIds, studioTrackSelection]);
+  }, [session?.id, studioReadyTrackIds, studioSelectableTrackIds, studioTrackSelection]);
 
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [activeDeck, setActiveDeck] = useState<0 | 1>(0);
@@ -1007,13 +1067,11 @@ export default function SessionExperience({
         const fade = fadeRef.current;
         if (fade === null) return;
         const env = crossfadeEnvelope((performance.now() - t0) / 1000, cfg.crossfadeSeconds);
-        const kept = new Set(cfg.keepStems);
-        const scaled: Record<string, number> = {};
-        for (const [type, volume] of Object.entries(fromMix)) scaled[type] = kept.has(type) ? volume : volume * env.fromGain;
+        const scaled = scaleCrossfadeStemVolumes(fromMix, cfg.keepStems, env.fromGain);
         const outgoing = decksRef.current[fromDeck];
         if (outgoing?.hasStemChannels) outgoing.applyStemVolumes(scaled);
-        else outgoing?.transport.setMasterVolume(env.fromGain * masterRef.current);
-        decksRef.current[toDeck]?.transport.setMasterVolume(env.toGain * masterRef.current);
+        else outgoing?.transport.applyMasterVolumeRealtime(env.fromGain * masterRef.current);
+        decksRef.current[toDeck]?.transport.applyMasterVolumeRealtime(env.toGain * masterRef.current);
         if (env.done) {
           finishTransition();
           return;
@@ -1057,8 +1115,6 @@ export default function SessionExperience({
       startInCurrent = (aligned.startInCurrentMs ?? 0) / 1000;
       incomingOffset = (aligned.incomingOffsetMs ?? 0) / 1000;
       setStatus(`${aligned.reason} Fading ${cfg.crossfadeSeconds}s from ${formatClock(startInCurrent)}.`);
-    } else if (cfg.mode === "meeting-point") {
-      setStatus("Meeting-point is stored; V1 crossfades from the current position.");
     } else {
       setStatus(`Crossfade ${cfg.crossfadeSeconds}s from ${formatClock(startInCurrent)}.`);
     }
@@ -1084,9 +1140,7 @@ export default function SessionExperience({
     if (fade === null) return;
     cancelAnimationFrame(fade.raf);
     const frozen = crossfadeCancel((performance.now() - fade.t0) / 1000, fade.cfg.crossfadeSeconds);
-    const kept = new Set(fade.cfg.keepStems);
-    const scaled: Record<string, number> = {};
-    for (const [type, volume] of Object.entries(fade.fromMix)) scaled[type] = kept.has(type) ? volume : volume * frozen.fromGain;
+    const scaled = scaleCrossfadeStemVolumes(fade.fromMix, fade.cfg.keepStems, frozen.fromGain);
     const outgoing = decksRef.current[fade.fromDeck];
     if (outgoing?.hasStemChannels) outgoing.applyStemVolumes(scaled);
     else outgoing?.transport.setMasterVolume(frozen.fromGain * masterRef.current);
@@ -1506,6 +1560,8 @@ export default function SessionExperience({
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionTrackId: itemId, position }),
+      }).then((detail) => {
+        if (detail !== null) publishWaveyardQueueChange([session.id]);
       });
     },
     [session, mutate],
@@ -1608,30 +1664,97 @@ export default function SessionExperience({
 
   // -------------------------------------------------------- studio handoff
   const sendToStudio = useCallback(() => {
-    if (session === null) return;
+    if (session === null || studioHandoffInFlight.current) return;
     if (selectedStudioTrackIds.length === 0) {
       setStatus("Select at least one session track to send to Studio.");
       return;
     }
+    const selectedFullSourceEntries = session.tracks.filter((item) => {
+      if (!selectedStudioTrackIds.includes(item.id)) return false;
+      const readiness = getStudioTrackReadiness(item, library);
+      return !readiness.ready && readiness.canUseFullSource;
+    });
+    studioHandoffInFlight.current = true;
+    setSendingToStudio(true);
+    setHandoff(null);
+    setStatus(selectedFullSourceEntries.length > 0 ? "Preparing selected full-source audio for Studio…" : null);
     void (async () => {
       try {
+        const fullSourceFailures: Array<{ title: string; reason: string }> = [];
+        const failedFullSourceIds = new Set<string>();
+        const preparedFullSourceIds: string[] = [];
+        for (const item of selectedFullSourceEntries) {
+          try {
+            const bridgeResponse = await fetch("/api/stems/passthrough", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ sourceAssetId: item.sourceAssetId }),
+            });
+            const bridgeBody = (await bridgeResponse.json().catch(() => null)) as {
+              error?: string;
+              stem?: { engine?: string };
+            } | null;
+            if (bridgeResponse.ok) {
+              preparedFullSourceIds.push(item.id);
+              continue;
+            }
+            // Separation can finish between the session load and this click.
+            // In that case the handoff service will use the now-available stems.
+            if (bridgeResponse.status === 409 && bridgeBody?.error === "This source already has separated stems.") {
+              continue;
+            }
+            failedFullSourceIds.add(item.id);
+            fullSourceFailures.push({
+              title: item.track.title,
+              reason: bridgeBody?.error ?? "Full-source audio could not be prepared.",
+            });
+          } catch {
+            failedFullSourceIds.add(item.id);
+            fullSourceFailures.push({
+              title: item.track.title,
+              reason: "Full-source audio could not be prepared because the connection failed.",
+            });
+          }
+        }
+        const handoffTrackIds = selectedStudioTrackIds.filter((id) => !failedFullSourceIds.has(id));
+        if (handoffTrackIds.length === 0) {
+          setStatus(fullSourceFailures.map((item) => `${item.title}: ${item.reason}`).join("; ")
+            || "No selected track could be prepared for Studio.");
+          return;
+        }
         const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionTrackIds: selectedStudioTrackIds }),
+          body: JSON.stringify({ sessionTrackIds: handoffTrackIds }),
         });
         if (!response.ok) {
           const body = (await response.json().catch(() => null)) as { error?: string } | null;
-          setStatus(body?.error ?? "The Studio handoff failed.");
+          const reason = body?.error ?? "The Studio handoff failed.";
+          setStatus(fullSourceFailures.length > 0
+            ? `${reason} ${fullSourceFailures.map((item) => `${item.title}: ${item.reason}`).join("; ")}`
+            : reason);
           return;
         }
-        setHandoff((await response.json()).handoff);
-        setStatus("Sent to Studio as a derived arrangement — sources untouched.");
+        const body = (await response.json()) as {
+          handoff: { projectId: string; remixTrackCount: number; refused?: Array<{ title: string; reason: string }> };
+        };
+        const refused = [...(body.handoff.refused ?? []), ...fullSourceFailures];
+        setHandoff({
+          ...body.handoff,
+          fullSourceCount: preparedFullSourceIds.length,
+          refused: refused.length > 0 ? refused : undefined,
+        });
+        setStatus(preparedFullSourceIds.length > 0
+          ? `Sent to Studio. ${preparedFullSourceIds.length} selected ${preparedFullSourceIds.length === 1 ? "entry uses" : "entries use"} full-source audio, not separated; source files remain untouched.`
+          : "Sent to Studio as a derived arrangement — sources untouched.");
       } catch {
         setStatus("The Studio handoff could not be saved.");
+      } finally {
+        studioHandoffInFlight.current = false;
+        setSendingToStudio(false);
       }
     })();
-  }, [session, selectedStudioTrackIds]);
+  }, [session, selectedStudioTrackIds, library]);
 
   // ------------------------------------- hardware media keys
   useHardwareMediaKeys({
@@ -1683,6 +1806,20 @@ export default function SessionExperience({
   // Background refresh: picks up finished separations and new library tracks.
   // A deck that is AUDIBLE keeps its source until the user switches.
   const pending = session?.tracks.some((item) => item.playback?.kind !== "stems") ?? false;
+  const sessionSeparationProgress = useMemo(() => {
+    if (session === null) return [];
+    return session.tracks.flatMap((item) => {
+      if (item.playback?.kind !== "source") return [];
+      const availability = library.find((track) => track.id === item.track.id)?.stemAvailability;
+      if (availability?.status !== "processing") return [];
+      return [{
+        id: item.id,
+        title: item.track.title,
+        stage: availability.stage,
+        progress: availability.progress,
+      }];
+    });
+  }, [session, library]);
   useEffect(() => {
     if (session === null) return;
     let cancelled = false;
@@ -1807,8 +1944,6 @@ export default function SessionExperience({
     if (mode === "beat" || mode === "bar") {
       const aligned = beatAlignedTransitionStart(currentItem.analysis?.beatGridMs ?? null, nextItem.analysis?.beatGridMs ?? null, 0, mode);
       alignment = { ok: aligned.ok, reason: aligned.reason };
-    } else if (mode === "meeting-point") {
-      alignment = { ok: false, reason: "Stored; V1 crossfades from the current position." };
     }
     return { tempo, key, alignment, evidence };
   }, [currentItem, nextItem, currentTransition]);
@@ -2080,6 +2215,19 @@ export default function SessionExperience({
       ))}
 
       <div className="wy-full-only">
+        {sessionSeparationProgress.map(({ id, title, stage, progress }) => {
+          const phase = progress?.phase
+            ? /^\d+\/\d+$/.test(progress.phase) ? ` · pass ${progress.phase}` : ` · ${progress.phase}`
+            : "";
+          const label = progress
+            ? `${stage === "finalizing" || progress.percent === 100 ? "Finishing" : "Separating"} · ${progress.percent}%${phase}`
+            : "Separating";
+          return (
+            <p key={id} className="sess-status" role="status" data-testid={`session-separation-progress-${id}`}>
+              {label} “{title}”. The full source keeps playing while the stems finish.
+            </p>
+          );
+        })}
         {Object.values(stemsReady).map((item) => (
           <p key={item.id} className="sess-status wy-ready" role="status">
             Stems are ready for “{item.track.title}”. It keeps playing the full source until you switch.{" "}
@@ -2111,23 +2259,29 @@ export default function SessionExperience({
         {handoff !== null && (
           <p className="sess-handoff" role="status">
             Studio arrangement created with {handoff.remixTrackCount} remix track{handoff.remixTrackCount === 1 ? "" : "s"}
+            {handoff.fullSourceCount
+              ? ` · ${handoff.fullSourceCount} full-source session ${handoff.fullSourceCount === 1 ? "entry" : "entries"} (not separated)`
+              : ""}
             {handoff.refused && handoff.refused.length > 0
               ? ` — not included: ${handoff.refused.map((item) => `${item.title} (${item.reason})`).join("; ")}.`
               : "."}{" "}
             <Link href={`/waveyard/projects/${handoff.projectId}?view=studio`}>Open in Studio</Link>
           </p>
         )}
-        <fieldset className="sess-studio-picker">
+        <fieldset className="sess-studio-picker" disabled={sendingToStudio}>
           <legend>Tracks to send to Studio</legend>
           <div className="sess-studio-picker-header">
             <span data-testid="studio-track-selection-count">
-              {selectedStudioTrackIds.length} of {session.tracks.length} selected
+              {selectedStudioTrackIds.length} selected of {studioSelectableTrackIds.length} selectable {studioSelectableTrackIds.length === 1 ? "track" : "tracks"}
             </span>
             <div className="sess-studio-picker-actions">
               <button
                 type="button"
                 className="button tiny"
-                disabled={currentItem === null}
+                disabled={currentItem === null || (
+                  !getStudioTrackReadiness(currentItem, library).ready
+                  && !getStudioTrackReadiness(currentItem, library).canUseFullSource
+                )}
                 onClick={() => {
                   if (currentItem === null) return;
                   setStudioTrackSelection({ sessionId: session.id, trackIds: [currentItem.id] });
@@ -2140,47 +2294,70 @@ export default function SessionExperience({
               <button
                 type="button"
                 className="button tiny"
-                disabled={selectedStudioTrackIds.length === session.tracks.length}
+                disabled={selectedStudioTrackIds.length === 0}
                 onClick={() => {
-                  setStudioTrackSelection({ sessionId: session.id, trackIds: studioSessionTrackIds });
+                  setStudioTrackSelection({ sessionId: session.id, trackIds: [] });
                   setHandoff(null);
                   setStatus(null);
                 }}
               >
-                Select all
+                Clear selection
+              </button>
+              <button
+                type="button"
+                className="button tiny"
+                disabled={selectedStudioTrackIds.length === studioReadyTrackIds.length}
+                onClick={() => {
+                  setStudioTrackSelection({ sessionId: session.id, trackIds: studioReadyTrackIds });
+                  setHandoff(null);
+                  setStatus(null);
+                }}
+              >
+                Select all ready
               </button>
             </div>
           </div>
+          {session.tracks.some((item) => !getStudioTrackReadiness(item, library).ready) && (
+            <p className="sess-status" data-testid="studio-unready-note">
+              Separated stems are used when ready. Select a “full source available” entry to add its original audio as one Studio track, or{" "}
+              <Link href="/waveyard">start or retry separation in the Library</Link>. Full-source entries require a separation job to have started.
+            </p>
+          )}
           <div className="sess-studio-picker-list">
-            {session.tracks.map((item, index) => (
-              <label className="sess-studio-picker-option" key={item.id}>
-                <input
-                  type="checkbox"
-                  checked={selectedStudioTrackIds.includes(item.id)}
-                  aria-label={`Include session entry ${index + 1}, ${item.track.title} by ${item.track.artist}, in Studio`}
-                  onChange={(event) => {
-                    const checked = event.currentTarget.checked;
-                    setStudioTrackSelection((previous) => {
-                      const currentIds = previous?.sessionId === session.id
-                        ? previous.trackIds.filter((id) => studioSessionTrackIds.includes(id))
-                        : studioSessionTrackIds;
-                      return {
-                        sessionId: session.id,
-                        trackIds: checked
-                          ? [...new Set([...currentIds, item.id])]
-                          : currentIds.filter((id) => id !== item.id),
-                      };
-                    });
-                    setHandoff(null);
-                    setStatus(null);
-                  }}
-                />
-                <span>
-                  Entry {index + 1}: {item.track.title}
-                  <small>{item.track.artist}</small>
-                </span>
-              </label>
-            ))}
+            {session.tracks.map((item, index) => {
+              const readiness = getStudioTrackReadiness(item, library);
+              return (
+                <label className="sess-studio-picker-option" key={item.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedStudioTrackIds.includes(item.id)}
+                    disabled={!readiness.ready && !readiness.canUseFullSource}
+                    aria-label={`Include session entry ${index + 1}, ${item.track.title} by ${item.track.artist}, in Studio`}
+                    aria-describedby={`studio-readiness-${item.id}`}
+                    onChange={(event) => {
+                      const checked = event.currentTarget.checked;
+                      setStudioTrackSelection((previous) => {
+                        const currentIds = previous?.sessionId === session.id
+                            ? previous.trackIds.filter((id) => studioSelectableTrackIds.includes(id))
+                          : studioReadyTrackIds;
+                        return {
+                          sessionId: session.id,
+                          trackIds: checked
+                            ? [...new Set([...currentIds, item.id])]
+                            : currentIds.filter((id) => id !== item.id),
+                        };
+                      });
+                      setHandoff(null);
+                      setStatus(null);
+                    }}
+                  />
+                  <span>
+                    Entry {index + 1}: {item.track.title}
+                    <small id={`studio-readiness-${item.id}`}>{item.track.artist} · {readiness.label}</small>
+                  </span>
+                </label>
+              );
+            })}
           </div>
         </fieldset>
         <div className="wy-drawer-actions sess-studio-action">
@@ -2188,10 +2365,12 @@ export default function SessionExperience({
             type="button"
             className="button secondary"
             onClick={sendToStudio}
-            disabled={selectedStudioTrackIds.length === 0}
+            disabled={selectedStudioTrackIds.length === 0 || sendingToStudio}
             data-testid="session-handoff"
           >
-            Send {selectedStudioTrackIds.length} to Studio
+            {sendingToStudio
+              ? "Creating Studio arrangement…"
+              : `Create Studio arrangement with ${selectedStudioTrackIds.length} ${selectedStudioTrackIds.length === 1 ? "track" : "tracks"}`}
           </button>
         </div>
 
@@ -2207,7 +2386,6 @@ export default function SessionExperience({
                     <option value="manual">Crossfade</option>
                     <option value="beat">Beat-aligned</option>
                     <option value="bar">Bar-aligned</option>
-                    <option value="meeting-point">Meeting point (stored)</option>
                   </select>
                 </div>
                 <div className="sess-transition-row">

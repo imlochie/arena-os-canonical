@@ -125,7 +125,7 @@ function mimeType(path: string) {
     jpeg: "image/jpeg", jpg: "image/jpeg", js: "text/javascript", json: "application/json",
     m4a: "audio/mp4", mp3: "audio/mpeg", mp4: "video/mp4", ogg: "audio/ogg",
     otf: "font/otf", png: "image/png", svg: "image/svg+xml", ttf: "font/ttf",
-    wav: "audio/wav", webm: "video/webm", woff: "font/woff", woff2: "font/woff2",
+    wav: "audio/wav", webm: "video/webm", webp: "image/webp", woff: "font/woff", woff2: "font/woff2",
     xml: "application/xml",
   };
   return types[extension ?? ""] ?? "application/octet-stream";
@@ -162,6 +162,40 @@ async function inlineArchiveCss(
     css = css.replace(match[0], `url("${dataUrl}")`);
   }
   return css;
+}
+
+async function inlineArchiveScriptMediaSources(
+  source: string,
+  htmlPath: string,
+  files: Record<string, any>,
+): Promise<string> {
+  const audioCalls = [...source.matchAll(/\bnew\s+Audio\s*\(\s*(["'])([^"'\\\r\n]+)\1\s*\)/gi)]
+    .map((match) => ({ match, audio: true }));
+  const mediaAssignments = [...source.matchAll(/\.src\s*=\s*(["'])([^"'\\\r\n]+\.(?:avif|gif|ico|jpe?g|png|svg|webp|m4a|mp3|mp4|ogg|wav|webm)(?:[?#][^"'\\\r\n]*)?)\1/gi)]
+    .map((match) => ({ match, audio: false }));
+  const matches = [...audioCalls, ...mediaAssignments]
+    .sort((left, right) => (right.match.index ?? 0) - (left.match.index ?? 0));
+  let rewritten = source;
+  for (const { match, audio } of matches) {
+    const reference = match[2].trim();
+    if (/^(?:data:|blob:)/i.test(reference)) continue;
+    const path = archivePath(htmlPath, reference);
+    if (!path) continue;
+    const target = files[path];
+    if (!target) throw new Error(`The archive is missing game media ${reference}.`);
+    if (audio && !/\.(?:m4a|mp3|ogg|wav)$/i.test(path.split(/[?#]/, 1)[0])) {
+      throw new Error(`The game audio source ${reference} must use an audio file.`);
+    }
+    const bytes = await target.async("uint8array");
+    const dataUrl = `data:${mimeType(path)};base64,${toBase64(bytes)}`;
+    const quote = match[1];
+    const oldLiteral = `${quote}${match[2]}${quote}`;
+    const newLiteral = `${quote}${dataUrl}${quote}`;
+    const replacement = match[0].replace(oldLiteral, newLiteral);
+    const start = match.index ?? 0;
+    rewritten = `${rewritten.slice(0, start)}${replacement}${rewritten.slice(start + match[0].length)}`;
+  }
+  return rewritten;
 }
 
 async function bundleOfflineBrowserGame(file: File): Promise<string> {
@@ -213,6 +247,9 @@ async function bundleOfflineBrowserGame(file: File): Promise<string> {
     script.removeAttribute("integrity");
     script.removeAttribute("crossorigin");
     script.textContent = scriptSource.replace(/<\/script/gi, "<\\/script");
+  }
+  for (const script of Array.from(document.querySelectorAll("script"))) {
+    script.textContent = await inlineArchiveScriptMediaSources(script.textContent ?? "", entryPath, files);
   }
 
   for (const link of Array.from(document.querySelectorAll("link[href]"))) {

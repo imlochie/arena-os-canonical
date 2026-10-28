@@ -16,7 +16,7 @@ export default function ArcadePage() {
           </span>
         </h1>
         <p className="mx-auto mt-3 max-w-2xl text-[15px] leading-relaxed text-slate-300">
-          Describe the game and a code-writing model builds it. Prompt changes against the current game. Local AI downloads once; quick cores are optional.
+          Build or revise games with a reachable code-writing model. Quick cores are separate offline classics; imported games stay sandboxed.
         </p>
       </section>
       <ArcadeForge />

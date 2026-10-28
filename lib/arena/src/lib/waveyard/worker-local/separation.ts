@@ -102,8 +102,7 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
     try {
       const session: MdxSessionLike = await ort.InferenceSession.create(modelPath, {
         executionProviders,
-        // The API shares memory/CPU with playback metadata and the desktop
-        // shell. Four retained ORT arenas can exhaust ordinary machines.
+        // Leave one CPU available on larger machines for playback and app work.
         intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         interOpNumThreads: 1,
         enableCpuMemArena: false,
@@ -337,6 +336,15 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
   const storage = getStorage();
   const uploadedKeys: string[] = [];
   let completed = false;
+  let progressWrite = Promise.resolve();
+  const persistProgress = (progress: Record<string, unknown>) => {
+    const metadata = JSON.stringify({ ...jobMetadata(job.metadata), progress });
+    progressWrite = progressWrite
+      .catch(() => undefined)
+      .then(() => updateJob(database, job.id, { metadata }))
+      .catch(() => undefined);
+  };
+  const flushProgress = () => progressWrite;
 
   try {
     await updateJob(database, job.id, {
@@ -345,6 +353,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       startedAt: new Date(),
       errorCode: null,
       errorMessage: null,
+      metadata: JSON.stringify({ ...jobMetadata(job.metadata), progress: null }),
     });
     await storage.getToFile((parentStem ?? source).storageKey, inputPath);
 
@@ -367,7 +376,9 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       right[i] = decoded.pcm[i * 2 + 1];
     }
 
-    // One engine per DISTINCT model (recipes may repeat a model; open once).
+    // One inference pass per DISTINCT model. Each MDX pass produces both
+    // primary and secondary stems, so separate output rows that use the same
+    // model must share that result instead of rerunning the expensive model.
     // The deep pass opens no MDX engine at all — its engine is the
     // owner-prepared bridge, and its outputs land as six WAV files.
     type OpenedEngines = Awaited<ReturnType<typeof openEngine>>;
@@ -395,13 +406,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         onProgress: (percent) => {
           if (percent === lastDeepPercent) return;
           lastDeepPercent = percent;
-          const base = jobMetadata(job.metadata);
-          void updateJob(database, job.id, {
-            metadata: JSON.stringify({
-              ...base,
-              progress: { done: percent, total: 100, percent, phase: "deep", model: DEEP_MODEL_ID },
-            }),
-          }).catch(() => undefined);
+          persistProgress({ done: percent, total: 100, percent, phase: "deep", model: DEEP_MODEL_ID });
         },
       });
       resolvedDevice = deep.resolvedDevice;
@@ -435,70 +440,95 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         });
       }
     } else {
+      const groups = new Map<string, { spec: MdxModelSpec; outputs: typeof runs }>();
+      for (const run of runs) {
+        const existing = groups.get(run.spec.id);
+        if (existing) {
+          existing.outputs.push(run);
+        } else {
+          groups.set(run.spec.id, { spec: run.spec, outputs: [run] });
+        }
+      }
+      const modelRuns = [...groups.values()];
+      const orderByRun = new Map(runs.map((run, index) => [run, index] as const));
+      const orderedOutputs: { order: number; output: StemOutput }[] = [];
       {
-        // Real progress across ALL runs (a recipe runs one model per stem):
+        // Real progress across ALL distinct model passes:
         // chunk-level updates into the durable row's metadata, throttled to
         // whole GLOBAL percents + the first and last chunk of each run.
         let lastReportedPercent = -1;
-        for (let runIndex = 0; runIndex < runs.length; runIndex += 1) {
-          const run = runs[runIndex];
+        for (let runIndex = 0; runIndex < modelRuns.length; runIndex += 1) {
+          const modelRun = modelRuns[runIndex]!;
           if (deps.openEngine === undefined) {
-            const separated = await demixMdxInWorker(run.spec, payload.requestedDevice, [left, right], (done, total) => {
+            const separated = await demixMdxInWorker(modelRun.spec, payload.requestedDevice, [left, right], (done, total) => {
               const runFraction = total > 0 ? done / total : 1;
-              const percent = Math.floor(((runIndex + runFraction) / runs.length) * 100);
+              const percent = Math.floor(((runIndex + runFraction) / modelRuns.length) * 100);
               if (done !== 1 && done !== total && percent === lastReportedPercent) return;
               lastReportedPercent = percent;
-              const base = jobMetadata(job.metadata);
-              void updateJob(database, job.id, {
-                metadata: JSON.stringify({
-                  ...base,
-                  progress: { done, total, percent, phase: `${runIndex + 1}/${runs.length}`, model: run.spec.id },
-                }),
-              }).catch(() => undefined);
+              persistProgress({
+                done,
+                total,
+                percent,
+                phase: `${runIndex + 1}/${modelRuns.length}`,
+                model: modelRun.spec.id,
+              });
             });
             resolvedDevice = separated.resolvedDevice;
-            stemOutputs.push({
-              stemType: run.stemType,
-              channels: run.take === "primary" ? separated.separated.primary : separated.separated.secondary,
-              model: run.spec.id,
-              modelVersion: run.spec.sha256,
-              sampleCount: separated.separated.sampleCount,
-            });
+            for (const run of modelRun.outputs) {
+              orderedOutputs.push({
+                order: orderByRun.get(run)!,
+                output: {
+                  stemType: run.stemType,
+                  channels: run.take === "primary" ? separated.separated.primary : separated.separated.secondary,
+                  model: modelRun.spec.id,
+                  modelVersion: modelRun.spec.sha256,
+                  sampleCount: separated.separated.sampleCount,
+                },
+              });
+            }
             continue;
           }
 
-          const engine = await openEngine(run.spec, payload.requestedDevice);
+          const engine = await openEngine(modelRun.spec, payload.requestedDevice);
           try {
-          resolvedDevice = engine.resolvedDevice;
-          const separated = await demixMdx([left, right], run.spec, engine.infer, (done, total) => {
-            const runFraction = total > 0 ? done / total : 1;
-            const percent = Math.floor(((runIndex + runFraction) / runs.length) * 100);
-            if (done !== 1 && done !== total && percent === lastReportedPercent) return;
-            lastReportedPercent = percent;
-            const base = jobMetadata(job.metadata);
-            void updateJob(database, job.id, {
-              metadata: JSON.stringify({
-                ...base,
-                progress: { done, total, percent, phase: `${runIndex + 1}/${runs.length}`, model: run.spec.id },
-              }),
-            }).catch(() => undefined);
-          });
-          stemOutputs.push({
-            stemType: run.stemType,
-            channels: run.take === "primary" ? separated.primary : separated.secondary,
-            model: run.spec.id,
-            modelVersion: run.spec.sha256,
-            sampleCount: separated.sampleCount,
-          });
+            resolvedDevice = engine.resolvedDevice;
+            const separated = await demixMdx([left, right], modelRun.spec, engine.infer, (done, total) => {
+              const runFraction = total > 0 ? done / total : 1;
+              const percent = Math.floor(((runIndex + runFraction) / modelRuns.length) * 100);
+              if (done !== 1 && done !== total && percent === lastReportedPercent) return;
+              lastReportedPercent = percent;
+              persistProgress({
+                done,
+                total,
+                percent,
+                phase: `${runIndex + 1}/${modelRuns.length}`,
+                model: modelRun.spec.id,
+              });
+            });
+            for (const run of modelRun.outputs) {
+              orderedOutputs.push({
+                order: orderByRun.get(run)!,
+                output: {
+                  stemType: run.stemType,
+                  channels: run.take === "primary" ? separated.primary : separated.secondary,
+                  model: modelRun.spec.id,
+                  modelVersion: modelRun.spec.sha256,
+                  sampleCount: separated.sampleCount,
+                },
+              });
+            }
           } finally {
             // Release BEFORE opening the next model, including failed runs.
             await engine.release().catch(() => undefined);
           }
         }
       }
+      orderedOutputs.sort((leftOutput, rightOutput) => leftOutput.order - rightOutput.order);
+      stemOutputs.push(...orderedOutputs.map(({ output }) => output));
       runModels = [...new Set(runs.map((run) => run.spec.id))];
     }
 
+    await flushProgress();
     await updateJob(database, job.id, {
       status: "finalizing",
       stage: "validating",
@@ -596,6 +626,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     }
     completed = true;
   } catch (error) {
+    await flushProgress();
     let errorCode = "separation_failed";
     if (error instanceof SeparationUnavailableError) errorCode = "separation_unavailable";
     else if (error instanceof DependencyMissingError) errorCode = "dependency_missing";

@@ -175,9 +175,21 @@ components:
           properties:
             status:
               type: string
-              enum: [source-only, processing, not-started, unavailable]
+              enum: [source-only, not-started, unavailable]
             reason:
               type: string
+          required: [status, reason]
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [processing]
+            reason:
+              type: string
+            stage:
+              type: string
+            progress:
+              $ref: "#/components/schemas/StemSeparationProgress"
           required: [status, reason]
         - type: object
           properties:
@@ -190,6 +202,16 @@ components:
               type: string
               format: uuid
           required: [status, reason, retryJobId]
+    StemSeparationProgress:
+      type: object
+      properties:
+        percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        phase:
+          type: string
+      required: [percent]
     LibraryTrackSeparationStartResponse:
       type: object
       properties:

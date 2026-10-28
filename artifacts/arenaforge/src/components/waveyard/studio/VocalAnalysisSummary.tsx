@@ -27,18 +27,28 @@ export function VocalAnalysisSummary({
   const request = async () => {
     if (!onRequestAnalysis) return;
     setRequesting(true);
-    setRequestMessage(await onRequestAnalysis());
-    setRequesting(false);
+    try {
+      setRequestMessage(await onRequestAnalysis());
+    } catch {
+      setRequestMessage("Vocal analysis could not reach the server. Try again when connected.");
+    } finally {
+      setRequesting(false);
+    }
   };
   const exportMidi = async () => {
     if (!onExportMidi) return;
     setRequesting(true);
-    setRequestMessage(await onExportMidi() ?? "MIDI export queued from the immutable version.");
-    setRequesting(false);
+    try {
+      setRequestMessage(await onExportMidi() ?? "MIDI export queued from the immutable version.");
+    } catch {
+      setRequestMessage("MIDI export could not reach the server. Try again when connected.");
+    } finally {
+      setRequesting(false);
+    }
   };
   if (!analysis) return <section className="vocal-analysis-summary" aria-label="Vocal stem pitch observation">
     <p>No vocal pitch observation is recorded for this isolated stem.</p>
-    {editable && onRequestAnalysis && <button className="button secondary" disabled={requesting} onClick={() => void request()}>{requesting ? "Queuing…" : "Analyze vocal stem"}</button>}
+    {editable && onRequestAnalysis && <button type="button" className="button secondary" disabled={requesting} onClick={() => void request()}>{requesting ? "Queuing…" : "Analyze vocal stem"}</button>}
     {requestMessage && <p className="error">{requestMessage}</p>}
   </section>;
   if (analysis.status !== "complete") {
@@ -47,7 +57,7 @@ export function VocalAnalysisSummary({
         Vocal stem observation: {analysis.status} · {analysis.stage}
         {analysis.errorMessage ? ` · ${analysis.errorMessage}` : ""}
       </p>
-      {editable && analysis.status === "failed" && onRequestAnalysis && <button className="button secondary" disabled={requesting} onClick={() => void request()}>{requesting ? "Queuing…" : "Retry vocal observation"}</button>}
+      {editable && analysis.status === "failed" && onRequestAnalysis && <button type="button" className="button secondary" disabled={requesting} onClick={() => void request()}>{requesting ? "Queuing…" : "Retry vocal observation"}</button>}
       {requestMessage && <p className="error">{requestMessage}</p>}
     </section>;
   }
@@ -61,7 +71,7 @@ export function VocalAnalysisSummary({
       {phrases.slice(0, 6).map((phrase, index) => <li key={phrase.id}>Phrase {index + 1}: {clockMs(phrase.startMs)}–{clockMs(phrase.endMs)} · confidence {Math.round(phrase.confidence * 100)}%</li>)}
     </ol>}
     <p>Source-relative pitch evidence from the isolated vocals stem only. It does not correct audio, create lyrics, or generate music.</p>
-    {onExportMidi && <button className="button secondary" disabled={requesting} onClick={() => void exportMidi()}>{requesting ? "Queuing…" : "Export MIDI"}</button>}
+    {onExportMidi && <button type="button" className="button secondary" disabled={requesting} onClick={() => void exportMidi()}>{requesting ? "Queuing…" : "Export MIDI"}</button>}
     {requestMessage && <p className="notice">{requestMessage}</p>}
   </section>;
 }

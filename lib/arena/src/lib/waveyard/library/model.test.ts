@@ -85,6 +85,38 @@ test("resolveStemAvailability: separation pending = processing", () => {
   assert.match(availability.reason, /still running/);
 });
 
+test("resolveStemAvailability exposes current progress, but ignores stale progress before separation starts", () => {
+  const running = resolveStemAvailability({
+    stems: [],
+    separationPending: true,
+    separationJob: {
+      id: "job-progress",
+      status: "processing",
+      stage: "separating",
+      errorCode: null,
+      metadata: JSON.stringify({ progress: { percent: 42.4, phase: "2/4" } }),
+    },
+  });
+  assert.equal(running.status, "processing");
+  if (running.status !== "processing") throw new Error("Expected a processing track.");
+  assert.deepEqual(running.progress, { percent: 42, phase: "2/4" });
+
+  const preparing = resolveStemAvailability({
+    stems: [],
+    separationPending: true,
+    separationJob: {
+      id: "job-retried",
+      status: "preparing",
+      stage: "preparing",
+      errorCode: null,
+      metadata: JSON.stringify({ progress: { percent: 100, phase: "1/1" } }),
+    },
+  });
+  assert.equal(preparing.status, "processing");
+  if (preparing.status !== "processing") throw new Error("Expected a processing track.");
+  assert.equal(preparing.progress, undefined, "a retry must not display its previous attempt's progress");
+});
+
 test("resolveStemAvailability: no separation job = not started", () => {
   const availability = resolveStemAvailability({ stems: [] });
   assert.equal(availability.status, "not-started");

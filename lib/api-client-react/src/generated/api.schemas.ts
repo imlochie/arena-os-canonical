@@ -9,13 +9,27 @@ export interface HealthStatus {
   status: string;
 }
 
+export interface StemSeparationProgress {
+  /**
+     * @minimum 0
+     * @maximum 100
+     */
+  percent: number;
+  phase?: string;
+}
+
 export type StemAvailability = {
   status: 'separated';
   stemCount: number;
   stemTypes: string[];
 } | {
-  status: 'source-only' | 'processing' | 'not-started' | 'unavailable';
+  status: 'source-only' | 'not-started' | 'unavailable';
   reason: string;
+} | {
+  status: 'processing';
+  reason: string;
+  stage?: string;
+  progress?: StemSeparationProgress;
 } | {
   status: 'rejected' | 'failed';
   reason: string;

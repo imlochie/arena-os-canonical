@@ -47,6 +47,9 @@ const libraryRows = tracks.map((item, index) => ({
 }));
 let liveQueue = [];
 let exposeSeparatedSource = false;
+let showSeparationProgress = false;
+let abortNextLibraryUpload = false;
+let libraryUploadRequests = 0;
 let heldAssetId = null;
 let heldAssetGate = null;
 let signalHeldAssetRequest = null;
@@ -56,8 +59,14 @@ const session = { id: sessionId, name: "Live layer regression", currentSessionTr
 const studioProjectId = "00000000-0000-4000-8000-000000000008";
 const studioRemixId = "00000000-0000-4000-8000-000000000009";
 let failStudioHandoff = false;
+let holdStudioHandoff = false;
+let releaseStudioHandoff = null;
+let signalStudioHandoffStarted = null;
+let studioHandoffRequests = 0;
 let studioProjectData = null;
 let studioRemixData = null;
+let studioHasRemix = true;
+let automaticRemixAttempts = 0;
 let holdNextStudioRemixPut = false;
 let signalHeldStudioRemixPut = null;
 let releaseHeldStudioRemixPut = null;
@@ -73,6 +82,7 @@ try {
   page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
   await context.addInitScript((fixtureSessionId) => {
     window.audioProbe = { sources: [], buffers: [], masterGains: [] };
+    window.modelStatusFetchModes = [];
     let leavingDocument = false;
     window.addEventListener("pagehide", () => { leavingDocument = true; }, { once: true });
     document.addEventListener("visibilitychange", () => {
@@ -83,6 +93,9 @@ try {
       const rawUrl = input instanceof Request ? input.url : String(input);
       const url = new URL(rawUrl, window.location.href);
       const keepalive = init?.keepalive ?? (input instanceof Request && input.keepalive);
+      if (url.pathname === "/api/waveyard/separation/models") {
+        window.modelStatusFetchModes.push(init?.cache ?? "default");
+      }
       // Keep fixture-session unload saves out of the real API; Playwright cannot
       // reliably route keepalive fetches once the page is leaving.
       if (keepalive && leavingDocument && url.pathname === `/api/library/sessions/${fixtureSessionId}/state`) {
@@ -159,10 +172,28 @@ try {
   });
   await context.route("**/api/library/tracks", route => {
     if (route.request().method() === "POST") {
+      libraryUploadRequests += 1;
+      if (abortNextLibraryUpload) {
+        abortNextLibraryUpload = false;
+        return route.abort("failed");
+      }
       return route.fulfill({ status: 201, json: { track: libraryRows[0], created: true, separationQueued: true } });
     }
+    const visibleLibraryRows = showSeparationProgress
+      ? libraryRows.map(row => row.id === libraryRows[0].id
+        ? {
+            ...row,
+            stemAvailability: {
+              status: "processing",
+              reason: "Stem separation is still running.",
+              stage: "separating",
+              progress: { percent: 36, phase: "2/4" },
+            },
+          }
+        : row)
+      : libraryRows;
     return route.fulfill({ json: { tracks: [
-      ...libraryRows, { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4, stemTypes: types }, studioProjectId: "fixture-project-d" },
+      ...visibleLibraryRows, { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4, stemTypes: types }, studioProjectId: "fixture-project-d" },
     ] } });
   });
   await context.route("**/api/library/playlists", route => route.fulfill({ json: { playlists: [
@@ -227,8 +258,15 @@ try {
   });
   await context.route(`**/api/library/sessions/${sessionId}/studio-handoff`, async route => {
     assert.equal(route.request().method(), "POST", "the session-to-Studio handoff is explicitly requested");
+    studioHandoffRequests += 1;
     if (failStudioHandoff) {
       return route.fulfill({ status: 503, json: { error: "Studio is temporarily unavailable. Try again." } });
+    }
+    if (holdStudioHandoff) {
+      await new Promise(resolve => {
+        releaseStudioHandoff = resolve;
+        signalStudioHandoffStarted?.();
+      });
     }
     const body = route.request().postDataJSON();
     assert.ok(Array.isArray(body?.sessionTrackIds), "the handoff sends an explicit session-entry selection");
@@ -303,6 +341,17 @@ try {
   });
   await context.route(`**/api/waveyard/projects/${studioProjectId}/**`, async route => {
     const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith("/automatic-remixes")) {
+      automaticRemixAttempts += 1;
+      if (automaticRemixAttempts === 1) {
+        await route.abort("failed");
+        return;
+      }
+      return route.fulfill({
+        status: 201,
+        json: { remix: { id: studioRemixId }, plan: { notices: [] } },
+      });
+    }
     if (pathname.endsWith("/master")) {
       return route.fulfill({ status: 404, json: { error: "The fixture has no master analysis." } });
     }
@@ -328,7 +377,7 @@ try {
   await context.route(`**/api/waveyard/projects/${studioProjectId}`, route =>
     route.fulfill({ json: studioProjectData ?? {} }));
   await context.route(`**/api/waveyard/projects/${studioProjectId}/remixes`, route =>
-    route.fulfill({ json: { remixes: [{ id: studioRemixId }] } }));
+    route.fulfill({ json: { remixes: studioHasRemix ? [{ id: studioRemixId }] : [] } }));
   await context.route(`**/api/remixes/${studioRemixId}`, async route => {
     if (route.request().method() === "PUT" && studioRemixData !== null) {
       studioRemixPutCount += 1;
@@ -349,17 +398,48 @@ try {
   });
   await context.route(`**/api/remixes/${studioRemixId}/versions`, route =>
     route.fulfill({ json: { versions: [] } }));
+  await context.route("**/api/waveyard/separation/models", route => route.fulfill({
+    json: {
+      models: ["kim_vocal_2", "kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"]
+        .map(id => ({ id, label: id, ready: true, sizeBytes: 0 })),
+    },
+  }));
   await page.goto("http://localhost:80/waveyard");
   await page.evaluate(() => localStorage.clear());
   await page.reload();
+  const emptyWorkspace = page.locator("#waveyard-live-mixer");
+  await emptyWorkspace.locator(".wy-workspace-empty").waitFor();
+  assert.equal((await emptyWorkspace.locator(".eyebrow").textContent())?.trim(), "Live mixer");
+  assert.match(await emptyWorkspace.locator("p").innerText(), /Play a library track to start/);
+  assert.equal(await emptyWorkspace.evaluate(element => getComputedStyle(element).paddingBottom), "24px",
+    "an empty mixer should not reserve space for a fixed transport");
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="stem-engine-status"]')?.textContent ===
+      "Four stem model files present · vocals / drums / bass / other");
+  assert.equal(await page.getByTestId("stem-engine-status").innerText(),
+    "Four stem model files present · vocals / drums / bass / other",
+    "model files must not be presented as proof that inference succeeded");
+  assert.ok(await page.evaluate(() => window.modelStatusFetchModes.length > 0));
+  assert.ok(await page.evaluate(() => window.modelStatusFetchModes.every(mode => mode === "no-store")),
+    "model readiness checks must bypass cached 304 responses");
+  libraryUploadRequests = 0;
+  abortNextLibraryUpload = true;
   const uploadTrackIntoSession = page.waitForResponse(response =>
     response.url().endsWith(`/api/library/sessions/${sessionId}/tracks`) && response.request().method() === "POST",
   );
-  await page.locator('input[type="file"][multiple]').setInputFiles({
-    name: "upload-test.wav",
-    mimeType: "audio/wav",
-    buffer: wav(2, 140),
-  });
+  await page.locator('input[type="file"][multiple]').setInputFiles([
+    { name: "retry-network-failure.wav", mimeType: "audio/wav", buffer: wav(2, 140) },
+    { name: "upload-test.wav", mimeType: "audio/wav", buffer: wav(2, 180) },
+  ]);
+  const uploadRecovery = page.getByTestId("failed-library-uploads");
+  await uploadRecovery.waitFor({ timeout: 10000 });
+  assert.match(await uploadRecovery.innerText(), /retry-network-failure\.wav/);
+  assert.doesNotMatch(await uploadRecovery.innerText(), /upload-test\.wav/,
+    "a successful file is not included in the retry list");
+  assert.equal(libraryUploadRequests, 2, "the batch continues after the first file hits a network failure");
+  await page.getByRole("button", { name: "Retry 1 failed upload" }).click();
+  await uploadRecovery.waitFor({ state: "detached", timeout: 10000 });
+  assert.equal(libraryUploadRequests, 3, "retry resends the failed file without selecting it again");
   const openMixerLink = page.getByRole("link", { name: "Open live mixer", exact: true });
   await openMixerLink.waitFor({ timeout: 15000 });
   assert.equal(await openMixerLink.getAttribute("href"), "#waveyard-live-mixer");
@@ -372,6 +452,7 @@ try {
   session.currentSessionTrackId = "a";
   session.positionSeconds = 0;
   exposeSeparatedSource = false;
+  showSeparationProgress = true;
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].length === 4 &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.readyState === 4));
@@ -543,6 +624,12 @@ try {
   await current.getByText("Retry live stems", { exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('[data-role="current"] [role="alert"]'));
   await page.getByTestId("session-transition").click();
+  const transitionMode = page.getByLabel("Mode");
+  assert.deepEqual(
+    await transitionMode.locator("option").evaluateAll(options => options.map(option => option.value)),
+    ["manual", "beat", "bar"],
+    "the transition selector must not offer the stored-only meeting-point mode",
+  );
   await page.getByRole("button", { name: "Finish", exact: true }).click();
   await secondPage.waitForFunction(() => document.querySelector('[data-role="current"]')?.textContent.includes("Test c"));
   assert.ok(await secondPage.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.paused)),
@@ -554,12 +641,45 @@ try {
     "a pause command in the mirror tab pauses the active tab");
   await secondPage.close();
 
+  // Auto-crossfade must start from the configured end window, preserve the
+  // equal-power incoming level, and advance without a manual Mix/Finish click.
+  session.tracks = tracks;
+  session.swaps = [];
+  session.currentSessionTrackId = "a";
+  session.positionSeconds = 0;
+  exposeSeparatedSource = false;
+  showSeparationProgress = false;
+  await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].length === 4 &&
+    [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.readyState === 4));
+  current = page.locator('[data-role="current"]');
+  const autoCrossfade = page.getByTestId("session-auto-crossfade");
+  await autoCrossfade.check();
+  await toggle();
+  await current.getByTestId("seek-deck-0").fill("18");
+  const finishAutoFade = page.getByRole("button", { name: "Finish", exact: true });
+  await finishAutoFade.waitFor({ timeout: 5000 });
+  await page.waitForFunction(
+    () => window.audioProbe.masterGains.some(node => node.gain.value > 0.55 && node.gain.value < 0.85),
+    null,
+    { timeout: 5000 },
+  );
+  const midFadeMasterGains = await page.evaluate(() => window.audioProbe.masterGains.map(node => node.gain.value));
+  const incomingMasterGain = midFadeMasterGains.find(gain => gain > 0.55 && gain < 0.85);
+  assert.ok(incomingMasterGain !== undefined,
+    `the incoming deck should be at its equal-power mid-fade level: ${JSON.stringify(midFadeMasterGains)}`);
+  await finishAutoFade.waitFor({ state: "detached", timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector('[data-role="current"]')?.textContent.includes("Test b"));
+  await autoCrossfade.uncheck();
+  console.log("PASS: auto-crossfade reaches its equal-power fade and advances to the next separated track.");
+
   // A source-only deck must keep playing while completed stems are prepared.
   session.tracks = [sourceOnlyTrack];
   session.swaps = [];
   session.currentSessionTrackId = "a";
   session.positionSeconds = 0;
   exposeSeparatedSource = false;
+  showSeparationProgress = true;
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await page.waitForFunction(() => {
     const audio = document.querySelector('[data-role="current"] audio');
@@ -569,7 +689,11 @@ try {
   await toggle();
   await current.getByTestId("seek-deck-0").fill("2");
   await page.waitForTimeout(150);
+  await page.getByTestId("session-separation-progress-a")
+    .filter({ hasText: /36%.*pass 2\/4/ })
+    .waitFor({ timeout: 5000 });
   exposeSeparatedSource = true;
+  showSeparationProgress = false;
   const switchButton = page.getByTestId("button-switch-stems-a");
   await switchButton.waitFor({ timeout: 15000 });
 
@@ -751,21 +875,42 @@ try {
   assert.equal(await page.getByLabel("vocals level, current deck").inputValue(), "0.42",
     "the live session loads its saved stem mix before handoff");
   const sourceAssetsBeforeHandoff = assetSnapshot();
+  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "2 selected of 2 selectable tracks",
+    "only entries with audio layers are selected for Studio by default");
+  assert.equal(await page.getByRole("checkbox", { name: /Unavailable session track/ }).isDisabled(), true,
+    "a session entry without stems cannot be selected for Studio");
+  assert.equal(await page.getByTestId("studio-unready-note").isVisible(), true,
+    "the picker explains where to prepare entries that are not ready");
   await page.getByRole("button", { name: "Current only" }).click();
-  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "1 of 3 selected");
+  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "1 selected of 2 selectable tracks");
   assert.equal(await page.getByRole("checkbox", { name: /session entry 1/ }).isChecked(), true,
     "Current only keeps the playing session entry");
   assert.equal(await page.getByRole("checkbox", { name: /session entry 2/ }).isChecked(), false);
-  await page.getByRole("checkbox", { name: /session entry 1/ }).uncheck();
-  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "0 of 3 selected");
+  await page.getByRole("button", { name: "Clear selection" }).click();
+  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "0 selected of 2 selectable tracks");
   assert.equal(await page.getByTestId("session-handoff").isDisabled(), true,
     "an empty selection cannot be submitted");
-  await page.getByRole("button", { name: "Select all" }).click();
-  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "3 of 3 selected");
-  await page.getByRole("checkbox", { name: /Unavailable session track/ }).uncheck();
-  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "2 of 3 selected",
-    "listeners can exclude a session entry before creating the arrangement");
-  await page.getByTestId("session-handoff").click();
+  await page.getByRole("button", { name: "Select all ready" }).click();
+  assert.equal((await page.getByTestId("studio-track-selection-count").innerText()).trim(), "2 selected of 2 selectable tracks");
+  assert.equal(await page.getByRole("checkbox", { name: /Unavailable session track/ }).isChecked(), false,
+    "unready session entries are excluded from the Studio request");
+  studioHandoffRequests = 0;
+  holdStudioHandoff = true;
+  let notifyStudioHandoffStarted;
+  const studioHandoffStarted = new Promise(resolve => { notifyStudioHandoffStarted = resolve; });
+  signalStudioHandoffStarted = notifyStudioHandoffStarted;
+  await page.getByTestId("session-handoff").evaluate(button => { button.click(); button.click(); });
+  await studioHandoffStarted;
+  assert.equal(studioHandoffRequests, 1, "a rapid double click submits only one Studio handoff");
+  assert.equal(await page.getByTestId("session-handoff").isDisabled(), true,
+    "the handoff button stays disabled while Studio is creating the arrangement");
+  assert.match(await page.getByTestId("session-handoff").innerText(), /Creating Studio arrangement/);
+  await page.waitForTimeout(100);
+  assert.equal(studioHandoffRequests, 1, "the in-flight guard prevents duplicate projects");
+  releaseStudioHandoff?.();
+  releaseStudioHandoff = null;
+  holdStudioHandoff = false;
+  signalStudioHandoffStarted = null;
   const studioLink = page.getByRole("link", { name: "Open in Studio" });
   await studioLink.waitFor();
   const handoffResult = await page.getByTestId("session-status").textContent();
@@ -872,6 +1017,23 @@ try {
   );
   assert.deepEqual(assetSnapshot(), sourceAssetsBeforeHandoff,
     "creating and editing the derived arrangement leaves original audio assets unchanged");
+
+  studioHasRemix = false;
+  automaticRemixAttempts = 0;
+  await page.goto(`http://localhost:80/waveyard/projects/${studioProjectId}?view=studio`);
+  const buildArrangementButton = page.getByRole("button", { name: "Build automatic arrangement", exact: true });
+  await buildArrangementButton.waitFor();
+  await buildArrangementButton.click();
+  await page.getByText(/automatic arrangement request could not reach the server/i).waitFor();
+  assert.equal(await buildArrangementButton.isEnabled(), true,
+    "a network failure re-enables the automatic arrangement action");
+  await buildArrangementButton.click();
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  await page.getByText(/starting point is ready to play/i).waitFor();
+  assert.equal(automaticRemixAttempts, 2,
+    "a failed automatic arrangement can be retried and the returned arrangement opens");
+  studioHasRemix = true;
+  console.log("PASS: Studio arrangement creation recovers from a network failure and opens on retry.");
 
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await page.waitForFunction(() => document.querySelector('[data-testid="session-handoff"]'));

@@ -10,10 +10,10 @@
  *
  * What this does NOT prove: separation quality. The deterministic signal-path
  * test injects a hand-crafted REAL ONNX model whose graph is a pass-through
- * (Identity). When the pinned Kim weights are already installed locally, a
- * separate gated test verifies their exact checksum and runs the production
- * worker/retry path. That proves real-weight execution and persistence, not
- * subjective separation quality:
+ * (Identity). When pinned weights are already installed locally, gated tests
+ * verify their exact checksums and run the production worker/retry path. That
+ * proves real-weight execution and persistence, not subjective separation
+ * quality:
  *
  *   primary stem ≈ the source mixture   (the entire STFT→ORT→ISTFT chain
  *                                        reconstructs what went in)
@@ -48,16 +48,30 @@ import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
 import type { OpenedEngine } from "./separation";
 import { demixMdxInWorker, handleSeparationJob } from "./separation";
-import { executionProviderAttempts, WAVEYARD_ORT_INTRA_OP_THREADS } from "@workspace/arena/lib/waveyard/separation/session";
+import {
+  executionProviderAttempts,
+  separationInferenceThreads,
+  WAVEYARD_ORT_INTRA_OP_THREADS,
+} from "@workspace/arena/lib/waveyard/separation/session";
 import { fixture, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 
 const KIM = findMdxModel("kim_vocal_2")!;
+const FOUR_STEM_MODELS = [
+  "kim_vocal_2",
+  "kuielab_b_drums",
+  "kuielab_b_bass",
+  "kuielab_b_other",
+].map((id) => findMdxModel(id)!);
 
 test("automatic separation prefers CUDA and falls back to CPU", () => {
   assert.deepEqual(executionProviderAttempts("auto"), [["cuda"], ["cpu"]]);
   assert.deepEqual(executionProviderAttempts("cuda"), [["cuda"], ["cpu"]]);
   assert.deepEqual(executionProviderAttempts("cpu"), [["cpu"]]);
-  assert.equal(WAVEYARD_ORT_INTRA_OP_THREADS, 2);
+  assert.equal(separationInferenceThreads(1), 1);
+  assert.equal(separationInferenceThreads(2), 2);
+  assert.equal(separationInferenceThreads(4), 3, "reserve one CPU on larger machines");
+  assert.equal(separationInferenceThreads(8), 4, "cap the model at four inference threads");
+  assert.ok(WAVEYARD_ORT_INTRA_OP_THREADS >= 1 && WAVEYARD_ORT_INTRA_OP_THREADS <= 4);
 });
 
 // ------------------------------------------------------ hand-crafted ONNX
@@ -142,22 +156,24 @@ async function realOrtEngine(f: SeparationFixture): Promise<{ engine: (spec: unk
   };
   const modelFile = join(f.modelsDir, "plumbing-probe.onnx");
   await writeFile(modelFile, craftPassthroughOnnx(KIM.params.dimF, KIM.params.dimT));
-  const session = await ort.InferenceSession.create(modelFile, { executionProviders: ["cpu"] });
   return {
-    engine: async () => ({
-      infer: async (spek, cfg, frames) => {
-        const tensor = new ort.Tensor("float32", spek, [1, 4, cfg.dimF, frames]);
-        const outputs = await session.run({ input: tensor });
-        const out = outputs[Object.keys(outputs)[0]];
-        if (!out || !(out.data instanceof Float32Array)) throw new Error("real session returned no float32 output");
-        if (out.data.length !== 4 * cfg.dimF * frames) throw new Error(`real session geometry mismatch: ${out.data.length}`);
-        return out.data;
-      },
-      release: async () => {
-        await session.release();
-      },
-      resolvedDevice: "cpu",
-    }),
+    engine: async () => {
+      const session = await ort.InferenceSession.create(modelFile, { executionProviders: ["cpu"] });
+      return {
+        infer: async (spek, cfg, frames) => {
+          const tensor = new ort.Tensor("float32", spek, [1, 4, cfg.dimF, frames]);
+          const outputs = await session.run({ input: tensor });
+          const out = outputs[Object.keys(outputs)[0]];
+          if (!out || !(out.data instanceof Float32Array)) throw new Error("real session returned no float32 output");
+          if (out.data.length !== 4 * cfg.dimF * frames) throw new Error(`real session geometry mismatch: ${out.data.length}`);
+          return out.data;
+        },
+        release: async () => {
+          await session.release();
+        },
+        resolvedDevice: "cpu",
+      };
+    },
   };
 }
 
@@ -267,6 +283,114 @@ test("a pinned local Kim model completes a failed separation through the product
     }
     t.diagnostic(
       `Pinned Kim model retry completed on ${job.resolvedDevice} in ${elapsedMs} ms for the 1-second synthetic fixture; this is execution evidence, not a separation-quality or Windows benchmark.`,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("the pinned four-model recipe completes through the production worker on retry", { timeout: 300_000 }, async (t) => {
+  const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+  const workspaceRoot = resolve(arenaRoot, "../..");
+  const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
+  for (const spec of FOUR_STEM_MODELS) {
+    const modelPath = join(modelDirectory, spec.file);
+    if (!existsSync(modelPath)) {
+      t.skip(`Pinned ${spec.id} weights are not installed locally.`);
+      return;
+    }
+    assert.equal(await checksumFile(modelPath), spec.sha256, `${spec.id} must match its registry checksum`);
+  }
+
+  const f = await fixture({ model: "stems_4" });
+  try {
+    for (const spec of FOUR_STEM_MODELS) {
+      await copyFile(join(modelDirectory, spec.file), join(f.modelsDir, spec.file));
+    }
+    await f.database
+      .update(processingJobs)
+      .set({
+        status: "failed",
+        stage: "failed",
+        errorCode: "separation_unavailable",
+        errorMessage: "A previous attempt could not open the model.",
+        completedAt: new Date(),
+      })
+      .where(eq(processingJobs.id, f.job.id));
+
+    let playbackTicks = 0;
+    let lastPlaybackTick = Date.now();
+    let maxPlaybackGapMs = 0;
+    const playbackTimer = setInterval(() => {
+      const now = Date.now();
+      maxPlaybackGapMs = Math.max(maxPlaybackGapMs, now - lastPlaybackTick);
+      lastPlaybackTick = now;
+      playbackTicks += 1;
+    }, 20);
+    let retryPromise: Promise<{ queued: boolean }> | undefined;
+    let elapsedMs = 0;
+    let requestLatencyMs = 0;
+    try {
+      const startedAt = Date.now();
+      retryPromise = retrySeparationJob(f.database, f.job.id, {
+        handOff: async () => handleSeparationJob(payloadOf(f), { db: f.database }),
+      });
+      const requestStartedAt = Date.now();
+      let requestTimeout: NodeJS.Timeout | undefined;
+      const request = await Promise.race([
+        f.database.select().from(processingJobs).then((rows) => ({
+          rows,
+          latencyMs: Date.now() - requestStartedAt,
+        })),
+        new Promise<never>((_, reject) => {
+          requestTimeout = setTimeout(
+            () => reject(new Error("Library read stalled during real four-stem separation")),
+            1_000,
+          );
+        }),
+      ]).finally(() => {
+        if (requestTimeout) clearTimeout(requestTimeout);
+      });
+      requestLatencyMs = request.latencyMs;
+      assert.equal(request.rows.length, 1);
+      assert.ok(requestLatencyMs < 1_000);
+
+      const retry = await retryPromise;
+      elapsedMs = Date.now() - startedAt;
+      assert.deepEqual(retry, { queued: true });
+    } finally {
+      clearInterval(playbackTimer);
+      await retryPromise?.catch(() => undefined);
+    }
+    assert.ok(playbackTicks >= 5, `playback timer advanced ${playbackTicks} times during separation`);
+    assert.ok(maxPlaybackGapMs < 1_000, `playback timer's longest pause was ${maxPlaybackGapMs}ms`);
+
+    const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    assert.equal(job.status, "complete");
+    assert.equal(job.errorCode, null);
+    const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+    assert.equal(stems.length, 4);
+    const stemsByType = new Map(stems.map((stem) => [stem.stemType, stem]));
+    for (const [stemType, modelId] of [
+      ["vocals", "kim_vocal_2"],
+      ["drums", "kuielab_b_drums"],
+      ["bass", "kuielab_b_bass"],
+      ["other", "kuielab_b_other"],
+    ] as const) {
+      const stem = stemsByType.get(stemType);
+      const spec = FOUR_STEM_MODELS.find((candidate) => candidate.id === modelId)!;
+      assert.ok(stem, `${stemType} was persisted`);
+      assert.equal(stem.model, modelId);
+      assert.equal(stem.modelVersion, spec.sha256);
+      const storedPath = getStorage().getLocalPath(stem.storageKey);
+      assert.ok(storedPath && existsSync(storedPath), `${stemType} output exists in storage`);
+      const decoded = decodeWav16(new Uint8Array(await readFile(storedPath!)));
+      assert.ok(decoded, `${stemType} is a readable WAV`);
+      assert.equal(decoded.sampleRate, 44_100);
+      assert.equal(decoded.frames, SAMPLES);
+    }
+    t.diagnostic(
+      `Pinned four-model retry completed on ${job.resolvedDevice} with ${WAVEYARD_ORT_INTRA_OP_THREADS} ORT threads in ${elapsedMs} ms; library read ${requestLatencyMs} ms; max playback timer gap ${maxPlaybackGapMs} ms. Synthetic fixture proves execution, not separation quality.`,
     );
   } finally {
     await f.close();

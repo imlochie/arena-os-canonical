@@ -40,10 +40,12 @@ test("a deterministic fallback is not accepted as arbitrary game generation", as
 
 test("local Model Hub generation stays on the selected model with remote fallback disabled", async () => {
   const modelId = "hub:ollama:qwen2.5-3b";
+  const signal = new AbortController().signal;
   let request: any;
   const result = await forgeGameWithAI("A tiny game that collects one coin", {
     modelId,
     localOnly: true,
+    signal,
   }, {
     generate: (async (input: any) => {
       request = input;
@@ -56,6 +58,7 @@ test("local Model Hub generation stays on the selected model with remote fallbac
   assert.equal(request.localOnly, true);
   assert.equal(request.keys, undefined);
   assert.equal(request.allowPublicFallback, false);
+  assert.equal(request.signal, signal);
 });
 
 test("oversized revision source is refused before calling a model", async () => {

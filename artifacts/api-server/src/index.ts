@@ -8,6 +8,7 @@ import {
 } from "@workspace/arena/lib/waveyard/worker-local";
 import { db, pool } from "@workspace/db";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
+import { runWaveyardStartupRecovery } from "./lib/waveyard-startup-recovery";
 
 const rawPort = process.env["PORT"];
 
@@ -29,8 +30,20 @@ const worker = startLocalWorker();
 if (worker) {
   // The in-memory broker and worker threads belonged to the previous API
   // process. Mark its jobs retryable and remove only their abandoned temp dirs.
-  const recovery = await recoverInterruptedLocalSeparationJobs(db);
-  const waveformRecovery = await recoverPendingLocalWaveformJobs(db);
+  const { recovery, waveformRecovery } = await runWaveyardStartupRecovery(
+    async () => {
+      const recovery = await recoverInterruptedLocalSeparationJobs(db);
+      const waveformRecovery = await recoverPendingLocalWaveformJobs(db);
+      return { recovery, waveformRecovery };
+    },
+    {
+      onRetry: (error, attempt, delayMs) => logger.warn({
+        attempt,
+        delayMs,
+        error,
+      }, "Transient database connection failure during Waveyard startup recovery; retrying"),
+    },
+  );
   logger.info({
     queues: worker.registeredQueues(),
     interrupted: recovery.interruptedJobIds.length,

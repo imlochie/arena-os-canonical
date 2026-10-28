@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { artworkEnvironment, deriveVisualState, motionPolicy, normaliseMusicalKey, SUPPORTED_MUSICAL_KEYS, type AutomaticRemixVariant, type CinematicVisualPreset, type MusicalMeetingPoint } from "@workspace/arena/lib/waveyard/types";
 import { WaveformCanvas } from "./WaveformCanvas";
 import { LivingPlayer, MiniPlayer } from "./player/LivingPlayer";
@@ -62,12 +62,22 @@ function canHandleShortcut(target: EventTarget | null) {
 type StudioTab = "edit" | "analyze" | "showcase";
 const STUDIO_TAB_LABEL = { edit: "Edit", analyze: "Analyze", showcase: "Showcase" } as const;
 const STUDIO_TAB_BLURB = {
-  edit: "Arrangement, clips, mixer, effects, master.",
+  edit: "Arrange clips, mix stems, save versions.",
   analyze: "Sections, meeting points, vocals, drums, harmony, AI tools.",
   showcase: "Stem deck, visualizer, A/B — the shareable face.",
 } as const;
 
-export function StudioCore({ projectId, remixSessionId, stems, sources, initialPresentation, onDerivedAnalysisRequested }: { projectId: string; remixSessionId?: string | null; stems: Stem[]; sources: Source[]; initialPresentation?: "studio"; onDerivedAnalysisRequested?: () => void }) {
+function StudioDisclosure({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="studio-disclosure" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>{title}</summary>
+      {open && <div className="studio-disclosure-body">{children}</div>}
+    </details>
+  );
+}
+
+export function StudioCore({ editorId, projectId, remixSessionId, stems, sources, initialPresentation, onDerivedAnalysisRequested }: { editorId?: string; projectId: string; remixSessionId?: string | null; stems: Stem[]; sources: Source[]; initialPresentation?: "studio"; onDerivedAnalysisRequested?: () => void }) {
   const ids = useMemo(() => stems.map((stem) => stem.id), [stems]);
   const duration = useMemo(() => Math.max(0, ...stems.map((stem) => stem.durationSeconds)), [stems]);
   const sourceDurationById = useMemo(() => new Map(stems.map((stem) => [stem.id, Math.round(stem.durationSeconds * 1000)])), [stems]);
@@ -102,6 +112,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
   const remixRef = useRef<Remix | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed">("saved");
   const [versions, setVersions] = useState<RemixVersionSummary[]>([]);
+  const [creatingRemixSession, setCreatingRemixSession] = useState(false);
   const [buildingAutomaticRemix, setBuildingAutomaticRemix] = useState<AutomaticRemixVariant | null>(null);
   const [automaticRemixMessage, setAutomaticRemixMessage] = useState<string | null>(null);
   const [automaticGeneration, setAutomaticGeneration] = useState<AutomaticRemixGenerationSummary | null>(null);
@@ -327,25 +338,35 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
     };
   }, [persist]);
 
-  const loadRemix = useCallback(async (id: string) => {
+  const loadRemix = useCallback(async (id: string): Promise<boolean> => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = null;
     saveRevision.current += 1;
-    const response = await fetch(`/api/remixes/${id}`, { cache: "no-store" });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) { setSaveState("failed"); return; }
-    const next = remixFromResponse(body);
-    remixRef.current = next;
-    setRemix(next);
-    setAutomaticGeneration(body.generation ?? null);
-    setClipSelection(null);
-    setSelectedClipIds([]);
-    reset();
-    setControls(Object.fromEntries(next.tracks.map((track) => [track.stemAssetId, { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, phaseInvert: track.phaseInverted === true }])));
-    setSaveState("saved");
-    const versionResponse = await fetch(`/api/remixes/${id}/versions`, { cache: "no-store" });
-    const versionBody = await versionResponse.json().catch(() => ({}));
-    if (versionResponse.ok) setVersions(versionBody.versions ?? []);
+    try {
+      const response = await fetch(`/api/remixes/${id}`, { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) { setSaveState("failed"); return false; }
+      const next = remixFromResponse(body);
+      remixRef.current = next;
+      setRemix(next);
+      setAutomaticGeneration(body.generation ?? null);
+      setClipSelection(null);
+      setSelectedClipIds([]);
+      reset();
+      setControls(Object.fromEntries(next.tracks.map((track) => [track.stemAssetId, { volume: track.volume, pan: track.pan, muted: track.muted, solo: track.solo, phaseInvert: track.phaseInverted === true }])));
+      setSaveState("saved");
+      try {
+        const versionResponse = await fetch(`/api/remixes/${id}/versions`, { cache: "no-store" });
+        const versionBody = await versionResponse.json().catch(() => ({}));
+        if (versionResponse.ok) setVersions(versionBody.versions ?? []);
+      } catch {
+        // Version history is optional; the arrangement remains usable.
+      }
+      return true;
+    } catch {
+      setSaveState("failed");
+      return false;
+    }
   }, [reset]);
 
   useEffect(() => {
@@ -473,7 +494,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
         anchor.click();
         anchor.remove();
         URL.revokeObjectURL(url);
-        return null;
+        return "MIDI file downloaded.";
       }
     }
     // Queued path: an immutable remix version is exported through the worker.
@@ -488,26 +509,55 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
     return "MIDI export queued — it lands in your exports when the worker finishes.";
   }, [projectId, versions]);
   const createRemix = async () => {
-    const response = await fetch(`/api/waveyard/projects/${projectId}/remixes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "First arrangement" }) });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) { setSaveState("failed"); return; }
-    await loadRemix(body.remix.id);
+    if (creatingRemixSession || buildingAutomaticRemix !== null) return;
+    setCreatingRemixSession(true);
+    setAutomaticRemixMessage(null);
+    try {
+      const response = await fetch(`/api/waveyard/projects/${projectId}/remixes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "First arrangement" }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || typeof body.remix?.id !== "string") {
+        setSaveState("failed");
+        setAutomaticRemixMessage(body.error ?? "The blank arrangement could not be started.");
+        return;
+      }
+      if (!await loadRemix(body.remix.id)) {
+        setAutomaticRemixMessage("The blank arrangement was created, but Studio could not open it. Refresh the page to try again.");
+      }
+    } catch {
+      setSaveState("failed");
+      setAutomaticRemixMessage("The blank arrangement request could not reach the server. Your source audio is unchanged; check your connection and try again.");
+    } finally {
+      setCreatingRemixSession(false);
+    }
   };
   const createAutomaticRemix = async (variant: AutomaticRemixVariant) => {
+    if (creatingRemixSession || buildingAutomaticRemix !== null) return;
     setBuildingAutomaticRemix(variant);
     setAutomaticRemixMessage(null);
-    const response = await fetch(`/api/waveyard/projects/${projectId}/automatic-remixes`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variant }),
-    });
-    const body = await response.json().catch(() => ({}));
-    setBuildingAutomaticRemix(null);
-    if (!response.ok) {
-      setAutomaticRemixMessage(body.error ?? "Waveyard could not build an automatic arrangement yet.");
-      return;
+    try {
+      const response = await fetch(`/api/waveyard/projects/${projectId}/automatic-remixes`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variant }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || typeof body.remix?.id !== "string") {
+        setAutomaticRemixMessage(body.error ?? "Waveyard could not build an automatic arrangement yet.");
+        return;
+      }
+      if (!await loadRemix(body.remix.id)) {
+        setAutomaticRemixMessage("The arrangement was created, but Studio could not open it. Refresh the page to try again.");
+        return;
+      }
+      const notices = Array.isArray(body.plan?.notices) ? body.plan.notices : [];
+      setAutomaticRemixMessage(notices[0] ?? `${variant === "hybrid" ? "Hybrid" : "Original"} starting point is ready to play.`);
+    } catch {
+      setAutomaticRemixMessage("The automatic arrangement request could not reach the server. Your source audio is unchanged; check your connection and try again.");
+    } finally {
+      setBuildingAutomaticRemix(null);
     }
-    await loadRemix(body.remix.id);
-    const notices = Array.isArray(body.plan?.notices) ? body.plan.notices : [];
-    setAutomaticRemixMessage(notices[0] ?? `${variant === "hybrid" ? "Hybrid" : "Original"} starting point is ready to play.`);
   };
   const findMeetingPoints = async (section: SourceSection) => {
     if (!remix || !selected) return "Create or open an arrangement before asking where this material fits.";
@@ -827,7 +877,10 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
     return () => window.removeEventListener("keydown", keyboard);
   }, [clipSelection, editClip, redo, remix, timing, toggleStemPreview, transport, undo]);
 
+  const remixCreationBusy = creatingRemixSession || buildingAutomaticRemix !== null;
   return <section
+    id={editorId}
+    tabIndex={editorId ? -1 : undefined}
     className={`studio waveyard-surface mode-${presentation}`}
     data-presentation={presentation}
     data-playing={observedTransportPlaying ? "true" : "false"}
@@ -868,24 +921,88 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
       onToggleFullscreen={() => setVisualFullscreen((current) => !current)}
       onOpenStudio={() => { setPresentation("studio"); setVisualFullscreen(false); }}
     /> : <>
-    {/* Palette (stems + libraries) stays mounted across studio tabs — it is
-        the shared selection surface every tab reads (vision Principle 3). */}
-    <SourcePool sources={sources} stems={stems} selectedStemId={selectedId} onSelectStem={(stemId) => { setSelectedId(stemId); setSelectedSourceSectionId(null); }} />
-    <ConnectedLibraries projectId={projectId} />
     <div className="studio-tabs" role="tablist" aria-label="Studio focus">
       {(["edit", "analyze", "showcase"] as const).map((tab) => (
         <button key={tab} type="button" role="tab" aria-selected={studioTab === tab} className={`tab-chip ${studioTab === tab ? "on" : ""}`} onClick={() => setStudioTab(tab)}>{STUDIO_TAB_LABEL[tab]}</button>
       ))}
       <small className="tab-hint">{STUDIO_TAB_BLURB[studioTab]}</small>
     </div>
+    <section id="remix-timeline" className="remix-panel">
+      <div className="panel-title">
+        <div><span className="eyebrow">Non-destructive arrangement</span><h3>Remix timeline</h3></div>
+        {!remix ? (
+          <div className="remix-actions">
+            <button type="button" className="button" disabled={remixCreationBusy} onClick={() => void createAutomaticRemix("original")}>
+              {buildingAutomaticRemix ? "Building automatic arrangement…" : "Build automatic arrangement"}
+            </button>
+            <button type="button" className="button secondary" disabled={remixCreationBusy} onClick={() => void createRemix()}>
+              {creatingRemixSession ? "Starting arrangement…" : "Start blank arrangement"}
+            </button>
+          </div>
+        ) : (
+          <div className="remix-actions">
+            <button type="button" className="button secondary" disabled={remixCreationBusy} onClick={() => void createRemix()}>
+              {creatingRemixSession ? "Starting arrangement…" : "New remix session"}
+            </button>
+            <button className="button secondary" disabled={!history.length} onClick={undo}>Undo</button>
+            <button className="button secondary" disabled={!future.length} onClick={redo}>Redo</button>
+            <button className="button secondary" onClick={() => void createVersion()}>Save version</button>
+            <button className="button" onClick={saveNow}>Save now</button>
+          </div>
+        )}
+      </div>
+      {automaticRemixMessage && <p className="automatic-remix-banner" role="status">{automaticRemixMessage}</p>}
+      {remix ? <>
+        <div className="arrangement-settings" aria-label="Arrangement timing settings">
+          <label>BPM <input aria-label="Tempo BPM" type="number" min="20" max="300" value={remix.tempoBpm} onChange={(event) => changeRemix((current) => ({ ...current, tempoBpm: Number(event.target.value) || 120 }))} /></label>
+          <button className="button secondary" disabled={!selectedSourceBpm} title={selectedSourceBpm ? `Use ${selectedSourceBpm.toFixed(2)} BPM from the selected source` : "Selected source has no complete BPM analysis"} onClick={() => selectedSourceBpm && changeRemix((current) => ({ ...current, tempoBpm: selectedSourceBpm }))}>Use source BPM</button>
+          <label>Target key <select aria-label="Target remix key" value={remix.targetKey ?? ""} onChange={(event) => changeRemix((current) => ({ ...current, targetKey: event.target.value || null }))}><option value="">No target key</option>{SUPPORTED_MUSICAL_KEYS.map((key) => <option key={key} value={key}>{key}</option>)}</select></label>
+          <label>Beats/bar <input aria-label="Time signature numerator" type="number" min="1" max="12" value={remix.timeSignatureNumerator} onChange={(event) => changeRemix((current) => ({ ...current, timeSignatureNumerator: Number(event.target.value) || 4 }))} /></label>
+          <label>Beat value <select aria-label="Time signature denominator" value={remix.timeSignatureDenominator} onChange={(event) => changeRemix((current) => ({ ...current, timeSignatureDenominator: Number(event.target.value) }))}>{[1, 2, 4, 8, 16].map((value) => <option value={value} key={value}>{value}</option>)}</select></label>
+          <label>Grid <select aria-label="Grid division" value={remix.gridDivision} onChange={(event) => changeRemix((current) => ({ ...current, gridDivision: event.target.value as GridDivision }))}>{["bar", "beat", "half-beat", "quarter-note"].map((value) => <option value={value} key={value}>{value}</option>)}</select></label>
+          <label><input aria-label="Snap enabled" type="checkbox" checked={remix.snapEnabled} onChange={(event) => changeRemix((current) => ({ ...current, snapEnabled: event.target.checked }))} /> Snap</label>
+          <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
+        </div>
+        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={arrangementDuration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} selectedClipIds={selectedClipIds} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onSelectedClipIds={setSelectedClipIds} onPreview={previewTimeline} onCommit={commitTimeline} onBatchCommit={batchEditClips} onAutomationEdit={editAutomation} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
+        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} sourceAlignmentByStemId={sourceAlignmentByStemId} comparisonSource={selected ? sourceAlignmentByStemId.get(selected.id) : null} slicePrefill={slicePrefill} onAlignBeat={alignClipBeat} onClipEdit={editClip} onAutomationEdit={(operation, payload) => editAutomation(remix, operation, payload)} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
+        <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
+      </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
+    </section>
+    {/* Stem selection stays available across modes; optional source tools mount only when requested. */}
+    <SourcePool sources={sources} stems={stems} selectedStemId={selectedId} onSelectStem={(stemId) => { setSelectedId(stemId); setSelectedSourceSectionId(null); }} />
     {studioTab === "edit" && <>
-      {remix && <><ProjectMusicalWorld remix={remix} stems={stems} /><ExtendedArrangementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} onApplied={async () => { await loadRemix(remix.id); }} /><MultiSourcePlacementPanel remixId={remix.id} anchorClipId={extensionAnchorClipId} stemAssetId={selected?.id ?? ""} sourceSectionId={selectedSourceSectionId} onApplied={async () => { await loadRemix(remix.id); }} /></>}
+      <StudioDisclosure title="Bring in another audio source">
+        <ConnectedLibraries projectId={projectId} />
+      </StudioDisclosure>
+      {remix && (
+        <StudioDisclosure title="Advanced arrangement tools">
+          <ProjectMusicalWorld remix={remix} stems={stems} />
+          <ExtendedArrangementPanel
+            remixId={remix.id}
+            anchorClipId={extensionAnchorClipId}
+            onApplied={async () => { await loadRemix(remix.id); }}
+          />
+          <MultiSourcePlacementPanel
+            remixId={remix.id}
+            anchorClipId={extensionAnchorClipId}
+            stemAssetId={selected?.id ?? ""}
+            sourceSectionId={selectedSourceSectionId}
+            onApplied={async () => { await loadRemix(remix.id); }}
+          />
+        </StudioDisclosure>
+      )}
       <div className="main-waveform"><div className="waveform-label">{source ? `Source · ${source.originalFilename}` : "Selected stem"}</div><WaveformCanvas assetId={source?.id ?? selected.id} label="project waveform" position={transport.position} duration={duration} onSeek={(seconds) => transport.seek(snapTimelineMs(seconds * 1000, timing) / 1000)} /></div>
       <StudioTransport transport={transport} timing={timing} loopStartMs={remix?.loopStartMs ?? 0} loopEndMs={remix?.loopEndMs ?? null} arrangementPlaying={arrangementPreview.playing} arrangementError={arrangementPreview.error} onToggleStemPreview={toggleStemPreview} onToggleArrangement={toggleArrangementPreview} onMasterVolume={(volume) => { transport.setMasterVolume(volume); changeRemix((current) => ({ ...current, masterVolume: volume })); }} onLoopChange={(loopStartMs, loopEndMs) => { transport.setLoop({ enabled: loopEndMs !== null, start: loopStartMs / 1000, end: (loopEndMs ?? 0) / 1000 }); changeRemix((current) => ({ ...current, loopStartMs, loopEndMs })); }} />
       <section className="studio-grid"><MixerConsole stems={stems} sources={sources} selectedId={selectedId} duration={duration} controls={mixerControls} transport={transport} onSelect={setSelectedId} onControl={updateControl} inserts={chainsByStem} onInserts={updateInserts} masterInserts={remix?.masterInserts ?? []} onMasterInserts={updateMasterInserts} />{selected && <ClipInspector stem={selected} source={source} duration={duration} transport={transport} remix={remix} activeClipId={selectedClipIds.length === 1 ? selectedClipIds[0] : null} onClipPatch={patchClip} onSplitClip={splitClip} onDuplicateClip={duplicateClip} onDeleteClip={deleteClip} />}</section>
-      <SoundDesignStudio projectId={projectId} />
-      <MasterStudio projectId={projectId} sourceAudioUrl={sources.length > 0 ? `/api/assets/${sources[0].id}` : null} />
-      <CleanupStudio projectId={projectId} />
+      <StudioDisclosure title="Sound design">
+        <SoundDesignStudio projectId={projectId} />
+      </StudioDisclosure>
+      <StudioDisclosure title="Mastering">
+        <MasterStudio projectId={projectId} sourceAudioUrl={sources.length > 0 ? `/api/assets/${sources[0].id}` : null} />
+      </StudioDisclosure>
+      <StudioDisclosure title="Audio cleanup">
+        <CleanupStudio projectId={projectId} />
+      </StudioDisclosure>
     </>}
     {studioTab === "analyze" && <>
       {source?.linkedFromLibrary && <p className="notice">Linked library audio. Mix and arrange it here; source analysis stays with the original project.</p>}
@@ -904,24 +1021,6 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, initialP
       <CompareAB projectId={projectId} sources={sources} stems={stems} transport={transport} />
       <StemPlayerDeck projectId={projectId} stems={stems} sources={sources} duration={duration} controls={mixerControls} transport={transport} onControl={updateControl} />
     </>}
-    <section className="remix-panel">
-      <div className="panel-title"><div><span className="eyebrow">Non-destructive arrangement</span><h3>Remix timeline</h3></div>{!remix ? <div className="remix-actions"><button className="button" disabled={buildingAutomaticRemix !== null} onClick={() => void createAutomaticRemix("original")}>{buildingAutomaticRemix === "original" ? "Building automatic arrangement…" : "Build automatic arrangement"}</button><button className="button secondary" onClick={() => void createRemix()}>Start blank arrangement</button></div> : <div className="remix-actions"><button className="button secondary" onClick={() => void createRemix()}>New remix session</button><button className="button secondary" disabled={!history.length} onClick={undo}>Undo</button><button className="button secondary" disabled={!future.length} onClick={redo}>Redo</button><button className="button secondary" onClick={() => void createVersion()}>Save version</button><button className="button" onClick={saveNow}>Save now</button></div>}</div>
-      {remix ? <>
-        <div className="arrangement-settings" aria-label="Arrangement timing settings">
-          <label>BPM <input aria-label="Tempo BPM" type="number" min="20" max="300" value={remix.tempoBpm} onChange={(event) => changeRemix((current) => ({ ...current, tempoBpm: Number(event.target.value) || 120 }))} /></label>
-          <button className="button secondary" disabled={!selectedSourceBpm} title={selectedSourceBpm ? `Use ${selectedSourceBpm.toFixed(2)} BPM from the selected source` : "Selected source has no complete BPM analysis"} onClick={() => selectedSourceBpm && changeRemix((current) => ({ ...current, tempoBpm: selectedSourceBpm }))}>Use source BPM</button>
-          <label>Target key <select aria-label="Target remix key" value={remix.targetKey ?? ""} onChange={(event) => changeRemix((current) => ({ ...current, targetKey: event.target.value || null }))}><option value="">No target key</option>{SUPPORTED_MUSICAL_KEYS.map((key) => <option key={key} value={key}>{key}</option>)}</select></label>
-          <label>Beats/bar <input aria-label="Time signature numerator" type="number" min="1" max="12" value={remix.timeSignatureNumerator} onChange={(event) => changeRemix((current) => ({ ...current, timeSignatureNumerator: Number(event.target.value) || 4 }))} /></label>
-          <label>Beat value <select aria-label="Time signature denominator" value={remix.timeSignatureDenominator} onChange={(event) => changeRemix((current) => ({ ...current, timeSignatureDenominator: Number(event.target.value) }))}>{[1, 2, 4, 8, 16].map((value) => <option value={value} key={value}>{value}</option>)}</select></label>
-          <label>Grid <select aria-label="Grid division" value={remix.gridDivision} onChange={(event) => changeRemix((current) => ({ ...current, gridDivision: event.target.value as GridDivision }))}>{["bar", "beat", "half-beat", "quarter-note"].map((value) => <option value={value} key={value}>{value}</option>)}</select></label>
-          <label><input aria-label="Snap enabled" type="checkbox" checked={remix.snapEnabled} onChange={(event) => changeRemix((current) => ({ ...current, snapEnabled: event.target.checked }))} /> Snap</label>
-          <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
-        </div>
-        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={arrangementDuration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} selectedClipIds={selectedClipIds} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onSelectedClipIds={setSelectedClipIds} onPreview={previewTimeline} onCommit={commitTimeline} onBatchCommit={batchEditClips} onAutomationEdit={editAutomation} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
-        <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} sourceAlignmentByStemId={sourceAlignmentByStemId} comparisonSource={selected ? sourceAlignmentByStemId.get(selected.id) : null} slicePrefill={slicePrefill} onAlignBeat={alignClipBeat} onClipEdit={editClip} onAutomationEdit={(operation, payload) => editAutomation(remix, operation, payload)} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
-        <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
-      </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}
-    </section>
     <MiniPlayer source={source} duration={duration} transport={presentationTransport} onOpenPlay={() => setPresentation("play")} />
     </>}
   </section>;

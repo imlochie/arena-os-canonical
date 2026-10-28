@@ -96,6 +96,53 @@ test("Local Mode allows registered loopback inference, not cloud egress", async 
   });
 });
 
+test("generate(): aborting a Model Hub call aborts upstream instead of returning fallback", async () => {
+  let markReceived!: () => void;
+  let markClosed!: () => void;
+  const received = new Promise<void>((resolve) => { markReceived = resolve; });
+  const closed = new Promise<void>((resolve) => { markClosed = resolve; });
+  const server: Server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.on("close", () => {
+        if (!response.writableEnded) markClosed();
+      });
+      markReceived();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const entry = hubModelFor("ollama", `http://127.0.0.1:${port}`, `cancel-${port}`, "Abort Test");
+  const controller = new AbortController();
+  registerDynamicModels([entry]);
+  try {
+    const pending = generate({
+      modelId: entry.id,
+      messages: [{ role: "user", content: "write a game" }],
+      signal: controller.signal,
+    });
+    await Promise.race([
+      received,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("local model request did not arrive")), 5000)),
+    ]);
+    controller.abort();
+    await assert.rejects(
+      pending,
+      (error: unknown) => error instanceof Error && error.name === "AbortError",
+      "caller cancellation must reject instead of becoming deterministic fallback output",
+    );
+    await Promise.race([
+      closed,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("upstream connection did not close")), 5000)),
+    ]);
+  } finally {
+    controller.abort();
+    clearDynamicModels();
+    server.closeAllConnections?.();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("generate(): agent-bridge model answers via the injected executor with honest labeling", async () => {
   const result = await generate(
     { modelId: "arena-agent", messages: [{ role: "user", content: "who are you?" }] },

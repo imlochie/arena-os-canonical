@@ -44,6 +44,8 @@ export interface GenerateOpts {
   // Privacy: localOnly blocks remote AI. Registered local-server models may
   // still run on literal loopback; never use the optional Model Hub LAN opt-in.
   localOnly?: boolean;
+  /** Cancel a caller-owned generation without converting it into a fallback. */
+  signal?: AbortSignal;
   // Assigned-worker execution disables the legacy provider/fallback cascade.
   strictRoute?: boolean;
   /** Artifact generation must not silently try unrelated public services
@@ -93,9 +95,13 @@ async function tryTurboAgent(
   temperature: number,
   maxTokens?: number,
   timeoutMs = 60000,
+  signal?: AbortSignal,
 ): Promise<string> {
   const base = url.replace(/\/$/, "");
   const ctrl = new AbortController();
+  const abortFromCaller = () => ctrl.abort(signal?.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener("abort", abortFromCaller, { once: true });
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetchImpl(`${base}/v1/chat/completions`, {
@@ -117,6 +123,7 @@ async function tryTurboAgent(
     return String(text);
   } finally {
     clearTimeout(t);
+    signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -428,7 +435,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
       try {
         if (opts.localOnly) assertUrlDestination(new URL(route.baseUrl), "loopback");
         else assertLoopbackUrl(route.baseUrl);
-        const text = await tryTurboAgent(fetchImpl, route.baseUrl, route.remoteModel, fullMessages, temperature, opts.maxTokens, 180_000);
+        const text = await tryTurboAgent(fetchImpl, route.baseUrl, route.remoteModel, fullMessages, temperature, opts.maxTokens, 180_000, opts.signal);
         return {
           text,
           runtimeLevel: "on-device",
@@ -439,6 +446,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
           fallback: false,
         };
       } catch (error) {
+        if (opts.signal?.aborted) throw error;
         const reason = error instanceof Error ? error.message : "unreachable";
         return localEngineResult(
           localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +

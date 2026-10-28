@@ -210,6 +210,9 @@ try {
   let mockRetryCount = 0;
   let mockNotStartedState = "not-started";
   let mockStartCount = 0;
+  let mockNotStartedRating = 0;
+  let uploadAttempts = 0;
+  const uploadAttemptNames = [];
   const recoveryTrack = {
     id: "arena-smoke-stem-recovery",
     title: "Retryable track",
@@ -236,11 +239,17 @@ try {
         stemAvailability: mockStemState === "rejected"
           ? { status: "rejected", reason: "Worker rejected the job.", retryJobId: "arena-smoke-stem-job" }
           : mockStemState === "processing"
-            ? { status: "processing", reason: "Stem separation is still running." }
+            ? {
+                status: "processing",
+                reason: "Stem separation is still running.",
+                stage: "separating",
+                progress: { percent: 36, phase: "2/4" },
+              }
             : { status: "separated", stemCount: 4 },
       },
       {
         ...notStartedTrack,
+        rating: mockNotStartedRating,
         stemAvailability: mockNotStartedState === "processing"
           ? { status: "processing", reason: "Separation is running." }
           : mockNotStartedState === "separated"
@@ -277,9 +286,14 @@ try {
   const liveSessionTracks = [liveCurrentItem];
   let liveSwap = null;
   let liveSwapRequestCount = 0;
+  let liveSwapDeleteRequestCount = 0;
   let liveTrackAddRequestCount = 0;
   let liveTrackPatchRequestCount = 0;
   let liveDonorFetchCount = 0;
+  let signalFirstDonorFetchStarted;
+  const firstDonorFetchStarted = new Promise(resolve => { signalFirstDonorFetchStarted = resolve; });
+  let releaseFirstDonorFetch;
+  const firstDonorFetchRelease = new Promise(resolve => { releaseFirstDonorFetch = resolve; });
   let resolveIsolatedMixSave;
   const isolatedMixSaved = new Promise(resolve => { resolveIsolatedMixSave = resolve; });
   let mockLiveSessionActive = false;
@@ -362,14 +376,50 @@ try {
         },
       };
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
+    } else if (url.pathname === `/api/library/sessions/${liveSessionId}/swaps` && route.request().method() === "DELETE") {
+      assert.equal(url.searchParams.get("swapId"), liveSwap?.id, "cancelling removes the exact pending live swap");
+      liveSwapDeleteRequestCount += 1;
+      liveSwap = null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname.endsWith("/separation") && route.request().method() === "POST") {
       mockStartCount += 1;
       mockNotStartedState = "processing";
-      setTimeout(() => { mockNotStartedState = "separated"; }, 1500);
+      setTimeout(() => { mockNotStartedState = "separated"; }, 4000);
       await route.fulfill({
         status: 202,
         contentType: "application/json",
         body: JSON.stringify({ state: "queued", jobId: "arena-smoke-new-separation" }),
+      });
+    } else if (url.pathname === "/api/library/tracks" && route.request().method() === "POST") {
+      uploadAttempts += 1;
+      const multipart = route.request().postDataBuffer()?.toString("latin1") ?? "";
+      uploadAttemptNames.push(multipart.match(/filename="([^"]+)"/)?.[1] ?? "");
+      if (uploadAttempts < 3) {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Temporary upload outage." }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            track: { id: "arena-smoke-already-uploaded-track" },
+            created: false,
+            separationQueued: false,
+          }),
+        });
+      }
+    } else if (url.pathname === `/api/library/tracks/${notStartedTrack.id}` && route.request().method() === "PATCH") {
+      const request = route.request().postDataJSON();
+      assert.equal(request.rating, 4, "rating remains editable while stem separation is running");
+      mockNotStartedRating = request.rating;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ track: { rating: mockNotStartedRating } }),
       });
     } else if (url.pathname.endsWith("/tracks") && route.request().method() === "GET") {
       await route.fulfill({
@@ -399,7 +449,15 @@ try {
     }
     if (assetId === liveDonorVocalsAssetId) {
       liveDonorFetchCount += 1;
-      await route.fulfill({ status: 200, contentType: "audio/wav", body: donorStemWav });
+      if (liveDonorFetchCount === 1) {
+        signalFirstDonorFetchStarted();
+        await firstDonorFetchRelease;
+      }
+      try {
+        await route.fulfill({ status: 200, contentType: "audio/wav", body: donorStemWav });
+      } catch (error) {
+        if (liveDonorFetchCount !== 1) throw error;
+      }
       return;
     }
     if (assetId === liveVocalsAssetId) {
@@ -415,13 +473,45 @@ try {
   await page.route("**/api/waveyard/projects", route => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ projects: [] }),
+    body: JSON.stringify({ projects: [{ id: "arena-smoke-saved-studio-project", title: "Saved arrangement" }] }),
   }));
+  let failTrackListOnce = true;
+  await page.route("**/api/library/tracks", async (route) => {
+    if (route.request().method() === "GET" && failTrackListOnce) {
+      failTrackListOnce = false;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Temporary track-list failure" }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  let playlistRequestCount = 0;
+  let resolveSecondPlaylistStarted;
+  const secondPlaylistStarted = new Promise((resolve) => { resolveSecondPlaylistStarted = resolve; });
+  let releaseSecondPlaylistResponse;
+  const secondPlaylistResponseGate = new Promise((resolve) => { releaseSecondPlaylistResponse = resolve; });
+  await page.route("**/api/library/playlists", async (route) => {
+    playlistRequestCount += 1;
+    if (playlistRequestCount === 2) {
+      resolveSecondPlaylistStarted();
+      await secondPlaylistResponseGate;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Temporary playlist failure" }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
   await page.route("**/api/jobs/arena-smoke-stem-job/retry", async route => {
     assert.equal(route.request().method(), "POST");
     mockRetryCount += 1;
     mockStemState = "processing";
-    setTimeout(() => { mockStemState = "separated"; }, 1500);
+    setTimeout(() => { mockStemState = "separated"; }, 5000);
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -431,27 +521,323 @@ try {
   await page.goto(`${base}/waveyard`, { waitUntil: "networkidle" });
   const recoveryRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Retryable track" });
   const notStartedRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Not started track" });
+  await page.getByTestId("track-load-failure").waitFor();
+  assert.equal(
+    await page.getByText("Your library is empty — add music to begin.", { exact: true }).count(),
+    0,
+    "a failed tracks request must not be presented as an empty library",
+  );
+  await page.getByRole("button", { name: "Retry track refresh", exact: true }).click();
+  await secondPlaylistStarted;
+  await recoveryRow.getByText("SEPARATION REJECTED", { exact: true }).waitFor();
+  releaseSecondPlaylistResponse();
+  await page.getByTestId("library-refresh-warning").waitFor();
+  await page.getByRole("button", { name: "Retry library refresh", exact: true }).click();
+  await page.getByTestId("library-refresh-warning").waitFor({ state: "detached" });
+  await page.getByTestId("track-load-failure").waitFor({ state: "detached" });
+  report.push("A failed track-list request shows retry instead of false emptiness; a playlist outage leaves tracks available and recovers on retry.");
+  let resolveSlowSearchStarted;
+  const slowSearchStarted = new Promise((resolve) => { resolveSlowSearchStarted = resolve; });
+  let resolveSlowSearchFinished;
+  const slowSearchFinished = new Promise((resolve) => { resolveSlowSearchFinished = resolve; });
+  await page.route("**/api/library/tracks?*", async (route) => {
+    const query = new URL(route.request().url()).searchParams.get("q");
+    if (query !== "this-will-not-match") {
+      await route.fallback();
+      return;
+    }
+    resolveSlowSearchStarted();
+    try {
+      const response = await route.fetch();
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      try {
+        await route.fulfill({ response });
+      } catch {
+        // A newer search should cancel this delayed response.
+      }
+    } catch {
+      // The browser may abort this request when the user changes the query.
+    } finally {
+      resolveSlowSearchFinished();
+    }
+  });
+  const librarySearch = page.getByRole("textbox", { name: "Search your music" });
+  await librarySearch.fill("this-will-not-match");
+  await slowSearchStarted;
+  const newerSearchResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith("/api/library/tracks") && url.searchParams.get("q") === "retryable";
+  });
+  await librarySearch.fill("retryable");
+  await newerSearchResponse;
+  await recoveryRow.getByText("SEPARATION REJECTED", { exact: true }).waitFor();
+  await slowSearchFinished;
+  assert.equal(await recoveryRow.count(), 1, "a slow older search must not replace a newer result");
+  await librarySearch.fill("");
+  await notStartedRow.getByText("NOT STARTED", { exact: true }).waitFor();
+  report.push("A delayed older search cannot replace the results from a newer query.");
+  const waveyardNavigation = page.getByRole("navigation", { name: "Waveyard" });
+  assert.equal(await page.getByRole("heading", { name: "Sessions", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Studio", exact: true }).count(), 0);
+  assert.equal(
+    await waveyardNavigation.getByRole("link", { name: "Sessions", exact: true }).getAttribute("href"),
+    "/waveyard/sessions",
+    "session creation and management remain available from their dedicated tab",
+  );
+  report.push("The Music tab stays focused on the library; sessions and arrangements have dedicated destinations.");
+  assert.equal(
+    await waveyardNavigation.getByRole("link", { name: "Studio", exact: true }).getAttribute("href"),
+    "/waveyard/studio",
+    "the Studio tab opens saved arrangements, not the new-project upload flow",
+  );
+  await page.route("**/api/waveyard/projects", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Temporary project-list failure" }),
+    });
+  }, { times: 1 });
+  await waveyardNavigation.getByRole("link", { name: "Studio", exact: true }).click();
+  await page.getByRole("heading", { name: "Your arrangements" }).waitFor();
+  await page.getByRole("alert").filter({ hasText: "Saved arrangements could not be loaded." }).waitFor();
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
+  await page.getByRole("link", { name: "Open Saved arrangement in Studio", exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: /Waveyard/ }).count(),
+    1,
+    "the global product switcher stays on Waveyard for nested Studio routes",
+  );
+  assert.equal(
+    await page.getByRole("link", { name: "Open Saved arrangement in Studio", exact: true }).getAttribute("href"),
+    "/waveyard/projects/arena-smoke-saved-studio-project?view=studio",
+    "the Studio landing lists resumable arrangements",
+  );
+  report.push("Studio has a direct saved-arrangement landing, and its retry action recovers from a failed project-list request.");
+  const waveformRetryProjectId = "arena-smoke-waveform-retry-project";
+  const waveformRetryJobId = "arena-smoke-waveform-retry-job";
+  const separationRetryJobId = "arena-smoke-project-separation-retry-job";
+  const waveformCanvasAssetId = "arena-smoke-waveform-canvas-source";
+  let waveformCanvasRequests = 0;
+  let waveformCanvasAvailable = false;
+  let waveformRetryAttempts = 0;
+  let waveformRetryStatus = "failed";
+  let separationRetryAttempts = 0;
+  let separationRetryStatus = "failed";
+  await page.route(`**/api/assets/${waveformCanvasAssetId}/waveform`, async (route) => {
+    waveformCanvasRequests += 1;
+    if (!waveformCanvasAvailable) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "The waveform queue is temporarily unavailable." }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        waveform: {
+          assetId: waveformCanvasAssetId,
+          durationSeconds: 8,
+          resolutions: { "1024": { min: [-0.2, -0.3], max: [0.2, 0.3] } },
+        },
+      }),
+    });
+  });
+  await page.route(`**/api/waveyard/projects/${waveformRetryProjectId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        project: {
+          title: "Waveform retry fixture",
+          description: "",
+          licenseCode: "CC0",
+          visibility: "private",
+          publicationStatus: "draft",
+          moderationStatus: "approved",
+        },
+        role: "owner",
+        build: null,
+        stems: [{
+          id: "arena-smoke-waveform-stem",
+          sourceAssetId: waveformCanvasAssetId,
+          stemType: "vocals",
+          durationSeconds: 8,
+          sampleRate: 44100,
+          channels: 2,
+          codec: "wav",
+          format: "wav",
+          fileSizeBytes: 16,
+          checksumSha256: "0".repeat(64),
+          model: "smoke-test",
+          modelVersion: "1",
+        }],
+        studioSources: [{
+          id: waveformCanvasAssetId,
+          originalFilename: "waveform-retry-source.wav",
+          durationSeconds: 8,
+          sampleRate: 44100,
+          channels: 2,
+          codec: "wav",
+          mimeType: "audio/wav",
+          fileSizeBytes: 16,
+          checksumSha256: "0".repeat(64),
+        }],
+        waveforms: [],
+        waveformJobs: [{
+          id: waveformRetryJobId,
+          status: waveformRetryStatus,
+          stage: waveformRetryStatus === "failed" ? "queue-unavailable" : "queued",
+          errorMessage: waveformRetryStatus === "failed" ? "The local waveform queue is unavailable." : null,
+        }],
+        jobs: [{
+          id: separationRetryJobId,
+          sourceAssetId: "arena-smoke-project-source",
+          status: separationRetryStatus,
+          stage: separationRetryStatus === "failed" ? "queue-unavailable" : "queued",
+          errorCode: "queue_unavailable",
+          errorMessage: separationRetryStatus === "failed" ? "The local separation queue is unavailable." : null,
+          model: "demucs",
+          resolvedDevice: null,
+          metadata: null,
+        }],
+        sources: [],
+      }),
+    });
+  });
+  await page.route(`**/api/jobs/${separationRetryJobId}/retry`, async (route) => {
+    assert.equal(route.request().method(), "POST", "project separation recovery uses the explicit retry action");
+    separationRetryAttempts += 1;
+    if (separationRetryAttempts === 1) {
+      await route.abort("failed");
+      return;
+    }
+    separationRetryStatus = "queued";
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ job: { id: separationRetryJobId, status: "queued" } }),
+    });
+  });
+  await page.route(`**/api/waveform-jobs/${waveformRetryJobId}/retry`, async (route) => {
+    assert.equal(route.request().method(), "POST", "waveform recovery uses the explicit retry action");
+    waveformRetryAttempts += 1;
+    if (waveformRetryAttempts === 1) {
+      await route.abort("failed");
+      return;
+    }
+    if (waveformRetryAttempts === 2) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "The waveform worker is still unavailable." }),
+      });
+      return;
+    }
+    waveformRetryStatus = "queued";
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ job: { id: waveformRetryJobId, status: "queued" } }),
+    });
+  });
+  await page.goto(`http://localhost:80/waveyard/projects/${waveformRetryProjectId}?view=studio`);
+  const retryProjectSeparationButton = page.getByRole("button", { name: "Retry separation", exact: true });
+  await retryProjectSeparationButton.waitFor();
+  await retryProjectSeparationButton.click();
+  await page.getByText(/Separation retry could not reach the server/).waitFor();
+  assert.equal(await retryProjectSeparationButton.isEnabled(), true, "network failure leaves project separation retry available");
+  await retryProjectSeparationButton.click();
+  await page.getByText(/Separation is at the “queued” stage/).waitFor();
+  assert.equal(separationRetryAttempts, 2, "project separation retry remains actionable after a network outage");
+  assert.equal(await page.getByRole("button", { name: "Retry separation", exact: true }).count(), 0, "a queued separation retry no longer offers a duplicate failed-job action");
+  report.push("A project-level separation retry recovers from a network outage without leaving the control stuck.");
+  const retryWaveformButton = page.getByRole("button", { name: "Retry waveform", exact: true });
+  await retryWaveformButton.waitFor();
+  await retryWaveformButton.click();
+  await page.getByText(/Waveform retry could not reach the server/).waitFor();
+  assert.equal(await retryWaveformButton.innerText(), "Retry waveform", "network failure resets the waveform retry button");
+  assert.equal(await retryWaveformButton.isEnabled(), true, "network failure leaves the waveform retry available");
+  await retryWaveformButton.click();
+  await page.getByText("The waveform worker is still unavailable.").waitFor();
+  assert.equal(await retryWaveformButton.isEnabled(), true, "a rejected retry response leaves the action available");
+  await retryWaveformButton.click();
+  await page.getByText(/Waveforms are still being generated/).waitFor({ timeout: 8_000 });
+  assert.equal(waveformRetryAttempts, 3, "the waveform retry can recover after both network and worker failures");
+  assert.equal(await page.getByRole("button", { name: "Retry waveform", exact: true }).count(), 0, "a queued retry no longer offers a duplicate failed-job action");
+  report.push("Waveform retry survives a network outage and a worker rejection, then resumes when the queue returns.");
+  const studioWaveform = page.locator(".main-waveform");
+  const retryCanvasWaveform = studioWaveform.getByTestId("waveform-canvas-retry");
+  await retryCanvasWaveform.waitFor();
+  await studioWaveform.getByRole("alert").getByText("The waveform queue is temporarily unavailable.").waitFor();
+  waveformCanvasAvailable = true;
+  await retryCanvasWaveform.click();
+  await studioWaveform.getByRole("button", { name: "Seek project waveform" }).waitFor();
+  assert(waveformCanvasRequests >= 2, "the Studio waveform retry must issue a new request for the selected asset");
+  report.push("Studio waveform fetch failures show an inline retry and recover without reloading the project.");
+  await page.goto("http://localhost:80/waveyard");
+  await page.getByRole("navigation", { name: "Waveyard" }).getByRole("link", { name: "Music", exact: true }).click();
   await recoveryRow.getByText("SEPARATION REJECTED", { exact: true }).waitFor();
   await notStartedRow.getByText("NOT STARTED", { exact: true }).waitFor();
-  assert.equal(await notStartedRow.getByRole("link", { name: "Studio ↗" }).getAttribute("href"), "/waveyard/projects/arena-smoke-not-started-project");
+  assert.equal(
+    await notStartedRow.getByRole("link", { name: "Studio ↗" }).getAttribute("href"),
+    "/waveyard/projects/arena-smoke-not-started-project?view=studio",
+    "a track's Studio shortcut opens the DAW directly",
+  );
   const retrySeparationButton = recoveryRow.getByRole("button", { name: "Retry separation for Retryable track" });
   await retrySeparationButton.click();
   await recoveryRow.getByText("SEPARATING…", { exact: true }).waitFor();
   await page.getByRole("status").filter({ hasText: "Retryable track: separation retry started." }).waitFor();
   assert.equal(mockRetryCount, 1, "retrying a rejected separation must submit one idempotent job retry");
+  await recoveryRow.getByText("SEPARATING · 36% · pass 2/4", { exact: true }).waitFor({ timeout: 6000 });
   await recoveryRow.getByText("4 STEMS", { exact: true }).waitFor({ timeout: 12000 });
   assert.equal(await page.getByRole("button", { name: "Retry separation for Retryable track" }).count(), 0);
-  report.push("The library identifies a rejected stem job, retries it in place, and updates from processing to separated without a reload.");
+  report.push("The library shows live separation percentage, retries a rejected job in place, and updates to separated without a reload.");
   const startSeparationButton = notStartedRow.getByRole("button", { name: "Start separation for Not started track" });
   await startSeparationButton.click();
   await notStartedRow.getByText("SEPARATING…", { exact: true }).waitFor();
   await page.getByRole("status").filter({ hasText: "Not started track: separation started." }).waitFor();
   assert.equal(mockStartCount, 1, "starting separation for an unprocessed track must submit one job");
+  assert.equal(mockNotStartedState, "processing", "the worker remains active during the library interaction");
+  assert.equal(await notStartedRow.getByRole("button", { name: "Play" }).isEnabled(), true);
+  assert.equal(await notStartedRow.getByRole("button", { name: "Next" }).isEnabled(), true);
+  await notStartedRow.getByRole("button", { name: "Rate Not started track: 4 stars" }).click();
+  await notStartedRow.getByRole("button", { name: "Clear Not started track: 4 stars" }).waitFor();
+  assert.equal(mockNotStartedRating, 4, "a library edit saves while separation is active");
+  report.push("Library playback controls and track rating remain usable during background separation.");
   await page.reload({ waitUntil: "networkidle" });
   const reloadedNotStartedRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Not started track" });
+  await reloadedNotStartedRow.locator('[aria-label="Rating: 4 of 5"]').waitFor();
   await reloadedNotStartedRow.getByText("4 STEMS", { exact: true }).waitFor({ timeout: 12000 });
   assert.equal(await reloadedNotStartedRow.getByRole("button", { name: "Start separation for Not started track" }).count(), 0);
   report.push("A library track with no separation job can start work directly, then shows the persisted result after reload.");
+  await page.getByLabel("Add music files").setInputFiles({
+    name: "retry-this-upload.wav",
+    mimeType: "audio/wav",
+    buffer: Buffer.from("synthetic upload fixture"),
+  });
+  const failedUploadNotice = page.getByTestId("failed-library-uploads");
+  await failedUploadNotice.getByText("retry-this-upload.wav").waitFor();
+  assert.equal(uploadAttempts, 1);
+  assert.equal(uploadAttemptNames[0], "retry-this-upload.wav", "the original upload request contains the selected file");
+  await page.getByRole("button", { name: "Retry 1 failed upload", exact: true }).click();
+  await page.getByRole("button", { name: "Retrying uploads…" }).waitFor();
+  await page.getByRole("button", { name: "Retry 1 failed upload", exact: true }).waitFor();
+  assert.equal(uploadAttempts, 2, "retry sends a second upload request without asking for the file again");
+  assert.deepEqual(uploadAttemptNames, ["retry-this-upload.wav", "retry-this-upload.wav"]);
+  await failedUploadNotice.getByText("retry-this-upload.wav").waitFor();
+  await page.getByRole("button", { name: "Retry 1 failed upload", exact: true }).click();
+  await page.getByText("That audio is already in your library — loading it in the live mixer.").waitFor();
+  assert.equal(uploadAttempts, 3, "the second retry reaches the idempotent existing-track response");
+  assert.deepEqual(uploadAttemptNames, [
+    "retry-this-upload.wav",
+    "retry-this-upload.wav",
+    "retry-this-upload.wav",
+  ]);
+  assert.equal(await page.getByTestId("failed-library-uploads").count(), 0, "a confirmed duplicate is no longer shown as a failed upload");
+  report.push("A retried upload can resolve to the existing library track without creating a duplicate or keeping a stale failure.");
 
   mockLiveSessionActive = true;
   await page.evaluate((id) => localStorage.setItem("waveyard.listening.sessionId", id), liveSessionId);
@@ -479,6 +865,34 @@ try {
   assert.equal(await vocalSource.locator("option").filter({ hasText: "Drums-only separated track" }).count(), 0, "the vocal picker must hide separated tracks with no vocal stem");
   await vocalSource.selectOption(liveDonorTrackId);
   await page.getByTestId("session-status").filter({ hasText: "vocals source saved" }).waitFor({ timeout: 8_000 });
+  await page.getByTestId("live-swap-pending-vocals").waitFor({ timeout: 8_000 });
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("The slow donor audio request did not start")), 8_000);
+    firstDonorFetchStarted.then(() => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+  const clockBeforeCancel = await sourceVocals.evaluate((audio) => audio.currentTime);
+  const cancelSlowSwap = page.getByRole("button", { name: "Cancel vocals switch to Donor track" });
+  await cancelSlowSwap.click();
+  await page.getByTestId("session-status").filter({ hasText: "vocals switch cancelled" }).waitFor({ timeout: 8_000 });
+  assert.equal(liveSwap, null, "cancelling removes the pending donor from the session");
+  assert.equal(liveSwapDeleteRequestCount, 1, "cancelling sends one removal request for the pending donor");
+  releaseFirstDonorFetch();
+  await page.waitForTimeout(250);
+  assert.equal(
+    await page.locator('audio[aria-label="vocals audio (swapped layer)"]').count(),
+    0,
+    "a late response from the cancelled donor cannot become the active stem",
+  );
+  await page.waitForFunction(({ assetId, after }) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > after + 0.2;
+  }, { assetId: liveVocalsAssetId, after: clockBeforeCancel }, { timeout: 5_000 });
+  assert.equal(await vocalSource.inputValue(), "", "cancelling restores the original vocal source selection");
+  await vocalSource.selectOption(liveDonorTrackId);
+  await page.getByTestId("session-status").filter({ hasText: "vocals source saved" }).waitFor({ timeout: 8_000 });
   await page.waitForFunction((assetId) => {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);
     return audio?.getAttribute("aria-label") === "vocals audio (swapped layer)";
@@ -488,8 +902,9 @@ try {
     const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
     return peak > 0.4;
   }, null, { timeout: 8_000 });
-  assert.equal(liveSwapRequestCount, 1, "choosing a live donor must persist exactly one swap");
-  assert.equal(liveDonorFetchCount, 1, "the selected donor's actual audio must be downloaded and decoded");
+  assert.equal(liveSwapRequestCount, 2, "a cancelled request and a later successful request each persist once");
+  assert.equal(liveSwapDeleteRequestCount, 1, "the slow swap cancellation is persisted exactly once");
+  assert.equal(liveDonorFetchCount, 2, "the cancelled and successful attempts both request the donor audio");
   const donorVocalPeak = await vocalsMeter.evaluate((bar) => Number(
     bar.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0,
   ));
@@ -524,7 +939,7 @@ try {
   assert.equal(liveTrackAddRequestCount, 1, "the Camelot wheel must add a compatible library track directly to the next slot");
   assert.equal(liveSessionTracks[1].track.id, liveCamelotTrackId);
   assert.equal(errors.length, errorsBeforeLiveSwap, "live swapping and isolation must not throw browser errors");
-  report.push("A live donor changes the audible vocal meter while playback keeps its clock; isolation silences drums, and the Camelot wheel cues a compatible library track directly.");
+  report.push("A slow live stem switch can be cancelled without rewinding playback; a later donor switch changes the audible vocal, isolation works, and Camelot cues a compatible track.");
 
   mockLiveSessionActive = false;
   const liveSessionPage = page;
@@ -623,7 +1038,119 @@ try {
   });
   assert(taskBeforeManualBrowser, "The mission task should appear before the manual browser control");
   report.push("Spaces navigation is distinct from the room launcher; first-run creates one workspace CTA, focuses the browser task, and puts mission controls before manual browsing.");
+  const localHubModelId = "hub:ollama:qwen2.5-3b";
+  await page.route("**/api/models", async route => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    const models = Array.isArray(payload.models) ? payload.models : [];
+    if (!models.some(model => model.id === localHubModelId)) {
+      models.push({
+        id: localHubModelId,
+        name: "qwen2.5:3b (ollama)",
+        provider: "local · smoke fixture",
+        backend: "local-server",
+        kind: "text",
+        requiresKey: false,
+        requiresNetwork: false,
+      });
+    }
+    await route.fulfill({ response, body: JSON.stringify({ ...payload, models }) });
+  });
+  const historyFixture = {
+    id: "arena-smoke-history",
+    prompt: "History action recovery",
+    gameType: "pong",
+    engine: "ai-codegen",
+    bytes: 1024,
+  };
+  const historyFixtureCode = "<!doctype html><html><body><canvas width=\"320\" height=\"180\"></canvas></body></html>";
+  let historyFixtureAvailable = true;
+  let historyOpenFailure = true;
+  let historyDeleteFailure = true;
+  await page.route(/\/api\/arcade\?limit=30$/, async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ games: historyFixtureAvailable ? [historyFixture] : [] }),
+    });
+  });
+  await page.route("**/api/arcade/arena-smoke-history", async route => {
+    if (route.request().method() === "GET") {
+      if (historyOpenFailure) {
+        historyOpenFailure = false;
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Saved game is temporarily unavailable." }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ game: { ...historyFixture, code: historyFixtureCode } }),
+      });
+      return;
+    }
+    if (route.request().method() === "DELETE") {
+      if (historyDeleteFailure) {
+        historyDeleteFailure = false;
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Saved game deletion failed temporarily." }),
+        });
+        return;
+      }
+      historyFixtureAvailable = false;
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    await route.fallback();
+  });
   await page.goto(`${base}/arcade`, { waitUntil: "networkidle" });
+  assert.equal(
+    await page.getByTestId("arcade-model-setup").getAttribute("open"),
+    null,
+    "advanced model setup starts collapsed so the game task comes first",
+  );
+  const promptBounds = await page.getByLabel("Game prompt").boundingBox();
+  const createBounds = await page.getByRole("button", { name: "🎮 Create & play" }).boundingBox();
+  const initialViewportHeight = await page.evaluate(() => window.innerHeight);
+  assert(promptBounds && promptBounds.y < initialViewportHeight, "the prompt is visible in Arcade's first viewport");
+  assert(
+    createBounds && createBounds.y + createBounds.height <= initialViewportHeight,
+    "the primary Create & play action is visible without scrolling",
+  );
+  report.push("Arcade opens on the game task; model setup stays accessible but no longer blocks the primary action.");
+  const modelSetupToggle = page.getByTestId("arcade-model-setup-toggle");
+  await modelSetupToggle.click();
+  const runtimeExplanation = page.getByTestId("arcade-model-runtime-explanation");
+  await runtimeExplanation.waitFor();
+  assert.match(
+    await runtimeExplanation.innerText(),
+    /browser-loaded model needs WebGPU.*Model Hub models do not.*packaged desktop app.*browser preview/s,
+    "Arcade must distinguish browser WebGPU from Model Hub's server runtime and locality",
+  );
+  await modelSetupToggle.click();
+  report.push("Arcade explains that browser WebGPU is separate from Model Hub and identifies where each server runs.");
+  const historyGameButton = page.getByRole("button", { name: "Open saved game History action recovery" });
+  await historyGameButton.click();
+  await page.getByTestId("arcade-history-error").getByText("Saved game is temporarily unavailable.").waitFor();
+  assert(await historyGameButton.isVisible(), "a failed game open must leave its library entry available");
+  await page.getByRole("button", { name: "Retry saved game action" }).click();
+  await page.locator('iframe[title="History action recovery"]').waitFor();
+  const historyCard = page.locator('[data-game-id="arena-smoke-history"]');
+  await historyCard.hover();
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "Delete saved game History action recovery" }).click();
+  await page.getByTestId("arcade-history-error").getByText("Saved game deletion failed temporarily.").waitFor();
+  assert(await historyGameButton.isVisible(), "a failed deletion must not remove the saved game");
+  assert(await page.locator('iframe[title="History action recovery"]').isVisible(), "a failed deletion must preserve the open game");
+  await page.getByRole("button", { name: "Retry saved game action" }).click();
+  await historyGameButton.waitFor({ state: "detached" });
+  assert.equal(await page.locator('iframe[title="History action recovery"]').count(), 0);
+  report.push("Arcade saved-game open/delete failures are visible, retryable, and never discard the game before server confirmation.");
   const platformerButton = page.getByRole("button", { name: "Open offline game Platform Adventure" });
   await platformerButton.waitFor({ timeout: 15000 });
   await platformerButton.click();
@@ -659,12 +1186,23 @@ try {
   report.push("Local model verification stays unavailable—not falsely passed—until an on-device model is actually loaded.");
   await page.getByLabel("Connected model source").selectOption("openai");
   let promptGenerationSeen = false;
+  let localServerGenerationSeen = false;
+  let localServerRevisionSeen = false;
+  let expectedModelId = "openai";
+  let expectedLocalOnly = false;
   let failNextGeneration = false;
+  let holdNextGeneration = false;
+  let heldGenerationHasSource = false;
+  let generationStartedResolve = null;
+  let releaseHeldGeneration = null;
   const generatedPong = '<!doctype html><html><head><title>Generated Pong</title></head><body><p id="generated-pong">AI Pong</p><canvas width="320" height="180"></canvas><script>let x=0;const c=document.querySelector("canvas"),ctx=c.getContext("2d");addEventListener("keydown",e=>{if(e.key==="ArrowRight")x++});function loop(){ctx.fillStyle="#111";ctx.fillRect(0,0,320,180);ctx.fillStyle="#fff";ctx.fillRect(x,20,8,30);requestAnimationFrame(loop)}loop();</script></body></html>';
+  const revisedGeneratedPong = generatedPong.replace("AI Pong", "AI Pong with multi-ball");
   const revisedOfflinePlatformer = '<!doctype html><html><head><title>Revised local platformer</title></head><body><p id="offline-revision-marker">Double jump added</p><canvas width="320" height="180"></canvas><script>let jumps=2;addEventListener("keydown",e=>{if(e.key===" ")jumps--});requestAnimationFrame(function loop(){requestAnimationFrame(loop)});</script></body></html>';
   await page.route("**/api/arcade/forge", async route => {
     const body = route.request().postDataJSON();
-    assert.equal(body.modelId, "openai", "the selected model source must reach the game-generation route");
+    assert.equal(body.modelId, expectedModelId, "the selected model source must reach the game-generation route");
+    assert.equal(Boolean(body.localOnly), expectedLocalOnly, "the generation route must preserve Local Mode");
+    if (expectedLocalOnly) assert.equal(body.keys, undefined, "Local Mode must not send provider keys");
     if (failNextGeneration) {
       failNextGeneration = false;
       await route.fulfill({
@@ -674,22 +1212,70 @@ try {
       });
       return;
     }
+    if (holdNextGeneration) {
+      holdNextGeneration = false;
+      assert.equal(typeof body.priorCode === "string", heldGenerationHasSource,
+        "a cancelled new game must not carry source; a cancelled revision must carry the current game");
+      generationStartedResolve?.();
+      generationStartedResolve = null;
+      await new Promise(resolve => { releaseHeldGeneration = resolve; });
+      try {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ code: generatedPong, title: "Late game", runtime: { ms: 12 } }),
+        });
+      } catch {
+        // The browser should have cancelled this request before the late reply.
+      }
+      return;
+    }
     if (body.prompt === "Pong") {
       promptGenerationSeen = true;
-    } else {
-      assert.equal(body.prompt, "Add a double jump");
+    } else if (body.prompt === "Pong with a rotating gate") {
+      localServerGenerationSeen = true;
+      assert.equal(body.priorCode, undefined, "New local-model games must not carry unrelated source");
+    } else if (body.prompt === "Add a multi-ball mode") {
+      localServerRevisionSeen = true;
+      assert(body.priorCode.includes("AI Pong"), "A local-model revision must include the current game source");
+    } else if (body.prompt === "Add a double jump") {
       assert.equal(body.ephemeral, true, "Offline starter revisions must not be saved to the shared catalog");
       assert.equal(body.parentId, undefined, "Offline starter revisions must not use a shared-game parent");
       assert(body.priorCode.includes("PLATFORM ADVENTURE"), "Offline revisions must carry the actual starter source");
+    } else {
+      assert.fail(`Unexpected game-generation prompt: ${body.prompt}`);
     }
+    const isPong = body.prompt === "Pong";
+    const isLocalPong = body.prompt === "Pong with a rotating gate";
+    const isMultiBallRevision = body.prompt === "Add a multi-ball mode";
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        game: body.prompt === "Pong" ? { id: "arena-smoke-pong", gameType: "pong" } : null,
-        code: body.prompt === "Pong" ? generatedPong : revisedOfflinePlatformer,
-        title: body.prompt === "Pong" ? "Generated Pong" : "Revised local platformer",
-        runtime: { ms: 12 },
+        game: isPong
+          ? { id: "arena-smoke-pong", gameType: "pong" }
+          : isLocalPong
+            ? { id: "arena-smoke-local-pong", gameType: "pong" }
+            : null,
+        code: isMultiBallRevision
+          ? revisedGeneratedPong
+          : isPong || isLocalPong
+            ? generatedPong
+            : revisedOfflinePlatformer,
+        title: isPong
+          ? "Generated Pong"
+          : isLocalPong
+            ? "Local model Pong"
+            : isMultiBallRevision
+              ? "Revised Pong"
+              : "Revised local platformer",
+        runtime: {
+          ms: 12,
+          backend: expectedLocalOnly ? "local-server" : "openai",
+          modelId: expectedModelId,
+          via: expectedLocalOnly ? "local-server:127.0.0.1/qwen2.5:3b" : "openai:smoke-test",
+          fallback: false,
+        },
       }),
     });
   });
@@ -715,11 +1301,85 @@ try {
   assert(promptGenerationSeen, "Automatic prompt generation must call the code-writing model instead of a preset core");
   await page.locator('iframe[title="Pong"]').waitFor();
   report.push("Automatic creation routes a bare Pong prompt and the selected model source to generated game code instead of a preset.");
+  await page.getByRole("button", { name: /Code/ }).click();
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async () => { throw new Error("Clipboard permission denied"); } },
+  }));
+  const copyButton = page.getByRole("button", { name: "Copy game source" });
+  await copyButton.click();
+  await page.getByTestId("arcade-copy-error").getByText("Clipboard permission denied").waitFor();
+  assert.equal(await copyButton.innerText(), "📋", "a denied clipboard write must not show copy success");
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text) => { window.__arenaSmokeCopied = text; } },
+    });
+  });
+  await copyButton.click();
+  await page.getByRole("button", { name: "Game source copied" }).waitFor();
+  assert.match(await page.evaluate(() => window.__arenaSmokeCopied), /AI Pong/);
+  const htmlDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download game source as HTML" }).click();
+  const htmlDownload = await htmlDownloadPromise;
+  assert.match(htmlDownload.suggestedFilename(), /^arenaforge-pong-.+\.html$/);
+  await page.getByRole("button", { name: /Play/ }).click();
+  report.push("Arcade copy reports denied clipboard access honestly, confirms real copies, and downloads game source as HTML.");
+  expectedModelId = localHubModelId;
+  expectedLocalOnly = true;
+  await page.evaluate(() => localStorage.setItem("af_local_mode", "1"));
+  await page.getByLabel("Connected model source").selectOption(localHubModelId);
+  await page.getByLabel("Game prompt").fill("Pong with a rotating gate");
+  await page.getByRole("button", { name: "🎮 Create & play" }).click();
+  await page.getByText("Local model Pong is playable").waitFor({ timeout: 10000 });
+  assert.match(
+    await page.getByTestId("game-runtime-provenance").innerText(),
+    /Local Model Hub.*qwen2\.5:3b/,
+    "Arcade should show the local model that actually generated the game",
+  );
+  assert(localServerGenerationSeen, "Local Mode must route new games to the selected local Model Hub model without WebGPU");
+  await page.getByLabel("Game change").fill("Add a multi-ball mode");
+  await page.getByRole("button", { name: "Apply change" }).click();
+  await page.getByText(/Revised Pong is playable/).waitFor({ timeout: 10000 });
+  assert(localServerRevisionSeen, "Local Mode edits must route the existing source to the selected local model");
+  report.push("Local Mode routed new-game and source-revision requests to the selected local Model Hub model with no provider keys (mocked inference endpoint).");
+  const prepareHeldGeneration = (hasSource) => {
+    heldGenerationHasSource = hasSource;
+    holdNextGeneration = true;
+    return new Promise(resolve => { generationStartedResolve = resolve; });
+  };
+  const existingGameFrame = page.locator('iframe[title="Add a multi-ball mode"]');
+  await existingGameFrame.waitFor({ timeout: 10000 });
+  let generationStarted = prepareHeldGeneration(false);
+  await page.getByLabel("Game prompt").fill("A long local game request to cancel");
+  await page.getByRole("button", { name: "🎮 Create & play" }).click();
+  await generationStarted;
+  await page.getByRole("button", { name: /Stop local generation/ }).click();
+  await page.getByText("Generation stopped. Your current game is unchanged.").waitFor({ timeout: 5000 });
+  releaseHeldGeneration?.();
+  releaseHeldGeneration = null;
+  await existingGameFrame.waitFor({ timeout: 5000 });
+
+  generationStarted = prepareHeldGeneration(true);
+  await page.getByLabel("Game change").fill("Change the score display, then cancel");
+  await page.getByRole("button", { name: "Apply change" }).click();
+  await generationStarted;
+  await page.getByRole("button", { name: /Stop local generation/ }).click();
+  await page.getByText("Revision stopped. Your current game is unchanged.").waitFor({ timeout: 5000 });
+  releaseHeldGeneration?.();
+  releaseHeldGeneration = null;
+  await existingGameFrame.waitFor({ timeout: 5000 });
+  report.push("Slow local-model creation and revisions can be cancelled without replacing the current playable game.");
   failNextGeneration = true;
   await page.getByLabel("Game prompt").fill("Keep my current game if this model is unavailable");
   await page.getByRole("button", { name: "🎮 Create & play" }).click();
   await page.getByText(/No game-writing model is reachable/).waitFor({ timeout: 10000 });
-  await page.locator('iframe[title="Pong"]').waitFor({ timeout: 10000 });
+  assert.notEqual(
+    await page.getByTestId("arcade-model-setup").getAttribute("open"),
+    null,
+    "a missing model takes the user to model setup instead of leaving them at the failed prompt",
+  );
+  await page.locator('iframe[title="Add a multi-ball mode"]').waitFor({ timeout: 10000 });
   report.push("A failed new game prompt preserves the last playable game.");
   let reaAnalysisRequests = 0;
   page.on("request", request => {
@@ -756,20 +1416,27 @@ try {
   const restoredBrowserFrame = page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]');
   await restoredBrowserFrame.locator("#game").waitFor({ timeout: 10000 });
   assert.equal(await restoredBrowserFrame.locator("#hud").innerText(), "Score 1", "HTML game progress must survive a page reload");
-  await page.evaluate(() => localStorage.setItem("af_local_mode", "0"));
+  await page.evaluate(() => localStorage.setItem("af_local_mode", "1"));
   const revisedGameHtml = `<!doctype html><html><head><title>Revised fixture</title></head><body><canvas id="patched" width="240" height="160"></canvas><script>let score=0;const c=document.getElementById("patched"),x=c.getContext("2d");function loop(){score++;x.fillStyle="#13b981";x.fillRect(0,0,c.width,c.height);document.title="Score "+score;requestAnimationFrame(loop)}loop();addEventListener("keydown",()=>{});addEventListener("touchstart",()=>{});</script><!-- ${"original test-only game code ".repeat(60)} --></body></html>`;
-  const revisedArchiveHtml = '<!doctype html><html><head><title>Revised offline project</title><style>#tile{width:48px;height:48px;background-image:url("data:ARENA_ASSET_TOKEN_0001");background-size:cover}</style></head><body><p id="hud">Score 0</p><div id="tile"></div><script>let score=Number(localStorage.getItem("zip-score")||0);const hud=document.getElementById("hud");hud.textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score+=2;localStorage.setItem("zip-score",String(score));hud.textContent="Score "+score}});</script></body></html>';
+  const revisedArchiveHtml = '<!doctype html><html><head><title>Revised offline project</title><style>#tile{width:48px;height:48px;background-image:url("data:ARENA_ASSET_TOKEN_0001");background-size:cover}</style></head><body><p id="hud">Score 0</p><div id="tile"></div><img id="dynamic-sprite" src="data:ARENA_ASSET_TOKEN_0004"><audio id="sfx" src="data:ARENA_ASSET_TOKEN_0002"></audio><button id="play-sfx">Play sound</button><button id="play-dynamic-sfx">Play dynamic sound</button><script>let score=Number(localStorage.getItem("zip-score")||0);const hud=document.getElementById("hud");hud.textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score+=2;localStorage.setItem("zip-score",String(score));hud.textContent="Score "+score}});const dynamicSfx=new Audio("data:ARENA_ASSET_TOKEN_0003");dynamicSfx.id="dynamic-sfx";document.body.appendChild(dynamicSfx);document.getElementById("play-sfx").addEventListener("click",()=>{void document.getElementById("sfx").play()});document.getElementById("play-dynamic-sfx").addEventListener("click",()=>{void dynamicSfx.play()});</script></body></html>';
   let revisionRequestSeen = false;
+  let archiveAudioBase64 = "";
   await page.route("**/api/arcade/import/revise", async route => {
     const body = route.request().postDataJSON();
     assert.equal(body.ephemeral, true, "Imported source revisions must not be saved to the shared game catalog");
-    assert.equal(body.modelId, "openai", "Imported-source revisions must use the selected model source");
+    assert.equal(body.modelId, expectedModelId, "Imported-source revisions must use the selected model source");
+    assert.equal(Boolean(body.localOnly), expectedLocalOnly, "Imported-source revisions must preserve Local Mode");
+    if (expectedLocalOnly) assert.equal(body.keys, undefined, "Local Mode must not send provider keys for imported source");
     revisionRequestSeen = true;
     if (body.prompt === "Add a pause overlay") {
       assert(body.priorCode.includes("Open homebrew fixture"), "Imported source must be included in the revision request");
     } else if (body.prompt === "Make movement faster") {
       assert(body.priorCode.includes("data:ARENA_ASSET_TOKEN_0001"), "Bundled images must stay out of model input");
       assert(!body.priorCode.includes("data:image/svg+xml;base64,"), "Binary image bytes must remain in the browser");
+      assert(body.priorCode.includes("data:ARENA_ASSET_TOKEN_0002"), "Bundled audio must stay out of model input");
+      assert(body.priorCode.includes("data:ARENA_ASSET_TOKEN_0003"), "JavaScript audio assets must stay out of model input");
+      assert(body.priorCode.includes("data:ARENA_ASSET_TOKEN_0004"), "JavaScript image assets must stay out of model input");
+      assert(!body.priorCode.includes(archiveAudioBase64), "Binary audio bytes must remain in the browser");
     } else {
       assert.fail(`Unexpected imported-game revision prompt: ${body.prompt}`);
     }
@@ -786,10 +1453,13 @@ try {
   await page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]').locator("#patched").waitFor();
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
   const archive = new JSZip();
-  archive.file("game/index.html", '<!doctype html><html><head><title>Offline project</title><link rel="stylesheet" href="game.css"></head><body><p id="hud">Score 0</p><div id="tile"></div><script src="game.js"></script></body></html>');
+  archive.file("game/index.html", '<!doctype html><html><head><title>Offline project</title><link rel="stylesheet" href="game.css"></head><body><p id="hud">Score 0</p><div id="tile"></div><audio id="sfx" src="assets/tone.wav"></audio><button id="play-sfx">Play sound</button><button id="play-dynamic-sfx">Play dynamic sound</button><script src="game.js"></script></body></html>');
   archive.file("game/game.css", '#tile{width:48px;height:48px;background-image:url("assets/tile.svg");background-size:cover}');
-  archive.file("game/game.js", 'let score=Number(localStorage.getItem("zip-score")||0);const hud=document.getElementById("hud");hud.textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score++;localStorage.setItem("zip-score",String(score));hud.textContent="Score "+score}});');
+  archive.file("game/game.js", 'let score=Number(localStorage.getItem("zip-score")||0);const hud=document.getElementById("hud");hud.textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score++;localStorage.setItem("zip-score",String(score));hud.textContent="Score "+score}});const dynamicSfx=new Audio("assets/tone.wav");dynamicSfx.id="dynamic-sfx";document.body.appendChild(dynamicSfx);const dynamicSprite=new Image();dynamicSprite.id="dynamic-sprite";dynamicSprite.src="assets/tile.svg";document.body.appendChild(dynamicSprite);document.getElementById("play-sfx").addEventListener("click",()=>{void document.getElementById("sfx").play()});document.getElementById("play-dynamic-sfx").addEventListener("click",()=>{void dynamicSfx.play()});');
   archive.file("game/assets/tile.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#13b981"/></svg>');
+  const archiveAudio = makePcmWav(440, 0.2, 1);
+  archiveAudioBase64 = archiveAudio.toString("base64");
+  archive.file("game/assets/tone.wav", archiveAudio);
   const archiveBuffer = await archive.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
   await page.locator('input[accept=".html,.htm,.zip,text/html,application/zip"]').setInputFiles({
     name: "open-homebrew-project.zip",
@@ -798,8 +1468,40 @@ try {
   });
   const archiveFrame = page.frameLocator('iframe[title="Playable game: open-homebrew-project.zip"]');
   await archiveFrame.locator("#tile").waitFor({ timeout: 10000 });
+  await archiveFrame.locator("#dynamic-sprite").waitFor({ timeout: 10000 });
   const bundledBackground = await archiveFrame.locator("#tile").evaluate(element => getComputedStyle(element).backgroundImage);
   assert(bundledBackground.includes("data:image/svg+xml;base64,"), "Local archive assets must be bundled into the playable HTML");
+  const dynamicSprite = archiveFrame.locator("#dynamic-sprite");
+  assert(
+    (await dynamicSprite.getAttribute("src"))?.startsWith("data:image/svg+xml;base64,"),
+    "JavaScript image source assignments must be bundled as offline data URLs",
+  );
+  const archiveAudioElement = archiveFrame.locator("#sfx");
+  assert(
+    (await archiveAudioElement.getAttribute("src"))?.startsWith("data:audio/wav;base64,"),
+    "Local archive audio must be bundled as an offline WAV data URL",
+  );
+  const assertAudioStarts = async audioElement => {
+    const started = await audioElement.evaluate(audio => new Promise(resolve => {
+      if (!audio.paused && audio.readyState >= 2) return resolve(true);
+      const timer = setTimeout(() => resolve(false), 3000);
+      audio.addEventListener("playing", () => {
+        clearTimeout(timer);
+        resolve(true);
+      }, { once: true });
+    }));
+    assert.equal(started, true, "The imported local audio must actually play in the restricted iframe");
+    await audioElement.evaluate(audio => audio.pause());
+  };
+  await archiveFrame.getByRole("button", { name: "Play sound" }).click();
+  await assertAudioStarts(archiveAudioElement);
+  const dynamicAudioElement = archiveFrame.locator("#dynamic-sfx");
+  assert(
+    (await dynamicAudioElement.getAttribute("src"))?.startsWith("data:audio/wav;base64,"),
+    "Static new Audio() paths must be bundled as offline WAV data URLs",
+  );
+  await archiveFrame.getByRole("button", { name: "Play dynamic sound" }).click();
+  await assertAudioStarts(dynamicAudioElement);
   await archiveFrame.locator("#tile").click();
   await archiveFrame.locator("#tile").evaluate(element =>
     element.ownerDocument.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
@@ -811,7 +1513,7 @@ try {
   const restoredArchiveFrame = page.frameLocator('iframe[title="Playable game: open-homebrew-project.zip"]');
   await restoredArchiveFrame.locator("#hud").waitFor({ timeout: 10000 });
   assert.equal(await restoredArchiveFrame.locator("#hud").innerText(), "Score 1", "Bundled game progress must survive a page reload");
-  await page.evaluate(() => localStorage.setItem("af_local_mode", "0"));
+  await page.evaluate(() => localStorage.setItem("af_local_mode", "1"));
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
   await page.getByLabel("Revise this browser game").fill("Make movement faster");
   await page.getByRole("button", { name: "Apply revision" }).click();
@@ -821,6 +1523,25 @@ try {
   assert(revisedArchiveScript.includes("score+=2"), "The imported game's actual scoring logic must be rewritten");
   const restoredImage = await revisedArchiveFrame.locator("#tile").evaluate(element => getComputedStyle(element).backgroundImage);
   assert(restoredImage.includes("data:image/svg+xml;base64,"), "Original local image must be restored after model revision");
+  const restoredDynamicSprite = revisedArchiveFrame.locator("#dynamic-sprite");
+  assert(
+    (await restoredDynamicSprite.getAttribute("src"))?.startsWith("data:image/svg+xml;base64,"),
+    "Original JavaScript image sources must be restored after model revision",
+  );
+  const revisedAudioElement = revisedArchiveFrame.locator("#sfx");
+  assert(
+    (await revisedAudioElement.getAttribute("src"))?.startsWith("data:audio/wav;base64,"),
+    "Original local audio must be restored after model revision",
+  );
+  await revisedArchiveFrame.getByRole("button", { name: "Play sound" }).click();
+  await assertAudioStarts(revisedAudioElement);
+  const revisedDynamicAudioElement = revisedArchiveFrame.locator("#dynamic-sfx");
+  assert(
+    (await revisedDynamicAudioElement.getAttribute("src"))?.startsWith("data:audio/wav;base64,"),
+    "Original JavaScript audio references must be restored after model revision",
+  );
+  await revisedArchiveFrame.getByRole("button", { name: "Play dynamic sound" }).click();
+  await assertAudioStarts(revisedDynamicAudioElement);
   await revisedArchiveFrame.locator("#tile").evaluate(element => element.ownerDocument.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
   await page.waitForTimeout(50);
   assert.equal(await revisedArchiveFrame.locator("#hud").innerText(), "Score 3", "Prompt revision must change imported gameplay, not just theme");

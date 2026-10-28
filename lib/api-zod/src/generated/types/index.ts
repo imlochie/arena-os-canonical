@@ -13,4 +13,5 @@ export * from './libraryTrackSeparationStartResponse';
 export * from './libraryTrackSeparationStartResponseState';
 export * from './libraryTrackSummary';
 export * from './stemAvailability';
+export * from './stemSeparationProgress';
 export * from './trackAnalysis';

@@ -1,13 +1,8 @@
 import Link from "@/routing/Link";
 
 /**
- * The ONE Waveyard navigation (P5 product cohesion).
- *
- * The loop leads (vision Decision 2, parked platform surface): Music →
- * Sessions → Studio are the default destinations. The parked platform pages
- * (Discover, Moderation) stay one click away in the secondary row — kept,
- * tested, out of the default navigation until the core loop is
- * stem.fm-grade. Studio pages keep their own content untouched.
+ * The Waveyard core loop: Music → Sessions → saved Studio arrangements.
+ * New project creation stays a separate action inside Studio.
  */
 export default function WaveyardNav() {
   return (
@@ -16,7 +11,7 @@ export default function WaveyardNav() {
       <div className="navlinks">
         <Link href="/waveyard">Music</Link>
         <Link href="/waveyard/sessions">Sessions</Link>
-        <Link href="/waveyard/create">Studio</Link>
+        <Link href="/waveyard/studio">Studio</Link>
       </div>
       <div className="navlinks parked" aria-label="Parked platform surfaces">
         <Link href="/waveyard/discover" title="Parked platform surface — kept, out of the default navigation">Discover</Link>

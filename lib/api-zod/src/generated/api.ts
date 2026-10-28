@@ -23,6 +23,9 @@ export const GetLibraryTracksQueryParams = zod.object({
 export const getLibraryTracksResponseTracksItemRatingMin = 0;
 export const getLibraryTracksResponseTracksItemRatingMax = 5;
 
+export const getLibraryTracksResponseTracksItemStemAvailabilityThreeProgressPercentMin = 0;
+export const getLibraryTracksResponseTracksItemStemAvailabilityThreeProgressPercentMax = 100;
+
 
 
 export const GetLibraryTracksResponse = zod.object({
@@ -42,8 +45,16 @@ export const GetLibraryTracksResponse = zod.object({
   "stemCount": zod.number().int(),
   "stemTypes": zod.array(zod.string())
 }),zod.object({
-  "status": zod.enum(['source-only', 'processing', 'not-started', 'unavailable']),
+  "status": zod.enum(['source-only', 'not-started', 'unavailable']),
   "reason": zod.string()
+}),zod.object({
+  "status": zod.enum(['processing']),
+  "reason": zod.string(),
+  "stage": zod.string().optional(),
+  "progress": zod.object({
+  "percent": zod.number().int().min(getLibraryTracksResponseTracksItemStemAvailabilityThreeProgressPercentMin).max(getLibraryTracksResponseTracksItemStemAvailabilityThreeProgressPercentMax),
+  "phase": zod.string().optional()
+}).optional()
 }),zod.object({
   "status": zod.enum(['rejected', 'failed']),
   "reason": zod.string(),

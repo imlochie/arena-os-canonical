@@ -35,7 +35,9 @@ export async function POST(req: Request) {
       localOnly,
       modelId: body?.modelId ? String(body.modelId) : undefined,
       priorCode,
+      signal: req.signal,
     });
+    if (req.signal.aborted) return new Response(null, { status: 499 });
     let game: any = null;
     // Persist only code that passed validation. The response still carries
     // the generated code either way — the code is the deliverable — but a
@@ -64,6 +66,9 @@ export async function POST(req: Request) {
       runtime: result.runtime,
     });
   } catch (e) {
+    if (req.signal.aborted || (e instanceof Error && e.name === "AbortError")) {
+      return new Response(null, { status: 499 });
+    }
     const message = e instanceof Error ? e.message : "generation failed";
     const noModel = (e as any)?.noModel === true || /no capable model|unavailable|not connected/i.test(message);
     if (noModel) {

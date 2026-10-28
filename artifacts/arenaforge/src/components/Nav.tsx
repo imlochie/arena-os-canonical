@@ -155,7 +155,12 @@ export default function Nav() {
     })).filter((g) => g.rooms.length > 0);
   }, [query]);
 
-  const activeRoom = ALL_ROOMS.find((r) => r.href === pathname);
+  const activeRoom = ALL_ROOMS
+    .filter((room) =>
+      pathname === room.href
+      || (room.href !== "/" && pathname.startsWith(`${room.href}/`)),
+    )
+    .sort((a, b) => b.href.length - a.href.length)[0];
   const primaryPageIsActive = PRIMARY.some((room) => room.href === pathname);
 
   return (

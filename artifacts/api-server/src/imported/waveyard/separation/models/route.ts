@@ -8,6 +8,10 @@ import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 
 export const runtime = "nodejs";
 
+function jsonNoStore(body: unknown, status = 200): Response {
+  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+}
+
 /** The stem engine's models, with their real state on THIS machine.
  *  Product vocabulary only — a model is "ready" or needs a one-time
  *  download; there is no infrastructure language here. The deep pass is
@@ -32,10 +36,10 @@ export async function GET(request: Request) {
       }),
     );
     if (new URL(request.url).searchParams.get("includeDeep") !== "1") {
-      return Response.json({ models });
+      return jsonNoStore({ models });
     }
     const deepStatus = deepEngineStatusForThisRuntime();
-    return Response.json({
+    return jsonNoStore({
       models,
       deep: {
         enabled: deepStemsEnabled(),
@@ -50,6 +54,6 @@ export async function GET(request: Request) {
   } catch (error) {
     if (error instanceof Response) return error;
     console.error("model status failed", error);
-    return Response.json({ error: "Model status could not be read." }, { status: 500 });
+    return jsonNoStore({ error: "Model status could not be read." }, 500);
   }
 }

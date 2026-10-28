@@ -40,8 +40,24 @@ interface TrackSummary {
   labels: string[];
   lastPlayedAt: string | null;
   addedAt: string;
-  stemAvailability: { status: string; stemCount?: number; reason?: string; retryJobId?: string };
+  stemAvailability: {
+    status: string;
+    stemCount?: number;
+    reason?: string;
+    retryJobId?: string;
+    stage?: string;
+    progress?: { percent: number; phase?: string };
+  };
   studioProjectId: string;
+}
+
+interface RetryableLibraryUpload {
+  file: File;
+  reason: string;
+}
+
+function uploadFileIdentity(file: File): string {
+  return `${file.name}\u0000${file.size}\u0000${file.lastModified}`;
 }
 
 interface PlaylistSummary {
@@ -62,21 +78,16 @@ interface QueueItem {
   track: TrackSummary;
 }
 
-interface StudioProject {
-  id: string;
-  title: string;
-  updatedAt: string;
-}
-
-interface SessionSummary {
-  id: string;
-  name: string;
-  trackCount: number;
-  updatedAt: string;
-}
-
 function StemBadge({ availability }: { availability: TrackSummary["stemAvailability"] }) {
-  const label =
+  const progress = availability.status === "processing" ? availability.progress : undefined;
+  const phase = progress?.phase
+    ? /^\d+\/\d+$/.test(progress.phase) ? ` · pass ${progress.phase}` : ` · ${progress.phase}`
+    : "";
+  const finishing = availability.status === "processing" &&
+    (availability.stage === "finalizing" || progress?.percent === 100);
+  const label = progress
+    ? `${finishing ? "FINISHING" : "SEPARATING"} · ${progress.percent}%${phase}`
+    :
     availability.status === "separated" ? `${availability.stemCount} STEMS`
     : availability.status === "source-only" ? "SOURCE"
     : availability.status === "processing" ? "SEPARATING…"
@@ -88,6 +99,7 @@ function StemBadge({ availability }: { availability: TrackSummary["stemAvailabil
     <span
       className={`stem-badge ${availability.status}`}
       title={availability.reason ?? "Separated stems are ready."}
+      aria-label={progress ? `Stem separation ${progress.percent}%${phase}` : label}
     >
       {label}
     </span>
@@ -234,7 +246,7 @@ function TrackRow({
             ))}
           </select>
         )}
-        <Link className="button secondary" href={`/waveyard/projects/${track.studioProjectId}`}>
+        <Link className="button secondary" href={`/waveyard/projects/${track.studioProjectId}?view=studio`}>
           Studio ↗
         </Link>
       </div>
@@ -248,11 +260,11 @@ export function MusicHome() {
   const [playlists, setPlaylists] = useState<PlaylistSummary[]>([]);
   const [openPlaylist, setOpenPlaylist] = useState<PlaylistDetail | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [studioProjects, setStudioProjects] = useState<StudioProject[]>([]);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [search, setSearch] = useState("");
   const [importUrl, setImportUrl] = useState("");
   const [adding, setAdding] = useState(false);
+  const [retryableUploads, setRetryableUploads] = useState<RetryableLibraryUpload[]>([]);
+  const uploadInFlight = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
   const [newPlaylistName, setNewPlaylistName] = useState("");
   const [collections, setCollections] = useState<SmartCollection[]>([]);
@@ -266,35 +278,90 @@ export function MusicHome() {
   const [libraryClockMs, setLibraryClockMs] = useState(0);
   const host = useListeningHost();
   const [loaded, setLoaded] = useState(false);
+  const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
+  const [trackLoadFailed, setTrackLoadFailed] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [dropBusy, setDropBusy] = useState<string | null>(null);
   const [busySeparationTrackIds, setBusySeparationTrackIds] = useState<Set<string>>(() => new Set());
   const dragDepth = useRef(0);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const trackRequestVersion = useRef(0);
+  const refreshRequestVersion = useRef(0);
+  const activeTrackSearchController = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async (query: string) => {
-    const [tracksResponse, playbackResponse, playlistsResponse, queueResponse, projectsResponse, sessionsResponse, collectionsResponse] =
-      await Promise.all([
-        fetch(`/api/library/tracks${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`, { cache: "no-store" }),
-        fetch("/api/library/playback-state", { cache: "no-store" }),
-        fetch("/api/library/playlists", { cache: "no-store" }),
-        fetch("/api/library/queue", { cache: "no-store" }),
-        fetch("/api/waveyard/projects", { cache: "no-store" }),
-        fetch("/api/library/sessions", { cache: "no-store" }),
-        fetch("/api/library/collections", { cache: "no-store" }),
-      ]);
-    if (tracksResponse.ok) setTracks((await tracksResponse.json()).tracks ?? []);
-    if (playbackResponse.ok) {
-      const state = (await playbackResponse.json()).playbackState;
-      setPlayback({ currentTrackId: state.currentTrackId, positionSeconds: state.positionSeconds });
-    }
-    if (playlistsResponse.ok) setPlaylists((await playlistsResponse.json()).playlists ?? []);
-    if (queueResponse.ok) setQueue((await queueResponse.json()).queue ?? []);
-    if (collectionsResponse.ok) setCollections((await collectionsResponse.json()).collections ?? []);
-    setLibraryClockMs(Date.now());
-    if (projectsResponse.ok) setStudioProjects((await projectsResponse.json()).projects ?? []);
-    if (sessionsResponse.ok) setSessions((await sessionsResponse.json()).sessions ?? []);
-    setLoaded(true);
+    activeTrackSearchController.current?.abort();
+    activeTrackSearchController.current = null;
+    const refreshRequestId = ++refreshRequestVersion.current;
+    const trackRequestId = ++trackRequestVersion.current;
+    const getJson = async (url: string) => {
+      try {
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) return null;
+        return await response.json();
+      } catch {
+        return null;
+      }
+    };
+    const tracksPromise = getJson(
+      `/api/library/tracks${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`,
+    ).then((tracksData) => {
+      if (trackRequestId !== trackRequestVersion.current) return;
+      if (Array.isArray(tracksData?.tracks)) {
+        setTracks(tracksData.tracks);
+        setTrackLoadFailed(false);
+      } else {
+        setTrackLoadFailed(true);
+      }
+      setLibraryClockMs(Date.now());
+      setLoaded(true);
+    });
+
+    const playbackPromise = getJson("/api/library/playback-state").then((data) => {
+      if (refreshRequestId === refreshRequestVersion.current && data?.playbackState) {
+        const state = data.playbackState;
+        setPlayback({ currentTrackId: state.currentTrackId, positionSeconds: state.positionSeconds });
+      }
+      return data;
+    });
+    const playlistsPromise = getJson("/api/library/playlists").then((data) => {
+      if (refreshRequestId === refreshRequestVersion.current && Array.isArray(data?.playlists)) {
+        setPlaylists(data.playlists);
+      }
+      return data;
+    });
+    const queuePromise = getJson("/api/library/queue").then((data) => {
+      if (refreshRequestId === refreshRequestVersion.current && Array.isArray(data?.queue)) {
+        setQueue(data.queue);
+      }
+      return data;
+    });
+    const collectionsPromise = getJson("/api/library/collections").then((data) => {
+      if (refreshRequestId === refreshRequestVersion.current && Array.isArray(data?.collections)) {
+        setCollections(data.collections);
+      }
+      return data;
+    });
+
+    void Promise.all([
+      playbackPromise,
+      playlistsPromise,
+      queuePromise,
+      collectionsPromise,
+    ]).then(([playbackData, playlistsData, queueData, collectionsData]) => {
+      if (refreshRequestId !== refreshRequestVersion.current) return;
+      const optionalDataFailed = !playbackData?.playbackState
+        || !Array.isArray(playlistsData?.playlists)
+        || !Array.isArray(queueData?.queue)
+        || !Array.isArray(collectionsData?.collections);
+      setRefreshWarning(
+        optionalDataFailed
+          ? "Some library details could not be refreshed. The last good track list is kept."
+          : null,
+      );
+    });
+
+    await tracksPromise;
   }, []);
 
   useEffect(() => {
@@ -325,14 +392,43 @@ export function MusicHome() {
   // Debounced live search over real persisted metadata.
   useEffect(() => {
     if (reloadTimer.current !== null) clearTimeout(reloadTimer.current);
+    const requestId = ++trackRequestVersion.current;
+    const controller = new AbortController();
+    activeTrackSearchController.current = controller;
     reloadTimer.current = setTimeout(() => {
+      if (controller.signal.aborted || requestId !== trackRequestVersion.current) return;
       void (async () => {
-        const response = await fetch(`/api/library/tracks${search.trim() ? `?q=${encodeURIComponent(search.trim())}` : ""}`, { cache: "no-store" });
-        if (response.ok) setTracks((await response.json()).tracks ?? []);
+        try {
+          const response = await fetch(
+            `/api/library/tracks${search.trim() ? `?q=${encodeURIComponent(search.trim())}` : ""}`,
+            { cache: "no-store", signal: controller.signal },
+          );
+          if (!response.ok) throw new Error(`Track search failed with HTTP ${response.status}`);
+          const data = await response.json();
+          if (requestId !== trackRequestVersion.current) return;
+          if (!Array.isArray(data?.tracks)) throw new Error("Track search returned an invalid result");
+          setTracks(data.tracks);
+          setTrackLoadFailed(false);
+          setLibraryClockMs(Date.now());
+          setLoaded(true);
+        } catch {
+          if (!controller.signal.aborted && requestId === trackRequestVersion.current) {
+            setTrackLoadFailed(true);
+            setLoaded(true);
+          }
+        } finally {
+          if (activeTrackSearchController.current === controller) {
+            activeTrackSearchController.current = null;
+          }
+        }
       })();
     }, 250);
     return () => {
       if (reloadTimer.current !== null) clearTimeout(reloadTimer.current);
+      if (activeTrackSearchController.current === controller) {
+        activeTrackSearchController.current = null;
+      }
+      controller.abort();
     };
   }, [search]);
 
@@ -374,49 +470,79 @@ export function MusicHome() {
 
   const addMusic = useCallback(
     async (files: FileList | File[] | null): Promise<string[]> => {
-      if (files === null || files.length === 0 || adding) return [];
+      if (files === null || files.length === 0 || uploadInFlight.current) return [];
+      const filesToAdd = Array.from(files);
+      uploadInFlight.current = true;
       setAdding(true);
       setMessage(null);
-      const failures: string[] = [];
+      const failures: Array<{ file: File; reason: string; retryable: boolean }> = [];
       const trackIds: string[] = [];
       let added = 0;
       let separationUnavailable = false;
-      for (const file of Array.from(files)) {
-        try {
-          const payload = new FormData();
-          payload.set("file", file);
-          const response = await fetch("/api/library/tracks", { method: "POST", body: payload });
-          const body = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            failures.push(`${file.name}: ${body.error ?? "could not add"}`);
-            continue;
+      try {
+        for (const file of filesToAdd) {
+          try {
+            const payload = new FormData();
+            payload.set("file", file);
+            const response = await fetch("/api/library/tracks", { method: "POST", body: payload });
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              failures.push({
+                file,
+                reason: body.error ?? `HTTP ${response.status}`,
+                retryable: response.status === 408 || response.status === 429 || response.status >= 500,
+              });
+              continue;
+            }
+            if (typeof body.track?.id === "string") trackIds.push(body.track.id);
+            if (body.created !== false) {
+              added += 1;
+              if (body.separationQueued === false) separationUnavailable = true;
+            }
+          } catch (error) {
+            failures.push({
+              file,
+              reason: error instanceof Error ? error.message : "Network error",
+              retryable: true,
+            });
           }
-          if (typeof body.track?.id === "string") trackIds.push(body.track.id);
-          if (body.created !== false) {
-            added += 1;
-            if (body.separationQueued === false) separationUnavailable = true;
-          }
-        } catch (error) {
-          failures.push(`${file.name}: ${error instanceof Error ? error.message : "could not add"}`);
         }
+        const attemptedKeys = new Set(filesToAdd.map(uploadFileIdentity));
+        setRetryableUploads((previous) => {
+          const next = new Map<string, RetryableLibraryUpload>(
+            previous
+              .filter(({ file }) => !attemptedKeys.has(uploadFileIdentity(file)))
+              .map((entry) => [uploadFileIdentity(entry.file), entry] as const),
+          );
+          for (const failure of failures) {
+            if (failure.retryable) {
+              next.set(uploadFileIdentity(failure.file), { file: failure.file, reason: failure.reason });
+            }
+          }
+          return [...next.values()];
+        });
+        setMessage(
+          failures.length > 0
+            ? `Added ${added}; ${failures.length} failed — ${failures[0].file.name}: ${failures[0].reason}`
+            : separationUnavailable
+              ? `Added ${added} track${added === 1 ? "" : "s"}, but the stem worker did not accept the separation job.`
+            : added > 0
+              ? `Added ${added} track${added === 1 ? "" : "s"} to your library. Stems separate in the background.`
+              : trackIds.length > 0
+                ? "That audio is already in your library — loading it in the live mixer."
+                : "That audio is already in your library.",
+        );
+        await refresh(search).catch(() => setMessage((current) =>
+          `${current ? `${current} ` : ""}The library could not refresh; reload to see saved tracks.`,
+        ));
+        if (trackIds.length > 0) void host.sendTrack(trackIds[0], "play");
+        return trackIds;
+      } finally {
+        uploadInFlight.current = false;
+        setAdding(false);
       }
-      setAdding(false);
-      setMessage(
-        failures.length > 0
-          ? `Added ${added}; ${failures.length} failed — ${failures[0]}`
-          : separationUnavailable
-            ? `Added ${added} track${added === 1 ? "" : "s"}, but the stem worker did not accept the separation job.`
-          : added > 0
-            ? `Added ${added} track${added === 1 ? "" : "s"} to your library. Stems separate in the background.`
-            : trackIds.length > 0
-              ? "That audio is already in your library — loading it in the live mixer."
-              : "That audio is already in your library.",
-      );
-      await refresh(search).catch(() => setMessage("The audio was saved, but the library could not refresh. Reload to see it."));
-      if (trackIds.length > 0) void host.sendTrack(trackIds[0], "play");
-      return trackIds;
     },
-    [adding, refresh, host, search],
+    [refresh, host, search],
   );
 
   /** Dropped files use the exact same music ingest path as the Add Music button. */
@@ -457,7 +583,7 @@ export function MusicHome() {
           /* next tick retries */
         }
       })();
-    }, 8000);
+    }, 3000);
     return () => window.clearInterval(interval);
   }, [anyProcessing, search]);
 
@@ -872,6 +998,47 @@ export function MusicHome() {
               )}
             </p>
           )}
+          {refreshWarning && (
+            <div className="library-message" role="status" data-testid="library-refresh-warning">
+              <span>{refreshWarning}</span>
+              <button type="button" className="button tiny" onClick={() => void refresh(search)}>
+                Retry library refresh
+              </button>
+            </div>
+          )}
+          {retryableUploads.length > 0 && (
+            <div className="library-message" role="status" data-testid="failed-library-uploads">
+              <p>
+                {retryableUploads.length} upload{retryableUploads.length === 1 ? "" : "s"} did not finish.
+                The selected files are still available in this tab; retry without choosing them again.
+              </p>
+              <ul style={{ margin: "6px 0", paddingLeft: 18 }}>
+                {retryableUploads.map(({ file, reason }) => (
+                  <li key={uploadFileIdentity(file)}>{file.name} — {reason}</li>
+                ))}
+              </ul>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="button tiny"
+                  disabled={adding}
+                  onClick={() => void addMusic(retryableUploads.map(({ file }) => file))}
+                >
+                  {adding
+                    ? "Retrying uploads…"
+                    : `Retry ${retryableUploads.length} failed upload${retryableUploads.length === 1 ? "" : "s"}`}
+                </button>
+                <button
+                  type="button"
+                  className="button tiny"
+                  disabled={adding}
+                  onClick={() => setRetryableUploads([])}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         <div className="library-side">
           <input
@@ -952,7 +1119,21 @@ export function MusicHome() {
             {visibleTracks.length} track{visibleTracks.length === 1 ? "" : "s"}
           </span>
         </div>
-        {loaded && tracks.length === 0 ? (
+        {loaded && trackLoadFailed && (
+          <div className="library-message" role="alert" data-testid="track-load-failure">
+            <span>
+              {tracks.length === 0
+                ? "Your tracks could not be loaded."
+                : "Track refresh failed; showing the last loaded list."}
+            </span>
+            <button type="button" className="button tiny" onClick={() => void refresh(search)}>
+              Retry track refresh
+            </button>
+          </div>
+        )}
+        {!loaded && tracks.length === 0 ? (
+          <p className="empty" role="status">Loading your library…</p>
+        ) : loaded && tracks.length === 0 && !trackLoadFailed ? (
           search.trim() !== "" ? (
             <p className="empty">Nothing matches that search.</p>
           ) : (
@@ -1095,50 +1276,6 @@ export function MusicHome() {
         )}
       </section>
 
-      <section className="sessions-panel" aria-label="Sessions">
-        <div className="library-panel-title">
-          <h2>Sessions</h2>
-          <Link className="button secondary" href="/waveyard/sessions">New session</Link>
-        </div>
-        {sessions.length === 0 ? (
-          <p className="empty">
-            No sessions yet. A session lines up songs to play as one set — start one from{" "}
-            <Link href="/waveyard/sessions">Sessions</Link>, or take a playing track into one from its player.
-          </p>
-        ) : (
-          <ul className="sessions-list">
-            {sessions.slice(0, 6).map((session) => (
-              <li key={session.id}>
-                <Link href={`/waveyard/session/${session.id}`}>
-                  <b>{session.name}</b>
-                  <small>
-                    {session.trackCount} track{session.trackCount === 1 ? "" : "s"} · updated{" "}
-                    {new Date(session.updatedAt).toLocaleDateString()}
-                  </small>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="studio-panel" aria-label="Studio projects">
-        <div className="library-panel-title">
-          <h2>Studio</h2>
-          <Link className="button secondary" href="/waveyard/create">New studio project</Link>
-        </div>
-        {studioProjects.length === 0 ? (
-          <p className="empty">No studio projects yet. The studio is where deep arrangement, cleanup, mastering and exports live.</p>
-        ) : (
-          <ul className="studio-list">
-            {studioProjects.map((project) => (
-              <li key={project.id}>
-                <Link href={`/waveyard/projects/${project.id}`}>{project.title}</Link>
-              </li>
-            ))}
-          </ul>
-        )}
-    </section>
       </div>
       {dragActive && (
         <div className="drop-overlay" role="status" aria-live="polite">

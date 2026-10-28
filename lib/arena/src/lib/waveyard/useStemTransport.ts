@@ -224,6 +224,13 @@ export function useStemTransport(ids: string[], duration: number) {
   const [loop, setLoop] = useState({ enabled: false, start: 0, end: 0 });
   const [error, setError] = useState<string | null>(null);
 
+  const applyMasterVolumeRealtime = useCallback((volume: number) => {
+    const audioContext = context.current;
+    const gain = masterGain.current?.gain;
+    if (!audioContext || !gain || !Number.isFinite(volume)) return;
+    gain.setValueAtTime(Math.min(2, Math.max(0, volume)), audioContext.currentTime);
+  }, []);
+
   const ensureGraph = useCallback((id: string) => {
     const element = media.current[id];
     if (!element) return null;
@@ -650,6 +657,7 @@ export function useStemTransport(ids: string[], duration: number) {
     duration,
     masterVolume,
     setMasterVolume,
+    applyMasterVolumeRealtime,
     loop,
     setLoop,
     error,
