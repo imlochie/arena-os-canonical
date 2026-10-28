@@ -42,15 +42,66 @@ export type ModelFileStatus = {
   sizeBytes: number | null;
 };
 
+type CachedModelStatus = { fingerprint: string; status: ModelFileStatus };
+const modelStatusCache = new Map<string, CachedModelStatus>();
+const modelStatusChecks = new Map<string, Promise<ModelFileStatus>>();
+
+function modelFileFingerprint(details: Awaited<ReturnType<typeof stat>>): string {
+  return [details.dev, details.ino, details.size, details.mtimeMs, details.ctimeMs].join(":");
+}
+
 /** Is the model installed and byte-exact? (Never throws — status, not I/O.) */
-export async function getModelFileStatus(spec: MdxModelSpec, dir = resolveModelsDir()): Promise<ModelFileStatus> {
+export async function getModelFileStatus(
+  spec: MdxModelSpec,
+  dir = resolveModelsDir(),
+  checksum: (path: string) => Promise<string> = checksumFile,
+): Promise<ModelFileStatus> {
   const path = resolve(dir, spec.file);
+  const cacheKey = `${path}\u0000${spec.sha256}\u0000${spec.sizeBytes}`;
   try {
     const details = await stat(path);
-    if (!details.isFile()) return { present: false, verified: false, sizeBytes: null };
-    const sha = await checksumFile(path);
-    return { present: true, verified: sha === spec.sha256, sizeBytes: details.size };
+    if (!details.isFile()) {
+      modelStatusCache.delete(cacheKey);
+      return { present: false, verified: false, sizeBytes: null };
+    }
+    const fingerprint = modelFileFingerprint(details);
+    const cached = modelStatusCache.get(cacheKey);
+    if (cached?.fingerprint === fingerprint) return { ...cached.status };
+
+    const checkKey = `${cacheKey}\u0000${fingerprint}`;
+    const existing = modelStatusChecks.get(checkKey);
+    if (existing) return existing;
+
+    const check = (async (): Promise<ModelFileStatus> => {
+      let sha: string;
+      try {
+        sha = await checksum(path);
+      } catch {
+        return { present: true, verified: false, sizeBytes: details.size };
+      }
+
+      let latest: Awaited<ReturnType<typeof stat>>;
+      try {
+        latest = await stat(path);
+      } catch {
+        modelStatusCache.delete(cacheKey);
+        return { present: false, verified: false, sizeBytes: null };
+      }
+      if (!latest.isFile() || modelFileFingerprint(latest) !== fingerprint) {
+        modelStatusCache.delete(cacheKey);
+        return { present: latest.isFile(), verified: false, sizeBytes: latest.isFile() ? latest.size : null };
+      }
+
+      const status = { present: true, verified: sha === spec.sha256, sizeBytes: details.size };
+      modelStatusCache.set(cacheKey, { fingerprint, status });
+      return { ...status };
+    })().finally(() => {
+      modelStatusChecks.delete(checkKey);
+    });
+    modelStatusChecks.set(checkKey, check);
+    return check;
   } catch {
+    modelStatusCache.delete(cacheKey);
     return { present: false, verified: false, sizeBytes: null };
   }
 }

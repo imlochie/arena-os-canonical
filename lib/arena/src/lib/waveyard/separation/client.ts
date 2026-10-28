@@ -18,7 +18,7 @@ export type StemEngineModelStatus = {
  *  "say nothing" rather than inventing a state. */
 export async function fetchStemEngineStatus(): Promise<StemEngineModelStatus[] | null> {
   try {
-    const response = await fetch("/api/waveyard/separation/models", { cache: "no-store" });
+    const response = await fetch("/api/waveyard/separation/models?includeDeep=1", { cache: "no-store" });
     if (!response.ok) return null;
     const json = (await response.json()) as { models?: unknown };
     if (!Array.isArray(json.models)) return null;

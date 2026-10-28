@@ -13,7 +13,7 @@ export const runtime = "nodejs";
  *  download; there is no infrastructure language here. The deep pass is
  *  reported the same honest way: prepared (with its six lanes) or not
  *  prepared (with the exact reason and prepare step). */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     await requireUser();
     const models = await Promise.all(
@@ -31,6 +31,9 @@ export async function GET() {
         };
       }),
     );
+    if (new URL(request.url).searchParams.get("includeDeep") !== "1") {
+      return Response.json({ models });
+    }
     const deepStatus = deepEngineStatusForThisRuntime();
     return Response.json({
       models,

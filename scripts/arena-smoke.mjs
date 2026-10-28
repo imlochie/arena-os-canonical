@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");
@@ -34,6 +34,7 @@ const reaAnalysisSmoke = execFileSync(
 assert(reaAnalysisSmoke.includes("without executing source"), "REA analysis smoke test did not complete successfully");
 report.push(reaAnalysisSmoke);
 let createdProject;
+let createdSubscriptionName;
 let battleId;
 let fallbackBattleId;
 function assertBlind(payload) {
@@ -177,6 +178,64 @@ try {
     assert(text.length > 150, `${path} is blank`);
     report.push(`${path} loaded.`);
   }
+  const routeSource = await readFile(new URL("../artifacts/arenaforge/src/routes.ts", import.meta.url), "utf8");
+  const auditRoutes = [...routeSource.matchAll(/path:\s*"([^"]+)"/g)]
+    .map((match) => match[1].replace(/:[^/]+/g, "audit-test"));
+  let auditedButtons = 0;
+  let auditedLinks = 0;
+  for (const path of auditRoutes) {
+    const previousErrors = errors.length;
+    await page.goto(base + path, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    await page.waitForTimeout(100);
+    const audit = await page.evaluate(() => {
+      const visible = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const closedDetails = element.closest("details:not([open])");
+        if (closedDetails && !closedDetails.querySelector("summary")?.contains(element)) return false;
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const hasHandler = (element, name) => {
+        for (let node = element; node; node = node.parentElement) {
+          const key = Object.keys(node).find((property) => property.startsWith("__reactProps$"));
+          const props = key ? node[key] : null;
+          if (typeof props?.[name] === "function" || typeof node[name.toLowerCase()] === "function") return true;
+        }
+        return false;
+      };
+      const buttons = [...document.querySelectorAll('button,input[type="button"],input[type="submit"]')].filter(visible);
+      const links = [...document.querySelectorAll("a")].filter(visible);
+      const unboundButtons = buttons.filter((element) => {
+        if (element.disabled || element.getAttribute("aria-disabled") === "true") return false;
+        if (hasHandler(element, "onClick") || element.closest("a[href]")) return false;
+        const form = element.closest("form");
+        const type = element.type || "submit";
+        return !(type === "submit" && form && (hasHandler(form, "onSubmit") || form.getAttribute("action")));
+      }).map((element) => ({
+        text: (element.innerText || element.textContent || element.value || element.getAttribute("aria-label") || element.title || "").trim().slice(0, 90),
+        route: location.pathname,
+      }));
+      const deadLinks = links.filter((element) => {
+        const href = element.getAttribute("href");
+        return href === null || href === "" || href === "#" || href.startsWith("javascript:");
+      }).map((element) => ({
+        text: (element.innerText || element.textContent || element.getAttribute("aria-label") || "").trim().slice(0, 90),
+        href: element.getAttribute("href"),
+        route: location.pathname,
+      }));
+      const unlabeledButtons = buttons.filter((element) =>
+        !(element.innerText || element.textContent || element.value || element.getAttribute("aria-label") || element.title || "").trim(),
+      ).map((element) => ({ route: location.pathname }));
+      return { buttons: buttons.length, links: links.length, unboundButtons, deadLinks, unlabeledButtons };
+    });
+    auditedButtons += audit.buttons;
+    auditedLinks += audit.links;
+    assert.deepEqual(audit.unboundButtons, [], `${path} has visible enabled buttons without an action or submit path`);
+    assert.deepEqual(audit.deadLinks, [], `${path} has visible links without a destination`);
+    assert.deepEqual(audit.unlabeledButtons, [], `${path} has visible buttons without an accessible name`);
+    assert.equal(errors.length, previousErrors, `${path} raised a browser error`);
+  }
+  report.push(`Control wiring audit passed across ${auditRoutes.length} routes: ${auditedButtons} visible buttons and ${auditedLinks} visible links.`);
   await page.goto(`${base}/arcade`, { waitUntil: "networkidle" });
   const platformerButton = page.getByRole("button", { name: "Open offline game Platform Adventure" });
   await platformerButton.waitFor({ timeout: 15000 });
@@ -446,6 +505,46 @@ try {
   await restoredEmulator.getByRole("button", { name: "Load State" }).click();
   await restoredEmulator.getByText(/SAVE LOADED FROM BROWSER/i).waitFor({ timeout: 15000 });
   report.push("The Game Boy emulator core initializes with control settings exposed; its browser-local save state restores after reload.");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  createdSubscriptionName = `Arena smoke subscription ${Date.now()}`;
+  await page.goto(`${base}/subscriptions`, { waitUntil: "networkidle" });
+  await page.getByPlaceholder("Name (Netflix…)", { exact: true }).fill(createdSubscriptionName);
+  await page.getByPlaceholder("Amount (12.99)", { exact: true }).fill("7.99");
+  await page.locator('input[type="date"]').fill("2099-06-15");
+  await page.getByRole("button", { name: "Add subscription", exact: true }).click();
+  const subscriptionRow = () => page.getByText(createdSubscriptionName, { exact: true }).locator("xpath=ancestor::li[1]");
+  await page.getByText("Subscription added.", { exact: true }).waitFor({ timeout: 10000 });
+  await subscriptionRow().getByRole("button", { name: "Pause", exact: true }).click();
+  await subscriptionRow().getByRole("button", { name: "Resume", exact: true }).waitFor({ timeout: 10000 });
+  await page.reload({ waitUntil: "networkidle" });
+  await subscriptionRow().getByRole("button", { name: "Resume", exact: true }).waitFor({ timeout: 10000 });
+  await subscriptionRow().getByRole("button", { name: "Resume", exact: true }).click();
+  await subscriptionRow().getByRole("button", { name: "Pause", exact: true }).waitFor({ timeout: 10000 });
+  await page.reload({ waitUntil: "networkidle" });
+  await subscriptionRow().getByRole("button", { name: "Pause", exact: true }).waitFor({ timeout: 10000 });
+  await subscriptionRow().getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByText(createdSubscriptionName, { exact: true }).waitFor({ state: "detached", timeout: 10000 });
+  await page.reload({ waitUntil: "networkidle" });
+  assert.equal(await page.getByText(createdSubscriptionName, { exact: true }).count(), 0, "Deleted subscription reappeared after reload");
+  report.push("Subscriptions can be added, paused and resumed across reloads, then deleted without leaving stale UI state.");
+  await page.route("**/api/subscriptions", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "database unavailable" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto(`${base}/subscriptions`, { waitUntil: "networkidle" });
+  await page.getByRole("alert").getByText(/Could not load subscriptions.*database unavailable/).waitFor({ timeout: 10000 });
+  assert.equal(await page.getByText("Nothing tracked yet.", { exact: true }).count(), 0, "A database error must not look like an empty list");
+  await page.unroute("**/api/subscriptions");
+  await page.reload({ waitUntil: "networkidle" });
+  assert.equal(await page.getByRole("alert").filter({ hasText: "Could not load subscriptions" }).count(), 0, "Subscription list did not recover after the API returned");
+  report.push("A subscription database outage shows a retryable error rather than a false empty state.");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(base + "/", { waitUntil: "networkidle" });
   await page.screenshot({ path: new URL("mobile.jpg", output).pathname, fullPage: true });
@@ -466,6 +565,21 @@ try {
   throw error;
 } finally {
   if (createdProject) await context.request.delete(`${base}/api/projects/${createdProject}`);
+  if (createdSubscriptionName) {
+    try {
+      const response = await context.request.get(`${base}/api/subscriptions`);
+      if (response.ok()) {
+        const data = await response.json();
+        for (const subscription of data.subscriptions ?? []) {
+          if (subscription.name === createdSubscriptionName) {
+            await context.request.post(`${base}/api/subscriptions`, { data: { action: "delete", id: subscription.id } });
+          }
+        }
+      }
+    } catch {
+      // Keep smoke cleanup best-effort if the database itself is unavailable.
+    }
+  }
   if (battleId) await context.request.delete(`${base}/api/battles/${battleId}`);
   if (fallbackBattleId) await context.request.delete(`${base}/api/battles/${fallbackBattleId}`);
   await browser.close();

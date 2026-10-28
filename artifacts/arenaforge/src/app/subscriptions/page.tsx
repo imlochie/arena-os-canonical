@@ -68,6 +68,11 @@ export default function SubscriptionsPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingSubscriptionAction, setPendingSubscriptionAction] = useState<{ id: string; kind: "toggle" | "delete" } | null>(null);
   // form
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
@@ -93,13 +98,21 @@ export default function SubscriptionsPage() {
   const [addedUids, setAddedUids] = useState<string[]>([]);
 
   const refresh = useCallback(async () => {
+    setRefreshing(true);
     try {
       const response = await fetch("/api/subscriptions");
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
       setSubs(data.subscriptions ?? []);
       setStats(data.stats ?? null);
-    } catch {
-      /* best effort */
+      setLoadError(null);
+      return true;
+    } catch (cause) {
+      setLoadError(cause instanceof Error ? cause.message : "Could not load subscriptions.");
+      return false;
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -122,11 +135,16 @@ export default function SubscriptionsPage() {
         setMessage(data.error ?? `HTTP ${response.status}`);
         return;
       }
+      if (!data.subscription) throw new Error("The server did not return the saved subscription.");
+      setSubs((list) => [data.subscription, ...list]);
       setName("");
       setAmount("");
       setNextCharge("");
       setCategory("");
+      setMessage("Subscription added.");
       await refresh();
+    } catch (cause) {
+      setMessage(`Could not add subscription: ${cause instanceof Error ? cause.message : "request failed"}`);
     } finally {
       setBusy(false);
     }
@@ -337,30 +355,47 @@ export default function SubscriptionsPage() {
     [loadAccounts],
   );
 
-  const toggleActive = useCallback(
-    async (sub: Sub) => {      setSubs((list) => list.map((s) => (s.id === sub.id ? { ...s, active: !s.active } : s)));
-      await fetch("/api/subscriptions", {
+  const toggleActive = useCallback(async (sub: Sub) => {
+    if (pendingSubscriptionAction) return;
+    setPendingSubscriptionAction({ id: sub.id, kind: "toggle" });
+    setActionError(null);
+    try {
+      const response = await fetch("/api/subscriptions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "update", id: sub.id, active: !sub.active }),
       });
-      refresh();
-    },
-    [refresh],
-  );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.subscription) throw new Error(data.error ?? `HTTP ${response.status}`);
+      setSubs((list) => list.map((item) => item.id === sub.id ? data.subscription : item));
+      await refresh();
+    } catch (cause) {
+      setActionError(`Could not ${sub.active ? "pause" : "resume"} ${sub.name}: ${cause instanceof Error ? cause.message : "request failed"}`);
+    } finally {
+      setPendingSubscriptionAction(null);
+    }
+  }, [pendingSubscriptionAction, refresh]);
 
-  const remove = useCallback(
-    async (id: string) => {
-      setSubs((list) => list.filter((s) => s.id !== id));
-      await fetch("/api/subscriptions", {
+  const remove = useCallback(async (sub: Sub) => {
+    if (pendingSubscriptionAction) return;
+    setPendingSubscriptionAction({ id: sub.id, kind: "delete" });
+    setActionError(null);
+    try {
+      const response = await fetch("/api/subscriptions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "delete", id }),
+        body: JSON.stringify({ action: "delete", id: sub.id }),
       });
-      refresh();
-    },
-    [refresh],
-  );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.removed) throw new Error(data.error ?? "The subscription was not deleted.");
+      setSubs((list) => list.filter((item) => item.id !== sub.id));
+      await refresh();
+    } catch (cause) {
+      setActionError(`Could not delete ${sub.name}: ${cause instanceof Error ? cause.message : "request failed"}`);
+    } finally {
+      setPendingSubscriptionAction(null);
+    }
+  }, [pendingSubscriptionAction, refresh]);
 
   return (
     <main className="mx-auto max-w-4xl px-6 py-10">
@@ -390,6 +425,15 @@ export default function SubscriptionsPage() {
         </div>
       )}
 
+      {loadError && (
+        <div role="alert" className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          <span>Could not load subscriptions. Your existing list has not been cleared. {loadError}</span>
+          <button type="button" className="rounded-lg border border-rose-300/30 px-3 py-1.5 text-xs font-semibold hover:bg-rose-400/10" onClick={() => void refresh()} disabled={refreshing}>
+            {refreshing ? "Retrying…" : "Retry"}
+          </button>
+        </div>
+      )}
+
       {stats && stats.upcoming.length > 0 && (
         <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
           <p className="text-xs font-bold uppercase tracking-wider text-amber-300">Coming up</p>
@@ -408,32 +452,35 @@ export default function SubscriptionsPage() {
 
       <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
         <h2 className="text-lg font-bold text-white">Add one</h2>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          <input className={input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (Netflix…)" />
-          <input className={input} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Amount (12.99)" />
+        <form className="mt-3" onSubmit={(event) => { event.preventDefault(); void add(); }}>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <input aria-label="Subscription name" className={input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (Netflix…)" />
+          <input aria-label="Subscription amount" inputMode="decimal" className={input} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Amount (12.99)" />
           <div className="flex gap-2">
-            <select className={input} value={currency} onChange={(e) => setCurrency(e.target.value)}>
+            <select aria-label="Subscription currency" className={input} value={currency} onChange={(e) => setCurrency(e.target.value)}>
               {["USD", "SGD", "AUD", "EUR", "GBP", "JPY"].map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
-            <select className={input} value={cadence} onChange={(e) => setCadence(e.target.value as (typeof CADENCES)[number])}>
+            <select aria-label="Billing cadence" className={input} value={cadence} onChange={(e) => setCadence(e.target.value as (typeof CADENCES)[number])}>
               {CADENCES.map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
           </div>
-          <input className={input} type="date" value={nextCharge} onChange={(e) => setNextCharge(e.target.value)} />
-          <input className={`${input} sm:col-span-2`} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Category (streaming, tools… optional)" />
+          <input aria-label="Next charge date" className={input} type="date" value={nextCharge} onChange={(e) => setNextCharge(e.target.value)} />
+          <input aria-label="Subscription category" className={`${input} sm:col-span-2`} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Category (streaming, tools… optional)" />
         </div>
-        <button className={`${button} mt-3`} onClick={add} disabled={busy || !name.trim() || !amount.trim() || !nextCharge}>
+        <button type="submit" className={`${button} mt-3`} disabled={busy || !name.trim() || !amount.trim() || !nextCharge}>
           Add subscription
         </button>
-        {message && <p className="mt-2 text-xs text-violet-300">{message}</p>}
+        {message && <p className="mt-2 text-xs text-violet-300" role="status">{message}</p>}
+        </form>
 
         <details className="mt-5">
           <summary className="cursor-pointer text-xs font-bold uppercase tracking-wider text-slate-400">📎 Paste a receipt email instead (Mailopoly-style)</summary>
           <textarea
+            aria-label="Receipt email text"
             className={`${input} mt-2 h-28`}
             value={emailText}
             onChange={(e) => setEmailText(e.target.value)}
@@ -490,24 +537,26 @@ export default function SubscriptionsPage() {
           <summary className="cursor-pointer text-xs font-bold uppercase tracking-wider text-slate-400">
             {accounts.length ? "Add another mailbox" : "Connect a mailbox"}
           </summary>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <select className={input} value={presetId} onChange={(e) => applyPreset(e.target.value)}>
+          <form className="mt-2" onSubmit={(event) => { event.preventDefault(); void testConnection(); }}>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <select aria-label="Email provider" className={input} value={presetId} onChange={(e) => applyPreset(e.target.value)}>
               {MAIL_PROVIDERS.map((p) => (
                 <option key={p.id} value={p.id}>{p.label}</option>
               ))}
             </select>
-            <input className={input} value={mailAddress} onChange={(e) => setMailAddress(e.target.value)} placeholder="you@gmail.com" />
-            <input className={input} value={mailUser} onChange={(e) => setMailUser(e.target.value)} placeholder={`Username (default: the address)`} />
-            <input className={input} type="password" value={mailPass} onChange={(e) => setMailPass(e.target.value)} placeholder="App password" />
-            <input className={input} value={mailHost} onChange={(e) => setMailHost(e.target.value)} placeholder="IMAP host" disabled={presetId !== "custom"} />
-            <input className={input} type="number" value={mailPort} onChange={(e) => setMailPort(Number(e.target.value) || 993)} disabled={presetId !== "custom"} />
+            <input aria-label="Mailbox email address" autoComplete="username" className={input} type="email" value={mailAddress} onChange={(e) => setMailAddress(e.target.value)} placeholder="you@gmail.com" />
+            <input aria-label="Mailbox username" autoComplete="username" className={input} value={mailUser} onChange={(e) => setMailUser(e.target.value)} placeholder="Username (default: the address)" />
+            <input aria-label="Mailbox app password" autoComplete="current-password" className={input} type="password" value={mailPass} onChange={(e) => setMailPass(e.target.value)} placeholder="App password" />
+            <input aria-label="IMAP host" className={input} value={mailHost} onChange={(e) => setMailHost(e.target.value)} placeholder="IMAP host" disabled={presetId !== "custom"} />
+            <input aria-label="IMAP port" className={input} type="number" value={mailPort} onChange={(e) => setMailPort(Number(e.target.value) || 993)} disabled={presetId !== "custom"} />
           </div>
           <p className="mt-1 text-[11px] text-slate-500">{MAIL_PROVIDERS.find((p) => p.id === presetId)?.note}</p>
           <div className="mt-2 flex gap-2">
-            <button className={`${button}`} onClick={() => void testConnection()} disabled={testing || !mailHost.trim() || !(mailUser || mailAddress) || !mailPass}>
+            <button type="submit" className={button} disabled={testing || !mailHost.trim() || !(mailUser || mailAddress) || !mailPass}>
               {testing ? "Knocking…" : "Test login"}
             </button>
             <button
+              type="button"
               className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50"
               onClick={() => void saveAccount()}
               disabled={!mailAddress.trim() || !mailHost.trim() || !mailPass}
@@ -515,6 +564,7 @@ export default function SubscriptionsPage() {
               Save account
             </button>
           </div>
+          </form>
         </details>
 
         {testResult && <p className="mt-2 break-words text-xs text-violet-300">{testResult}</p>}
@@ -564,6 +614,7 @@ export default function SubscriptionsPage() {
         )}
       </div>
 
+      {actionError && <p className="mt-4 rounded-xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200" role="alert">{actionError}</p>}
       <ul className="mt-6 space-y-2">
         {subs.map((sub) => (
           <li key={sub.id} className={`flex flex-wrap items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 ${sub.active ? "" : "opacity-50"}`}>
@@ -576,16 +627,18 @@ export default function SubscriptionsPage() {
               </p>
             </div>
             <div className="ml-auto flex items-center gap-2">
-              <button className="rounded-lg border border-white/15 px-3 py-1 text-xs text-slate-300 hover:text-white" onClick={() => void toggleActive(sub)}>
-                {sub.active ? "Pause" : "Resume"}
+              <button className="rounded-lg border border-white/15 px-3 py-1 text-xs text-slate-300 hover:text-white disabled:opacity-50" disabled={pendingSubscriptionAction !== null} onClick={() => void toggleActive(sub)}>
+                {pendingSubscriptionAction?.id === sub.id && pendingSubscriptionAction.kind === "toggle" ? "Saving…" : sub.active ? "Pause" : "Resume"}
               </button>
-              <button className="rounded-lg border border-rose-500/30 px-3 py-1 text-xs text-rose-300 hover:bg-rose-500/10" onClick={() => void remove(sub.id)}>
-                Delete
+              <button className="rounded-lg border border-rose-500/30 px-3 py-1 text-xs text-rose-300 hover:bg-rose-500/10 disabled:opacity-50" disabled={pendingSubscriptionAction !== null} onClick={() => void remove(sub)}>
+                {pendingSubscriptionAction?.id === sub.id && pendingSubscriptionAction.kind === "delete" ? "Deleting…" : "Delete"}
               </button>
             </div>
           </li>
         ))}
-        {subs.length === 0 && <li className="py-10 text-center text-sm text-slate-500">Nothing tracked yet.</li>}
+        {loading && <li className="py-10 text-center text-sm text-slate-500" role="status">Loading subscriptions…</li>}
+        {!loading && subs.length === 0 && loadError && <li className="py-10 text-center text-sm text-rose-200">The list is unavailable. Retry above; it is not being shown as empty.</li>}
+        {!loading && subs.length === 0 && !loadError && <li className="py-10 text-center text-sm text-slate-500">Nothing tracked yet.</li>}
       </ul>
     </main>
   );

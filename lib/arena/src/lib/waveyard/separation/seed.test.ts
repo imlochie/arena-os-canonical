@@ -9,11 +9,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
+import { checksumFile } from "../audio";
 import type { MdxModelSpec } from "./mdx";
 import { findMdxModel } from "./mdx";
 import { getModelFileStatus, ModelSeedError, seedModelFile, type SeedProgress } from "./seed";
@@ -68,6 +69,45 @@ test("status: absent model is honestly not-present; seeded model is verified", a
     assert.ok(installed.equals(bytes));
     const leftovers = (await readdir(dir)).filter((name) => name.startsWith(".download-"));
     assert.deepEqual(leftovers, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("verified status reuses one hash until the model file changes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wy-status-cache-"));
+  try {
+    const bytes = Buffer.alloc(2_000_000, 13);
+    const spec = await specFor(bytes);
+    const path = join(dir, spec.file);
+    await writeFile(path, bytes);
+    let checksums = 0;
+    const slowChecksum = async (filePath: string) => {
+      checksums += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return checksumFile(filePath);
+    };
+
+    const [first, concurrent] = await Promise.all([
+      getModelFileStatus(spec, dir, slowChecksum),
+      getModelFileStatus(spec, dir, slowChecksum),
+    ]);
+    assert.equal(first.verified, true);
+    assert.equal(concurrent.verified, true);
+    assert.equal(checksums, 1, "concurrent status checks share one file hash");
+
+    assert.equal((await getModelFileStatus(spec, dir, slowChecksum)).verified, true);
+    assert.equal(checksums, 1, "unchanged model file reuses its verified status");
+
+    const changed = Buffer.from(bytes);
+    changed[0] ^= 0xff;
+    await writeFile(path, changed);
+    const changedTime = new Date(Date.now() + 10_000);
+    await utimes(path, changedTime, changedTime);
+    const afterChange = await getModelFileStatus(spec, dir, slowChecksum);
+    assert.equal(afterChange.present, true);
+    assert.equal(afterChange.verified, false, "changed file bytes are never served from the old cache entry");
+    assert.equal(checksums, 2, "changed file identity triggers a fresh hash");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

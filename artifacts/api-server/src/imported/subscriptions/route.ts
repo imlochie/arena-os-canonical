@@ -23,7 +23,10 @@ export async function GET() {
     const rolled = rows.map((r) => ({ ...r, nextCharge: rollForward(r.nextCharge, r.cadence) }));
     return Response.json({ subscriptions: rolled, stats: computeStats(rolled) });
   } catch {
-    return Response.json({ subscriptions: [], stats: { activeCount: 0, monthlyCents: 0, yearlyCents: 0, upcoming: [] }, error: "database unavailable" });
+    return Response.json(
+      { subscriptions: [], stats: { activeCount: 0, monthlyCents: 0, yearlyCents: 0, upcoming: [] }, error: "database unavailable" },
+      { status: 503 },
+    );
   }
 }
 
