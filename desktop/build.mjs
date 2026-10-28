@@ -26,7 +26,13 @@ async function findPackageRoot(entry, expectedName) {
 
 /** Copy an external Node runtime and its dependencies into a portable node_modules tree. */
 export async function copyExternalPackage(packageName, sourceRequire, destinationNodeModules, state = { copied: new Set(), ancestors: new Set() }) {
-  const entry = sourceRequire.resolve(packageName);
+  let entry;
+  try {
+    entry = sourceRequire.resolve(packageName);
+  } catch {
+    // Type-only packages (such as type-fest) have a package.json but no JS entry.
+    entry = sourceRequire.resolve(`${packageName}/package.json`);
+  }
   const { directory: sourceRoot, manifest } = await findPackageRoot(entry, packageName);
   const destination = path.join(destinationNodeModules, ...packageName.split("/"));
   const destinationKey = path.resolve(destination);
