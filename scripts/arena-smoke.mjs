@@ -355,7 +355,9 @@ try {
   const bundledBackground = await archiveFrame.locator("#tile").evaluate(element => getComputedStyle(element).backgroundImage);
   assert(bundledBackground.includes("data:image/svg+xml;base64,"), "Local archive assets must be bundled into the playable HTML");
   await archiveFrame.locator("#tile").click();
-  await page.keyboard.press("ArrowRight");
+  await archiveFrame.locator("#tile").evaluate(element =>
+    element.ownerDocument.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
+  );
   await page.waitForTimeout(50);
   assert.equal(await archiveFrame.locator("#hud").innerText(), "Score 1", "Bundled game JavaScript must run with keyboard input");
   await page.reload({ waitUntil: "networkidle" });

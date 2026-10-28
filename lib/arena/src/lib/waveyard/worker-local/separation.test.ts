@@ -385,6 +385,107 @@ test("waveform recovery keeps the three-attempt limit and final error after a re
   }
 });
 
+test("waveform recovery preserves the remaining attempt budget across repeated worker restarts", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    let firstBackoffStarted!: () => void;
+    const firstBackoff = new Promise<void>((resolve) => { firstBackoffStarted = resolve; });
+    const firstBroker = new LocalJobBroker();
+    let generationCalls = 0;
+    firstBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => {
+        generationCalls += 1;
+        throw Object.assign(new Error("Temporary failure on attempt one"), { code: "EIO" });
+      },
+      sleep: async () => {
+        firstBackoffStarted();
+        await new Promise<void>(() => {});
+      },
+    }));
+    await firstBroker.submit(
+      "waveyard-waveform",
+      job.id,
+      sourceWaveformPayload(f, job.id),
+    );
+    await firstBackoff;
+
+    let secondBackoffStarted!: () => void;
+    const secondBackoff = new Promise<void>((resolve) => { secondBackoffStarted = resolve; });
+    const secondDelays: number[] = [];
+    const secondBroker = new LocalJobBroker();
+    secondBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => {
+        generationCalls += 1;
+        throw Object.assign(new Error("Temporary failure on attempt two"), { code: "EIO" });
+      },
+      sleep: async (milliseconds) => {
+        secondDelays.push(milliseconds);
+        secondBackoffStarted();
+        await new Promise<void>(() => {});
+      },
+    }));
+    const secondRecovery = await recoverPendingLocalWaveformJobs(
+      f.database,
+      (payload) => secondBroker.submit(
+        "waveyard-waveform",
+        payload.waveformJobId,
+        payload as unknown as Record<string, unknown>,
+      ),
+    );
+    assert.deepEqual(secondRecovery.requeuedJobIds, [job.id]);
+    await secondBackoff;
+
+    const [retryingAfterSecondAttempt] = await f.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, job.id));
+    assert.equal(retryingAfterSecondAttempt.stage, "retrying");
+    assert.equal(retryingAfterSecondAttempt.attempts, 2, "the second worker records only its one attempt");
+    assert.deepEqual(secondDelays, [WAVEFORM_RETRY_BACKOFF_MS[1]]);
+
+    const thirdBroker = new LocalJobBroker();
+    let thirdAttempts = 0;
+    thirdBroker.register("waveyard-waveform", (payload) => handleWaveformJob(payload, {
+      db: f.database,
+      generateWaveform: async () => {
+        generationCalls += 1;
+        thirdAttempts += 1;
+        throw Object.assign(new Error("Temporary failure on final attempt"), { code: "EIO" });
+      },
+    }));
+    const thirdRecovery = await recoverPendingLocalWaveformJobs(
+      f.database,
+      (payload) => thirdBroker.submit(
+        "waveyard-waveform",
+        payload.waveformJobId,
+        payload as unknown as Record<string, unknown>,
+      ),
+    );
+    assert.deepEqual(thirdRecovery.requeuedJobIds, [job.id]);
+    const [requeuedAfterSecondRestart] = await f.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, job.id));
+    assert.equal(requeuedAfterSecondRestart.attempts, 2, "the second restart does not reset or spend an attempt");
+    assert.equal(await thirdBroker.drain(10_000), true);
+
+    const [failed] = await f.database.select().from(waveformJobs).where(eq(waveformJobs.id, job.id));
+    const assets = await f.database.select().from(waveformAssets).where(eq(waveformAssets.waveformJobId, job.id));
+    assert.equal(generationCalls, WAVEFORM_MAX_ATTEMPTS);
+    assert.equal(thirdAttempts, 1, "only the one remaining attempt runs after the second restart");
+    assert.equal(failed.attempts, WAVEFORM_MAX_ATTEMPTS);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.errorCode, "waveform_retry_exhausted");
+    assert.match(failed.errorMessage ?? "", /failed after 3 attempts: Temporary failure on final attempt/i);
+    assert.equal(assets.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform stops after the bounded transient retry limit and keeps the failure visible", async () => {
   const f = await fixture();
   try {
