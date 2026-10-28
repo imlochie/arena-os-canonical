@@ -203,8 +203,10 @@ try {
   assert((await restoredPlatformer.locator("#hR").innerText()).includes("STAGE 2 / 3"), "Offline game progress must survive reloads");
   report.push("Offline starter games are saved locally, reopen after reload, and resume their unlocked platform stage.");
   await page.evaluate(() => localStorage.setItem("af_local_mode", "0"));
-  await page.locator("summary").filter({ hasText: "Model setup" }).click();
   const localGenerationCheck = page.getByTestId("button-local-generation-check");
+  if (!(await localGenerationCheck.isVisible())) {
+    await page.locator("summary").filter({ hasText: "Model setup" }).click();
+  }
   await localGenerationCheck.waitFor();
   assert(await localGenerationCheck.isDisabled(), "A local generation check must not run until an on-device model is loaded");
   assert.equal(await page.getByTestId("local-generation-result").count(), 0, "An unsupported test browser must never show a local-generation pass");
@@ -246,8 +248,11 @@ try {
   await page.getByText("offline-revision-marker").waitFor();
   report.push("Prompt revisions change the saved offline game's source without adding it to the shared catalog.");
   await page.evaluate(() => localStorage.setItem("af_local_mode", "0"));
-  await page.locator("summary").filter({ hasText: "Model setup" }).click();
-  await page.getByLabel("Connected model source").selectOption("openai");
+  const connectedModelSource = page.getByLabel("Connected model source");
+  if (!(await connectedModelSource.isVisible())) {
+    await page.locator("summary").filter({ hasText: "Model setup" }).click();
+  }
+  await connectedModelSource.selectOption("openai");
   await page.getByLabel("Game prompt").fill("Pong");
   await page.getByRole("button", { name: "🎮 Create & play" }).click();
   await page.getByText("✨ AI codegen").waitFor({ timeout: 10000 });
