@@ -1,6 +1,6 @@
 import { build } from "esbuild";
 import { createRequire } from "node:module";
-import { cp, mkdir, rm, access } from "node:fs/promises";
+import { cp, mkdir, rm, access, readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -8,6 +8,62 @@ import path from "node:path";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
 const require = createRequire(import.meta.url);
+const apiRequire = createRequire(path.join(root, "artifacts/api-server/package.json"));
+
+async function findPackageRoot(entry, expectedName) {
+  let directory = path.dirname(entry);
+  while (directory !== path.dirname(directory)) {
+    try {
+      const manifest = JSON.parse(await readFile(path.join(directory, "package.json"), "utf8"));
+      if (manifest.name === expectedName) return { directory, manifest };
+    } catch {
+      // Keep walking until the package manifest is found.
+    }
+    directory = path.dirname(directory);
+  }
+  throw new Error(`Could not locate the installed ${expectedName} package.`);
+}
+
+/** Copy an external Node runtime and its dependencies into a portable node_modules tree. */
+export async function copyExternalPackage(packageName, sourceRequire, destinationNodeModules, state = { copied: new Set(), ancestors: new Set() }) {
+  const entry = sourceRequire.resolve(packageName);
+  const { directory: sourceRoot, manifest } = await findPackageRoot(entry, packageName);
+  const destination = path.join(destinationNodeModules, ...packageName.split("/"));
+  const destinationKey = path.resolve(destination);
+  if (!state.copied.has(destinationKey)) {
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(sourceRoot, destination, { recursive: true, dereference: true });
+    state.copied.add(destinationKey);
+  }
+
+  const packageKey = `${manifest.name}@${manifest.version}`;
+  if (state.ancestors.has(packageKey)) return destination;
+  const nextState = {
+    copied: state.copied,
+    ancestors: new Set([...state.ancestors, packageKey]),
+  };
+  const packageRequire = createRequire(entry);
+  const optionalDependencies = manifest.optionalDependencies ?? {};
+  for (const dependencyName of Object.keys({
+    ...(manifest.dependencies ?? {}),
+    ...optionalDependencies,
+  })) {
+    try {
+      await copyExternalPackage(
+        dependencyName,
+        packageRequire,
+        path.join(destination, "node_modules"),
+        nextState,
+      );
+    } catch (error) {
+      if (Object.hasOwn(optionalDependencies, dependencyName)) continue;
+      throw new Error(
+        `Could not stage ${manifest.name} dependency ${dependencyName}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return destination;
+}
 
 export function runPnpm(args, env = {}) {
   // Resolve the pnpm JS entry rather than invoking a .cmd shim through a shell.
@@ -36,6 +92,16 @@ async function main() {
   await cp(path.join(root, "artifacts/arenaforge/dist/public"), path.join(stage, "web"), { recursive: true });
   const playwrightRoot = path.dirname(require.resolve("playwright-core/package.json"));
   await cp(playwrightRoot, path.join(stage, "server/node_modules/playwright-core"), { recursive: true });
+  await copyExternalPackage(
+    "onnxruntime-node",
+    apiRequire,
+    path.join(stage, "server/node_modules"),
+  );
+  const stagedRequire = createRequire(path.join(stage, "server/index.mjs"));
+  const onnxRuntime = stagedRequire("onnxruntime-node");
+  if (typeof onnxRuntime.InferenceSession?.create !== "function") {
+    throw new Error("The staged ONNX Runtime did not expose InferenceSession.create.");
+  }
 
   // Download the Chromium revision matching the exact installed Playwright.
   runPnpm(["--filter", "@workspace/desktop", "exec", "playwright-core", "install", "chromium"]);

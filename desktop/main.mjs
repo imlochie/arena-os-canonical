@@ -114,8 +114,8 @@ async function start() {
       ARENA_WEB_ROOT: path.join(resources, "web"), CHROMIUM_PATH: chromium,
       PORT: String(serverPort),
       DATABASE_URL: `postgres://arena:${encodeURIComponent(dbPassword)}@127.0.0.1:${dbPort}/arena`,
-      WAVEYARD_STORAGE_DIR: path.join(root, "waveyard/storage"),
-      WAVEYARD_MODELS_DIR: path.join(root, "waveyard/models"),
+      WAVEYARD_STORAGE_DIR: process.env.WAVEYARD_STORAGE_DIR ?? path.join(root, "waveyard/storage"),
+      WAVEYARD_MODELS_DIR: process.env.WAVEYARD_MODELS_DIR ?? path.join(root, "waveyard/models"),
       REDIS_URL: "",
     },
   });

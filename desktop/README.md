@@ -72,5 +72,9 @@ port fails explicitly instead of silently changing the app's browser origin.
 Existing databases are never deleted or reinitialised to fix startup errors.
 The bundled PostgreSQL major remains 16 to match the retained desktop runtime.
 
-The package is scoped to this runtime and browser task path. Optional music/GPU
-tools are not bundled or claimed ready by this work.
+The package includes the CPU ONNX Runtime needed by Waveyard's local separator.
+Separation model weights are downloaded separately through Waveyard and are not
+bundled. CUDA/GPU providers and FFmpeg are not bundled; use a PCM 44.1 kHz WAV
+for a CPU separation check unless FFmpeg is installed separately. This package
+still needs a real Windows Waveyard run before its speed or audio quality is
+verified.
