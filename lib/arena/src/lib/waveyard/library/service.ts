@@ -133,22 +133,39 @@ async function availabilityBySource(
       .from(stemAssets)
       .where(inArray(stemAssets.sourceAssetId, sourceAssetIds)),
     db
-      .select({ sourceAssetId: processingJobs.sourceAssetId, status: processingJobs.status })
+      .select({
+        id: processingJobs.id,
+        sourceAssetId: processingJobs.sourceAssetId,
+        status: processingJobs.status,
+        errorCode: processingJobs.errorCode,
+      })
       .from(processingJobs)
       .where(
         and(
           inArray(processingJobs.sourceAssetId, sourceAssetIds),
           eq(processingJobs.type, "separation"),
-          inArray(processingJobs.status, ["queued", "running"]),
         ),
-      ),
+      )
+      .orderBy(desc(processingJobs.updatedAt), desc(processingJobs.createdAt)),
   ]);
-  const pendingBySource = new Set(jobRows.map((row) => row.sourceAssetId));
+  const pendingBySource = new Set(
+    jobRows
+      .filter((row) => ["queued", "preparing", "running", "processing", "finalizing"].includes(row.status))
+      .map((row) => row.sourceAssetId),
+  );
+  const latestJobBySource = new Map<string, (typeof jobRows)[number]>();
+  for (const job of jobRows) {
+    if (!latestJobBySource.has(job.sourceAssetId)) latestJobBySource.set(job.sourceAssetId, job);
+  }
   for (const id of sourceAssetIds) {
     const stems = stemRows.filter((row) => row.sourceAssetId === id);
     map.set(
       id,
-      resolveStemAvailability({ stems, separationPending: pendingBySource.has(id) }),
+      resolveStemAvailability({
+        stems,
+        separationPending: pendingBySource.has(id),
+        separationJob: latestJobBySource.get(id),
+      }),
     );
   }
   return map;
@@ -428,7 +445,21 @@ export async function getTrack(ownerId: string, trackId: string): Promise<TrackD
     .where(eq(sourceAnalyses.sourceAssetId, row.sourceAssetId))
     .limit(1);
 
-  const availability = resolveStemAvailability({ stems: stemRows });
+  const [latestJob] = await db
+    .select({
+      id: processingJobs.id,
+      status: processingJobs.status,
+      errorCode: processingJobs.errorCode,
+    })
+    .from(processingJobs)
+    .where(and(eq(processingJobs.sourceAssetId, row.sourceAssetId), eq(processingJobs.type, "separation")))
+    .orderBy(desc(processingJobs.updatedAt), desc(processingJobs.createdAt))
+    .limit(1);
+  const availability = resolveStemAvailability({
+    stems: stemRows,
+    separationPending: latestJob !== undefined && ["queued", "preparing", "running", "processing", "finalizing"].includes(latestJob.status),
+    separationJob: latestJob,
+  });
   const realStems = stemRows.filter((stem) => stem.engine !== "passthrough-unseparated");
   const passthrough = stemRows.find((stem) => stem.engine === "passthrough-unseparated");
   const playback =

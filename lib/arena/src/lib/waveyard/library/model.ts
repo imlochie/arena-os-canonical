@@ -59,6 +59,9 @@ export type StemAvailability =
   | { status: "separated"; stemCount: number }
   | { status: "source-only"; reason: string }
   | { status: "processing"; reason: string }
+  | { status: "rejected"; reason: string; retryJobId: string }
+  | { status: "failed"; reason: string; retryJobId: string }
+  | { status: "not-started"; reason: string }
   | { status: "unavailable"; reason: string };
 
 export interface StemAvailabilityInput {
@@ -66,6 +69,8 @@ export interface StemAvailabilityInput {
   stems: Array<{ stemType: string; engine: string }>;
   /** A separation job for the source exists and has not finished/failed. */
   separationPending?: boolean;
+  /** The newest separation attempt, when one exists. */
+  separationJob?: { id: string; status: string; errorCode: string | null };
 }
 
 /** The passthrough bridge (POST /api/stems/passthrough) creates one
@@ -84,9 +89,29 @@ export function resolveStemAvailability(input: StemAvailabilityInput): StemAvail
   if (input.separationPending === true) {
     return { status: "processing", reason: "Stem separation is still running — playback uses the full source until it completes." };
   }
+  if (input.separationJob?.status === "failed") {
+    if (input.separationJob.errorCode === "queue_unavailable") {
+      return {
+        status: "rejected",
+        reason: "The stem worker rejected this separation job. Retry it from the library.",
+        retryJobId: input.separationJob.id,
+      };
+    }
+    return {
+      status: "failed",
+      reason: "Stem separation failed. Retry it from the library.",
+      retryJobId: input.separationJob.id,
+    };
+  }
+  if (input.separationJob?.status === "complete") {
+    return { status: "unavailable", reason: "The separation job completed without producing stems." };
+  }
+  if (input.separationJob !== undefined) {
+    return { status: "unavailable", reason: "The previous separation attempt did not produce stems." };
+  }
   return {
-    status: "unavailable",
-    reason: "No stems exist for this track yet (separation has not run or its job failed).",
+    status: "not-started",
+    reason: "Stem separation has not started for this track.",
   };
 }
 

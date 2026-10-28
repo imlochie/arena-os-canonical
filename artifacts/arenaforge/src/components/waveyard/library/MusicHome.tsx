@@ -39,7 +39,7 @@ interface TrackSummary {
   labels: string[];
   lastPlayedAt: string | null;
   addedAt: string;
-  stemAvailability: { status: string; stemCount?: number; reason?: string };
+  stemAvailability: { status: string; stemCount?: number; reason?: string; retryJobId?: string };
   studioProjectId: string;
 }
 
@@ -79,6 +79,9 @@ function StemBadge({ availability }: { availability: TrackSummary["stemAvailabil
     availability.status === "separated" ? `${availability.stemCount} STEMS`
     : availability.status === "source-only" ? "SOURCE"
     : availability.status === "processing" ? "SEPARATING…"
+    : availability.status === "rejected" ? "SEPARATION REJECTED"
+    : availability.status === "failed" ? "SEPARATION FAILED"
+    : availability.status === "not-started" ? "NOT STARTED"
     : "NO STEMS";
   return (
     <span
@@ -99,6 +102,8 @@ function TrackRow({
   onAddToPlaylist,
   onRate,
   onLabels,
+  onRetrySeparation,
+  retrying,
 }: {
   track: TrackSummary;
   onPlay: (track: TrackSummary) => void;
@@ -108,6 +113,8 @@ function TrackRow({
   onAddToPlaylist: (playlistId: string, track: TrackSummary) => void;
   onRate: (track: TrackSummary, rating: number) => void;
   onLabels: (track: TrackSummary, labels: string[]) => void;
+  onRetrySeparation: (track: TrackSummary) => void;
+  retrying: boolean;
 }) {
   const [addingLabel, setAddingLabel] = useState(false);
   const [labelDraft, setLabelDraft] = useState("");
@@ -183,6 +190,17 @@ function TrackRow({
         <button type="button" className="button" onClick={() => onPlay(track)} data-testid={`button-play-${track.id}`}>Play</button>
         <button type="button" className="button secondary" onClick={() => onNext(track)} title="Line up on the next deck" data-testid={`button-next-${track.id}`}>Next</button>
         <button type="button" className="button secondary" title="Add to the saved queue and the live listening order" onClick={() => onQueue(track)}>+ Queue</button>
+        {(track.stemAvailability.status === "rejected" || track.stemAvailability.status === "failed") && (
+          <button
+            type="button"
+            className="button secondary"
+            aria-label={`Retry separation for ${track.title}`}
+            disabled={retrying}
+            onClick={() => onRetrySeparation(track)}
+          >
+            {retrying ? "Retrying…" : "Retry separation"}
+          </button>
+        )}
         {playlists.length > 0 && (
           <select
             aria-label={`Add ${track.title} to a playlist`}
@@ -199,7 +217,9 @@ function TrackRow({
             ))}
           </select>
         )}
-        <Link className="button secondary" href={`/waveyard/projects/${track.studioProjectId}`}>Studio ↗</Link>
+        <Link className="button secondary" href={`/waveyard/projects/${track.studioProjectId}`}>
+          {track.stemAvailability.status === "not-started" ? "Open project to start" : "Studio ↗"}
+        </Link>
       </div>
     </article>
   );
@@ -231,6 +251,7 @@ export function MusicHome() {
   const [loaded, setLoaded] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [dropBusy, setDropBusy] = useState<string | null>(null);
+  const [retryingTrackIds, setRetryingTrackIds] = useState<Set<string>>(() => new Set());
   const dragDepth = useRef(0);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -494,6 +515,39 @@ export function MusicHome() {
       setMessage("Could not save those labels.");
     }
   }, []);
+
+  const retrySeparation = useCallback(async (track: TrackSummary) => {
+    const jobId = track.stemAvailability.retryJobId;
+    if (!jobId || retryingTrackIds.has(track.id)) return;
+    setRetryingTrackIds((previous) => new Set(previous).add(track.id));
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/retry`, { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMessage(`${track.title}: ${body.error ?? "Separation retry could not be started."}`);
+        return;
+      }
+      setTracks((previous) => previous.map((existing) => existing.id === track.id
+        ? {
+            ...existing,
+            stemAvailability: {
+              status: "processing",
+              reason: "Stem separation is still running — playback uses the full source until it completes.",
+            },
+          }
+        : existing));
+      setMessage(`${track.title}: separation retry started.`);
+    } catch {
+      setMessage(`${track.title}: separation retry could not be started — check the connection.`);
+    } finally {
+      setRetryingTrackIds((previous) => {
+        const next = new Set(previous);
+        next.delete(track.id);
+        return next;
+      });
+    }
+  }, [retryingTrackIds]);
 
   const collectionTrack = useCallback((track: TrackSummary): CollectionTrack => ({
     id: track.id,
@@ -847,6 +901,8 @@ export function MusicHome() {
                 onAddToPlaylist={onAddToPlaylist}
                 onRate={rateTrack}
                 onLabels={setTrackLabels}
+                onRetrySeparation={retrySeparation}
+                retrying={retryingTrackIds.has(track.id)}
               />
             ))}
           </div>

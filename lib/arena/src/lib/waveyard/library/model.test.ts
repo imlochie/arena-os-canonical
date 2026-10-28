@@ -81,10 +81,30 @@ test("resolveStemAvailability: separation pending = processing", () => {
   assert.match(availability.reason, /still running/);
 });
 
-test("resolveStemAvailability: nothing at all = unavailable with a real reason", () => {
+test("resolveStemAvailability: no separation job = not started", () => {
   const availability = resolveStemAvailability({ stems: [] });
-  assert.equal(availability.status, "unavailable");
-  assert.match(availability.reason, /No stems exist/);
+  assert.equal(availability.status, "not-started");
+  assert.match(availability.reason, /has not started/);
+});
+
+test("resolveStemAvailability: queue rejection exposes a retryable job", () => {
+  assert.deepEqual(resolveStemAvailability({
+    stems: [],
+    separationJob: { id: "job-rejected", status: "failed", errorCode: "queue_unavailable" },
+  }), {
+    status: "rejected",
+    reason: "The stem worker rejected this separation job. Retry it from the library.",
+    retryJobId: "job-rejected",
+  });
+});
+
+test("resolveStemAvailability: worker failure exposes a retryable job", () => {
+  const availability = resolveStemAvailability({
+    stems: [],
+    separationJob: { id: "job-failed", status: "failed", errorCode: "worker_error" },
+  });
+  assert.equal(availability.status, "failed");
+  assert.equal(availability.retryJobId, "job-failed");
 });
 
 test("normalizeStemMix: clamps to 0..2, drops junk, keeps valid values", () => {

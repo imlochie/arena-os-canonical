@@ -179,6 +179,91 @@ try {
     assert(text.length > 150, `${path} is blank`);
     report.push(`${path} loaded.`);
   }
+  let mockStemState = "rejected";
+  let mockRetryCount = 0;
+  const recoveryTrack = {
+    id: "arena-smoke-stem-recovery",
+    title: "Retryable track",
+    artist: "Smoke test",
+    album: "",
+    durationSeconds: 90,
+    playCount: 0,
+    rating: 0,
+    labels: [],
+    lastPlayedAt: null,
+    addedAt: new Date().toISOString(),
+    studioProjectId: "arena-smoke-stem-project",
+  };
+  const notStartedTrack = {
+    ...recoveryTrack,
+    id: "arena-smoke-stem-not-started",
+    title: "Not started track",
+    studioProjectId: "arena-smoke-not-started-project",
+  };
+  const mockTrackPayload = () => ({
+    tracks: [
+      {
+        ...recoveryTrack,
+        stemAvailability: mockStemState === "rejected"
+          ? { status: "rejected", reason: "Worker rejected the job.", retryJobId: "arena-smoke-stem-job" }
+          : mockStemState === "processing"
+            ? { status: "processing", reason: "Stem separation is still running." }
+            : { status: "separated", stemCount: 4 },
+      },
+      { ...notStartedTrack, stemAvailability: { status: "not-started", reason: "No job started." } },
+    ],
+  });
+  await page.route("**/api/library/**", async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/tracks") && route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mockTrackPayload()) });
+    } else if (url.pathname.endsWith("/playback-state")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ playbackState: { currentTrackId: null, positionSeconds: 0 } }) });
+    } else if (url.pathname.endsWith("/playlists")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ playlists: [] }) });
+    } else if (url.pathname.endsWith("/queue")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ queue: [] }) });
+    } else if (url.pathname.endsWith("/sessions")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sessions: [] }) });
+    } else if (url.pathname.endsWith("/collections")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ collections: [] }) });
+    } else {
+      await route.continue();
+    }
+  });
+  await page.route("**/api/waveyard/projects", route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ projects: [] }),
+  }));
+  await page.route("**/api/jobs/arena-smoke-stem-job/retry", async route => {
+    assert.equal(route.request().method(), "POST");
+    mockRetryCount += 1;
+    mockStemState = "processing";
+    setTimeout(() => { mockStemState = "separated"; }, 1500);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ job: { id: "arena-smoke-stem-job", status: "queued" } }),
+    });
+  });
+  await page.goto(`${base}/waveyard`, { waitUntil: "networkidle" });
+  const recoveryRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Retryable track" });
+  const notStartedRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Not started track" });
+  await recoveryRow.getByText("SEPARATION REJECTED", { exact: true }).waitFor();
+  await notStartedRow.getByText("NOT STARTED", { exact: true }).waitFor();
+  assert.equal(await notStartedRow.getByRole("link", { name: "Open project to start" }).getAttribute("href"), "/waveyard/projects/arena-smoke-not-started-project");
+  const retrySeparationButton = recoveryRow.getByRole("button", { name: "Retry separation for Retryable track" });
+  await retrySeparationButton.click();
+  await recoveryRow.getByText("SEPARATING…", { exact: true }).waitFor();
+  await page.getByRole("status").filter({ hasText: "Retryable track: separation retry started." }).waitFor();
+  assert.equal(mockRetryCount, 1, "retrying a rejected separation must submit one idempotent job retry");
+  await recoveryRow.getByText("4 STEMS", { exact: true }).waitFor({ timeout: 12000 });
+  assert.equal(await page.getByRole("button", { name: "Retry separation for Retryable track" }).count(), 0);
+  report.push("The library identifies a rejected stem job, retries it in place, and updates from processing to separated without a reload.");
+  await page.unroute("**/api/library/**");
+  await page.unroute("**/api/waveyard/projects");
+  await page.unroute("**/api/jobs/arena-smoke-stem-job/retry");
   const routeSource = await readFile(new URL("../artifacts/arenaforge/src/routes.ts", import.meta.url), "utf8");
   const auditRoutes = [...routeSource.matchAll(/path:\s*"([^"]+)"/g)]
     .map((match) => match[1].replace(/:[^/]+/g, "audit-test"));

@@ -196,6 +196,8 @@ test("library intake creates a playable track through the existing pipeline", as
   trackA = result.track;
   assert.equal(result.created, true);
   assert.ok(result.separationQueued === false, "no queue in this environment — enqueue state must be honest");
+  assert.equal(result.track.stemAvailability.status, "rejected", "a rejected queue handoff is visible on the track");
+  assert.ok(result.track.stemAvailability.status === "rejected" && result.track.stemAvailability.retryJobId);
   assert.equal(trackA.title, "Windowlicker");
   assert.equal(trackA.artist, "Aphex Twin");
   assert.equal(trackA.durationSeconds, 2);
@@ -344,7 +346,7 @@ test("track detail resolves source, stems, analysis, and the studio handoff proj
   assert.ok(detail !== null);
   assert.equal(detail.playback.kind, "source");
   assert.deepEqual(detail.playback.assetIds, [detail.source.id]);
-  assert.equal(detail.stemAvailability.status, "unavailable", "no stems and no pending job → honest unavailable");
+  assert.equal(detail.stemAvailability.status, "rejected", "the detail view preserves a rejected separation job");
   const [container] = await db.db.select().from(schema.projects).where(eq(schema.projects.id, detail.studioProjectId)).limit(1);
   assert.ok(container);
   assert.equal(container.kind, "library");

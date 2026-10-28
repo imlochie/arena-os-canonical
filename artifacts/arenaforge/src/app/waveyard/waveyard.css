@@ -532,6 +532,7 @@
 .stem-badge.separated{color:var(--acid);border-color:#465126}
 .stem-badge.source-only{color:var(--orange);border-color:#5a4326}
 .stem-badge.processing{color:var(--ink);animation:pulse 1.6s infinite}
+.stem-badge.rejected,.stem-badge.failed,.stem-badge.not-started{color:var(--orange);border-color:#5a4326}
 @keyframes pulse{50%{opacity:.45}}
 .playlist-create{display:flex;gap:8px;margin-bottom:14px}
 .playlist-create input{flex:1;background:#11130e;border:1px solid #3b3e38;color:var(--ink);padding:11px}
