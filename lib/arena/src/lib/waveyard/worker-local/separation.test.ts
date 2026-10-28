@@ -220,6 +220,111 @@ test("waveform recovery resumes the persisted retry after a local worker restart
   }
 });
 
+test("waveform recovery does not requeue a job completed after its pending read", async () => {
+  const f = await fixture();
+  try {
+    const [completedDuringRecovery, stillPending] = await f.database
+      .insert(waveformJobs)
+      .values([
+        {
+          projectId: f.project.id,
+          sourceAssetId: f.source.id,
+          status: "processing",
+          stage: "generating",
+          idempotencyKey: `waveform:recovery-race-complete:${f.source.id}`,
+        },
+        {
+          projectId: f.project.id,
+          sourceAssetId: f.source.id,
+          status: "processing",
+          stage: "generating",
+          idempotencyKey: `waveform:recovery-race-pending:${f.source.id}`,
+        },
+      ])
+      .returning();
+
+    let completionInjected = false;
+    let completedSnapshot: typeof completedDuringRecovery | undefined;
+    const raceDatabase = new Proxy(f.database as object, {
+      get(target, property, receiver) {
+        if (property !== "select") return Reflect.get(target, property, receiver);
+
+        const select = Reflect.get(target, property, target) as (...args: unknown[]) => unknown;
+        return (...args: unknown[]) => {
+          const builder = Reflect.apply(select, target, args) as object;
+          const wrapBuilder = (current: object, isWaveformSelect = false): object => new Proxy(current, {
+            get(queryBuilder, method, queryReceiver) {
+              const value = Reflect.get(queryBuilder, method, queryReceiver);
+              if (method === "from" && typeof value === "function") {
+                return (...fromArgs: unknown[]) => wrapBuilder(
+                  Reflect.apply(value, queryBuilder, fromArgs) as object,
+                  fromArgs[0] === waveformJobs,
+                );
+              }
+              if (method === "where" && isWaveformSelect && typeof value === "function") {
+                return (...whereArgs: unknown[]) => {
+                  const query = Reflect.apply(value, queryBuilder, whereArgs) as {
+                    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (error: unknown) => unknown) => unknown;
+                  };
+                  return {
+                    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (error: unknown) => unknown) =>
+                      query.then(async (rows) => {
+                        if (!completionInjected) {
+                          completionInjected = true;
+                          [completedSnapshot] = await f.database
+                            .update(waveformJobs)
+                            .set({
+                              status: "complete",
+                              stage: "complete",
+                              errorCode: "waveform_ready",
+                              errorMessage: "Waveform finished before recovery claimed it.",
+                              completedAt: new Date("2025-01-02T03:04:05.000Z"),
+                              updatedAt: new Date("2025-01-02T03:04:05.000Z"),
+                            })
+                            .where(eq(waveformJobs.id, completedDuringRecovery.id))
+                            .returning();
+                        }
+                        return onFulfilled(rows);
+                      }, onRejected),
+                  };
+                };
+              }
+              return typeof value === "function" ? value.bind(queryBuilder) : value;
+            },
+          });
+          return wrapBuilder(builder);
+        };
+      },
+    }) as typeof f.database;
+
+    const enqueued: string[] = [];
+    const recovery = await recoverPendingLocalWaveformJobs(raceDatabase, async (payload) => {
+      enqueued.push(payload.waveformJobId);
+    });
+
+    assert.ok(completionInjected, "the job completes after the initial pending read");
+    assert.deepEqual(recovery.requeuedJobIds, [stillPending.id]);
+    assert.deepEqual(recovery.enqueuedJobIds, [stillPending.id]);
+    assert.deepEqual(enqueued, [stillPending.id], "the completed job is not submitted to the worker");
+    assert.deepEqual(recovery.failedJobIds, []);
+
+    const [completedAfterRecovery] = await f.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, completedDuringRecovery.id));
+    assert.deepEqual(completedAfterRecovery, completedSnapshot, "recovery leaves the terminal row unchanged");
+
+    const [requeued] = await f.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, stillPending.id));
+    assert.equal(requeued.status, "queued");
+    assert.equal(requeued.stage, "queued");
+  } finally {
+    await f.close();
+  }
+});
+
 test("waveform recovery keeps the three-attempt limit and final error after a restart", async () => {
   const f = await fixture();
   try {
