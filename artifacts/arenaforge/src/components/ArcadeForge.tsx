@@ -70,11 +70,13 @@ const LOCAL_CHECK_PROMPT =
 type LocalModelCheck = {
   id: string;
   nonce: string;
+  source: "webllm" | "model-hub";
   modelId: string;
+  via: string;
   code: string;
   bytes: number;
   ms: number;
-  tokps: number;
+  tokps?: number;
   status: "checking" | "passed" | "failed";
   message: string;
 };
@@ -135,6 +137,7 @@ export default function ArcadeForge() {
   const [iterating, setIterating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [workspace, setWorkspace] = useState<ArcadeWorkspace>("create");
+  const [modelSetupOpen, setModelSetupOpen] = useState(true);
 
   // On-device AI state
   const [gpu, setGpu] = useState<{ ok: boolean; reason?: string } | null>(null);
@@ -147,6 +150,7 @@ export default function ArcadeForge() {
   const [streamed, setStreamed] = useState("");
   const [offlineReady, setOfflineReady] = useState<string | null>(null);
   const [localCheckRunning, setLocalCheckRunning] = useState(false);
+  const [activeCheckSource, setActiveCheckSource] = useState<"webllm" | "model-hub" | null>(null);
   const [localCheckError, setLocalCheckError] = useState<string | null>(null);
   const [localModelCheck, setLocalModelCheck] = useState<LocalModelCheck | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -211,7 +215,9 @@ export default function ArcadeForge() {
           return {
             ...existing,
             status: "passed",
-            message: "The generated game passed validation and started in the isolated preview without a startup error.",
+            message: existing.source === "model-hub"
+              ? "The selected local model generated a valid game and it started in the isolated preview. WebGPU and remote providers were not used."
+              : "The generated game passed validation and started in the isolated preview without a startup error.",
           };
         }
         return existing;
@@ -328,6 +334,7 @@ export default function ArcadeForge() {
     setLocalModelCheck(null);
     setLocalCheckError(null);
     setLocalCheckRunning(true);
+    setActiveCheckSource("webllm");
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -354,7 +361,9 @@ export default function ArcadeForge() {
       setLocalModelCheck({
         id,
         nonce,
+        source: "webllm",
         modelId: loadedModelId() ?? engineModel ?? modelId,
+        via: "webllm",
         code,
         bytes: validation.bytes,
         ms: result.ms,
@@ -370,6 +379,78 @@ export default function ArcadeForge() {
     } finally {
       if (localCheckAbortRef.current === controller) localCheckAbortRef.current = null;
       setLocalCheckRunning(false);
+      setActiveCheckSource(null);
+      setBusy(false);
+      setPhase("");
+      setStreamed("");
+    }
+  }
+
+  async function runConnectedModelGenerationCheck() {
+    const selected = serverModels.find((model) => model.id === serverModelId);
+    if (!selected || selected.backend !== "local-server") {
+      setLocalCheckError("Select a local Model Hub model before running this check.");
+      return;
+    }
+    if (localCheckRunning || busy || iterating) return;
+
+    localCheckAbortRef.current?.abort();
+    const controller = new AbortController();
+    localCheckAbortRef.current = controller;
+    const nonce = crypto.randomUUID();
+    setLocalModelCheck(null);
+    setLocalCheckError(null);
+    setLocalCheckRunning(true);
+    setActiveCheckSource("model-hub");
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    setPhase("Testing the selected local model…");
+    setStreamed("");
+
+    try {
+      const response = await fetch("/api/arcade/forge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: LOCAL_CHECK_PROMPT,
+          modelId: selected.id,
+          localOnly: true,
+          ephemeral: true,
+        }),
+        signal: controller.signal,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? "The selected local model could not create a game.");
+      const code = typeof body.code === "string" ? body.code : "";
+      if (!code) throw new Error("The local model did not return a complete HTML game.");
+      const validation = validateGameCode(code);
+      if (!validation.ok) {
+        throw new Error(`Generated HTML failed Arcade validation: ${validation.issues.join("; ")}`);
+      }
+
+      const runtime = body.runtime ?? {};
+      setLocalModelCheck({
+        id: `model-hub-check:${nonce}`,
+        nonce,
+        source: "model-hub",
+        modelId: String(runtime.modelId ?? selected.id),
+        via: String(runtime.via ?? selected.provider ?? selected.backend),
+        code,
+        bytes: validation.bytes,
+        ms: Number.isFinite(Number(runtime.ms)) ? Number(runtime.ms) : 0,
+        status: "checking",
+        message: "Generated and validated. Waiting for the isolated preview to start…",
+      });
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        const message = cause instanceof Error ? cause.message : "The local model generation check failed.";
+        setLocalCheckError(message.slice(0, 500));
+      }
+    } finally {
+      if (localCheckAbortRef.current === controller) localCheckAbortRef.current = null;
+      setLocalCheckRunning(false);
+      setActiveCheckSource(null);
       setBusy(false);
       setPhase("");
       setStreamed("");
@@ -795,13 +876,21 @@ export default function ArcadeForge() {
   const serverModelChoices = serverModels.filter(
     (model) => model.kind === "text" && model.backend !== "arena-local-engine" && model.backend !== "webllm",
   );
+  const selectedLocalServerModel = serverModels.some(
+    (model) => model.id === serverModelId && model.backend === "local-server",
+  );
 
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
       <div className="min-w-0">
         {/* Engine status */}
-        <details open={loadingModel} className="glass rounded-2xl p-4">
-          <summary className="cursor-pointer text-sm font-bold text-slate-200">
+        <details
+          data-testid="arcade-model-setup"
+          open={loadingModel || modelSetupOpen}
+          onToggle={(event) => setModelSetupOpen(event.currentTarget.open)}
+          className="glass rounded-2xl p-4"
+        >
+          <summary data-testid="arcade-model-setup-toggle" className="cursor-pointer text-sm font-bold text-slate-200">
             Model setup <span className="ml-2 text-xs font-normal text-slate-400">{engineOn ? "On-device model loaded" : "Connections and on-device AI"}</span>
           </summary>
           <div className="mt-3">
@@ -900,32 +989,46 @@ export default function ArcadeForge() {
           <div data-testid="local-generation-check-panel" className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-500/5 p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="text-xs font-extrabold text-cyan-100">Prove local generation in this browser</p>
+                <p className="text-xs font-extrabold text-cyan-100">Prove local game generation</p>
                 <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                  Runs a fresh prompt through the loaded WebLLM, validates the generated HTML, then boots it in Arcade’s isolated game preview. The prompt is not sent to an API or provider. The first model download still needs internet.
+                  Test either the loaded browser model or a selected Model Hub runtime. The browser model needs WebGPU; the Model Hub test sends only this fixed prompt to the app machine’s loopback model. Both validate and boot the game in an isolated preview without saving it.
                 </p>
               </div>
-              <button
-                type="button"
-                data-testid="button-local-generation-check"
-                onClick={runLocalGenerationCheck}
-                disabled={!engineOn || localCheckRunning || busy || iterating || loadingModel}
-                title={engineOn ? "Generate and validate a temporary game with the loaded on-device model" : "Load the on-device model first"}
-                className="shrink-0 rounded-lg border border-cyan-300/30 bg-cyan-400/10 px-3 py-2 text-xs font-extrabold text-cyan-100 hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {localCheckRunning ? "Generating locally…" : "Run local generation check"}
-              </button>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                <button
+                  type="button"
+                  data-testid="button-local-generation-check"
+                  onClick={runLocalGenerationCheck}
+                  disabled={!engineOn || localCheckRunning || busy || iterating || loadingModel}
+                  title={engineOn ? "Generate and validate a temporary game with the loaded browser model" : "Load the browser model first"}
+                  className="rounded-lg border border-cyan-300/30 bg-cyan-400/10 px-3 py-2 text-xs font-extrabold text-cyan-100 hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {activeCheckSource === "webllm" ? "Generating locally…" : "Test browser model"}
+                </button>
+                <button
+                  type="button"
+                  data-testid="button-local-server-generation-check"
+                  onClick={runConnectedModelGenerationCheck}
+                  disabled={!selectedLocalServerModel || localCheckRunning || busy || iterating || loadingModel}
+                  title={selectedLocalServerModel ? "Generate a temporary game through the selected local Model Hub runtime without WebGPU" : "Select a local Model Hub model above"}
+                  className="rounded-lg border border-emerald-300/30 bg-emerald-400/10 px-3 py-2 text-xs font-extrabold text-emerald-100 hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {activeCheckSource === "model-hub" ? "Testing local model…" : "Test selected local model"}
+                </button>
+              </div>
             </div>
             <p data-testid="local-generation-status" role="status" className="mt-2 text-[11px] text-slate-400">
-              {engineOn
-                ? "Model loaded. A pass requires generated code, validator approval, and a clean startup in the isolated game preview."
+              {selectedLocalServerModel
+                ? "A local Model Hub model is selected. Its test uses no WebGPU, no cloud key, and no public fallback."
+                : engineOn
+                  ? "Browser model loaded. A pass requires generated code, validator approval, and a clean startup in the isolated game preview."
                 : gpu?.ok === false
-                  ? `Not ready: WebGPU is unavailable here (${gpu.reason ?? "unsupported browser or GPU"}). This browser cannot verify local generation.`
-                  : "Load the on-device model above first. The check stays disabled until the model is loaded."}
+                    ? `WebGPU is unavailable here (${gpu.reason ?? "unsupported browser or GPU"}). Select a Model Hub model above to test local generation without WebGPU.`
+                    : "Load the browser model above or select a local Model Hub model to run a real generation check."}
             </p>
             {localCheckError && (
               <p data-testid="local-generation-error" role="alert" className="mt-2 rounded-lg border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                Local generation check did not pass: {localCheckError}
+                Generation check did not pass: {localCheckError}
               </p>
             )}
             {localModelCheck && (
@@ -936,16 +1039,17 @@ export default function ArcadeForge() {
                   className={`text-xs font-bold ${localModelCheck.status === "passed" ? "text-emerald-200" : localModelCheck.status === "failed" ? "text-red-200" : "text-amber-200"}`}
                 >
                   {localModelCheck.status === "passed"
-                    ? `Passed on this device: ${localModelCheck.message}`
+                    ? `Passed: ${localModelCheck.message}`
                     : localModelCheck.status === "failed"
                       ? `Did not pass: ${localModelCheck.message}`
                       : localModelCheck.message}
                 </p>
                 <p className="mt-1 text-[10px] text-slate-400">
                   {WEBLLM_MODELS.find((model) => model.id === localModelCheck.modelId)?.name ?? localModelCheck.modelId}
+                  {" · "}{localModelCheck.via}
                   {" · "}{(localModelCheck.bytes / 1024).toFixed(1)} KB
                   {" · "}{(localModelCheck.ms / 1000).toFixed(1)} s
-                  {" · "}{localModelCheck.tokps} tokens/s
+                  {typeof localModelCheck.tokps === "number" ? ` · ${localModelCheck.tokps} tokens/s` : ""}
                 </p>
                 {localModelCheck.status !== "failed" && (
                   <>

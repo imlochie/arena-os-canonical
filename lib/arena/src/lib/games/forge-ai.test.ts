@@ -38,6 +38,26 @@ test("a deterministic fallback is not accepted as arbitrary game generation", as
   }), (error: any) => error.noModel === true);
 });
 
+test("local Model Hub generation stays on the selected model with remote fallback disabled", async () => {
+  const modelId = "hub:ollama:qwen2.5-3b";
+  let request: any;
+  const result = await forgeGameWithAI("A tiny game that collects one coin", {
+    modelId,
+    localOnly: true,
+  }, {
+    generate: (async (input: any) => {
+      request = input;
+      return { text: buildPong(), modelId, backend: "local-server", via: "local-server:127.0.0.1/ollama", fallback: false, ms: 3 };
+    }) as any,
+  });
+
+  assert.equal(result.validation.ok, true);
+  assert.equal(request.modelId, modelId);
+  assert.equal(request.localOnly, true);
+  assert.equal(request.keys, undefined);
+  assert.equal(request.allowPublicFallback, false);
+});
+
 test("oversized revision source is refused before calling a model", async () => {
   let called = false;
   await assert.rejects(() => forgeGameWithAI("add a level", { priorCode: "x".repeat(50_001) }, {
