@@ -852,10 +852,18 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
   await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
 
+  const sessionBeforeHandoff = await sessions.getSession(OWNER, created.id);
   const handoff = await sessions.sendSessionToStudio(OWNER, created.id);
   assert.ok(handoff.projectId);
   assert.ok(handoff.remixSessionId);
-  assert.equal(handoff.remixTrackCount, 2, "A binds its real stems; B binds its passthrough bridge");
+  const expectedAssets = sessionBeforeHandoff.tracks.flatMap((entry) => {
+    const separated = entry.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
+    const playable = separated.length
+      ? separated
+      : entry.stems.filter((stem) => stem.engine === "passthrough-unseparated");
+    return playable.map((stem) => ({ stemId: stem.id, startMs: 0 }));
+  });
+  assert.equal(handoff.remixTrackCount, expectedAssets.length, "every separated layer is retained; passthrough is used only when separation is absent");
 
   // The derived project is a STUDIO project (visible in studio listings).
   const studioList = await service.listStudioProjects(OWNER);
@@ -863,13 +871,17 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
 
   // The remix tracks reference the EXISTING stem asset rows — no new audio.
   const remixTrackRows = await db.db.select().from(schema.remixTracks).where(eq(schema.remixTracks.remixSessionId, handoff.remixSessionId));
-  assert.equal(remixTrackRows.length, 2);
+  assert.equal(remixTrackRows.length, expectedAssets.length);
   const stemIdsBefore = new Set(
     (await db.db.select({ id: schema.stemAssets.id }).from(schema.stemAssets)).map((row) => row.id),
   );
   for (const row of remixTrackRows) {
     assert.ok(stemIdsBefore.has(row.stemAssetId), `remix track ${row.id} references a pre-existing stem`);
   }
+  const clips = await db.db.select().from(schema.remixClips);
+  const handoffClips = clips.filter((clip) => remixTrackRows.some((track) => track.id === clip.remixTrackId));
+  assert.equal(handoffClips.length, remixTrackRows.length, "each mixer lane opens as a visible timeline clip");
+  assert.ok(handoffClips.some((clip) => clip.timelineStartMs > 0), "later session tracks are placed after earlier tracks on the timeline");
   // The source audio count is unchanged (no copies anywhere).
   assert.equal((await db.db.select().from(schema.sourceAssets)).length, 3, "A, B and the other owner's — nothing added");
 

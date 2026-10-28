@@ -1,6 +1,6 @@
 import { isUuid } from "@workspace/arena/lib/api/ids";
 
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   drumAnalyses,
@@ -9,6 +9,8 @@ import {
   harmonyEvents,
   processingJobs,
   projectBuilds,
+  remixSessions,
+  remixTracks,
   sourceAcquisitions,
   sourceAnalyses,
   sourceAssets,
@@ -65,6 +67,28 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       db.select().from(sourceAcquisitions).innerJoin(sourceAssets, eq(sourceAcquisitions.sourceAssetId, sourceAssets.id)).where(eq(sourceAssets.projectId, id)),
       db.select().from(projectBuilds).where(eq(projectBuilds.projectId, id)).orderBy(desc(projectBuilds.updatedAt)).limit(1),
     ]);
+    const projectRemixes = await db.select({ id: remixSessions.id })
+      .from(remixSessions)
+      .where(eq(remixSessions.projectId, id));
+    const linkedStemIds = projectRemixes.length
+      ? [...new Set((await db.select({ stemAssetId: remixTracks.stemAssetId })
+        .from(remixTracks)
+        .where(inArray(remixTracks.remixSessionId, projectRemixes.map((remix) => remix.id))))
+        .map((track) => track.stemAssetId))]
+      : [];
+    const projectStemIds = new Set(stems.map((stem) => stem.id));
+    const externalStemRows = linkedStemIds.length
+      ? await db.select().from(stemAssets).where(inArray(stemAssets.id, linkedStemIds))
+      : [];
+    const linkedStems = externalStemRows.filter((stem) => !projectStemIds.has(stem.id));
+    const linkedProjectIds = [...new Set(linkedStems.map((stem) => stem.projectId))];
+    await Promise.all(linkedProjectIds.map((linkedProjectId) =>
+      requireProjectRole(user.id, linkedProjectId, "viewer"),
+    ));
+    const linkedSourceIds = [...new Set(linkedStems.map((stem) => stem.sourceAssetId))];
+    const linkedSources = linkedSourceIds.length
+      ? await db.select().from(sourceAssets).where(inArray(sourceAssets.id, linkedSourceIds))
+      : [];
     const analysisBySource = new Map(
       analysisRows.map((analysis) => [
         analysis.sourceAssetId,
@@ -117,22 +141,41 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       existing.push(row.vocal_phrases);
       phrasesByStem.set(stemId, existing);
     }
+    const projectSources = sources.map(({ storageKey: _storageKey, ...source }) => ({
+      ...source,
+      analysis: analysisBySource.get(source.id) ?? null,
+      acquisition: acquisitionBySource.get(source.id) ?? null,
+      sectionAnalysis: sectionAnalysisBySource.get(source.id) ?? null,
+      sections: sectionsBySource.get(source.id) ?? [],
+      eventAnalysis: eventAnalysisBySource.get(source.id) ?? null,
+      events: eventsBySource.get(source.id) ?? [],
+      harmonyAnalysis: harmonyAnalysisBySource.get(source.id) ?? null,
+      harmonyEvents: harmonyEventsBySource.get(source.id) ?? [],
+    }));
+    const studioSources = [
+      ...projectSources,
+      ...linkedSources
+        .filter((source) => !sources.some((projectSource) => projectSource.id === source.id))
+        .map(({ storageKey: _storageKey, ...source }) => ({
+          ...source,
+          linkedFromLibrary: true,
+          analysis: null,
+          acquisition: null,
+          sectionAnalysis: null,
+          sections: [],
+          eventAnalysis: null,
+          events: [],
+          harmonyAnalysis: null,
+          harmonyEvents: [],
+        })),
+    ];
     return Response.json({
       project,
       role,
       build: buildRows[0] ?? null,
-      sources: sources.map(({ storageKey: _storageKey, ...source }) => ({
-        ...source,
-        analysis: analysisBySource.get(source.id) ?? null,
-        acquisition: acquisitionBySource.get(source.id) ?? null,
-        sectionAnalysis: sectionAnalysisBySource.get(source.id) ?? null,
-        sections: sectionsBySource.get(source.id) ?? [],
-        eventAnalysis: eventAnalysisBySource.get(source.id) ?? null,
-        events: eventsBySource.get(source.id) ?? [],
-        harmonyAnalysis: harmonyAnalysisBySource.get(source.id) ?? null,
-        harmonyEvents: harmonyEventsBySource.get(source.id) ?? [],
-      })),
-      stems: stems.map(({ storageKey: _storageKey, waveformKey: _waveformKey, ...stem }) => ({
+      sources: projectSources,
+      studioSources,
+      stems: [...stems, ...linkedStems].map(({ storageKey: _storageKey, waveformKey: _waveformKey, ...stem }) => ({
         ...stem,
         drumAnalysis: drumAnalysisByStem.get(stem.id) ?? null,
         drumEvents: drumEventsByStem.get(stem.id) ?? [],

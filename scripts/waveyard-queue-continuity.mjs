@@ -366,10 +366,38 @@ try {
   await studioLink.waitFor();
   assert.equal(
     await studioLink.getAttribute("href"),
-    "/waveyard/projects/derived-studio-project",
-    "a listening-session handoff opens its derived project, not the upload form",
+    "/waveyard/projects/derived-studio-project?view=studio",
+    "a listening-session handoff opens its derived project directly in Studio",
   );
-  console.log("PASS: queue edits converge across tabs without rewinding playback; removals preserve valid session entries and fade behavior");
+  await context.route("**/api/waveyard/projects/derived-studio-project", async (route) => routeJson(route, {
+    project: { title: "Session handoff", description: "Derived from a listening session", licenseCode: "private", visibility: "private", publicationStatus: "draft", moderationStatus: "pending" },
+    role: "owner",
+    build: null,
+    sources: [],
+    studioSources: [{ id: "linked-source", originalFilename: "Session track A", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", mimeType: "audio/wav", fileSizeBytes: 1000, checksumSha256: "source-checksum", linkedFromLibrary: true }],
+    stems: [{ id: "linked-stem", sourceAssetId: "linked-source", stemType: "drums", engine: "test", model: "test", modelVersion: "1", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: 1000, checksumSha256: "stem-checksum" }],
+    waveforms: [],
+    waveformJobs: [],
+    jobs: [],
+  }));
+  await context.route("**/api/waveyard/projects/derived-studio-project/remixes", async (route) => routeJson(route, {
+    remixes: [{ id: "derived-studio-remix" }],
+  }));
+  await context.route("**/api/remixes/derived-studio-remix", async (route) => routeJson(route, {
+    remix: { id: "derived-studio-remix", name: "Session handoff", masterVolume: 1, masterInserts: "[]", loopStartMs: 0, loopEndMs: null, tempoBpm: 120, timeSignatureNumerator: 4, timeSignatureDenominator: 4, gridDivision: "beat", snapEnabled: true, targetKey: null, version: 1 },
+    tracks: [{ id: "derived-remix-track", stemAssetId: "linked-stem", name: "Session track A — drums", sortOrder: 0, volume: 1, pan: 0, muted: false, solo: false, inserts: [], phaseInverted: false, clips: [] }],
+    automation: [],
+    stems: [{ id: "linked-stem", sourceAssetId: "linked-source", stemType: "drums", durationSeconds: 12, sampleRate: 44100, channels: 2, codec: "pcm_s16le", format: "wav", fileSizeBytes: 1000, checksumSha256: "stem-checksum" }],
+  }));
+  await context.route("**/api/remixes/derived-studio-remix/versions", async (route) => routeJson(route, { versions: [] }));
+  await studioLink.click();
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  assert.equal(
+    await page.getByTestId("waveyard-mode-studio").getAttribute("aria-selected"),
+    "true",
+    "the handoff lands in the mixer, with linked session stems mounted",
+  );
+  console.log("PASS: queue continuity and session-to-Studio handoff preserve playback, link the real project, and open its mixer");
 } finally {
   await browser.close();
 }

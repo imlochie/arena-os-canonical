@@ -24,6 +24,7 @@ import {
   listenSessionTracks,
   queueItems,
   projects,
+  remixClips,
   remixSessions,
   remixTracks,
   sourceAnalyses,
@@ -595,23 +596,40 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
   const detail = await sessionPayload(sessionId);
   await ownedSession(ownerId, sessionId);
 
-  const bindable: Array<{ sessionTrack: SessionTrackPayload; stemId: string; stemType: string }> = [];
+  const bindable: Array<{
+    sessionTrack: SessionTrackPayload;
+    stemId: string;
+    stemType: string;
+    timelineStartMs: number;
+    durationMs: number;
+  }> = [];
   const refused: string[] = [];
+  let timelineStartMs = 0;
   for (const sessionTrack of detail.tracks) {
     const trackDetail = await getTrack(ownerId, sessionTrack.track.id);
     if (trackDetail === null || trackDetail.stems.length === 0) {
       refused.push(sessionTrack.track.title);
       continue;
     }
-    // Prefer a real separated stem set; fall back to the passthrough stem.
-    const real = trackDetail.stems.find((stem) => stem.engine !== "passthrough-unseparated");
+    // Carry every separated stem and its current session fader into Studio.
+    // The full-source bridge is only used when no separated stems exist.
+    const real = trackDetail.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
     const passthrough = trackDetail.stems.find((stem) => stem.engine === "passthrough-unseparated");
-    const stem = real ?? passthrough;
-    if (stem === undefined) {
+    const playableStems = real.length > 0 ? real : passthrough ? [passthrough] : [];
+    if (playableStems.length === 0) {
       refused.push(sessionTrack.track.title);
       continue;
     }
-    bindable.push({ sessionTrack, stemId: stem.id, stemType: stem.stemType });
+    for (const stem of playableStems) {
+      bindable.push({
+        sessionTrack,
+        stemId: stem.id,
+        stemType: stem.stemType,
+        timelineStartMs,
+        durationMs: Math.max(1, Math.round(stem.durationSeconds * 1000)),
+      });
+    }
+    timelineStartMs += Math.max(1, Math.round(sessionTrack.track.durationSeconds * 1000));
   }
   if (bindable.length === 0) {
     throw new StemSwapRefusedError(
@@ -640,15 +658,22 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
     .returning({ id: remixSessions.id });
 
   await db.transaction(async (tx) => {
-    for (const [index, entry] of bindable.entries()) {
-      await tx.insert(remixTracks).values({
-        remixSessionId: remix.id,
-        stemAssetId: entry.stemId,
-        name: `${entry.sessionTrack.track.title} — ${entry.stemType}`,
-        sortOrder: index,
-        volume: entry.sessionTrack.stemMix[entry.stemType] ?? 1,
-      });
-    }
+    const createdTracks = await tx.insert(remixTracks).values(bindable.map((entry, sortOrder) => ({
+      remixSessionId: remix.id,
+      stemAssetId: entry.stemId,
+      name: `${entry.sessionTrack.track.title} — ${entry.stemType}`,
+      sortOrder,
+      volume: entry.sessionTrack.stemMix[entry.stemType] ?? 1,
+    }))).returning({ id: remixTracks.id, sortOrder: remixTracks.sortOrder });
+    const idBySortOrder = new Map(createdTracks.map((track) => [track.sortOrder, track.id]));
+    await tx.insert(remixClips).values(bindable.map((entry, sortOrder) => ({
+      remixTrackId: idBySortOrder.get(sortOrder)!,
+      stemAssetId: entry.stemId,
+      timelineStartMs: entry.timelineStartMs,
+      sourceOffsetMs: 0,
+      durationMs: entry.durationMs,
+      gain: 1,
+    })));
   });
 
   return { projectId: project.id, remixSessionId: remix.id, remixTrackCount: bindable.length, refused: refused.length > 0 ? refused.join(", ") : undefined };

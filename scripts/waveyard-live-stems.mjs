@@ -181,10 +181,16 @@ try {
   assert.match(await wheel.getByTestId("camelot-key-8B").getAttribute("class"), /compatible/, "the relative-major 8B cell is highlighted");
   const camelotCell = wheel.getByTestId("camelot-key-3B");
   await camelotCell.scrollIntoViewIfNeeded();
-  assert.ok(await camelotCell.evaluate(button => {
+  const wheelHitTest = await camelotCell.evaluate(button => {
     const rect = button.getBoundingClientRect();
-    return button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
-  }), "wheel button centers must be pointer reachable");
+    const target = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    return {
+      reachable: button.contains(target),
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      target: target ? `${target.tagName.toLowerCase()}${target.id ? `#${target.id}` : ""}.${String(target.className || "").toString().replaceAll(" ", ".")}` : "none",
+    };
+  });
+  assert.ok(wheelHitTest.reachable, `wheel button centers must be pointer reachable: ${JSON.stringify(wheelHitTest)}`);
   await camelotCell.evaluate(button => button.click());
   await wheel.getByRole("button", { name: "Set Test c as next" }).click();
   assert.equal(session.tracks[1].id, "c", "selecting a Camelot key can reorder a compatible session track to next");
@@ -234,8 +240,12 @@ try {
     seekable: Array.from({ length: e.seekable.length }, (_, i) => [e.seekable.start(i), e.seekable.end(i)]) })));
   assert.ok(paused.every(e => Math.abs(e.time - 6) < 0.1), "recipient media must seek, not only the slider");
   await toggle();
-  const offset = await page.evaluate(() => window.audioProbe.buffers.at(-1).startedOffset);
-  assert.ok(Math.abs(offset - 6) < 0.1, `donor resumes from recipient seek, got ${offset}`);
+  const resumed = await page.evaluate(() => ({
+    offset: window.audioProbe.buffers.at(-1).startedOffset,
+    recipientTime: document.querySelector('[data-role="current"] audio')?.currentTime,
+    paused: document.querySelector('[data-role="current"] audio')?.paused,
+  }));
+  assert.ok(Math.abs(resumed.offset - 6) < 0.1, `donor resumes from recipient seek: ${JSON.stringify(resumed)}`);
   await current.getByLabel("vocals source", { exact: true }).selectOption("");
   await page.waitForTimeout(400);
   const originalGain = await page.evaluate(() => window.audioProbe.sources.find(s => s.mediaElement.src.endsWith("/a-vocals")).inputNode.gain.value);

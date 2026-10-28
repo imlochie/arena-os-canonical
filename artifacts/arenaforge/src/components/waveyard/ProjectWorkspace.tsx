@@ -24,6 +24,7 @@ type ProjectData = {
   role: "viewer" | "contributor" | "editor" | "owner";
   build?: { id: string; status: "processing" | "complete" | "failed"; stage: string; requestedSourceCount: number; acceptedSourceCount: number; failedSourceCount: number; remixSessionId: string | null; errorMessage: string | null } | null;
   stems: Stem[];
+  studioSources?: Source[];
   waveforms: any[];
   waveformJobs: Array<{
     id: string;
@@ -67,8 +68,15 @@ function parseJobProgress(metadata: string | null): { done: number; total: numbe
   }
 }
 
-export function ProjectWorkspace({ projectId }: { projectId: string }) {
+export function ProjectWorkspace({
+  projectId,
+  initialView,
+}: {
+  projectId: string;
+  initialView?: "studio";
+}) {
   const [data, setData] = useState<ProjectData | null>(null);
+  const [openStudio, setOpenStudio] = useState(initialView === "studio");
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [refresh, setRefresh] = useState(0);
@@ -79,6 +87,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [preparingEngine, setPreparingEngine] = useState(false);
   const [processorNotice, setProcessorNotice] = useState<string | null>(null);
   const processorChecked = useRef(false);
+
+  useEffect(() => {
+    if (initialView === "studio" || new URLSearchParams(window.location.search).get("view") === "studio") {
+      setOpenStudio(true);
+    }
+  }, [initialView]);
   const finalizingBuild = useRef<string | null>(null);
 
   useEffect(() => {
@@ -446,7 +460,8 @@ async function prepareEngine(model: string, jobId: string) {
           projectId={projectId}
           remixSessionId={data.build?.remixSessionId}
           stems={data.stems}
-          sources={data.sources}
+          sources={data.studioSources ?? data.sources}
+          initialPresentation={openStudio ? "studio" : undefined}
           onDerivedAnalysisRequested={() => setRefresh((value) => value + 1)}
         />
       ) : (

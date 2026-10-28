@@ -38,6 +38,17 @@ async function getRemixAccess(
     .limit(1);
   if (!remix) throw new Response("Remix session not found.", { status: 404 });
   await requireProjectRole(userId, remix.projectId, minimum);
+  const linkedProjectRows = await db
+    .select({ projectId: stemAssets.projectId })
+    .from(remixTracks)
+    .innerJoin(stemAssets, eq(remixTracks.stemAssetId, stemAssets.id))
+    .where(eq(remixTracks.remixSessionId, remix.id));
+  const linkedProjectIds = [...new Set(linkedProjectRows
+    .map((row) => row.projectId)
+    .filter((projectId) => projectId !== remix.projectId))];
+  await Promise.all(linkedProjectIds.map((projectId) =>
+    requireProjectRole(userId, projectId, "viewer"),
+  ));
   return remix;
 }
 
@@ -183,17 +194,34 @@ export async function PUT(
       })
       .from(stemAssets)
       .where(eq(stemAssets.projectId, remix.projectId));
+    const linkedStemRows = existingTracks.length
+      ? await db.select({
+          id: stemAssets.id,
+          sourceAssetId: stemAssets.sourceAssetId,
+          durationSeconds: stemAssets.durationSeconds,
+          projectId: stemAssets.projectId,
+        }).from(stemAssets).where(inArray(stemAssets.id, existingTracks.map((track) => track.stemAssetId)))
+      : [];
+    const linkedProjectIds = [...new Set(linkedStemRows
+      .map((stem) => stem.projectId)
+      .filter((projectId) => projectId !== remix.projectId))];
+    await Promise.all(linkedProjectIds.map((projectId) =>
+      requireProjectRole(user.id, projectId, "viewer"),
+    ));
+    const allowedStems = [...new Map(
+      [...projectStems, ...linkedStemRows].map((stem) => [stem.id, stem]),
+    ).values()];
     const durationByAssetId = new Map(
-      projectStems.map((stem) => [stem.id, stem.durationSeconds * 1000]),
+      allowedStems.map((stem) => [stem.id, stem.durationSeconds * 1000]),
     );
     // Beat snapping resolves source-side metadata at the persistence boundary.
     // Unavailable analysis deliberately leaves freehand coordinates untouched.
-    const sourceIds = [...new Set(projectStems.map((stem) => stem.sourceAssetId))];
+    const sourceIds = [...new Set(allowedStems.map((stem) => stem.sourceAssetId))];
     const analyses = sourceIds.length
       ? await db.select().from(sourceAnalyses).where(inArray(sourceAnalyses.sourceAssetId, sourceIds))
       : [];
     const beatGridBySourceId = new Map(analyses.map((analysis) => [analysis.sourceAssetId, analysis]));
-    const sourceByStemId = new Map(projectStems.map((stem) => [stem.id, stem.sourceAssetId]));
+    const sourceByStemId = new Map(allowedStems.map((stem) => [stem.id, stem.sourceAssetId]));
     input = {
       ...input,
       tracks: input.tracks.map((track) => ({
@@ -214,7 +242,7 @@ export async function PUT(
       )
     )
       return Response.json(
-        { error: "A clip references an asset outside this project." },
+        { error: "A clip references audio unavailable to this arrangement." },
         { status: 403 },
       );
     if (

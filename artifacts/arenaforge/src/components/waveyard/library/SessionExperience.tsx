@@ -1996,9 +1996,12 @@ export default function SessionExperience({
           <p className="sess-handoff" role="status">
             Studio arrangement created with {handoff.remixTrackCount} remix track{handoff.remixTrackCount === 1 ? "" : "s"}
             {handoff.refused && handoff.refused.length > 0 ? ` — ${handoff.refused.length} refused.` : "."}{" "}
-            <Link href={`/waveyard/projects/${handoff.projectId}`}>Open in Studio</Link>
+            <Link href={`/waveyard/projects/${handoff.projectId}?view=studio`}>Open in Studio</Link>
           </p>
         )}
+        <div className="wy-drawer-actions sess-studio-action">
+          <button type="button" className="button secondary" onClick={sendToStudio} data-testid="session-handoff">Send to Studio</button>
+        </div>
 
         <div className="wy-decks">
           <SessionDeck {...deckProps(0)} />
@@ -2113,7 +2116,6 @@ export default function SessionExperience({
             <button type="button" className="button" onClick={addTrack} disabled={addTrackId === ""} data-testid="session-add-track">Add</button>
           </div>
           <div className="wy-drawer-actions">
-            <button type="button" className="button secondary" onClick={sendToStudio} data-testid="session-handoff">Send to Studio</button>
             <Link className="button secondary" href="/waveyard/sessions">All sessions</Link>
           </div>
         </details>

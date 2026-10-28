@@ -67,7 +67,7 @@ const STUDIO_TAB_BLURB = {
   showcase: "Stem deck, visualizer, A/B — the shareable face.",
 } as const;
 
-export function StudioCore({ projectId, remixSessionId, stems, sources, onDerivedAnalysisRequested }: { projectId: string; remixSessionId?: string | null; stems: Stem[]; sources: Source[]; onDerivedAnalysisRequested?: () => void }) {
+export function StudioCore({ projectId, remixSessionId, stems, sources, initialPresentation, onDerivedAnalysisRequested }: { projectId: string; remixSessionId?: string | null; stems: Stem[]; sources: Source[]; initialPresentation?: "studio"; onDerivedAnalysisRequested?: () => void }) {
   const ids = useMemo(() => stems.map((stem) => stem.id), [stems]);
   const duration = useMemo(() => Math.max(0, ...stems.map((stem) => stem.durationSeconds)), [stems]);
   const sourceDurationById = useMemo(() => new Map(stems.map((stem) => [stem.id, Math.round(stem.durationSeconds * 1000)])), [stems]);
@@ -87,6 +87,15 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const [selectedSourceSectionId, setSelectedSourceSectionId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(80);
   const [remix, setRemix] = useState<Remix | null>(null);
+  const arrangementDuration = useMemo(() => {
+    const latestClipEndMs = Math.max(
+      0,
+      ...(remix?.tracks.flatMap((track) =>
+        track.clips.map((clip) => clip.timelineStartMs + clip.durationMs),
+      ) ?? []),
+    );
+    return Math.max(duration, latestClipEndMs / 1000);
+  }, [duration, remix]);
   // Save now can be clicked immediately after an input event, before React has
   // committed its render. Keep the most recently edited arrangement available
   // to that explicit persistence boundary.
@@ -102,7 +111,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
   const [acceptingMeetingPoint, setAcceptingMeetingPoint] = useState<string | null>(null);
   // Presentation is browser-only observation over the same project, selection,
   // transport, and persisted remix state. It never forks musical authority.
-  const [presentation, setPresentation] = useState<"studio" | "play" | "visual">("play");
+  const [presentation, setPresentation] = useState<"studio" | "play" | "visual">(initialPresentation ?? "play");
   /** Progressive disclosure inside the Studio presentation (vision Principle
    *  3): Edit / Analyze / Showcase. Panels genuinely unmount per tab; the
    *  audio graph (useStemTransport) and mixer state live in StudioCore, so
@@ -805,11 +814,12 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
       <CleanupStudio projectId={projectId} />
     </>}
     {studioTab === "analyze" && <>
-      {source && <SourceSectionMap source={source} onUseForSlice={(section) => { setStudioTab("edit"); setSelectedSourceSectionId(section.id); setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` }); }} onArrangementAction={async (section, action, repetitions) => { setStudioTab("edit"); return arrangeSection(section, action, repetitions); }} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
+      {source?.linkedFromLibrary && <p className="notice">Linked library audio. Mix and arrange it here; source analysis stays with the original project.</p>}
+      {source && !source.linkedFromLibrary && <SourceSectionMap source={source} onUseForSlice={(section) => { setStudioTab("edit"); setSelectedSourceSectionId(section.id); setSlicePrefill({ sourceAssetId: source.id, startBeatIndex: section.startBeatIndex, endBeatIndex: section.endBeatIndex, token: `${section.id}:${Date.now()}` }); }} onArrangementAction={async (section, action, repetitions) => { setStudioTab("edit"); return arrangeSection(section, action, repetitions); }} onFindMeetingPoints={findMeetingPoints} onRequestEvents={() => requestSourceEvents(source.id)} />}
       <MeetingPointsPanel points={meetingPoints} busyId={acceptingMeetingPoint} message={meetingMessage} onAccept={async (point) => { setStudioTab("edit"); await acceptMeetingPoint(point); }} />
-      {source && selected && <VocalAnalysisSummary stem={selected} editable onRequestAnalysis={() => requestVocalAnalysis(selected.id)} onExportMidi={selected.stemType === "vocals" ? () => requestMidiExport("vocal", source.id, selected.id) : undefined} />}
-      {source && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} onExportMidi={selected.stemType === "drums" || selected.stemType === "percussion" ? () => requestMidiExport("drums", source.id, selected.id) : undefined} />}
-      {source && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} onExportMidi={() => requestMidiExport("harmony", source.id, selected.id)} />}
+      {source && !source.linkedFromLibrary && selected && <VocalAnalysisSummary stem={selected} editable onRequestAnalysis={() => requestVocalAnalysis(selected.id)} onExportMidi={selected.stemType === "vocals" ? () => requestMidiExport("vocal", source.id, selected.id) : undefined} />}
+      {source && !source.linkedFromLibrary && selected && <DrumAnalysisPanel stem={selected} source={source} onRequestAnalysis={() => requestDrumAnalysis(selected.id)} onExportMidi={selected.stemType === "drums" || selected.stemType === "percussion" ? () => requestMidiExport("drums", source.id, selected.id) : undefined} />}
+      {source && !source.linkedFromLibrary && <HarmonyAnalysisPanel source={source} onRequestAnalysis={() => requestHarmonyAnalysis(source.id)} onExportMidi={() => requestMidiExport("harmony", source.id, selected.id)} />}
       <AIStudio projectId={projectId} />
       <GeneratedLayers projectId={projectId} canEdit />
       <VocalChops projectId={projectId} canEdit />
@@ -833,7 +843,7 @@ export function StudioCore({ projectId, remixSessionId, stems, sources, onDerive
           <label><input aria-label="Snap enabled" type="checkbox" checked={remix.snapEnabled} onChange={(event) => changeRemix((current) => ({ ...current, snapEnabled: event.target.checked }))} /> Snap</label>
           <label>Zoom <input aria-label="Timeline zoom" type="range" min="40" max="180" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /></label>
         </div>
-        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={duration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} selectedClipIds={selectedClipIds} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onSelectedClipIds={setSelectedClipIds} onPreview={previewTimeline} onCommit={commitTimeline} onBatchCommit={batchEditClips} onAutomationEdit={editAutomation} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
+        <ArrangementTimeline remix={arrangementRemix ?? remix} duration={arrangementDuration} positionMs={transport.position * 1000} timing={timing} zoom={zoom} selection={clipSelection} selectedClipIds={selectedClipIds} sourceDurationById={sourceDurationById} sourceBeatByStemId={sourceBeatByStemId} sourceBpmByStemId={sourceBpmByStemId} onSelection={setClipSelection} onSelectedClipIds={setSelectedClipIds} onPreview={previewTimeline} onCommit={commitTimeline} onBatchCommit={batchEditClips} onAutomationEdit={editAutomation} onChange={changeRemix} onSeek={(milliseconds) => transport.seek(milliseconds / 1000)} onDuplicateTrack={(trackId) => void duplicateTrack(trackId)} />
         <ArrangementInspector remix={arrangementRemix ?? remix} selection={clipSelection} positionMs={transport.position * 1000} timing={timing} sourceBpmByStemId={sourceBpmByStemId} sourceKeyByStemId={sourceKeyByStemId} sourceBeatByStemId={sourceBeatByStemId} sourceAssetIdByStemId={sourceAssetIdByStemId} sourceAlignmentByStemId={sourceAlignmentByStemId} comparisonSource={selected ? sourceAlignmentByStemId.get(selected.id) : null} slicePrefill={slicePrefill} onAlignBeat={alignClipBeat} onClipEdit={editClip} onAutomationEdit={(operation, payload) => editAutomation(remix, operation, payload)} onChange={changeRemix} onSelection={setClipSelection} onReload={() => void loadRemix(remix.id)} />
         <VersionHistory versions={versions} onRestore={(id) => void restoreVersion(id)} />
       </> : <p className="notice">Create a remix only after genuine separated stems exist. Waveyard will create tracks and clips that point to those existing assets.</p>}

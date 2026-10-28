@@ -170,6 +170,7 @@ export type Source = {
   mimeType: string;
   fileSizeBytes: number;
   checksumSha256: string;
+  linkedFromLibrary?: boolean;
   analysis?: SourceAnalysis | null;
   acquisition?: { method: string; sourceUrl: string | null; title: string | null; artist: string | null; resolver: string | null; metadata: string; createdAt: string } | null;
   sectionAnalysis?: SourceSectionAnalysis | null;
