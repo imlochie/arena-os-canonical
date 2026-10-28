@@ -151,6 +151,12 @@ try {
     }
     await routeJson(route, { session });
   });
+  await context.route(`**/api/library/sessions/${sessionId}/studio-handoff`, async (route) => {
+    assert.equal(route.request().method(), "POST", "the session handoff is explicitly requested");
+    return routeJson(route, {
+      handoff: { projectId: "derived-studio-project", remixTrackCount: 3, refused: [] },
+    }, 201);
+  });
 
   await page.goto("http://localhost:80/waveyard");
   await page.locator('[data-testid="button-play-550e8400-e29b-41d4-a716-446655440001"]').waitFor();
@@ -355,6 +361,14 @@ try {
   await waitForFixture(() => session.currentSessionTrackId === "session-track-7", "automatic handoff at the selected fade length", 18000);
   await page.reload();
   assert.equal(await page.getByTestId("session-auto-crossfade").isChecked(), true, "the auto-crossfade preference survives reload");
+  await page.getByTestId("session-handoff").click();
+  const studioLink = page.getByRole("link", { name: "Open in Studio" });
+  await studioLink.waitFor();
+  assert.equal(
+    await studioLink.getAttribute("href"),
+    "/waveyard/projects/derived-studio-project",
+    "a listening-session handoff opens its derived project, not the upload form",
+  );
   console.log("PASS: queue edits converge across tabs without rewinding playback; removals preserve valid session entries and fade behavior");
 } finally {
   await browser.close();

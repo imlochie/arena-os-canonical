@@ -1996,7 +1996,7 @@ export default function SessionExperience({
           <p className="sess-handoff" role="status">
             Studio arrangement created with {handoff.remixTrackCount} remix track{handoff.remixTrackCount === 1 ? "" : "s"}
             {handoff.refused && handoff.refused.length > 0 ? ` — ${handoff.refused.length} refused.` : "."}{" "}
-            <Link href={`/waveyard/create?project=${handoff.projectId}`}>Open in Studio</Link>
+            <Link href={`/waveyard/projects/${handoff.projectId}`}>Open in Studio</Link>
           </p>
         )}
 
