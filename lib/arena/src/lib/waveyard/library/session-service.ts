@@ -581,7 +581,7 @@ export interface StudioHandoffResult {
   projectId: string;
   remixSessionId: string;
   remixTrackCount: number;
-  refused?: string;
+  refused?: Array<{ title: string; reason: string }>;
 }
 
 /**
@@ -603,12 +603,16 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
     timelineStartMs: number;
     durationMs: number;
   }> = [];
-  const refused: string[] = [];
+  const refused: Array<{ title: string; reason: string }> = [];
   let timelineStartMs = 0;
   for (const sessionTrack of detail.tracks) {
     const trackDetail = await getTrack(ownerId, sessionTrack.track.id);
-    if (trackDetail === null || trackDetail.stems.length === 0) {
-      refused.push(sessionTrack.track.title);
+    if (trackDetail === null) {
+      refused.push({ title: sessionTrack.track.title, reason: "The source track is no longer available." });
+      continue;
+    }
+    if (trackDetail.stems.length === 0) {
+      refused.push({ title: sessionTrack.track.title, reason: "No separated stems or full-source audio are available." });
       continue;
     }
     // Carry every separated stem and its current session fader into Studio.
@@ -617,7 +621,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
     const passthrough = trackDetail.stems.find((stem) => stem.engine === "passthrough-unseparated");
     const playableStems = real.length > 0 ? real : passthrough ? [passthrough] : [];
     if (playableStems.length === 0) {
-      refused.push(sessionTrack.track.title);
+      refused.push({ title: sessionTrack.track.title, reason: "No separated stems or full-source audio are available." });
       continue;
     }
     for (const stem of playableStems) {
@@ -633,7 +637,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
   }
   if (bindable.length === 0) {
     throw new StemSwapRefusedError(
-      `No session track has audio the Studio can bind (needs separated stems or the full-source bridge): ${refused.join(", ")}.`,
+      `No session track has audio the Studio can bind (needs separated stems or the full-source bridge): ${refused.map((item) => item.title).join(", ")}.`,
     );
   }
 
@@ -676,7 +680,7 @@ export async function sendSessionToStudio(ownerId: string, sessionId: string): P
     })));
   });
 
-  return { projectId: project.id, remixSessionId: remix.id, remixTrackCount: bindable.length, refused: refused.length > 0 ? refused.join(", ") : undefined };
+  return { projectId: project.id, remixSessionId: remix.id, remixTrackCount: bindable.length, refused: refused.length > 0 ? refused : undefined };
 }
 
 /** Analysis for the compatibility panel: BPM/key/beat grid per session track. */

@@ -1,6 +1,7 @@
 // Isolated real-browser audio-graph regression. Session persistence is mocked;
 // generated WAV bytes are decoded and played by the real application engine.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 const require = createRequire(new URL("../artifacts/api-server/package.json", import.meta.url));
 const { chromium } = require("playwright-core");
@@ -18,6 +19,7 @@ function wav(seconds, frequency) {
 }
 const assets = new Map();
 assets.set("a-source", wav(20, 130));
+assets.set("b-source", wav(8, 230));
 const tracks = ["a", "b", "c"].map((id, index) => {
   const duration = [20, 8, 12][index];
   const stems = types.map((stemType, i) => {
@@ -50,6 +52,14 @@ let heldAssetGate = null;
 let signalHeldAssetRequest = null;
 const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+const studioProjectId = "00000000-0000-4000-8000-000000000008";
+const studioRemixId = "00000000-0000-4000-8000-000000000009";
+let failStudioHandoff = false;
+let studioProjectData = null;
+let studioRemixData = null;
+const assetSnapshot = () => [...assets.entries()]
+  .map(([id, bytes]) => [id, createHash("sha256").update(bytes).digest("hex")])
+  .sort(([left], [right]) => left.localeCompare(right));
 const browser = await chromium.launch({ executablePath: "/repl/tools/bin/chromium",
   args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"] });
 try {
@@ -165,9 +175,94 @@ try {
     } else if (request.method() === "DELETE") {
       session.swaps = session.swaps.filter(s => s.id !== url.searchParams.get("swapId"));
     } else if (url.pathname.endsWith("/state") && body) Object.assign(session, body);
-    else if (request.method() === "PATCH" && body) Object.assign(tracks.find(t => t.id === url.pathname.split("/").at(-1)), body);
+    else if (request.method() === "PATCH" && body) {
+      const targetId = url.pathname.split("/").at(-1);
+      const sessionTrack = session.tracks.find(item => item.id === targetId);
+      if (sessionTrack) Object.assign(sessionTrack, body);
+      else Object.assign(tracks.find(t => t.id === targetId), body);
+    }
     await route.fulfill({ json: { session } });
   });
+  await context.route(`**/api/library/sessions/${sessionId}/studio-handoff`, async route => {
+    assert.equal(route.request().method(), "POST", "the session-to-Studio handoff is explicitly requested");
+    if (failStudioHandoff) {
+      return route.fulfill({ status: 503, json: { error: "Studio is temporarily unavailable. Try again." } });
+    }
+    let timelineStartMs = 0;
+    const sources = [];
+    const stems = [];
+    const remixTracks = [];
+    const refused = [];
+    for (const item of session.tracks) {
+      if (item.stems.length === 0) {
+        refused.push({ title: item.track.title, reason: "No separated stems or full-source audio are available." });
+        continue;
+      }
+      const sourceId = item.sourceAssetId ?? `${item.track.id}-source`;
+      if (!sources.some(source => source.id === sourceId)) {
+        sources.push({
+          id: sourceId, originalFilename: `${item.track.title} original.wav`,
+          durationSeconds: item.track.durationSeconds, sampleRate: 22050, channels: 1,
+          codec: "pcm_s16le", mimeType: "audio/wav", fileSizeBytes: 1000,
+          checksumSha256: createHash("sha256").update(assets.get(sourceId) ?? Buffer.alloc(0)).digest("hex"),
+          linkedFromLibrary: true,
+        });
+      }
+      for (const stem of item.stems) {
+        stems.push({
+          id: stem.id, sourceAssetId: sourceId, stemType: stem.stemType, engine: stem.engine,
+          model: "synthetic-fixture", modelVersion: "1", durationSeconds: item.track.durationSeconds,
+          sampleRate: 22050, channels: 1, codec: "pcm_s16le", format: "wav",
+          fileSizeBytes: 1000, checksumSha256: `checksum-${stem.id}`,
+        });
+        const trackId = `studio-${item.id}-${stem.stemType}`;
+        remixTracks.push({
+          id: trackId, stemAssetId: stem.id, name: `${item.track.title} — ${stem.stemType}`,
+          sortOrder: remixTracks.length, volume: item.stemMix[stem.stemType] ?? 1,
+          pan: 0, muted: false, solo: false, inserts: [], phaseInverted: false,
+          clips: [{
+            id: `clip-${trackId}`, remixTrackId: trackId, stemAssetId: stem.id,
+            timelineStartMs, sourceOffsetMs: 0,
+            durationMs: Math.round(item.track.durationSeconds * 1000), gain: 1,
+            beatSnapEnabled: false, tempoRatio: 1,
+          }],
+        });
+      }
+      timelineStartMs += Math.max(1, Math.round(item.track.durationSeconds * 1000));
+    }
+    studioProjectData = {
+      project: {
+        title: `Session · ${session.name}`,
+        description: "Derived from this listening session. Original tracks and stems are referenced, never copied or modified.",
+        licenseCode: "private", visibility: "private", publicationStatus: "draft", moderationStatus: "pending",
+      },
+      role: "owner", build: null, sources, studioSources: sources, stems, waveforms: [], waveformJobs: [], jobs: [],
+    };
+    studioRemixData = {
+      remix: {
+        id: studioRemixId, name: `Session · ${session.name}`, masterVolume: 1,
+        masterInserts: "[]", loopStartMs: 0, loopEndMs: null, tempoBpm: 120,
+        timeSignatureNumerator: 4, timeSignatureDenominator: 4,
+        gridDivision: "beat", snapEnabled: true, targetKey: null, version: 1,
+      },
+      tracks: remixTracks, automation: [],
+    };
+    return route.fulfill({
+      status: 201,
+      json: { handoff: {
+        projectId: studioProjectId, remixSessionId: studioRemixId,
+        remixTrackCount: remixTracks.length, refused: refused.length ? refused : undefined,
+      } },
+    });
+  });
+  await context.route(`**/api/waveyard/projects/${studioProjectId}`, route =>
+    route.fulfill({ json: studioProjectData ?? {} }));
+  await context.route(`**/api/waveyard/projects/${studioProjectId}/remixes`, route =>
+    route.fulfill({ json: { remixes: [{ id: studioRemixId }] } }));
+  await context.route(`**/api/remixes/${studioRemixId}`, route =>
+    route.fulfill({ json: studioRemixData ?? {} }));
+  await context.route(`**/api/remixes/${studioRemixId}/versions`, route =>
+    route.fulfill({ json: { versions: [] } }));
   await page.goto("http://localhost:80/waveyard");
   await page.evaluate(() => localStorage.clear());
   await page.reload();
@@ -468,7 +563,73 @@ try {
   assert.ok(types.every(type => retryGains.filter(source => source.url.endsWith(`/a-${type}`)).at(-1)?.gain < 0.01),
     "the stem layers are silent after the retry completes");
 
+  const missingStudioTrack = {
+    ...tracks[2], id: "session-missing", position: 2,
+    track: { ...tracks[2].track, id: "missing", title: "Unavailable session track" },
+    sourceAssetId: null, stems: [], playback: { kind: "source", assetIds: ["a-source"] }, stemMix: {},
+  };
+  const liveMixTracks = tracks.slice(0, 2).map((item, index) => ({
+    ...item,
+    position: index,
+    sourceAssetId: index === 0 ? "a-source" : "b-source",
+    stemMix: index === 0
+      ? { vocals: 0.42, drums: 0.78, bass: 1, other: 1 }
+      : { vocals: 1, drums: 1, bass: 0.31, other: 1 },
+  }));
+  session.tracks = [...liveMixTracks, missingStudioTrack];
+  session.currentSessionTrackId = "a";
+  session.positionSeconds = 0;
+  session.swaps = [];
+  exposeSeparatedSource = false;
+  await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].length === 4 &&
+    [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.readyState === 4));
+  assert.equal(await page.getByLabel("vocals level, current deck").inputValue(), "0.42",
+    "the live session loads its saved stem mix before handoff");
+  const sourceAssetsBeforeHandoff = assetSnapshot();
+  await page.getByTestId("session-handoff").click();
+  const studioLink = page.getByRole("link", { name: "Open in Studio" });
+  await studioLink.waitFor();
+  const handoffResult = await page.getByTestId("session-status").textContent();
+  assert.match(handoffResult, /Sent to Studio as a derived arrangement/);
+  assert.match(await studioLink.locator("xpath=..").textContent(), /8 remix tracks/);
+  assert.match(await studioLink.locator("xpath=..").textContent(), /Unavailable session track/);
+  assert.match(await studioLink.locator("xpath=..").textContent(), /No separated stems or full-source audio are available/);
+  assert.equal(await studioLink.getAttribute("href"),
+    `/waveyard/projects/${studioProjectId}?view=studio`,
+    "the handoff link opens the derived project directly in Studio");
+  await studioLink.click();
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  await page.waitForFunction(() => document.querySelectorAll(".timeline-track").length === 8);
+  assert.equal(await page.getByTestId("waveyard-mode-studio").getAttribute("aria-selected"), "true",
+    "the derived project opens in the Studio presentation");
+  assert.equal(await page.locator(".timeline-track").count(), 8,
+    "both separated songs contribute four editable arrangement lanes");
+  assert.equal(await page.locator(".timeline-track .clip").count(), 8,
+    "every generated lane has a timeline clip");
+  const clipOffsets = await page.locator(".timeline-track .clip").evaluateAll(elements =>
+    elements.map(element => Number.parseFloat(element.style.left)),
+  );
+  assert.ok(clipOffsets.some(offset => offset > 0), "the second song is placed after the first on the arrangement timeline");
+  const vocalsVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
+  await vocalsVolume.waitFor();
+  assert.equal(await vocalsVolume.inputValue(), "0.42",
+    "the saved session fader is carried into the editable Studio arrangement");
+  await vocalsVolume.fill("0.55");
+  assert.equal(await vocalsVolume.inputValue(), "0.55", "the generated arrangement volume control is editable");
+  assert.deepEqual(assetSnapshot(), sourceAssetsBeforeHandoff,
+    "creating and editing the derived arrangement leaves original audio assets unchanged");
+
+  await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+  await page.waitForFunction(() => document.querySelector('[data-testid="session-handoff"]'));
+  failStudioHandoff = true;
+  await page.getByTestId("session-handoff").click();
+  await page.getByTestId("session-status").filter({ hasText: "Studio is temporarily unavailable" }).waitFor();
+  assert.equal(await page.getByRole("link", { name: "Open in Studio" }).count(), 0,
+    "a failed handoff does not show a misleading project link");
+  failStudioHandoff = false;
+
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile must not overflow");
-  console.log("PASS: upload-to-mixer handoff, live swaps, seek/resume, gapless handoffs, failed-source recovery, mobile width");
+  console.log("PASS: live stems and source recovery; session-to-Studio creates editable lanes, explains refusals, preserves source assets, and reports failure");
 } finally { await browser.close(); }
