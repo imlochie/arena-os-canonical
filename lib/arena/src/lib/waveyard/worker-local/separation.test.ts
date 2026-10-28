@@ -319,7 +319,89 @@ test("waveform recovery does not requeue a job completed after its pending read"
       .from(waveformJobs)
       .where(eq(waveformJobs.id, stillPending.id));
     assert.equal(requeued.status, "queued");
-    assert.equal(requeued.stage, "recovery-submitting");
+    assert.match(requeued.stage, /^recovery-submitting:\d+:[0-9a-f-]+$/);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform recovery keeps a completed waveform when enqueue throws after worker completion", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async (payload) => {
+      await handleWaveformJob(payload as unknown as Record<string, unknown>, {
+        db: f.database,
+        generateWaveform: async () => validWaveformDocument(),
+      });
+      throw new Error("Queue acknowledgement failed after accepting the job");
+    });
+
+    const [completed] = await f.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, job.id));
+    const assets = await f.database
+      .select()
+      .from(waveformAssets)
+      .where(eq(waveformAssets.waveformJobId, job.id));
+
+    assert.deepEqual(recovery.requeuedJobIds, [job.id]);
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.equal(completed.status, "complete");
+    assert.equal(completed.stage, "complete");
+    assert.equal(assets.length, 1);
+    assert.equal(await getStorage().exists(assets[0]!.storageKey), true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform recovery records a genuine queue submission failure", async () => {
+  const f = await fixture();
+  try {
+    const job = await createSourceWaveformJob(f);
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async () => {
+      throw new Error("Local waveform queue is unavailable");
+    });
+
+    const [failed] = await f.database
+      .select()
+      .from(waveformJobs)
+      .where(eq(waveformJobs.id, job.id));
+    assert.deepEqual(recovery.requeuedJobIds, []);
+    assert.deepEqual(recovery.failedJobIds, [job.id]);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.stage, "queue-unavailable");
+    assert.equal(failed.errorCode, "queue_unavailable");
+    assert.match(failed.errorMessage ?? "", /Local waveform queue is unavailable/);
+  } finally {
+    await f.close();
+  }
+});
+
+test("waveform recovery reclaims a queue claim left by a stopped process", async () => {
+  const f = await fixture();
+  try {
+    const [job] = await f.database
+      .insert(waveformJobs)
+      .values({
+        projectId: f.project.id,
+        sourceAssetId: f.source.id,
+        status: "queued",
+        stage: "recovery-submitting:999999999:abandoned-claim",
+        idempotencyKey: `waveform:recovery-abandoned-claim:${f.source.id}`,
+      })
+      .returning();
+    const dispatched: string[] = [];
+
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async (payload) => {
+      dispatched.push(payload.waveformJobId);
+    });
+
+    assert.deepEqual(recovery.requeuedJobIds, [job.id]);
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.deepEqual(dispatched, [job.id]);
   } finally {
     await f.close();
   }
