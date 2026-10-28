@@ -19,7 +19,7 @@ import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/ret
 import type { OpenedEngine, SeparationHandlerDeps } from "./separation";
 import { handleSeparationJob } from "./separation";
 import { fixture, identityEngine, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
-import { recoverInterruptedLocalSeparationJobs } from "./recovery";
+import { recoverInterruptedLocalSeparationJobs, recoverPendingLocalWaveformJobs } from "./recovery";
 
 const KIM = findMdxModel("kim_vocal_2")!;
 type Fixture = SeparationFixture;
@@ -96,6 +96,42 @@ test("full pipeline: fake identity session → stems stored, decoded back, and a
       assert.equal(j.status, "failed");
       assert.equal(j.errorCode, "queue_unavailable");
     }
+  } finally {
+    await f.close();
+  }
+});
+
+test("startup recovery enqueues persisted waveform jobs once for every saved stem", async () => {
+  const f = await fixture();
+  try {
+    await handleSeparationJob(payloadOf(f), {
+      db: f.database,
+      openEngine: identityEngine(),
+      // The separation transaction commits its stem and waveform rows, but the
+      // process stops before the local broker receives any waveform jobs.
+      enqueueWaveform: async () => undefined,
+    });
+
+    const [separation] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    assert.equal(separation.status, "complete");
+    const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+    const pending = await f.database.select().from(waveformJobs).where(eq(waveformJobs.projectId, f.project.id));
+    const stemJobs = pending.filter((job) => job.stemAssetId !== null);
+    assert.equal(stems.length, 2);
+    assert.equal(stemJobs.length, stems.length);
+    assert.ok(stemJobs.every((job) => job.status === "queued"));
+
+    const dispatched: Array<{ waveformJobId: string; projectId: string; stemAssetId?: string }> = [];
+    const recovery = await recoverPendingLocalWaveformJobs(f.database, async (payload) => {
+      dispatched.push(payload);
+    });
+
+    assert.deepEqual(recovery.resetJobIds, []);
+    assert.deepEqual(new Set(recovery.enqueuedJobIds), new Set(stemJobs.map((job) => job.id)));
+    assert.deepEqual(recovery.failedJobIds, []);
+    assert.equal(dispatched.length, stems.length);
+    assert.deepEqual(new Set(dispatched.map((payload) => payload.stemAssetId)), new Set(stems.map((stem) => stem.id)));
+    assert.equal(new Set(dispatched.map((payload) => payload.waveformJobId)).size, stems.length);
   } finally {
     await f.close();
   }

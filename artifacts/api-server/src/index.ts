@@ -4,6 +4,7 @@ import {
   startLocalWorker,
   drainLocalWorker,
   recoverInterruptedLocalSeparationJobs,
+  recoverPendingLocalWaveformJobs,
 } from "@workspace/arena/lib/waveyard/worker-local";
 import { db, pool } from "@workspace/db";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
@@ -29,10 +30,14 @@ if (worker) {
   // The in-memory broker and worker threads belonged to the previous API
   // process. Mark its jobs retryable and remove only their abandoned temp dirs.
   const recovery = await recoverInterruptedLocalSeparationJobs(db);
+  const waveformRecovery = await recoverPendingLocalWaveformJobs(db);
   logger.info({
     queues: worker.registeredQueues(),
     interrupted: recovery.interruptedJobIds.length,
     cleanedTempDirectories: recovery.cleanedTempDirectories.length,
+    resetWaveforms: waveformRecovery.resetJobIds.length,
+    enqueuedWaveforms: waveformRecovery.enqueuedJobIds.length,
+    waveformQueueFailures: waveformRecovery.failedJobIds.length,
   }, "Waveyard local processors ready");
 }
 

@@ -69,6 +69,7 @@ export type SeparationHandlerDeps = {
   /** Opens the verified model and returns the inference seam. */
   openEngine?: (spec: MdxModelSpec, requestedDevice: "auto" | "cpu" | "cuda") => Promise<OpenedEngine>;
   decode?: typeof decodeSourceToStereoPcm;
+  enqueueWaveform?: typeof enqueueWaveform;
   /** The deep pass (owner-prepared Demucs, separation/deep.ts). Injectable
    *  so the e2e test drives the FULL pipeline with a stub engine. */
   runDeep?: typeof runDeepSeparation;
@@ -574,7 +575,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     // a retry. Each durable job records its own failure boundary.
     for (const waveformJob of durableWork) {
       try {
-        await enqueueWaveform({
+        await (deps.enqueueWaveform ?? enqueueWaveform)({
           waveformJobId: waveformJob.id,
           projectId: job.projectId,
           stemAssetId: waveformJob.stemAssetId!,
