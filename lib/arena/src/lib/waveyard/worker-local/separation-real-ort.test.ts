@@ -8,11 +8,12 @@
  * persistence — against the same PGlite + local-storage + ffmpeg fixture
  * the fake-session e2e uses.
  *
- * What this does NOT prove: separation quality. The registry model weights
- * (Kim_Vocal_2.onnx, 66.8 MB, sha-pinned) cannot be downloaded in this
- * environment (network policy) and must never be fabricated — so this test
- * injects a hand-crafted REAL ONNX model whose graph is a pass-through
- * (Identity). The assertions are therefore SIGNAL-PATH assertions:
+ * What this does NOT prove: separation quality. The deterministic signal-path
+ * test injects a hand-crafted REAL ONNX model whose graph is a pass-through
+ * (Identity). When the pinned Kim weights are already installed locally, a
+ * separate gated test verifies their exact checksum and runs the production
+ * worker/retry path. That proves real-weight execution and persistence, not
+ * subjective separation quality:
  *
  *   primary stem ≈ the source mixture   (the entire STFT→ORT→ISTFT chain
  *                                        reconstructs what went in)
@@ -32,8 +33,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { eq } from "drizzle-orm";
 
@@ -42,6 +45,7 @@ import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { stemAssets, processingJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
+import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
 import type { OpenedEngine } from "./separation";
 import { demixMdxInWorker, handleSeparationJob } from "./separation";
 import { executionProviderAttempts, WAVEYARD_ORT_INTRA_OP_THREADS } from "@workspace/arena/lib/waveyard/separation/session";
@@ -216,6 +220,54 @@ test("real onnxruntime session: the separation pipeline executes and reconstruct
     // the real model's conv nets are the missing variable. Recorded for the
     // acceptance protocol's baseline comparison.
     assert.ok(elapsedMs > 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a pinned local Kim model completes a failed separation through the production worker on retry", { timeout: 180_000 }, async (t) => {
+  const f = await fixture();
+  try {
+    const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+    const workspaceRoot = resolve(arenaRoot, "../..");
+    const pinnedModelPath = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models", KIM.file);
+    if (!existsSync(pinnedModelPath)) {
+      t.skip("Pinned Kim model is not installed locally; the deterministic ONNX plumbing test remains available.");
+      return;
+    }
+    assert.equal(await checksumFile(pinnedModelPath), KIM.sha256, "only the registry-pinned model may run");
+    await copyFile(pinnedModelPath, join(f.modelsDir, KIM.file));
+    await f.database
+      .update(processingJobs)
+      .set({
+        status: "failed",
+        stage: "failed",
+        errorCode: "separation_unavailable",
+        errorMessage: "A previous attempt could not open the model.",
+        completedAt: new Date(),
+      })
+      .where(eq(processingJobs.id, f.job.id));
+
+    const startedAt = Date.now();
+    const retry = await retrySeparationJob(f.database, f.job.id, {
+      handOff: async () => handleSeparationJob(payloadOf(f), { db: f.database }),
+    });
+    const elapsedMs = Date.now() - startedAt;
+    assert.deepEqual(retry, { queued: true });
+
+    const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    assert.equal(job.status, "complete", "the real worker completes the retried durable row");
+    assert.equal(job.errorCode, null);
+    assert.ok(job.resolvedDevice === "cpu" || job.resolvedDevice === "cuda");
+    const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+    assert.equal(stems.length, 2, "the retry persists exactly one real-model stem set");
+    for (const stem of stems) {
+      const storedPath = getStorage().getLocalPath(stem.storageKey);
+      assert.ok(storedPath && existsSync(storedPath), `the ${stem.stemType} output exists in storage`);
+    }
+    t.diagnostic(
+      `Pinned Kim model retry completed on ${job.resolvedDevice} in ${elapsedMs} ms for the 1-second synthetic fixture; this is execution evidence, not a separation-quality or Windows benchmark.`,
+    );
   } finally {
     await f.close();
   }
