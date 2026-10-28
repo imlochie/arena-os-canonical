@@ -29,6 +29,14 @@ export class SeparationUnavailableError extends Error {
   }
 }
 
+/** Keep one model bounded while allowing a little CPU parallelism. */
+export const WAVEYARD_ORT_INTRA_OP_THREADS = 2;
+
+/** Auto prefers a supported GPU; CPU is the honest fallback. */
+export function executionProviderAttempts(requestedDevice: "auto" | "cpu" | "cuda"): string[][] {
+  return requestedDevice === "cpu" ? [["cpu"]] : [["cuda"], ["cpu"]];
+}
+
 /** The minimal ort surface the engine needs (both real and fake sessions). */
 export interface MdxSessionLike {
   run(feeds: Record<string, { data: Float32Array; dims: number[] }>): Promise<Record<string, { data: Float32Array; dims: number[] }>>;

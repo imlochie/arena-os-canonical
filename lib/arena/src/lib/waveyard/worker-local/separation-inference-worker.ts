@@ -5,6 +5,8 @@ import {
   loadOrtModule,
   sessionInfer,
   SeparationUnavailableError,
+  executionProviderAttempts,
+  WAVEYARD_ORT_INTRA_OP_THREADS,
   verifyModelFile,
   type MdxSessionLike,
 } from "@workspace/arena/lib/waveyard/separation/session";
@@ -30,7 +32,7 @@ async function run() {
     );
   }
 
-  const attempts: string[][] = request.requestedDevice === "cuda" ? [["cuda"], ["cpu"]] : [["cpu"]];
+  const attempts = executionProviderAttempts(request.requestedDevice);
   let session: MdxSessionLike | undefined;
   let resolvedDevice: string | undefined;
   let lastError: unknown = null;
@@ -40,7 +42,7 @@ async function run() {
         executionProviders,
         // Keep inference bounded so it can share a machine with playback and
         // ordinary API work. The full JS demix pipeline also stays off-thread.
-        intraOpNumThreads: 1,
+        intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         interOpNumThreads: 1,
         enableCpuMemArena: false,
         enableMemPattern: false,

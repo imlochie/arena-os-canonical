@@ -53,9 +53,11 @@ import {
 import { runDeepSeparation } from "@workspace/arena/lib/waveyard/separation/deep";
 import { DEEP_MODEL_ID, isDeepSeparationMode } from "@workspace/arena/lib/waveyard/separation/modes";
 import {
+  executionProviderAttempts,
   loadOrtModule,
   sessionInfer,
   SeparationUnavailableError,
+  WAVEYARD_ORT_INTRA_OP_THREADS,
   verifyModelFile,
   type MdxSessionLike,
 } from "@workspace/arena/lib/waveyard/separation/session";
@@ -81,12 +83,6 @@ export type OpenedEngine = {
   resolvedDevice: string;
 };
 
-/** Explicit CPU skips GPU; auto and CUDA try it first, then honestly fall
- *  back to CPU. resolvedDevice records what actually ran. */
-export function executionProviderAttempts(requestedDevice: "auto" | "cpu" | "cuda"): string[][] {
-  return requestedDevice === "cpu" ? [["cpu"]] : [["cuda"], ["cpu"]];
-}
-
 /** Production engine opener: verify the model file's checksum, then create
  *  an onnxruntime session using the requested device policy. */
 async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "cpu" | "cuda"): Promise<OpenedEngine> {
@@ -108,7 +104,7 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
         executionProviders,
         // The API shares memory/CPU with playback metadata and the desktop
         // shell. Four retained ORT arenas can exhaust ordinary machines.
-        intraOpNumThreads: 2,
+        intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         interOpNumThreads: 1,
         enableCpuMemArena: false,
         enableMemPattern: false,

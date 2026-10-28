@@ -43,7 +43,8 @@ import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { stemAssets, processingJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
 import type { OpenedEngine } from "./separation";
-import { demixMdxInWorker, executionProviderAttempts, handleSeparationJob } from "./separation";
+import { demixMdxInWorker, handleSeparationJob } from "./separation";
+import { executionProviderAttempts, WAVEYARD_ORT_INTRA_OP_THREADS } from "@workspace/arena/lib/waveyard/separation/session";
 import { fixture, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 
 const KIM = findMdxModel("kim_vocal_2")!;
@@ -52,6 +53,7 @@ test("automatic separation prefers CUDA and falls back to CPU", () => {
   assert.deepEqual(executionProviderAttempts("auto"), [["cuda"], ["cpu"]]);
   assert.deepEqual(executionProviderAttempts("cuda"), [["cuda"], ["cpu"]]);
   assert.deepEqual(executionProviderAttempts("cpu"), [["cpu"]]);
+  assert.equal(WAVEYARD_ORT_INTRA_OP_THREADS, 2);
 });
 
 // ------------------------------------------------------ hand-crafted ONNX
