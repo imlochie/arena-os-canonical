@@ -2086,6 +2086,10 @@ export default function SessionExperience({
     const donors = session.tracks.filter((item) =>
       item.track.id !== currentItem.track.id && validateStemSwap(currentItem.stems, item.stems, stemType).ok,
     );
+    const selectedDonorBpm = swap === undefined ? null
+      : session.tracks.find((item) => item.track.id === swap.toTrackId)?.analysis?.bpm
+        ?? library.find((item) => item.id === swap.toTrackId)?.analysis?.bpm
+        ?? null;
     const inSession = new Set(session.tracks.map((item) => item.track.id));
     const libraryDonors = library.filter((item) => !inSession.has(item.id) &&
       item.id !== currentItem.track.id &&
@@ -2114,6 +2118,17 @@ export default function SessionExperience({
           {donors.map((donor) => <option key={donor.id} value={donor.track.id}>{donor.track.title}</option>)}
           {libraryDonors.map((donor) => <option key={donor.id} value={donor.id}>{donor.title}</option>)}
         </select>
+        {swap && (
+          <small role="status" data-testid={`live-stem-tempo-${stemType}`}>
+            {pendingSwap
+              ? "Preparing live layer…"
+              : activeSwapTempoStretchRatios[stemType] !== undefined
+                ? "Tempo matched · pitch preserved"
+                : selectedDonorBpm !== null
+                  ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
+                  : "Tempo unavailable · native tempo"}
+          </small>
+        )}
         {donors.length === 0 && libraryDonors.length === 0 && <small>Separate a track with {stemType} to swap in a layer.</small>}
       </div>
     );

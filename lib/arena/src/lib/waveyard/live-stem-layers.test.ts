@@ -141,6 +141,30 @@ test("tempo-matched donor audio is prepared before the original layer fades out"
   } finally { f.layers.dispose(); }
 });
 
+test("a newer donor cancels stale tempo preparation before it can take over", async () => {
+  let started!: () => void;
+  let firstSignal: AbortSignal | null = null;
+  const workerStarted = new Promise<void>((resolve) => { started = resolve; });
+  const f = fixture((_context, _buffer, ratio, signal) => {
+    if (ratio !== 0.8) return Promise.resolve({ duration: 3 } as AudioBuffer);
+    firstSignal = signal;
+    started();
+    return new Promise<AudioBuffer>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("Preparation cancelled.")), { once: true });
+    });
+  });
+  globalThis.fetch = async () => response();
+  try {
+    const stale = f.layers.replace("vocals", "/slow-donor", 0.8);
+    await workerStarted;
+    await f.layers.replace("vocals", "/latest-donor");
+    await stale;
+    assert.equal(firstSignal?.aborted, true);
+    assert.equal(f.sources.length, 1, "only the latest selection starts audio");
+    assert.equal(f.channel.inputGain.gain.value, 0, "the original fades only for the latest ready donor");
+  } finally { f.layers.dispose(); }
+});
+
 test("a rapid donor change holds the in-progress crossfade before starting the next one", async () => {
   const f = fixture();
   globalThis.fetch = async () => response();

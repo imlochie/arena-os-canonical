@@ -565,6 +565,8 @@ try {
   const tempoMatchedDonorDuration = await page.evaluate(() => window.audioProbe.buffers.at(-1).buffer.duration);
   assert.ok(Math.abs(tempoMatchedDonorDuration - (8 * 124 / 120)) < 0.08,
     `a 124 BPM donor is pitch-preservingly matched to the 120 BPM recipient: ${tempoMatchedDonorDuration}`);
+  assert.equal(await current.getByTestId("live-stem-tempo-vocals").innerText(),
+    "Tempo matched · pitch preserved", "the UI confirms tempo sync only after preparation succeeds");
   await toggle();
   const seek = current.getByTestId("seek-deck-0");
   await seek.fill("6");
@@ -613,7 +615,8 @@ try {
   const buffersBeforeExternalSwap = await page.evaluate(() => window.audioProbe.buffers.length);
   await currentVocals.selectOption("d");
   await page.waitForFunction((beforeCount) => window.audioProbe.buffers.length > beforeCount &&
-    [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > 10));
+    [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > 10),
+  buffersBeforeExternalSwap);
   assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "d", "library donor is saved without being added to the session queue");
   const externalResume = await page.evaluate(() => ({
     offset: window.audioProbe.buffers.at(-1).startedOffset,
@@ -622,6 +625,8 @@ try {
   const externalOffsetError = loopOffsetError(externalResume.offset, externalResume.recipientTimeAtStart, 4);
   assert.ok(Number.isFinite(externalResume.recipientTimeAtStart) && externalOffsetError < 0.15,
     `external library donor follows recipient clock: ${JSON.stringify(externalResume)}`);
+  assert.equal(await current.getByTestId("live-stem-tempo-vocals").innerText(),
+    "Tempo unavailable · native tempo", "missing BPM is shown honestly instead of implying tempo sync");
   failAsset = "c-bass";
   await current.getByLabel("bass source", { exact: true }).selectOption("c");
   await current.getByRole("alert").waitFor();
