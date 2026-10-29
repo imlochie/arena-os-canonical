@@ -27,6 +27,12 @@ Do not chase separation speed by weakening model verification or opening multipl
 
 **How to apply:** Profile the actual inference on the intended machine and real audio before changing checksum guarantees, session lifetime, or concurrency.
 
+In the Replit Linux runtime, ONNX Runtime may log a missing shared CUDA provider library before successfully falling back to CPU.
+
+**Why:** A passing run after that warning proves the CPU fallback, not that CUDA or any Windows execution provider works.
+
+**How to apply:** Read the resolved device from the completed job and keep the provider warning distinct from inference failure; do not treat the Linux fallback as target-device evidence.
+
 Treat a physical playback deck's audio graph as longer-lived than its selected song, and bind media source nodes to actual media elements rather than asset identifiers alone.
 
 **Why:** HTML media time can advance even when its Web Audio graph is closed or disconnected. Element volume is not proof that gain, mute, or solo still works.
