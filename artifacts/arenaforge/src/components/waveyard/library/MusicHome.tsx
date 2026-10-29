@@ -28,6 +28,7 @@ import {
 } from "@workspace/arena/lib/waveyard/library/collections";
 
 const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
+const MAX_PARALLEL_LIBRARY_UPLOAD_BYTES = 64 * 1024 * 1024;
 
 interface TrackSummary {
   id: string;
@@ -263,6 +264,7 @@ export function MusicHome() {
   const [search, setSearch] = useState("");
   const [importUrl, setImportUrl] = useState("");
   const [adding, setAdding] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number } | null>(null);
   const [retryableUploads, setRetryableUploads] = useState<RetryableLibraryUpload[]>([]);
   const uploadInFlight = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -476,37 +478,59 @@ export function MusicHome() {
       setAdding(true);
       setMessage(null);
       const failures: Array<{ file: File; reason: string; retryable: boolean }> = [];
-      const trackIds: string[] = [];
-      let added = 0;
-      let separationUnavailable = false;
+      const failuresByIndex: Array<{ file: File; reason: string; retryable: boolean } | undefined> = [];
+      const trackIdsByIndex: Array<string | undefined> = [];
+      const createdByIndex = Array.from({ length: filesToAdd.length }, () => false);
+      const separationQueuedByIndex = Array.from({ length: filesToAdd.length }, () => true);
+      let nextFileIndex = 0;
+      let completedUploads = 0;
+      const uploadConcurrency = filesToAdd.some((file) => file.size > MAX_PARALLEL_LIBRARY_UPLOAD_BYTES)
+        ? 1
+        : Math.min(2, filesToAdd.length);
+      setUploadProgress({ completed: 0, total: filesToAdd.length });
       try {
-        for (const file of filesToAdd) {
-          try {
-            const payload = new FormData();
-            payload.set("file", file);
-            const response = await fetch("/api/library/tracks", { method: "POST", body: payload });
-            const body = await response.json().catch(() => ({}));
-            if (!response.ok) {
-              failures.push({
+        const uploadNextFile = async () => {
+          while (true) {
+            const index = nextFileIndex++;
+            const file = filesToAdd[index];
+            if (!file) return;
+            try {
+              const payload = new FormData();
+              payload.set("file", file);
+              const response = await fetch("/api/library/tracks", { method: "POST", body: payload });
+              const body = await response.json().catch(() => ({}));
+              if (!response.ok) {
+                failuresByIndex[index] = {
+                  file,
+                  reason: body.error ?? `HTTP ${response.status}`,
+                  retryable: response.status === 408 || response.status === 429 || response.status >= 500,
+                };
+              } else {
+                if (typeof body.track?.id === "string") trackIdsByIndex[index] = body.track.id;
+                createdByIndex[index] = body.created !== false;
+                separationQueuedByIndex[index] = body.separationQueued !== false;
+              }
+            } catch (error) {
+              failuresByIndex[index] = {
                 file,
-                reason: body.error ?? `HTTP ${response.status}`,
-                retryable: response.status === 408 || response.status === 429 || response.status >= 500,
-              });
-              continue;
+                reason: error instanceof Error ? error.message : "Network error",
+                retryable: true,
+              };
+            } finally {
+              completedUploads += 1;
+              setUploadProgress({ completed: completedUploads, total: filesToAdd.length });
             }
-            if (typeof body.track?.id === "string") trackIds.push(body.track.id);
-            if (body.created !== false) {
-              added += 1;
-              if (body.separationQueued === false) separationUnavailable = true;
-            }
-          } catch (error) {
-            failures.push({
-              file,
-              reason: error instanceof Error ? error.message : "Network error",
-              retryable: true,
-            });
           }
+        };
+        await Promise.all(
+          Array.from({ length: uploadConcurrency }, () => uploadNextFile()),
+        );
+        for (const failure of failuresByIndex) {
+          if (failure !== undefined) failures.push(failure);
         }
+        const trackIds = trackIdsByIndex.filter((id): id is string => id !== undefined);
+        const added = createdByIndex.filter(Boolean).length;
+        const separationUnavailable = createdByIndex.some((created, index) => created && !separationQueuedByIndex[index]);
         const attemptedKeys = new Set(filesToAdd.map(uploadFileIdentity));
         setRetryableUploads((previous) => {
           const next = new Map<string, RetryableLibraryUpload>(
@@ -538,6 +562,7 @@ export function MusicHome() {
         if (trackIds.length > 0) void host.sendTrack(trackIds[0], "play");
         return trackIds;
       } finally {
+        setUploadProgress(null);
         uploadInFlight.current = false;
         setAdding(false);
       }
@@ -955,6 +980,11 @@ export function MusicHome() {
             <b>{adding ? "ADDING…" : "+ ADD MUSIC"}</b>
             <small>MP3 · WAV · FLAC · M4A · AAC · OGG</small>
           </label>
+          {uploadProgress && (
+            <p className="library-message" role="status" aria-live="polite" data-testid="library-upload-progress">
+              Adding {uploadProgress.total} file{uploadProgress.total === 1 ? "" : "s"} · {uploadProgress.completed} of {uploadProgress.total} complete
+            </p>
+          )}
           <StemEngineSetup />
           <details className="library-url-import">
           <summary>Import from a link</summary>

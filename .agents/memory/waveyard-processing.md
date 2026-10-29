@@ -21,6 +21,12 @@ For retry evidence, exercise the default local queue handoff into the production
 
 **How to apply:** Assert the retried durable row completes and its stem objects are persisted after the local broker drains. Keep CPU timing separate from Windows or separation-quality claims.
 
+Do not chase separation speed by weakening model verification or opening multiple native sessions without target-device measurements.
+
+**Why:** A Linux CPU timing showed model checksum verification and session creation were a small fraction of the four-model run; inference dominated. That does not establish Windows throughput or justify increasing memory pressure.
+
+**How to apply:** Profile the actual inference on the intended machine and real audio before changing checksum guarantees, session lifetime, or concurrency.
+
 Treat a physical playback deck's audio graph as longer-lived than its selected song, and bind media source nodes to actual media elements rather than asset identifiers alone.
 
 **Why:** HTML media time can advance even when its Web Audio graph is closed or disconnected. Element volume is not proof that gain, mute, or solo still works.

@@ -213,6 +213,10 @@ try {
   let mockNotStartedRating = 0;
   let uploadAttempts = 0;
   const uploadAttemptNames = [];
+  let nextRetryUploadGate = null;
+  let measureUploadConcurrency = false;
+  let batchUploadsInFlight = 0;
+  let maxBatchUploadsInFlight = 0;
   const recoveryTrack = {
     id: "arena-smoke-stem-recovery",
     title: "Retryable track",
@@ -394,8 +398,27 @@ try {
       uploadAttempts += 1;
       const multipart = route.request().postDataBuffer()?.toString("latin1") ?? "";
       uploadAttemptNames.push(multipart.match(/filename="([^"]+)"/)?.[1] ?? "");
-      if (uploadAttempts < 3) {
-        await new Promise(resolve => setTimeout(resolve, 120));
+      if (measureUploadConcurrency) {
+        batchUploadsInFlight += 1;
+        maxBatchUploadsInFlight = Math.max(maxBatchUploadsInFlight, batchUploadsInFlight);
+        await new Promise(resolve => setTimeout(resolve, 250));
+        batchUploadsInFlight -= 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            track: { id: "arena-smoke-batch-upload-track" },
+            created: false,
+            separationQueued: true,
+          }),
+        });
+      } else if (uploadAttempts < 3) {
+        if (uploadAttempts === 2 && nextRetryUploadGate) {
+          nextRetryUploadGate.signalStarted();
+          await nextRetryUploadGate.response;
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 120));
+        }
         await route.fulfill({
           status: 503,
           contentType: "application/json",
@@ -822,8 +845,19 @@ try {
   await failedUploadNotice.getByText("retry-this-upload.wav").waitFor();
   assert.equal(uploadAttempts, 1);
   assert.equal(uploadAttemptNames[0], "retry-this-upload.wav", "the original upload request contains the selected file");
+  let signalRetryUploadStarted;
+  const retryUploadStarted = new Promise((resolve) => { signalRetryUploadStarted = resolve; });
+  let releaseRetryUploadResponse;
+  const retryUploadResponseGate = new Promise((resolve) => { releaseRetryUploadResponse = resolve; });
+  nextRetryUploadGate = {
+    signalStarted: signalRetryUploadStarted,
+    response: retryUploadResponseGate,
+  };
   await page.getByRole("button", { name: "Retry 1 failed upload", exact: true }).click();
+  await retryUploadStarted;
   await page.getByRole("button", { name: "Retrying uploads…" }).waitFor();
+  releaseRetryUploadResponse();
+  nextRetryUploadGate = null;
   await page.getByRole("button", { name: "Retry 1 failed upload", exact: true }).waitFor();
   assert.equal(uploadAttempts, 2, "retry sends a second upload request without asking for the file again");
   assert.deepEqual(uploadAttemptNames, ["retry-this-upload.wav", "retry-this-upload.wav"]);
@@ -838,6 +872,20 @@ try {
   ]);
   assert.equal(await page.getByTestId("failed-library-uploads").count(), 0, "a confirmed duplicate is no longer shown as a failed upload");
   report.push("A retried upload can resolve to the existing library track without creating a duplicate or keeping a stale failure.");
+  measureUploadConcurrency = true;
+  await page.getByLabel("Add music files").setInputFiles([
+    { name: "batch-one.wav", mimeType: "audio/wav", buffer: Buffer.from("batch one") },
+    { name: "batch-two.wav", mimeType: "audio/wav", buffer: Buffer.from("batch two") },
+    { name: "batch-three.wav", mimeType: "audio/wav", buffer: Buffer.from("batch three") },
+  ]);
+  const uploadProgress = page.getByTestId("library-upload-progress");
+  await uploadProgress.getByText("0 of 3 complete", { exact: false }).waitFor();
+  await uploadProgress.waitFor({ state: "detached", timeout: 10_000 });
+  measureUploadConcurrency = false;
+  assert.equal(uploadAttempts, 6, "a three-file batch submits each selected file once");
+  assert.deepEqual(uploadAttemptNames.slice(3), ["batch-one.wav", "batch-two.wav", "batch-three.wav"]);
+  assert.equal(maxBatchUploadsInFlight, 2, "the library uploads at most two files concurrently");
+  report.push("Multi-file library imports show completed-file progress, upload two-at-a-time, and retain selection order.");
 
   mockLiveSessionActive = true;
   await page.evaluate((id) => localStorage.setItem("waveyard.listening.sessionId", id), liveSessionId);
