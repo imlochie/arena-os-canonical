@@ -535,6 +535,16 @@ try {
     await button.click();
     await page.waitForFunction((before) => document.querySelector('[data-testid="session-play"]').getAttribute("aria-pressed") !== before, before);
   };
+  const chooseLiveSource = async (stemType, donorId) => {
+    await current.getByTestId(`open-live-swap-${stemType}`).click();
+    const picker = current.getByTestId(`live-swap-picker-${stemType}`);
+    await picker.waitFor();
+    const candidate = current.getByTestId(`live-swap-candidate-${stemType}-${donorId}`);
+    if (await candidate.count() === 0) {
+      throw new Error(`Missing ${stemType} donor ${donorId}; current deck: ${await current.innerText()}; picker: ${await picker.innerText()}`);
+    }
+    await candidate.click();
+  };
   const wheel = page.getByTestId("session-camelot-wheel");
   assert.equal(await wheel.getByTestId("camelot-key-8A").getAttribute("aria-pressed"), "true", "the current A minor track maps to 8A");
   assert.match(await wheel.getByTestId("camelot-key-8B").getAttribute("class"), /compatible/, "the relative-major 8B cell is highlighted");
@@ -600,12 +610,16 @@ try {
   signalHeldAssetRouteFinished = finishSlowDonorRoute;
   const playbackBeforeCancel = await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.currentTime);
   const buffersBeforeCancel = await page.evaluate(() => window.audioProbe.buffers.length);
-  const donorOptions = await current.locator('select[aria-label="vocals source"] option').allTextContents();
-  assert.ok(donorOptions.some(label => label.includes("Test b") && label.includes("BPM ✓") && label.includes("key ✓")),
-    `the swap picker exposes compatible BPM/key evidence per donor: ${donorOptions.join(" | ")}`);
-  assert.ok(donorOptions.some(label => label.includes("Test c") && label.includes("BPM ✓") && label.includes("key —")),
-    `the swap picker distinguishes a key mismatch from a tempo match: ${donorOptions.join(" | ")}`);
-  await current.getByLabel("vocals source", { exact: true }).selectOption("b");
+  await current.getByTestId("open-live-swap-vocals").click();
+  const donorBOption = current.getByTestId("live-swap-candidate-vocals-b");
+  const donorCOption = current.getByTestId("live-swap-candidate-vocals-c");
+  const donorBLabel = await donorBOption.innerText();
+  const donorCLabel = await donorCOption.innerText();
+  assert.match(donorBLabel, /BPM match[\s\S]*Key match/,
+    `the swap picker shows compatible BPM/key cues: ${donorBLabel}`);
+  assert.match(donorCLabel, /BPM match[\s\S]*Key differs/,
+    `the picker distinguishes a key mismatch from a tempo match: ${donorCLabel}`);
+  await donorBOption.click();
   await slowDonorRequested;
   const cancelSlowSwap = page.getByTestId("cancel-live-stem-swap-swap-vocals");
   await cancelSlowSwap.waitFor();
@@ -623,8 +637,8 @@ try {
     const audio = document.querySelector('[data-role="current"] audio[src$="/a-vocals"]');
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
   }, playbackAtCancel, { timeout: 5_000 });
-  assert.equal(await current.getByLabel("vocals source", { exact: true }).inputValue(), "",
-    "cancelling a pending donor restores the original source selection");
+  assert.equal(await current.getByTestId("restore-live-swap-vocals").count(), 0,
+    "cancelling a pending donor leaves the original source selected");
   assert.equal(session.swaps.length, 0, "cancelling removes the pending persisted swap");
   assert.equal(await page.evaluate(() => window.audioProbe.buffers.length), buffersBeforeCancel,
     "a cancelled donor is never decoded into a playing layer");
@@ -635,7 +649,7 @@ try {
   await slowDonorRouteFinished;
   signalHeldAssetRouteFinished = null;
 
-  await current.getByLabel("vocals source", { exact: true }).selectOption("b");
+  await chooseLiveSource("vocals", "b");
   await page.waitForFunction(() => window.audioProbe.buffers.length === 1);
   await page.waitForTimeout(250);
   const tempoMatchedDonorDuration = await page.evaluate(() => window.audioProbe.buffers.at(-1).buffer.duration);
@@ -660,13 +674,13 @@ try {
   const resumedOffsetError = Math.abs(resumed.offset - ((resumed.recipientTimeAtStart ?? 0) % resumed.duration));
   assert.ok(Number.isFinite(resumed.recipientTimeAtStart) && resumedOffsetError < 0.15,
     `donor resumes from the recipient's live clock: ${JSON.stringify(resumed)}`);
-  await current.getByLabel("vocals source", { exact: true }).selectOption("");
+  await current.getByTestId("restore-live-swap-vocals").click();
   await page.waitForTimeout(400);
   const originalGain = await page.evaluate(() => window.audioProbe.sources.find(s => s.mediaElement.src.endsWith("/a-vocals")).inputNode.gain.value);
   assert.equal(originalGain, 1);
   for (const type of types) {
-    await current.getByLabel(`${type} source`, { exact: true }).selectOption("b");
-    await page.waitForFunction(() => !document.querySelector('[aria-label="vocals source"]').disabled);
+    await chooseLiveSource(type, "b");
+    await page.waitForFunction(() => !document.querySelector('[data-testid="open-live-swap-vocals"]').disabled);
   }
   await page.waitForTimeout(300);
   await toggle();
@@ -687,9 +701,12 @@ try {
   assert.ok(donorResume.sources.every(source =>
     Number.isFinite(source.recipientTimeAtStart) && loopOffsetError(source.offset, source.recipientTimeAtStart, source.duration) < 0.15),
     `all four donors must follow original clock modulo duration: ${JSON.stringify(donorResume)}`);
-  const currentVocals = page.locator('[data-role="current"]').getByLabel("vocals source", { exact: true });
   const buffersBeforeExternalSwap = await page.evaluate(() => window.audioProbe.buffers.length);
-  await currentVocals.selectOption("d");
+  await current.getByTestId("open-live-swap-vocals").click();
+  const unknownAnalysisDonor = current.getByTestId("live-swap-candidate-vocals-d");
+  assert.match(await unknownAnalysisDonor.getAttribute("aria-label"), /BPM unknown; Key unknown/,
+    "the picker labels absent donor analysis instead of implying compatibility");
+  await unknownAnalysisDonor.click();
   await page.waitForFunction((beforeCount) => window.audioProbe.buffers.length > beforeCount &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > 10),
   buffersBeforeExternalSwap);
@@ -704,7 +721,7 @@ try {
   assert.equal(await current.getByTestId("live-stem-tempo-vocals").innerText(),
     "Tempo unavailable · native tempo", "missing BPM is shown honestly instead of implying tempo sync");
   failAsset = "c-bass";
-  await current.getByLabel("bass source", { exact: true }).selectOption("c");
+  await chooseLiveSource("bass", "c");
   await current.getByRole("alert").waitFor();
   assert.match(await current.getByRole("alert").textContent(), /previous layer was kept/);
   failAsset = null;

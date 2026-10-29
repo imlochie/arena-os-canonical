@@ -7,6 +7,7 @@ import { useStemTransport, type ChannelMeter, type MixerValues } from "@workspac
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import CamelotWheel from "./CamelotWheel";
+import LiveStemSwapPicker, { type LiveStemDonorOption } from "./LiveStemSwapPicker";
 import {
   beatAlignedTransitionStart,
   compatibilityEvidence,
@@ -684,6 +685,7 @@ export default function SessionExperience({
   const [phase, setPhase] = useState<FadePhase>("idle");
   const [savingSwap, setSavingSwap] = useState(false);
   const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
+  const [openSwapStem, setOpenSwapStem] = useState<string | null>(null);
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
   const [flags, setFlags] = useState<Record<string, StemFlags>>({});
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
@@ -746,6 +748,9 @@ export default function SessionExperience({
   }, [session, currentId]);
 
   const currentItem = currentIndex >= 0 ? session?.tracks[currentIndex] ?? null : null;
+  useEffect(() => {
+    setOpenSwapStem(null);
+  }, [currentItem?.id]);
   const nextItem = currentIndex >= 0 ? session?.tracks[currentIndex + 1] ?? null : null;
   const previousItem = currentIndex > 0 ? session?.tracks[currentIndex - 1] ?? null : null;
   const standbyDeckIndex: 0 | 1 = activeDeck === 0 ? 1 : 0;
@@ -2095,69 +2100,64 @@ export default function SessionExperience({
       item.id !== currentItem.track.id &&
       item.stemAvailability?.status === "separated" &&
       item.stemAvailability.stemTypes.includes(stemType));
-    const donorOptionLabel = (title: string, bpm: number | null, musicalKey: string | null) => {
-      const currentBpm = currentItem.analysis?.bpm ?? null;
-      const currentKey = currentItem.analysis?.musicalKey ?? null;
-      const tempo = tempoCompatibility(currentBpm, bpm);
-      const key = keyCompatibility(currentKey, musicalKey);
-      const bpmBadge = currentBpm === null || bpm === null ? "BPM ?" : tempo.compatible ? "BPM ✓" : "BPM —";
-      const keyBadge = currentKey === null || musicalKey === null ? "key ?" : key.compatible ? "key ✓" : "key —";
-      const bpmLabel = bpm === null ? "BPM ?" : `${Math.round(bpm)} BPM`;
-      return `${title} · ${bpmLabel} · ${musicalKey ?? "key ?"} · ${bpmBadge} · ${keyBadge}`;
-    };
+    const candidates: LiveStemDonorOption[] = [
+      ...donors.map((donor) => ({
+        id: donor.track.id,
+        title: donor.track.title,
+        artist: donor.track.artist,
+        bpm: donor.analysis?.bpm ?? null,
+        musicalKey: donor.analysis?.musicalKey ?? null,
+        collection: "session" as const,
+      })),
+      ...libraryDonors.map((donor) => ({
+        id: donor.id,
+        title: donor.title,
+        artist: donor.artist,
+        bpm: donor.analysis?.bpm ?? null,
+        musicalKey: donor.analysis?.musicalKey ?? null,
+        collection: "library" as const,
+      })),
+    ];
+    const selectedDonor = session.tracks.find((item) => item.track.id === swap?.toTrackId);
+    const selectedDonorTitle = selectedDonor?.track.title
+      ?? library.find((item) => item.id === swap?.toTrackId)?.title
+      ?? swap?.donorTrack?.title
+      ?? null;
+    const swapStatus = swap === undefined ? null
+      : pendingSwap
+        ? "Preparing live layer…"
+        : activeSwapTempoStretchRatios[stemType] !== undefined
+          ? "Tempo matched · pitch preserved"
+          : selectedDonorBpm !== null
+            ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
+            : "Tempo unavailable · native tempo";
     return (
-      <div className="wy-stem-source-control">
-        <span>Live source</span>
-        <select
-          className="wy-stem-source"
-          aria-label={`${stemType} source`}
-          value={swap?.toTrackId ?? ""}
-          disabled={savingSwap || pendingSwap !== undefined || (donors.length === 0 && libraryDonors.length === 0)}
-          title="Choose a separated song in your library as a live stem source"
-          onChange={(event) => {
-            const donor = donors.find((item) => item.track.id === event.target.value);
-            if (donor) requestSwap(stemType, { id: donor.track.id, title: donor.track.title, stems: donor.stems });
-            else {
-              const source = libraryDonors.find((item) => item.id === event.target.value);
-              if (source) requestSwap(stemType, { id: source.id, title: source.title });
-              else if (!event.target.value && swap) revertSwap(swap.id);
-            }
-          }}
-        >
-          <option value="">Original</option>
-          {donors.length > 0 && (
-            <optgroup label="In this session">
-              {donors.map((donor) => (
-                <option key={donor.id} value={donor.track.id}>
-                  {donorOptionLabel(donor.track.title, donor.analysis?.bpm ?? null, donor.analysis?.musicalKey ?? null)}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {libraryDonors.length > 0 && (
-            <optgroup label="Separated library tracks">
-              {libraryDonors.map((donor) => (
-                <option key={donor.id} value={donor.id}>
-                  {donorOptionLabel(donor.title, donor.analysis?.bpm ?? null, donor.analysis?.musicalKey ?? null)}
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
-        <small>BPM/key markers compare this song with each source; ? means analysis is missing.</small>
-        {swap && (
-          <small role="status" data-testid={`live-stem-tempo-${stemType}`}>
-            {pendingSwap
-              ? "Preparing live layer…"
-              : activeSwapTempoStretchRatios[stemType] !== undefined
-                ? "Tempo matched · pitch preserved"
-                : selectedDonorBpm !== null
-                  ? `Native tempo · ${Math.round(selectedDonorBpm)} BPM`
-                  : "Tempo unavailable · native tempo"}
-          </small>
-        )}
-        {donors.length === 0 && libraryDonors.length === 0 && <small>Separate a track with {stemType} to swap in a layer.</small>}
-      </div>
+      <LiveStemSwapPicker
+        stemType={stemType}
+        currentBpm={currentItem.analysis?.bpm ?? null}
+        currentKey={currentItem.analysis?.musicalKey ?? null}
+        candidates={candidates}
+        selectedDonorId={swap?.toTrackId ?? null}
+        selectedDonorTitle={selectedDonorTitle}
+        swapStatus={swapStatus}
+        isOpen={openSwapStem === stemType}
+        pending={pendingSwap !== undefined}
+        busy={savingSwap}
+        onToggle={() => setOpenSwapStem((current) => current === stemType ? null : stemType)}
+        onClose={() => setOpenSwapStem(null)}
+        onChoose={(donorId) => {
+          const donor = donors.find((item) => item.track.id === donorId);
+          if (donor) {
+            void requestSwap(stemType, { id: donor.track.id, title: donor.track.title, stems: donor.stems });
+            return;
+          }
+          const source = libraryDonors.find((item) => item.id === donorId);
+          if (source) void requestSwap(stemType, { id: source.id, title: source.title });
+        }}
+        onRestore={() => {
+          if (swap) void revertSwap(swap.id);
+        }}
+      />
     );
   };
 
