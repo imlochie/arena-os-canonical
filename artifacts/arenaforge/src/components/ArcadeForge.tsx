@@ -46,6 +46,11 @@ type ArcadeServerModel = {
   requiresNetwork?: boolean;
   kind?: string;
 };
+
+function isServerRoutedLocalModel(model: Pick<ArcadeServerModel, "backend"> | undefined): boolean {
+  return model?.backend === "local-server" || model?.backend === "turboagent";
+}
+
 const SAVE_SLOT_ALIAS_PREFIX = "arenaforge.game-save-slot.v1:";
 const SERVER_MODEL_PREFERENCE = "af_arcade_server_model";
 const OFFLINE_STARTERS_SEEDED_KEY = "arenaforge.offline-starters-seeded.v1";
@@ -403,8 +408,8 @@ export default function ArcadeForge() {
 
   async function runConnectedModelGenerationCheck() {
     const selected = serverModels.find((model) => model.id === serverModelId);
-    if (!selected || selected.backend !== "local-server") {
-      setLocalCheckError("Select a local Model Hub model before running this check.");
+    if (!selected || !isServerRoutedLocalModel(selected)) {
+      setLocalCheckError("Select a local model before running this check.");
       return;
     }
     if (localCheckRunning || busy || iterating) return;
@@ -535,9 +540,9 @@ export default function ArcadeForge() {
   ) {
     const routedModelId = routeModelId ?? serverModelId;
     const selectedModel = serverModels.find((model) => model.id === routedModelId);
-    const controller = selectedModel?.backend === "local-server" ? new AbortController() : null;
+    const controller = isServerRoutedLocalModel(selectedModel) ? new AbortController() : null;
     if (controller) abortRef.current = controller;
-    setPhase(selectedModel?.backend === "local-server" ? "🖥️ Local model writing your game…" : "✨ AI writing your game (server)…");
+    setPhase(isServerRoutedLocalModel(selectedModel) ? "🖥️ Local model writing your game…" : "✨ AI writing your game (server)…");
     const flags = privacyFlags();
     try {
       const res = await fetch("/api/arcade/forge", {
@@ -692,8 +697,8 @@ export default function ArcadeForge() {
   function shouldRouteToServerModel(localOnly: boolean, hasConnectedProvider: boolean): boolean {
     if (strategy === "ai") return false;
     const hasSelectedModel = serverModelId.trim() !== "";
-    const selectedModelIsLocal = hasSelectedModel && serverModels.some(
-      (model) => model.id === serverModelId && model.backend === "local-server",
+    const selectedModelIsLocal = hasSelectedModel && isServerRoutedLocalModel(
+      serverModels.find((model) => model.id === serverModelId),
     );
     if (hasSelectedModel) return !localOnly || selectedModelIsLocal;
     return !localOnly && !isEngineLoaded() && hasConnectedProvider;
@@ -706,6 +711,10 @@ export default function ArcadeForge() {
       const selected = serverModels.find((model) => model.id === runtime.modelId);
       const modelName = selected?.name ?? runtime.via?.split("/").at(-1) ?? runtime.modelId;
       return `Local Model Hub · ${modelName}`;
+    }
+    if (runtime.backend === "turboagent") {
+      const selected = serverModels.find((model) => model.id === runtime.modelId);
+      return `Local TurboAgent · ${selected?.name ?? runtime.modelId}`;
     }
     if (runtime.backend === "webllm") return `Browser model · ${runtime.modelId}`;
     if (runtime.backend === "offline-core" || runtime.backend === "arena-local-engine") {
@@ -975,8 +984,8 @@ export default function ArcadeForge() {
   const serverModelChoices = serverModels.filter(
     (model) => model.kind === "text" && model.backend !== "arena-local-engine" && model.backend !== "webllm",
   );
-  const selectedLocalServerModel = serverModels.some(
-    (model) => model.id === serverModelId && model.backend === "local-server",
+  const selectedLocalModel = serverModels.some(
+    (model) => model.id === serverModelId && isServerRoutedLocalModel(model),
   );
 
   return (
@@ -1111,8 +1120,8 @@ export default function ArcadeForge() {
                   type="button"
                   data-testid="button-local-server-generation-check"
                   onClick={runConnectedModelGenerationCheck}
-                  disabled={!selectedLocalServerModel || localCheckRunning || busy || iterating || loadingModel}
-                  title={selectedLocalServerModel ? "Generate a temporary game through the selected local Model Hub runtime without WebGPU" : "Select a local Model Hub model above"}
+                  disabled={!selectedLocalModel || localCheckRunning || busy || iterating || loadingModel}
+                  title={selectedLocalModel ? "Generate a temporary game through the selected local model without WebGPU" : "Select a local model above"}
                   className="rounded-lg border border-emerald-300/30 bg-emerald-400/10 px-3 py-2 text-xs font-extrabold text-emerald-100 hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {activeCheckSource === "model-hub" ? "Testing local model…" : "Test selected local model"}
@@ -1120,8 +1129,8 @@ export default function ArcadeForge() {
               </div>
             </div>
             <p data-testid="local-generation-status" role="status" className="mt-2 text-[11px] text-slate-400">
-              {selectedLocalServerModel
-                ? "A local Model Hub model is selected. Its test uses no WebGPU, no cloud key, and no public fallback."
+              {selectedLocalModel
+                ? "A local model is selected. Its test uses no WebGPU, cloud key, or public fallback."
                 : engineOn
                   ? "Browser model loaded. A pass requires generated code, validator approval, and a clean startup in the isolated game preview."
                 : gpu?.ok === false

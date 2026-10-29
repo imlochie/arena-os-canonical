@@ -377,7 +377,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
   }
 
   // localOnly + a non-local-engine selection → forced, visible fallback.
-  if (opts.localOnly && model.backend !== "local-server") {
+  if (opts.localOnly && model.backend !== "local-server" && model.backend !== "turboagent") {
     if (model.kind === "image") {
       const style = model.pollinationsId.split(":")[1] === "turbo" ? "turbo" : "flux";
       const { text } = localImage(model.id, opts, style);
@@ -503,7 +503,9 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
     const wanted = requestedExecution(model.id, model.backend, model.level);
     if (url) {
       try {
-        const text = await tryTurboAgent(fetchImpl, url, hfId, fullMessages, temperature, opts.maxTokens);
+        if (opts.localOnly) assertUrlDestination(new URL(url), "loopback");
+        else assertLoopbackUrl(url);
+        const text = await tryTurboAgent(fetchImpl, url, hfId, fullMessages, temperature, opts.maxTokens, 180_000, opts.signal);
         return {
           text,
           runtimeLevel: "on-device",
@@ -514,6 +516,7 @@ async function generateExec(opts: GenerateOpts, deps: GenerateDeps = {}): Promis
           fallback: false,
         };
       } catch (error) {
+        if (opts.signal?.aborted) throw error;
         const reason = error instanceof Error ? error.message : "unreachable";
         return localEngineResult(
           localTextReply(LOCAL_ENGINE_ID, fullMessages, system, opts.category ?? "general") +

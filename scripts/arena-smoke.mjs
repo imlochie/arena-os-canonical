@@ -1154,7 +1154,7 @@ try {
   });
   assert(taskBeforeManualBrowser, "The mission task should appear before the manual browser control");
   report.push("Spaces navigation is distinct from the room launcher; first-run creates one workspace CTA, focuses the browser task, and puts mission controls before manual browsing.");
-  const localHubModelId = "hub:ollama:qwen2.5-3b";
+  const localHubModelId = "turboagent-smoke-qwen";
   await page.route("**/api/models", async route => {
     const response = await route.fetch();
     const payload = await response.json();
@@ -1162,9 +1162,9 @@ try {
     if (!models.some(model => model.id === localHubModelId)) {
       models.push({
         id: localHubModelId,
-        name: "qwen2.5:3b (ollama)",
+        name: "qwen2.5:3b (TurboAgent)",
         provider: "local · smoke fixture",
-        backend: "local-server",
+        backend: "turboagent",
         kind: "text",
         requiresKey: false,
         requiresNetwork: false,
@@ -1304,6 +1304,7 @@ try {
   let promptGenerationSeen = false;
   let localServerGenerationSeen = false;
   let localServerRevisionSeen = false;
+  let localModelProofSeen = false;
   let expectedModelId = "openai";
   let expectedLocalOnly = false;
   let failNextGeneration = false;
@@ -1312,6 +1313,94 @@ try {
   let generationStartedResolve = null;
   let releaseHeldGeneration = null;
   const generatedPong = '<!doctype html><html><head><title>Generated Pong</title></head><body><p id="generated-pong">AI Pong</p><canvas width="320" height="180"></canvas><script>let x=0;const c=document.querySelector("canvas"),ctx=c.getContext("2d");addEventListener("keydown",e=>{if(e.key==="ArrowRight")x++});function loop(){ctx.fillStyle="#111";ctx.fillRect(0,0,320,180);ctx.fillStyle="#fff";ctx.fillRect(x,20,8,30);requestAnimationFrame(loop)}loop();</script></body></html>';
+  const localProofGame = String.raw`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Square and Coin</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101827; color: #fff; font: 16px system-ui, sans-serif; }
+    main { width: min(94vw, 560px); padding: 20px; text-align: center; }
+    h1 { margin: 0 0 8px; color: #c8dcff; }
+    #score { display: inline-block; min-width: 120px; padding: 8px 14px; border: 1px solid #5274a8; border-radius: 20px; font-weight: 700; }
+    canvas { display: block; width: 100%; margin: 12px auto; border: 2px solid #5274a8; border-radius: 10px; background: #18263b; }
+    .help { color: #aebbd0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Square and Coin</h1>
+    <p id="score" aria-live="polite">Score: 0</p>
+    <p class="help">Move the blue square with the arrow keys. Collect the gold coin.</p>
+    <canvas id="game" width="480" height="320" aria-label="Square and coin game"></canvas>
+  </main>
+  <script>
+    (() => {
+      "use strict";
+      const canvas = document.getElementById("game");
+      const context = canvas.getContext("2d");
+      const scoreLabel = document.getElementById("score");
+      const player = { x: 32, y: 32, size: 24, speed: 3.4 };
+      const coin = { x: 300, y: 180, radius: 11 };
+      const held = new Set();
+      let score = 0;
+      let previousTime = 0;
+
+      function onKeyDown(event) {
+        if (event.key.startsWith("Arrow")) {
+          event.preventDefault();
+          held.add(event.key);
+        }
+      }
+      function onKeyUp(event) {
+        held.delete(event.key);
+      }
+      function placeCoin() {
+        coin.x = 24 + Math.random() * (canvas.width - 48);
+        coin.y = 24 + Math.random() * (canvas.height - 48);
+      }
+      function update(delta) {
+        if (held.has("ArrowLeft")) player.x -= player.speed * delta;
+        if (held.has("ArrowRight")) player.x += player.speed * delta;
+        if (held.has("ArrowUp")) player.y -= player.speed * delta;
+        if (held.has("ArrowDown")) player.y += player.speed * delta;
+        player.x = Math.max(0, Math.min(canvas.width - player.size, player.x));
+        player.y = Math.max(0, Math.min(canvas.height - player.size, player.y));
+        const closeX = Math.abs(player.x + player.size / 2 - coin.x) < player.size / 2 + coin.radius;
+        const closeY = Math.abs(player.y + player.size / 2 - coin.y) < player.size / 2 + coin.radius;
+        if (closeX && closeY) {
+          score += 1;
+          scoreLabel.textContent = "Score: " + score;
+          placeCoin();
+        }
+      }
+      function draw() {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = "#18263b";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = "#ffd451";
+        context.beginPath();
+        context.arc(coin.x, coin.y, coin.radius, 0, Math.PI * 2);
+        context.fill();
+        context.fillStyle = "#4aa8ff";
+        context.fillRect(player.x, player.y, player.size, player.size);
+      }
+      function frame(time) {
+        const delta = Math.min(2, (time - previousTime) / 16.67 || 1);
+        previousTime = time;
+        update(delta);
+        draw();
+        requestAnimationFrame(frame);
+      }
+      window.addEventListener("keydown", onKeyDown);
+      window.addEventListener("keyup", onKeyUp);
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>`;
   const revisedGeneratedPong = generatedPong.replace("AI Pong", "AI Pong with multi-ball");
   const revisedOfflinePlatformer = '<!doctype html><html><head><title>Revised local platformer</title></head><body><p id="offline-revision-marker">Double jump added</p><canvas width="320" height="180"></canvas><script>let jumps=2;addEventListener("keydown",e=>{if(e.key===" ")jumps--});requestAnimationFrame(function loop(){requestAnimationFrame(loop)});</script></body></html>';
   await page.route("**/api/arcade/forge", async route => {
@@ -1319,6 +1408,27 @@ try {
     assert.equal(body.modelId, expectedModelId, "the selected model source must reach the game-generation route");
     assert.equal(Boolean(body.localOnly), expectedLocalOnly, "the generation route must preserve Local Mode");
     if (expectedLocalOnly) assert.equal(body.keys, undefined, "Local Mode must not send provider keys");
+    if (body.prompt.includes("local model test")) {
+      assert.equal(body.ephemeral, true, "The local model proof must not save a shared game");
+      assert.equal(body.priorCode, undefined, "The local model proof must not reuse another game's source");
+      localModelProofSeen = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: localProofGame,
+          title: "Temporary local model proof",
+          runtime: {
+            ms: 12,
+            backend: "turboagent",
+            modelId: expectedModelId,
+            via: "turboagent:qwen2.5:3b",
+            fallback: false,
+          },
+        }),
+      });
+      return;
+    }
     if (failNextGeneration) {
       failNextGeneration = false;
       await route.fulfill({
@@ -1387,9 +1497,9 @@ try {
               : "Revised local platformer",
         runtime: {
           ms: 12,
-          backend: expectedLocalOnly ? "local-server" : "openai",
+          backend: expectedLocalOnly ? "turboagent" : "openai",
           modelId: expectedModelId,
-          via: expectedLocalOnly ? "local-server:127.0.0.1/qwen2.5:3b" : "openai:smoke-test",
+          via: expectedLocalOnly ? "turboagent:qwen2.5:3b" : "openai:smoke-test",
           fallback: false,
         },
       }),
@@ -1445,20 +1555,27 @@ try {
   expectedLocalOnly = true;
   await page.evaluate(() => localStorage.setItem("af_local_mode", "1"));
   await page.getByLabel("Connected model source").selectOption(localHubModelId);
+  assert(
+    await page.getByTestId("button-local-server-generation-check").isEnabled(),
+    "the local-model proof button must recognize TurboAgent models",
+  );
+  await page.getByTestId("button-local-server-generation-check").click();
+  await page.getByTestId("local-generation-result").getByText(/Passed: The selected local model generated a valid game/).waitFor({ timeout: 10000 });
+  assert(localModelProofSeen, "The local-model proof button must make an ephemeral request through the selected model");
   await page.getByLabel("Game prompt").fill("Pong with a rotating gate");
   await page.getByRole("button", { name: "🎮 Create & play" }).click();
   await page.getByText("Local model Pong is playable").waitFor({ timeout: 10000 });
   assert.match(
     await page.getByTestId("game-runtime-provenance").innerText(),
-    /Local Model Hub.*qwen2\.5:3b/,
-    "Arcade should show the local model that actually generated the game",
+    /Local TurboAgent.*qwen2\.5:3b/,
+    "Arcade should identify the local TurboAgent model that generated the game",
   );
   assert(localServerGenerationSeen, "Local Mode must route new games to the selected local Model Hub model without WebGPU");
   await page.getByLabel("Game change").fill("Add a multi-ball mode");
   await page.getByRole("button", { name: "Apply change" }).click();
   await page.getByText(/Revised Pong is playable/).waitFor({ timeout: 10000 });
   assert(localServerRevisionSeen, "Local Mode edits must route the existing source to the selected local model");
-  report.push("Local Mode routed new-game and source-revision requests to the selected local Model Hub model with no provider keys (mocked inference endpoint).");
+  report.push("Local Mode routed new-game and source-revision requests to the selected local TurboAgent model with no provider keys (mocked inference endpoint).");
   const prepareHeldGeneration = (hasSource) => {
     heldGenerationHasSource = hasSource;
     holdNextGeneration = true;

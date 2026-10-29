@@ -96,6 +96,41 @@ test("Local Mode allows registered loopback inference, not cloud egress", async 
   });
 });
 
+test("Local Mode routes TurboAgent through loopback and refuses public endpoints", async () => {
+  const previousUrl = process.env.TURBOAGENT_URL;
+  try {
+    await withOpenAiCompatFake((payload) => {
+      const request = payload as { model?: string };
+      return JSON.stringify({
+        choices: [{ message: { content: `local:${request.model}` } }],
+      });
+    }, async (port) => {
+      process.env.TURBOAGENT_URL = `http://127.0.0.1:${port}`;
+      const result = await generate({
+        modelId: "turboagent-7b",
+        messages: [{ role: "user", content: "create a tiny game" }],
+        localOnly: true,
+      });
+      assert.equal(result.backend, "turboagent");
+      assert.equal(result.fallback, false);
+      assert.equal(result.text, "local:Qwen/Qwen2.5-7B-Instruct");
+    });
+
+    process.env.TURBOAGENT_URL = "http://192.0.2.1:1234";
+    const refused = await generate({
+      modelId: "turboagent-7b",
+      messages: [{ role: "user", content: "create a tiny game" }],
+      localOnly: true,
+    });
+    assert.equal(refused.fallback, true);
+    assert.equal(refused.backend, "arena-local-engine");
+    assert.match(refused.note ?? "", /loopback|public|private|refused/i);
+  } finally {
+    if (previousUrl === undefined) delete process.env.TURBOAGENT_URL;
+    else process.env.TURBOAGENT_URL = previousUrl;
+  }
+});
+
 test("generate(): aborting a Model Hub call aborts upstream instead of returning fallback", async () => {
   let markReceived!: () => void;
   let markClosed!: () => void;
@@ -138,6 +173,55 @@ test("generate(): aborting a Model Hub call aborts upstream instead of returning
   } finally {
     controller.abort();
     clearDynamicModels();
+    server.closeAllConnections?.();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("generate(): aborting TurboAgent propagates cancellation upstream", async () => {
+  let markReceived!: () => void;
+  let markClosed!: () => void;
+  const received = new Promise<void>((resolve) => { markReceived = resolve; });
+  const closed = new Promise<void>((resolve) => { markClosed = resolve; });
+  const server: Server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.on("close", () => {
+        if (!response.writableEnded) markClosed();
+      });
+      markReceived();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const previousUrl = process.env.TURBOAGENT_URL;
+  process.env.TURBOAGENT_URL = `http://127.0.0.1:${port}`;
+  const controller = new AbortController();
+  try {
+    const pending = generate({
+      modelId: "turboagent-7b",
+      messages: [{ role: "user", content: "write a game" }],
+      localOnly: true,
+      signal: controller.signal,
+    });
+    await Promise.race([
+      received,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("TurboAgent request did not arrive")), 5000)),
+    ]);
+    controller.abort();
+    await assert.rejects(
+      pending,
+      (error: unknown) => error instanceof Error && error.name === "AbortError",
+      "caller cancellation must not become a deterministic fallback game",
+    );
+    await Promise.race([
+      closed,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("TurboAgent connection did not close")), 5000)),
+    ]);
+  } finally {
+    controller.abort();
+    if (previousUrl === undefined) delete process.env.TURBOAGENT_URL;
+    else process.env.TURBOAGENT_URL = previousUrl;
     server.closeAllConnections?.();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

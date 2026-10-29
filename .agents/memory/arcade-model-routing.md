@@ -44,3 +44,9 @@ Do not claim local game generation works based only on WebGPU detection or succe
 **Why:** The user called out prior assurances based on readiness checks that did not prove actual local generation.
 
 **How to apply:** Treat the on-device generation check as device-specific evidence; a headless browser without WebGPU must report “not verified,” never pass.
+
+Model backend labels are a runtime contract. Keep model selection, Local Mode routing, the local-model proof action, cancellation, and runtime provenance aligned for every server-routed local backend. Restrict local inference to loopback and never disguise an unreachable model as generated game code.
+
+**Why:** A catalogued TurboAgent model was being routed differently from Model Hub models: Local Mode chose the WebGPU path, and the local proof control did not recognize it.
+
+**How to apply:** For each local backend, test a real loopback inference request, refusal of a non-loopback URL, upstream cancellation, and the browser flow; do not count a mocked browser response as model-generation evidence.
