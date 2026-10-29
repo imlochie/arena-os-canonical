@@ -15,6 +15,12 @@ Keep only one native separation model open at a time and bound its CPU threading
 
 **How to apply:** Preserve sequential session lifetime, release on errors too, and measure real full-song memory/performance before increasing parallelism. A short synthetic musical fixture establishes pipeline execution, not subjective separation quality.
 
+For retry evidence, exercise the default local queue handoff into the production separation handler; a custom retry callback bypasses the broker wiring used by the library.
+
+**Why:** A real model can complete successfully when called directly even if the user-facing retry path fails to enqueue or route its job.
+
+**How to apply:** Assert the retried durable row completes and its stem objects are persisted after the local broker drains. Keep CPU timing separate from Windows or separation-quality claims.
+
 Treat a physical playback deck's audio graph as longer-lived than its selected song, and bind media source nodes to actual media elements rather than asset identifiers alone.
 
 **Why:** HTML media time can advance even when its Web Audio graph is closed or disconnected. Element volume is not proof that gain, mute, or solo still works.

@@ -43,11 +43,13 @@ import { eq } from "drizzle-orm";
 import { decodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
+import { SEPARATION_QUEUE } from "@workspace/arena/lib/waveyard/queue";
 import { stemAssets, processingJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
 import type { OpenedEngine } from "./separation";
 import { demixMdxInWorker, handleSeparationJob } from "./separation";
+import { getLocalJobBroker, resetLocalJobBrokerForTests } from "./broker";
 import {
   executionProviderAttempts,
   separationInferenceThreads,
@@ -62,6 +64,29 @@ const FOUR_STEM_MODELS = [
   "kuielab_b_bass",
   "kuielab_b_other",
 ].map((id) => findMdxModel(id)!);
+
+function createLocalRetryHarness(database: SeparationFixture["database"]) {
+  const previousDesktopMode = process.env.ARENA_DESKTOP_MODE;
+  const previousRedisUrl = process.env.REDIS_URL;
+  process.env.ARENA_DESKTOP_MODE = "1";
+  delete process.env.REDIS_URL;
+  resetLocalJobBrokerForTests();
+  const broker = getLocalJobBroker();
+  broker.register(SEPARATION_QUEUE, (payload) =>
+    handleSeparationJob(payload as Parameters<typeof handleSeparationJob>[0], { db: database }),
+  );
+  return {
+    broker,
+    async restore() {
+      await broker.drain(30_000);
+      resetLocalJobBrokerForTests();
+      if (previousDesktopMode === undefined) delete process.env.ARENA_DESKTOP_MODE;
+      else process.env.ARENA_DESKTOP_MODE = previousDesktopMode;
+      if (previousRedisUrl === undefined) delete process.env.REDIS_URL;
+      else process.env.REDIS_URL = previousRedisUrl;
+    },
+  };
+}
 
 test("automatic separation prefers CUDA and falls back to CPU", () => {
   assert.deepEqual(executionProviderAttempts("auto"), [["cuda"], ["cpu"]]);
@@ -243,6 +268,7 @@ test("real onnxruntime session: the separation pipeline executes and reconstruct
 
 test("a pinned local Kim model completes a failed separation through the production worker on retry", { timeout: 180_000 }, async (t) => {
   const f = await fixture();
+  let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
   try {
     const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const workspaceRoot = resolve(arenaRoot, "../..");
@@ -264,12 +290,16 @@ test("a pinned local Kim model completes a failed separation through the product
       })
       .where(eq(processingJobs.id, f.job.id));
 
+    // Exercise the same default hand-off used by the local library retry route:
+    // retrySeparationJob -> queue.ts -> LocalJobBroker -> production handler.
+    harness = createLocalRetryHarness(f.database);
+
     const startedAt = Date.now();
-    const retry = await retrySeparationJob(f.database, f.job.id, {
-      handOff: async () => handleSeparationJob(payloadOf(f), { db: f.database }),
-    });
+    const retry = await retrySeparationJob(f.database, f.job.id);
+    assert.equal(await harness.broker.drain(150_000), true, "the local production worker drains the retried job");
     const elapsedMs = Date.now() - startedAt;
     assert.deepEqual(retry, { queued: true });
+    assert.equal(harness.broker.stats().succeeded, 1, "the real worker completed one broker submission");
 
     const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
     assert.equal(job.status, "complete", "the real worker completes the retried durable row");
@@ -285,6 +315,7 @@ test("a pinned local Kim model completes a failed separation through the product
       `Pinned Kim model retry completed on ${job.resolvedDevice} in ${elapsedMs} ms for the 1-second synthetic fixture; this is execution evidence, not a separation-quality or Windows benchmark.`,
     );
   } finally {
+    await harness?.restore();
     await f.close();
   }
 });
@@ -303,6 +334,7 @@ test("the pinned four-model recipe completes through the production worker on re
   }
 
   const f = await fixture({ model: "stems_4" });
+  let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
   try {
     for (const spec of FOUR_STEM_MODELS) {
       await copyFile(join(modelDirectory, spec.file), join(f.modelsDir, spec.file));
@@ -331,10 +363,9 @@ test("the pinned four-model recipe completes through the production worker on re
     let elapsedMs = 0;
     let requestLatencyMs = 0;
     try {
+      harness = createLocalRetryHarness(f.database);
       const startedAt = Date.now();
-      retryPromise = retrySeparationJob(f.database, f.job.id, {
-        handOff: async () => handleSeparationJob(payloadOf(f), { db: f.database }),
-      });
+      retryPromise = retrySeparationJob(f.database, f.job.id);
       const requestStartedAt = Date.now();
       let requestTimeout: NodeJS.Timeout | undefined;
       const request = await Promise.race([
@@ -356,8 +387,10 @@ test("the pinned four-model recipe completes through the production worker on re
       assert.ok(requestLatencyMs < 1_000);
 
       const retry = await retryPromise;
+      assert.equal(await harness.broker.drain(240_000), true, "the four-model retry drains through the local worker");
       elapsedMs = Date.now() - startedAt;
       assert.deepEqual(retry, { queued: true });
+      assert.equal(harness.broker.stats().succeeded, 1, "the real worker completed the four-model broker submission");
     } finally {
       clearInterval(playbackTimer);
       await retryPromise?.catch(() => undefined);
@@ -393,6 +426,7 @@ test("the pinned four-model recipe completes through the production worker on re
       `Pinned four-model retry completed on ${job.resolvedDevice} with ${WAVEYARD_ORT_INTRA_OP_THREADS} ORT threads in ${elapsedMs} ms; library read ${requestLatencyMs} ms; max playback timer gap ${maxPlaybackGapMs} ms. Synthetic fixture proves execution, not separation quality.`,
     );
   } finally {
+    await harness?.restore();
     await f.close();
   }
 });
