@@ -71,6 +71,9 @@ let holdNextStudioRemixPut = false;
 let signalHeldStudioRemixPut = null;
 let releaseHeldStudioRemixPut = null;
 let studioRemixPutCount = 0;
+let sourceEventRequests = 0;
+let meetingPointRequests = 0;
+let sectionArrangementRequests = 0;
 const assetSnapshot = () => [...assets.entries()]
   .map(([id, bytes]) => [id, createHash("sha256").update(bytes).digest("hex")])
   .sort(([left], [right]) => left.localeCompare(right));
@@ -289,7 +292,21 @@ try {
           durationSeconds: item.track.durationSeconds, sampleRate: 22050, channels: 1,
           codec: "pcm_s16le", mimeType: "audio/wav", fileSizeBytes: 1000,
           checksumSha256: createHash("sha256").update(assets.get(sourceId) ?? Buffer.alloc(0)).digest("hex"),
-          linkedFromLibrary: true,
+          linkedFromLibrary: sourceId !== "a-source",
+          ...(sourceId === "a-source" ? {
+            sectionAnalysis: {
+              id: "section-analysis-a", status: "complete", stage: "complete", attempts: 1,
+              analysisEngine: "synthetic-fixture", analysisEngineVersion: "1",
+              errorCode: null, errorMessage: null, analyzedAt: new Date().toISOString(),
+            },
+            sections: [{
+              id: "section-a-1", sectionIndex: 0, startMs: 0, endMs: 8000,
+              startBeatIndex: 0, endBeatIndex: 16, startBar: 1, endBar: 5,
+              label: "section", labelConfidence: 0, structuralConfidence: 0.8,
+              analysisEngine: "synthetic-fixture", analysisEngineVersion: "1",
+              sourceChecksumSha256: createHash("sha256").update(assets.get(sourceId) ?? Buffer.alloc(0)).digest("hex"),
+            }],
+          } : {}),
         });
       }
       for (const stem of item.stems) {
@@ -373,6 +390,31 @@ try {
   });
   await context.route("**/api/assets/*/waveform", route =>
     route.fulfill({ json: { waveform: { durationSeconds: 1, resolutions: { "256": { min: [0], max: [0] } } } } }));
+  await context.route("**/api/sources/*/events", async route => {
+    sourceEventRequests += 1;
+    if (sourceEventRequests === 1) return route.abort("failed");
+    return route.fulfill({ status: 202, json: { queued: true } });
+  });
+  await context.route(`**/api/remixes/${studioRemixId}/meeting-points`, async route => {
+    meetingPointRequests += 1;
+    if (meetingPointRequests === 1) return route.abort("failed");
+    return route.fulfill({ json: { points: [] } });
+  });
+  await context.route(`**/api/remixes/${studioRemixId}/clips/from-section`, async route => {
+    sectionArrangementRequests += 1;
+    if (sectionArrangementRequests === 1) return route.abort("failed");
+    const body = route.request().postDataJSON();
+    assert.equal(body.sectionId, "section-a-1", "the selected source section is sent to arrangement creation");
+    const clip = {
+      id: "section-clip-a-1", remixTrackId: body.remixTrackId, stemAssetId: body.stemAssetId,
+      timelineStartMs: body.timelineStartMs, sourceOffsetMs: 0, durationMs: 8000,
+      gain: 1, beatSnapEnabled: false, tempoRatio: 1,
+    };
+    const targetTrack = studioRemixData.tracks.find(track => track.id === body.remixTrackId);
+    assert.ok(targetTrack, "the selected source section resolves to an arrangement track");
+    targetTrack.clips.push(clip);
+    return route.fulfill({ json: { clips: [clip] } });
+  });
   await context.route("**/api/streaming/accounts", route => route.fulfill({ json: { accounts: [] } }));
   await context.route(`**/api/waveyard/projects/${studioProjectId}`, route =>
     route.fulfill({ json: studioProjectData ?? {} }));
@@ -945,6 +987,36 @@ try {
     elements.map(element => Number.parseFloat(element.style.left)),
   );
   assert.ok(clipOffsets.some(offset => offset > 0), "the second song is placed after the first on the arrangement timeline");
+  await page.getByRole("tab", { name: "Analyze" }).click();
+  await page.locator('[data-testid="source-section-map-a-source"] .source-section-marker').click();
+  await page.getByTestId("source-section-inspection-section-a-1").waitFor();
+  assert.equal(await page.getByRole("tab", { name: "Analyze" }).getAttribute("aria-selected"), "true",
+    "selecting a source section keeps its analysis actions available instead of switching tabs");
+  const analyzeEventsButton = page.getByRole("button", { name: "Analyze events" });
+  await analyzeEventsButton.click();
+  await page.getByText("Could not confirm the request. Refresh the source status before trying again.", { exact: true }).waitFor();
+  assert.equal(await analyzeEventsButton.isDisabled(), false,
+    "a dropped event-analysis request releases the busy state for recovery");
+  await analyzeEventsButton.click();
+  await page.getByText("Event analysis queued.", { exact: true }).waitFor();
+  assert.equal(sourceEventRequests, 2, "event analysis can be retried after a dropped network request");
+  const findPlacementButton = page.getByRole("button", { name: "Find where this fits" });
+  await findPlacementButton.click();
+  await page.getByText("Could not reach the server for placement recommendations. Check your connection and try again.", { exact: true }).waitFor();
+  assert.equal(await findPlacementButton.isDisabled(), false,
+    "a dropped placement request releases the busy state for recovery");
+  await findPlacementButton.click();
+  await page.getByText("Placement recommendations updated.", { exact: true }).waitFor();
+  assert.equal(meetingPointRequests, 2, "placement recommendations can be retried after a dropped request");
+  const addSectionButton = page.getByRole("button", { name: "Add to Arrangement" });
+  await addSectionButton.click();
+  await page.getByText("Could not confirm this arrangement change. Refresh Studio before trying again.", { exact: true }).waitFor();
+  assert.equal(await addSectionButton.isDisabled(), false,
+    "a dropped arrangement request releases its busy state without leaving Analyze");
+  await addSectionButton.click();
+  await page.getByText("Section added to the arrangement.", { exact: true }).waitFor();
+  assert.equal(sectionArrangementRequests, 2, "section insertion can be retried after the failed request");
+  await page.getByRole("tab", { name: "Edit" }).click();
   const vocalsVolume = page.getByLabel("Test a original.wav — Vocals arrangement volume");
   await vocalsVolume.waitFor();
   assert.equal(await vocalsVolume.inputValue(), "0.42",

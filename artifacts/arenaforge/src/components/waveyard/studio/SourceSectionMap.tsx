@@ -33,6 +33,19 @@ export function SourceSectionMap({
   const [requestingEvents, setRequestingEvents] = useState(false);
   const [eventMessage, setEventMessage] = useState<string | null>(null);
   const events = source.events ?? [];
+  const requestEvents = async () => {
+    if (!onRequestEvents) return;
+    setRequestingEvents(true);
+    setEventMessage(null);
+    try {
+      const message = await onRequestEvents();
+      setEventMessage(message ?? "Event analysis queued.");
+    } catch {
+      setEventMessage("Could not confirm the request. Refresh the source status before trying again.");
+    } finally {
+      setRequestingEvents(false);
+    }
+  };
   const eventPanel = <section className="source-events" aria-label="Source musical events">
     <div><span className="eyebrow">Source-coordinate markers</span><h4>Events</h4></div>
     {source.eventAnalysis?.status === "complete" ? <>
@@ -44,8 +57,8 @@ export function SourceSectionMap({
       {events.length > 12 && <small>+ {events.length - 12} more source-relative events</small>}
     </> : <>
       <p>{source.eventAnalysis?.status === "failed" ? `Event analysis failed${source.eventAnalysis.errorMessage ? `: ${source.eventAnalysis.errorMessage}` : "."}` : "Events are optional deterministic onset evidence; they do not alter Beat Snap or clips."}</p>
-      {onRequestEvents && <button className="button secondary" disabled={requestingEvents} onClick={() => void (async () => { setRequestingEvents(true); const message = await onRequestEvents(); setRequestingEvents(false); setEventMessage(message ?? "Event analysis queued."); })()}>{requestingEvents ? "Queuing…" : source.eventAnalysis?.status === "processing" || source.eventAnalysis?.status === "queued" ? "Event analysis queued" : "Analyze events"}</button>}
-      {eventMessage && <p className="notice">{eventMessage}</p>}
+      {onRequestEvents && <button type="button" className="button secondary" disabled={requestingEvents} onClick={() => void requestEvents()}>{requestingEvents ? "Queuing…" : source.eventAnalysis?.status === "processing" || source.eventAnalysis?.status === "queued" ? "Event analysis queued" : "Analyze events"}</button>}
+      {eventMessage && <p className="notice" role="status">{eventMessage}</p>}
     </>}
     {source.eventAnalysis && <small>Engine {source.eventAnalysis.analysisEngine} {source.eventAnalysis.analysisEngineVersion}</small>}
   </section>;
@@ -57,15 +70,26 @@ export function SourceSectionMap({
     if (!selected || !onArrangementAction) return;
     setActing(action);
     setActionMessage(null);
-    const message = await onArrangementAction(selected, action, repetitions);
-    setActing(null);
-    setActionMessage(message ?? (action === "loop" ? "Section loop added to the arrangement." : "Section added to the arrangement."));
+    try {
+      const message = await onArrangementAction(selected, action, repetitions);
+      setActionMessage(message ?? (action === "loop" ? "Section loop added to the arrangement." : "Section added to the arrangement."));
+    } catch {
+      setActionMessage("Could not confirm this arrangement change. Refresh Studio before trying again.");
+    } finally {
+      setActing(null);
+    }
   };
   const findMeetingPoints = async () => {
     if (!selected || !onFindMeetingPoints) return;
     setActing("meeting"); setActionMessage(null);
-    const message = await onFindMeetingPoints(selected);
-    setActing(null); setActionMessage(message ?? "Placement recommendations updated.");
+    try {
+      const message = await onFindMeetingPoints(selected);
+      setActionMessage(message ?? "Placement recommendations updated.");
+    } catch {
+      setActionMessage("Could not reach the server for placement recommendations. Check your connection and try again.");
+    } finally {
+      setActing(null);
+    }
   };
   return <section className="source-section-map" aria-label="Source structure markers" data-testid={`source-section-map-${source.id}`}>
     <div className="panel-title"><div><span className="eyebrow">Source-coordinate markers</span><h3>Detected structure</h3></div><span>{sections.length} sections</span></div>
@@ -76,7 +100,7 @@ export function SourceSectionMap({
         className={`source-section-marker ${selected?.id === section.id ? "selected" : ""}`}
         key={section.id}
         style={{ width: `${Math.max(2, ((section.endMs - section.startMs) / durationMs) * 100)}%` }}
-        onClick={() => { setSelectedId(section.id); setActionMessage(null); onUseForSlice(section); }}
+        onClick={() => { setSelectedId(section.id); setActionMessage(null); }}
         title={`Section ${section.sectionIndex + 1}, bars ${section.startBar} to ${section.endBar}`}
       >Section {section.sectionIndex + 1}</button>)}
     </div>
