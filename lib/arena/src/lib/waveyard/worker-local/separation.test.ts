@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
-import { processingJobs, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
+import { processingJobs, sourceAssets, stemAssets, waveformAssets, waveformJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel, type MdxInfer, type MdxModelSpec } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { DEEP_MODEL_SIGNATURE, resetDeepProbeCacheForTests } from "@workspace/arena/lib/waveyard/separation/deep";
 import { NO_TEST_PYTHON, STUB_DEEP_ENV_KEYS, writeStubDeepEngine } from "@workspace/arena/lib/waveyard/separation/deep-fixtures";
@@ -29,6 +29,7 @@ import {
 import { LocalJobBroker } from "./broker";
 import { fixture, identityEngine, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
 import { recoverInterruptedLocalSeparationJobs, recoverPendingLocalWaveformJobs } from "./recovery";
+import { cleanupOrphanedSourceObjects, ORPHAN_SOURCE_GRACE_PERIOD_MS } from "./source-cleanup";
 
 const KIM = findMdxModel("kim_vocal_2")!;
 type Fixture = SeparationFixture;
@@ -110,6 +111,42 @@ test("waveform cleanup removes only old unreferenced generated objects", async (
     assert.equal(await storage.exists(referencedKey), true, "an object with a matching asset row is retained");
     assert.equal(await storage.exists(recentKey), true, "a recently-created orphan is retained");
     assert.equal(await storage.exists(orphanKey), false, "an old unreferenced waveform object is removed");
+  } finally {
+    await f.close();
+  }
+});
+
+test("source cleanup removes only old generated objects without a source row", async () => {
+  const f = await fixture();
+  try {
+    const storage = getStorage();
+    const referencedKey = f.source.storageKey;
+    const orphanKey = privateObjectKey(f.project.id, "source", "wav");
+    const recentKey = privateObjectKey(f.project.id, "source", "wav");
+    const nonGeneratedKey = `projects/${f.project.id}/source/legacy-upload.wav`;
+    const otherCategoryKey = privateObjectKey(f.project.id, "export", "wav");
+    for (const key of [orphanKey, recentKey, nonGeneratedKey, otherCategoryKey]) {
+      await storage.putBuffer(key, "test");
+    }
+
+    const oldTime = new Date(Date.now() - ORPHAN_SOURCE_GRACE_PERIOD_MS - 60_000);
+    await utimes(storage.getLocalPath(orphanKey)!, oldTime, oldTime);
+    await utimes(storage.getLocalPath(nonGeneratedKey)!, oldTime, oldTime);
+    await utimes(storage.getLocalPath(otherCategoryKey)!, oldTime, oldTime);
+
+    const removed = await cleanupOrphanedSourceObjects({
+      db: f.database,
+      storage,
+      now: new Date(),
+    });
+
+    assert.deepEqual(removed, [orphanKey]);
+    assert.equal(await storage.exists(referencedKey), true, "a source object with a source row is retained");
+    assert.equal(await storage.exists(recentKey), true, "a recent unreferenced source object is retained");
+    assert.equal(await storage.exists(nonGeneratedKey), true, "non-generated source paths are retained");
+    assert.equal(await storage.exists(otherCategoryKey), true, "objects outside the source category are retained");
+    assert.equal(await storage.exists(orphanKey), false, "an old generated source object without a row is removed");
+    assert.equal((await f.database.select().from(sourceAssets)).length, 1, "source rows remain unchanged");
   } finally {
     await f.close();
   }

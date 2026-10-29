@@ -5,6 +5,7 @@ import {
   drainLocalWorker,
   recoverInterruptedLocalSeparationJobs,
   recoverPendingLocalWaveformJobs,
+  cleanupOrphanedSourceObjects,
 } from "@workspace/arena/lib/waveyard/worker-local";
 import { db, pool } from "@workspace/db";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
@@ -44,6 +45,22 @@ if (worker) {
       }, "Transient database connection failure during Waveyard startup recovery; retrying"),
     },
   );
+  let removedOrphanSourceObjects = 0;
+  try {
+    const removed = await runWaveyardStartupRecovery(
+      cleanupOrphanedSourceObjects,
+      {
+        onRetry: (error, attempt, delayMs) => logger.warn({
+          attempt,
+          delayMs,
+          error,
+        }, "Transient database connection failure during Waveyard source cleanup; retrying"),
+      },
+    );
+    removedOrphanSourceObjects = removed.length;
+  } catch (error) {
+    logger.warn({ error }, "Waveyard source cleanup failed; continuing startup without deleting additional files");
+  }
   logger.info({
     queues: worker.registeredQueues(),
     interrupted: recovery.interruptedJobIds.length,
@@ -53,6 +70,7 @@ if (worker) {
     resetWaveforms: waveformRecovery.resetJobIds.length,
     enqueuedWaveforms: waveformRecovery.enqueuedJobIds.length,
     waveformQueueFailures: waveformRecovery.failedJobIds.length,
+    removedOrphanSourceObjects,
   }, "Waveyard local processors ready");
 }
 

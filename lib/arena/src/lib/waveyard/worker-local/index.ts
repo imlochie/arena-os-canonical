@@ -25,6 +25,7 @@ import { handleSectionAnalysisJob } from "./sections";
 import { handleExportJob } from "./export";
 
 export { getLocalJobBroker, localWorkerActive };
+export { cleanupOrphanedSourceObjects, ORPHAN_SOURCE_GRACE_PERIOD_MS } from "./source-cleanup";
 export {
   recoverInterruptedLocalSeparationJobs,
   recoverPendingLocalWaveformJobs,
