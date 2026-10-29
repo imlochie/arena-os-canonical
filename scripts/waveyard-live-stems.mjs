@@ -576,6 +576,7 @@ try {
   await firstPage.getByLabel("Seek current track", { exact: true }).press("Home");
   await secondPage.waitForFunction(() => document.querySelector('[aria-label="Seek current track"]')?.value === "0");
   assert.equal(await firstPage.getByTestId("session-play").getAttribute("aria-pressed"), "true", "remote seek does not pause the active deck");
+  await toggle();
 
   await current.getByLabel("Isolate vocals", { exact: true }).click();
   await page.waitForFunction(() => {
@@ -608,6 +609,7 @@ try {
   heldAssetGate = slowDonorGate;
   signalHeldAssetRequest = signalSlowDonorRequest;
   signalHeldAssetRouteFinished = finishSlowDonorRoute;
+  if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
   const playbackBeforeCancel = await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.currentTime);
   const buffersBeforeCancel = await page.evaluate(() => window.audioProbe.buffers.length);
   await current.getByTestId("open-live-swap-vocals").click();
@@ -642,6 +644,7 @@ try {
   assert.equal(session.swaps.length, 0, "cancelling removes the pending persisted swap");
   assert.equal(await page.evaluate(() => window.audioProbe.buffers.length), buffersBeforeCancel,
     "a cancelled donor is never decoded into a playing layer");
+  if (await current.locator("audio").first().evaluate(audio => !audio.paused)) await toggle();
   heldAssetId = null;
   heldAssetGate = null;
   signalHeldAssetRequest = null;
@@ -649,21 +652,36 @@ try {
   await slowDonorRouteFinished;
   signalHeldAssetRouteFinished = null;
 
-  await chooseLiveSource("vocals", "b");
-  await page.waitForFunction(() => window.audioProbe.buffers.length === 1);
+  const currentTrackIdForTempoTest = session.currentSessionTrackId ?? "a";
+  const tempoCurrentTrack = tracks.find(item => item.id === currentTrackIdForTempoTest) ?? tracks[0];
+  const tempoDonor = tracks.find(item => item.id !== tempoCurrentTrack.id && item.id === (tempoCurrentTrack.id === "b" ? "a" : "b")) ?? tracks[1];
+  if (await current.locator("audio").first().evaluate(audio => !audio.paused)) await toggle();
+  const seek = current.getByTestId("seek-deck-0");
+  const initialSeekSeconds = Math.min(6, tempoCurrentTrack.track.durationSeconds * 0.5);
+  const followSeekSeconds = Math.min(11, tempoCurrentTrack.track.durationSeconds * 0.3);
+  await seek.fill("0");
+  await chooseLiveSource("vocals", tempoDonor.id);
+  const buffersBeforeTempoSwap = await page.evaluate(() => window.audioProbe.buffers.length);
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="live-stem-tempo-vocals"]')?.textContent === "Tempo matched · pitch preserved",
+  );
+  await toggle();
+  await page.waitForFunction(before => window.audioProbe.buffers.length > before, buffersBeforeTempoSwap);
   await page.waitForTimeout(250);
   const tempoMatchedDonorDuration = await page.evaluate(() => window.audioProbe.buffers.at(-1).buffer.duration);
-  assert.ok(Math.abs(tempoMatchedDonorDuration - (8 * 124 / 120)) < 0.08,
-    `a 124 BPM donor is pitch-preservingly matched to the 120 BPM recipient: ${tempoMatchedDonorDuration}`);
+  const expectedTempoMatchedDuration = tempoDonor.track.durationSeconds *
+    (tempoDonor.analysis.bpm / tempoCurrentTrack.analysis.bpm);
+  assert.ok(Math.abs(tempoMatchedDonorDuration - expectedTempoMatchedDuration) < 0.08,
+    `the donor is pitch-preservingly matched to the recipient: ${tempoMatchedDonorDuration}`);
   assert.equal(await current.getByTestId("live-stem-tempo-vocals").innerText(),
     "Tempo matched · pitch preserved", "the UI confirms tempo sync only after preparation succeeds");
   await toggle();
-  const seek = current.getByTestId("seek-deck-0");
-  await seek.fill("6");
+  await seek.fill(String(initialSeekSeconds));
   await page.waitForTimeout(150);
   const paused = await current.locator("audio").evaluateAll(elements => elements.map(e => ({ time: e.currentTime, ready: e.readyState, duration: e.duration, paused: e.paused,
     seekable: Array.from({ length: e.seekable.length }, (_, i) => [e.seekable.start(i), e.seekable.end(i)]) })));
-  assert.ok(paused.every(e => Math.abs(e.time - 6) < 0.1), "recipient media must seek, not only the slider");
+  assert.ok(paused.every(e => Math.abs(e.time - initialSeekSeconds) < 0.1),
+    `recipient media must seek, not only the slider: target=${initialSeekSeconds} actual=${JSON.stringify(paused)}`);
   await toggle();
   const resumed = await page.evaluate(() => ({
     offset: window.audioProbe.buffers.at(-1).startedOffset,
@@ -676,15 +694,22 @@ try {
     `donor resumes from the recipient's live clock: ${JSON.stringify(resumed)}`);
   await current.getByTestId("restore-live-swap-vocals").click();
   await page.waitForTimeout(400);
-  const originalGain = await page.evaluate(() => window.audioProbe.sources.find(s => s.mediaElement.src.endsWith("/a-vocals")).inputNode.gain.value);
+  const originalGain = await page.evaluate((trackId) =>
+    window.audioProbe.sources.find(s => s.mediaElement.src.endsWith(`/${trackId}-vocals`)).inputNode.gain.value,
+  tempoCurrentTrack.id);
   assert.equal(originalGain, 1);
+  const wasPlayingBeforeFourSwaps = await current.locator("audio").first().evaluate(audio => !audio.paused);
+  if (wasPlayingBeforeFourSwaps) await toggle();
   for (const type of types) {
-    await chooseLiveSource(type, "b");
-    await page.waitForFunction(() => !document.querySelector('[data-testid="open-live-swap-vocals"]').disabled);
+    const donorId = session.currentSessionTrackId === "b" ? "a" : "b";
+    await chooseLiveSource(type, donorId);
+    await page.waitForFunction((stemType) => {
+      const trigger = document.querySelector(`[data-testid="open-live-swap-${stemType}"]`);
+      return trigger instanceof HTMLButtonElement && !trigger.disabled;
+    }, type);
   }
   await page.waitForTimeout(300);
-  await toggle();
-  await seek.fill("11");
+  await seek.fill(String(followSeekSeconds));
   await toggle();
   const donorResume = await page.evaluate(() => ({
     sources: window.audioProbe.buffers.slice(-4).map(b => ({
@@ -707,9 +732,9 @@ try {
   assert.match(await unknownAnalysisDonor.getAttribute("aria-label"), /BPM unknown; Key unknown/,
     "the picker labels absent donor analysis instead of implying compatibility");
   await unknownAnalysisDonor.click();
-  await page.waitForFunction((beforeCount) => window.audioProbe.buffers.length > beforeCount &&
-    [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > 10),
-  buffersBeforeExternalSwap);
+  await page.waitForFunction(({ beforeCount, minTime }) => window.audioProbe.buffers.length > beforeCount &&
+    [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > minTime),
+  { beforeCount: buffersBeforeExternalSwap, minTime: Math.max(0, followSeekSeconds - 0.5) });
   assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "d", "library donor is saved without being added to the session queue");
   const externalResume = await page.evaluate(() => ({
     offset: window.audioProbe.buffers.at(-1).startedOffset,
@@ -720,13 +745,22 @@ try {
     `external library donor follows recipient clock: ${JSON.stringify(externalResume)}`);
   assert.equal(await current.getByTestId("live-stem-tempo-vocals").innerText(),
     "Tempo unavailable · native tempo", "missing BPM is shown honestly instead of implying tempo sync");
-  failAsset = "c-bass";
-  await chooseLiveSource("bass", "c");
+  const failedDonorId = session.currentSessionTrackId === "c" ? "a" : "c";
+  failAsset = `${failedDonorId}-bass`;
+  await chooseLiveSource("bass", failedDonorId);
   await current.getByRole("alert").waitFor();
   assert.match(await current.getByRole("alert").textContent(), /previous layer was kept/);
   failAsset = null;
   await current.getByText("Retry live stems", { exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('[data-role="current"] [role="alert"]'));
+  if (await current.locator("audio").first().evaluate(audio => !audio.paused)) await toggle();
+  for (let steps = 0; steps < session.tracks.length && session.currentSessionTrackId !== "a"; steps += 1) {
+    const index = session.tracks.findIndex(item => item.id === session.currentSessionTrackId);
+    const previousItem = session.tracks[(index - 1 + session.tracks.length) % session.tracks.length];
+    await page.getByRole("button", { name: "Previous track", exact: true }).click();
+    await current.getByText(previousItem.track.title, { exact: true }).waitFor();
+  }
+  assert.equal(session.currentSessionTrackId, "a", "the cross-tab transition check starts from the first session entry");
   await page.getByTestId("session-transition").click();
   const transitionMode = page.getByLabel("Mode");
   assert.deepEqual(
