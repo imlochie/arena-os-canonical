@@ -28,6 +28,7 @@ function fixture() {
         gain: {
           value: 1,
           cancelScheduledValues(time: number) { automation.push({ type: "cancel", time }); },
+          cancelAndHoldAtTime(time: number) { automation.push({ type: "hold", time }); },
           setValueAtTime(value: number, time: number) {
             this.value = value;
             automation.push({ type: "set", value, time });
@@ -48,7 +49,7 @@ function fixture() {
     () => context as unknown as AudioContext,
     () => channel as unknown as ReturnType<ConstructorParameters<typeof LiveStemLayers>[1]>,
   );
-  return { layers, channel, media, sources, gains };
+  return { layers, channel, media, sources, gains, context };
 }
 
 function response(ok = true) {
@@ -120,6 +121,26 @@ test("a late download cannot override a newer selection", async () => {
     await late;
     assert.equal(f.sources.length, 1);
     assert.equal(f.sources[0].stopped, false);
+  } finally { f.layers.dispose(); }
+});
+
+test("a rapid donor change holds the in-progress crossfade before starting the next one", async () => {
+  const f = fixture();
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.replace("vocals", "/first");
+    f.context.currentTime = 5.02;
+    await f.layers.replace("vocals", "/second");
+
+    const firstDonorAutomation = f.gains[2].automation;
+    assert.deepEqual(firstDonorAutomation.slice(-2), [
+      { type: "hold", time: 5.02 },
+      { type: "ramp", value: 0, time: 5.06 },
+    ]);
+    assert.deepEqual(f.gains[3].automation.slice(-2), [
+      { type: "hold", time: 5.02 },
+      { type: "ramp", value: 1, time: 5.06 },
+    ]);
   } finally { f.layers.dispose(); }
 });
 

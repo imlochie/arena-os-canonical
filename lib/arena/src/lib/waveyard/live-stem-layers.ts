@@ -27,8 +27,12 @@ export class LiveStemLayers {
 
   private ramp(gain: GainNode, value: number) {
     const now = gain.context.currentTime;
-    gain.gain.cancelScheduledValues(now);
-    gain.gain.setValueAtTime(gain.gain.value, now);
+    if (typeof gain.gain.cancelAndHoldAtTime === "function") {
+      gain.gain.cancelAndHoldAtTime(now);
+    } else {
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+    }
     gain.gain.linearRampToValueAtTime(value, now + 0.04);
   }
 
