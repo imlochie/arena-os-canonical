@@ -294,9 +294,9 @@ export function useStemTransport(ids: string[], duration: number) {
       (id) => ensureGraph(id),
     );
   }
-  const replaceStem = useCallback((id: string, url: string | null) => {
+  const replaceStem = useCallback((id: string, url: string | null, tempoStretchRatio = 1) => {
     if (url) ensureGraph(id);
-    return liveLayers.current!.replace(id, url);
+    return liveLayers.current!.replace(id, url, tempoStretchRatio);
   }, [ensureGraph]);
   const prepareChannels = useCallback((channelIds: string[]) => {
     for (const id of channelIds) {

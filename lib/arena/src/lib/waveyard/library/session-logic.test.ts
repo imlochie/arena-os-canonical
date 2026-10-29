@@ -17,6 +17,7 @@ import {
   scaleCrossfadeStemVolumes,
   defaultTransitionConfig,
   keyCompatibility,
+  liveStemTempoStretchRatio,
   nextSessionTrack,
   normalizeTransitionConfig,
   tempoCompatibility,
@@ -121,6 +122,13 @@ test("tempo compatibility: missing analysis is honest, never guessed", () => {
   assert.equal(missing.ratio, null);
   assert.match(missing.reason, /not complete/);
   assert.deepEqual(tempoCompatibility(null, null).ratio, null);
+});
+
+test("live stem tempo sync only stretches compatible analyzed tempos", () => {
+  assert.equal(liveStemTempoStretchRatio(120, 124), 124 / 120);
+  assert.equal(liveStemTempoStretchRatio(120, 60), 0.5);
+  assert.equal(liveStemTempoStretchRatio(120, 140), null, "large differences remain at donor tempo");
+  assert.equal(liveStemTempoStretchRatio(120, null), null, "missing donor analysis is not guessed");
 });
 
 test("key compatibility: same key, fifth, and relative relationships", () => {

@@ -5,7 +5,7 @@ import { LiveStemLayers } from "./live-stem-layers";
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
-function fixture() {
+function fixture(stretchBuffer?: ConstructorParameters<typeof LiveStemLayers>[2]) {
   const sources: Array<{ offset: number; stopped: boolean; loop: boolean }> = [];
   const gains: Array<{ automation: Array<{ type: string; value?: number; time: number }> }> = [];
   const context = {
@@ -48,6 +48,7 @@ function fixture() {
   const layers = new LiveStemLayers(
     () => context as unknown as AudioContext,
     () => channel as unknown as ReturnType<ConstructorParameters<typeof LiveStemLayers>[1]>,
+    stretchBuffer,
   );
   return { layers, channel, media, sources, gains, context };
 }
@@ -121,6 +122,22 @@ test("a late download cannot override a newer selection", async () => {
     await late;
     assert.equal(f.sources.length, 1);
     assert.equal(f.sources[0].stopped, false);
+  } finally { f.layers.dispose(); }
+});
+
+test("tempo-matched donor audio is prepared before the original layer fades out", async () => {
+  const ratios: number[] = [];
+  const f = fixture(async (_context, _buffer, ratio, signal) => {
+    ratios.push(ratio);
+    assert.equal(signal.aborted, false);
+    return { duration: 6 } as AudioBuffer;
+  });
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.replace("vocals", "/donor", 0.8);
+    assert.deepEqual(ratios, [0.8]);
+    assert.equal(f.sources[0].offset, 1, "the stretched donor follows the recipient clock modulo its new duration");
+    assert.equal(f.channel.inputGain.gain.value, 0, "the original fades only after matching finishes");
   } finally { f.layers.dispose(); }
 });
 

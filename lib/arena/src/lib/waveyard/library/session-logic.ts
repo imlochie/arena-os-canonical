@@ -149,6 +149,19 @@ export function tempoCompatibility(aBpm: number | null, bBpm: number | null): Te
   };
 }
 
+/**
+ * Pitch-preserving live-stem stretch factor (output duration / donor duration)
+ * when the analyzed tempos are close or have a half/double-time lock.
+ */
+export function liveStemTempoStretchRatio(
+  recipientBpm: number | null,
+  donorBpm: number | null,
+): number | null {
+  const compatibility = tempoCompatibility(recipientBpm, donorBpm);
+  if (!compatibility.compatible || recipientBpm === null || donorBpm === null) return null;
+  return donorBpm / recipientBpm;
+}
+
 export interface KeyCompatibility {
   aKey: string | null;
   bKey: string | null;

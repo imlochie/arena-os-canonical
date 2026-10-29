@@ -1,10 +1,29 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 
 import {
   isTransientDatabaseConnectionFailure,
   runWaveyardStartupRecovery,
+  waitForServerListening,
 } from "./waveyard-startup-recovery";
+
+test("background Waveyard maintenance can wait for the server listening event", async (context) => {
+  const server = createServer();
+  context.after(async () => {
+    if (!server.listening) return;
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  const ready = waitForServerListening(server);
+  assert.equal(server.listening, false);
+  server.listen(0, "127.0.0.1");
+  await ready;
+  assert.equal(server.listening, true);
+  await waitForServerListening(server);
+});
 
 test("Waveyard startup recovery retries a wrapped connection interruption and succeeds", async () => {
   const delays: number[] = [];

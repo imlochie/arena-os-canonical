@@ -9,7 +9,7 @@ import {
 } from "@workspace/arena/lib/waveyard/worker-local";
 import { db, pool } from "@workspace/db";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
-import { runWaveyardStartupRecovery } from "./lib/waveyard-startup-recovery";
+import { runWaveyardStartupRecovery, waitForServerListening } from "./lib/waveyard-startup-recovery";
 
 const rawPort = process.env["PORT"];
 
@@ -71,26 +71,26 @@ if (process.env.ARENA_DESKTOP_MODE === "1") {
 let sourceCleanupTask: Promise<void> | undefined;
 const server = app.listen(port, process.env.ARENA_DESKTOP_MODE === "1" ? "127.0.0.1" : "0.0.0.0", () => {
   logger.info({ port }, "Server listening");
-  if (worker) {
-    sourceCleanupTask = (async () => {
-      try {
-        const removed = await runWaveyardStartupRecovery(
-          cleanupOrphanedSourceObjects,
-          {
-            onRetry: (error, attempt, delayMs) => logger.warn({
-              attempt,
-              delayMs,
-              error,
-            }, "Transient database connection failure during Waveyard source cleanup; retrying"),
-          },
-        );
-        logger.info({ removedOrphanSourceObjects: removed.length }, "Waveyard source cleanup finished");
-      } catch (error) {
-        logger.warn({ error }, "Waveyard source cleanup failed; continuing without deleting additional files");
-      }
-    })();
-  }
 });
+if (worker) {
+  sourceCleanupTask = waitForServerListening(server)
+    .then(async () => {
+      const removed = await runWaveyardStartupRecovery(
+        cleanupOrphanedSourceObjects,
+        {
+          onRetry: (error, attempt, delayMs) => logger.warn({
+            attempt,
+            delayMs,
+            error,
+          }, "Transient database connection failure during Waveyard source cleanup; retrying"),
+        },
+      );
+      logger.info({ removedOrphanSourceObjects: removed.length }, "Waveyard source cleanup finished");
+    })
+    .catch((error) => {
+      logger.warn({ error }, "Waveyard source cleanup failed; continuing without deleting additional files");
+    });
+}
 server.on("error", (err) => {
   logger.error({ err }, "Error listening on port");
   process.exit(1);

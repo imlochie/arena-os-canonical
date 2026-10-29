@@ -5,9 +5,73 @@ type Channel = {
 };
 type Layer = {
   url: string;
+  tempoStretchRatio: number;
   buffer: AudioBuffer;
   input: GainNode;
   source: AudioBufferSourceNode | null;
+};
+
+type BufferStretcher = (
+  context: AudioContext,
+  buffer: AudioBuffer,
+  ratio: number,
+  signal: AbortSignal,
+) => Promise<AudioBuffer>;
+
+const stretchBufferInWorker: BufferStretcher = (context, buffer, ratio, signal) => {
+  if (typeof Worker === "undefined") {
+    return Promise.reject(new Error("This browser cannot prepare a tempo-matched live stem."));
+  }
+  const worker = new Worker(new URL("./live-stem-tempo.worker.ts", import.meta.url), { type: "module" });
+  return new Promise<AudioBuffer>((resolve, reject) => {
+    const cleanup = () => {
+      signal.removeEventListener("abort", abort);
+      worker.terminate();
+    };
+    const abort = () => {
+      cleanup();
+      reject(new DOMException("Live stem preparation was cancelled.", "AbortError"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    worker.onerror = (event) => {
+      cleanup();
+      reject(new Error(event.message || "Live tempo matching failed."));
+    };
+    worker.onmessage = (event: MessageEvent<{ left?: ArrayBuffer; right?: ArrayBuffer; error?: string }>) => {
+      cleanup();
+      if (event.data.error) {
+        reject(new Error(event.data.error));
+        return;
+      }
+      if (!event.data.left || !event.data.right) {
+        reject(new Error("Live tempo matching returned incomplete audio."));
+        return;
+      }
+      const left = new Float32Array(event.data.left);
+      const right = new Float32Array(event.data.right);
+      if (left.length === 0 || left.length !== right.length) {
+        reject(new Error("Live tempo matching returned invalid audio."));
+        return;
+      }
+      const stretched = context.createBuffer(2, left.length, buffer.sampleRate);
+      stretched.getChannelData(0).set(left);
+      stretched.getChannelData(1).set(right);
+      resolve(stretched);
+    };
+    try {
+      const left = Float32Array.from(buffer.getChannelData(0));
+      const right = buffer.numberOfChannels > 1
+        ? Float32Array.from(buffer.getChannelData(1))
+        : Float32Array.from(left);
+      worker.postMessage(
+        { left: left.buffer, right: right.buffer, ratio, sampleRate: buffer.sampleRate },
+        [left.buffer, right.buffer],
+      );
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
 };
 
 /**
@@ -23,6 +87,7 @@ export class LiveStemLayers {
   constructor(
     private context: () => AudioContext,
     private channel: (id: string) => Channel | null,
+    private stretchBuffer: BufferStretcher = stretchBufferInWorker,
   ) {}
 
   private ramp(gain: GainNode, value: number) {
@@ -69,7 +134,7 @@ export class LiveStemLayers {
     layer.source = source;
   }
 
-  async replace(id: string, url: string | null) {
+  async replace(id: string, url: string | null, tempoStretchRatio = 1) {
     this.pending.get(id)?.abort();
     this.pending.delete(id);
     const previous = this.layers.get(id);
@@ -81,7 +146,10 @@ export class LiveStemLayers {
       this.retire(previous);
       return;
     }
-    if (previous?.url === url) return;
+    if (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2) {
+      throw new Error("The live stem tempo ratio must be between 0.5× and 2×.");
+    }
+    if (previous?.url === url && Math.abs(previous.tempoStretchRatio - tempoStretchRatio) < 0.001) return;
     const operation = new AbortController();
     this.pending.set(id, operation);
     try {
@@ -89,7 +157,11 @@ export class LiveStemLayers {
       if (!response.ok) throw new Error(`Stem download failed (${response.status}).`);
       const bytes = await response.arrayBuffer();
       const ctx = this.context();
-      const buffer = await ctx.decodeAudioData(bytes);
+      const decoded = await ctx.decodeAudioData(bytes);
+      if (operation.signal.aborted || this.pending.get(id) !== operation) return;
+      const buffer = Math.abs(tempoStretchRatio - 1) < 0.001
+        ? decoded
+        : await this.stretchBuffer(ctx, decoded, tempoStretchRatio, operation.signal);
       if (operation.signal.aborted || this.pending.get(id) !== operation) return;
       if (!(buffer.duration > 0)) throw new Error("The donor stem has no playable audio.");
       const channel = this.channel(id);
@@ -97,7 +169,7 @@ export class LiveStemLayers {
       const input = ctx.createGain();
       input.gain.value = 0;
       input.connect(channel.gain);
-      const layer: Layer = { url, buffer, input, source: null };
+      const layer: Layer = { url, tempoStretchRatio, buffer, input, source: null };
       this.start(layer, channel);
       this.layers.set(id, layer);
       this.ramp(input, 1);

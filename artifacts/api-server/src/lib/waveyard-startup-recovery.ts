@@ -1,3 +1,6 @@
+import { once } from "node:events";
+import type { Server } from "node:http";
+
 const TRANSIENT_DATABASE_CONNECTION_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
@@ -15,6 +18,11 @@ const TRANSIENT_CONNECTION_MESSAGE =
   /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN)\b|connection terminated unexpectedly|server closed the connection unexpectedly|could not connect to server|connection timeout|socket hang up/i;
 
 export const WAVEYARD_RECOVERY_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
+
+export async function waitForServerListening(server: Server): Promise<void> {
+  if (server.listening) return;
+  await once(server, "listening");
+}
 
 export function isTransientDatabaseConnectionFailure(error: unknown): boolean {
   const visited = new Set<object>();

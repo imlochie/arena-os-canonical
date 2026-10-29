@@ -31,7 +31,7 @@ const tracks = ["a", "b", "c"].map((id, index) => {
     track: { id, title: `Test ${id}`, artist: "Synthetic fixture", durationSeconds: duration },
     stems, playback: { kind: "stems", assetIds: stems.map(s => s.id) }, stemMix: {},
     transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
-    analysis: { bpm: 120, musicalKey: ["A minor", "C major", "C# major"][index], beatGridMs: null } };
+    analysis: { bpm: index === 1 ? 124 : 120, musicalKey: ["A minor", "C major", "C# major"][index], beatGridMs: null } };
 });
 const sourceOnlyTrack = { ...tracks[0], stems: [], playback: { kind: "source", assetIds: ["a-source"] } };
 const externalStemKeys = types.map(stem => {
@@ -562,6 +562,9 @@ try {
   await current.getByLabel("vocals source", { exact: true }).selectOption("b");
   await page.waitForFunction(() => window.audioProbe.buffers.length === 1);
   await page.waitForTimeout(250);
+  const tempoMatchedDonorDuration = await page.evaluate(() => window.audioProbe.buffers.at(-1).buffer.duration);
+  assert.ok(Math.abs(tempoMatchedDonorDuration - (8 * 124 / 120)) < 0.08,
+    `a 124 BPM donor is pitch-preservingly matched to the 120 BPM recipient: ${tempoMatchedDonorDuration}`);
   await toggle();
   const seek = current.getByTestId("seek-deck-0");
   await seek.fill("6");
@@ -573,9 +576,10 @@ try {
   const resumed = await page.evaluate(() => ({
     offset: window.audioProbe.buffers.at(-1).startedOffset,
     recipientTimeAtStart: window.audioProbe.buffers.at(-1).recipientTimeAtStart,
+    duration: window.audioProbe.buffers.at(-1).buffer.duration,
     paused: document.querySelector('[data-role="current"] audio')?.paused,
   }));
-  const resumedOffsetError = Math.abs(resumed.offset - ((resumed.recipientTimeAtStart ?? 0) % 8));
+  const resumedOffsetError = Math.abs(resumed.offset - ((resumed.recipientTimeAtStart ?? 0) % resumed.duration));
   assert.ok(Number.isFinite(resumed.recipientTimeAtStart) && resumedOffsetError < 0.15,
     `donor resumes from the recipient's live clock: ${JSON.stringify(resumed)}`);
   await current.getByLabel("vocals source", { exact: true }).selectOption("");
@@ -593,6 +597,7 @@ try {
   const donorResume = await page.evaluate(() => ({
     sources: window.audioProbe.buffers.slice(-4).map(b => ({
       offset: b.startedOffset, recipientTimeAtStart: b.recipientTimeAtStart,
+      duration: b.buffer.duration,
     })),
   }));
   const loopOffsetError = (offset, recipientTime, duration) => {
@@ -602,11 +607,12 @@ try {
     return Math.min(difference, duration - difference);
   };
   assert.ok(donorResume.sources.every(source =>
-    Number.isFinite(source.recipientTimeAtStart) && loopOffsetError(source.offset, source.recipientTimeAtStart, 8) < 0.15),
+    Number.isFinite(source.recipientTimeAtStart) && loopOffsetError(source.offset, source.recipientTimeAtStart, source.duration) < 0.15),
     `all four donors must follow original clock modulo duration: ${JSON.stringify(donorResume)}`);
   const currentVocals = page.locator('[data-role="current"]').getByLabel("vocals source", { exact: true });
+  const buffersBeforeExternalSwap = await page.evaluate(() => window.audioProbe.buffers.length);
   await currentVocals.selectOption("d");
-  await page.waitForFunction(() => window.audioProbe.buffers.length >= 7 &&
+  await page.waitForFunction((beforeCount) => window.audioProbe.buffers.length > beforeCount &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > 10));
   assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "d", "library donor is saved without being added to the session queue");
   const externalResume = await page.evaluate(() => ({

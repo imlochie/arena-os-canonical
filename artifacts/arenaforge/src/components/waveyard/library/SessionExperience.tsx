@@ -13,6 +13,7 @@ import {
   crossfadeCancel,
   crossfadeEnvelope,
   keyCompatibility,
+  liveStemTempoStretchRatio,
   nextSessionTrack,
   scaleCrossfadeStemVolumes,
   tempoCompatibility,
@@ -179,6 +180,7 @@ function SessionDeck({
   active,
   startAt,
   swaps,
+  tempoStretchRatios,
   masterLevel,
   autoPlay,
   onAutoPlayed,
@@ -200,6 +202,7 @@ function SessionDeck({
   active: boolean;
   startAt: number;
   swaps: Record<string, string>;
+  tempoStretchRatios: Record<string, number>;
   masterLevel: number;
   autoPlay: boolean;
   onAutoPlayed: () => void;
@@ -252,14 +255,18 @@ function SessionDeck({
     return map;
   }, [item?.stems, stagingTarget?.stems]);
 
-  const swapKey = JSON.stringify(assetIds.map((id) => [id, swaps[stemTypeByAsset.get(id) ?? "source"] ?? null]));
+  const swapKey = JSON.stringify(assetIds.map((id) => {
+    const stemType = stemTypeByAsset.get(id) ?? "source";
+    const donor = swaps[stemType] ?? null;
+    return [id, donor, donor === null ? 1 : tempoStretchRatios[stemType] ?? 1];
+  }));
   useEffect(() => {
     let stale = false;
-    const layers = JSON.parse(swapKey) as Array<[string, string | null]>;
+    const layers = JSON.parse(swapKey) as Array<[string, string | null, number]>;
     setLoadingLayers(layers.some(([, donor]) => donor !== null));
-    const replacements = layers.map(([id, donor]) => {
+    const replacements = layers.map(([id, donor, tempoStretchRatio]) => {
       const stemType = stemTypeByAsset.get(id) ?? "source";
-      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null).then(() => {
+      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio).then(() => {
         if (!stale && donor !== null && item !== null) onLiveLayerReady?.(item.id, stemType);
       });
     });
@@ -270,7 +277,7 @@ function SessionDeck({
       })
       .finally(() => { if (!stale) setLoadingLayers(false); });
     return () => { stale = true; };
-  }, [swapKey, stemTypeByAsset, transport.replaceStem, onLiveLayerReady, item?.id, swapRetry]);
+  }, [swapKey, stemTypeByAsset, tempoStretchRatios, transport.replaceStem, onLiveLayerReady, item?.id, swapRetry]);
 
   const applyStemVolumes = useCallback(
     (volumes: Record<string, number>) => {
@@ -889,6 +896,20 @@ export default function SessionExperience({
     }
     return map;
   }, [session, currentItem]);
+
+  const activeSwapTempoStretchRatios = useMemo(() => {
+    const ratios: Record<string, number> = {};
+    if (session === null || currentItem === null) return ratios;
+    for (const swap of session.swaps) {
+      if (swap.sessionTrackId !== currentItem.id) continue;
+      const donorBpm = session.tracks.find((item) => item.track.id === swap.toTrackId)?.analysis?.bpm
+        ?? library.find((track) => track.id === swap.toTrackId)?.analysis?.bpm
+        ?? null;
+      const ratio = liveStemTempoStretchRatio(currentItem.analysis?.bpm ?? null, donorBpm);
+      if (ratio !== null) ratios[swap.stemType] = ratio;
+    }
+    return ratios;
+  }, [session, currentItem, library]);
 
   const publishTransport = useCallback((snapshot: {
     trackId: string | null;
@@ -2107,6 +2128,7 @@ export default function SessionExperience({
       active: isActive,
       startAt: startAtFor(deckIndex),
       swaps: isActive ? activeSwaps : {},
+      tempoStretchRatios: isActive ? activeSwapTempoStretchRatios : {},
       masterLevel,
       autoPlay: item !== null && autoPlayId === item.id && (isActive || resumeAt?.itemId === item.id),
       onAutoPlayed: () => {
