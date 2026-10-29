@@ -27,6 +27,9 @@ let failNextQueueMove = false;
 let failNextQueueClear = false;
 let failNextPlaylistCreate = false;
 let failNextPlaylistAdd = false;
+let failNextPlaylistDelete = false;
+let playlistDeleteRequests = 0;
+let failNextPlaylistRename = false;
 let failNextPlaylistMove = false;
 let failNextPlaylistRemove = false;
 let playlistDetail = {
@@ -83,8 +86,27 @@ try {
       playlists: [{ ...playlistDetail, trackCount: playlistDetail.items.length }],
     });
   });
-  await context.route("**/api/library/playlists/test-set", (route) =>
-    routeJson(route, { playlist: playlistDetail }));
+  await context.route("**/api/library/playlists/test-set", (route) => {
+    if (route.request().method() === "PATCH") {
+      if (failNextPlaylistRename) {
+        failNextPlaylistRename = false;
+        return routeJson(route, { error: "synthetic playlist rename failure" }, 503);
+      }
+      playlistDetail.name = route.request().postDataJSON().name;
+      return routeJson(route, {
+        playlist: { id: playlistDetail.id, name: playlistDetail.name, trackCount: playlistDetail.items.length },
+      });
+    }
+    if (route.request().method() === "DELETE") {
+      playlistDeleteRequests += 1;
+      if (failNextPlaylistDelete) {
+        failNextPlaylistDelete = false;
+        return routeJson(route, { error: "synthetic playlist delete failure" }, 503);
+      }
+      return routeJson(route, { ok: true });
+    }
+    return routeJson(route, { playlist: playlistDetail });
+  });
   await context.route("**/api/library/playlists/test-set/items**", async (route) => {
     if (route.request().method() === "PATCH" && failNextPlaylistMove) {
       failNextPlaylistMove = false;
@@ -269,7 +291,7 @@ try {
   await page.getByRole("region", { name: "Playlists" }).getByRole("button", { name: "Create", exact: true }).click();
   await page.getByTestId("playlist-mutation-error").getByText("Could not create the playlist", { exact: false }).waitFor();
   await page.getByRole("region", { name: "Playlists" }).getByRole("button", { name: "Create", exact: true }).click();
-  await page.getByRole("button", { name: /Rejected playlist/ }).waitFor();
+  await page.getByTestId("playlist-row-created-playlist").waitFor();
   await page.getByText("Empty playlist.", { exact: true }).waitFor();
   assert.equal(await page.getByTestId("playlist-mutation-error").count(), 0, "a successful create clears the prior failure and opens the new playlist");
   failNextPlaylistAdd = true;
@@ -697,7 +719,27 @@ try {
   await page.getByLabel("Add Queue fixture 1 to a playlist").selectOption("test-set");
   await page.getByTestId("library-action-message").getByText("Queue fixture 1 added to Test playlist.", { exact: false }).waitFor();
   assert.equal(playlistDetail.items.length, 3, "a successful track-to-playlist action updates the persisted playlist fixture");
-  console.log("PASS: queue and playlist errors stay visible without mutating data; live continuity, handoff, and Studio reopen survive");
+  failNextPlaylistRename = true;
+  await page.getByRole("button", { name: "Rename playlist Test playlist" }).click();
+  await page.getByLabel("New name for Test playlist").fill("Renamed playlist");
+  await page.getByRole("button", { name: "Save name" }).click();
+  await page.getByTestId("playlist-mutation-error").getByText("Could not rename this playlist", { exact: false }).waitFor();
+  assert.equal(playlistDetail.name, "Test playlist", "a rejected rename leaves the playlist name unchanged");
+  await page.getByRole("button", { name: "Save name" }).click();
+  await page.getByTestId("playlist-row-test-set").getByText("Renamed playlist").waitFor();
+  await page.getByRole("button", { name: "Delete playlist Renamed playlist" }).click();
+  await page.getByText(/tracks stay in your library/).waitFor();
+  await page.getByRole("button", { name: "Cancel delete Renamed playlist" }).click();
+  assert.equal(playlistDeleteRequests, 0, "cancelling a playlist deletion does not call the API");
+  failNextPlaylistDelete = true;
+  await page.getByRole("button", { name: "Delete playlist Renamed playlist" }).click();
+  await page.getByRole("button", { name: "Confirm delete Renamed playlist" }).click();
+  await page.getByTestId("playlist-mutation-error").getByText("Could not delete this playlist", { exact: false }).waitFor();
+  assert.equal(await page.getByTestId("playlist-row-test-set").count(), 1, "a rejected delete keeps the playlist visible");
+  await page.getByRole("button", { name: "Confirm delete Renamed playlist" }).click();
+  await page.getByTestId("playlist-row-test-set").waitFor({ state: "detached" });
+  assert.equal(await page.locator(`[data-testid="button-play-${ids[0]}"]`).count(), 1, "deleting a playlist leaves its library tracks playable");
+  console.log("PASS: queue and playlist edits report failures; deletion confirms consequences and preserves library tracks; live continuity, handoff, and Studio reopen survive");
 } finally {
   await browser.close();
 }

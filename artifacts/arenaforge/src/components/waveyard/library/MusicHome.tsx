@@ -260,6 +260,11 @@ export function MusicHome() {
   const [playback, setPlayback] = useState<{ currentTrackId: string | null; positionSeconds: number } | null>(null);
   const [playlists, setPlaylists] = useState<PlaylistSummary[]>([]);
   const [openPlaylist, setOpenPlaylist] = useState<PlaylistDetail | null>(null);
+  const [playlistRenameId, setPlaylistRenameId] = useState<string | null>(null);
+  const [playlistNameDraft, setPlaylistNameDraft] = useState("");
+  const [renamingPlaylistId, setRenamingPlaylistId] = useState<string | null>(null);
+  const [playlistDeleteConfirmId, setPlaylistDeleteConfirmId] = useState<string | null>(null);
+  const [deletingPlaylistId, setDeletingPlaylistId] = useState<string | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [search, setSearch] = useState("");
   const [importUrl, setImportUrl] = useState("");
@@ -860,8 +865,12 @@ export function MusicHome() {
   const openPlaylistDetail = useCallback(async (playlistId: string) => {
     if (openPlaylist?.id === playlistId) {
       setOpenPlaylist(null);
+      setPlaylistRenameId(null);
+      setPlaylistDeleteConfirmId(null);
       return;
     }
+    setPlaylistRenameId(null);
+    setPlaylistDeleteConfirmId(null);
     try {
       const response = await fetch(`/api/library/playlists/${playlistId}`, { cache: "no-store" });
       if (!response.ok) {
@@ -874,6 +883,57 @@ export function MusicHome() {
       setPlaylistMessage("Could not open this playlist. Check the connection and try again.");
     }
   }, [openPlaylist]);
+
+  const renamePlaylist = useCallback(async (event: FormEvent<HTMLFormElement>, playlistId: string) => {
+    event.preventDefault();
+    const name = playlistNameDraft.trim();
+    if (name === "") return;
+    setRenamingPlaylistId(playlistId);
+    try {
+      const response = await fetch(`/api/library/playlists/${playlistId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!response.ok) {
+        setPlaylistMessage("Could not rename this playlist. Try again.");
+        return;
+      }
+      const summary = (await response.json()).playlist as PlaylistSummary;
+      setPlaylists((previous) => previous.map((playlist) => playlist.id === playlistId ? summary : playlist));
+      setOpenPlaylist((current) => current?.id === playlistId
+        ? { ...current, name: summary.name }
+        : current);
+      setPlaylistRenameId(null);
+      setPlaylistNameDraft("");
+      setPlaylistMessage(null);
+    } catch {
+      setPlaylistMessage("Could not rename this playlist. Check the connection and try again.");
+    } finally {
+      setRenamingPlaylistId(null);
+    }
+  }, [playlistNameDraft]);
+
+  const deletePlaylist = useCallback(async (playlistId: string) => {
+    setDeletingPlaylistId(playlistId);
+    try {
+      const response = await fetch(`/api/library/playlists/${playlistId}`, { method: "DELETE" });
+      if (!response.ok) {
+        setPlaylistMessage("Could not delete this playlist. Try again.");
+        return;
+      }
+      setPlaylists((previous) => previous.filter((playlist) => playlist.id !== playlistId));
+      setOpenPlaylist((current) => current?.id === playlistId ? null : current);
+      setPlaylistRenameId(null);
+      setPlaylistNameDraft("");
+      setPlaylistDeleteConfirmId(null);
+      setPlaylistMessage(null);
+    } catch {
+      setPlaylistMessage("Could not delete this playlist. Check the connection and try again.");
+    } finally {
+      setDeletingPlaylistId(null);
+    }
+  }, []);
 
   const onAddToPlaylist = useCallback(async (playlistId: string, track: TrackSummary) => {
     try {
@@ -1283,7 +1343,12 @@ export function MusicHome() {
           <ul className="playlist-list">
             {playlists.map((playlist) => (
               <li key={playlist.id} className={openPlaylist?.id === playlist.id ? "open" : ""}>
-                <button type="button" className="playlist-row" onClick={() => void openPlaylistDetail(playlist.id)}>
+                <button
+                  type="button"
+                  className="playlist-row"
+                  data-testid={`playlist-row-${playlist.id}`}
+                  onClick={() => void openPlaylistDetail(playlist.id)}
+                >
                   <b>{playlist.name}</b>
                   <small>{playlist.trackCount} track{playlist.trackCount === 1 ? "" : "s"}</small>
                 </button>
@@ -1293,6 +1358,83 @@ export function MusicHome() {
                       onClick={() => void enqueuePlaylist(openPlaylist)} data-testid={`playlist-live-${playlist.id}`}>
                       Add playlist to listening order
                     </button>
+                    {playlistRenameId === playlist.id ? (
+                      <form className="playlist-rename-form" onSubmit={(event) => void renamePlaylist(event, playlist.id)}>
+                        <input
+                          aria-label={`New name for ${playlist.name}`}
+                          value={playlistNameDraft}
+                          maxLength={160}
+                          onChange={(event) => setPlaylistNameDraft(event.target.value)}
+                        />
+                        <button type="submit" className="button secondary" disabled={renamingPlaylistId === playlist.id || playlistNameDraft.trim() === ""}>
+                          {renamingPlaylistId === playlist.id ? "Saving…" : "Save name"}
+                        </button>
+                        <button
+                          type="button"
+                          className="button secondary"
+                          aria-label={`Cancel rename ${playlist.name}`}
+                          disabled={renamingPlaylistId === playlist.id}
+                          onClick={() => {
+                            setPlaylistRenameId(null);
+                            setPlaylistNameDraft("");
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button secondary playlist-rename-action"
+                        aria-label={`Rename playlist ${playlist.name}`}
+                        disabled={deletingPlaylistId === playlist.id}
+                        onClick={() => {
+                          setPlaylistMessage(null);
+                          setPlaylistDeleteConfirmId(null);
+                          setPlaylistNameDraft(playlist.name);
+                          setPlaylistRenameId(playlist.id);
+                        }}
+                      >
+                        Rename playlist
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="button secondary playlist-delete-action"
+                      aria-label={`Delete playlist ${playlist.name}`}
+                      disabled={deletingPlaylistId === playlist.id}
+                      onClick={() => {
+                        setPlaylistMessage(null);
+                        setPlaylistRenameId(null);
+                        setPlaylistNameDraft("");
+                        setPlaylistDeleteConfirmId(playlist.id);
+                      }}
+                    >
+                      Delete playlist
+                    </button>
+                    {playlistDeleteConfirmId === playlist.id && (
+                      <div className="playlist-delete-confirm" role="group" aria-label={`Confirm delete ${playlist.name}`}>
+                        <p>Delete “{playlist.name}”? The tracks stay in your library; only this playlist and its order are removed.</p>
+                        <button
+                          type="button"
+                          className="button"
+                          aria-label={`Confirm delete ${playlist.name}`}
+                          disabled={deletingPlaylistId === playlist.id}
+                          onClick={() => void deletePlaylist(playlist.id)}
+                        >
+                          {deletingPlaylistId === playlist.id ? "Deleting…" : "Confirm delete"}
+                        </button>
+                        <button
+                          type="button"
+                          className="button secondary"
+                          aria-label={`Cancel delete ${playlist.name}`}
+                          disabled={deletingPlaylistId === playlist.id}
+                          onClick={() => setPlaylistDeleteConfirmId(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    )}
                     <ol className="playlist-items">
                       {openPlaylist.items.map((item, index) => (
                         <li key={item.id}>

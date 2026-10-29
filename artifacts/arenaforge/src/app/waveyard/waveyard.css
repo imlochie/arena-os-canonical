@@ -544,6 +544,12 @@
 .playlist-items{list-style:none;margin:6px 0 10px 12px;padding:0 0 0 12px;border-left:2px solid #2d3224;display:grid;gap:6px}
 .playlist-items li{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px}
 .playlist-items li a:hover{color:var(--acid)}
+.playlist-delete-action{margin:8px 0}
+.playlist-delete-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:8px;border:1px solid var(--line);background:#11130e;padding:10px;margin:0 0 10px}
+.playlist-delete-confirm p{flex:1 1 100%;margin:0;color:var(--muted);font-size:12px;line-height:1.5}
+.playlist-rename-action{margin:8px 0}
+.playlist-rename-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+.playlist-rename-form input{flex:1 1 180px;min-width:0;background:#11130e;border:1px solid #3b3e38;color:var(--ink);padding:10px}
 .playlist-item-actions{display:flex;gap:4px}
 .studio-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .studio-list a{display:block;border:1px solid var(--line);background:var(--panel);padding:11px 14px;font-size:14px}
