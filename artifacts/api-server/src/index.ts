@@ -45,22 +45,6 @@ if (worker) {
       }, "Transient database connection failure during Waveyard startup recovery; retrying"),
     },
   );
-  let removedOrphanSourceObjects = 0;
-  try {
-    const removed = await runWaveyardStartupRecovery(
-      cleanupOrphanedSourceObjects,
-      {
-        onRetry: (error, attempt, delayMs) => logger.warn({
-          attempt,
-          delayMs,
-          error,
-        }, "Transient database connection failure during Waveyard source cleanup; retrying"),
-      },
-    );
-    removedOrphanSourceObjects = removed.length;
-  } catch (error) {
-    logger.warn({ error }, "Waveyard source cleanup failed; continuing startup without deleting additional files");
-  }
   logger.info({
     queues: worker.registeredQueues(),
     interrupted: recovery.interruptedJobIds.length,
@@ -70,7 +54,6 @@ if (worker) {
     resetWaveforms: waveformRecovery.resetJobIds.length,
     enqueuedWaveforms: waveformRecovery.enqueuedJobIds.length,
     waveformQueueFailures: waveformRecovery.failedJobIds.length,
-    removedOrphanSourceObjects,
   }, "Waveyard local processors ready");
 }
 
@@ -85,8 +68,28 @@ if (process.env.ARENA_DESKTOP_MODE === "1") {
   await pool.query("update space_missions set status='checkpointed', status_detail='The desktop app restarted. Review the saved journal, then resume.', updated_at=now() where status='running'");
 }
 
+let sourceCleanupTask: Promise<void> | undefined;
 const server = app.listen(port, process.env.ARENA_DESKTOP_MODE === "1" ? "127.0.0.1" : "0.0.0.0", () => {
   logger.info({ port }, "Server listening");
+  if (worker) {
+    sourceCleanupTask = (async () => {
+      try {
+        const removed = await runWaveyardStartupRecovery(
+          cleanupOrphanedSourceObjects,
+          {
+            onRetry: (error, attempt, delayMs) => logger.warn({
+              attempt,
+              delayMs,
+              error,
+            }, "Transient database connection failure during Waveyard source cleanup; retrying"),
+          },
+        );
+        logger.info({ removedOrphanSourceObjects: removed.length }, "Waveyard source cleanup finished");
+      } catch (error) {
+        logger.warn({ error }, "Waveyard source cleanup failed; continuing without deleting additional files");
+      }
+    })();
+  }
 });
 server.on("error", (err) => {
   logger.error({ err }, "Error listening on port");
@@ -107,6 +110,7 @@ async function shutdown() {
         "Local worker drain timed out; unfinished separation jobs will be marked interrupted on next start.",
       );
     }
+    if (sourceCleanupTask) await sourceCleanupTask;
     await closeAllBrowserSessions();
     await pool.end();
   } catch (err) {
