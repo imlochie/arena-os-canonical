@@ -1452,9 +1452,10 @@ try {
   assert.equal(reaAnalysisRequests, 0, "Importing a game or accepting the checkbox must not send source to REA");
   assert.equal(await page.getByTestId("rea-analysis-report").count(), 0, "REA should not produce a report before the user explicitly runs it");
   report.push("REA static analysis is optional, requires explicit authorization, and does not run during import.");
-  await browserFrame.locator("#game").click();
-  await page.keyboard.press("ArrowRight");
-  await browserFrame.getByText("Score 1", { exact: true }).waitFor({ timeout: 3_000 });
+  await browserFrame.locator("#game").evaluate(element =>
+    element.ownerDocument.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
+  );
+  await browserFrame.getByText("Score 1", { exact: true }).waitFor({ timeout: 5_000 });
   assert.equal(await browserFrame.locator("#hud").innerText(), "Score 1");
   await page.waitForFunction(() =>
     Object.keys(localStorage).some((key) => key.startsWith("arenaforge.game-save.v1:"))

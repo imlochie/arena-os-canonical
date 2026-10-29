@@ -655,6 +655,43 @@ test("playlists: create, add (duplicates allowed), reorder, remove, delete", asy
   assert.equal((await service.listTracks({ ownerId: OWNER })).length, 2);
 });
 
+test("playlist add rolls back the inserted entry when resequencing fails", async () => {
+  const playlist = await service.createPlaylist(OWNER, "Atomic add");
+  await service.addTrackToPlaylist({ ownerId: OWNER, playlistId: playlist.id, trackId: trackA.id });
+  await client!.query(`
+    CREATE FUNCTION fail_playlist_resequence() RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION 'synthetic playlist resequence failure';
+    END;
+    $$ LANGUAGE plpgsql
+  `);
+  await client!.query(`
+    CREATE TRIGGER fail_playlist_resequence_trigger
+    BEFORE UPDATE ON wy_playlist_items
+    FOR EACH ROW EXECUTE FUNCTION fail_playlist_resequence()
+  `);
+  try {
+    await assert.rejects(
+      () => service.addTrackToPlaylist({ ownerId: OWNER, playlistId: playlist.id, trackId: trackB.id }),
+      (error) => {
+        const wrapped = error as Error & { cause?: unknown };
+        assert.match(String(wrapped.cause), /synthetic playlist resequence failure/);
+        return true;
+      },
+    );
+  } finally {
+    await client!.query("DROP TRIGGER IF EXISTS fail_playlist_resequence_trigger ON wy_playlist_items");
+    await client!.query("DROP FUNCTION IF EXISTS fail_playlist_resequence()");
+  }
+  const detail = await service.getPlaylist(OWNER, playlist.id);
+  assert.deepEqual(
+    detail.items.map((item) => item.track.id),
+    [trackA.id],
+    "a failed atomic add must not leave a second track entry behind",
+  );
+  await service.deletePlaylist(OWNER, playlist.id);
+});
+
 test("real stems change availability and what the player loads", async () => {
   const sourceId = sourceIdByTrackId.get(trackA.id)!;
   const stemIds: string[] = [];

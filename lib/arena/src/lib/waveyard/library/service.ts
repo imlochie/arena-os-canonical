@@ -1065,23 +1065,6 @@ export async function deletePlaylist(ownerId: string, playlistId: string): Promi
   await db.delete(playlists).where(eq(playlists.id, playlistId));
 }
 
-async function resequencePlaylist(playlistId: string, orderedIds: string[]): Promise<void> {
-  await db.transaction(async (tx) => {
-    for (const [index, id] of orderedIds.entries()) {
-      await tx.update(playlistItems).set({ position: index }).where(and(eq(playlistItems.id, id), eq(playlistItems.playlistId, playlistId)));
-    }
-  });
-}
-
-async function playlistItemIds(playlistId: string): Promise<string[]> {
-  const rows = await db
-    .select({ id: playlistItems.id })
-    .from(playlistItems)
-    .where(eq(playlistItems.playlistId, playlistId))
-    .orderBy(asc(playlistItems.position));
-  return rows.map((row) => row.id);
-}
-
 export async function addTrackToPlaylist(input: {
   ownerId: string;
   playlistId: string;
@@ -1096,19 +1079,27 @@ export async function addTrackToPlaylist(input: {
     .limit(1);
   if (track === undefined) throw new TrackNotFoundError();
 
-  const ids = await playlistItemIds(input.playlistId);
-  const [item] = await db
-    .insert(playlistItems)
-    .values({ playlistId: input.playlistId, trackId: input.trackId, position: ids.length })
-    .returning({ id: playlistItems.id });
-  const ordered = [...ids, item.id];
-  if (input.position !== undefined) {
-    const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
-    const from = ordered.length - 1;
-    ordered.splice(to, 0, ordered.splice(from, 1)[0]);
-  }
-  await resequencePlaylist(input.playlistId, ordered);
-  await touchPlaylist(input.playlistId);
+  await db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ id: playlistItems.id })
+      .from(playlistItems)
+      .where(eq(playlistItems.playlistId, input.playlistId))
+      .orderBy(asc(playlistItems.position));
+    const [item] = await tx
+      .insert(playlistItems)
+      .values({ playlistId: input.playlistId, trackId: input.trackId, position: rows.length })
+      .returning({ id: playlistItems.id });
+    const ordered = [...rows.map((row) => row.id), item.id];
+    if (input.position !== undefined) {
+      const to = Math.min(Math.max(Math.trunc(input.position), 0), ordered.length - 1);
+      const from = ordered.length - 1;
+      ordered.splice(to, 0, ordered.splice(from, 1)[0]);
+    }
+    for (const [index, id] of ordered.entries()) {
+      await tx.update(playlistItems).set({ position: index }).where(and(eq(playlistItems.id, id), eq(playlistItems.playlistId, input.playlistId)));
+    }
+    await tx.update(playlists).set({ updatedAt: new Date() }).where(eq(playlists.id, input.playlistId));
+  });
   return playlistPayload(input.playlistId);
 }
 
@@ -1118,9 +1109,18 @@ export async function removePlaylistItem(
   itemId: string,
 ): Promise<PlaylistDetail> {
   await ownedPlaylist(ownerId, playlistId);
-  await db.delete(playlistItems).where(and(eq(playlistItems.id, itemId), eq(playlistItems.playlistId, playlistId)));
-  await resequencePlaylist(playlistId, await playlistItemIds(playlistId));
-  await touchPlaylist(playlistId);
+  await db.transaction(async (tx) => {
+    await tx.delete(playlistItems).where(and(eq(playlistItems.id, itemId), eq(playlistItems.playlistId, playlistId)));
+    const rows = await tx
+      .select({ id: playlistItems.id })
+      .from(playlistItems)
+      .where(eq(playlistItems.playlistId, playlistId))
+      .orderBy(asc(playlistItems.position));
+    for (const [index, row] of rows.entries()) {
+      await tx.update(playlistItems).set({ position: index }).where(and(eq(playlistItems.id, row.id), eq(playlistItems.playlistId, playlistId)));
+    }
+    await tx.update(playlists).set({ updatedAt: new Date() }).where(eq(playlists.id, playlistId));
+  });
   return playlistPayload(playlistId);
 }
 
@@ -1131,18 +1131,23 @@ export async function movePlaylistItem(
   position: number,
 ): Promise<PlaylistDetail> {
   await ownedPlaylist(ownerId, playlistId);
-  const ids = await playlistItemIds(playlistId);
-  const from = ids.indexOf(itemId);
-  if (from === -1) throw new QueueItemNotFoundError();
-  const to = Math.min(Math.max(Math.trunc(position), 0), ids.length - 1);
-  ids.splice(to, 0, ids.splice(from, 1)[0]);
-  await resequencePlaylist(playlistId, ids);
-  await touchPlaylist(playlistId);
+  await db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ id: playlistItems.id })
+      .from(playlistItems)
+      .where(eq(playlistItems.playlistId, playlistId))
+      .orderBy(asc(playlistItems.position));
+    const ids = rows.map((row) => row.id);
+    const from = ids.indexOf(itemId);
+    if (from === -1) throw new QueueItemNotFoundError();
+    const to = Math.min(Math.max(Math.trunc(position), 0), ids.length - 1);
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    for (const [index, id] of ids.entries()) {
+      await tx.update(playlistItems).set({ position: index }).where(and(eq(playlistItems.id, id), eq(playlistItems.playlistId, playlistId)));
+    }
+    await tx.update(playlists).set({ updatedAt: new Date() }).where(eq(playlists.id, playlistId));
+  });
   return playlistPayload(playlistId);
-}
-
-async function touchPlaylist(playlistId: string): Promise<void> {
-  await db.update(playlists).set({ updatedAt: new Date() }).where(eq(playlists.id, playlistId));
 }
 
 // ------------------------------------------------------------ studio listing

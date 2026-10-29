@@ -25,6 +25,18 @@ let sessionTrackSequence = 0;
 let failNextQueueDelete = false;
 let failNextQueueMove = false;
 let failNextQueueClear = false;
+let failNextPlaylistCreate = false;
+let failNextPlaylistAdd = false;
+let failNextPlaylistMove = false;
+let failNextPlaylistRemove = false;
+let playlistDetail = {
+  id: "test-set",
+  name: "Test playlist",
+  trackCount: 2,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  items: [library[1], library[2]].map((track, position) => ({ id: `playlist-item-${position}`, position, track })),
+};
 
 function wav() {
   // Keep audio alive through the removal scenarios; track metadata remains
@@ -50,15 +62,68 @@ try {
 
   await context.route("**/api/assets/*", (route) => route.fulfill({ status: 200, contentType: "audio/wav", body: audio }));
   await context.route("**/api/library/tracks", (route) => routeJson(route, { tracks: library }));
-  await context.route("**/api/library/playlists", (route) => routeJson(route, {
-    playlists: [{ id: "test-set", name: "Test playlist", trackCount: 2 }],
-  }));
-  await context.route("**/api/library/playlists/test-set", (route) => routeJson(route, {
-    playlist: {
-      id: "test-set", name: "Test playlist",
-      items: [library[1], library[2]].map((track, position) => ({ id: `playlist-item-${position}`, position, track })),
-    },
-  }));
+  await context.route("**/api/library/playlists", async (route) => {
+    if (route.request().method() === "POST" && failNextPlaylistCreate) {
+      failNextPlaylistCreate = false;
+      return routeJson(route, { error: "synthetic playlist creation failure" }, 503);
+    }
+    if (route.request().method() === "POST") {
+      const { name } = route.request().postDataJSON();
+      return routeJson(route, {
+        playlist: {
+          id: "created-playlist",
+          name,
+          trackCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      }, 201);
+    }
+    return routeJson(route, {
+      playlists: [{ ...playlistDetail, trackCount: playlistDetail.items.length }],
+    });
+  });
+  await context.route("**/api/library/playlists/test-set", (route) =>
+    routeJson(route, { playlist: playlistDetail }));
+  await context.route("**/api/library/playlists/test-set/items**", async (route) => {
+    if (route.request().method() === "PATCH" && failNextPlaylistMove) {
+      failNextPlaylistMove = false;
+      return routeJson(route, { error: "synthetic playlist reorder failure" }, 503);
+    }
+    if (route.request().method() === "DELETE" && failNextPlaylistRemove) {
+      failNextPlaylistRemove = false;
+      return routeJson(route, { error: "synthetic playlist removal failure" }, 503);
+    }
+    if (route.request().method() === "POST" && failNextPlaylistAdd) {
+      failNextPlaylistAdd = false;
+      return routeJson(route, { error: "synthetic playlist add failure" }, 503);
+    }
+    if (route.request().method() === "PATCH") {
+      const { itemId, position } = route.request().postDataJSON();
+      const from = playlistDetail.items.findIndex((item) => item.id === itemId);
+      if (from < 0) return routeJson(route, { error: "playlist item not found" }, 404);
+      const target = Math.min(Math.max(position, 0), playlistDetail.items.length - 1);
+      playlistDetail.items.splice(target, 0, playlistDetail.items.splice(from, 1)[0]);
+      playlistDetail.items.forEach((item, index) => { item.position = index; });
+      return routeJson(route, { playlist: playlistDetail });
+    }
+    if (route.request().method() === "DELETE") {
+      const itemId = new URL(route.request().url()).searchParams.get("itemId");
+      playlistDetail.items = playlistDetail.items.filter((item) => item.id !== itemId);
+      playlistDetail.items.forEach((item, index) => { item.position = index; });
+      playlistDetail.trackCount = playlistDetail.items.length;
+      return routeJson(route, { playlist: playlistDetail });
+    }
+    if (route.request().method() === "POST") {
+      const { trackId } = route.request().postDataJSON();
+      const track = library.find((item) => item.id === trackId);
+      const item = { id: `playlist-item-${playlistDetail.items.length}`, position: playlistDetail.items.length, track };
+      playlistDetail.items.push(item);
+      playlistDetail.trackCount = playlistDetail.items.length;
+      return routeJson(route, { playlist: playlistDetail }, 201);
+    }
+    return route.continue();
+  });
   await context.route("**/api/library/playback-state", (route) => routeJson(route, {
     playbackState: { currentTrackId: null, positionSeconds: 0 },
   }));
@@ -199,6 +264,18 @@ try {
 
   await page.goto("http://localhost:80/waveyard");
   await page.locator('[data-testid="button-play-550e8400-e29b-41d4-a716-446655440001"]').waitFor();
+  failNextPlaylistCreate = true;
+  await page.getByLabel("New playlist name").fill("Rejected playlist");
+  await page.getByRole("region", { name: "Playlists" }).getByRole("button", { name: "Create", exact: true }).click();
+  await page.getByTestId("playlist-mutation-error").getByText("Could not create the playlist", { exact: false }).waitFor();
+  await page.getByRole("region", { name: "Playlists" }).getByRole("button", { name: "Create", exact: true }).click();
+  await page.getByRole("button", { name: /Rejected playlist/ }).waitFor();
+  await page.getByText("Empty playlist.", { exact: true }).waitFor();
+  assert.equal(await page.getByTestId("playlist-mutation-error").count(), 0, "a successful create clears the prior failure and opens the new playlist");
+  failNextPlaylistAdd = true;
+  await page.getByLabel("Add Queue fixture 1 to a playlist").selectOption("test-set");
+  await page.getByTestId("library-action-message").getByText("Could not add Queue fixture 1 to the playlist", { exact: false }).waitFor();
+  assert.equal(playlistDetail.items.length, 2, "a rejected playlist add leaves the playlist unchanged");
   const waitForFixture = async (predicate, description, timeoutMs = 8000) => {
     const until = Date.now() + timeoutMs;
     while (!predicate() && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 30));
@@ -267,6 +344,14 @@ try {
   assert.equal(session.currentSessionTrackId, "session-track-1", "removing a pending target does not interrupt the current song");
 
   await page.getByRole("button", { name: "Test playlist" }).click();
+  failNextPlaylistMove = true;
+  await page.locator(".playlist-items li").nth(1).getByRole("button", { name: "Move up" }).click();
+  await page.getByTestId("playlist-mutation-error").getByText("Could not update the playlist order", { exact: false }).waitFor();
+  assert.deepEqual(playlistDetail.items.map((item) => item.track.id), [ids[1], ids[2]], "a rejected playlist reorder keeps the playlist unchanged");
+  failNextPlaylistRemove = true;
+  await page.locator(".playlist-items li").first().getByRole("button", { name: "Remove Queue fixture 2", exact: true }).click();
+  await page.getByTestId("playlist-mutation-error").getByText("Could not remove that track from the playlist", { exact: false }).waitFor();
+  assert.equal(playlistDetail.items.length, 2, "a rejected playlist removal keeps both playlist entries");
   await page.getByTestId("playlist-live-test-set").click();
   await waitForFixture(() => session.tracks.length === 4, "the ordered playlist additions");
   assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[0], ids[0], ids[1], ids[2]], "playlist songs append without saved-queue links");
@@ -607,7 +692,12 @@ try {
     "a saved arrangement edit survives reopening its Studio project",
   );
 
-  console.log("PASS: queue continuity, selected-track handoff, and Studio edits survive reopening the arrangement");
+  await page.goto("http://localhost:80/waveyard");
+  await page.locator(`[data-testid="button-play-${ids[0]}"]`).waitFor();
+  await page.getByLabel("Add Queue fixture 1 to a playlist").selectOption("test-set");
+  await page.getByTestId("library-action-message").getByText("Queue fixture 1 added to Test playlist.", { exact: false }).waitFor();
+  assert.equal(playlistDetail.items.length, 3, "a successful track-to-playlist action updates the persisted playlist fixture");
+  console.log("PASS: queue and playlist errors stay visible without mutating data; live continuity, handoff, and Studio reopen survive");
 } finally {
   await browser.close();
 }

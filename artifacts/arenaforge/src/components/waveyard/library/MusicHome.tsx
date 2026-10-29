@@ -269,6 +269,7 @@ export function MusicHome() {
   const uploadInFlight = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
   const [queueErrorMessage, setQueueErrorMessage] = useState<string | null>(null);
+  const [playlistMessage, setPlaylistMessage] = useState<string | null>(null);
   const [newPlaylistName, setNewPlaylistName] = useState("");
   const [collections, setCollections] = useState<SmartCollection[]>([]);
   const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
@@ -648,6 +649,7 @@ export function MusicHome() {
   }, [playback, host]);
 
   const enqueuePlaylist = useCallback(async (playlist: PlaylistDetail) => {
+    setPlaylistMessage(null);
     if (playlist.items.length === 0) {
       setMessage("This playlist is empty.");
       return;
@@ -835,15 +837,23 @@ export function MusicHome() {
     event.preventDefault();
     const name = newPlaylistName.trim();
     if (name === "") return;
-    const response = await fetch("/api/library/playlists", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch("/api/library/playlists", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!response.ok) {
+        setPlaylistMessage("Could not create the playlist. Try again.");
+        return;
+      }
+      const created = (await response.json()).playlist as PlaylistSummary;
+      setPlaylists((previous) => [...previous.filter((playlist) => playlist.id !== created.id), created]);
+      setOpenPlaylist({ ...created, items: [] });
       setNewPlaylistName("");
-      const listResponse = await fetch("/api/library/playlists", { cache: "no-store" });
-      if (listResponse.ok) setPlaylists((await listResponse.json()).playlists ?? []);
+      setPlaylistMessage(null);
+    } catch {
+      setPlaylistMessage("Could not create the playlist. Check the connection and try again.");
     }
   }, [newPlaylistName]);
 
@@ -852,41 +862,76 @@ export function MusicHome() {
       setOpenPlaylist(null);
       return;
     }
-    const response = await fetch(`/api/library/playlists/${playlistId}`, { cache: "no-store" });
-    if (response.ok) setOpenPlaylist((await response.json()).playlist);
+    try {
+      const response = await fetch(`/api/library/playlists/${playlistId}`, { cache: "no-store" });
+      if (!response.ok) {
+        setPlaylistMessage("Could not open this playlist. Try again.");
+        return;
+      }
+      setOpenPlaylist((await response.json()).playlist);
+      setPlaylistMessage(null);
+    } catch {
+      setPlaylistMessage("Could not open this playlist. Check the connection and try again.");
+    }
   }, [openPlaylist]);
 
   const onAddToPlaylist = useCallback(async (playlistId: string, track: TrackSummary) => {
-    const response = await fetch(`/api/library/playlists/${playlistId}/items`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trackId: track.id }),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/library/playlists/${playlistId}/items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trackId: track.id }),
+      });
+      if (!response.ok) {
+        setMessage(`Could not add ${track.title} to the playlist. Try again.`);
+        return;
+      }
       const detail = (await response.json()).playlist as PlaylistDetail;
       setOpenPlaylist(detail);
-      const listResponse = await fetch("/api/library/playlists", { cache: "no-store" });
-      if (listResponse.ok) setPlaylists((await listResponse.json()).playlists ?? []);
+      setPlaylists((previous) => previous.map((playlist) => playlist.id === detail.id
+        ? { ...playlist, trackCount: detail.items.length }
+        : playlist));
+      setPlaylistMessage(null);
+      setMessage(`${track.title} added to ${detail.name}.`);
+    } catch {
+      setMessage(`Could not add ${track.title} to the playlist. Check the connection and try again.`);
     }
   }, []);
 
   const removePlaylistItem = useCallback(async (playlistId: string, itemId: string) => {
-    const response = await fetch(`/api/library/playlists/${playlistId}/items?itemId=${itemId}`, { method: "DELETE" });
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/library/playlists/${playlistId}/items?itemId=${itemId}`, { method: "DELETE" });
+      if (!response.ok) {
+        setPlaylistMessage("Could not remove that track from the playlist. Try again.");
+        return;
+      }
       const detail = (await response.json()).playlist as PlaylistDetail;
       setOpenPlaylist(detail);
-      const listResponse = await fetch("/api/library/playlists", { cache: "no-store" });
-      if (listResponse.ok) setPlaylists((await listResponse.json()).playlists ?? []);
+      setPlaylists((previous) => previous.map((playlist) => playlist.id === detail.id
+        ? { ...playlist, trackCount: detail.items.length }
+        : playlist));
+      setPlaylistMessage(null);
+    } catch {
+      setPlaylistMessage("Could not remove that track from the playlist. Check the connection and try again.");
     }
   }, []);
 
   const movePlaylistItem = useCallback(async (playlistId: string, itemId: string, position: number) => {
-    const response = await fetch(`/api/library/playlists/${playlistId}/items`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ itemId, position }),
-    });
-    if (response.ok) setOpenPlaylist((await response.json()).playlist);
+    try {
+      const response = await fetch(`/api/library/playlists/${playlistId}/items`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId, position }),
+      });
+      if (!response.ok) {
+        setPlaylistMessage("Could not update the playlist order. Try again.");
+        return;
+      }
+      setOpenPlaylist((await response.json()).playlist);
+      setPlaylistMessage(null);
+    } catch {
+      setPlaylistMessage("Could not update the playlist order. Check the connection and try again.");
+    }
   }, []);
 
   const removeQueueItem = useCallback(async (itemId: string) => {
@@ -1041,7 +1086,7 @@ export function MusicHome() {
           </div>
           </details>
           {message && (
-            <p className="library-message" role="status">
+            <p className="library-message" role="status" data-testid="library-action-message">
               {message}
               {host.sessionId !== null && (
                 <a className="library-message-link" href="#waveyard-live-mixer">Open live mixer</a>
@@ -1219,6 +1264,9 @@ export function MusicHome() {
 
       <section className="playlists-panel" aria-label="Playlists">
         <div className="library-panel-title"><h2>Playlists</h2><span>{playlists.length}</span></div>
+        {playlistMessage !== null && (
+          <p className="library-message" role="alert" data-testid="playlist-mutation-error">{playlistMessage}</p>
+        )}
         <form className="playlist-create" onSubmit={createPlaylist}>
           <input
             aria-label="New playlist name"
