@@ -213,6 +213,19 @@ try {
   let mockNotStartedRating = 0;
   let uploadAttempts = 0;
   const uploadAttemptNames = [];
+  const batchTrackIdsByName = new Map([
+    ["batch-one.wav", "arena-smoke-batch-one"],
+    ["batch-two.wav", "arena-smoke-batch-two"],
+    ["batch-three.wav", "arena-smoke-batch-three"],
+  ]);
+  const uploadSessionId = "arena-smoke-library-import-session";
+  const uploadSessionTracks = [];
+  const uploadSessionTrackIds = [];
+  let uploadSessionCurrentTrackId = null;
+  let resolveFirstUploadSessionTrack;
+  const firstUploadSessionTrack = new Promise(resolve => { resolveFirstUploadSessionTrack = resolve; });
+  let resolveSecondUploadSessionTrack;
+  const secondUploadSessionTrack = new Promise(resolve => { resolveSecondUploadSessionTrack = resolve; });
   let nextRetryUploadGate = null;
   let measureUploadConcurrency = false;
   let batchUploadsInFlight = 0;
@@ -311,6 +324,16 @@ try {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
+  const uploadSessionPayload = () => structuredClone({
+    id: uploadSessionId,
+    name: "Smoke upload session",
+    currentSessionTrackId: uploadSessionCurrentTrackId,
+    positionSeconds: 0,
+    tracks: uploadSessionTracks,
+    swaps: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
   const liveLibraryPayload = () => ({
     tracks: [
       { ...recoveryTrack, id: liveCurrentTrackId, title: "Live source track", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 2, stemTypes: ["vocals", "drums"] } },
@@ -324,7 +347,39 @@ try {
   const donorStemWav = makePcmWav(880, 0.8);
   await context.route("**/api/library/**", async route => {
     const url = new URL(route.request().url());
-    if (url.pathname === `/api/library/sessions/${liveSessionId}` && route.request().method() === "GET") {
+    if (url.pathname === "/api/library/sessions" && route.request().method() === "POST") {
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ session: { id: uploadSessionId, name: "Smoke upload session" } }),
+      });
+    } else if (url.pathname === `/api/library/sessions/${uploadSessionId}` && route.request().method() === "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: uploadSessionPayload() }) });
+    } else if (url.pathname === `/api/library/sessions/${uploadSessionId}/state` && route.request().method() === "PUT") {
+      const state = route.request().postDataJSON();
+      uploadSessionCurrentTrackId = state.sessionTrackId ?? null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ saved: true }) });
+    } else if (url.pathname === `/api/library/sessions/${uploadSessionId}/tracks` && route.request().method() === "POST") {
+      const request = route.request().postDataJSON();
+      uploadSessionTrackIds.push(request.trackId);
+      const item = {
+        id: `arena-smoke-upload-session-track-${uploadSessionTrackIds.length}`,
+        position: request.position,
+        queueItemId: null,
+        track: { id: request.trackId, title: `Imported ${request.trackId}`, artist: "Smoke test", durationSeconds: 8 },
+        sourceAssetId: liveVocalsAssetId,
+        stems: [],
+        playback: { kind: "source", assetIds: [liveVocalsAssetId] },
+        stemMix: {},
+        transition: { mode: "manual", crossfadeSeconds: 0, keepStems: [] },
+        analysis: null,
+      };
+      uploadSessionTracks.splice(request.position, 0, item);
+      uploadSessionTracks.forEach((entry, index) => { entry.position = index; });
+      if (uploadSessionTrackIds.length === 1) resolveFirstUploadSessionTrack();
+      if (uploadSessionTrackIds.length === 2) resolveSecondUploadSessionTrack();
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ session: uploadSessionPayload() }) });
+    } else if (url.pathname === `/api/library/sessions/${liveSessionId}` && route.request().method() === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname === `/api/library/sessions/${liveSessionId}/state` && route.request().method() === "PUT") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ saved: true }) });
@@ -397,7 +452,8 @@ try {
     } else if (url.pathname === "/api/library/tracks" && route.request().method() === "POST") {
       uploadAttempts += 1;
       const multipart = route.request().postDataBuffer()?.toString("latin1") ?? "";
-      uploadAttemptNames.push(multipart.match(/filename="([^"]+)"/)?.[1] ?? "");
+      const uploadName = multipart.match(/filename="([^"]+)"/)?.[1] ?? "";
+      uploadAttemptNames.push(uploadName);
       if (measureUploadConcurrency) {
         batchUploadsInFlight += 1;
         maxBatchUploadsInFlight = Math.max(maxBatchUploadsInFlight, batchUploadsInFlight);
@@ -407,8 +463,8 @@ try {
           status: 200,
           contentType: "application/json",
           body: JSON.stringify({
-            track: { id: "arena-smoke-batch-upload-track" },
-            created: false,
+            track: { id: batchTrackIdsByName.get(uploadName) ?? "arena-smoke-batch-upload-track" },
+            created: true,
             separationQueued: true,
           }),
         });
@@ -456,7 +512,7 @@ try {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ playlists: [] }) });
     } else if (url.pathname.endsWith("/queue")) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ queue: [] }) });
-    } else if (url.pathname.endsWith("/sessions")) {
+    } else if (url.pathname.endsWith("/sessions") && route.request().method() === "GET") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sessions: [] }) });
     } else if (url.pathname.endsWith("/collections")) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ collections: [] }) });
@@ -871,6 +927,8 @@ try {
     "retry-this-upload.wav",
   ]);
   assert.equal(await page.getByTestId("failed-library-uploads").count(), 0, "a confirmed duplicate is no longer shown as a failed upload");
+  await firstUploadSessionTrack;
+  assert.equal(uploadSessionTrackIds[0], "arena-smoke-already-uploaded-track");
   report.push("A retried upload can resolve to the existing library track without creating a duplicate or keeping a stale failure.");
   measureUploadConcurrency = true;
   await page.getByLabel("Add music files").setInputFiles([
@@ -883,9 +941,19 @@ try {
   await uploadProgress.waitFor({ state: "detached", timeout: 10_000 });
   measureUploadConcurrency = false;
   assert.equal(uploadAttempts, 6, "a three-file batch submits each selected file once");
-  assert.deepEqual(uploadAttemptNames.slice(3), ["batch-one.wav", "batch-two.wav", "batch-three.wav"]);
+  assert.deepEqual(
+    uploadAttemptNames.slice(3).sort(),
+    ["batch-one.wav", "batch-two.wav", "batch-three.wav"].sort(),
+    "parallel request arrival order may vary, but each selected file must be submitted once",
+  );
   assert.equal(maxBatchUploadsInFlight, 2, "the library uploads at most two files concurrently");
-  report.push("Multi-file library imports show completed-file progress, upload two-at-a-time, and retain selection order.");
+  await secondUploadSessionTrack;
+  assert.equal(
+    uploadSessionTrackIds[1],
+    "arena-smoke-batch-one",
+    "the first selected file, not whichever upload finishes first, is loaded into the mixer",
+  );
+  report.push("Multi-file library imports show progress, upload two-at-a-time, and load the first selected file into the mixer.");
 
   mockLiveSessionActive = true;
   await page.evaluate((id) => localStorage.setItem("waveyard.listening.sessionId", id), liveSessionId);

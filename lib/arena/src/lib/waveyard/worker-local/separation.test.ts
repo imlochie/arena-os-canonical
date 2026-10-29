@@ -1007,11 +1007,76 @@ test("separation progress writes complete in order before the job finalizes", as
       openEngine: identityEngine(),
     });
 
-    assert.deepEqual(progressWriteOrder, [50, 100], "slower earlier writes must not overwrite later progress");
+    assert.deepEqual(progressWriteOrder, [0, 50, 100], "pass-start and chunk progress must stay ordered");
     assert.equal(staleProgressCleared, true, "a retry must clear old progress before starting new inference");
     const [completed] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
     assert.equal(completed.status, "complete");
   } finally {
+    await f.close();
+  }
+});
+
+test("multi-model progress reports the active pass before opening its engine", async () => {
+  const f = await fixture({ model: "stems_4" });
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  let signalFirst!: (modelId: string) => void;
+  let signalSecond!: (modelId: string) => void;
+  const firstOpened = new Promise<string>((resolve) => { signalFirst = resolve; });
+  const secondOpened = new Promise<string>((resolve) => { signalSecond = resolve; });
+  const fakeEngine = identityEngine();
+  let openCount = 0;
+  let job: Promise<void> | undefined;
+
+  try {
+    job = handleSeparationJob(payloadOf(f), {
+      db: f.database,
+      openEngine: async (spec) => {
+        const index = openCount++;
+        if (index === 0) {
+          signalFirst(spec.id);
+          await firstGate;
+        } else if (index === 1) {
+          signalSecond(spec.id);
+          await secondGate;
+        }
+        return fakeEngine(spec);
+      },
+    });
+
+    assert.equal(await firstOpened, "kim_vocal_2");
+    const [firstRow] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    const firstProgress = (JSON.parse(firstRow!.metadata!) as { progress: Record<string, unknown> }).progress;
+    assert.deepEqual(firstProgress, {
+      done: 0,
+      total: 4,
+      percent: 0,
+      phase: "1/4",
+      model: "kim_vocal_2",
+      kind: "model-pass",
+    });
+
+    releaseFirst();
+    assert.equal(await secondOpened, "kuielab_b_drums");
+    const [secondRow] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+    const secondProgress = (JSON.parse(secondRow!.metadata!) as { progress: Record<string, unknown> }).progress;
+    assert.deepEqual(secondProgress, {
+      done: 1,
+      total: 4,
+      percent: 25,
+      phase: "2/4",
+      model: "kuielab_b_drums",
+      kind: "model-pass",
+    });
+
+    releaseSecond();
+    await job;
+  } finally {
+    releaseFirst();
+    releaseSecond();
+    await job?.catch(() => undefined);
     await f.close();
   }
 });

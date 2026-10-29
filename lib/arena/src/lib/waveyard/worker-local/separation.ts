@@ -459,6 +459,17 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
         let lastReportedPercent = -1;
         for (let runIndex = 0; runIndex < modelRuns.length; runIndex += 1) {
           const modelRun = modelRuns[runIndex]!;
+          const passPercent = Math.floor((runIndex / modelRuns.length) * 100);
+          persistProgress({
+            done: runIndex,
+            total: modelRuns.length,
+            percent: passPercent,
+            phase: `${runIndex + 1}/${modelRuns.length}`,
+            model: modelRun.spec.id,
+            kind: "model-pass",
+          });
+          await flushProgress();
+
           if (deps.openEngine === undefined) {
             const separated = await demixMdxInWorker(modelRun.spec, payload.requestedDevice, [left, right], (done, total) => {
               const runFraction = total > 0 ? done / total : 1;
@@ -471,6 +482,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
                 percent,
                 phase: `${runIndex + 1}/${modelRuns.length}`,
                 model: modelRun.spec.id,
+                kind: "chunk",
               });
             });
             resolvedDevice = separated.resolvedDevice;
@@ -503,6 +515,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
                 percent,
                 phase: `${runIndex + 1}/${modelRuns.length}`,
                 model: modelRun.spec.id,
+                kind: "chunk",
               });
             });
             for (const run of modelRun.outputs) {

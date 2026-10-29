@@ -49,11 +49,19 @@ type ProjectData = {
 
 const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
 
-/** Chunk-level separation progress, when the engine has reported it. */
-function parseJobProgress(metadata: string | null): { done: number; total: number; percent: number } | null {
+/** Separation pass or chunk progress, when the engine has reported it. */
+function parseJobProgress(metadata: string | null): {
+  done: number;
+  total: number;
+  percent: number;
+  phase?: string;
+  kind?: "model-pass" | "chunk";
+} | null {
   if (!metadata) return null;
   try {
-    const parsed = JSON.parse(metadata) as { progress?: { done?: unknown; total?: unknown; percent?: unknown } };
+    const parsed = JSON.parse(metadata) as {
+      progress?: { done?: unknown; total?: unknown; percent?: unknown; phase?: unknown; kind?: unknown };
+    };
     const progress = parsed?.progress;
     if (
       progress === null || typeof progress !== "object" ||
@@ -62,7 +70,13 @@ function parseJobProgress(metadata: string | null): { done: number; total: numbe
     ) {
       return null;
     }
-    return { done: progress.done, total: progress.total, percent: Math.min(100, Math.max(0, progress.percent)) };
+    return {
+      done: progress.done,
+      total: progress.total,
+      percent: Math.min(100, Math.max(0, progress.percent)),
+      ...(typeof progress.phase === "string" ? { phase: progress.phase } : {}),
+      ...(progress.kind === "model-pass" || progress.kind === "chunk" ? { kind: progress.kind } : {}),
+    };
   } catch {
     return null;
   }
@@ -468,6 +482,12 @@ async function prepareEngine(model: string, jobId: string) {
           {(() => {
             const progress = parseJobProgress(latest.metadata);
             if (latest.stage === "separating" && progress) {
+              if (progress.kind === "model-pass" && progress.phase) {
+                return `Pass ${progress.phase} running · ${progress.percent}%. Keep this page open or return later.`;
+              }
+              if (progress.kind === "chunk") {
+                return `Separating — ${progress.percent}% · pass ${progress.phase ?? "in progress"} · chunk ${progress.done} of ${progress.total}. Keep this page open or return later.`;
+              }
               return `Separating — ${progress.percent}% (part ${progress.done} of ${progress.total}). Keep this page open or return later.`;
             }
             return `Separation is at the “${latest.stage}” stage. Keep this page open or return later.`;
