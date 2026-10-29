@@ -74,6 +74,9 @@ let studioRemixPutCount = 0;
 let sourceEventRequests = 0;
 let meetingPointRequests = 0;
 let sectionArrangementRequests = 0;
+let projectLoadAttempts = 0;
+let failFirstProjectLoad = false;
+let failNextModelCheck = false;
 const assetSnapshot = () => [...assets.entries()]
   .map(([id, bytes]) => [id, createHash("sha256").update(bytes).digest("hex")])
   .sort(([left], [right]) => left.localeCompare(right));
@@ -393,6 +396,12 @@ try {
   await context.route("**/api/sources/*/events", async route => {
     sourceEventRequests += 1;
     if (sourceEventRequests === 1) return route.abort("failed");
+    const source = studioProjectData.sources.find(item => item.id === "a-source");
+    source.eventAnalysis = {
+      id: "event-analysis-a", status: "queued", stage: "queued", attempts: 1,
+      analysisEngine: "synthetic-fixture", analysisEngineVersion: "1",
+      errorCode: null, errorMessage: null, analyzedAt: null,
+    };
     return route.fulfill({ status: 202, json: { queued: true } });
   });
   await context.route(`**/api/remixes/${studioRemixId}/meeting-points`, async route => {
@@ -416,8 +425,14 @@ try {
     return route.fulfill({ json: { clips: [clip] } });
   });
   await context.route("**/api/streaming/accounts", route => route.fulfill({ json: { accounts: [] } }));
-  await context.route(`**/api/waveyard/projects/${studioProjectId}`, route =>
-    route.fulfill({ json: studioProjectData ?? {} }));
+  await context.route(`**/api/waveyard/projects/${studioProjectId}`, route => {
+    projectLoadAttempts += 1;
+    if (failFirstProjectLoad) {
+      failFirstProjectLoad = false;
+      return route.fulfill({ status: 503, json: { error: "Temporary project refresh outage." } });
+    }
+    return route.fulfill({ json: studioProjectData ?? {} });
+  });
   await context.route(`**/api/waveyard/projects/${studioProjectId}/remixes`, route =>
     route.fulfill({ json: { remixes: studioHasRemix ? [{ id: studioRemixId }] : [] } }));
   await context.route(`**/api/remixes/${studioRemixId}`, async route => {
@@ -440,15 +455,29 @@ try {
   });
   await context.route(`**/api/remixes/${studioRemixId}/versions`, route =>
     route.fulfill({ json: { versions: [] } }));
-  await context.route("**/api/waveyard/separation/models", route => route.fulfill({
-    json: {
-      models: ["kim_vocal_2", "kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"]
-        .map(id => ({ id, label: id, ready: true, sizeBytes: 0 })),
-    },
-  }));
+  await context.route("**/api/waveyard/separation/models", route => {
+    if (failNextModelCheck) {
+      failNextModelCheck = false;
+      return route.fulfill({ status: 503, json: { error: "Temporary model status outage." } });
+    }
+    return route.fulfill({
+      json: {
+        models: ["kim_vocal_2", "kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"]
+          .map(id => ({ id, label: id, ready: true, sizeBytes: 0 })),
+      },
+    });
+  });
   await page.goto("http://localhost:80/waveyard");
   await page.evaluate(() => localStorage.clear());
+  failNextModelCheck = true;
   await page.reload();
+  await page.getByText("Temporary model status outage.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Check stem engine" }).click();
+  await page.getByTestId("stem-engine-status")
+    .getByText("Four stem model files present · vocals / drums / bass / other", { exact: true })
+    .waitFor();
+  assert.equal(await page.getByText("Temporary model status outage.", { exact: true }).count(), 0,
+    "a successful stem-engine check clears the earlier status failure");
   const emptyWorkspace = page.locator("#waveyard-live-mixer");
   await emptyWorkspace.locator(".wy-workspace-empty").waitFor();
   assert.equal((await emptyWorkspace.locator(".eyebrow").textContent())?.trim(), "Live mixer");
@@ -974,8 +1003,11 @@ try {
   assert.equal(await studioLink.getAttribute("href"),
     `/waveyard/projects/${studioProjectId}?view=studio`,
     "the handoff link opens the derived project directly in Studio");
+  projectLoadAttempts = 0;
+  failFirstProjectLoad = true;
   await studioLink.click();
   await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  assert.ok(projectLoadAttempts >= 2, "Studio retries opening the project after a transient server failure");
   await page.waitForFunction(() => document.querySelectorAll(".timeline-track").length === 8);
   assert.equal(await page.getByTestId("waveyard-mode-studio").getAttribute("aria-selected"), "true",
     "the derived project opens in the Studio presentation");
@@ -999,6 +1031,7 @@ try {
     "a dropped event-analysis request releases the busy state for recovery");
   await analyzeEventsButton.click();
   await page.getByText("Event analysis queued.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Event analysis queued" }).waitFor();
   assert.equal(sourceEventRequests, 2, "event analysis can be retried after a dropped network request");
   const findPlacementButton = page.getByRole("button", { name: "Find where this fits" });
   await findPlacementButton.click();

@@ -452,8 +452,9 @@ export function StudioCore({ editorId, projectId, remixSessionId, stems, sources
     const response = await fetch(`/api/sources/${sourceId}/events`, { method: "POST" });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) return body.error ?? "Could not queue source event analysis.";
+    onDerivedAnalysisRequested?.();
     return null;
-  }, []);
+  }, [onDerivedAnalysisRequested]);
   const requestDrumAnalysis = useCallback(async (stemId: string) => {
     const response = await fetch(`/api/stems/${stemId}/drum-analysis`, { method: "POST" });
     const body = await response.json().catch(() => ({}));

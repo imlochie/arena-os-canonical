@@ -19,10 +19,13 @@ export default function StemEngineSetup() {
     const required = REQUIRED.map((id) => body.models.find((model: Model) => model.id === id));
     if (required.some((model) => !model)) throw new Error("The four-stem model registry is incomplete.");
     setModels(required);
+    setError("");
     return required as Model[];
   }, []);
 
-  useEffect(() => { void refresh().catch((cause) => setError(cause.message)); }, [refresh]);
+  useEffect(() => {
+    void refresh().catch((cause) => setError(cause instanceof Error ? cause.message : "Could not check the stem engine."));
+  }, [refresh]);
 
   async function prepare() {
     if (preparing) return;
@@ -57,7 +60,7 @@ export default function StemEngineSetup() {
           {preparing ? progress || "Checking stem models…" : ready ? "Four stem model files present · vocals / drums / bass / other" : models ? `Prepare stems once (${downloadMb} MB) to enable separation.` : "Checking stem models…"}
         </span>
         {!ready && (
-          <button type="button" disabled={preparing} onClick={() => { if (models) void prepare(); else void refresh().catch((cause) => setError(cause.message)); }} className="btn-arena rounded-lg px-3 py-2 text-xs font-bold text-white">
+          <button type="button" disabled={preparing} onClick={() => { if (models) void prepare(); else void refresh().catch((cause) => setError(cause instanceof Error ? cause.message : "Could not check the stem engine.")); }} className="btn-arena rounded-lg px-3 py-2 text-xs font-bold text-white">
             {preparing ? "Preparing…" : models ? "Prepare stems" : "Check stem engine"}
           </button>
         )}

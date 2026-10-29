@@ -128,15 +128,35 @@ export function ProjectWorkspace({
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+    let retryDelay = 2_500;
+    const retry = () => {
+      if (disposed) return;
+      const delay = retryDelay;
+      retryDelay = Math.min(retryDelay * 2, 30_000);
+      timer = setTimeout(() => void load(), delay);
+    };
     const load = async () => {
-      const response = await fetch(`/api/waveyard/projects/${projectId}`, {
-        cache: "no-store",
-      });
+      let response: Response;
+      try {
+        response = await fetch(`/api/waveyard/projects/${projectId}`, {
+          cache: "no-store",
+        });
+      } catch {
+        if (disposed) return;
+        setError("Project status could not be refreshed. Retrying automatically…");
+        retry();
+        return;
+      }
+      if (disposed) return;
       const json = await response.json().catch(() => ({}));
       if (!response.ok) {
         setError(json.error ?? "Project could not be opened.");
+        if (response.status === 429 || response.status >= 500) retry();
         return;
       }
+      setError(null);
+      retryDelay = 2_500;
       setData(json);
       const sourcesAwaitingSectionLifecycle = (json.sources ?? []).some(
         (source: { analysis?: { status?: string } | null; sectionAnalysis?: { status?: string } | null }) =>
@@ -155,7 +175,7 @@ export function ProjectWorkspace({
             job.status,
           ),
       );
-      if (active) timer = setTimeout(load, 2_500);
+      if (active) timer = setTimeout(() => void load(), 2_500);
       if (active && !processorChecked.current) {
         processorChecked.current = true;
         void (async () => {
@@ -175,6 +195,7 @@ export function ProjectWorkspace({
     };
     void load();
     return () => {
+      disposed = true;
       if (timer) clearTimeout(timer);
     };
   }, [projectId, refresh]);
