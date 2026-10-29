@@ -2095,6 +2095,16 @@ export default function SessionExperience({
       item.id !== currentItem.track.id &&
       item.stemAvailability?.status === "separated" &&
       item.stemAvailability.stemTypes.includes(stemType));
+    const donorOptionLabel = (title: string, bpm: number | null, musicalKey: string | null) => {
+      const currentBpm = currentItem.analysis?.bpm ?? null;
+      const currentKey = currentItem.analysis?.musicalKey ?? null;
+      const tempo = tempoCompatibility(currentBpm, bpm);
+      const key = keyCompatibility(currentKey, musicalKey);
+      const bpmBadge = currentBpm === null || bpm === null ? "BPM ?" : tempo.compatible ? "BPM ✓" : "BPM —";
+      const keyBadge = currentKey === null || musicalKey === null ? "key ?" : key.compatible ? "key ✓" : "key —";
+      const bpmLabel = bpm === null ? "BPM ?" : `${Math.round(bpm)} BPM`;
+      return `${title} · ${bpmLabel} · ${musicalKey ?? "key ?"} · ${bpmBadge} · ${keyBadge}`;
+    };
     return (
       <div className="wy-stem-source-control">
         <span>Live source</span>
@@ -2115,9 +2125,26 @@ export default function SessionExperience({
           }}
         >
           <option value="">Original</option>
-          {donors.map((donor) => <option key={donor.id} value={donor.track.id}>{donor.track.title}</option>)}
-          {libraryDonors.map((donor) => <option key={donor.id} value={donor.id}>{donor.title}</option>)}
+          {donors.length > 0 && (
+            <optgroup label="In this session">
+              {donors.map((donor) => (
+                <option key={donor.id} value={donor.track.id}>
+                  {donorOptionLabel(donor.track.title, donor.analysis?.bpm ?? null, donor.analysis?.musicalKey ?? null)}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {libraryDonors.length > 0 && (
+            <optgroup label="Separated library tracks">
+              {libraryDonors.map((donor) => (
+                <option key={donor.id} value={donor.id}>
+                  {donorOptionLabel(donor.title, donor.analysis?.bpm ?? null, donor.analysis?.musicalKey ?? null)}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
+        <small>BPM/key markers compare this song with each source; ? means analysis is missing.</small>
         {swap && (
           <small role="status" data-testid={`live-stem-tempo-${stemType}`}>
             {pendingSwap

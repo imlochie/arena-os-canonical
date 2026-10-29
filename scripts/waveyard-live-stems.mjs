@@ -600,6 +600,11 @@ try {
   signalHeldAssetRouteFinished = finishSlowDonorRoute;
   const playbackBeforeCancel = await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.currentTime);
   const buffersBeforeCancel = await page.evaluate(() => window.audioProbe.buffers.length);
+  const donorOptions = await current.locator('select[aria-label="vocals source"] option').allTextContents();
+  assert.ok(donorOptions.some(label => label.includes("Test b") && label.includes("BPM ✓") && label.includes("key ✓")),
+    `the swap picker exposes compatible BPM/key evidence per donor: ${donorOptions.join(" | ")}`);
+  assert.ok(donorOptions.some(label => label.includes("Test c") && label.includes("BPM ✓") && label.includes("key —")),
+    `the swap picker distinguishes a key mismatch from a tempo match: ${donorOptions.join(" | ")}`);
   await current.getByLabel("vocals source", { exact: true }).selectOption("b");
   await slowDonorRequested;
   const cancelSlowSwap = page.getByTestId("cancel-live-stem-swap-swap-vocals");
