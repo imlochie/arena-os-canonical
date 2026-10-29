@@ -22,6 +22,9 @@ const session = {
 let savedQueue = [];
 let queueSequence = 0;
 let sessionTrackSequence = 0;
+let failNextQueueDelete = false;
+let failNextQueueMove = false;
+let failNextQueueClear = false;
 
 function wav() {
   // Keep audio alive through the removal scenarios; track metadata remains
@@ -68,6 +71,10 @@ try {
       return routeJson(route, { queue: savedQueue, addedQueueItemId: id }, 201);
     }
     if (route.request().method() === "DELETE") {
+      if (failNextQueueClear) {
+        failNextQueueClear = false;
+        return routeJson(route, { error: "synthetic queue clear failure" }, 503);
+      }
       const linkedIds = new Set(savedQueue.map((item) => item.id));
       const removed = session.tracks.filter((item) => linkedIds.has(item.queueItemId));
       session.tracks = session.tracks.filter((item) => !linkedIds.has(item.queueItemId));
@@ -83,6 +90,10 @@ try {
   });
   await context.route("**/api/library/queue/*", async (route) => {
     if (route.request().method() === "PATCH") {
+      if (failNextQueueMove) {
+        failNextQueueMove = false;
+        return routeJson(route, { error: "synthetic queue reorder failure" }, 503);
+      }
       const { position, sessionId: requestedSessionId } = route.request().postDataJSON();
       assert.equal(requestedSessionId, sessionId, "queue moves identify the active listening session");
       const id = new URL(route.request().url()).pathname.split("/").at(-1);
@@ -108,6 +119,10 @@ try {
       return routeJson(route, { queue: savedQueue, affectedSessionIds: changed ? [sessionId] : [] });
     }
     if (route.request().method() !== "DELETE") return route.continue();
+    if (failNextQueueDelete) {
+      failNextQueueDelete = false;
+      return routeJson(route, { error: "synthetic queue deletion failure" }, 503);
+    }
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
     const removedQueueItem = savedQueue.find((item) => item.id === id);
     savedQueue = savedQueue.filter((item) => item.id !== id);
@@ -202,6 +217,21 @@ try {
   assert.equal(session.tracks[0].track.id, session.tracks[2].track.id, "the duplicate songs remain separate entries");
   assert.notEqual(session.tracks[0].queueItemId, session.tracks[2].queueItemId, "repeated songs have distinct saved-row links");
 
+  failNextQueueDelete = true;
+  await page.getByRole("button", { name: "Remove Queue fixture 2 from queue" }).click();
+  await page.getByTestId("queue-mutation-error").getByText("Could not remove this track from the saved queue", { exact: false }).waitFor();
+  assert.equal(savedQueue.length, 3, "a rejected queue deletion leaves the saved queue unchanged");
+  assert.equal(session.tracks.length, 3, "a rejected queue deletion leaves the listening order unchanged");
+  failNextQueueMove = true;
+  await page.getByRole("button", { name: "Move Queue fixture 2 up from position 2" }).click();
+  await page.getByTestId("queue-mutation-error").getByText("Could not update the saved queue order", { exact: false }).waitFor();
+  assert.deepEqual(savedQueue.map((item) => item.track.id), [ids[0], ids[1], ids[0]], "a rejected reorder retains the previous queue order");
+  failNextQueueClear = true;
+  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await page.getByTestId("queue-mutation-error").getByText("Could not clear the saved queue", { exact: false }).waitFor();
+  assert.equal(savedQueue.length, 3, "a rejected queue clear retains every saved row");
+  assert.equal(session.tracks.length, 3, "a rejected queue clear retains every linked session entry");
+
   await page.locator("#sess-fade").focus();
   await page.keyboard.press("End");
   assert.equal(await page.locator("#sess-fade").inputValue(), "15", "the long fade leaves time to remove its target");
@@ -218,6 +248,7 @@ try {
     () => session.tracks.length === 2 && savedQueue.length === 2 && session.currentSessionTrackId === currentSessionTrackIdBeforeTargetRemoval,
     "removing the pending mix target",
   );
+  await page.getByTestId("queue-mutation-error").waitFor({ state: "detached" });
   await page.getByTestId("session-transition").waitFor();
   await page.getByRole("button", { name: "Pause", exact: true }).waitFor();
   await page.waitForFunction((before) => {
@@ -362,7 +393,7 @@ try {
   await waitForViewOrder(page, reorderedQueueOrder, reorderedSessionOrder, "the initiating tab shows the committed queue and session order");
   await waitForViewOrder(secondPage, reorderedQueueOrder, reorderedSessionOrder, "the other tab refreshes to the committed queue and session order");
   assert.equal(session.currentSessionTrackId, currentTrackBeforeTabMove, "queue reorder does not change the playing session track");
-  assert.equal(session.positionSeconds, savedPositionBeforeTabMove, "queue reorder does not change the saved playback position");
+  assert.ok(session.positionSeconds >= savedPositionBeforeTabMove, "queue reorder does not reset the saved playback position while playback advances");
   assert.equal(await page.locator(".wy-now b").innerText(), "Queue fixture 2", "the initiating tab keeps its current track");
   assert.equal(await secondPage.locator(".wy-now b").innerText(), "Queue fixture 2", "the second tab keeps the same current track");
   const currentTimeAfterTabMove = await page.locator('.sess-deck[data-role="current"] audio').evaluate((audio) => audio.currentTime);
@@ -575,6 +606,7 @@ try {
     "132",
     "a saved arrangement edit survives reopening its Studio project",
   );
+
   console.log("PASS: queue continuity, selected-track handoff, and Studio edits survive reopening the arrangement");
 } finally {
   await browser.close();

@@ -268,6 +268,7 @@ export function MusicHome() {
   const [retryableUploads, setRetryableUploads] = useState<RetryableLibraryUpload[]>([]);
   const uploadInFlight = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [queueErrorMessage, setQueueErrorMessage] = useState<string | null>(null);
   const [newPlaylistName, setNewPlaylistName] = useState("");
   const [collections, setCollections] = useState<SmartCollection[]>([]);
   const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
@@ -889,38 +890,57 @@ export function MusicHome() {
   }, []);
 
   const removeQueueItem = useCallback(async (itemId: string) => {
-    const response = await fetch(`/api/library/queue/${itemId}`, { method: "DELETE" });
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/library/queue/${itemId}`, { method: "DELETE" });
+      if (!response.ok) {
+        setQueueErrorMessage("Could not remove this track from the saved queue. Try again.");
+        return;
+      }
       const result = await response.json();
       setQueue(result.queue ?? []);
+      setQueueErrorMessage(null);
       host.refreshSession(result.affectedSessionIds ?? []);
       publishWaveyardQueueChange(result.affectedSessionIds ?? []);
+    } catch {
+      setQueueErrorMessage("Could not remove this track from the saved queue. Check the connection and try again.");
     }
   }, [host]);
 
   const clearQueue = useCallback(async () => {
-    const response = await fetch("/api/library/queue", { method: "DELETE" });
-    if (response.ok) {
+    try {
+      const response = await fetch("/api/library/queue", { method: "DELETE" });
+      if (!response.ok) {
+        setQueueErrorMessage("Could not clear the saved queue. Try again.");
+        return;
+      }
       const result = await response.json();
       setQueue(result.queue ?? []);
+      setQueueErrorMessage(null);
       host.refreshSession(result.affectedSessionIds ?? []);
       publishWaveyardQueueChange(result.affectedSessionIds ?? []);
+    } catch {
+      setQueueErrorMessage("Could not clear the saved queue. Check the connection and try again.");
     }
   }, [host]);
 
   const moveQueueItem = useCallback(async (itemId: string, position: number) => {
-    const response = await fetch(`/api/library/queue/${itemId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ position, sessionId: host.sessionId ?? undefined }),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/library/queue/${itemId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ position, sessionId: host.sessionId ?? undefined }),
+      });
+      if (!response.ok) {
+        setQueueErrorMessage("Could not update the saved queue order. Try again.");
+        return;
+      }
       const result = await response.json();
       setQueue(result.queue ?? []);
+      setQueueErrorMessage(null);
       host.refreshSession(result.affectedSessionIds ?? []);
       publishWaveyardQueueChange(result.affectedSessionIds ?? []);
-    } else {
-      setMessage("Could not update the saved queue order.");
+    } catch {
+      setQueueErrorMessage("Could not update the saved queue order. Check the connection and try again.");
     }
   }, [host]);
 
@@ -1090,6 +1110,9 @@ export function MusicHome() {
               <h2>Saved queue</h2>
               {queue.length > 0 && <button type="button" className="button secondary" onClick={() => void clearQueue()}>Clear</button>}
             </div>
+            {queueErrorMessage !== null && (
+              <p className="library-message" role="alert" data-testid="queue-mutation-error">{queueErrorMessage}</p>
+            )}
             {queue.length === 0 ? (
               <p className="empty">Nothing queued. Add tracks with + Queue.</p>
             ) : (
