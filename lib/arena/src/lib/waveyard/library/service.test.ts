@@ -866,22 +866,40 @@ test("session: create, add tracks (ordered, duplicates allowed), reorder, remove
 test("session: per-track stem mix and transition persist and round-trip", async () => {
   const created = await sessions.createSession(OWNER, "Mix lab");
   const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const performance = {
+    snap: "beat",
+    instantRestore: true,
+    recall: { vocals: 0.64 },
+    isolatedStem: null,
+    beforeIsolation: null,
+  };
 
   const updated = await sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, {
     stemMix: { vocals: 0, drums: 1.4, bass: 0.8 },
-    transition: { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"] },
+    transition: { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"], performance },
   });
   assert.deepEqual(updated.tracks[0].stemMix, { vocals: 0, drums: 1.4, bass: 0.8 });
-  assert.deepEqual(updated.tracks[0].transition, { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"] });
+  assert.deepEqual(updated.tracks[0].transition, { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"], performance });
 
   const reread = await sessions.getSession(OWNER, created.id);
   assert.deepEqual(reread.tracks[0].stemMix, { vocals: 0, drums: 1.4, bass: 0.8 }, "mix survives a fresh read");
-  assert.deepEqual(reread.tracks[0].transition, { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"] });
+  assert.deepEqual(reread.tracks[0].transition, { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"], performance });
 
   await assert.rejects(
     () => sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, { transition: { mode: "warp", crossfadeSeconds: 1 } }),
     /invalid/i,
     "invalid transition configs are refused",
+  );
+  await assert.rejects(
+    () => sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, {
+      transition: {
+        mode: "manual",
+        crossfadeSeconds: 4,
+        performance: { ...performance, recall: { vocals: 4 } },
+      },
+    }),
+    /invalid/i,
+    "invalid performance recall is refused",
   );
   await sessions.deleteSession(OWNER, created.id);
 });

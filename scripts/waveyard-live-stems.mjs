@@ -31,7 +31,11 @@ const tracks = ["a", "b", "c"].map((id, index) => {
     track: { id, title: `Test ${id}`, artist: "Synthetic fixture", durationSeconds: duration },
     stems, playback: { kind: "stems", assetIds: stems.map(s => s.id) }, stemMix: {},
     transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
-    analysis: { bpm: index === 1 ? 124 : 120, musicalKey: ["A minor", "C major", "C# major"][index], beatGridMs: null } };
+    analysis: {
+      bpm: index === 1 ? 124 : index === 0 ? 60 : 120,
+      musicalKey: ["A minor", "C major", "C# major"][index],
+      beatGridMs: index === 0 ? Array.from({ length: 20 }, (_, beat) => beat * 1000) : null,
+    } };
 });
 const sourceOnlyTrack = { ...tracks[0], stems: [], playback: { kind: "source", assetIds: ["a-source"] } };
 const externalStemKeys = types.map(stem => {
@@ -606,6 +610,48 @@ try {
     const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));
     return source?.inputNode?.nextNode?.gain?.value > 0.9;
   }));
+
+  await current.getByLabel("Snap stem changes").selectOption("beat");
+  await page.waitForTimeout(800);
+  assert.equal(session.tracks.find(item => item.id === "a").transition.performance.snap, "beat",
+    "the per-track performance snap setting persists through the session edit route");
+  const barSnapOptions = await current.locator('option[value="bar"]').evaluateAll(options =>
+    options.map(option => ({ disabled: option.disabled, html: option.outerHTML, deck: option.closest("[data-role]")?.getAttribute("data-role") })));
+  assert.ok(barSnapOptions.length > 0 && barSnapOptions.every(option => option.disabled && option.html.includes("Bar unavailable")),
+    `bar snap is unavailable when the current analysis has no downbeat evidence: ${JSON.stringify(barSnapOptions)}`);
+  const mixBeforeHold = structuredClone(session.tracks.find(item => item.id === "a").stemMix);
+  await current.getByLabel("Hold to isolate vocals").focus();
+  await page.keyboard.down("Space");
+  await page.waitForFunction(() => {
+    const gain = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    return gain("vocals") > 0.9 && ["drums", "bass", "other"].every(type => gain(type) < 0.01);
+  });
+  await page.waitForTimeout(700);
+  assert.deepEqual(session.tracks.find(item => item.id === "a").stemMix, mixBeforeHold,
+    "momentary isolation never writes a temporary mix to the session");
+  await page.keyboard.up("Space");
+  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type => {
+    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));
+    return source?.inputNode?.nextNode?.gain?.value > 0.9;
+  }), null, { timeout: 3000 });
+
+  if (await page.getByTestId("session-play").getAttribute("aria-pressed") !== "true") await toggle();
+  await current.getByLabel("Mute drums", { exact: true }).click();
+  await current.locator(".wy-performance-pending").waitFor({ timeout: 2000 });
+  assert.ok(await page.evaluate(() => {
+    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-drums"));
+    return (source?.inputNode?.nextNode?.gain?.value ?? 0) > 0.9;
+  }), "a beat-snapped mute remains unchanged before its measured boundary");
+  await page.waitForFunction(() => {
+    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-drums"));
+    return source?.inputNode?.nextNode?.gain?.value < 0.01;
+  }, null, { timeout: 2500 });
+  await current.getByLabel("Restore all current stems").click();
+  await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type => {
+    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));
+    return source?.inputNode?.nextNode?.gain?.value > 0.9;
+  }));
+  await toggle();
 
   let signalSlowDonorRequest;
   const slowDonorRequested = new Promise(resolve => { signalSlowDonorRequest = resolve; });

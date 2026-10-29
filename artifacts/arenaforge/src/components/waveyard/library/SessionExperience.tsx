@@ -23,6 +23,15 @@ import {
   type TransitionMode,
 } from "@workspace/arena/lib/waveyard/library/session-logic";
 import {
+  defaultPerformance,
+  nextPerformanceBoundary,
+  performMix,
+  performanceTick,
+  type PerformanceAction,
+  type PerformanceSettings,
+  type PerformanceSnap,
+} from "@workspace/arena/lib/waveyard/library/performance";
+import {
   publishWaveyardQueueChange,
   publishWaveyardTransportChange,
   subscribeToWaveyardQueueChanges,
@@ -77,6 +86,21 @@ interface PendingLiveSwap {
   sessionTrackId: string;
   stemType: string;
   donorTitle: string;
+}
+
+interface PendingPerformance {
+  itemId: string;
+  deckIndex: 0 | 1;
+  snap: PerformanceSnap;
+  target: number;
+  previous: number;
+  actions: PerformanceAction[];
+}
+
+interface TemporaryIsolation {
+  itemId: string;
+  stemType: string;
+  level: number;
 }
 
 type LibraryTrackOption = Pick<LibraryTrackSummary, "id" | "title" | "artist" | "analysis" | "stemAvailability">;
@@ -148,7 +172,6 @@ type DeckApi = {
 };
 
 type FadePhase = "idle" | "fading";
-type StemFlags = { muted: string[]; solo: string[] };
 
 const SAVE_INTERVAL_MS = 10_000;
 
@@ -158,16 +181,12 @@ function formatClock(seconds: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-/** Level × mute × solo → the gain actually applied (and the value persisted as stemMix). */
-function effectiveMix(item: SessionTrackItem | null, levels: Record<string, number> | undefined, flags: StemFlags | undefined) {
+/** Numeric fader state is the audible mix and the value persisted as stemMix. */
+function effectiveMix(item: SessionTrackItem | null, levels: Record<string, number> | undefined) {
   const out: Record<string, number> = {};
   if (item === null) return out;
-  const solo = flags?.solo ?? [];
-  const muted = flags?.muted ?? [];
   for (const stem of item.stems) {
-    let value = levels?.[stem.stemType] ?? 1;
-    if (muted.includes(stem.stemType) || (solo.length > 0 && !solo.includes(stem.stemType))) value = 0;
-    out[stem.stemType] = value;
+    out[stem.stemType] = levels?.[stem.stemType] ?? 1;
   }
   return out;
 }
@@ -188,9 +207,17 @@ function SessionDeck({
   autoPlay,
   onAutoPlayed,
   levels,
-  flags,
   onLevel,
-  onFlag,
+  performanceSettings,
+  onPerformanceAction,
+  onSnapChange,
+  onInstantRestoreChange,
+  onHoldStart,
+  onHoldEnd,
+  heldStem,
+  pendingPerformanceLabel,
+  onCancelPendingPerformance,
+  performanceDisabled,
   onReset,
   stemExtra,
   onLiveLayerReady,
@@ -210,9 +237,17 @@ function SessionDeck({
   autoPlay: boolean;
   onAutoPlayed: () => void;
   levels: Record<string, number>;
-  flags: StemFlags;
   onLevel: (stemType: string, value: number) => void;
-  onFlag: (stemType: string, flag: "muted" | "solo") => void;
+  performanceSettings: PerformanceSettings;
+  onPerformanceAction: (action: PerformanceAction) => void;
+  onSnapChange: (snap: PerformanceSnap) => void;
+  onInstantRestoreChange: (enabled: boolean) => void;
+  onHoldStart: (stemType: string) => void;
+  onHoldEnd: () => void;
+  heldStem: string | null;
+  pendingPerformanceLabel: string | null;
+  onCancelPendingPerformance: () => void;
+  performanceDisabled: boolean;
   onReset: () => void;
   stemExtra?: (stemType: string) => ReactNode;
   onLiveLayerReady?: (sessionTrackId: string, stemType: string) => void;
@@ -225,6 +260,8 @@ function SessionDeck({
   const assetIds = useMemo(() => item?.playback?.assetIds ?? [], [item?.playback]);
   const duration = item?.track.durationSeconds ?? 0;
   const [handoffTarget, setHandoffTarget] = useState<SessionTrackItem | null>(null);
+  const holdGestureRef = useRef<"pointer" | "keyboard" | null>(null);
+  const suppressHoldClickRef = useRef(false);
   const stagingTarget = handoffTarget !== null
     && (handoffTarget.playback?.kind !== item?.playback?.kind
       || JSON.stringify(handoffTarget.playback?.assetIds) !== JSON.stringify(item?.playback?.assetIds))
@@ -461,9 +498,8 @@ function SessionDeck({
   }, [transport.playing]);
 
   const separated = item?.playback?.kind === "stems" && (item?.stems.length ?? 0) > 0;
-  const anySolo = flags.solo.length > 0;
+  const anySolo = performanceSettings.isolatedStem !== null;
   const mixChanged = (item?.stems ?? []).some((stem) => Math.abs((levels[stem.stemType] ?? 1) - 1) > 0.001)
-    || flags.muted.length > 0
     || anySolo;
 
   return (
@@ -587,10 +623,49 @@ function SessionDeck({
                 </div>
               )}
               {active && <p className="wy-deck-note wy-live-note">Live swaps stay on this song&rsquo;s clock · shorter layers loop; use the Camelot wheel to cue compatible tracks.</p>}
+              {active && (
+                <div className="wy-performance-controls" role="group" aria-label="Live stem performance">
+                  <label>
+                    Snap
+                    <select
+                      aria-label="Snap stem changes"
+                      value={performanceSettings.snap}
+                      disabled={performanceDisabled}
+                      onChange={(event) => onSnapChange(event.target.value as PerformanceSnap)}
+                    >
+                      <option value="off">Off</option>
+                      <option value="quarter">¼ beat</option>
+                      <option value="half">½ beat</option>
+                      <option value="beat">Beat</option>
+                      <option value="bar" disabled>Bar unavailable</option>
+                    </select>
+                  </label>
+                  <label className="wy-performance-restore">
+                    <input
+                      type="checkbox"
+                      aria-label="Instant Restore"
+                      checked={performanceSettings.instantRestore}
+                      disabled={performanceDisabled}
+                      onChange={(event) => onInstantRestoreChange(event.target.checked)}
+                    />
+                    Instant restore
+                  </label>
+                  {pendingPerformanceLabel && (
+                    <span className="wy-performance-pending" role="status">
+                      {pendingPerformanceLabel}
+                      <button type="button" onClick={onCancelPendingPerformance}>Cancel</button>
+                    </span>
+                  )}
+                  {performanceSettings.snap === "bar" && (
+                    <span className="wy-performance-note">Bar snap needs verified downbeat data.</span>
+                  )}
+                  <span className="wy-performance-note">Snaps use the analyzed source grid; they are not sample-locked.</span>
+                </div>
+              )}
               {mixChanged && (
                 <div className="wy-stem-toolbar">
                   <span role="status">
-                    {anySolo ? `Isolating ${flags.solo.join(", ")}` : flags.muted.length > 0 ? `Muted ${flags.muted.join(", ")}` : "Stem levels adjusted"}
+                    {anySolo ? `Isolating ${performanceSettings.isolatedStem}` : "Stem levels adjusted"}
                   </span>
                   <button
                     type="button"
@@ -604,8 +679,8 @@ function SessionDeck({
               )}
               {item.stems.map((stem) => {
                 const level = levels[stem.stemType] ?? 1;
-                const muted = flags.muted.includes(stem.stemType);
-                const solo = flags.solo.includes(stem.stemType);
+                const muted = level <= 0.0001;
+                const solo = performanceSettings.isolatedStem === stem.stemType;
                 const silent = muted || (anySolo && !solo);
                 const peak = meters?.[stem.id]?.peak ?? 0;
                 return (
@@ -624,8 +699,60 @@ function SessionDeck({
                       onChange={(event) => onLevel(stem.stemType, Number(event.target.value))}
                     />
                     <span className="wy-stem-value">{level.toFixed(2)}</span>
-                    <button type="button" className={`wy-toggle${muted ? " on" : ""}`} aria-pressed={muted} aria-label={`Mute ${stem.stemType}`} onClick={() => onFlag(stem.stemType, "muted")}>Mute</button>
-                    <button type="button" className={`wy-toggle solo${solo ? " on" : ""}`} aria-pressed={solo} aria-label={`Isolate ${stem.stemType}`} onClick={() => onFlag(stem.stemType, "solo")}>Isolate</button>
+                    <button type="button" className={`wy-toggle${muted ? " on" : ""}`} disabled={performanceDisabled} aria-pressed={muted} aria-label={`Mute ${stem.stemType}`} onClick={() => onPerformanceAction({ kind: "mute", stem: stem.stemType })}>Mute</button>
+                    <button type="button" className={`wy-toggle solo${solo ? " on" : ""}`} disabled={performanceDisabled} aria-pressed={solo} aria-label={`Isolate ${stem.stemType}`} onClick={() => onPerformanceAction({ kind: "isolate", stem: stem.stemType })}>Isolate</button>
+                    {active && (
+                      <button
+                        type="button"
+                        className={`wy-toggle wy-hold-toggle${heldStem === stem.stemType ? " on" : ""}`}
+                        disabled={performanceDisabled}
+                        aria-pressed={heldStem === stem.stemType}
+                        aria-label={`Hold to isolate ${stem.stemType}`}
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          holdGestureRef.current = "pointer";
+                          event.currentTarget.setPointerCapture(event.pointerId);
+                          onHoldStart(stem.stemType);
+                        }}
+                        onPointerUp={() => {
+                          holdGestureRef.current = null;
+                          suppressHoldClickRef.current = true;
+                          onHoldEnd();
+                        }}
+                        onPointerCancel={() => {
+                          holdGestureRef.current = null;
+                          onHoldEnd();
+                        }}
+                        onLostPointerCapture={() => onHoldEnd()}
+                        onBlur={() => onHoldEnd()}
+                        onKeyDown={(event) => {
+                          if ((event.key === " " || event.key === "Enter") && !event.repeat) {
+                            event.preventDefault();
+                            holdGestureRef.current = "keyboard";
+                            onHoldStart(stem.stemType);
+                          }
+                        }}
+                        onKeyUp={(event) => {
+                          if (event.key === " " || event.key === "Enter") {
+                            event.preventDefault();
+                            holdGestureRef.current = null;
+                            suppressHoldClickRef.current = true;
+                            onHoldEnd();
+                          }
+                        }}
+                        onClick={() => {
+                          if (suppressHoldClickRef.current) {
+                            suppressHoldClickRef.current = false;
+                            return;
+                          }
+                          if (holdGestureRef.current !== null) return;
+                          onHoldStart(stem.stemType);
+                          window.setTimeout(onHoldEnd, 350);
+                        }}
+                      >
+                        Hold
+                      </button>
+                    )}
                     {stemExtra?.(stem.stemType)}
                   </div>
                 );
@@ -697,8 +824,9 @@ export default function SessionExperience({
   const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
   const [openSwapStem, setOpenSwapStem] = useState<string | null>(null);
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
-  const [flags, setFlags] = useState<Record<string, StemFlags>>({});
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
+  const [pendingPerformance, setPendingPerformance] = useState<PendingPerformance | null>(null);
+  const [temporaryIsolation, setTemporaryIsolation] = useState<TemporaryIsolation | null>(null);
   const [masterLevel, setMasterLevel] = useState(1);
   const [autoPlayId, setAutoPlayId] = useState<string | null>(null);
   const [autoCrossfadeEnabled, setAutoCrossfadeEnabled] = useState(() => {
@@ -715,6 +843,12 @@ export default function SessionExperience({
   const [resumeAt, setResumeAt] = useState<{ itemId: string; seconds: number } | null>(null);
 
   const decksRef = useRef<Array<DeckApi | null>>([null, null]);
+  const pendingPerformanceRef = useRef<PendingPerformance | null>(null);
+  const mixesRef = useRef(mixes);
+  const transitionsRef = useRef(transitions);
+  mixesRef.current = mixes;
+  transitionsRef.current = transitions;
+  const temporaryIsolationRef = useRef<TemporaryIsolation | null>(null);
   const fadeRef = useRef<{ raf: number; t0: number; fromDeck: 0 | 1; toDeck: 0 | 1; cfg: TransitionConfig; fromMix: Record<string, number> } | null>(null);
   const advancingRef = useRef(false);
   const [playingByDeck, setPlayingByDeck] = useState<[boolean, boolean]>([false, false]);
@@ -822,7 +956,6 @@ export default function SessionExperience({
           currentIdRef.current = restoredCurrent;
           sessionRef.current = detail;
           setMixes(nextMixes);
-          setFlags({});
           setStemsReady({});
           setTransitions(nextTransitions);
           setCurrentId(restoredCurrent);
@@ -1013,13 +1146,13 @@ export default function SessionExperience({
         let failed = false;
         for (const item of items) {
           const body = JSON.stringify({
-            stemMix: effectiveMix(item, mixes[item.id] ?? item.stemMix, flags[item.id]),
+            stemMix: effectiveMix(item, mixes[item.id] ?? item.stemMix),
             transition: transitions[item.id] ?? item.transition,
           });
           const key = `${session.id}:${item.id}`;
           if (lastSentRef.current[key] === undefined) {
             // First sight of this item: what's on the server is the baseline.
-            lastSentRef.current[key] = JSON.stringify({ stemMix: effectiveMix(item, item.stemMix, undefined), transition: item.transition });
+            lastSentRef.current[key] = JSON.stringify({ stemMix: effectiveMix(item, item.stemMix), transition: item.transition });
           }
           if (lastSentRef.current[key] === body) continue;
           try {
@@ -1039,18 +1172,195 @@ export default function SessionExperience({
     }, 600);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- debounce on control changes for the loaded pair
-  }, [session?.id, currentItem?.id, nextItem?.id, mixes, flags, transitions]);
+  }, [session?.id, currentItem?.id, nextItem?.id, mixes, transitions]);
 
   // Apply effective mixes to the physical decks.
-  const currentEffective = useMemo(() => effectiveMix(currentItem, currentItem ? mixes[currentItem.id] : undefined, currentItem ? flags[currentItem.id] : undefined), [currentItem, mixes, flags]);
-  const nextEffective = useMemo(() => effectiveMix(nextItem, nextItem ? mixes[nextItem.id] : undefined, nextItem ? flags[nextItem.id] : undefined), [nextItem, mixes, flags]);
+  const currentEffective = useMemo(() => effectiveMix(currentItem, currentItem ? mixes[currentItem.id] : undefined), [currentItem, mixes]);
+  const nextEffective = useMemo(() => effectiveMix(nextItem, nextItem ? mixes[nextItem.id] : undefined), [nextItem, mixes]);
+  const currentAudioMix = useMemo(() => {
+    if (currentItem === null || temporaryIsolation?.itemId !== currentItem.id) return currentEffective;
+    return Object.fromEntries(currentItem.stems.map((stem) => [
+      stem.stemType,
+      stem.stemType === temporaryIsolation.stemType ? temporaryIsolation.level : 0,
+    ]));
+  }, [currentItem, currentEffective, temporaryIsolation]);
   useEffect(() => {
     if (fadeRef.current !== null) return;
-    decksRef.current[activeDeck]?.applyStemVolumes(currentEffective);
-  }, [currentEffective, activeDeck, currentItem?.id]);
+    decksRef.current[activeDeck]?.applyStemVolumes(currentAudioMix);
+  }, [currentAudioMix, activeDeck, currentItem?.id]);
   useEffect(() => {
     decksRef.current[standbyDeckIndex]?.applyStemVolumes(nextEffective);
   }, [nextEffective, standbyDeckIndex, nextItem?.id]);
+
+  const cancelPendingPerformance = useCallback((message?: string) => {
+    if (pendingPerformanceRef.current !== null) {
+      pendingPerformanceRef.current = null;
+      setPendingPerformance(null);
+    }
+    if (message !== undefined) setStatus(message);
+  }, []);
+
+  const endTemporaryIsolation = useCallback(() => {
+    if (temporaryIsolationRef.current === null) return;
+    temporaryIsolationRef.current = null;
+    setTemporaryIsolation(null);
+  }, []);
+
+  const setPerformanceForItem = useCallback((item: SessionTrackItem, patch: Partial<PerformanceSettings>) => {
+    const currentConfig = transitionsRef.current[item.id] ?? item.transition;
+    const performance = { ...(currentConfig.performance ?? defaultPerformance()), ...patch };
+    const nextConfig = { ...currentConfig, performance };
+    const nextTransitions = { ...transitionsRef.current, [item.id]: nextConfig };
+    transitionsRef.current = nextTransitions;
+    setTransitions(nextTransitions);
+  }, []);
+
+  const applyPerformanceActions = useCallback((
+    item: SessionTrackItem,
+    deckIndex: 0 | 1,
+    actions: PerformanceAction[],
+  ) => {
+    const currentConfig = transitionsRef.current[item.id] ?? item.transition;
+    let levels = effectiveMix(item, mixesRef.current[item.id] ?? item.stemMix);
+    let settings = currentConfig.performance ?? defaultPerformance();
+    for (const action of actions) {
+      const result = performMix(levels, settings, action, item.stems.map((stem) => stem.stemType));
+      levels = result.mix;
+      settings = result.performance;
+    }
+    const nextMixes = { ...mixesRef.current, [item.id]: levels };
+    mixesRef.current = nextMixes;
+    setMixes(nextMixes);
+    const nextTransitions = {
+      ...transitionsRef.current,
+      [item.id]: { ...currentConfig, performance: settings },
+    };
+    transitionsRef.current = nextTransitions;
+    setTransitions(nextTransitions);
+    decksRef.current[deckIndex]?.applyStemVolumes(levels);
+    setStatus(null);
+  }, []);
+
+  const requestPerformance = useCallback((
+    itemId: string,
+    deckIndex: 0 | 1,
+    action: PerformanceAction,
+  ) => {
+    const item = deckItems[deckIndex];
+    if (item === null || item.id !== itemId || phase !== "idle") return;
+    endTemporaryIsolation();
+    const deck = decksRef.current[deckIndex];
+    const settings = (transitionsRef.current[item.id] ?? item.transition).performance ?? defaultPerformance();
+    const currentLevels = effectiveMix(item, mixesRef.current[item.id] ?? item.stemMix);
+    const restoring = action.kind === "restore"
+      || (action.kind === "isolate" && settings.isolatedStem === action.stem)
+      || (action.kind === "mute" && (currentLevels[action.stem] ?? 1) <= 0.0001);
+    const shouldSnap = deckIndex === activeDeck
+      && item.id === currentIdRef.current
+      && deck?.transport.playing === true
+      && settings.snap !== "off"
+      && !(restoring && settings.instantRestore);
+    if (!shouldSnap) {
+      cancelPendingPerformance();
+      applyPerformanceActions(item, deckIndex, [action]);
+      return;
+    }
+
+    const position = deck?.transport.currentPosition() ?? NaN;
+    const target = nextPerformanceBoundary(position, item.analysis?.beatGridMs, settings.snap);
+    if (target === null) {
+      setStatus(settings.snap === "bar"
+        ? "Bar snap unavailable: this track has no verified downbeat data. Choose Beat or Off."
+        : "Beat snap unavailable: this track has no verified beat grid. Choose Off for immediate stem changes.");
+      return;
+    }
+    const previous = pendingPerformanceRef.current;
+    const actions = previous?.itemId === item.id && previous.deckIndex === deckIndex
+      ? [...previous.actions, action]
+      : [action];
+    const pending: PendingPerformance = {
+      itemId: item.id,
+      deckIndex,
+      snap: settings.snap,
+      target: previous?.itemId === item.id && previous.deckIndex === deckIndex ? previous.target : target,
+      previous: position,
+      actions,
+    };
+    pendingPerformanceRef.current = pending;
+    setPendingPerformance(pending);
+    const targetAction = action.kind === "restore" ? "restore mix" : `${action.kind} ${action.stem}`;
+    setStatus(`${targetAction} queued for the next ${settings.snap} boundary.`);
+  }, [activeDeck, applyPerformanceActions, cancelPendingPerformance, deckItems, endTemporaryIsolation, phase]);
+
+  const beginTemporaryIsolation = useCallback((itemId: string, stemType: string) => {
+    if (phase !== "idle" || currentIdRef.current !== itemId || deckItems[activeDeck]?.id !== itemId) return;
+    const item = deckItems[activeDeck];
+    if (item === null || !item.stems.some((stem) => stem.stemType === stemType)) return;
+    cancelPendingPerformance();
+    const levels = effectiveMix(item, mixesRef.current[item.id] ?? item.stemMix);
+    const settings = (transitionsRef.current[item.id] ?? item.transition).performance ?? defaultPerformance();
+    const level = (levels[stemType] ?? 1) > 0 ? levels[stemType] : settings.recall[stemType] ?? 1;
+    const temporary = { itemId, stemType, level: Math.max(0, Math.min(2, level)) };
+    temporaryIsolationRef.current = temporary;
+    setTemporaryIsolation(temporary);
+  }, [activeDeck, cancelPendingPerformance, deckItems, phase]);
+
+  useEffect(() => {
+    const pending = pendingPerformance;
+    if (pending === null) return;
+    let frame = 0;
+    const tick = () => {
+      const live = pendingPerformanceRef.current;
+      if (live === null) return;
+      const item = sessionRef.current?.tracks.find((track) => track.id === live.itemId) ?? null;
+      const deck = decksRef.current[live.deckIndex];
+      const position = deck?.transport.currentPosition() ?? NaN;
+      const valid = item !== null
+        && currentIdRef.current === live.itemId
+        && activeDeckRef.current === live.deckIndex
+        && phase === "idle";
+      const verdict = valid
+        ? performanceTick(live.target, live.previous, position, deck?.transport.playing ?? false)
+        : "cancel";
+      live.previous = position;
+      if (verdict === "wait") {
+        frame = requestAnimationFrame(tick);
+        return;
+      }
+      pendingPerformanceRef.current = null;
+      setPendingPerformance(null);
+      if (verdict === "apply" && item !== null) {
+        applyPerformanceActions(item, live.deckIndex, live.actions);
+      } else {
+        setStatus("Pending stem changes cancelled: playback moved, paused, or missed the beat. Nothing was applied late.");
+      }
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [applyPerformanceActions, pendingPerformance, phase]);
+
+  useEffect(() => {
+    if (temporaryIsolation === null) return;
+    if (temporaryIsolation.itemId !== currentItem?.id || phase !== "idle") endTemporaryIsolation();
+  }, [currentItem?.id, endTemporaryIsolation, phase, temporaryIsolation]);
+
+  useEffect(() => {
+    const interrupt = () => endTemporaryIsolation();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") interrupt();
+    };
+    window.addEventListener("pointerup", interrupt);
+    window.addEventListener("pointercancel", interrupt);
+    window.addEventListener("blur", interrupt);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pointerup", interrupt);
+      window.removeEventListener("pointercancel", interrupt);
+      window.removeEventListener("blur", interrupt);
+      document.removeEventListener("visibilitychange", onVisibility);
+      interrupt();
+    };
+  }, [endTemporaryIsolation]);
 
   // Master level drives both decks outside a fade (the fade multiplies by it).
   useEffect(() => {
@@ -1123,6 +1433,8 @@ export default function SessionExperience({
 
   const beginTransition = useCallback(async () => {
     if (phase === "fading") return;
+    cancelPendingPerformance("Pending stem changes cancelled because a transition started.");
+    endTemporaryIsolation();
     const fromDeck = activeDeck;
     const toDeck = standbyDeckIndex;
     const fromApi = decksRef.current[fromDeck];
@@ -1169,7 +1481,7 @@ export default function SessionExperience({
     toApi.transport.setMasterVolume(0);
     await toApi.transport.play();
     runFade(cfg, fromDeck, toDeck, { ...currentEffective });
-  }, [phase, activeDeck, standbyDeckIndex, deckItems, transitions, runFade, finishTransition, currentEffective]);
+  }, [phase, activeDeck, standbyDeckIndex, deckItems, transitions, runFade, finishTransition, currentEffective, cancelPendingPerformance, endTemporaryIsolation]);
 
   const cancelTransition = useCallback(() => {
     const fade = fadeRef.current;
@@ -1204,6 +1516,8 @@ export default function SessionExperience({
 
   const togglePlay = useCallback(async () => {
     if (phase === "fading") cancelTransition();
+    cancelPendingPerformance("Pending stem changes cancelled by playback control.");
+    endTemporaryIsolation();
     const api = decksRef.current[activeDeck];
     if (api === null) return;
     const remote = remoteTransportRef.current;
@@ -1228,7 +1542,7 @@ export default function SessionExperience({
       clearRemoteTransport();
       await api.transport.play();
     }
-  }, [activeDeck, phase, cancelTransition, persistState, sessionId, publishTransport, clearRemoteTransport]);
+  }, [activeDeck, phase, cancelTransition, persistState, sessionId, publishTransport, clearRemoteTransport, cancelPendingPerformance, endTemporaryIsolation]);
 
   const handleDeckEnded = useCallback(
     (deckIndex: number, itemId: string) => {
@@ -1432,7 +1746,6 @@ export default function SessionExperience({
           setMixes((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
           setTransitions((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
           setStemsReady((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
-          setFlags((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => liveIds.has(id))));
           sessionRef.current = detail;
           setSession(detail);
 
@@ -1771,7 +2084,7 @@ export default function SessionExperience({
               .filter((item) => handoffTrackIds.includes(item.id))
               .map((item) => ({
                 sessionTrackId: item.id,
-                stemMix: effectiveMix(item, mixes[item.id] ?? item.stemMix, flags[item.id]),
+                stemMix: effectiveMix(item, mixes[item.id] ?? item.stemMix),
               })),
           }),
         });
@@ -1809,7 +2122,7 @@ export default function SessionExperience({
         setSendingToStudio(false);
       }
     })();
-  }, [session, selectedStudioTrackIds, library, savingSwap, mixes, flags]);
+  }, [session, selectedStudioTrackIds, library, savingSwap, mixes]);
 
   // ------------------------------------- hardware media keys
   useHardwareMediaKeys({
@@ -1945,7 +2258,7 @@ export default function SessionExperience({
       return;
     }
     setStatus(`Preparing separated stems for “${ready.track.title}”…`);
-    const levels = effectiveMix(ready, mixes[itemId] ?? ready.stemMix, flags[itemId] ?? emptyFlags);
+    const levels = effectiveMix(ready, mixes[itemId] ?? ready.stemMix);
     const prepared = await api.prepareHandoff(ready, levels);
     if (prepared === null) {
       setStatus("The separated stems could not be prepared. The original track keeps playing.");
@@ -1960,7 +2273,7 @@ export default function SessionExperience({
       return copy;
     });
     setStatus(`Switched “${ready.track.title}” to stems at ${formatClock(prepared.position)} without interrupting playback.`);
-  }, [stemsReady, deckItems, mixes, flags]);
+  }, [stemsReady, deckItems, mixes]);
 
   const returnToFullTrack = useCallback(async (itemId: string) => {
     const s = sessionRef.current;
@@ -2068,19 +2381,54 @@ export default function SessionExperience({
   const duration = currentItem?.track.durationSeconds ?? 0;
   const transition = currentTransition;
   const keepSet = new Set(transition?.keepStems ?? []);
-  const emptyFlags: StemFlags = { muted: [], solo: [] };
 
-  const setLevel = (itemId: string) => (stemType: string, value: number) =>
-    setMixes((prev) => ({ ...prev, [itemId]: { ...prev[itemId], [stemType]: value } }));
-  const toggleFlag = (itemId: string) => (stemType: string, flag: "muted" | "solo") =>
-    setFlags((prev) => {
-      const cur = prev[itemId] ?? { muted: [], solo: [] };
-      const list = cur[flag].includes(stemType) ? cur[flag].filter((s) => s !== stemType) : [...cur[flag], stemType];
-      return { ...prev, [itemId]: { ...cur, [flag]: list } };
-    });
+  const setLevel = (itemId: string) => (stemType: string, value: number) => {
+    cancelPendingPerformance("Pending stem changes cancelled by fader movement.");
+    endTemporaryIsolation();
+    const item = session.tracks.find((track) => track.id === itemId);
+    let levels = { ...(mixesRef.current[itemId] ?? item?.stemMix ?? {}), [stemType]: value };
+    if (item !== undefined) {
+      const performance = (transitionsRef.current[itemId] ?? item.transition).performance ?? defaultPerformance();
+      if (performance.isolatedStem !== null) {
+        levels = {
+          ...performMix(
+            mixesRef.current[itemId] ?? item.stemMix,
+            performance,
+            { kind: "restore" },
+            item.stems.map((stem) => stem.stemType),
+          ).mix,
+          [stemType]: value,
+        };
+      }
+    }
+    const nextMixes = { ...mixesRef.current, [itemId]: levels };
+    mixesRef.current = nextMixes;
+    setMixes(nextMixes);
+    if (item !== undefined) setPerformanceForItem(item, { isolatedStem: null, beforeIsolation: null });
+  };
+  const resetMix = (item: SessionTrackItem) => {
+    cancelPendingPerformance();
+    endTemporaryIsolation();
+    const levels = Object.fromEntries(item.stems.map((stem) => [stem.stemType, 1]));
+    const nextMixes = { ...mixesRef.current, [item.id]: levels };
+    mixesRef.current = nextMixes;
+    setMixes(nextMixes);
+    setPerformanceForItem(item, { recall: {}, isolatedStem: null, beforeIsolation: null });
+    const deckIndex = deckItems[0]?.id === item.id ? 0 : deckItems[1]?.id === item.id ? 1 : -1;
+    if (deckIndex >= 0) decksRef.current[deckIndex as 0 | 1]?.applyStemVolumes(levels);
+  };
+  const actionForItem = (itemId: string, deckIndex: 0 | 1) => (action: PerformanceAction) =>
+    requestPerformance(itemId, deckIndex, action);
+  const updateSnap = (item: SessionTrackItem, snap: PerformanceSnap) => {
+    cancelPendingPerformance();
+    setPerformanceForItem(item, { snap });
+  };
   const setTransition = (patch: Partial<TransitionConfig>) => {
     if (currentItem === null) return;
-    setTransitions((prev) => ({ ...prev, [currentItem.id]: { ...(prev[currentItem.id] ?? currentItem.transition), ...patch } }));
+    const current = transitionsRef.current[currentItem.id] ?? currentItem.transition;
+    const nextTransitions = { ...transitionsRef.current, [currentItem.id]: { ...current, ...patch } };
+    transitionsRef.current = nextTransitions;
+    setTransitions(nextTransitions);
   };
   const toggleKeep = (stemType: string) => {
     if (currentItem === null) return;
@@ -2090,6 +2438,8 @@ export default function SessionExperience({
     setTransition({ keepStems: [...kept] });
   };
   const seekCurrent = (value: number) => {
+    cancelPendingPerformance("Pending stem changes cancelled by seek.");
+    endTemporaryIsolation();
     const api = decksRef.current[activeDeck];
     const remote = remoteTransportRef.current;
     const usingRemoteState = remote?.sessionId === sessionId && !api?.transport.playing;
@@ -2207,17 +2557,26 @@ export default function SessionExperience({
         setResumeAt(null);
       },
       levels: item ? mixes[item.id] ?? {} : {},
-      flags: item ? flags[item.id] ?? emptyFlags : emptyFlags,
       onLevel: item ? setLevel(item.id) : () => undefined,
-      onFlag: item ? toggleFlag(item.id) : () => undefined,
-      onReset: () => {
-        if (!item) return;
-        setMixes((prev) => ({
-          ...prev,
-          [item.id]: Object.fromEntries(item.stems.map((stem) => [stem.stemType, 1])),
-        }));
-        setFlags((prev) => ({ ...prev, [item.id]: { muted: [], solo: [] } }));
-      },
+      performanceSettings: item
+        ? transitions[item.id]?.performance ?? item.transition.performance ?? defaultPerformance()
+        : defaultPerformance(),
+      onPerformanceAction: item ? actionForItem(item.id, deckIndex) : () => undefined,
+      onSnapChange: item ? (snap: PerformanceSnap) => updateSnap(item, snap) : () => undefined,
+      onInstantRestoreChange: item
+        ? (enabled: boolean) => setPerformanceForItem(item, { instantRestore: enabled })
+        : () => undefined,
+      onHoldStart: item && isActive
+        ? (stemType: string) => beginTemporaryIsolation(item.id, stemType)
+        : () => undefined,
+      onHoldEnd: endTemporaryIsolation,
+      heldStem: item !== null && temporaryIsolation?.itemId === item.id ? temporaryIsolation.stemType : null,
+      pendingPerformanceLabel: item && pendingPerformance?.itemId === item.id && pendingPerformance.deckIndex === deckIndex
+        ? `${pendingPerformance.actions.length} change${pendingPerformance.actions.length === 1 ? "" : "s"} queued · next ${pendingPerformance.snap}`
+        : null,
+      onCancelPendingPerformance: () => cancelPendingPerformance("Pending stem changes cancelled."),
+      performanceDisabled: phase !== "idle",
+      onReset: () => { if (item) resetMix(item); },
       stemExtra: isActive ? swapExtra : undefined,
       onLiveLayerReady: isActive ? markLiveLayerReady : undefined,
       onReturnToSource: isActive && item?.playback?.kind === "stems" && item.sourceAssetId !== null
@@ -2561,7 +2920,7 @@ export default function SessionExperience({
                 onAddNext={setLibraryTrackAsNext}
               />
             )}
-            <p className="wy-fine">Mute or isolate a stem to audition it. Restore all returns every layer to the full mix.</p>
+            <p className="wy-fine">Mute or isolate to lock a stem; hold to audition it briefly. Restore all returns every layer to full volume.</p>
           </div>
           <SessionDeck {...deckProps(1)} />
         </div>

@@ -370,6 +370,19 @@ export function useStemTransport(ids: string[], duration: number) {
     [duration, ids],
   );
 
+  const currentPosition = useCallback(() => {
+    const anchor = ids
+      .map((id) => media.current[id])
+      .find((element) => element && !element.paused)
+      ?? media.current[ids[0]];
+    const current = anchor?.currentTime;
+    if (typeof current === "number" && Number.isFinite(current)) {
+      positionRef.current = current;
+      return current;
+    }
+    return positionRef.current;
+  }, [ids]);
+
   /** Apply insert chains (live): rebuilds the subgraph of every playing graph. */
   const applyInserts = useCallback(
     (chains: Record<string, InsertChain>, master: InsertChain) => {
@@ -654,6 +667,7 @@ export function useStemTransport(ids: string[], duration: number) {
     applyInserts,
     playing,
     position,
+    currentPosition,
     duration,
     masterVolume,
     setMasterVolume,

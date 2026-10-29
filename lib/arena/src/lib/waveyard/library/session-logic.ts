@@ -19,6 +19,7 @@ import {
   usableBeatGrid,
 } from "@workspace/arena/lib/waveyard/types/beat-grid";
 import { normaliseMusicalKey, semitoneShift } from "@workspace/arena/lib/waveyard/types/musical-key";
+import { normalizePerformance, type PerformanceSettings } from "./performance";
 
 // ------------------------------------------------------------- transitions
 
@@ -27,6 +28,8 @@ export type TransitionMode = (typeof TRANSITION_MODES)[number];
 
 export interface TransitionConfig {
   mode: TransitionMode;
+  /** Live mute/isolate behavior and fader recall, stored with this track. */
+  performance?: PerformanceSettings;
   /** Crossfade length in seconds. 0 = hard cut. */
   crossfadeSeconds: number;
   /** Stems of the OUTGOING track that hold their level for the whole
@@ -53,7 +56,9 @@ export function normalizeTransitionConfig(raw: unknown): TransitionConfig | null
   const keepStems = Array.isArray(value.keepStems)
     ? [...new Set(value.keepStems.filter((stem): stem is string => typeof stem === "string" && stem.length > 0 && stem.length <= 64))]
     : [];
-  return { mode, crossfadeSeconds: seconds, keepStems };
+  const performance = value.performance === undefined ? undefined : normalizePerformance(value.performance);
+  if (performance === null) return null;
+  return { mode, crossfadeSeconds: seconds, keepStems, ...(performance ? { performance } : {}) };
 }
 
 export function defaultTransitionConfig(): TransitionConfig {

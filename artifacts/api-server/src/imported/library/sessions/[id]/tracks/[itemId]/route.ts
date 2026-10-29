@@ -17,6 +17,15 @@ const patchSchema = z.object({
       mode: z.enum(["manual", "beat", "bar"]),
       crossfadeSeconds: z.number().min(0).max(30),
       keepStems: z.array(z.string().min(1).max(64)).optional(),
+      performance: z.object({
+        snap: z.enum(["off", "quarter", "half", "beat", "bar"]),
+        instantRestore: z.boolean(),
+        recall: z.record(z.string().min(1).max(64), z.number().min(0).max(2)).refine((levels) => Object.keys(levels).length <= 64),
+        isolatedStem: z.string().min(1).max(64).nullable(),
+        beforeIsolation: z.record(z.string().min(1).max(64), z.number().min(0).max(2))
+          .refine((levels) => Object.keys(levels).length <= 64)
+          .nullable(),
+      }).optional(),
     })
     .optional(),
 });

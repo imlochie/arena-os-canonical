@@ -25,6 +25,13 @@ import {
   compatibilityEvidence,
   TRANSITION_MODES,
 } from "./session-logic";
+import {
+  defaultPerformance,
+  normalizePerformance,
+  nextPerformanceBoundary,
+  performMix,
+  performanceTick,
+} from "./performance";
 
 // ------------------------------------------------------------ transitions
 
@@ -47,6 +54,62 @@ test("transition config: valid modes round-trip, invalid rejected", () => {
   const cleaned = normalizeTransitionConfig({ mode: "manual", crossfadeSeconds: 1, keepStems: ["drums", "drums", "", 42, "bass"] });
   assert.deepEqual(cleaned?.keepStems, ["drums", "bass"]);
   assert.deepEqual(defaultTransitionConfig(), { mode: "manual", crossfadeSeconds: 4, keepStems: [] });
+});
+
+test("performance mix restores an exact pre-isolation fader state", () => {
+  const before = { vocals: 0.43, drums: 0, bass: 1.25, other: 0.72 };
+  const isolated = performMix(before, defaultPerformance(), { kind: "isolate", stem: "vocals" }, Object.keys(before));
+  assert.deepEqual(isolated.mix, { vocals: 0.43, drums: 0, bass: 0, other: 0 });
+  assert.equal(isolated.performance.isolatedStem, "vocals");
+
+  const restored = performMix(
+    isolated.mix,
+    isolated.performance,
+    { kind: "isolate", stem: "vocals" },
+    Object.keys(before),
+  );
+  assert.deepEqual(restored.mix, before);
+  assert.equal(restored.performance.isolatedStem, null);
+});
+
+test("performance mute remembers and restores the last fader level", () => {
+  const muted = performMix({ vocals: 0.61, drums: 1 }, defaultPerformance(), { kind: "mute", stem: "vocals" }, ["vocals", "drums"]);
+  assert.equal(muted.mix.vocals, 0);
+  const restored = performMix(muted.mix, muted.performance, { kind: "mute", stem: "vocals" }, ["vocals", "drums"]);
+  assert.equal(restored.mix.vocals, 0.61);
+});
+
+test("muting during isolate restores the previous layers before muting", () => {
+  const before = { vocals: 0.7, drums: 0.3, bass: 1.2 };
+  const isolated = performMix(before, defaultPerformance(), { kind: "isolate", stem: "vocals" }, Object.keys(before));
+  const muted = performMix(isolated.mix, isolated.performance, { kind: "mute", stem: "drums" }, Object.keys(before));
+  assert.deepEqual(muted.mix, { vocals: 0.7, drums: 0, bass: 1.2 });
+  assert.equal(muted.performance.isolatedStem, null);
+});
+
+test("performance config validates bounded recall and paired isolation state", () => {
+  const config = { ...defaultPerformance(), snap: "beat" as const, recall: { vocals: 0.5 } };
+  assert.deepEqual(normalizePerformance(config), config);
+  assert.equal(normalizePerformance({ ...config, recall: { vocals: 3 } }), null);
+  assert.equal(normalizePerformance({ ...config, isolatedStem: "vocals" }), null);
+});
+
+test("performance snap requires a measured grid and never guesses bar downbeats", () => {
+  const grid = [0, 500, 1000, 1500, 2000];
+  assert.equal(nextPerformanceBoundary(0.1, grid, "beat"), 0.5);
+  assert.equal(nextPerformanceBoundary(0.1, grid, "half"), 0.25);
+  assert.equal(nextPerformanceBoundary(0.1, grid, "quarter"), 0.125);
+  assert.equal(nextPerformanceBoundary(0.1, grid, "bar"), null);
+  assert.equal(nextPerformanceBoundary(0.1, null, "beat"), null);
+  assert.equal(nextPerformanceBoundary(0.1, [0, 500, 450], "beat"), null);
+});
+
+test("performance boundary rejects late or interrupted source-clock callbacks", () => {
+  assert.equal(performanceTick(1, 0.8, 0.9, true), "wait");
+  assert.equal(performanceTick(1, 0.9, 1, true), "apply");
+  assert.equal(performanceTick(1, 0.9, 1.2, true), "cancel");
+  assert.equal(performanceTick(1, 1, 0.7, true), "cancel");
+  assert.equal(performanceTick(1, 0.9, 1, false), "cancel");
 });
 
 test("crossfade envelope: equal-power throughout with exact endpoints", () => {
