@@ -276,8 +276,15 @@ try {
     }
     const body = route.request().postDataJSON();
     assert.ok(Array.isArray(body?.sessionTrackIds), "the handoff sends an explicit session-entry selection");
+    assert.ok(Array.isArray(body?.trackEdits), "the handoff sends the current mixer snapshot");
     const selectedIds = new Set(body.sessionTrackIds);
     assert.equal(selectedIds.size, body.sessionTrackIds.length, "a session entry can only be selected once");
+    const handoffMixById = new Map();
+    for (const edit of body.trackEdits) {
+      assert.ok(selectedIds.has(edit.sessionTrackId), "mixer snapshots only include selected entries");
+      handoffMixById.set(edit.sessionTrackId, edit.stemMix);
+    }
+    assert.equal(handoffMixById.size, selectedIds.size, "every selected entry gets a current mixer snapshot");
     let timelineStartMs = 0;
     const sources = [];
     const stems = [];
@@ -322,7 +329,8 @@ try {
         const trackId = `studio-${item.id}-${stem.stemType}`;
         remixTracks.push({
           id: trackId, stemAssetId: stem.id, name: `${item.track.title} — ${stem.stemType}`,
-          sortOrder: remixTracks.length, volume: item.stemMix[stem.stemType] ?? 1,
+          sortOrder: remixTracks.length,
+          volume: handoffMixById.get(item.id)?.[stem.stemType] ?? item.stemMix[stem.stemType] ?? 1,
           pan: 0, muted: false, solo: false, inserts: [], phaseInverted: false,
           clips: [{
             id: `clip-${trackId}`, remixTrackId: trackId, stemAssetId: stem.id,
@@ -355,7 +363,7 @@ try {
       status: 201,
       json: { handoff: {
         projectId: studioProjectId, remixSessionId: studioRemixId,
-        remixTrackCount: remixTracks.length, refused: refused.length ? refused : undefined,
+        remixTrackCount: remixTracks.length, preservedSwapCount: 0, refused: refused.length ? refused : undefined,
       } },
     });
   });

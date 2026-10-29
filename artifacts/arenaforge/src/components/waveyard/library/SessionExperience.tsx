@@ -58,6 +58,8 @@ interface SessionDetail {
     stemType: string;
     fromTrackId: string;
     toTrackId: string;
+    fromStemAssetId: string | null;
+    toStemAssetId: string | null;
     atSeconds: number;
     createdAt: string;
     donorTrack?: {
@@ -658,7 +660,15 @@ export default function SessionExperience({
   const [status, setStatus] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
   const [mixSaveError, setMixSaveError] = useState(false);
-  const [handoff, setHandoff] = useState<{ projectId: string; remixTrackCount: number; fullSourceCount?: number; refused?: Array<{ title: string; reason: string }> } | null>(null);
+  const [handoff, setHandoff] = useState<{
+    projectId: string;
+    remixTrackCount: number;
+    preservedSwapCount?: number;
+    preservedTransitionCount?: number;
+    transitionWarnings?: Array<{ fromTitle: string; toTitle: string; reason: string }>;
+    fullSourceCount?: number;
+    refused?: Array<{ title: string; reason: string }>;
+  } | null>(null);
   const [sendingToStudio, setSendingToStudio] = useState(false);
   const studioHandoffInFlight = useRef(false);
   const [studioTrackSelection, setStudioTrackSelection] = useState<{ sessionId: string; trackIds: string[] } | null>(null);
@@ -1695,6 +1705,10 @@ export default function SessionExperience({
       setStatus("Select at least one session track to send to Studio.");
       return;
     }
+    if (savingSwap) {
+      setStatus("Wait for the selected live stem swap to finish saving before sending it to Studio.");
+      return;
+    }
     const selectedFullSourceEntries = session.tracks.filter((item) => {
       if (!selectedStudioTrackIds.includes(item.id)) return false;
       const readiness = getStudioTrackReadiness(item, library);
@@ -1751,7 +1765,15 @@ export default function SessionExperience({
         const response = await fetch(`/api/library/sessions/${session.id}/studio-handoff`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionTrackIds: handoffTrackIds }),
+          body: JSON.stringify({
+            sessionTrackIds: handoffTrackIds,
+            trackEdits: session.tracks
+              .filter((item) => handoffTrackIds.includes(item.id))
+              .map((item) => ({
+                sessionTrackId: item.id,
+                stemMix: effectiveMix(item, mixes[item.id] ?? item.stemMix, flags[item.id]),
+              })),
+          }),
         });
         if (!response.ok) {
           const body = (await response.json().catch(() => null)) as { error?: string } | null;
@@ -1762,7 +1784,14 @@ export default function SessionExperience({
           return;
         }
         const body = (await response.json()) as {
-          handoff: { projectId: string; remixTrackCount: number; refused?: Array<{ title: string; reason: string }> };
+          handoff: {
+            projectId: string;
+            remixTrackCount: number;
+            preservedSwapCount?: number;
+            preservedTransitionCount?: number;
+            transitionWarnings?: Array<{ fromTitle: string; toTitle: string; reason: string }>;
+            refused?: Array<{ title: string; reason: string }>;
+          };
         };
         const refused = [...(body.handoff.refused ?? []), ...fullSourceFailures];
         setHandoff({
@@ -1780,7 +1809,7 @@ export default function SessionExperience({
         setSendingToStudio(false);
       }
     })();
-  }, [session, selectedStudioTrackIds, library]);
+  }, [session, selectedStudioTrackIds, library, savingSwap, mixes, flags]);
 
   // ------------------------------------- hardware media keys
   useHardwareMediaKeys({
@@ -2323,6 +2352,15 @@ export default function SessionExperience({
         {handoff !== null && (
           <p className="sess-handoff" role="status">
             Studio arrangement created with {handoff.remixTrackCount} remix track{handoff.remixTrackCount === 1 ? "" : "s"}
+            {handoff.preservedSwapCount
+              ? ` · ${handoff.preservedSwapCount} live stem swap${handoff.preservedSwapCount === 1 ? "" : "s"} carried over`
+              : ""}
+            {handoff.preservedTransitionCount
+              ? ` · ${handoff.preservedTransitionCount} session crossfade${handoff.preservedTransitionCount === 1 ? "" : "s"} carried over`
+              : ""}
+            {handoff.transitionWarnings && handoff.transitionWarnings.length > 0
+              ? ` — transition notes: ${handoff.transitionWarnings.map((item) => `${item.fromTitle} → ${item.toTitle}: ${item.reason}`).join("; ")}`
+              : ""}
             {handoff.fullSourceCount
               ? ` · ${handoff.fullSourceCount} full-source session ${handoff.fullSourceCount === 1 ? "entry" : "entries"} (not separated)`
               : ""}

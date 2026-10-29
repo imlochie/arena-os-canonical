@@ -140,6 +140,10 @@ before(async () => {
     appliedMigrations.rows.some((row) => row.name === "0018_waveyard_session_queue_link.sql"),
     "queue/session linkage migration must apply",
   );
+  assert.ok(
+    appliedMigrations.rows.some((row) => row.name === "0019_session_swap_asset_identity.sql"),
+    "exact live-swap stem identities must apply",
+  );
 
   // --- env BEFORE any app module import (db reads DATABASE_URL at load) ---
   process.env.DATABASE_URL = `postgresql://arena:arena-test@127.0.0.1:${port}/arena_library_test`;
@@ -948,8 +952,30 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
     { id: swap.id, sessionTrackId: sessionTrackB, stemType: "drums", fromTrackId: trackB.id, toTrackId: trackA.id, atSeconds: 12.5 },
     "provenance: source track, donor track, stem type, session context",
   );
+  assert.equal(
+    swap.fromStemAssetId,
+    detail.tracks[0].stems.find((stem) => stem.stemType === "drums")?.id,
+    "the original stem asset is pinned",
+  );
   assert.equal(swap.donorTrack?.id, trackA.id, "restored swap includes the donor track");
   assert.ok(swap.donorTrack?.stems.some((stem) => stem.stemType === "drums"), "restored donor includes the real replacement stem");
+  assert.equal(
+    swap.toStemAssetId,
+    swap.donorTrack?.stems.find((stem) => stem.stemType === "drums")?.id,
+    "the exact donor stem asset is pinned",
+  );
+
+  const swapHandoff = await sessions.sendSessionToStudio(OWNER, created.id, [sessionTrackB], [
+    { sessionTrackId: sessionTrackB, stemMix: { drums: 0.37 } },
+  ]);
+  assert.equal(swapHandoff.preservedSwapCount, 1, "the saved live swap is reported as carried into Studio");
+  const swappedStudioTracks = await db.db.select().from(schema.remixTracks)
+    .where(eq(schema.remixTracks.remixSessionId, swapHandoff.remixSessionId));
+  assert.equal(swappedStudioTracks.length, 1, "the selected source has one real drum stem");
+  assert.equal(swappedStudioTracks[0].stemAssetId, swap.toStemAssetId, "Studio binds the exact donor audio asset");
+  assert.equal(swappedStudioTracks[0].volume, 0.37, "the latest unsaved session fader value is carried into Studio");
+  assert.match(swappedStudioTracks[0].name, new RegExp(trackA.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    "the Studio lane identifies the live-swap donor");
 
   // Refusal: B has no real "vocals" layer to replace.
   await assert.rejects(
@@ -964,6 +990,19 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
   assert.equal(replaced.swaps[0].atSeconds, 18);
   const restored = await sessions.removeStemSwap(OWNER, created.id, replaced.swaps[0].id);
   assert.equal(restored.swaps.length, 0, "Original must not reveal an older shadow swap");
+  await db.db.insert(schema.listenSessionSwaps).values({
+    sessionId: created.id,
+    sessionTrackId: sessionTrackB,
+    stemType: "drums",
+    fromTrackId: trackB.id,
+    toTrackId: trackA.id,
+    atSeconds: 20,
+  });
+  await assert.rejects(
+    () => sessions.sendSessionToStudio(OWNER, created.id, [sessionTrackB]),
+    /reapply that live swap/i,
+    "legacy swap rows are not guessed from today's donor track contents",
+  );
   await sessions.deleteSession(OWNER, created.id);
 });
 
@@ -997,6 +1036,7 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   const firstSession = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
   await sessions.updateSessionTrack(OWNER, created.id, firstSession.tracks[0].id, {
     stemMix: { vocals: 0.42, drums: 0.78 },
+    transition: { mode: "manual", crossfadeSeconds: 0.75, keepStems: ["drums"] },
   });
   await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
 
@@ -1015,19 +1055,33 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
     sessions.StudioHandoffSelectionError,
     "session entries from outside this session cannot be included",
   );
-  const handoff = await sessions.sendSessionToStudio(OWNER, created.id, selectedEntries.map((entry) => entry.id));
+  const handoffMixes = selectedEntries.map((entry, index) => ({
+    sessionTrackId: entry.id,
+    stemMix: Object.fromEntries(entry.stems.map((stem) => [stem.stemType, index === 0 ? 0.23 : 0.64])),
+  }));
+  const handoff = await sessions.sendSessionToStudio(
+    OWNER,
+    created.id,
+    selectedEntries.map((entry) => entry.id),
+    handoffMixes,
+  );
   assert.ok(handoff.projectId);
   assert.ok(handoff.remixSessionId);
   let expectedTimelineStartMs = 0;
-  const expectedAssets = selectedEntries.flatMap((entry) => {
+  const expectedAssets = selectedEntries.flatMap((entry, index) => {
     const separated = entry.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
     const playable = separated.length
       ? separated
       : entry.stems.filter((stem) => stem.engine === "passthrough-unseparated");
     const assets = playable.map((stem) => ({ stemId: stem.id, startMs: expectedTimelineStartMs }));
-    expectedTimelineStartMs += Math.max(1, Math.round(entry.track.durationSeconds * 1000));
+    const durationMs = Math.max(1, Math.round(entry.track.durationSeconds * 1000));
+    const outgoingFadeMs = index < selectedEntries.length - 1
+      ? Math.min(Math.round(entry.transition.crossfadeSeconds * 1000), durationMs)
+      : 0;
+    expectedTimelineStartMs += durationMs - outgoingFadeMs;
     return assets;
   });
+  assert.equal(handoff.preservedTransitionCount, 1, "the saved crossfade is carried into Studio");
   assert.equal(handoff.remixTrackCount, expectedAssets.length, "every separated layer is retained; passthrough is used only when separation is absent");
 
   // The derived project is a STUDIO project (visible in studio listings).
@@ -1043,13 +1097,13 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
     "only the selected session entries contribute remix tracks",
   );
   const expectedVolumeByStemId = new Map(
-    selectedEntries.flatMap((entry) =>
-      entry.stems.map((stem) => [stem.id, entry.stemMix[stem.stemType] ?? 1] as const),
+    selectedEntries.flatMap((entry, index) =>
+      entry.stems.map((stem) => [stem.id, index === 0 ? 0.23 : 0.64] as const),
     ),
   );
   for (const row of remixTrackRows) {
     assert.equal(row.volume, expectedVolumeByStemId.get(row.stemAssetId),
-      `remix track ${row.id} keeps the session fader for its existing stem`);
+      `remix track ${row.id} uses the latest session fader snapshot`);
   }
   const stemIdsBefore = new Set(stemsBeforeHandoff.map((row) => row.id));
   for (const row of remixTrackRows) {
@@ -1058,6 +1112,22 @@ test("session: send to Studio derives a remix that REFERENCES existing stems (no
   const clips = await db.db.select().from(schema.remixClips);
   const handoffClips = clips.filter((clip) => remixTrackRows.some((track) => track.id === clip.remixTrackId));
   assert.equal(handoffClips.length, remixTrackRows.length, "each mixer lane opens as a visible timeline clip");
+  const firstEntryStemIds = new Set(selectedEntries[0].stems.map((stem) => stem.id));
+  const firstEntryTrackIds = new Set(remixTrackRows
+    .filter((track) => firstEntryStemIds.has(track.stemAssetId))
+    .map((track) => track.id));
+  const firstEntryClips = handoffClips.filter((clip) => firstEntryTrackIds.has(clip.remixTrackId));
+  const secondEntryClips = handoffClips.filter((clip) => !firstEntryTrackIds.has(clip.remixTrackId));
+  const keptDrumStemId = selectedEntries[0].stems.find((stem) => stem.stemType === "drums")?.id;
+  const keptDrumTrackId = remixTrackRows.find((track) => track.stemAssetId === keptDrumStemId)?.id;
+  assert.ok(keptDrumTrackId, "the selected first entry includes the retained drum layer");
+  assert.ok(firstEntryClips.filter((clip) => clip.remixTrackId !== keptDrumTrackId)
+    .every((clip) => clip.fadeOutMs === 750), "outgoing stems fade for the saved crossfade length");
+  assert.equal(firstEntryClips.find((clip) => clip.remixTrackId === keptDrumTrackId)?.fadeOutMs, 0,
+    "stems configured to stay up are not faded out");
+  assert.ok(secondEntryClips.every((clip) => clip.fadeInMs === 750), "incoming stems fade for the saved crossfade length");
+  assert.ok(handoffClips.every((clip) => clip.fadeInMs + clip.fadeOutMs <= clip.durationMs),
+    "carried fades never exceed the clip's available duration");
   const expectedStartByStemId = new Map(expectedAssets.map((entry) => [entry.stemId, entry.startMs]));
   assert.ok(
     handoffClips.every((clip) => clip.timelineStartMs === expectedStartByStemId.get(clip.stemAssetId)),

@@ -875,6 +875,10 @@ export const listenSessionSwaps = pgTable("wy_listen_session_swaps", {
   stemType: text("stem_type").notNull(),
   fromTrackId: uuid("from_track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
   toTrackId: uuid("to_track_id").notNull().references(() => tracks.id, { onDelete: "cascade" }),
+  // Nullable for legacy swaps: old rows cannot safely identify which
+  // published stem asset was heard when the swap was recorded.
+  fromStemAssetId: uuid("from_stem_asset_id").references(() => stemAssets.id, { onDelete: "set null" }),
+  toStemAssetId: uuid("to_stem_asset_id").references(() => stemAssets.id, { onDelete: "set null" }),
   atSeconds: real("at_seconds").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [

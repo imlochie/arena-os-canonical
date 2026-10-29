@@ -36,9 +36,11 @@ import {
   normalizeStemMix,
   parseStemMix,
   serializeStemMix,
+  withUnityDefaults,
   type StemMix,
 } from "./model";
 import {
+  beatAlignedTransitionStart,
   defaultTransitionConfig,
   normalizeTransitionConfig,
   validateStemSwap,
@@ -122,6 +124,8 @@ export interface SessionSwapPayload {
   stemType: string;
   fromTrackId: string;
   toTrackId: string;
+  fromStemAssetId: string | null;
+  toStemAssetId: string | null;
   atSeconds: number;
   createdAt: string;
   donorTrack: { id: string; title: string; stems: TrackStem[] } | null;
@@ -221,6 +225,8 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
       stemType: row.stemType,
       fromTrackId: row.fromTrackId,
       toTrackId: row.toTrackId,
+      fromStemAssetId: row.fromStemAssetId,
+      toStemAssetId: row.toStemAssetId,
       atSeconds: row.atSeconds,
       createdAt: row.createdAt.toISOString(),
       donorTrack: details.has(row.toTrackId) ? {
@@ -546,8 +552,17 @@ export async function recordStemSwap(input: {
   const donorDetail = await getTrack(input.ownerId, input.toTrackId);
   if (currentDetail === null || donorDetail === null) throw new TrackNotInLibraryError();
 
+  const currentStem = currentDetail.stems.find((stem) =>
+    stem.stemType === input.stemType && stem.engine !== "passthrough-unseparated",
+  );
+  const donorStem = donorDetail.stems.find((stem) =>
+    stem.stemType === input.stemType && stem.engine !== "passthrough-unseparated",
+  );
   const validation = validateStemSwap(currentDetail.stems, donorDetail.stems, input.stemType);
   if (!validation.ok) throw new StemSwapRefusedError(validation.reason);
+  if (currentStem === undefined || donorStem === undefined) {
+    throw new StemSwapRefusedError("The exact audio for this stem swap is no longer available.");
+  }
 
   await db.transaction(async (tx) => {
     // A stem has one current donor. Repeated live selections must not leave
@@ -564,6 +579,8 @@ export async function recordStemSwap(input: {
       stemType: input.stemType,
       fromTrackId: sessionTrack.trackId,
       toTrackId: input.toTrackId,
+      fromStemAssetId: currentStem.id,
+      toStemAssetId: donorStem.id,
       atSeconds: Number.isFinite(input.atSeconds) && input.atSeconds > 0 ? input.atSeconds : 0,
     });
   });
@@ -593,7 +610,15 @@ export interface StudioHandoffResult {
   projectId: string;
   remixSessionId: string;
   remixTrackCount: number;
+  preservedSwapCount: number;
+  preservedTransitionCount: number;
+  transitionWarnings?: Array<{ fromTitle: string; toTitle: string; reason: string }>;
   refused?: Array<{ title: string; reason: string }>;
+}
+
+export interface StudioHandoffTrackEdit {
+  sessionTrackId: string;
+  stemMix: unknown;
 }
 
 /**
@@ -607,6 +632,7 @@ export async function sendSessionToStudio(
   ownerId: string,
   sessionId: string,
   selectedSessionTrackIds?: string[],
+  trackEdits?: StudioHandoffTrackEdit[],
 ): Promise<StudioHandoffResult> {
   await requireUser();
   const detail = await sessionPayload(sessionId);
@@ -626,17 +652,47 @@ export async function sendSessionToStudio(
     }
     selectedTracks = detail.tracks.filter((entry) => selectedIds.has(entry.id));
   }
+  const selectedTrackIds = new Set(selectedTracks.map((entry) => entry.id));
+  const mixEdits = new Map<string, StemMix>();
+  for (const edit of trackEdits ?? []) {
+    if (!selectedTrackIds.has(edit.sessionTrackId)) {
+      throw new StudioHandoffSelectionError("Mixer values were provided for an entry not selected for Studio.");
+    }
+    if (mixEdits.has(edit.sessionTrackId)) {
+      throw new StudioHandoffSelectionError("The Studio handoff contains duplicate mixer values.");
+    }
+    const sessionTrack = selectedTracks.find((entry) => entry.id === edit.sessionTrackId)!;
+    mixEdits.set(
+      edit.sessionTrackId,
+      normalizeStemMix(withUnityDefaults(normalizeStemMix(edit.stemMix), sessionTrack.stems.map((stem) => stem.stemType))),
+    );
+  }
 
   const bindable: Array<{
     sessionTrack: SessionTrackPayload;
     stemId: string;
     stemType: string;
+    trackName: string;
     timelineStartMs: number;
+    sourceOffsetMs: number;
     durationMs: number;
+    fadeInMs: number;
+    fadeOutMs: number;
   }> = [];
   const refused: Array<{ title: string; reason: string }> = [];
-  let timelineStartMs = 0;
-  for (const sessionTrack of selectedTracks) {
+  const transitionWarnings: NonNullable<StudioHandoffResult["transitionWarnings"]> = [];
+  let preservedSwapCount = 0;
+  let preservedTransitionCount = 0;
+  let previousPlacement: {
+    sessionTrack: SessionTrackPayload;
+    startMs: number;
+    sourceOffsetMs: number;
+    durationMs: number;
+    bindableStart: number;
+    bindableEnd: number;
+    transition: TransitionConfig;
+  } | null = null;
+  for (const [selectedIndex, sessionTrack] of selectedTracks.entries()) {
     const trackDetail = await getTrack(ownerId, sessionTrack.track.id);
     if (trackDetail === null) {
       refused.push({ title: sessionTrack.track.title, reason: "The source track is no longer available." });
@@ -655,27 +711,222 @@ export async function sendSessionToStudio(
       refused.push({ title: sessionTrack.track.title, reason: "No separated stems or full-source audio are available." });
       continue;
     }
+    const replacements = new Map<string, { stemId: string; donorTitle: string; durationSeconds: number }>();
+    let invalidSwapReason: string | null = null;
+    for (const swap of detail.swaps.filter((entry) => entry.sessionTrackId === sessionTrack.id)) {
+      if (swap.fromTrackId !== sessionTrack.track.id || swap.fromStemAssetId === null || swap.toStemAssetId === null) {
+        invalidSwapReason = `The saved ${swap.stemType} swap has no pinned audio version. Reapply that live swap in the session before sending this entry to Studio.`;
+        break;
+      }
+      const originalStem = trackDetail.stems.find((stem) =>
+        stem.id === swap.fromStemAssetId && stem.stemType === swap.stemType,
+      );
+      const donorDetail = await getTrack(ownerId, swap.toTrackId);
+      const donorStem = donorDetail?.stems.find((stem) =>
+        stem.id === swap.toStemAssetId && stem.stemType === swap.stemType && stem.engine !== "passthrough-unseparated",
+      );
+      if (originalStem === undefined || donorStem === undefined || donorDetail === null) {
+        invalidSwapReason = `The saved ${swap.stemType} swap audio is no longer available at its recorded version. Reapply the swap before sending this entry to Studio.`;
+        break;
+      }
+      replacements.set(swap.stemType, {
+        stemId: donorStem.id,
+        donorTitle: donorDetail.title,
+        durationSeconds: donorStem.durationSeconds,
+      });
+    }
+    if (invalidSwapReason !== null) {
+      refused.push({ title: sessionTrack.track.title, reason: invalidSwapReason });
+      continue;
+    }
+    const trackDurationMs = Number.isFinite(trackDetail.durationSeconds) && trackDetail.durationSeconds > 0
+      ? Math.max(1, Math.round(trackDetail.durationSeconds * 1000))
+      : Math.max(0, ...playableStems.map((stem) =>
+        Number.isFinite(stem.durationSeconds) && stem.durationSeconds > 0
+          ? Math.round(stem.durationSeconds * 1000)
+          : 0,
+      ));
+    if (trackDurationMs <= 0) {
+      refused.push({ title: sessionTrack.track.title, reason: "Audio duration is unavailable for Studio placement." });
+      continue;
+    }
+
+    let timelineStartMs: number = previousPlacement
+      ? previousPlacement.startMs + previousPlacement.durationMs
+      : 0;
+    let sourceOffsetMs = 0;
+    let fadeInMs = 0;
+    let boundaryOverlapMs = 0;
+    if (previousPlacement) {
+      const previousTransition = previousPlacement.transition;
+      const rawRequestedFadeMs = Math.max(0, Math.round(previousTransition.crossfadeSeconds * 1000));
+      const currentTransition = normalizeTransitionConfig(sessionTrack.transition) ?? defaultTransitionConfig();
+      const requestedNextFadeMs = selectedIndex < selectedTracks.length - 1
+        ? Math.max(0, Math.round(currentTransition.crossfadeSeconds * 1000))
+        : 0;
+      const incomingBudgetMs = requestedNextFadeMs > 0
+        && rawRequestedFadeMs + requestedNextFadeMs > trackDurationMs
+        ? Math.floor(trackDurationMs * rawRequestedFadeMs / (rawRequestedFadeMs + requestedNextFadeMs))
+        : rawRequestedFadeMs;
+      const outgoingFadeableClips = bindable
+        .slice(previousPlacement.bindableStart, previousPlacement.bindableEnd)
+        .filter((clip) => !previousTransition.keepStems.includes(clip.stemType));
+      const outgoingFadeCapacityMs = outgoingFadeableClips.length > 0
+        ? Math.min(...outgoingFadeableClips.map((clip) => Math.max(0, clip.durationMs - clip.fadeInMs)))
+        : previousPlacement.durationMs;
+      const requestedFadeMs = Math.min(
+        rawRequestedFadeMs,
+        previousPlacement.durationMs,
+        trackDurationMs,
+        incomingBudgetMs,
+        outgoingFadeCapacityMs,
+      );
+      if (requestedFadeMs < rawRequestedFadeMs) {
+        transitionWarnings.push({
+          fromTitle: previousPlacement.sessionTrack.track.title,
+          toTitle: sessionTrack.track.title,
+          reason: "The saved fade was shortened to fit the audio and leave room for adjacent transitions.",
+        });
+      }
+      if (requestedFadeMs > 0) {
+        let startInPreviousMs = previousPlacement.sourceOffsetMs + previousPlacement.durationMs - requestedFadeMs;
+        let incomingOffsetMs = 0;
+        let needsManualFallback = previousTransition.mode === "manual";
+        if (previousTransition.mode !== "manual") {
+          const eitherHasLiveSwap = detail.swaps.some(
+            (swap) => swap.sessionTrackId === previousPlacement!.sessionTrack.id || swap.sessionTrackId === sessionTrack.id,
+          );
+          if (eitherHasLiveSwap) {
+            transitionWarnings.push({
+              fromTitle: previousPlacement.sessionTrack.track.title,
+              toTitle: sessionTrack.track.title,
+              reason: "A live stem swap is present; this boundary uses a manual fade because its beat timing is not stored.",
+            });
+            needsManualFallback = true;
+          } else {
+            const aligned = beatAlignedTransitionStart(
+              previousPlacement.sessionTrack.analysis?.beatGridMs ?? null,
+              sessionTrack.analysis?.beatGridMs ?? null,
+              Math.max(
+                previousPlacement.sourceOffsetMs,
+                previousPlacement.sourceOffsetMs + previousPlacement.durationMs - requestedFadeMs,
+              ),
+              previousTransition.mode,
+            );
+            if (
+              aligned.ok
+              && aligned.startInCurrentMs !== null
+              && aligned.incomingOffsetMs !== null
+              && aligned.startInCurrentMs >= previousPlacement.sourceOffsetMs
+              && aligned.incomingOffsetMs < trackDurationMs
+            ) {
+              startInPreviousMs = Math.round(aligned.startInCurrentMs);
+              incomingOffsetMs = Math.max(0, Math.round(aligned.incomingOffsetMs));
+            } else {
+              transitionWarnings.push({
+                fromTitle: previousPlacement.sessionTrack.track.title,
+                toTitle: sessionTrack.track.title,
+                reason: aligned.ok
+                  ? "The verified beat/bar cue falls outside the available audio; using a manual fade."
+                  : aligned.reason,
+              });
+              needsManualFallback = true;
+            }
+          }
+        }
+        if (needsManualFallback) {
+          startInPreviousMs = previousPlacement.sourceOffsetMs + previousPlacement.durationMs - requestedFadeMs;
+          incomingOffsetMs = 0;
+        }
+        let overlapMs = Math.min(
+          requestedFadeMs,
+          previousPlacement.sourceOffsetMs + previousPlacement.durationMs - startInPreviousMs,
+          trackDurationMs - incomingOffsetMs,
+        );
+        if (overlapMs <= 0 && !needsManualFallback) {
+          transitionWarnings.push({
+            fromTitle: previousPlacement.sessionTrack.track.title,
+            toTitle: sessionTrack.track.title,
+            reason: "The verified beat/bar cue falls outside the usable audio; this boundary uses a manual fade.",
+          });
+          needsManualFallback = true;
+          startInPreviousMs = previousPlacement.sourceOffsetMs + previousPlacement.durationMs - requestedFadeMs;
+          incomingOffsetMs = 0;
+          overlapMs = Math.min(requestedFadeMs, previousPlacement.durationMs, trackDurationMs);
+        }
+        if (overlapMs > 0) {
+          sourceOffsetMs = incomingOffsetMs;
+          timelineStartMs = previousPlacement.startMs + Math.max(0, startInPreviousMs - previousPlacement.sourceOffsetMs);
+          fadeInMs = overlapMs;
+          boundaryOverlapMs = overlapMs;
+        }
+      }
+    }
+    const remainingTrackDurationMs = trackDurationMs - sourceOffsetMs;
+    if (remainingTrackDurationMs <= 0) {
+      refused.push({ title: sessionTrack.track.title, reason: "The saved transition starts beyond the available audio." });
+      continue;
+    }
+    const bindableStart = bindable.length;
     for (const stem of playableStems) {
-      const stemDuration = Number.isFinite(stem.durationSeconds) && stem.durationSeconds > 0
-        ? stem.durationSeconds
+      const replacement = replacements.get(stem.stemType);
+      const stemDuration = Number.isFinite(replacement?.durationSeconds) && (replacement?.durationSeconds ?? 0) > 0
+        ? replacement!.durationSeconds
+        : Number.isFinite(stem.durationSeconds) && stem.durationSeconds > 0
+          ? stem.durationSeconds
         : trackDetail.durationSeconds;
       if (!Number.isFinite(stemDuration) || stemDuration <= 0) {
         refused.push({ title: sessionTrack.track.title, reason: "Audio duration is unavailable for Studio placement." });
         continue;
       }
+      const clipDurationMs = Math.min(
+        Math.round(stemDuration * 1000) - sourceOffsetMs,
+        remainingTrackDurationMs,
+      );
+      if (clipDurationMs <= 0) {
+        refused.push({ title: sessionTrack.track.title, reason: `The ${stem.stemType} audio ends before the saved transition offset.` });
+        continue;
+      }
       bindable.push({
         sessionTrack,
-        stemId: stem.id,
+        stemId: replacement?.stemId ?? stem.id,
         stemType: stem.stemType,
+        trackName: replacement
+          ? `${sessionTrack.track.title} — ${stem.stemType} · ${replacement.donorTitle}`
+          : `${sessionTrack.track.title} — ${stem.stemType}`,
         timelineStartMs,
-        durationMs: Math.max(1, Math.round(stemDuration * 1000)),
+        sourceOffsetMs,
+        durationMs: clipDurationMs,
+        fadeInMs: Math.min(fadeInMs, clipDurationMs),
+        fadeOutMs: 0,
       });
+      if (replacement !== undefined) preservedSwapCount += 1;
     }
-    timelineStartMs += Math.max(1, Math.round(trackDetail.durationSeconds * 1000));
+    if (bindable.length === bindableStart) continue;
+    if (previousPlacement && boundaryOverlapMs > 0) {
+      for (let index = previousPlacement.bindableStart; index < previousPlacement.bindableEnd; index += 1) {
+        const outgoing = bindable[index];
+        if (previousPlacement.transition.keepStems.includes(outgoing.stemType)) continue;
+        outgoing.fadeOutMs = Math.min(boundaryOverlapMs, outgoing.durationMs);
+      }
+      preservedTransitionCount += 1;
+    }
+    previousPlacement = {
+      sessionTrack,
+      startMs: timelineStartMs,
+      sourceOffsetMs,
+      durationMs: remainingTrackDurationMs,
+      bindableStart,
+      bindableEnd: bindable.length,
+      transition: normalizeTransitionConfig(sessionTrack.transition) ?? defaultTransitionConfig(),
+    };
   }
   if (bindable.length === 0) {
+    const reasons = refused.map((item) => `${item.title}: ${item.reason}`).join("; ");
     throw new StemSwapRefusedError(
-      `No session track has audio the Studio can bind (needs separated stems or the full-source bridge): ${refused.map((item) => item.title).join(", ")}.`,
+      reasons.length > 0
+        ? `No selected session entry can be opened in Studio. ${reasons}`
+        : "No selected session entry has audio the Studio can bind (needs separated stems or the full-source bridge).",
     );
   }
 
@@ -703,22 +954,32 @@ export async function sendSessionToStudio(
     const createdTracks = await tx.insert(remixTracks).values(bindable.map((entry, sortOrder) => ({
       remixSessionId: remix.id,
       stemAssetId: entry.stemId,
-      name: `${entry.sessionTrack.track.title} — ${entry.stemType}`,
+      name: entry.trackName,
       sortOrder,
-      volume: entry.sessionTrack.stemMix[entry.stemType] ?? 1,
+      volume: (mixEdits.get(entry.sessionTrack.id) ?? entry.sessionTrack.stemMix)[entry.stemType] ?? 1,
     }))).returning({ id: remixTracks.id, sortOrder: remixTracks.sortOrder });
     const idBySortOrder = new Map(createdTracks.map((track) => [track.sortOrder, track.id]));
     await tx.insert(remixClips).values(bindable.map((entry, sortOrder) => ({
       remixTrackId: idBySortOrder.get(sortOrder)!,
       stemAssetId: entry.stemId,
       timelineStartMs: entry.timelineStartMs,
-      sourceOffsetMs: 0,
+      sourceOffsetMs: entry.sourceOffsetMs,
       durationMs: entry.durationMs,
       gain: 1,
+      fadeInMs: entry.fadeInMs,
+      fadeOutMs: entry.fadeOutMs,
     })));
   });
 
-  return { projectId: project.id, remixSessionId: remix.id, remixTrackCount: bindable.length, refused: refused.length > 0 ? refused : undefined };
+  return {
+    projectId: project.id,
+    remixSessionId: remix.id,
+    remixTrackCount: bindable.length,
+    preservedSwapCount,
+    preservedTransitionCount,
+    transitionWarnings: transitionWarnings.length > 0 ? transitionWarnings : undefined,
+    refused: refused.length > 0 ? refused : undefined,
+  };
 }
 
 /** Analysis for the compatibility panel: BPM/key/beat grid per session track. */
