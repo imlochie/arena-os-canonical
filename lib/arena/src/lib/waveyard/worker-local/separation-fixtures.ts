@@ -17,7 +17,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
-import { encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
+import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { getStorage, privateObjectKey } from "@workspace/arena/lib/waveyard/storage";
 import { projects, processingJobs, sourceAssets } from "@workspace/db/waveyardSchema";
 import type { MdxInfer, MdxModelSpec } from "@workspace/arena/lib/waveyard/separation/mdx";
@@ -72,7 +72,7 @@ export function snrDb(a: Float32Array, b: Float32Array, from: number, to: number
 
 export type SeparationFixture = Awaited<ReturnType<typeof fixture>>;
 
-export async function fixture(options: { model?: string } = {}) {
+export async function fixture(options: { model?: string; sourceWavPath?: string } = {}) {
   const model = options.model ?? "kim_vocal_2";
   const storageDir = await mkdtemp(join(tmpdir(), "wy-sep-storage-"));
   process.env.WAVEYARD_STORAGE_DIR = storageDir;
@@ -93,10 +93,15 @@ export async function fixture(options: { model?: string } = {}) {
     .values({ ownerId: randomUUID(), title: "Stem Machine E2E" })
     .returning();
 
-  // 1.0 s of 44.1 kHz stereo — exactly one model chunk end to end.
-  const wav = encodeWav16(stemMachineSource(SAMPLES), 44_100);
   const sourceDir = await mkdtemp(join(tmpdir(), "wy-sep-source-"));
   const sourcePath = join(sourceDir, "source.wav");
+  // A real WAV can be supplied for opt-in acceptance runs; otherwise use the
+  // deterministic one-second fixture used by unit and plumbing tests.
+  const wav = options.sourceWavPath === undefined
+    ? encodeWav16(stemMachineSource(SAMPLES), 44_100)
+    : await readFile(options.sourceWavPath);
+  const decodedSource = decodeWav16(new Uint8Array(wav));
+  if (decodedSource === null) throw new Error("Separation fixture source must be a readable 16-bit PCM WAV.");
   await writeFile(sourcePath, wav);
   const storageKey = privateObjectKey(project.id, "source", "wav");
   await getStorage().putFile(storageKey, sourcePath, "audio/wav");
@@ -110,9 +115,9 @@ export async function fixture(options: { model?: string } = {}) {
       mimeType: "audio/wav",
       storageKey,
       checksumSha256: checksum,
-      durationSeconds: 1,
-      sampleRate: 44_100,
-      channels: 2,
+      durationSeconds: decodedSource.frames / decodedSource.sampleRate,
+      sampleRate: decodedSource.sampleRate,
+      channels: decodedSource.channels,
       codec: "pcm_s16le",
       fileSizeBytes: wav.length,
     })

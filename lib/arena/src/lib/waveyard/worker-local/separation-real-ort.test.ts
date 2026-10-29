@@ -65,6 +65,24 @@ const FOUR_STEM_MODELS = [
   "kuielab_b_other",
 ].map((id) => findMdxModel(id)!);
 
+function audioMetrics(samples: Float32Array) {
+  let sumSquares = 0;
+  let peak = 0;
+  let clipped = 0;
+  for (const sample of samples) {
+    const magnitude = Math.abs(sample);
+    sumSquares += sample * sample;
+    peak = Math.max(peak, magnitude);
+    if (magnitude >= 0.999) clipped += 1;
+  }
+  const rms = Math.sqrt(sumSquares / Math.max(1, samples.length));
+  return {
+    rmsDbfs: Number((20 * Math.log10(Math.max(rms, 1e-12))).toFixed(1)),
+    peakDbfs: Number((20 * Math.log10(Math.max(peak, 1e-12))).toFixed(1)),
+    clippedSamples: clipped,
+  };
+}
+
 function createLocalRetryHarness(database: SeparationFixture["database"]) {
   const previousDesktopMode = process.env.ARENA_DESKTOP_MODE;
   const previousRedisUrl = process.env.REDIS_URL;
@@ -430,6 +448,85 @@ test("the pinned four-model recipe completes through the production worker on re
     await f.close();
   }
 });
+
+// Opt-in real-audio measurement. Point this at a short, representative 44.1 kHz
+// PCM WAV excerpt so the same pinned weights and production retry/worker path
+// can be measured without making the default test suite depend on user media.
+const realAudioWavPath = process.env.WAVEYARD_REAL_AUDIO_WAV;
+if (realAudioWavPath) {
+  test("the pinned four-model recipe separates a real audio excerpt", { timeout: 300_000 }, async (t) => {
+    const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+    const workspaceRoot = resolve(arenaRoot, "../..");
+    const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
+    for (const spec of FOUR_STEM_MODELS) {
+      const modelPath = join(modelDirectory, spec.file);
+      assert.ok(existsSync(modelPath), `Pinned ${spec.id} weights must be installed for this measurement.`);
+      assert.equal(await checksumFile(modelPath), spec.sha256, `${spec.id} must match its registry checksum`);
+    }
+
+    const f = await fixture({ model: "stems_4", sourceWavPath: resolve(realAudioWavPath) });
+    let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
+    try {
+      const sourceBytes = new Uint8Array(await readFile(f.sourcePath));
+      const sourceDecoded = decodeWav16(sourceBytes);
+      assert.ok(sourceDecoded, "the supplied real-audio excerpt must be readable PCM WAV");
+      assert.equal(sourceDecoded.sampleRate, 44_100, "the measurement excerpt must be 44.1 kHz");
+      assert.equal(sourceDecoded.channels, 2, "the measurement excerpt must be stereo");
+      assert.ok(sourceDecoded.frames > 44_100, "use more than one second of real audio");
+      assert.ok(sourceDecoded.frames <= 15 * 60 * 44_100, "keep the excerpt within the worker's decode limit");
+
+      for (const spec of FOUR_STEM_MODELS) {
+        await copyFile(join(modelDirectory, spec.file), join(f.modelsDir, spec.file));
+      }
+      await f.database
+        .update(processingJobs)
+        .set({
+          status: "failed",
+          stage: "failed",
+          errorCode: "separation_unavailable",
+          errorMessage: "Measurement run initialized.",
+          completedAt: new Date(),
+        })
+        .where(eq(processingJobs.id, f.job.id));
+
+      harness = createLocalRetryHarness(f.database);
+      const startedAt = Date.now();
+      const retry = await retrySeparationJob(f.database, f.job.id);
+      assert.equal(await harness.broker.drain(240_000), true, "the real-audio recipe drains through the production worker");
+      const elapsedMs = Date.now() - startedAt;
+      assert.deepEqual(retry, { queued: true });
+
+      const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
+      assert.equal(job.status, "complete");
+      const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+      assert.equal(stems.length, 4, "the recipe persists vocals, drums, bass, and melody");
+
+      const measuredStems: Record<string, ReturnType<typeof audioMetrics>> = {};
+      for (const stem of stems) {
+        const storedPath = getStorage().getLocalPath(stem.storageKey);
+        assert.ok(storedPath && existsSync(storedPath), `${stem.stemType} output exists in storage`);
+        const decoded = decodeWav16(new Uint8Array(await readFile(storedPath!)));
+        assert.ok(decoded, `${stem.stemType} output is a readable WAV`);
+        assert.equal(decoded.sampleRate, 44_100);
+        assert.equal(decoded.frames, sourceDecoded.frames, `${stem.stemType} retains the full excerpt duration`);
+        measuredStems[stem.stemType] = audioMetrics(decoded.samples);
+        assert.ok(measuredStems[stem.stemType].rmsDbfs > -90, `${stem.stemType} output is not silent`);
+      }
+      t.diagnostic(JSON.stringify({
+        inputSeconds: Number((sourceDecoded.frames / sourceDecoded.sampleRate).toFixed(2)),
+        inputSampleRate: sourceDecoded.sampleRate,
+        inputChannels: sourceDecoded.channels,
+        resolvedDevice: job.resolvedDevice,
+        elapsedMs,
+        stems: measuredStems,
+        evidenceLimit: "real audio and pinned-model execution; not Windows-runtime or subjective-quality verification",
+      }));
+    } finally {
+      await harness?.restore();
+      await f.close();
+    }
+  });
+}
 
 test("a real-length CPU demix leaves library requests and playback timers responsive", { timeout: 120_000 }, async () => {
   const f = await fixture();
