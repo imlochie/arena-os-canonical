@@ -265,22 +265,62 @@ async function waitForSeparation(track) {
   let latestJob = null;
   let latestProject = null;
   let stems = [];
+  let activePass = null;
+  const observedPasses = [];
+  const finishActivePass = (observedAt = performance.now()) => {
+    if (!activePass) return;
+    observedPasses.push({
+      phase: activePass.phase,
+      model: activePass.model,
+      observedDurationSeconds: Number(((observedAt - activePass.startedAt) / 1000).toFixed(2)),
+    });
+    activePass = null;
+  };
+  const captureProgress = (job) => {
+    let metadata = job?.metadata ?? {};
+    if (typeof metadata === "string") {
+      try {
+        metadata = JSON.parse(metadata);
+      } catch {
+        metadata = {};
+      }
+    }
+    const progress = metadata?.progress;
+    const nextPass = typeof progress?.phase === "string" && typeof progress?.model === "string"
+      ? { phase: progress.phase, model: progress.model }
+      : null;
+    if (activePass && (nextPass?.phase !== activePass.phase || nextPass?.model !== activePass.model)) {
+      finishActivePass();
+    }
+    if (nextPass && !activePass) {
+      activePass = { ...nextPass, startedAt: performance.now() };
+    }
+  };
+  const saveObservedPasses = () => {
+    finishActivePass();
+    report.timings.progressObservedModelPasses = observedPasses;
+    report.timings.progressObservationIntervalSeconds = 2;
+  };
   while (Date.now() < deadline) {
     latestProject = await apiGet(`/api/waveyard/projects/${track.studioProjectId}`);
     latestJob = (latestProject.jobs ?? []).find(
       (job) => job.type === "separation" && job.sourceAssetId === track.source.id,
     ) ?? null;
+    captureProgress(latestJob);
     stems = (latestProject.stems ?? []).filter(
       (stem) => stem.sourceAssetId === track.source.id && stem.engine !== "passthrough-unseparated",
     );
     if (latestJob?.status === "failed") {
+      saveObservedPasses();
       throw new Error(`Separation failed: ${latestJob.errorMessage ?? latestJob.errorCode ?? latestJob.stage}`);
     }
     if (latestJob?.status === "complete" && stems.length === 4) {
+      saveObservedPasses();
       return { job: latestJob, project: latestProject, stems };
     }
     await delay(2_000);
   }
+  saveObservedPasses();
   throw new Error(`Separation did not produce four stems within 45 minutes (last status: ${latestJob?.status ?? "no job"}).`);
 }
 

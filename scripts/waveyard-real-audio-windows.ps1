@@ -1,8 +1,13 @@
 <#
 .SYNOPSIS
-Runs Waveyard's real-audio stem separation measurement locally on Windows.
+Runs a low-level real-audio separation pipeline measurement on Windows.
 
 .DESCRIPTION
+This source-level test exercises the production local worker and pinned models,
+but it does not launch the packaged ArenaForge app or verify live stem playback.
+For the complete installed-app Windows acceptance check, use
+desktop/Measure-Waveyard.ps1 instead.
+
 Accepts WAV, MP3, FLAC, M4A, AAC, and OGG files plus installed project dependencies.
 Compressed formats and WAV files outside native 16-bit PCM at 44.1 kHz require
 ffmpeg to be available through Arena's local resolver.
