@@ -1470,6 +1470,10 @@ try {
       });
     }
     const offenders = [...document.querySelectorAll("body *")]
+      .filter(element => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.right > innerWidth + 1 && !element.closest(".timeline-scroll");
+      })
       .map(element => {
         const rect = element.getBoundingClientRect();
         return {
@@ -1481,7 +1485,6 @@ try {
           text: element.textContent?.trim().slice(0, 60) || null,
         };
       })
-      .filter(element => element.width > 0 && element.right > innerWidth + 1)
       .slice(0, 12);
     return { viewport: innerWidth, documentWidth: document.documentElement.scrollWidth, chain, offenders };
   });

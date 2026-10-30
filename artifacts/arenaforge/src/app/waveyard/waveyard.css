@@ -1011,6 +1011,7 @@
 .studio-tabs{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:14px 0 4px}
 #studio-editor{scroll-margin-top:18px}
 #remix-timeline{scroll-margin-top:18px}
+.studio{grid-template-columns:minmax(0,1fr)}
 .studio,.remix-panel,.timeline-scroll,.panel-title{min-width:0;max-width:100%}
 .panel-title{flex-wrap:wrap}
 .timeline-scroll{overflow-x:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
