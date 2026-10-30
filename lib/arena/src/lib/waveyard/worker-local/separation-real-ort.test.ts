@@ -537,11 +537,66 @@ if (realAudioInputPath) {
         .where(eq(processingJobs.id, f.job.id));
 
       harness = createLocalRetryHarness(f.database);
+      const modelPassTimings: { phase: string; model: string; elapsedMs: number }[] = [];
+      let activePass: { phase: string; model: string; startedAt: number } | null = null;
+      let stopSamplingProgress = false;
+      let progressSamplingError: string | null = null;
+      const sampleProgress = (async () => {
+        while (!stopSamplingProgress) {
+          try {
+            const [latestJob] = await f.database
+              .select()
+              .from(processingJobs)
+              .where(eq(processingJobs.id, f.job.id));
+            const metadata = typeof latestJob?.metadata === "string"
+              ? JSON.parse(latestJob.metadata)
+              : (latestJob?.metadata ?? {});
+            const progress = metadata?.progress;
+            if (typeof progress?.phase === "string" && progress.phase !== activePass?.phase) {
+              const observedAt = Date.now();
+              if (activePass) {
+                modelPassTimings.push({
+                  phase: activePass.phase,
+                  model: activePass.model,
+                  elapsedMs: observedAt - activePass.startedAt,
+                });
+              }
+              activePass = {
+                phase: progress.phase,
+                model: typeof progress.model === "string" ? progress.model : "unknown",
+                startedAt: observedAt,
+              };
+            }
+          } catch (error) {
+            progressSamplingError = error instanceof Error ? error.message : String(error);
+            return;
+          }
+          await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 500));
+        }
+      })();
       const startedAt = Date.now();
-      const retry = await retrySeparationJob(f.database, f.job.id);
-      assert.equal(await harness.broker.drain(570_000), true, "the real-audio recipe drains through the production worker");
+      let retry: Awaited<ReturnType<typeof retrySeparationJob>> | undefined;
+      try {
+        retry = await retrySeparationJob(f.database, f.job.id);
+        assert.equal(await harness.broker.drain(570_000), true, "the real-audio recipe drains through the production worker");
+      } finally {
+        stopSamplingProgress = true;
+        await sampleProgress;
+        if (activePass) {
+          modelPassTimings.push({
+            phase: activePass.phase,
+            model: activePass.model,
+            elapsedMs: Date.now() - activePass.startedAt,
+          });
+        }
+      }
       const elapsedMs = Date.now() - startedAt;
       assert.deepEqual(retry, { queued: true });
+      assert.equal(
+        modelPassTimings.length,
+        FOUR_STEM_MODELS.length,
+        "the production worker should expose a progress interval for each real model pass",
+      );
 
       const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
       assert.equal(job.status, "complete");
@@ -591,6 +646,9 @@ if (realAudioInputPath) {
           excerptPreparationMs,
           separationElapsedMs: elapsedMs,
           measuredInputToStemsMs: audioDecodeMs + excerptPreparationMs + elapsedMs,
+          progressObservedModelPasses: modelPassTimings,
+          progressSamplingIntervalMs: 500,
+          ...(progressSamplingError ? { progressSamplingError } : {}),
           excludes: "PGlite fixture setup, model copying, library import/upload, and subjective separation quality",
         },
         evidenceLimit: "Real audio and pinned-model execution on the recorded platform; this does not establish Windows performance unless platform is win32, or subjective separation quality.",

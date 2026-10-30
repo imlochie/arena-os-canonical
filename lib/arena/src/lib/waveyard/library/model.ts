@@ -12,6 +12,8 @@
  * session, and API layers share ONE definition of these rules.
  */
 
+import { isDeepStemModel, stemDisplayName } from "../separation/stem-display";
+
 /** The canonical default stem channels, in player order. `other` is the
  * standard fourth separation stem (melody/instrumental) — displayed as
  * MELODY, but the identity used across the engine is `other`. */
@@ -57,7 +59,7 @@ export function buildStemChannels(stemTypes: readonly string[]): StemChannel[] {
 /** Honest stem availability for a track, derived from REAL stem rows. */
 export interface SeparationProgress {
   percent: number;
-  /** Multi-model recipes identify the current pass as e.g. "2/4". */
+  /** Friendly current-pass label, e.g. "pass 2/4 · Drums". */
   phase?: string;
 }
 
@@ -92,16 +94,45 @@ export const PASSTHROUGH_ENGINE = "passthrough-unseparated";
 function parseSeparationProgress(metadata: string | null | undefined): SeparationProgress | undefined {
   if (!metadata) return undefined;
   try {
-    const value = JSON.parse(metadata) as { progress?: { percent?: unknown; phase?: unknown } };
+    const value = JSON.parse(metadata) as {
+      progress?: { percent?: unknown; phase?: unknown; model?: unknown };
+    };
     const progress = value?.progress;
     if (typeof progress?.percent !== "number" || !Number.isFinite(progress.percent)) return undefined;
+    const phase = formatSeparationProgressPhase(progress.phase, progress.model);
     return {
       percent: Math.min(100, Math.max(0, Math.round(progress.percent))),
-      ...(typeof progress.phase === "string" ? { phase: progress.phase.slice(0, 32) } : {}),
+      ...(phase ? { phase } : {}),
     };
   } catch {
     return undefined;
   }
+}
+
+const PROGRESS_STEM_TYPES_BY_MODEL: Record<string, string> = {
+  kim_vocal_2: "vocals",
+  kuielab_b_drums: "drums",
+  kuielab_b_bass: "bass",
+  kuielab_b_other: "other",
+};
+
+/** Converts internal worker pass data to a short, safe label for user-facing progress. */
+export function formatSeparationProgressPhase(phaseValue: unknown, modelValue: unknown): string | undefined {
+  const phase = typeof phaseValue === "string" ? phaseValue.slice(0, 32) : undefined;
+  const model = typeof modelValue === "string" ? modelValue : undefined;
+  if (isDeepStemModel(model)) {
+    return phase && /^\d+\/\d+$/.test(phase) ? `pass ${phase} · Deep stems` : "Deep separation";
+  }
+
+  const stemType = model ? PROGRESS_STEM_TYPES_BY_MODEL[model] : undefined;
+  const modelLabel = stemType ? stemDisplayName(stemType, { model }) : undefined;
+  const phaseLabel = phase
+    ? /^\d+\/\d+$/.test(phase) ? `pass ${phase}` : phase
+    : undefined;
+  const labels: string[] = [];
+  if (phaseLabel) labels.push(phaseLabel);
+  if (modelLabel) labels.push(modelLabel);
+  return labels.length > 0 ? labels.join(" · ").slice(0, 64) : undefined;
 }
 
 export function resolveStemAvailability(input: StemAvailabilityInput): StemAvailability {

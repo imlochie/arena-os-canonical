@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { writePcmWavExcerpt } from "./waveyard-audio.mjs";
+import { measurePcmWavSignal, writePcmWavExcerpt } from "./waveyard-audio.mjs";
 
 function makePcmWavHeader({ dataBytes, sampleRateHz = 4, channels = 2, bitsPerSample = 16 }) {
   const header = Buffer.alloc(44);
@@ -83,4 +83,31 @@ test("rejects an excerpt that starts with only one second of audio left", async 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("measures PCM signal per stem and identifies silent WAV output", () => {
+  const samples = Buffer.alloc(8);
+  samples.writeInt16LE(16_384, 0);
+  samples.writeInt16LE(-16_384, 2);
+  const wavHeader = makePcmWavHeader({ dataBytes: samples.length });
+  const active = measurePcmWavSignal(Buffer.concat([wavHeader, samples]));
+  assert.equal(active.channels, 2);
+  assert.equal(active.sampleRateHz, 4);
+  assert.equal(active.sampleCount, 4);
+  assert.equal(active.durationSeconds, 0.5);
+  assert.ok(Math.abs(active.rms - Math.sqrt(0.125)) < 1e-7);
+  assert.equal(active.peakAbsolute, 0.5);
+  assert.equal(active.pcmFingerprint.length, 64);
+  assert.equal(
+    active.pcmFingerprint,
+    measurePcmWavSignal(Buffer.concat([wavHeader, samples])).pcmFingerprint,
+  );
+
+  const silent = measurePcmWavSignal(Buffer.concat([
+    makePcmWavHeader({ dataBytes: 8 }),
+    Buffer.alloc(8),
+  ]));
+  assert.equal(silent.rms, 0);
+  assert.equal(silent.peakAbsolute, 0);
+  assert.notEqual(active.pcmFingerprint, silent.pcmFingerprint);
 });

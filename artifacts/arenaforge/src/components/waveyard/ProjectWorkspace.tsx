@@ -11,6 +11,7 @@ import { separationTargetOptions } from "@workspace/arena/lib/waveyard/separatio
 import { PublicationPanel } from "./PublicationPanel";
 import { WaveyardHandoffPanel } from "./WaveyardHandoffPanel";
 import { evaluateAutomaticBuildFinalization } from "@workspace/arena/lib/waveyard/automatic-build-finalization";
+import { formatSeparationProgressPhase } from "@workspace/arena/lib/waveyard/library/model";
 
 type ProjectData = {
   project: {
@@ -60,7 +61,7 @@ function parseJobProgress(metadata: string | null): {
   if (!metadata) return null;
   try {
     const parsed = JSON.parse(metadata) as {
-      progress?: { done?: unknown; total?: unknown; percent?: unknown; phase?: unknown; kind?: unknown };
+      progress?: { done?: unknown; total?: unknown; percent?: unknown; phase?: unknown; kind?: unknown; model?: unknown };
     };
     const progress = parsed?.progress;
     if (
@@ -74,7 +75,9 @@ function parseJobProgress(metadata: string | null): {
       done: progress.done,
       total: progress.total,
       percent: Math.min(100, Math.max(0, progress.percent)),
-      ...(typeof progress.phase === "string" ? { phase: progress.phase } : {}),
+      ...(typeof progress.phase === "string"
+        ? { phase: formatSeparationProgressPhase(progress.phase, progress.model) ?? progress.phase }
+        : {}),
       ...(progress.kind === "model-pass" || progress.kind === "chunk" ? { kind: progress.kind } : {}),
     };
   } catch {
@@ -504,10 +507,10 @@ async function prepareEngine(model: string, jobId: string) {
             const progress = parseJobProgress(latest.metadata);
             if (latest.stage === "separating" && progress) {
               if (progress.kind === "model-pass" && progress.phase) {
-                return `Pass ${progress.phase} running · ${progress.percent}%. Keep this page open or return later.`;
+                return `${progress.phase} in progress · ${progress.percent}%. Keep this page open or return later.`;
               }
               if (progress.kind === "chunk") {
-                return `Separating — ${progress.percent}% · pass ${progress.phase ?? "in progress"} · chunk ${progress.done} of ${progress.total}. Keep this page open or return later.`;
+                return `Separating — ${progress.percent}% · ${progress.phase ?? "in progress"} · chunk ${progress.done} of ${progress.total}. Keep this page open or return later.`;
               }
               return `Separating — ${progress.percent}% (part ${progress.done} of ${progress.total}). Keep this page open or return later.`;
             }

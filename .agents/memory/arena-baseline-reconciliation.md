@@ -7,4 +7,16 @@ When the user names a branch or asks to preserve earlier work, compare it with t
 
 **Why:** Arena has divergent implementation branches with different project structures and product documents; choosing the wrong baseline or trusting commit similarity alone risks reviving stale requirements or missing real regressions.
 
-**How to apply:** Check the worktree, refs, ancestry, relevant source, and acceptance tests at the start of substantive Arena work. Tell the user which baseline is in use when it differs from a branch they named, and preserve every inspected ref while comparing.
+**How to apply:** Check the worktree, refs, ancestry, relevant source, and acceptance tests at the start of substantive Arena work. When the user asks for a branch audit, include every local and remote ref, not only the named branch, and distinguish patch-equivalent commits from unique work. Tell the user which baseline is in use when it differs from a branch they named, and preserve every inspected ref while comparing.
+
+Historical Waveyard conversion work must be described precisely: the TunePat integration only launches the owner's installed app and expects manual output import; a separate local-file conversion/archive workflow handles files the owner already has. Neither extracts protected Apple Music audio. Current library snapshots back up catalog metadata, not the audio files.
+
+**Why:** Treating a launcher or metadata snapshot as an Apple Music converter would repeat the product's core failure mode: claiming a capability the user cannot actually use.
+
+**How to apply:** When reviewing or proposing Apple Music backup, distinguish catalog/playlist snapshots from local audio conversion and from protected-stream acquisition. Do not claim TunePat conversion exists unless an end-to-end, authorized file workflow is implemented and tested.
+
+The current Waveyard implementation already includes prepared live stem swaps, temporary held isolation, per-track gain recall, and beat/bar snap scheduling; verify current behavior and tests before treating those historical commits as regressions. The divergent branch also contains a browser gameplay/publication gate for Arcade plus portable Studio export bundles and local conversion archives that are not present in current main. Its 2048 source patch is a specific example, not a general reverse-engineering capability.
+
+**Why:** A commit absent by ancestry can still have an equivalent implementation, while a related demo or test does not prove the underlying general capability exists.
+
+**How to apply:** Compare capability semantics and acceptance coverage in both trees. Prioritize targeted ports of the Arcade runtime gate and Waveyard export/conversion workflows; do not cherry-pick old framework code or mistake a pinned game example for universal game modification.

@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)][string]$Executable,
   [Parameter(Mandatory = $true)][string]$AudioPath,
   [string]$ModelsPath,
-  [int]$MaxSeconds = 0,
+  [int]$MaxSeconds = 20,
   [int]$StartSeconds = 0
 )
 

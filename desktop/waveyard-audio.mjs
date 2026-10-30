@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { open, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -29,6 +30,68 @@ export async function probeAudioFile(filePath, ffprobePath) {
     sampleRateHz: Number.isFinite(Number(audio.sample_rate)) ? Number(audio.sample_rate) : null,
     bitsPerSample: Number.isFinite(Number(audio.bits_per_sample)) ? Number(audio.bits_per_sample) : null,
     durationSeconds: Number(durationSeconds.toFixed(2)),
+  };
+}
+
+export function measurePcmWavSignal(input) {
+  const bytes = Buffer.isBuffer(input) ? input : Buffer.from(input);
+  assert(bytes.length >= 44, "The separated stem response is too short to be a WAV file.");
+  assert.equal(bytes.toString("ascii", 0, 4), "RIFF", "The separated stem is not a RIFF WAV file.");
+  assert.equal(bytes.toString("ascii", 8, 12), "WAVE", "The separated stem is not a WAVE file.");
+
+  let format;
+  let dataOffset = -1;
+  let dataBytes = 0;
+  for (let offset = 12; offset + 8 <= bytes.length;) {
+    const name = bytes.toString("ascii", offset, offset + 4);
+    const chunkSize = bytes.readUInt32LE(offset + 4);
+    const chunkStart = offset + 8;
+    const chunkEnd = chunkStart + chunkSize;
+    assert(chunkEnd <= bytes.length, "The separated stem WAV contains a truncated chunk.");
+    if (name === "fmt ") {
+      assert(chunkSize >= 16, "The separated stem WAV format chunk is incomplete.");
+      format = {
+        code: bytes.readUInt16LE(chunkStart),
+        channels: bytes.readUInt16LE(chunkStart + 2),
+        sampleRateHz: bytes.readUInt32LE(chunkStart + 4),
+        bitsPerSample: bytes.readUInt16LE(chunkStart + 14),
+      };
+    } else if (name === "data" && dataOffset < 0) {
+      dataOffset = chunkStart;
+      dataBytes = chunkSize;
+    }
+    if (format && dataOffset >= 0) break;
+    offset = chunkEnd + (chunkSize % 2);
+  }
+
+  assert(format, "The separated stem WAV has no format chunk.");
+  assert.equal(format.code, 1, "The separated stem WAV is not uncompressed PCM.");
+  assert.equal(format.bitsPerSample, 16, "The separated stem WAV is not 16-bit PCM.");
+  assert(format.channels > 0 && format.sampleRateHz > 0, "The separated stem WAV format is invalid.");
+  assert(dataOffset >= 0 && dataBytes > 0, "The separated stem WAV has no audio samples.");
+  assert.equal(dataBytes % 2, 0, "The separated stem WAV data is not sample-aligned.");
+  assert.equal(dataBytes % (format.channels * 2), 0, "The separated stem WAV data is not frame-aligned.");
+
+  const sampleCount = dataBytes / 2;
+  let sumSquares = 0;
+  let peakAbsolute = 0;
+  for (let offset = dataOffset; offset < dataOffset + dataBytes; offset += 2) {
+    const sample = bytes.readInt16LE(offset) / 32768;
+    const absolute = Math.abs(sample);
+    sumSquares += sample * sample;
+    peakAbsolute = Math.max(peakAbsolute, absolute);
+  }
+  const pcmFingerprint = createHash("sha256")
+    .update(bytes.subarray(dataOffset, dataOffset + dataBytes))
+    .digest("hex");
+  return {
+    channels: format.channels,
+    sampleRateHz: format.sampleRateHz,
+    sampleCount,
+    durationSeconds: Number((sampleCount / (format.channels * format.sampleRateHz)).toFixed(2)),
+    rms: Number(Math.sqrt(sumSquares / sampleCount).toFixed(8)),
+    peakAbsolute: Number(peakAbsolute.toFixed(8)),
+    pcmFingerprint,
   };
 }
 

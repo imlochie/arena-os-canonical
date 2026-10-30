@@ -94,12 +94,27 @@ test("resolveStemAvailability exposes current progress, but ignores stale progre
       status: "processing",
       stage: "separating",
       errorCode: null,
-      metadata: JSON.stringify({ progress: { percent: 42.4, phase: "2/4" } }),
+      metadata: JSON.stringify({ progress: { percent: 42.4, phase: "2/4", model: "kuielab_b_drums" } }),
     },
   });
   assert.equal(running.status, "processing");
   if (running.status !== "processing") throw new Error("Expected a processing track.");
-  assert.deepEqual(running.progress, { percent: 42, phase: "2/4" });
+  assert.deepEqual(running.progress, { percent: 42, phase: "pass 2/4 · Drums" });
+
+  const unknownPass = resolveStemAvailability({
+    stems: [],
+    separationPending: true,
+    separationJob: {
+      id: "job-unknown-model",
+      status: "processing",
+      stage: "separating",
+      errorCode: null,
+      metadata: JSON.stringify({ progress: { percent: 25, phase: "1/4", model: "unrecognized_model_id" } }),
+    },
+  });
+  assert.equal(unknownPass.status, "processing");
+  if (unknownPass.status !== "processing") throw new Error("Expected a processing track.");
+  assert.deepEqual(unknownPass.progress, { percent: 25, phase: "pass 1/4" });
 
   const preparing = resolveStemAvailability({
     stems: [],

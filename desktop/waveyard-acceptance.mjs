@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { _electron } from "playwright-core";
 import {
+  measurePcmWavSignal,
   probeAudioFile,
   writeCompressedAudioExcerpt,
   writePcmWavExcerpt,
@@ -31,7 +32,7 @@ const defaultModelsPath = process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, "Arena", "waveyard", "models")
   : "";
 const modelsPath = process.argv[4] || process.env.WAVEYARD_MODELS_DIR || defaultModelsPath;
-const maxSeconds = Number(process.argv[5] ?? 0);
+const maxSeconds = Number(process.argv[5] ?? 20);
 const startSeconds = Number(process.argv[6] ?? 0);
 const requiredModels = ["kim_vocal_2", "kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"];
 const execFileAsync = promisify(execFile);
@@ -463,10 +464,15 @@ async function run() {
   await switchButton.waitFor({ timeout: 90_000 });
   const stemIds = Object.values(stemMap);
   const responseStatuses = new Map();
+  const audioResponseBodies = new Map();
   const stemIdSet = new Set(stemIds);
   const collectAssetResponse = (response) => {
     const id = new URL(response.url()).pathname.split("/").at(-1);
-    if (stemIdSet.has(id)) responseStatuses.set(id, response.status());
+    if (!stemIdSet.has(id)) return;
+    responseStatuses.set(id, response.status());
+    if (response.status() === 200) {
+      audioResponseBodies.set(id, response.body().catch(() => null));
+    }
   };
   page.on("response", collectAssetResponse);
   await switchButton.click();
@@ -476,6 +482,33 @@ async function run() {
       && audio.every((element) => element.readyState >= 2 && !element.paused)
       && ids.every((id) => audio.some((element) => (element.currentSrc || element.src).includes(id)));
   }, stemIds, { timeout: 120_000 });
+
+  const audioSignalByStem = {};
+  const pcmFingerprints = new Set();
+  for (const [stemType, id] of Object.entries(stemMap)) {
+    const bodyPromise = audioResponseBodies.get(id);
+    assert(bodyPromise, `The ${stemType} stem response body was not captured.`);
+    const body = await bodyPromise;
+    assert(body, `The ${stemType} stem response body could not be read.`);
+    const metrics = measurePcmWavSignal(body);
+    assert(
+      metrics.rms > 0.000001,
+      `The ${stemType} stem is silent (RMS ${metrics.rms}, peak ${metrics.peakAbsolute}).`,
+    );
+    const { pcmFingerprint, ...reportMetrics } = metrics;
+    pcmFingerprints.add(pcmFingerprint);
+    audioSignalByStem[stemType] = reportMetrics;
+  }
+  assert.equal(
+    pcmFingerprints.size,
+    Object.keys(stemMap).length,
+    "Two or more stems contain identical PCM audio instead of distinct separation outputs.",
+  );
+  report.audioSignal = {
+    minimumRms: 0.000001,
+    distinctPcmStemCount: pcmFingerprints.size,
+    stems: audioSignalByStem,
+  };
 
   const current = page.locator('[data-role="current"]');
   const isolate = current.getByLabel("Isolate vocals", { exact: true });
@@ -502,7 +535,11 @@ async function run() {
   assert(stemIds.every((id) => responseStatuses.get(id) === 200), "One or more real stem assets did not return HTTP 200.");
   page.off("response", collectAssetResponse);
   report.timings.uploadToPlayableIsolatedStemsSeconds = Number(((performance.now() - uploadStarted) / 1000).toFixed(2));
-  record("Four real stems play in sync and vocal isolation changes the audio gains");
+  record("Four distinct non-silent real stems play in sync and vocal isolation changes their audio gains", {
+    rmsByStem: Object.fromEntries(
+      Object.entries(audioSignalByStem).map(([stemType, metrics]) => [stemType, metrics.rms]),
+    ),
+  });
 
   report.passed = true;
 }
