@@ -15,7 +15,11 @@ export default function ProjectPage({
     <main className="shell">
       <WaveyardNav />
       <section className="workspace">
-        <ProjectWorkspace projectId={id} initialView={searchParams?.view === "studio" ? "studio" : undefined} />
+        <ProjectWorkspace
+          key={id}
+          projectId={id}
+          initialView={searchParams?.view === "studio" ? "studio" : undefined}
+        />
       </section>
     </main>
   );

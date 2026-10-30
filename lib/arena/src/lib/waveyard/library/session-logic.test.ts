@@ -104,6 +104,13 @@ test("performance snap requires a measured grid and never guesses bar downbeats"
   assert.equal(nextPerformanceBoundary(0.1, [0, 500, 450], "beat"), null);
 });
 
+test("performance snap leaves enough lead for the scheduled audio callback", () => {
+  const grid = [0, 1000, 2000, 3000];
+  assert.equal(nextPerformanceBoundary(0.9, grid, "beat", undefined, 0.18), 2);
+  assert.equal(nextPerformanceBoundary(0.75, grid, "beat", undefined, 0.18), 1);
+  assert.equal(nextPerformanceBoundary(0.41, grid, "half", undefined, 0.12), 1);
+});
+
 test("performance boundary rejects late or interrupted source-clock callbacks", () => {
   assert.equal(performanceTick(1, 0.8, 0.9, true), "wait");
   assert.equal(performanceTick(1, 0.9, 1, true), "apply");

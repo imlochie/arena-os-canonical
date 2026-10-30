@@ -252,7 +252,7 @@ export function ArrangementTimeline({
         0s <span>{clock(timelineEndMs / 1000)}</span>
         <em>{timing.tempoBpm} BPM · {timing.timeSignatureNumerator}/{timing.timeSignatureDenominator} · {timing.gridDivision}</em>
       </div>
-      <div className="timeline-scroll">
+      <div className="timeline-scroll" role="region" aria-label="Arrangement timeline" tabIndex={0}>
         <div className="timeline timeline-direct" style={{ width: timelineWidth }}>
           <div className="timeline-grid" aria-hidden="true">
             {Array.from({ length: bars + 1 }, (_, index) => <i className="bar-line" key={`bar-${index}`} style={{ left: `${(index * barMs(timing) / 1000) * zoom}px` }} />)}

@@ -32,9 +32,9 @@ const tracks = ["a", "b", "c"].map((id, index) => {
     stems, playback: { kind: "stems", assetIds: stems.map(s => s.id) }, stemMix: {},
     transition: { mode: "manual", crossfadeSeconds: 2, keepStems: [] },
     analysis: {
-      bpm: index === 1 ? 124 : index === 0 ? 60 : 120,
+      bpm: index === 1 ? 124 : 120,
       musicalKey: ["A minor", "C major", "C# major"][index],
-      beatGridMs: index === 0 ? Array.from({ length: 20 }, (_, beat) => beat * 1000) : null,
+      beatGridMs: index === 0 ? Array.from({ length: 40 }, (_, beat) => beat * 500) : null,
     } };
 });
 const sourceOnlyTrack = { ...tracks[0], stems: [], playback: { kind: "source", assetIds: ["a-source"] } };
@@ -49,9 +49,38 @@ const libraryRows = tracks.map((item, index) => ({
   addedAt: new Date().toISOString(), stemAvailability: { status: "separated", stemCount: 4, stemTypes: types },
   studioProjectId: `fixture-project-${index}`,
 }));
+const preparationDonorId = "prep-source";
+const preparationDonorRow = {
+  id: preparationDonorId,
+  title: "Prepared library source",
+  artist: "Synthetic fixture",
+  album: "",
+  durationSeconds: 18,
+  playCount: 0,
+  rating: 0,
+  labels: [],
+  lastPlayedAt: null,
+  addedAt: new Date().toISOString(),
+  stemAvailability: { status: "not-started", reason: "Stem separation has not started." },
+  studioProjectId: "fixture-project-prep",
+};
+const retryDonorId = "retry-source";
+const retryDonorRow = {
+  ...preparationDonorRow,
+  id: retryDonorId,
+  title: "Retryable library source",
+  stemAvailability: { status: "failed", reason: "A previous attempt failed.", retryJobId: "retry-prep-job" },
+  studioProjectId: "fixture-project-retry",
+};
 let liveQueue = [];
 let exposeSeparatedSource = false;
 let showSeparationProgress = false;
+let unstartedCurrentSessionTrack = false;
+let currentSessionSeparationRequests = 0;
+let preparationRequested = false;
+let preparationStartRequests = 0;
+let retryRequested = false;
+let preparationRetryRequests = 0;
 let abortNextLibraryUpload = false;
 let libraryUploadRequests = 0;
 let heldAssetId = null;
@@ -62,6 +91,7 @@ const session = { id: sessionId, name: "Live layer regression", currentSessionTr
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 const studioProjectId = "00000000-0000-4000-8000-000000000008";
 const studioRemixId = "00000000-0000-4000-8000-000000000009";
+const secondStudioProjectId = "00000000-0000-4000-8000-000000000010";
 let failStudioHandoff = false;
 let holdStudioHandoff = false;
 let releaseStudioHandoff = null;
@@ -69,6 +99,9 @@ let signalStudioHandoffStarted = null;
 let studioHandoffRequests = 0;
 let studioProjectData = null;
 let studioRemixData = null;
+let holdSecondStudioProjectLoad = false;
+let secondStudioProjectLoadSignal = null;
+let secondStudioProjectLoadGate = null;
 let studioHasRemix = true;
 let automaticRemixAttempts = 0;
 let holdNextStudioRemixPut = false;
@@ -201,10 +234,46 @@ try {
             },
           }
         : row)
-      : libraryRows;
+      : unstartedCurrentSessionTrack
+        ? libraryRows.map(row => row.id === "a"
+          ? { ...row, stemAvailability: { status: "not-started", reason: "Stem separation has not started." } }
+          : row)
+        : libraryRows;
     return route.fulfill({ json: { tracks: [
-      ...visibleLibraryRows, { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4, stemTypes: types }, studioProjectId: "fixture-project-d" },
+      ...visibleLibraryRows,
+      {
+        ...preparationDonorRow,
+        stemAvailability: preparationRequested
+          ? { status: "processing", reason: "Stem separation is running.", stage: "separating", progress: { percent: 12, phase: "1/4" } }
+          : preparationDonorRow.stemAvailability,
+      },
+      {
+        ...retryDonorRow,
+        stemAvailability: retryRequested
+          ? { status: "processing", reason: "Stem separation retry is running.", stage: "separating", progress: { percent: 8, phase: "1/4" } }
+          : retryDonorRow.stemAvailability,
+      },
+      { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4, stemTypes: types }, studioProjectId: "fixture-project-d" },
     ] } });
+  });
+  await context.route(`**/api/library/tracks/${preparationDonorId}/separation`, route => {
+    if (route.request().method() !== "POST") return route.fallback();
+    preparationStartRequests += 1;
+    preparationRequested = true;
+    return route.fulfill({ status: 202, json: { state: "queued", jobId: "prep-job", stemCount: null, error: null } });
+  });
+  await context.route("**/api/jobs/retry-prep-job/retry", route => {
+    if (route.request().method() !== "POST") return route.fallback();
+    preparationRetryRequests += 1;
+    retryRequested = true;
+    return route.fulfill({ status: 200, json: { job: { id: "retry-prep-job", status: "queued" } } });
+  });
+  await context.route("**/api/library/tracks/a/separation", route => {
+    if (route.request().method() !== "POST") return route.fallback();
+    currentSessionSeparationRequests += 1;
+    unstartedCurrentSessionTrack = false;
+    showSeparationProgress = true;
+    return route.fulfill({ status: 202, json: { state: "queued", jobId: "session-separation-job", stemCount: null, error: null } });
   });
   await context.route("**/api/library/playlists", route => route.fulfill({ json: { playlists: [
     { id: "test-playlist", name: "Test order", trackCount: 2 },
@@ -445,6 +514,37 @@ try {
     }
     return route.fulfill({ json: studioProjectData ?? {} });
   });
+  await context.route(`**/api/waveyard/projects/${secondStudioProjectId}/**`, route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.endsWith("/publication/audit")) {
+      return route.fulfill({ json: { events: [] } });
+    }
+    if (pathname.endsWith("/publication")) {
+      return route.fulfill({ json: {
+        publication: {
+          visibility: "private", publicationStatus: "draft", moderationStatus: "pending",
+          publishedExportAssetId: null, licenseCode: "private", downloadPermission: "owner-only",
+          rightsAcknowledgementVersion: "", rightsAcknowledgementStatement: "", tags: [],
+        },
+        exports: [], exportJobs: [],
+      } });
+    }
+    return route.fulfill({ json: {} });
+  });
+  await context.route(`**/api/waveyard/projects/${secondStudioProjectId}/remixes`, route =>
+    route.fulfill({ json: { remixes: studioHasRemix ? [{ id: studioRemixId }] : [] } }));
+  await context.route(`**/api/waveyard/projects/${secondStudioProjectId}`, async route => {
+    if (holdSecondStudioProjectLoad && secondStudioProjectLoadGate !== null) {
+      secondStudioProjectLoadSignal?.();
+      await secondStudioProjectLoadGate;
+    }
+    const projectData = studioProjectData;
+    return route.fulfill({
+      json: projectData === null
+        ? {}
+        : { ...projectData, project: { ...projectData.project, title: "Second derived arrangement" } },
+    });
+  });
   await context.route(`**/api/waveyard/projects/${studioProjectId}/remixes`, route =>
     route.fulfill({ json: { remixes: studioHasRemix ? [{ id: studioRemixId }] : [] } }));
   await context.route(`**/api/remixes/${studioRemixId}`, async route => {
@@ -635,6 +735,7 @@ try {
     return source?.inputNode?.nextNode?.gain?.value > 0.9;
   }), null, { timeout: 3000 });
 
+  await firstPage.bringToFront();
   if (await page.getByTestId("session-play").getAttribute("aria-pressed") !== "true") await toggle();
   await current.getByLabel("Mute drums", { exact: true }).click();
   await current.locator(".wy-performance-pending").waitFor({ timeout: 2000 });
@@ -652,6 +753,28 @@ try {
     return source?.inputNode?.nextNode?.gain?.value > 0.9;
   }));
   await toggle();
+
+  if (await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.paused)) await toggle();
+  const playbackBeforePreparingDonor = await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.currentTime);
+  await current.getByTestId("open-live-swap-vocals").click();
+  await current.getByTestId(`prepare-live-swap-vocals-${preparationDonorId}`).click();
+  await current.getByTestId(`live-swap-preparing-vocals-${preparationDonorId}`).waitFor();
+  assert.equal(preparationStartRequests, 1, "the live-swap picker starts separation for a library source in place");
+  await page.waitForFunction(before => {
+    const audio = document.querySelector('[data-role="current"] audio[src$="/a-vocals"]');
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
+  }, playbackBeforePreparingDonor, { timeout: 5_000 });
+  assert.equal(session.swaps.length, 0, "preparing a donor does not change the active live swap");
+  const playbackBeforeRetry = await current.locator('audio[src$="/a-vocals"]').evaluate(audio => audio.currentTime);
+  await current.getByTestId(`prepare-live-swap-vocals-${retryDonorId}`).click();
+  await current.getByTestId(`live-swap-preparing-vocals-${retryDonorId}`).waitFor();
+  assert.equal(preparationRetryRequests, 1, "the live-swap picker retries failed source separation in place");
+  await page.waitForFunction(before => {
+    const audio = document.querySelector('[data-role="current"] audio[src$="/a-vocals"]');
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
+  }, playbackBeforeRetry, { timeout: 5_000 });
+  console.log("PASS: separation start and retry stay in the live-swap picker without interrupting the current mix");
+  await current.getByTestId("open-live-swap-vocals").click();
 
   let signalSlowDonorRequest;
   const slowDonorRequested = new Promise(resolve => { signalSlowDonorRequest = resolve; });
@@ -865,13 +988,15 @@ try {
   await autoCrossfade.uncheck();
   console.log("PASS: auto-crossfade reaches its equal-power fade and advances to the next separated track.");
 
-  // A source-only deck must keep playing while completed stems are prepared.
+  // A source-only deck can start separation from the mixer and keep playing.
   session.tracks = [sourceOnlyTrack];
   session.swaps = [];
   session.currentSessionTrackId = "a";
   session.positionSeconds = 0;
   exposeSeparatedSource = false;
-  showSeparationProgress = true;
+  showSeparationProgress = false;
+  unstartedCurrentSessionTrack = true;
+  currentSessionSeparationRequests = 0;
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await page.waitForFunction(() => {
     const audio = document.querySelector('[data-role="current"] audio');
@@ -881,11 +1006,32 @@ try {
   await toggle();
   await current.getByTestId("seek-deck-0").fill("2");
   await page.waitForTimeout(150);
+  const currentSeparationButton = page.getByTestId("button-start-session-separation-a");
+  await currentSeparationButton.waitFor();
+  const playbackBeforeCurrentSeparation = await current.locator('audio[src$="/a-source"]').evaluate(audio => audio.currentTime);
+  await currentSeparationButton.click();
+  assert.equal(currentSessionSeparationRequests, 1, "the currently playing source can start separation in the mixer");
+  await page.waitForFunction(before => {
+    const audio = document.querySelector('[data-role="current"] audio[src$="/a-source"]');
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
+  }, playbackBeforeCurrentSeparation, { timeout: 5_000 });
+  await page.getByTestId("session-separation-progress-a").waitFor();
+  await currentSeparationButton.waitFor({ state: "detached" });
+  await toggle();
+  await page.reload();
+  await page.waitForFunction(() => {
+    const audio = document.querySelector('[data-role="current"] audio');
+    return audio?.src.endsWith("/a-source") && audio.readyState >= 2;
+  });
+  current = page.locator('[data-role="current"]');
+  if (await current.locator('audio[src$="/a-source"]').evaluate(audio => audio.paused)) await toggle();
+  await current.getByTestId("seek-deck-0").fill("2");
   await page.getByTestId("session-separation-progress-a")
     .filter({ hasText: /36%.*pass 2\/4/ })
-    .waitFor({ timeout: 5000 });
+    .waitFor({ timeout: 5_000 });
   exposeSeparatedSource = true;
   showSeparationProgress = false;
+  unstartedCurrentSessionTrack = false;
   const switchButton = page.getByTestId("button-switch-stems-a");
   await switchButton.waitFor({ timeout: 15000 });
 
@@ -1012,7 +1158,8 @@ try {
     position: Math.max(...elements.map(element => element.currentTime)),
   }));
   assert.equal(afterFailedReturn.count, 4, "a failed full-track load removes only the staged source");
-  assert.ok(afterFailedReturn.playing, "all original stems continue playing after the source fails");
+  assert.ok(afterFailedReturn.playing,
+    `all original stems continue playing after the source fails: ${JSON.stringify(afterFailedReturn)}`);
   assert.ok(afterFailedReturn.position > beforeFailedReturn, "the current stem mix advances while the source is unavailable");
   assert.ok(Math.abs(await page.evaluate(() => window.audioProbe.masterGains.at(-1)?.gain.value) - 0.63) < 0.01,
     "a failed source load leaves the master level unchanged");
@@ -1270,7 +1417,83 @@ try {
     "a failed handoff does not show a misleading project link");
   failStudioHandoff = false;
 
+  await page.goto(`http://localhost:80/waveyard/projects/${studioProjectId}?view=studio`);
+  await page.getByRole("heading", { name: "Mixer console" }).waitFor();
+  let signalSecondStudioProjectRequest;
+  const secondStudioProjectRequested = new Promise(resolve => {
+    signalSecondStudioProjectRequest = resolve;
+  });
+  let releaseSecondStudioProjectResponse;
+  secondStudioProjectLoadGate = new Promise(resolve => {
+    releaseSecondStudioProjectResponse = resolve;
+  });
+  secondStudioProjectLoadSignal = signalSecondStudioProjectRequest;
+  holdSecondStudioProjectLoad = true;
+  const secondStudioProjectUrl = `/waveyard/projects/${secondStudioProjectId}?view=studio`;
+  const secondProjectNavigation = page.waitForURL(url => url.pathname === `/waveyard/projects/${secondStudioProjectId}`);
+  await page.evaluate(url => {
+    window.history.pushState({}, "", url);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, secondStudioProjectUrl);
+  await secondProjectNavigation;
+  await secondStudioProjectRequested;
+  await page.getByText("Opening private studio…", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("heading", { name: "Session · Live layer regression" }).count(), 0,
+    "the prior arrangement is hidden while another project loads");
+  holdSecondStudioProjectLoad = false;
+  releaseSecondStudioProjectResponse?.();
+  secondStudioProjectLoadGate = null;
+  secondStudioProjectLoadSignal = null;
+  await page.getByRole("heading", { name: "Second derived arrangement" }).waitFor();
+  await page.waitForFunction(() => document.activeElement?.id === "studio-editor", null, { timeout: 10_000 });
+  console.log("PASS: switching Studio projects resets stale arrangement state and focuses the newly opened editor");
+
   await page.setViewportSize({ width: 390, height: 844 });
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile must not overflow");
+  const studioMobileLayout = await page.evaluate(() => {
+    const chain = [];
+    for (let element = document.querySelector(".studio"), depth = 0; element && depth < 8; element = element.parentElement, depth += 1) {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      chain.push({
+        tag: element.tagName.toLowerCase(),
+        className: typeof element.className === "string" ? element.className : null,
+        width: Math.round(rect.width),
+        right: Math.round(rect.right),
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+        minWidth: style.minWidth,
+        maxWidth: style.maxWidth,
+        display: style.display,
+        gridTemplateColumns: style.gridTemplateColumns,
+        flexWrap: style.flexWrap,
+        overflowX: style.overflowX,
+      });
+    }
+    const offenders = [...document.querySelectorAll("body *")]
+      .map(element => {
+        const rect = element.getBoundingClientRect();
+        return {
+          tag: element.tagName.toLowerCase(),
+          id: element.id || null,
+          className: typeof element.className === "string" ? element.className : null,
+          right: Math.round(rect.right),
+          width: Math.round(rect.width),
+          text: element.textContent?.trim().slice(0, 60) || null,
+        };
+      })
+      .filter(element => element.width > 0 && element.right > innerWidth + 1)
+      .slice(0, 12);
+    return { viewport: innerWidth, documentWidth: document.documentElement.scrollWidth, chain, offenders };
+  });
+  assert.ok(studioMobileLayout.documentWidth <= studioMobileLayout.viewport,
+    `Studio must not overflow on mobile: ${JSON.stringify(studioMobileLayout)}`);
+  await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+  await page.waitForFunction(() => document.querySelector('[data-testid="session-handoff"]'));
+  const sessionMobileLayout = await page.evaluate(() => ({
+    viewport: innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  assert.ok(sessionMobileLayout.documentWidth <= sessionMobileLayout.viewport,
+    `session must not overflow on mobile: ${JSON.stringify(sessionMobileLayout)}`);
   console.log("PASS: live stem swaps are cancellable without interrupting playback; source recovery and the session-to-Studio handoff remain usable");
 } finally { await browser.close(); }

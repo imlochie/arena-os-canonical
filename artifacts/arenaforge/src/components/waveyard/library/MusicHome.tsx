@@ -1090,7 +1090,7 @@ export function MusicHome() {
       <section className="library-hero" aria-label="Your music">
         <div>
           <h1>Your library</h1>
-          <label className="add-music">
+          <label className="add-music" id="waveyard-add-music">
             <input
               aria-label="Add music files"
               type="file"

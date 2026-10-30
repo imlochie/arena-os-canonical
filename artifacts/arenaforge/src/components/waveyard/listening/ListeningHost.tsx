@@ -191,6 +191,7 @@ export function ListeningWorkspace() {
           <section className="wy-workspace wy-workspace-empty" aria-label="Listening workspace">
             <span className="eyebrow">Live mixer</span>
             <p>No song is loaded. Play a library track to start; use Add Music if your library is empty.</p>
+            <a className="button secondary" href={pathname === "/waveyard" ? "#waveyard-add-music" : "/waveyard#waveyard-add-music"}>Add music</a>
           </section>
         ) : null
       ) : (

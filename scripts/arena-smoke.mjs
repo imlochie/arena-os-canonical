@@ -858,6 +858,12 @@ try {
   report.push("Studio waveform fetch failures show an inline retry and recover without reloading the project.");
   await page.goto("http://localhost:80/waveyard");
   await page.getByRole("navigation", { name: "Waveyard" }).getByRole("link", { name: "Music", exact: true }).click();
+  const emptyMixerAddMusic = page.getByRole("link", { name: "Add music", exact: true });
+  await emptyMixerAddMusic.waitFor();
+  assert.equal(await emptyMixerAddMusic.getAttribute("href"), "#waveyard-add-music");
+  await page.locator("#waveyard-add-music").waitFor();
+  assert.equal(await page.locator("#waveyard-add-music").count(), 1);
+  report.push("The empty live mixer can jump directly to Waveyard's working add-music control.");
   await recoveryRow.getByText("SEPARATION REJECTED", { exact: true }).waitFor();
   await notStartedRow.getByText("NOT STARTED", { exact: true }).waitFor();
   assert.equal(
@@ -977,9 +983,10 @@ try {
   const originalVocalPeak = await vocalsMeter.evaluate((bar) => Number(
     bar.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0,
   ));
-  const vocalSource = page.getByLabel("vocals source");
-  assert.equal(await vocalSource.locator("option").filter({ hasText: "Drums-only separated track" }).count(), 0, "the vocal picker must hide separated tracks with no vocal stem");
-  await vocalSource.selectOption(liveDonorTrackId);
+  await page.getByTestId("open-live-swap-vocals").click();
+  assert.equal(await page.getByTestId(`live-swap-candidate-vocals-${liveDrumsOnlyTrackId}`).count(), 0,
+    "the vocal picker must hide separated tracks with no vocal stem");
+  await page.getByTestId(`live-swap-candidate-vocals-${liveDonorTrackId}`).click();
   await page.getByTestId("session-status").filter({ hasText: "vocals source saved" }).waitFor({ timeout: 8_000 });
   await page.getByTestId("live-swap-pending-vocals").waitFor({ timeout: 8_000 });
   await new Promise((resolve, reject) => {
@@ -1006,8 +1013,10 @@ try {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > after + 0.2;
   }, { assetId: liveVocalsAssetId, after: clockBeforeCancel }, { timeout: 5_000 });
-  assert.equal(await vocalSource.inputValue(), "", "cancelling restores the original vocal source selection");
-  await vocalSource.selectOption(liveDonorTrackId);
+  assert.equal(await page.getByTestId("restore-live-swap-vocals").count(), 0,
+    "cancelling restores the original vocal source selection");
+  await page.getByTestId("open-live-swap-vocals").click();
+  await page.getByTestId(`live-swap-candidate-vocals-${liveDonorTrackId}`).click();
   await page.getByTestId("session-status").filter({ hasText: "vocals source saved" }).waitFor({ timeout: 8_000 });
   await page.waitForFunction((assetId) => {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);
@@ -1031,7 +1040,7 @@ try {
   }, { assetId: liveVocalsAssetId, after: clockBeforeSwap }, { timeout: 5_000 });
   const clockAfterSwap = await sourceVocals.evaluate((audio) => audio.currentTime);
   assert(clockAfterSwap > clockBeforeSwap + 0.2, `the recipient song clock must continue through a live stem swap (${clockBeforeSwap.toFixed(2)} → ${clockAfterSwap.toFixed(2)})`);
-  const isolateVocals = page.getByRole("button", { name: "Isolate vocals" });
+  const isolateVocals = page.getByRole("button", { name: "Isolate vocals", exact: true });
   await isolateVocals.click();
   assert.equal(await isolateVocals.getAttribute("aria-pressed"), "true");
   await page.waitForFunction(() => {

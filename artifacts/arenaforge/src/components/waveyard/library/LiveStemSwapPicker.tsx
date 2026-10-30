@@ -13,11 +13,21 @@ export interface LiveStemDonorOption {
   collection: "session" | "library";
 }
 
+export interface LiveStemPreparationOption {
+  id: string;
+  title: string;
+  artist: string;
+  status: "source-only" | "not-started" | "processing" | "failed" | "rejected";
+  progressPercent?: number;
+}
+
 interface LiveStemSwapPickerProps {
   stemType: string;
   currentBpm: number | null;
   currentKey: string | null;
   candidates: LiveStemDonorOption[];
+  preparationCandidates: LiveStemPreparationOption[];
+  preparingTrackIds: ReadonlySet<string>;
   selectedDonorId: string | null;
   selectedDonorTitle: string | null;
   swapStatus: string | null;
@@ -27,6 +37,7 @@ interface LiveStemSwapPickerProps {
   onToggle: () => void;
   onClose: () => void;
   onChoose: (donorId: string) => void;
+  onPrepare: (trackId: string) => void;
   onRestore: () => void;
 }
 
@@ -40,6 +51,8 @@ export default function LiveStemSwapPicker({
   currentBpm,
   currentKey,
   candidates,
+  preparationCandidates,
+  preparingTrackIds,
   selectedDonorId,
   selectedDonorTitle,
   swapStatus,
@@ -49,12 +62,14 @@ export default function LiveStemSwapPicker({
   onToggle,
   onClose,
   onChoose,
+  onPrepare,
   onRestore,
 }: LiveStemSwapPickerProps) {
   const [query, setQuery] = useState("");
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const firstCandidateRef = useRef<HTMLButtonElement>(null);
+  const firstPreparationRef = useRef<HTMLButtonElement>(null);
   const pickerId = `live-swap-picker-${stemType}`;
 
   const filteredCandidates = useMemo(() => {
@@ -64,15 +79,24 @@ export default function LiveStemSwapPicker({
       `${candidate.title} ${candidate.artist}`.toLocaleLowerCase().includes(normalizedQuery),
     );
   }, [candidates, query]);
+  const filteredPreparationCandidates = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    if (normalizedQuery === "") return preparationCandidates;
+    return preparationCandidates.filter((candidate) =>
+      `${candidate.title} ${candidate.artist}`.toLocaleLowerCase().includes(normalizedQuery),
+    );
+  }, [preparationCandidates, query]);
+  const sourceCount = candidates.length + preparationCandidates.length;
 
   useEffect(() => {
     if (!isOpen) {
       setQuery("");
       return;
     }
-    if (candidates.length > 4) searchRef.current?.focus();
-    else firstCandidateRef.current?.focus();
-  }, [candidates.length, isOpen]);
+    if (sourceCount > 4) searchRef.current?.focus();
+    else if (candidates.length > 0) firstCandidateRef.current?.focus();
+    else firstPreparationRef.current?.focus();
+  }, [candidates.length, isOpen, sourceCount]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -93,6 +117,7 @@ export default function LiveStemSwapPicker({
   };
   const sessionCandidates = filteredCandidates.filter((candidate) => candidate.collection === "session");
   const libraryCandidates = filteredCandidates.filter((candidate) => candidate.collection === "library");
+  const visiblePreparationCandidates = filteredPreparationCandidates.slice(0, 12);
 
   const renderCandidate = (candidate: LiveStemDonorOption, index: number) => {
     const tempo = tempoCompatibility(currentBpm, candidate.bpm);
@@ -195,7 +220,7 @@ export default function LiveStemSwapPicker({
               </button>
             </div>
           )}
-          {candidates.length > 4 && (
+          {sourceCount > 4 && (
             <label className="wy-swap-search">
               <span className="visually-hidden">Search separated sources</span>
               <input
@@ -225,15 +250,64 @@ export default function LiveStemSwapPicker({
               </div>
             </div>
           )}
-          {filteredCandidates.length === 0 && (
+          {visiblePreparationCandidates.length > 0 && (
+            <div className="wy-swap-group">
+              <span className="wy-swap-group-label">Separate before swapping</span>
+              <div className="wy-swap-prepare-list">
+                {visiblePreparationCandidates.map((candidate, index) => {
+                  const isProcessing = candidate.status === "processing";
+                  const needsRetry = candidate.status === "failed" || candidate.status === "rejected";
+                  const starting = preparingTrackIds.has(candidate.id);
+                  return (
+                    <div className="wy-swap-prepare-row" key={candidate.id}>
+                      <span className="wy-swap-prepare-copy">
+                        <strong>{candidate.title}</strong>
+                        <small>
+                          {candidate.artist || "Unknown artist"}
+                          {isProcessing
+                            ? ` · Separating${candidate.progressPercent === undefined ? "…" : ` · ${candidate.progressPercent}%`}`
+                            : needsRetry ? " · Previous separation failed" : " · Stems not ready"}
+                        </small>
+                      </span>
+                      {isProcessing ? (
+                        <span
+                          className="wy-swap-prepare-progress"
+                          role="status"
+                          data-testid={`live-swap-preparing-${stemType}-${candidate.id}`}
+                        >
+                          {candidate.progressPercent === undefined ? "Separating…" : `${candidate.progressPercent}%`}
+                        </span>
+                      ) : (
+                        <button
+                          ref={index === 0 ? firstPreparationRef : undefined}
+                          type="button"
+                          className="wy-swap-prepare-action"
+                          aria-label={`${needsRetry ? "Retry separation for" : "Separate"} ${candidate.title} for ${stemType}`}
+                          data-testid={`prepare-live-swap-${stemType}-${candidate.id}`}
+                          disabled={busy || starting}
+                          onClick={() => onPrepare(candidate.id)}
+                        >
+                          {starting ? "Starting…" : needsRetry ? "Retry" : "Separate"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {filteredPreparationCandidates.length > visiblePreparationCandidates.length && (
+                <small className="wy-swap-prepare-more">Search to narrow the remaining tracks.</small>
+              )}
+            </div>
+          )}
+          {filteredCandidates.length === 0 && filteredPreparationCandidates.length === 0 && (
             <div className="wy-swap-empty">
-              <strong>{candidates.length > 0 ? "No matches" : `No ${stemType} sources ready`}</strong>
+              <strong>{sourceCount > 0 ? "No matches" : `No ${stemType} sources ready`}</strong>
               <small>
-                {candidates.length > 0
+                {sourceCount > 0
                   ? "Try a shorter search."
-                  : "Add another track and wait for its separated stems to finish."}
+                  : "Add a track, then separate its stems. Your current mix keeps playing."}
               </small>
-              {candidates.length === 0 && <Link href="/waveyard">Open music library</Link>}
+              {sourceCount === 0 && <Link href="/waveyard">Open music library</Link>}
             </div>
           )}
           <p className="wy-swap-footnote">BPM and key are compatibility hints, not a similarity or sound-quality score.</p>

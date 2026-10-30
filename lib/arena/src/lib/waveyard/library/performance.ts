@@ -1,5 +1,6 @@
 /** Source-clock stem performance controls. These are not sample-locked. */
 export const PERFORMANCE_SNAPS = ["off", "quarter", "half", "beat", "bar"] as const;
+export const PERFORMANCE_MINIMUM_LEAD_SECONDS = 0.18;
 export type PerformanceSnap = (typeof PERFORMANCE_SNAPS)[number];
 export type StemLevels = Record<string, number>;
 
@@ -112,10 +113,16 @@ export function nextPerformanceBoundary(
   grid: unknown,
   snap: PerformanceSnap,
   downbeats?: unknown,
+  minimumLeadSeconds = 0,
 ): number | null {
-  if (!Number.isFinite(positionSeconds) || positionSeconds < 0) return null;
+  if (
+    !Number.isFinite(positionSeconds)
+    || positionSeconds < 0
+    || !Number.isFinite(minimumLeadSeconds)
+    || minimumLeadSeconds < 0
+  ) return null;
   if (snap === "off") return positionSeconds;
-  if (snap === "bar") return nextPerformanceBoundary(positionSeconds, downbeats, "beat");
+  if (snap === "bar") return nextPerformanceBoundary(positionSeconds, downbeats, "beat", undefined, minimumLeadSeconds);
   if (
     !Array.isArray(grid)
     || grid.length < 2
@@ -126,7 +133,7 @@ export function nextPerformanceBoundary(
     )
   ) return null;
 
-  const positionMs = positionSeconds * 1000;
+  const positionMs = (positionSeconds + minimumLeadSeconds) * 1000;
   let low = 0;
   let high = grid.length;
   while (low < high) {

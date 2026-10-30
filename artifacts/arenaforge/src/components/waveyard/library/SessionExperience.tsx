@@ -7,7 +7,10 @@ import { useStemTransport, type ChannelMeter, type MixerValues } from "@workspac
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import CamelotWheel from "./CamelotWheel";
-import LiveStemSwapPicker, { type LiveStemDonorOption } from "./LiveStemSwapPicker";
+import LiveStemSwapPicker, {
+  type LiveStemDonorOption,
+  type LiveStemPreparationOption,
+} from "./LiveStemSwapPicker";
 import {
   beatAlignedTransitionStart,
   compatibilityEvidence,
@@ -24,6 +27,7 @@ import {
 } from "@workspace/arena/lib/waveyard/library/session-logic";
 import {
   defaultPerformance,
+  PERFORMANCE_MINIMUM_LEAD_SECONDS,
   nextPerformanceBoundary,
   performMix,
   performanceTick,
@@ -783,6 +787,7 @@ export default function SessionExperience({
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [library, setLibrary] = useState<LibraryTrackOption[]>([]);
+  const [preparingSeparationTrackIds, setPreparingSeparationTrackIds] = useState<Set<string>>(() => new Set());
   const [addTrackId, setAddTrackId] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
@@ -1267,7 +1272,13 @@ export default function SessionExperience({
     }
 
     const position = deck?.transport.currentPosition() ?? NaN;
-    const target = nextPerformanceBoundary(position, item.analysis?.beatGridMs, settings.snap);
+    const target = nextPerformanceBoundary(
+      position,
+      item.analysis?.beatGridMs,
+      settings.snap,
+      undefined,
+      PERFORMANCE_MINIMUM_LEAD_SECONDS,
+    );
     if (target === null) {
       setStatus(settings.snap === "bar"
         ? "Bar snap unavailable: this track has no verified downbeat data. Choose Beat or Off."
@@ -2188,6 +2199,9 @@ export default function SessionExperience({
       }];
     });
   }, [session, library]);
+  const currentSourceAvailability = currentItem?.playback?.kind === "source"
+    ? library.find((track) => track.id === currentItem.track.id)?.stemAvailability ?? null
+    : null;
   useEffect(() => {
     if (session === null) return;
     let cancelled = false;
@@ -2463,6 +2477,77 @@ export default function SessionExperience({
     if (!shouldRemainPlaying) void persistState({ id: trackId, position: value });
   };
 
+  const startSessionTrackSeparation = async (trackId: string) => {
+    const track = library.find((item) => item.id === trackId);
+    if (track === undefined || preparingSeparationTrackIds.has(trackId) || track.stemAvailability.status === "processing") return;
+
+    setPreparingSeparationTrackIds((previous) => new Set(previous).add(trackId));
+    setStatus(null);
+    const markProcessing = () => setLibrary((previous) => previous.map((item) => item.id === trackId
+      ? {
+          ...item,
+          stemAvailability: {
+            status: "processing",
+            reason: "Stem separation is running — the current mix keeps playing until the stems are ready.",
+          },
+        }
+      : item));
+    const readBody = async (response: Response) =>
+      await response.json().catch(() => ({})) as Record<string, unknown>;
+
+    try {
+      let response: Response;
+      let body: Record<string, unknown>;
+      if (track.stemAvailability.status === "failed" || track.stemAvailability.status === "rejected") {
+        response = await fetch(`/api/jobs/${track.stemAvailability.retryJobId}/retry`, { method: "POST" });
+        body = await readBody(response);
+      } else {
+        response = await fetch(`/api/library/tracks/${trackId}/separation`, { method: "POST" });
+        body = await readBody(response);
+        if (body.state === "previous-attempt" && typeof body.jobId === "string") {
+          response = await fetch(`/api/jobs/${body.jobId}/retry`, { method: "POST" });
+          body = await readBody(response);
+        }
+      }
+
+      if (body.state === "separated") {
+        const refresh = await fetch("/api/library/tracks", { cache: "no-store" });
+        if (refresh.ok) {
+          const latest = await refresh.json() as { tracks?: LibraryTrackOption[] };
+          if (Array.isArray(latest.tracks)) setLibrary(latest.tracks);
+        }
+        setStatus(`${track.title}: stems are already available. Choose it from the ready sources.`);
+        return;
+      }
+      if (response.ok || body.state === "queued" || body.state === "processing") {
+        markProcessing();
+        setStatus(`${track.title}: separation started. Keep listening; your current mix will not stop.`);
+        return;
+      }
+      if (body.state === "failed" && typeof body.jobId === "string") {
+        setLibrary((previous) => previous.map((item) => item.id === trackId
+          ? {
+              ...item,
+              stemAvailability: {
+                status: "rejected",
+                reason: typeof body.error === "string" ? body.error : "The separation worker did not accept this job.",
+                retryJobId: body.jobId as string,
+              },
+            }
+          : item));
+      }
+      setStatus(`${track.title}: ${typeof body.error === "string" ? body.error : "Separation could not be started."}`);
+    } catch {
+      setStatus(`${track.title}: separation could not be started. Check the connection and try again.`);
+    } finally {
+      setPreparingSeparationTrackIds((previous) => {
+        const next = new Set(previous);
+        next.delete(trackId);
+        return next;
+      });
+    }
+  };
+
   const swapExtra = (stemType: string) => {
     if (currentItem === null) return null;
     const swap = session.swaps.filter((s) => s.sessionTrackId === currentItem.id && s.stemType === stemType).at(-1);
@@ -2479,6 +2564,20 @@ export default function SessionExperience({
       item.id !== currentItem.track.id &&
       item.stemAvailability?.status === "separated" &&
       item.stemAvailability.stemTypes.includes(stemType));
+    const preparationCandidates: LiveStemPreparationOption[] = library.flatMap((item) => {
+      if (item.id === currentItem.track.id) return [];
+      const availability = item.stemAvailability;
+      if (availability.status === "separated" || availability.status === "unavailable") return [];
+      return [{
+        id: item.id,
+        title: item.title,
+        artist: item.artist,
+        status: availability.status,
+        ...(availability.status === "processing" && availability.progress !== undefined
+          ? { progressPercent: availability.progress.percent }
+          : {}),
+      }];
+    });
     const candidates: LiveStemDonorOption[] = [
       ...donors.map((donor) => ({
         id: donor.track.id,
@@ -2516,6 +2615,8 @@ export default function SessionExperience({
         currentBpm={currentItem.analysis?.bpm ?? null}
         currentKey={currentItem.analysis?.musicalKey ?? null}
         candidates={candidates}
+        preparationCandidates={preparationCandidates}
+        preparingTrackIds={preparingSeparationTrackIds}
         selectedDonorId={swap?.toTrackId ?? null}
         selectedDonorTitle={selectedDonorTitle}
         swapStatus={swapStatus}
@@ -2533,6 +2634,7 @@ export default function SessionExperience({
           const source = libraryDonors.find((item) => item.id === donorId);
           if (source) void requestSwap(stemType, { id: source.id, title: source.title });
         }}
+        onPrepare={(trackId) => { void startSessionTrackSeparation(trackId); }}
         onRestore={() => {
           if (swap) void revertSwap(swap.id);
         }}
@@ -2667,6 +2769,31 @@ export default function SessionExperience({
       ))}
 
       <div className="wy-full-only">
+        {currentItem !== null &&
+          (currentSourceAvailability?.status === "source-only" ||
+            currentSourceAvailability?.status === "not-started" ||
+            currentSourceAvailability?.status === "failed" ||
+            currentSourceAvailability?.status === "rejected") && (
+            <p className="sess-status wy-ready" role="status" data-testid={`session-separation-action-${currentItem.id}`}>
+              {currentSourceAvailability.status === "failed" || currentSourceAvailability.status === "rejected"
+                ? `Separation failed for “${currentItem.track.title}”. Retry here; playback keeps going.`
+                : `“${currentItem.track.title}” is playing as full audio. Separate it here to unlock live stems.`}{" "}
+              <button
+                type="button"
+                className="button tiny"
+                aria-label={`${currentSourceAvailability.status === "failed" || currentSourceAvailability.status === "rejected" ? "Retry" : "Start"} separation for ${currentItem.track.title}`}
+                data-testid={`button-start-session-separation-${currentItem.id}`}
+                disabled={preparingSeparationTrackIds.has(currentItem.track.id)}
+                onClick={() => void startSessionTrackSeparation(currentItem.track.id)}
+              >
+                {preparingSeparationTrackIds.has(currentItem.track.id)
+                  ? "Starting…"
+                  : currentSourceAvailability.status === "failed" || currentSourceAvailability.status === "rejected"
+                    ? "Retry separation"
+                    : "Separate stems"}
+              </button>
+            </p>
+          )}
         {sessionSeparationProgress.map(({ id, title, stage, progress }) => {
           const phase = progress?.phase
             ? /^\d+\/\d+$/.test(progress.phase) ? ` · pass ${progress.phase}` : ` · ${progress.phase}`
