@@ -199,12 +199,12 @@ export default function DeviceSecurityPage() {
       {
         id: "local-mode",
         area: "Arena posture",
-        name: "Local Mode (zero egress)",
+        name: "Local Mode (provider calls)",
         verdict: ps.localMode ? "pass" : "info",
         value: ps.localMode ? "ON" : "OFF",
         detail: ps.localMode
-          ? "All AI generation is forced to the Arena Local Engine — no network egress from AI surfaces."
-          : "Remote models may be contacted when selected. Turn Local Mode on in Privacy Controls to force zero egress.",
+          ? "Supported remote model/provider calls are blocked. The browser still sends requests to the Arena API."
+          : "Selected remote providers may receive prompts. Local Mode blocks supported provider calls, not browser-to-server traffic.",
       },
       {
         id: "ephemeral",

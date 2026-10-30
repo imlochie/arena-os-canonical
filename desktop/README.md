@@ -73,14 +73,18 @@ port fails explicitly instead of silently changing the app's browser origin.
 Existing databases are never deleted or reinitialised to fix startup errors.
 The bundled PostgreSQL major remains 16 to match the retained desktop runtime.
 
-The package includes the CPU ONNX Runtime needed by Waveyard's local separator
-and a pinned Windows x64 LGPL shared FFmpeg/FFprobe build for compressed audio,
-waveforms, and exports. The FFmpeg archive is SHA-256 verified, cached under
+The package includes ONNX Runtime's CPU engine and the Windows x64 DirectML
+runtime dependencies (`DirectML.dll`, DXCompiler, and DXIL) for Waveyard's local
+separator, plus a pinned Windows x64 LGPL shared FFmpeg/FFprobe build for
+compressed audio, waveforms, and exports. The FFmpeg archive is SHA-256 verified, cached under
 `generated-artifacts/windows-tool-cache`, and its license is included beside
 the binaries in `resources/bin`. The shared libraries and tools add about
-150 MiB installed. Separation model weights remain a separate one-time download
-through Waveyard; CUDA/GPU providers are not bundled. This package still needs
-a real Windows Waveyard run before its speed or audio quality is verified.
+150 MiB installed. Automatic separation on Windows tries DirectML first and
+falls back to CPU; each job records the provider it actually resolved.
+Separation model weights remain a separate one-time download through Waveyard.
+A build-time probe runs a real CPU ONNX session, but only a real Windows
+measurement can establish whether DirectML is selected and how fast the
+four-model separation runs on the target machine.
 
 The FFmpeg package build downloads its pinned archive from GitHub during the
 first Windows package build. If the upstream `latest` asset changes, the
@@ -111,7 +115,8 @@ it does not modify the normal library or retain the audio. It measures import,
 separation, first playable stem timing, resolved model/device, machine and file
 metadata, process-tree memory, verifies distinct non-silent PCM in each output
 stem, and checks that the four stems play while vocal isolation changes live
-audio gains.
+audio gains. The report includes `model.directMlSelected`; this records whether
+the DML execution provider was selected, not per-operator GPU utilization.
 It writes only that report to
 `generated-artifacts/windows-waveyard/report-<timestamp>.json`. Share the
 report, not the audio file, to finish the Windows measurement. The report

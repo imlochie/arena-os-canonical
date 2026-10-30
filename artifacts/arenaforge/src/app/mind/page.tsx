@@ -237,7 +237,7 @@ export default function MindPage() {
     >
       <h1 className="text-3xl font-black text-white">The Mind</h1>
       <p className="mt-2 text-sm text-slate-400">
-        Throw anything in — thoughts, links, quotes, images. It gets tagged and summarized automatically; search finds it later. No folders, no filing.
+        Save notes, links, quotes, and images, then search them later. Automatic tags and summaries depend on the configured engine.
       </p>
 
       <div className="mt-6 flex gap-2">

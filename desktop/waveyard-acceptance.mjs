@@ -424,14 +424,22 @@ async function run() {
     : (result.job.metadata ?? {});
   assert(typeof metadata.engine === "string", "The completed job did not record its inference engine.");
   assert(Array.isArray(metadata.models) && metadata.models.length === 4, "The job did not record all four model passes.");
-  assert(typeof metadata.resolvedDevice === "string", "The job did not record its resolved CPU/GPU device.");
+  assert.equal(result.job.requestedDevice, "auto", "The Windows measurement must exercise automatic device selection.");
+  const resolvedDevice = typeof metadata.resolvedDevice === "string" ? metadata.resolvedDevice : null;
+  assert(
+    resolvedDevice,
+    `The job did not record its resolved device; DirectML selected: ${resolvedDevice === "dml"}.`,
+  );
+  const directMlSelected = resolvedDevice.toLowerCase() === "dml";
   report.model = {
     requested: result.job.model,
     requestedDevice: result.job.requestedDevice,
     actualModels: metadata.models ?? [],
     engine: metadata.engine ?? null,
-    resolvedDevice: metadata.resolvedDevice ?? null,
+    resolvedDevice,
+    directMlSelected,
   };
+  record("Windows separation provider", { resolvedDevice, directMlSelected });
   report.timings.inferenceSeconds = result.job.startedAt && result.job.completedAt
     ? Number(((Date.parse(result.job.completedAt) - Date.parse(result.job.startedAt)) / 1000).toFixed(2))
     : Number(((performance.now() - separationStarted) / 1000).toFixed(2));

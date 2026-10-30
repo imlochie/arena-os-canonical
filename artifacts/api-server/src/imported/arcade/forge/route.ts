@@ -39,7 +39,7 @@ export async function POST(req: Request) {
       signal: req.signal,
     });
     if (req.signal.aborted) return new Response(null, { status: 499 });
-    const runtimeVerification = await verifyArcadeRuntime(result.code);
+    const runtimeVerification = await verifyArcadeRuntime(result.code, req.signal);
     if (req.signal.aborted) return new Response(null, { status: 499 });
     if (runtimeVerification.status !== "passed") {
       const message = runtimeVerification.status === "unavailable"

@@ -44,7 +44,7 @@ export default function PrinciplesPage() {
           <div className="rounded-xl bg-white/[0.03] p-3 ring-1 ring-white/5">
             <p className="text-sm font-extrabold text-white">3 · Local ≠ lawless</p>
             <p className="mt-1 text-slate-300">
-              Local Mode and on-device AI run on your machine with zero egress — maximum privacy.
+              Local Mode blocks supported remote-provider calls. On-device inference requires the model service to run on the same machine as Arena.
               But this app will never help produce illegal content, regardless of where the
               computation happens.
             </p>

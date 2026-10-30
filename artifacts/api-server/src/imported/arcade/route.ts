@@ -79,7 +79,7 @@ export async function POST(req: Request) {
         }, { status: 422 });
       }
       const gameType = (body.gameType as GameType) ?? detectGameType(prompt || "ai game");
-      const runtimeVerification = await verifyArcadeRuntime(code);
+      const runtimeVerification = await verifyArcadeRuntime(code, req.signal);
       if (runtimeVerification.status !== "passed") {
         return Response.json({
           error: runtimeVerification.status === "unavailable"
@@ -110,14 +110,28 @@ export async function POST(req: Request) {
           runtimeVerification,
         });
       }
-      const row = await insertArcadeGame(db, {
-        prompt: prompt || "on-device AI game",
-        gameType,
-        engine: "on-device-ai",
-        code,
-        parentId: parentId ?? null,
-        ownerId: user.id,
-      });
+      let row;
+      try {
+        row = await insertArcadeGame(db, {
+          prompt: prompt || "on-device AI game",
+          gameType,
+          engine: "on-device-ai",
+          code,
+          parentId: parentId ?? null,
+          ownerId: user.id,
+        });
+      } catch {
+        return Response.json({
+          error: "The game passed its startup check but could not be saved to the shared library.",
+          draft: {
+            code,
+            title: prompt.slice(0, 40) || "On-device game",
+            gameType,
+            runtimeVerification,
+          },
+          runtimeVerification,
+        }, { status: 503 });
+      }
       return Response.json({ game: row, validation: v, runtimeVerification }, { status: 201 });
     }
 
@@ -137,7 +151,7 @@ export async function POST(req: Request) {
         },
       }, { status: 422 });
     }
-    const runtimeVerification = await verifyArcadeRuntime(g.code);
+    const runtimeVerification = await verifyArcadeRuntime(g.code, req.signal);
     if (runtimeVerification.status !== "passed") {
       return Response.json({
         error: runtimeVerification.status === "unavailable"
@@ -166,14 +180,28 @@ export async function POST(req: Request) {
     }
     // Persist only code that passed validation — a failed validation must
     // never become a stored "game" the catalogue then serves to everyone.
-    const row = await insertArcadeGame(db, {
-      prompt,
-      gameType: g.gameType,
-      engine: g.engine,
-      code: g.code,
-      parentId: parentId ?? null,
-      ownerId: user.id,
-    });
+    let row;
+    try {
+      row = await insertArcadeGame(db, {
+        prompt,
+        gameType: g.gameType,
+        engine: g.engine,
+        code: g.code,
+        parentId: parentId ?? null,
+        ownerId: user.id,
+      });
+    } catch {
+      return Response.json({
+        error: "The game passed its startup check but could not be saved to the shared library.",
+        draft: {
+          code: g.code,
+          title: g.title,
+          gameType: g.gameType,
+          runtimeVerification,
+        },
+        runtimeVerification,
+      }, { status: 503 });
+    }
     return Response.json({ game: row, validation: v, runtimeVerification, ms: g.ms }, { status: 201 });
   } catch (e) {
     console.error(e);

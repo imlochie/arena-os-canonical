@@ -67,8 +67,8 @@ export async function GET() {
         auditEvents: eventsN,
       },
       dbBytes,
-      residency: "local-postgres-only",
-      training: "never",
+      residency: "Arena server database",
+      training: "not used by Arena to train models",
     });
   } catch (e) {
     console.error(e);

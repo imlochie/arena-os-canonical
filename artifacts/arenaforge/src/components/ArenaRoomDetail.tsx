@@ -172,10 +172,9 @@ export default function ArenaRoomDetail({
               <div className="flex items-start gap-3">
                 <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-200" size={18} aria-hidden="true" />
                 <div>
-                  <p className="text-sm font-bold text-emerald-100">Existing app surface</p>
+                  <p className="text-sm font-bold text-cyan-100">Route exists</p>
                   <p className="mt-1 text-sm leading-5 text-slate-400">
-                    This room points to the existing app surface below. Nothing begins until
-                    you choose to submit there.
+                    This link opens the tool. Check its own runtime and service requirements before relying on an output.
                   </p>
                   <Link
                     href={room.destination.href}

@@ -24,3 +24,13 @@ test("isolated browser check catches uncaught startup errors without publishing"
   assert.equal(report.status, "failed", JSON.stringify(report));
   assert.match(report.issues.join(" "), /intentional startup failure/);
 });
+
+test("cancelled checks return without launching the browser", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const code = generateGameOffline("Pong", "pong").code;
+  const report = await verifyArcadeRuntime(code, controller.signal);
+
+  assert.equal(report.status, "unavailable", JSON.stringify(report));
+  assert.match(report.issues.join(" "), /cancelled/i);
+});

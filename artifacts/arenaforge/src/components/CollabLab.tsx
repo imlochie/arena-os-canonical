@@ -428,10 +428,10 @@ export default function CollabLab() {
             <ProjectPicker value={projectId} onChange={setProjectId} />
             <span className="text-[11px] text-slate-500">
               {privacy.ephemeral
-                ? "👻 Ephemeral: single-run synthesis, nothing stored."
+                ? "👻 Ephemeral: Arena does not save this run; provider handling still follows the selected runtime."
                 : privacy.localMode || !privacy.online
-                  ? "🔒 Local: on-device council + synthesis, zero egress."
-                  : "parallel minds · synthesis · iterate · never trained on"}
+                  ? "🔒 Local Mode: supported remote provider calls are blocked; the Arena API still receives requests."
+                  : "parallel minds · synthesis · iterate"}
             </span>
           </div>
           {(isEph || isLocal) && collab && (

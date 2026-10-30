@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { stageFfmpegBundle } from "./ffmpeg-bundle.mjs";
+import { verifyOnnxRuntime } from "./onnx-runtime-probe.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -113,6 +114,7 @@ async function main() {
   if (typeof onnxRuntime.InferenceSession?.create !== "function") {
     throw new Error("The staged ONNX Runtime did not expose InferenceSession.create.");
   }
+  await verifyOnnxRuntime(onnxRuntime, path.join(stage, "server"));
 
   // Download the Chromium revision matching the exact installed Playwright.
   runPnpm(["--filter", "@workspace/desktop", "exec", "playwright-core", "install", "chromium"]);

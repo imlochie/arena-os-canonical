@@ -60,29 +60,29 @@ export default function PrivacyPage() {
   return (
     <div className="mx-auto max-w-4xl">
       <div className="text-center">
-        <p className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-4 py-1.5 text-xs font-bold text-emerald-200">
-          🔒 Data Protection Center
+        <p className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-4 py-1.5 text-xs font-bold text-cyan-200">
+          🔒 Privacy and data handling
         </p>
         <h1 className="mx-auto mt-4 text-3xl font-black leading-tight tracking-tight text-white sm:text-4xl">
-          Your data is yours.{" "}
+          Know where your data goes.{" "}
           <span className="bg-gradient-to-r from-emerald-300 to-cyan-300 bg-clip-text text-transparent">
-            Never trained on. Ever.
+            Controls vary by tool.
           </span>
         </h1>
         <p className="mx-auto mt-3 max-w-2xl text-sm leading-relaxed text-slate-300">
-          The contract: <strong className="text-white">no training on your data</strong>, memory and tasks that
-          stay on your machine, and a <strong className="text-white">Local Mode for every feature</strong> so no
-          internet connection is ever mandatory.
+          This browser preview sends requests to the hosted Arena server. Local Mode blocks supported remote
+          provider calls; it does not make browser-to-server traffic or storage local. The packaged desktop app
+          runs its API on this PC.
         </p>
       </div>
 
-      {/* Guarantees */}
+      {/* Execution boundaries */}
       <div className="mt-6 grid gap-2 sm:grid-cols-2">
         {[
-          { e: "🚫", t: "Never trained on", d: "Your prompts, votes, chats and collabs are never used to train any model — not ours, not anyone's. Cloud calls carry explicit no-train / no-retain headers, and Local Mode sends nothing anywhere." },
-          { e: "🏠", t: "Local-first memory", d: "History, assistants, templates and Elo live in your own Postgres — not a vendor cloud. Memory and tasks work fully offline." },
-          { e: "📴", t: "Offline for everything", d: "Battles, collabs, chat, judge, image arena and leaderboards all run on the on-device engine in Local Mode. Pull the cable and keep working." },
-          { e: "🧹", t: "Erase anything, anytime", d: "Delete single items, wipe by category, or nuke everything including the audit log. Exports are one click. No retention dark patterns." },
+          { e: "🌐", t: "Hosted browser", d: "Requests and files sent to Arena reach the hosted API. Local Mode does not block that connection or prevent server-side storage." },
+          { e: "🖥️", t: "Packaged desktop", d: "The Arena API runs on this PC. A model is local only when its model service also runs on this PC." },
+          { e: "🤖", t: "Remote providers", d: "Selected prompts are sent for inference. Arena adds best-effort no-train/no-retain headers; provider policies still apply." },
+          { e: "🧹", t: "Storage controls", d: "Persistence and deletion coverage vary by tool. Check the data inventory and each tool's save controls." },
         ].map((c) => (
           <div key={c.t} className="glass rounded-2xl p-4">
             <p className="text-xl">{c.e}</p>
@@ -96,42 +96,35 @@ export default function PrivacyPage() {
         <PrivacyControls />
       </div>
 
-      {/* Mode matrix */}
+      {/* Data handling matrix */}
       <div className="glass mt-4 rounded-2xl p-5">
-        <h2 className="text-base font-extrabold text-white">🔀 The three modes</h2>
+        <h2 className="text-base font-extrabold text-white">🔀 What the controls change</h2>
         <div className="mt-3 overflow-x-auto">
           <table className="w-full min-w-[560px] border-collapse text-xs">
             <thead>
               <tr className="text-left text-[11px] uppercase tracking-wider text-slate-400">
-                <th className="border border-white/10 bg-white/[0.03] px-3 py-2">Question</th>
-                <th className="border border-white/10 bg-white/[0.03] px-3 py-2">🔓 Cloud (default)</th>
-                <th className="border border-white/10 bg-white/[0.03] px-3 py-2">🔒 Local Mode</th>
-                <th className="border border-white/10 bg-white/[0.03] px-3 py-2">👻 Ephemeral</th>
+                <th className="border border-white/10 bg-white/[0.03] px-3 py-2">Control</th>
+                <th className="border border-white/10 bg-white/[0.03] px-3 py-2">Effect</th>
               </tr>
             </thead>
             <tbody className="text-slate-200">
               {[
-                ["Internet needed?", "Yes, for AI calls", "No — everything on-device", "Only if combined with cloud"],
-                ["Prompts leave machine?", "Yes — inference only, no-train headers", "Never — zero egress", "Depends on Local toggle"],
-                ["Anything trains on data?", "No — contract + headers", "Impossible — nothing sent", "No"],
-                ["Saved to database?", "Yes — your local Postgres", "Yes — memory still works", "Nothing persisted"],
-                ["Blind battles fair?", "Yes — sealed server-side", "Yes — same engine", "Yes — AES-sealed token"],
-                ["Votes affect Elo?", "Yes", "Yes", "No — private by design"],
-                ["Best for", "Max quality, still free", "Privacy + offline + travel", "Sensitive prompts"],
+                ["Local Mode", "Disables supported remote model/provider calls. It does not block requests to the Arena server."],
+                ["Ephemeral", "Skips persistence only in flows that support it; it is not a global storage switch."],
+                ["Remote model", "The selected provider receives the prompt for inference. Headers are best-effort, not a contract."],
+                ["Model location", "The model runs where its service endpoint is hosted. In the web preview, localhost means the Arena server."],
               ].map((r) => (
                 <tr key={r[0]}>
                   <td className="border border-white/10 px-3 py-2 font-bold text-white">{r[0]}</td>
                   <td className="border border-white/10 px-3 py-2">{r[1]}</td>
-                  <td className="border border-white/10 px-3 py-2">{r[2]}</td>
-                  <td className="border border-white/10 px-3 py-2">{r[3]}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
         <p className="mt-2 text-[11px] text-slate-500">
-          Combine Local + Ephemeral for maximum protection: on-device AI with zero storage — the app becomes a
-          stateless offline instrument. BYOK keys are ignored in Local Mode (zero egress beats key quality).
+          Local + Ephemeral reduces provider calls and persistence for supported flows. The hosted API still
+          receives the browser request. BYOK keys are ignored when Local Mode is enforced.
         </p>
       </div>
 
@@ -170,7 +163,7 @@ export default function PrivacyPage() {
               ))}
             </div>
             <p className="mt-2 text-[11px] text-slate-500">
-              Residency: <strong className="text-slate-300">{summary.residency}</strong> · training:{" "}
+              Storage: <strong className="text-slate-300">{summary.residency}</strong> · Arena training:{" "}
               <strong className="text-emerald-300">{summary.training}</strong> · policy {summary.policy.version}
             </p>
           </>
@@ -251,14 +244,13 @@ export default function PrivacyPage() {
         <h2 className="text-base font-extrabold text-white">🤝 Honest provider notes</h2>
         <div className="mt-2 space-y-2 text-xs leading-relaxed text-slate-300">
           <p className="rounded-xl bg-white/[0.03] p-3 ring-1 ring-white/5">
-            <strong className="text-white">Pollinations (default cloud).</strong> Keyless inference; we attach
-            no-train / no-retain headers to every call. If you need a contractual guarantee rather than a
-            best-effort header, use Local Mode — then nothing is sent at all.
+            <strong className="text-white">Pollinations (default cloud).</strong> Prompts are sent for inference.
+            Arena attaches best-effort no-train / no-retain headers; this is not a contractual guarantee.
           </p>
           <p className="rounded-xl bg-white/[0.03] p-3 ring-1 ring-white/5">
-            <strong className="text-white">BYOK keys (Groq / OpenRouter).</strong> Keys live only in your browser
-            and are forwarded per-request for inference. Free third-party tiers may log for abuse prevention —
-            Local Mode ignores keys entirely and skips these providers.
+            <strong className="text-white">BYOK keys (Groq / OpenRouter).</strong> Keys are stored in the browser
+            and sent to the Arena API for each request so it can forward them to the provider. Provider retention
+            and abuse-prevention policies may apply.
           </p>
           <p className="rounded-xl bg-white/[0.03] p-3 ring-1 ring-white/5">
             <strong className="text-white">Browser TTS.</strong> Read-aloud uses your device&apos;s built-in

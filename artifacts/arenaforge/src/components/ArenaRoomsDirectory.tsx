@@ -12,6 +12,7 @@ import {
   Compass,
   GraduationCap,
   Cpu,
+  Gamepad2,
   Headphones,
   Image,
   LayoutGrid,
@@ -38,6 +39,7 @@ const ROOM_ICONS: Record<string, LucideIcon> = {
   "archive-assistant": Archive,
   classroom: BookOpen,
   college: GraduationCap,
+  arcade: Gamepad2,
   studio: Sparkles,
   "cut-lab": Scissors,
   waveyard: Headphones,
@@ -51,8 +53,8 @@ const STATE_STYLES: Record<
 > = {
   available: {
     icon: CheckCircle2,
-    className: "border-emerald-400/20 bg-emerald-400/10 text-emerald-200",
-    dot: "bg-emerald-300",
+    className: "border-cyan-300/20 bg-cyan-300/5 text-cyan-100",
+    dot: "bg-cyan-200",
   },
   local: {
     icon: CircleAlert,
@@ -92,27 +94,26 @@ export default function ArenaRoomsDirectory() {
         <div className="relative max-w-3xl">
           <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.2em] text-cyan-200/80">
             <Radio size={14} aria-hidden="true" />
-            Arena room index
+            Handoff room index
           </div>
           <h1 className="mt-4 text-3xl font-black tracking-[-0.04em] text-white sm:text-5xl">
-            A clear place to begin.
+            Open a tool or prepare a handoff.
           </h1>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-300 sm:text-base">
-            Rooms are addresses into the tools already in Arena OS. Choose a surface,
-            review where it leads, and decide when anything should move.
+            This index lists registered handoff rooms. Handoff records stay in this browser;
+            they do not send payloads to the destination automatically.
           </p>
           <p className="mt-2 max-w-2xl text-xs leading-5 text-slate-500">
-            Naming note: <b className="text-slate-400">Spaces</b> is one of these rooms — the
-            agent workbench that runs fleets and missions in the background.
+            Use the room menu to browse every tool in Arena.
           </p>
           <div className="mt-7 flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-300">
             <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/15 px-3 py-2">
               <LayoutGrid size={14} className="text-violet-200" aria-hidden="true" />
-              {ARENA_ROOMS.length} distinct rooms
+              {ARENA_ROOMS.length} registered rooms
             </span>
             <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/15 px-3 py-2">
               <Cable size={14} className="text-cyan-200" aria-hidden="true" />
-              Transfers stay visible
+              Handoffs are manual
             </span>
           </div>
         </div>
@@ -121,7 +122,7 @@ export default function ArenaRoomsDirectory() {
       <div className="mt-8 flex items-end justify-between gap-4">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-violet-200/70">
-            Room directory
+            Registered rooms
           </p>
           <h2 className="mt-2 text-xl font-extrabold tracking-tight text-white">
             Pick a working surface

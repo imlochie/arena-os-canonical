@@ -82,6 +82,7 @@ function isolatedBrowserEnvironment(): NodeJS.ProcessEnv {
 
 export async function verifyArcadeRuntime(
   code: string,
+  signal?: AbortSignal,
 ): Promise<ArcadeRuntimeVerification> {
   const staticCheck = validateGameCode(code);
   if (!staticCheck.ok) {
@@ -98,8 +99,12 @@ export async function verifyArcadeRuntime(
   activeChecks++;
   let browser: Browser | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
   try {
     const work = async (): Promise<ArcadeRuntimeVerification> => {
+      if (signal?.aborted) {
+        return { status: "unavailable", scope: SCOPE, issues: ["Browser verification was cancelled."] };
+      }
       const executablePath = await chromiumExecutablePath();
       browser = await chromium.launch({
         headless: true,
@@ -108,6 +113,9 @@ export async function verifyArcadeRuntime(
         env: isolatedBrowserEnvironment(),
         args: process.platform === "linux" ? ["--no-sandbox", "--disable-dev-shm-usage"] : [],
       });
+      if (signal?.aborted) {
+        return { status: "unavailable", scope: SCOPE, issues: ["Browser verification was cancelled."] };
+      }
       const context = await browser.newContext({
         viewport: { width: 900, height: 700 },
         serviceWorkers: "block",
@@ -140,7 +148,7 @@ export async function verifyArcadeRuntime(
           });
           return;
         }
-        if (/^https?:/i.test(route.request().url())) {
+        if (/^(?:https?|wss?):/i.test(route.request().url())) {
           blockedRequests++;
           await route.abort("blockedbyclient");
           return;
@@ -210,7 +218,17 @@ export async function verifyArcadeRuntime(
         issues: ["Browser startup verification exceeded 20 seconds; the game was not published."],
       }), 20_000);
     });
-    return await Promise.race([work(), timed]);
+    const cancelled = signal
+      ? new Promise<ArcadeRuntimeVerification>((resolve) => {
+          abortHandler = () => {
+            void browser?.close().catch(() => {});
+            resolve({ status: "unavailable", scope: SCOPE, issues: ["Browser verification was cancelled."] });
+          };
+          signal.addEventListener("abort", abortHandler, { once: true });
+          if (signal.aborted) abortHandler();
+        })
+      : undefined;
+    return await Promise.race([work(), timed, ...(cancelled ? [cancelled] : [])]);
   } catch (error) {
     return {
       status: browser ? "failed" : "unavailable",
@@ -223,6 +241,7 @@ export async function verifyArcadeRuntime(
     };
   } finally {
     if (timeout) clearTimeout(timeout);
+    if (signal && abortHandler) signal.removeEventListener("abort", abortHandler);
     await browser?.close().catch(() => {});
     activeChecks--;
   }

@@ -1,15 +1,14 @@
-// Server-side data-protection core: the no-training contract,
-// zero-egress enforcement for Local Mode, sealed ephemeral reveals,
-// and the privacy audit log.
+// Server-side privacy controls: best-effort provider headers, remote-provider
+// blocking for Local Mode, sealed ephemeral reveals, and the privacy audit log.
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
 import { db } from "@workspace/db";
 import { privacyEvents } from "@workspace/db/schema";
 
 export const DATA_POLICY = {
-  training: "never",
-  retentionCloud: "zero-by-default",
-  localModeEgress: "none",
+  training: "not-used-by-Arena",
+  retentionCloud: "provider-dependent; best-effort headers",
+  localModeEgress: "remote-providers-disabled-where-supported",
   version: "2026-09-12",
 } as const;
 

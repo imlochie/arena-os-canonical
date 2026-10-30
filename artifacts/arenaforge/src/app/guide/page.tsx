@@ -114,7 +114,7 @@ export default function GuidePage() {
             { n: "Groq free tier", q: "★★★★★", k: "Free key", d: "Blazing Llama 3.3 70B. Insane speed, excellent quality. Generous daily limits. Best BYOK upgrade." },
             { n: "OpenRouter :free models", q: "★★★★☆", k: "Free key", d: "Meta/NVIDIA/Qwen free endpoints (e.g. llama-3.3-70b-instruct:free). One key, many models." },
             { n: "Google Gemini free", q: "★★★★☆", k: "Free key", d: "Huge context (1M tokens), great for long docs. Limits vary by project." },
-            { n: "Ollama (local)", q: "★★★☆☆", k: "None — your GPU", d: "Fully private, fully offline. Quality depends on your machine. Point this app's API at localhost:11434 to use it." },
+            { n: "Ollama (local)", q: "★★★☆☆", k: "No provider key", d: "Ollama runs where its service is installed. In the hosted preview, localhost is Arena's server; use the packaged desktop app to connect Ollama on this PC." },
             { n: "HuggingFace Inference", q: "★★★☆☆", k: "Free token", d: "Monthly included credits. Great for trying open-weight models before committing." },
           ].map((p) => (
             <div key={p.n} className={`flex flex-col gap-1 rounded-xl p-3 ring-1 sm:flex-row sm:items-center sm:gap-3 ${p.hot ? "bg-violet-600/10 ring-violet-500/40" : "bg-white/[0.03] ring-white/5"}`}>

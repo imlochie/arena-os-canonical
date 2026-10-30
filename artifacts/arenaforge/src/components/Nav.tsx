@@ -37,7 +37,7 @@ const GROUPS: { title: string; rooms: RoomLink[] }[] = [
   {
     title: "Agents & teams",
     rooms: [
-      { href: "/spaces", label: "Spaces", emoji: "🧩", desc: "Agent fleets, missions, watchers.", keywords: "automation agents fleet mission workspace watch" },
+      { href: "/spaces", label: "Spaces", emoji: "🧩", desc: "Browser workspaces and model-assisted missions.", keywords: "automation agents fleet mission workspace watch" },
       { href: "/orchestrator", label: "Orchestrator", emoji: "🪢", desc: "Pick a workflow for the work.", keywords: "workflow route pipeline" },
       { href: "/council", label: "Council", emoji: "🧠", desc: "Compare perspectives, synthesize.", keywords: "debate compare perspectives" },
       { href: "/congress", label: "Congress", emoji: "🏛️", desc: "Timed multi-seat deliberation.", keywords: "debate seats deliberation vote" },
@@ -49,10 +49,10 @@ const GROUPS: { title: string; rooms: RoomLink[] }[] = [
     rooms: [
       { href: "/waveyard", label: "Waveyard", emoji: "🎚️", desc: "The music studio: stems, remixes, exports.", keywords: "music audio stems separation remix" },
       { href: "/studio", label: "Visual Studio", emoji: "🎬", desc: "Full generation lab: backends, jobs, gallery.", keywords: "video image audio generation wangp comfyui jobs" },
-      { href: "/arcade", label: "Arcade", emoji: "🎮", desc: "Forge any game — templates or AI.", keywords: "game tetris play generate" },
+      { href: "/arcade", label: "Arcade", emoji: "🎮", desc: "Create and revise browser games; import supported web games.", keywords: "game tetris play generate" },
       { href: "/image", label: "Image", emoji: "🖼️", desc: "Generate images.", keywords: "picture draw art" },
       { href: "/luma", label: "LUMA", emoji: "📷", desc: "The image workshop.", keywords: "photo picture edit" },
-      { href: "/toolbox", label: "Toolbox", emoji: "🧰", desc: "Convert video, audio and images locally — the converter websites and HandBrake, replaced.", keywords: "convert ffmpeg handbrake mp4 mkv webm mp3 wav webp gif transcode remux encode compress" },
+      { href: "/toolbox", label: "Toolbox", emoji: "🧰", desc: "Convert video, audio and images with the configured media tools.", keywords: "convert ffmpeg handbrake mp4 mkv webm mp3 wav webp gif transcode remux encode compress" },
     ],
   },
   {
@@ -78,17 +78,17 @@ const GROUPS: { title: string; rooms: RoomLink[] }[] = [
   {
     title: "System",
     rooms: [
-      { href: "/rooms", label: "All rooms", emoji: "🗺️", desc: "The full directory.", keywords: "directory all overview" },
+      { href: "/rooms", label: "Handoff rooms", emoji: "🗺️", desc: "Registered rooms for manual handoffs.", keywords: "directory handoff overview" },
       { href: "/runtime", label: "Runtime", emoji: "⚙️", desc: "Which brains run, and where.", keywords: "engine model levels local" },
       { href: "/model-hub", label: "Model Hub", emoji: "🧰", desc: "Download and connect AI models (Ollama, keys, agent bridge).", keywords: "model hub ollama download connect local lmstudio bridge keys" },
       { href: "/creative", label: "Creative Suite", emoji: "🎨", desc: "Research with citations, decks, podcasts, voices, captions.", keywords: "research citations deck slides pptx podcast voice tts captions srt creative gamma perplexity notebooklm elevenlabs capcut" },
-      { href: "/foundry", label: "App Foundry", emoji: "🔨", desc: "Describe an app, any model builds it — sandboxed preview, versioned iterations.", keywords: "foundry vibe coding app builder generate html prototype bolt lovable v0 base44" },
+      { href: "/foundry", label: "App Foundry", emoji: "🔨", desc: "Build and revise web apps with a connected model; preview in a sandbox.", keywords: "foundry vibe coding app builder generate html prototype bolt lovable v0 base44" },
       { href: "/deep-agent", label: "Deep Agent", emoji: "🤖", desc: "Bounded autonomous agent: plan → act → verify, capped and transcribed.", keywords: "deep agent autonomous autogpt plan act verify bounded transcript" },
-      { href: "/mind", label: "The Mind", emoji: "🧠", desc: "Throw anything in — auto-tagged, searchable, no folders.", keywords: "mind mymind capture notes links quotes images mood board auto tag smart spaces serendipity bookmarking second brain" },
-      { href: "/subscriptions", label: "Subscriptions", emoji: "💳", desc: "Offline recurring-cost tracker with receipt extraction.", keywords: "subscriptions bobby recurring costs bills tracker receipt extract forecast monthly total" },
+      { href: "/mind", label: "The Mind", emoji: "🧠", desc: "Save and search notes, links, quotes, and images.", keywords: "mind mymind capture notes links quotes images mood board auto tag smart spaces serendipity bookmarking second brain" },
+      { href: "/subscriptions", label: "Subscriptions", emoji: "💳", desc: "Track recurring costs and forecasts; extract receipt details.", keywords: "subscriptions bobby recurring costs bills tracker receipt extract forecast monthly total" },
       { href: "/market", label: "Market", emoji: "🛒", desc: "Model marketplace and comparison.", keywords: "market models compare shop" },
       { href: "/guide", label: "Guide", emoji: "📘", desc: "Clone and self-host instructions.", keywords: "clone deploy self host docs" },
-      { href: "/privacy", label: "Privacy", emoji: "🛡️", desc: "Never trained on. Local-first.", keywords: "data protection security" },
+      { href: "/privacy", label: "Privacy", emoji: "🛡️", desc: "Privacy settings and data-handling controls.", keywords: "data protection security" },
       { href: "/device-security", label: "Device Security", emoji: "🔐", desc: "What Arena can honestly observe here.", keywords: "device security observe privacy fingerprint" },
     ],
   },
@@ -172,7 +172,7 @@ export default function Nav() {
           </span>
           <span className="hidden leading-tight sm:block">
             <span className="block text-[15px] font-extrabold tracking-tight text-white">Arena</span>
-            <span className="block text-[10px] font-semibold text-slate-500">free · private · yours</span>
+            <span className="block text-[10px] font-semibold text-slate-500">personal tool workspace</span>
           </span>
         </Link>
 
@@ -224,7 +224,7 @@ export default function Nav() {
           </div>
           <Link
             href="/privacy"
-            title="Data protection — never trained on, local-first, offline-ready"
+            title="Privacy settings and data-handling boundaries"
             className={`rounded-lg px-2.5 py-2 text-sm font-bold transition ${
               pathname === "/privacy"
                 ? "bg-emerald-600/25 text-white ring-1 ring-emerald-500/50"

@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 import { ARENA_ROOMS, getArenaRoom } from "./arenaRooms";
 
-/** The fixed 12-room inventory. Rooms are addresses; surfaces are not rooms. */
+/** Registered handoff-room inventory. Each entry must open a real product surface. */
 const EXPECTED_ROOM_IDS = [
   "assistant",
   "orchestrator",
@@ -37,6 +37,7 @@ const EXPECTED_ROOM_IDS = [
   "subscriptions",
   "cut-lab",
   "waveyard",
+  "arcade",
   "luma",
   // Added by the product audit: Market was reachable from nowhere.
   "market",
@@ -56,6 +57,7 @@ const EXPECTED_DESTINATIONS: Record<string, string> = {
   studio: "/studio",
   "cut-lab": "/cut",
   waveyard: "/waveyard",
+  arcade: "/arcade",
   luma: "/luma",
   "device-security": "/device-security",
   market: "/market",

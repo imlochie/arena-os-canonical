@@ -50,9 +50,9 @@ function Shell() {
     <DesktopRuntimeStatus />
     <footer className="border-t border-white/10 py-5">
       <p className="mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 text-center text-xs text-slate-500 sm:px-6">
-        <span>ArenaForge Personal · your votes train <em>your</em> leaderboard · $0 forever</span>
+        <span>ArenaForge Personal · your votes train <em>your</em> leaderboard</span>
         <span className="text-slate-700">·</span>
-        <a href="/privacy" className="font-bold text-emerald-300/80 hover:underline">🛡️ Privacy — never trained on, local-first</a>
+        <a href="/privacy" className="font-bold text-emerald-300/80 hover:underline">🛡️ Privacy and data handling</a>
         <span className="text-slate-700">·</span>
         <a href="/principles" className="font-bold text-slate-400 hover:underline">📜 Principles</a>
       </p>

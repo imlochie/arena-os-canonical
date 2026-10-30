@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { copyExternalPackage } from "./build.mjs";
+import { verifyOnnxRuntime } from "./onnx-runtime-probe.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
 const apiRequire = createRequire(path.join(root, "artifacts/api-server/package.json"));
 
-test("stages ONNX Runtime with its native binding and runtime dependencies", async () => {
+test("stages ONNX Runtime with CPU inference and Windows DirectML dependencies", async () => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "arena-ort-stage-"));
   const nodeModules = path.join(temporaryRoot, "server", "node_modules");
   try {
@@ -21,6 +22,11 @@ test("stages ONNX Runtime with its native binding and runtime dependencies", asy
     assert.equal(typeof runtime.InferenceSession?.create, "function");
     const runtimeRequire = createRequire(stagedRequire.resolve("onnxruntime-node"));
     assert.ok(runtimeRequire.resolve("onnxruntime-common"));
+    const windowsRuntime = path.join(nodeModules, "onnxruntime-node", "bin", "napi-v6", "win32", "x64");
+    for (const file of ["onnxruntime.dll", "DirectML.dll", "dxcompiler.dll", "dxil.dll"]) {
+      await access(path.join(windowsRuntime, file));
+    }
+    await verifyOnnxRuntime(runtime, temporaryRoot);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

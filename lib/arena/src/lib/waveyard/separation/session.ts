@@ -38,9 +38,14 @@ export function separationInferenceThreads(availableCpus = availableParallelism(
 
 export const WAVEYARD_ORT_INTRA_OP_THREADS = separationInferenceThreads();
 
-/** Auto prefers a supported GPU; CPU is the honest fallback. */
-export function executionProviderAttempts(requestedDevice: "auto" | "cpu" | "cuda"): string[][] {
-  return requestedDevice === "cpu" ? [["cpu"]] : [["cuda"], ["cpu"]];
+/** Auto prefers the platform's packaged GPU provider; CPU is the fallback. */
+export function executionProviderAttempts(
+  requestedDevice: "auto" | "cpu" | "cuda",
+  platform: NodeJS.Platform = process.platform,
+): string[][] {
+  if (requestedDevice === "cpu") return [["cpu"]];
+  if (requestedDevice === "cuda") return [["cuda"], ["cpu"]];
+  return platform === "win32" ? [["dml"], ["cpu"]] : [["cuda"], ["cpu"]];
 }
 
 /** The minimal ort surface the engine needs (both real and fake sessions). */

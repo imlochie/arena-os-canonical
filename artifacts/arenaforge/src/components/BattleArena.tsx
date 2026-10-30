@@ -551,10 +551,10 @@ export default function BattleArena() {
             <PrivacyControls compact />
             <span className="text-[11px] text-slate-500">
               {privacy.ephemeral
-                ? "👻 Ephemeral: single-turn, reveal-only vote, nothing stored."
+                ? "👻 Ephemeral: Arena does not save this run; provider handling still follows the selected runtime."
                 : privacy.localMode || !privacy.online
-                  ? "🔒 Local: on-device AI, zero egress, memory still saved."
-                  : "streamed · blind · position-randomized · Elo + BT · never trained on"}
+                  ? "🔒 Local Mode: supported remote provider calls are blocked; the Arena API still receives requests."
+                  : "streamed · blind · position-randomized · Elo + BT"}
             </span>
           </div>
 

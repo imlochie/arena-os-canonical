@@ -139,7 +139,7 @@ function verifyGameInIsolatedPreview(code: string, saveId: string): Promise<{ ok
       `try{parent.postMessage({channel:channel,nonce:nonce,type:"result",ok:issues.length===0,issues:issues},"*")}catch(e){}}` +
       `window.addEventListener("error",function(e){errors.push(String(e.message||"script error").slice(0,220))},true);` +
       `window.addEventListener("unhandledrejection",function(e){errors.push(String(e.reason&&e.reason.message||e.reason||"promise rejection").slice(0,220))});` +
-      `document.addEventListener("DOMContentLoaded",function(){setTimeout(report,350)});})();</script>`;
+      `document.addEventListener("DOMContentLoaded",function(){var buttons=document.querySelectorAll("button");for(var i=0;i<buttons.length;i++){if(/\\b(start|play|begin)\\b/i.test(buttons[i].innerText||buttons[i].textContent||"")){buttons[i].click();break}}setTimeout(report,350)});})();</script>`;
     window.addEventListener("message", onMessage);
     frame.srcdoc = createGameSandboxDocument(code, saveId).replace(/<\/head>/i, `${probe}</head>`);
     document.body.append(frame);
@@ -537,45 +537,69 @@ export default function ArcadeForge() {
   }
 
   function persistGame(payload: any) {
-    return fetch("/api/arcade", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...payload, ...privacyFlags() }),
-    }).then(async (r) => {
-      const j = await r.json();
-      if (!r.ok) {
-        if (typeof j?.draft?.code === "string") {
-          try {
-            const savedDraft = await preserveUnverifiedDraft(
-              String(payload.prompt ?? "Unverified game"),
-              j.draft.code,
-              j.draft.runtimeVerification,
-              j.draft.title,
-              j.draft.gameType,
-            );
-            throw new Error(`${j.error ?? "The game did not pass its startup check."} Draft saved as “${savedDraft.title}”; your current game was left unchanged.`);
-          } catch (error) {
-            if (error instanceof Error && error.message.includes("Draft saved as")) throw error;
-            throw new Error(`${j.error ?? "The game did not pass its startup check."} The draft could not be saved locally: ${error instanceof Error ? error.message : "storage unavailable"}.`);
-          }
+    return (async () => {
+      const privacy = privacyFlags();
+      let response: Response;
+      let result: any = {};
+      try {
+        response = await fetch("/api/arcade", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, ...privacy }),
+        });
+        result = await response.json().catch(() => ({}));
+      } catch (error) {
+        if (typeof payload.clientCode !== "string") throw error;
+        if (privacy.ephemeral) {
+          throw new Error("The API could not be reached. Ephemeral mode is on, so the game source was not retained.");
         }
-        throw new Error(j.error ?? "save failed");
+        const savedDraft = await preserveGeneratedOutput(
+          String(payload.prompt ?? "Unverified game"),
+          payload.clientCode,
+          { status: "unavailable", issues: ["The API could not be reached to verify or publish this game."] },
+          undefined,
+          payload.gameType,
+        );
+        throw new Error(`The API could not be reached. The unverified draft is saved locally as “${savedDraft.title}”; your current game was left unchanged.`);
       }
-      if (j.runtimeVerification?.status !== "passed") {
+      if (!response.ok) {
+        const draftCode = typeof result?.draft?.code === "string" ? result.draft.code : payload.clientCode;
+        if (typeof draftCode !== "string") throw new Error(result.error ?? "save failed");
+        if (privacy.ephemeral) {
+          throw new Error(`${result.error ?? "The game could not be published."} Ephemeral mode is on, so the game source was not retained.`);
+        }
+        try {
+          const savedDraft = await preserveGeneratedOutput(
+            String(payload.prompt ?? "Unverified game"),
+            draftCode,
+            result?.draft?.runtimeVerification ?? result?.runtimeVerification,
+            result?.draft?.title,
+            result?.draft?.gameType ?? payload.gameType,
+          );
+          throw new Error(`${result.error ?? "The game could not be published."} ${savedDraft.draft ? "Unverified draft" : "Local copy"} saved as “${savedDraft.title}”; your current game was left unchanged.`);
+        } catch (error) {
+          if (error instanceof Error && error.message.includes("saved as “")) throw error;
+          throw new Error(`${result.error ?? "The game could not be published."} The draft could not be saved locally: ${error instanceof Error ? error.message : "storage unavailable"}.`);
+        }
+      }
+      if (result.runtimeVerification?.status !== "passed") {
         if (typeof payload.clientCode === "string") {
-          const savedDraft = await preserveUnverifiedDraft(
+          if (privacy.ephemeral) {
+            throw new Error("The server did not confirm an isolated startup check. Ephemeral mode is on, so the game source was not retained.");
+          }
+          const savedDraft = await preserveGeneratedOutput(
             String(payload.prompt ?? "Unverified game"),
             payload.clientCode,
-            j.runtimeVerification,
+            result.runtimeVerification,
             undefined,
             payload.gameType,
           );
-          throw new Error(`The server did not confirm an isolated startup check. Draft saved as “${savedDraft.title}”; no game was published.`);
+          throw new Error(`The server did not confirm an isolated startup check. Local copy saved as “${savedDraft.title}”; no game was published.`);
         }
         throw new Error("The server did not confirm an isolated startup check. No game was published.");
       }
-      return { ...j.game, runtimeVerification: j.runtimeVerification };
-    });
+      return { ...result.game, runtimeVerification: result.runtimeVerification };
+    })();
   }
 
   async function runInstant(p: string, type: GameType, parentId?: string) {
@@ -622,7 +646,7 @@ export default function ArcadeForge() {
     return updated;
   }
 
-  async function preserveUnverifiedDraft(
+  async function preserveGeneratedOutput(
     promptText: string,
     code: string,
     verification: { status?: string; issues?: string[] } | undefined,
@@ -632,7 +656,9 @@ export default function ArcadeForge() {
     const id = `arcade-draft:${crypto.randomUUID()}`;
     const gameType = GAME_TYPES.find((item) => item.id === gameTypeHint)?.id ?? detectGameType(promptText);
     const title = (titleHint?.trim() || promptText.trim().slice(0, 40) || "Unverified game").slice(0, 80);
-    const status = verification?.status === "unavailable" ? "unavailable" : "failed";
+    const status = verification?.status === "passed"
+      ? "passed"
+      : verification?.status === "unavailable" ? "unavailable" : "failed";
     const draft: SavedOfflineGame = {
       id,
       title,
@@ -644,7 +670,7 @@ export default function ArcadeForge() {
       starter: false,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      draft: true,
+      draft: status !== "passed",
       verificationStatus: status,
       verificationIssues: Array.isArray(verification?.issues) ? verification.issues.map(String).slice(0, 8) : [],
     };
@@ -653,7 +679,9 @@ export default function ArcadeForge() {
       draft,
       ...current.filter((item) => item.id !== draft.id),
     ].sort((a, b) => a.title.localeCompare(b.title)));
-    setNotice(`“${title}” is saved as an unverified draft in Offline starter games. Your previous game is unchanged.`);
+    setNotice(status === "passed"
+      ? `“${title}” passed the startup check and is saved locally. The shared library was not updated; your previous game is unchanged.`
+      : `“${title}” is saved as an unverified draft in Offline starter games. Your previous game is unchanged.`);
     return draft;
   }
 
@@ -689,17 +717,20 @@ export default function ArcadeForge() {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (typeof body?.draft?.code === "string") {
+          if (flags.ephemeral) {
+            throw new Error(`${body.error ?? "The game did not pass its startup check."} Ephemeral mode is on, so the game source was not retained.`);
+          }
           try {
-            const savedDraft = await preserveUnverifiedDraft(
+            const savedDraft = await preserveGeneratedOutput(
               p,
               body.draft.code,
               body.draft.runtimeVerification,
               body.draft.title,
               body.draft.gameType,
             );
-            throw new Error(`${body.error ?? "The game did not pass its startup check."} Draft saved as “${savedDraft.title}”; your current game was left unchanged.`);
+            throw new Error(`${body.error ?? "The game did not pass its startup check."} ${savedDraft.draft ? "Unverified draft" : "Local copy"} saved as “${savedDraft.title}”; your current game was left unchanged.`);
           } catch (error) {
-            if (error instanceof Error && error.message.includes("Draft saved as")) throw error;
+            if (error instanceof Error && error.message.includes("saved as “")) throw error;
             throw new Error(`${body.error ?? "The game did not pass its startup check."} The draft could not be saved locally: ${error instanceof Error ? error.message : "storage unavailable"}.`);
           }
         }
@@ -782,7 +813,7 @@ export default function ArcadeForge() {
         const startup = await verifyGameInIsolatedPreview(code, localOfflineId);
         if (!startup.ok) {
           if (!privacyFlags().ephemeral) {
-            const savedDraft = await preserveUnverifiedDraft(p, code, { status: "failed", issues: startup.issues }, p, type);
+            const savedDraft = await preserveGeneratedOutput(p, code, { status: "failed", issues: startup.issues }, p, type);
             throw new Error(`The revision failed the isolated startup check. Draft saved as “${savedDraft.title}”; the original offline game and its progress were left unchanged.`);
           }
           throw new Error(`The temporary revision failed the isolated startup check: ${startup.issues.join("; ")}`);

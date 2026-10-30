@@ -4,10 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Gauge, HardDrive, Loader2, Trash2, Upload, Wrench } from "lucide-react";
 
 /**
- * The Toolbox — local file conversion. The HandBrake / converter-website
- * replacement: everything runs on this machine through the bundled ffmpeg,
- * nothing is uploaded anywhere, and the engine used (hardware or software)
- * is labeled on every job.
+ * The Toolbox — file conversion through the Arena API's configured FFmpeg.
+ * The packaged desktop app runs that API on this PC; the hosted web preview
+ * processes uploads on its server. The engine used (hardware or software) is
+ * labeled on every job.
  */
 
 type Probe = {
@@ -181,8 +181,8 @@ export default function ToolboxPage() {
         Toolbox
       </h1>
       <p className="mt-2 text-sm text-slate-400">
-        Convert video, audio and images locally — the converter websites and HandBrake, replaced. Everything runs on
-        this machine through the bundled ffmpeg; nothing is uploaded anywhere, ever.
+        Convert video, audio and images with FFmpeg. Files are sent to the Arena API for processing: that server
+        is this PC in the packaged desktop app and the hosted server in this preview.
       </p>
       <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
         {hardware ? (

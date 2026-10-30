@@ -8,3 +8,9 @@ The real-audio measurement test uses TypeScript modules with extensionless impor
 **Why:** stripping TypeScript types does not provide the module-resolution behavior required by this source graph, and pnpm exposes `tsx` through the scripts workspace rather than the root or library package.
 
 **How to apply:** invoke the measurement through the scripts workspace's resolver-aware runner, pass the test file by absolute path because pnpm changes the working directory to that package, and keep platform and model evidence explicit in every report. A Linux CPU run is not Windows validation.
+
+On the current Linux x64 runtime, ONNX Runtime may log that the optional shared provider library is missing while CPU inference still works. The crafted CPU session test has passed despite that warning.
+
+**Why:** the provider library belongs to the optional CUDA package on this platform; the base CPU runtime can still execute.
+
+**How to apply:** use the actual CPU session/test result to decide whether inference is blocked; do not treat that warning alone as a failed separation run, and never count it as Windows evidence.

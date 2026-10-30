@@ -271,7 +271,7 @@ export default function CreativeSuitePage() {
     <main className="mx-auto max-w-5xl px-6 py-10">
       <h1 className="text-3xl font-black text-white">Creative Suite</h1>
       <p className="mt-2 text-sm text-slate-400">
-        Thirteen-tool energy, local-first rules: every output below carries its real engine. Video lives in{" "}
+        Research, presentations, podcasts, voice, and caption tools. Outputs identify their engine. Video lives in{" "}
         <a className="text-violet-400 underline" href="/studio">Visual Studio</a>, music &amp; stems in{" "}
         <a className="text-violet-400 underline" href="/waveyard">Waveyard</a>, brains in the{" "}
         <a className="text-violet-400 underline" href="/model-hub">Model Hub</a>.

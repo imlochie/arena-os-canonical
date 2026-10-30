@@ -108,10 +108,14 @@ function createLocalRetryHarness(database: SeparationFixture["database"]) {
   };
 }
 
-test("automatic separation prefers CUDA and falls back to CPU", () => {
-  assert.deepEqual(executionProviderAttempts("auto"), [["cuda"], ["cpu"]]);
+test("automatic separation prefers the platform GPU provider and falls back to CPU", () => {
+  assert.deepEqual(executionProviderAttempts("auto", "win32"), [["dml"], ["cpu"]]);
+  assert.deepEqual(executionProviderAttempts("auto", "linux"), [["cuda"], ["cpu"]]);
+  assert.deepEqual(executionProviderAttempts("auto"), executionProviderAttempts("auto", process.platform));
   assert.deepEqual(executionProviderAttempts("cuda"), [["cuda"], ["cpu"]]);
+  assert.deepEqual(executionProviderAttempts("cuda", "win32"), [["cuda"], ["cpu"]]);
   assert.deepEqual(executionProviderAttempts("cpu"), [["cpu"]]);
+  assert.deepEqual(executionProviderAttempts("cpu", "win32"), [["cpu"]]);
   assert.equal(separationInferenceThreads(1), 1);
   assert.equal(separationInferenceThreads(2), 2);
   assert.equal(separationInferenceThreads(4), 3, "reserve one CPU on larger machines");

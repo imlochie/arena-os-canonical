@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 /**
- * Subscriptions — the Bobby dupe: offline, private, unlimited (Bobby's paid
- * tier, free). Plus the Mailopoly hook: paste a receipt email and the app
- * extracts the subscription for one-tap saving.
+ * Subscriptions — recurring-cost tracking with optional receipt extraction.
+ * Storage follows the configured Arena deployment; receipt extraction uses
+ * the selected runtime.
  */
 
 type Sub = {
@@ -401,7 +401,7 @@ export default function SubscriptionsPage() {
     <main className="mx-auto max-w-4xl px-6 py-10">
       <h1 className="text-3xl font-black text-white">Subscriptions</h1>
       <p className="mt-2 text-sm text-slate-400">
-        Offline, private, unlimited — everything Bobby charges for, free. Paste a receipt email below and the fields fill themselves.
+        Track recurring payments, pause or resume them, and review forecasts. Receipt extraction uses the configured engine; storage follows this Arena deployment.
       </p>
 
       {stats && (

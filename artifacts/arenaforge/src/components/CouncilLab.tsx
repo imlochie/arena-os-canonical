@@ -345,10 +345,10 @@ export default function CouncilLab() {
             <ProjectPicker value={projectId} onChange={setProjectId} />
             <span className="text-[11px] text-slate-500">
               {privacy.ephemeral
-                ? "👻 Ephemeral: perspectives + synthesis vanish, nothing stored."
+                ? "👻 Ephemeral: Arena does not save this run; provider handling still follows the selected runtime."
                 : privacy.localMode || !privacy.online
-                  ? "🔒 Local: council runs on-device, memory still saved."
-                  : "2 minds · cross-critique · synthesis · artifact · never trained on"}
+                  ? "🔒 Local Mode: supported remote provider calls are blocked; the Arena API still receives requests."
+                  : "2 minds · cross-critique · synthesis · artifact"}
             </span>
           </div>
           {notice && <p className="mt-3 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-200">{notice}</p>}

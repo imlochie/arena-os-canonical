@@ -6,9 +6,9 @@ import DesktopRuntimeStatus from "@/components/DesktopRuntimeStatus";
 import { OfflineBanner, SwRegister } from "@/components/OfflineKit";
 
 export const metadata = {
-  title: "ArenaForge Personal — Your Free Private AI Arena",
+  title: "ArenaForge Personal — AI tools for work",
   description:
-    "Blind battles, collab lab, leaderboards. Local Mode works fully offline. Never trained on. $0 forever.",
+    "A workspace for chat, media, music, games, and browser tasks. Runtime and storage behavior vary by tool.",
   manifest: "/manifest.json",
 };
 
@@ -27,10 +27,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <DesktopRuntimeStatus />
         <footer className="border-t border-white/10 py-5">
           <p className="mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 text-center text-xs text-slate-500 sm:px-6">
-            <span>ArenaForge Personal · your votes train <em>your</em> leaderboard · $0 forever</span>
+            <span>ArenaForge Personal · your votes train <em>your</em> leaderboard</span>
             <span className="text-slate-700">·</span>
             <a href="/privacy" className="font-bold text-emerald-300/80 hover:underline">
-              🛡️ Privacy — never trained on, local-first
+              🛡️ Privacy and data handling
             </a>
             <span className="text-slate-700">·</span>
             <a href="/principles" className="font-bold text-slate-400 hover:underline">

@@ -164,7 +164,8 @@ export function BuildProject() {
         First run: the stem engine needs a one-time download
         ({Math.round((engine!.find((model) => !model.ready)!.sizeBytes ?? 0) / 1_000_000)} MB).
         You can prepare it now or after your first upload fails — separation
-        then runs fully offline on this machine.
+        then runs on the Arena worker. In the packaged desktop app, that worker runs on this PC; in the hosted
+        preview, it runs on the server.
         <button type="button" className="button secondary" disabled={preparingEngine} onClick={() => void prepareEngine()} style={{ display: "block", marginTop: "0.5rem" }}>
           {preparingEngine ? "Preparing stem engine…" : "Prepare stem engine now"}
         </button>

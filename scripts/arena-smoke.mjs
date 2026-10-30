@@ -1659,7 +1659,7 @@ try {
   failNextRuntimeCheck = true;
   await page.getByLabel("Game prompt").fill("A game with a startup error");
   await page.getByRole("button", { name: "🎮 Create & play" }).click();
-  await page.getByText(/Draft saved as “Broken Pong Draft”; your current game was left unchanged/).waitFor({ timeout: 10000 });
+  await page.getByText(/Unverified draft saved as “Broken Pong Draft”; your current game was left unchanged/).waitFor({ timeout: 10000 });
   await page.locator('iframe[title="Add a multi-ball mode"]').waitFor({ timeout: 10000 });
   assert.equal(await page.getByText(/draft · unverified/).count(), 1, "a failed runtime check must be visible as an unverified local draft");
   await page.reload({ waitUntil: "networkidle" });
