@@ -295,6 +295,8 @@ try {
   const liveCamelotTrackId = "arena-smoke-live-camelot-track";
   const liveVocalsAssetId = "arena-smoke-live-vocals";
   const liveDrumsAssetId = "arena-smoke-live-drums";
+  const liveBassAssetId = "arena-smoke-live-bass";
+  const liveOtherAssetId = "arena-smoke-live-other";
   const liveDonorVocalsAssetId = "arena-smoke-live-donor-vocals";
   const liveCamelotSourceAssetId = "arena-smoke-live-camelot-source";
   const liveCurrentItem = {
@@ -306,9 +308,11 @@ try {
     stems: [
       { id: liveVocalsAssetId, stemType: "vocals", engine: "smoke-test", durationSeconds: 8 },
       { id: liveDrumsAssetId, stemType: "drums", engine: "smoke-test", durationSeconds: 8 },
+      { id: liveBassAssetId, stemType: "bass", engine: "smoke-test", durationSeconds: 8 },
+      { id: liveOtherAssetId, stemType: "other", engine: "smoke-test", durationSeconds: 8 },
     ],
-    playback: { kind: "stems", assetIds: [liveVocalsAssetId, liveDrumsAssetId] },
-    stemMix: { vocals: 1, drums: 1 },
+    playback: { kind: "stems", assetIds: [liveVocalsAssetId, liveDrumsAssetId, liveBassAssetId, liveOtherAssetId] },
+    stemMix: { vocals: 1, drums: 1, bass: 1, other: 1 },
     transition: { mode: "manual", crossfadeSeconds: 0, keepStems: [] },
     analysis: { bpm: 120, musicalKey: "C major", beatGridMs: [0, 500, 1000, 1500] },
   };
@@ -348,7 +352,7 @@ try {
   });
   const liveLibraryPayload = () => ({
     tracks: [
-      { ...recoveryTrack, id: liveCurrentTrackId, title: "Live source track", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 2, stemTypes: ["vocals", "drums"] } },
+      { ...recoveryTrack, id: liveCurrentTrackId, title: "Live source track", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 4, stemTypes: ["vocals", "drums", "bass", "other"] } },
       { ...recoveryTrack, id: liveDonorTrackId, title: "Donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["vocals"] } },
       { ...recoveryTrack, id: liveDrumsOnlyTrackId, title: "Drums-only separated track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["drums"] } },
       { ...recoveryTrack, id: liveCamelotTrackId, title: "Camelot library match", artist: "Smoke test", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "A minor" }, stemAvailability: { status: "source-only", reason: "Separation has not started." } },
@@ -356,6 +360,8 @@ try {
   });
   const quietStemWav = makePcmWav(440, 0.08);
   const drumStemWav = makePcmWav(110, 0.25);
+  const bassStemWav = makePcmWav(220, 0.16);
+  const otherStemWav = makePcmWav(330, 0.12);
   const donorStemWav = makePcmWav(880, 0.8);
   await context.route("**/api/library/**", async route => {
     const url = new URL(route.request().url());
@@ -559,6 +565,14 @@ try {
       await route.fulfill({ status: 200, contentType: "audio/wav", body: drumStemWav });
       return;
     }
+    if (assetId === liveBassAssetId) {
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: bassStemWav });
+      return;
+    }
+    if (assetId === liveOtherAssetId) {
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: otherStemWav });
+      return;
+    }
     await route.fulfill({ status: 404, body: "Unknown smoke audio asset" });
   });
   await page.route("**/api/waveyard/projects", route => route.fulfill({
@@ -714,6 +728,7 @@ try {
   let waveformRetryStatus = "failed";
   let separationRetryAttempts = 0;
   let separationRetryStatus = "failed";
+  let separationResolvedDevice = null;
   await page.route(`**/api/assets/${waveformCanvasAssetId}/waveform`, async (route) => {
     waveformCanvasRequests += 1;
     if (!waveformCanvasAvailable) {
@@ -787,11 +802,12 @@ try {
           id: separationRetryJobId,
           sourceAssetId: "arena-smoke-project-source",
           status: separationRetryStatus,
-          stage: separationRetryStatus === "failed" ? "queue-unavailable" : "queued",
-          errorCode: "queue_unavailable",
+          stage: separationRetryStatus === "failed" ? "queue-unavailable" : separationRetryStatus,
+          errorCode: separationRetryStatus === "failed" ? "queue_unavailable" : null,
           errorMessage: separationRetryStatus === "failed" ? "The local separation queue is unavailable." : null,
           model: "demucs",
-          resolvedDevice: null,
+          requestedDevice: "auto",
+          resolvedDevice: separationResolvedDevice,
           metadata: null,
         }],
         sources: [],
@@ -806,6 +822,7 @@ try {
       return;
     }
     separationRetryStatus = "queued";
+    separationResolvedDevice = null;
     await route.fulfill({
       status: 202,
       contentType: "application/json",
@@ -844,7 +861,14 @@ try {
   await page.getByText(/Separation is at the “queued” stage/).waitFor();
   assert.equal(separationRetryAttempts, 2, "project separation retry remains actionable after a network outage");
   assert.equal(await page.getByRole("button", { name: "Retry separation", exact: true }).count(), 0, "a queued separation retry no longer offers a duplicate failed-job action");
-  report.push("A project-level separation retry recovers from a network outage without leaving the control stuck.");
+  separationRetryStatus = "complete";
+  separationResolvedDevice = "cpu";
+  await page.reload({ waitUntil: "networkidle" });
+  const deviceStatus = page.getByTestId("job-device-status");
+  await deviceStatus.waitFor();
+  assert.equal((await deviceStatus.innerText()).trim(), "· CPU fallback");
+  assert.match(await deviceStatus.getAttribute("title"), /may take longer/);
+  report.push("Project separation retry recovers, and automatic CPU fallback is identified as slower.");
   const retryWaveformButton = page.getByRole("button", { name: "Retry waveform", exact: true });
   await retryWaveformButton.waitFor();
   await retryWaveformButton.click();
@@ -1076,7 +1100,35 @@ try {
   assert.equal(liveTrackAddRequestCount, 1, "the Camelot wheel must add a compatible library track directly to the next slot");
   assert.equal(liveSessionTracks[1].track.id, liveCamelotTrackId);
   assert.equal(errors.length, errorsBeforeLiveSwap, "live swapping and isolation must not throw browser errors");
-  report.push("A slow live stem switch can be cancelled without rewinding playback; a later donor switch changes the audible vocal, isolation works, and Camelot cues a compatible track.");
+  const desktopViewport = page.viewportSize();
+  await page.setViewportSize({ width: 402, height: 874 });
+  await page.waitForTimeout(100);
+  const mobileStemControls = await page.evaluate(() => {
+    const viewportWidth = document.documentElement.clientWidth;
+    const targets = Array.from(document.querySelectorAll(
+      '[data-testid^="quick-isolate-"], [data-testid^="quick-open-live-swap-"], [data-testid="quick-restore-mix"]',
+    )).map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        testId: element.getAttribute("data-testid"),
+        left: rect.left,
+        right: rect.right,
+        width: rect.width,
+        height: rect.height,
+      };
+    });
+    return { viewportWidth, documentWidth: document.documentElement.scrollWidth, targets };
+  });
+  assert.equal(mobileStemControls.documentWidth, mobileStemControls.viewportWidth, "mobile stem controls must not create horizontal overflow");
+  assert.equal(mobileStemControls.targets.filter((target) => target.testId.startsWith("quick-isolate-")).length, 4);
+  assert.equal(mobileStemControls.targets.filter((target) => target.testId.startsWith("quick-open-live-swap-")).length, 4);
+  assert(mobileStemControls.targets.some((target) => target.testId === "quick-restore-mix"), "the mobile player must expose restore mix");
+  for (const target of mobileStemControls.targets) {
+    assert(target.width >= 44 && target.height >= 44, `${target.testId} must meet a 44px mobile touch target`);
+    assert(target.left >= 0 && target.right <= mobileStemControls.viewportWidth, `${target.testId} must stay within the mobile viewport`);
+  }
+  await page.setViewportSize(desktopViewport ?? { width: 1280, height: 800 });
+  report.push("A slow live stem switch can be cancelled without rewinding playback; later swaps, isolation, Camelot cueing, and mobile stem controls pass.");
 
   mockLiveSessionActive = false;
   const liveSessionPage = page;

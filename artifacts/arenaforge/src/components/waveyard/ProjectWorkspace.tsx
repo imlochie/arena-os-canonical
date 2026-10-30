@@ -12,6 +12,7 @@ import { PublicationPanel } from "./PublicationPanel";
 import { WaveyardHandoffPanel } from "./WaveyardHandoffPanel";
 import { evaluateAutomaticBuildFinalization } from "@workspace/arena/lib/waveyard/automatic-build-finalization";
 import { formatSeparationProgressPhase } from "@workspace/arena/lib/waveyard/library/model";
+import { separationDeviceHint, separationDeviceLabel } from "@workspace/arena/lib/waveyard/separation/device-status";
 
 type ProjectData = {
   project: {
@@ -386,7 +387,15 @@ async function prepareEngine(model: string, jobId: string) {
         {latest && (
           <div className="stage" data-testid="job-stage">
             {latest.status.toUpperCase()} · {latest.stage}
-            {latest.resolvedDevice ? ` · ${latest.resolvedDevice}` : ""}
+            {latest.resolvedDevice && (
+              <span
+                data-testid="job-device-status"
+                aria-label={separationDeviceLabel(latest.requestedDevice, latest.resolvedDevice) ?? undefined}
+                title={separationDeviceHint(latest.requestedDevice, latest.resolvedDevice) ?? undefined}
+              >
+                {" · "}{separationDeviceLabel(latest.requestedDevice, latest.resolvedDevice)}
+              </span>
+            )}
           </div>
         )}
       </header>

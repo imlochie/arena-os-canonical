@@ -357,6 +357,8 @@
     "./lib/waveyard/separation/deep-fixtures": "./src/lib/waveyard/separation/deep-fixtures.ts",
     "./lib/waveyard/separation/deep.test": "./src/lib/waveyard/separation/deep.test.ts",
     "./lib/waveyard/separation/deep": "./src/lib/waveyard/separation/deep.ts",
+    "./lib/waveyard/separation/device-status.test": "./src/lib/waveyard/separation/device-status.test.ts",
+    "./lib/waveyard/separation/device-status": "./src/lib/waveyard/separation/device-status.ts",
     "./lib/waveyard/separation/fft.test": "./src/lib/waveyard/separation/fft.test.ts",
     "./lib/waveyard/separation/fft": "./src/lib/waveyard/separation/fft.ts",
     "./lib/waveyard/separation/mdx.test": "./src/lib/waveyard/separation/mdx.test.ts",
