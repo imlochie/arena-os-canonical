@@ -514,6 +514,16 @@
 .library-panel-title{display:flex;justify-content:space-between;align-items:baseline;gap:14px;margin-bottom:14px}
 .library-panel-title h2{font-size:20px;letter-spacing:-.03em;margin:0}
 .library-panel-title span{color:var(--muted);font-size:12px}
+.library-audio-backup{display:grid;gap:10px;padding:14px 16px;margin:0 0 12px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--panel),transparent 12%)}
+.library-audio-backup strong{font-size:13px}
+.library-audio-backup p,.library-backup-note{color:var(--muted);font-size:11.5px;line-height:1.5;margin:4px 0 0}
+.library-audio-backup small{color:var(--muted);font-size:10.5px;line-height:1.5}
+.library-audio-backup-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.library-streaming-backups{margin:0 0 18px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--panel)}
+.library-streaming-backups>summary{cursor:pointer;font-weight:700;font-size:12px;color:var(--ink)}
+.library-streaming-backups[open]>summary{margin-bottom:8px}
+.track-backup-choice{display:inline-flex;gap:5px;align-items:center;color:var(--muted);font-size:11px}
+.track-backup-choice input{accent-color:var(--acid)}
 .empty{color:var(--muted);font-size:13px;margin:8px 0}
 .track-list{display:grid}
 .track-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto auto auto;gap:16px;align-items:center;padding:12px 6px;border-bottom:1px solid var(--line)}
@@ -578,7 +588,7 @@
 .session-preview h1{font-size:clamp(44px,6vw,88px);letter-spacing:-.08em;line-height:.9;margin:14px 0 18px}
 .session-preview p{color:var(--muted);font-size:15px;line-height:1.6}
 .session-preview .player-actions{margin-top:22px}
-@media(max-width:900px){.library-hero{grid-template-columns:1fr}.track-row{grid-template-columns:42px minmax(0,1fr) auto;row-gap:8px}.track-duration{display:none}.track-actions{grid-column:1/-1;justify-content:flex-start}.player-head{flex-direction:column;align-items:flex-start}.wplayer-transport{grid-template-columns:auto auto 1fr auto}.player-master{display:none}.player-stem{grid-template-columns:96px 1fr 34px 34px}.recent-row{grid-auto-columns:minmax(120px,60vw)}}
+@media(max-width:900px){.library-hero{grid-template-columns:1fr}.track-row{grid-template-columns:42px minmax(0,1fr) auto;row-gap:8px}.track-duration{display:none}.track-actions{grid-column:1/-1;justify-content:flex-start}.library-audio-backup-actions{align-items:stretch}.player-head{flex-direction:column;align-items:flex-start}.wplayer-transport{grid-template-columns:auto auto 1fr auto}.player-master{display:none}.player-stem{grid-template-columns:96px 1fr 34px 34px}.recent-row{grid-auto-columns:minmax(120px,60vw)}}
 
 /* ===== P2 player: dominant stems, transport, queue drawer ===== */
 .player-shell.p2{gap:22px}

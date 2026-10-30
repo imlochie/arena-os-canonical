@@ -38,6 +38,74 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LibraryTrackListResponse"
+  /library/audio-backup:
+    get:
+      operationId: getLibraryAudioBackup
+      tags: [waveyard]
+      summary: Download exact stored library originals as a ZIP with a CSV manifest
+      description: Returns a ZIP archive when preflight is omitted. With preflight=1, returns the selected file count and total bytes. This does not retrieve Apple Music subscription audio.
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          style: form
+          explode: false
+          description: Comma-separated UUIDs of tracks whose exact original audio is already stored in Waveyard.
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 100
+            items:
+              type: string
+              format: uuid
+        - name: preflight
+          in: query
+          required: false
+          description: Set to 1 to return a size/count summary instead of the ZIP.
+          schema:
+            type: string
+            enum: ["1"]
+      responses:
+        "200":
+          description: ZIP download, or JSON preflight summary when preflight=1
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryAudioBackupPreflightResponse"
+        "400":
+          description: Invalid selection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Selected original audio is unavailable or not owned by the current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: Stored original no longer matches its recorded metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "413":
+          description: Selection exceeds the ZIP size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "415":
+          description: Unsupported source filename extension
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /library/tracks/{id}/separation:
     post:
       operationId: startLibraryTrackSeparation
@@ -109,6 +177,30 @@ components:
           items:
             $ref: "#/components/schemas/LibraryTrackSummary"
       required: [tracks]
+    LibraryAudioBackupPreflightResponse:
+      type: object
+      properties:
+        audioFiles:
+          type: integer
+          minimum: 1
+          maximum: 100
+        totalBytes:
+          type: integer
+          minimum: 1
+          maximum: 2147483648
+        maximumFiles:
+          type: integer
+          example: 100
+        maximumBytes:
+          type: integer
+          example: 2147483648
+      required: [audioFiles, totalBytes, maximumFiles, maximumBytes]
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
     LibraryTrackSummary:
       type: object
       properties:

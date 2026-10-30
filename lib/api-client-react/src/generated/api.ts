@@ -20,8 +20,11 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  ApiError,
+  GetLibraryAudioBackupParams,
   GetLibraryTracksParams,
   HealthStatus,
+  LibraryAudioBackupPreflightResponse,
   LibraryTrackListResponse,
   LibraryTrackSeparationStartResponse
 } from './api.schemas';
@@ -125,6 +128,91 @@ export function useGetLibraryTracks<TData = Awaited<ReturnType<typeof getLibrary
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetLibraryTracksQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetLibraryAudioBackupUrl = (params: GetLibraryAudioBackupParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/library/audio-backup?${stringifiedParams}` : `/api/library/audio-backup`
+}
+
+/**
+ * Returns a ZIP archive when preflight is omitted. With preflight=1, returns the selected file count and total bytes. This does not retrieve Apple Music subscription audio.
+ * @summary Download exact stored library originals as a ZIP with a CSV manifest
+ */
+export const getLibraryAudioBackup = async (params: GetLibraryAudioBackupParams, options?: Parameters<typeof customFetch>[1]): Promise<Blob | LibraryAudioBackupPreflightResponse> => {
+
+  return customFetch<Blob | LibraryAudioBackupPreflightResponse>(getGetLibraryAudioBackupUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLibraryAudioBackupQueryKey = (params?: GetLibraryAudioBackupParams,) => {
+    return [
+    `/api/library/audio-backup`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetLibraryAudioBackupQueryOptions = <TData = Awaited<ReturnType<typeof getLibraryAudioBackup>>, TError = ErrorType<ApiError>>(params: GetLibraryAudioBackupParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioBackup>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLibraryAudioBackupQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLibraryAudioBackup>>> = ({ signal }) => getLibraryAudioBackup(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioBackup>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetLibraryAudioBackupQueryResult = NonNullable<Awaited<ReturnType<typeof getLibraryAudioBackup>>>
+export type GetLibraryAudioBackupQueryError = ErrorType<ApiError>
+
+
+/**
+ * @summary Download exact stored library originals as a ZIP with a CSV manifest
+ */
+
+export function useGetLibraryAudioBackup<TData = Awaited<ReturnType<typeof getLibraryAudioBackup>>, TError = ErrorType<ApiError>>(
+ params: GetLibraryAudioBackupParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryAudioBackup>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetLibraryAudioBackupQueryOptions(params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

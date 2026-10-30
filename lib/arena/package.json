@@ -305,6 +305,8 @@
     "./lib/waveyard/library/player-logic": "./src/lib/waveyard/library/player-logic.ts",
     "./lib/waveyard/library/service.test": "./src/lib/waveyard/library/service.test.ts",
     "./lib/waveyard/library/service": "./src/lib/waveyard/library/service.ts",
+    "./lib/waveyard/library/audio-backup.test": "./src/lib/waveyard/library/audio-backup.test.ts",
+    "./lib/waveyard/library/audio-backup": "./src/lib/waveyard/library/audio-backup.ts",
     "./lib/waveyard/library/session-logic.test": "./src/lib/waveyard/library/session-logic.test.ts",
     "./lib/waveyard/library/session-logic": "./src/lib/waveyard/library/session-logic.ts",
     "./lib/waveyard/library/performance": "./src/lib/waveyard/library/performance.ts",

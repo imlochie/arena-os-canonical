@@ -71,6 +71,33 @@ export const GetLibraryTracksResponse = zod.object({
 
 
 /**
+ * Returns a ZIP archive when preflight is omitted. With preflight=1, returns the selected file count and total bytes. This does not retrieve Apple Music subscription audio.
+ * @summary Download exact stored library originals as a ZIP with a CSV manifest
+ */
+export const getLibraryAudioBackupQueryIdsMax = 100;
+
+
+
+export const GetLibraryAudioBackupQueryParams = zod.object({
+  "ids": zod.array(zod.coerce.string().uuid()).min(1).max(getLibraryAudioBackupQueryIdsMax).describe('Comma-separated UUIDs of tracks whose exact original audio is already stored in Waveyard.'),
+  "preflight": zod.enum(['1']).optional().describe('Set to 1 to return a size/count summary instead of the ZIP.')
+})
+
+export const getLibraryAudioBackupResponseAudioFilesMax = 100;
+
+export const getLibraryAudioBackupResponseTotalBytesMax = 2147483648;
+
+
+
+export const GetLibraryAudioBackupResponse = zod.object({
+  "audioFiles": zod.number().int().min(1).max(getLibraryAudioBackupResponseAudioFilesMax),
+  "totalBytes": zod.number().int().min(1).max(getLibraryAudioBackupResponseTotalBytesMax),
+  "maximumFiles": zod.number().int(),
+  "maximumBytes": zod.number().int()
+})
+
+
+/**
  * @summary Start separation for a library track
  */
 export const StartLibraryTrackSeparationParams = zod.object({

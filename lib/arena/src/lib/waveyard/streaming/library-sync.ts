@@ -548,3 +548,236 @@ export function parseCsvSnapshot(text: string, service: StreamingService, playli
   return parseLibrarySnapshot(candidate);
 }
 
+type ApplePlistValue = string | number | boolean | null | ApplePlistValue[] | { [key: string]: ApplePlistValue };
+
+function decodePlistXmlText(text: string): string {
+  return text.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (entity, body: string) => {
+    if (body === "amp") return "&";
+    if (body === "lt") return "<";
+    if (body === "gt") return ">";
+    if (body === "quot") return '"';
+    if (body === "apos") return "'";
+    const codePoint = body.startsWith("#x")
+      ? Number.parseInt(body.slice(2), 16)
+      : Number.parseInt(body.slice(1), 10);
+    return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+      ? String.fromCodePoint(codePoint)
+      : entity;
+  });
+}
+
+/**
+ * Reads Apple's XML property-list export without following its Location paths
+ * or resolving external entities. Audio is never read by this metadata parser.
+ */
+function parseApplePlistXmlDocument(xml: string): Record<string, ApplePlistValue> | null {
+  if (xml.length === 0 || xml.length > 64 * 1024 * 1024) return null;
+  const source = xml
+    .replace(/^\uFEFF/, "")
+    .replace(/<\?xml\b[\s\S]*?\?>/gi, "")
+    .replace(/<!DOCTYPE\b[^>]*>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "");
+  const tokens: string[] = [];
+  const tokenPattern = /<!\[CDATA\[[\s\S]*?\]\]>|<\/?[A-Za-z][^>]*>|[^<]+/g;
+  for (const match of source.matchAll(tokenPattern)) {
+    const token = match[0];
+    tokens.push(token.startsWith("<![CDATA[") ? token.slice(9, -3) : token);
+    if (tokens.length > 2_000_000) return null;
+  }
+
+  let cursor = 0;
+  let nodes = 0;
+  const skipWhitespace = () => {
+    while (cursor < tokens.length && !tokens[cursor].startsWith("<") && tokens[cursor].trim() === "") cursor += 1;
+  };
+  const parseText = (tag: string): string | null => {
+    const opener = tokens[cursor] ?? "";
+    const selfClosing = opener.endsWith("/>");
+    cursor += 1;
+    if (selfClosing) return "";
+    let value = "";
+    while (cursor < tokens.length) {
+      const token = tokens[cursor++];
+      if (token === `</${tag}>`) return decodePlistXmlText(value);
+      if (token.startsWith("<")) return null;
+      value += token;
+    }
+    return null;
+  };
+
+  const parseValue = (depth: number): ApplePlistValue | undefined => {
+    skipWhitespace();
+    if (depth > 64 || ++nodes > 1_000_000) return undefined;
+    const token = tokens[cursor] ?? "";
+    const opening = token.match(/^<([A-Za-z][A-Za-z0-9]*)\b[^>]*>$/);
+    if (opening === null) return undefined;
+    const tag = opening[1].toLowerCase();
+    if (tag === "true" || tag === "false") {
+      cursor += 1;
+      if (!token.endsWith("/>")) {
+        if (tokens[cursor] !== `</${tag}>`) return undefined;
+        cursor += 1;
+      }
+      return tag === "true";
+    }
+    if (tag === "null") {
+      cursor += 1;
+      return null;
+    }
+    if (tag === "dict") {
+      cursor += 1;
+      const result: Record<string, ApplePlistValue> = {};
+      if (token.endsWith("/>")) return result;
+      while (true) {
+        skipWhitespace();
+        if (tokens[cursor] === "</dict>") {
+          cursor += 1;
+          return result;
+        }
+        const keyToken = tokens[cursor] ?? "";
+        if (!/^<key(?:\s[^>]*)?>$/.test(keyToken)) return undefined;
+        const key = parseText("key");
+        if (key === null) return undefined;
+        const value = parseValue(depth + 1);
+        if (value === undefined) return undefined;
+        result[key] = value;
+      }
+    }
+    if (tag === "array") {
+      cursor += 1;
+      const result: ApplePlistValue[] = [];
+      if (token.endsWith("/>")) return result;
+      while (true) {
+        skipWhitespace();
+        if (tokens[cursor] === "</array>") {
+          cursor += 1;
+          return result;
+        }
+        const value = parseValue(depth + 1);
+        if (value === undefined) return undefined;
+        result.push(value);
+      }
+    }
+    if (["string", "key", "date", "data", "integer", "real"].includes(tag)) {
+      const text = parseText(tag);
+      if (text === null) return undefined;
+      if (tag === "integer") {
+        if (!/^-?\d+$/.test(text.trim())) return undefined;
+        const value = Number(text.trim());
+        return Number.isSafeInteger(value) ? value : undefined;
+      }
+      if (tag === "real") {
+        const value = Number(text.trim());
+        return Number.isFinite(value) ? value : undefined;
+      }
+      return text;
+    }
+    return undefined;
+  };
+
+  skipWhitespace();
+  if (tokens[cursor]?.startsWith("<plist")) cursor += 1;
+  const root = parseValue(0);
+  if (root === undefined || root === null || Array.isArray(root) || typeof root !== "object") return null;
+  skipWhitespace();
+  if (tokens[cursor] === "</plist>") cursor += 1;
+  skipWhitespace();
+  return cursor === tokens.length ? root : null;
+}
+
+function plistRecord(value: ApplePlistValue | undefined): Record<string, ApplePlistValue> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, ApplePlistValue>
+    : null;
+}
+
+function plistString(value: ApplePlistValue | undefined, maxLength = MAX_TITLE_LENGTH): string | null {
+  if (typeof value !== "string") return null;
+  const clean = value.trim();
+  return clean === "" ? null : clean.slice(0, maxLength);
+}
+
+function plistId(value: ApplePlistValue | undefined, fallback: string): string {
+  return typeof value === "string" || typeof value === "number" ? String(value).slice(0, 200) : fallback;
+}
+
+/**
+ * Imports a standard iTunes/Apple Music Library.xml as a metadata snapshot.
+ * The XML's local file paths are deliberately ignored; this never copies or
+ * decodes any audio and never follows a path from the imported document.
+ */
+export function parseAppleMusicLibraryXml(xml: string, libraryName = "Apple Music Library"): LibrarySnapshot | null {
+  const root = parseApplePlistXmlDocument(xml);
+  const rawTracks = plistRecord(root?.Tracks);
+  if (root === null || rawTracks === null) return null;
+
+  const byReference = new Map<string, ExternalTrack>();
+  const allTracks: ExternalTrack[] = [];
+  const likedTracks: ExternalTrack[] = [];
+  for (const [dictionaryId, rawTrack] of Object.entries(rawTracks)) {
+    const record = plistRecord(rawTrack);
+    const title = plistString(record?.Name);
+    if (record === null || title === null) continue;
+    const persistentId = plistString(record["Persistent ID"], 200);
+    const externalId = persistentId ?? plistId(record["Track ID"], dictionaryId);
+    const artist = plistString(record.Artist) ?? plistString(record["Album Artist"]);
+    const isrcRaw = plistString(record.ISRC, 32);
+    const durationValue = record["Total Time"];
+    const durationMs = typeof durationValue === "number" && durationValue > 0 ? durationValue : null;
+    const track: ExternalTrack = {
+      service: "apple",
+      externalId,
+      title,
+      artists: [artist ?? "Unknown artist"],
+      album: plistString(record.Album),
+      isrc: isrcRaw === null ? null : parseIsrc(isrcRaw),
+      durationMs,
+    };
+    allTracks.push(track);
+    byReference.set(dictionaryId, track);
+    if (record["Track ID"] !== undefined) byReference.set(String(record["Track ID"]), track);
+    if (persistentId !== null) byReference.set(persistentId, track);
+    if (record.Loved === true) likedTracks.push(track);
+  }
+  if (allTracks.length === 0) return null;
+
+  const playlists: ExternalPlaylist[] = [{
+    externalId: "apple-library",
+    name: plistString(root.Name, 200) ?? libraryName.slice(0, 200),
+    description: null,
+    tracks: allTracks.slice(0, MAX_TRACKS_PER_PLAYLIST),
+  }];
+  const rawPlaylists = Array.isArray(root.Playlists) ? root.Playlists : [];
+  for (const [index, rawPlaylist] of rawPlaylists.entries()) {
+    const record = plistRecord(rawPlaylist);
+    if (record === null || record["Master"] === true || record["Is Master"] === true) continue;
+    const name = plistString(record.Name, 200);
+    if (name === null) continue;
+    const items = Array.isArray(record["Playlist Items"]) ? record["Playlist Items"] : [];
+    const playlistTracks: ExternalTrack[] = [];
+    for (const item of items) {
+      const itemRecord = plistRecord(item);
+      const reference = itemRecord?.["Track ID"] ?? itemRecord?.["Track Persistent ID"];
+      if (reference === undefined) continue;
+      const track = byReference.get(String(reference));
+      if (track !== undefined) playlistTracks.push(track);
+    }
+    playlists.push({
+      externalId: plistId(record["Playlist Persistent ID"], `apple-playlist-${index}`),
+      name,
+      description: plistString(record.Description, 1000),
+      tracks: playlistTracks.slice(0, MAX_TRACKS_PER_PLAYLIST),
+    });
+    if (playlists.length >= MAX_PLAYLISTS) break;
+  }
+
+  const candidate: LibrarySnapshot = {
+    service: "apple",
+    takenAt: new Date().toISOString(),
+    accountName: plistString(root.Name, 200),
+    playlists,
+    likedTracks: likedTracks.slice(0, MAX_TRACKS_PER_PLAYLIST),
+  };
+  return parseLibrarySnapshot(candidate);
+}
+

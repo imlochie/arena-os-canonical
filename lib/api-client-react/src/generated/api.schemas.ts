@@ -72,6 +72,25 @@ export interface LibraryTrackListResponse {
   tracks: LibraryTrackSummary[];
 }
 
+export interface LibraryAudioBackupPreflightResponse {
+  /**
+     * @minimum 1
+     * @maximum 100
+     */
+  audioFiles: number;
+  /**
+     * @minimum 1
+     * @maximum 2147483648
+     */
+  totalBytes: number;
+  maximumFiles: number;
+  maximumBytes: number;
+}
+
+export interface ApiError {
+  error: string;
+}
+
 export type LibraryTrackSeparationStartResponseState = typeof LibraryTrackSeparationStartResponseState[keyof typeof LibraryTrackSeparationStartResponseState];
 
 
@@ -101,4 +120,24 @@ q?: string;
  */
 limit?: number;
 };
+
+export type GetLibraryAudioBackupParams = {
+/**
+ * Comma-separated UUIDs of tracks whose exact original audio is already stored in Waveyard.
+ * @minItems 1
+ * @maxItems 100
+ */
+ids: string[];
+/**
+ * Set to 1 to return a size/count summary instead of the ZIP.
+ */
+preflight?: GetLibraryAudioBackupPreflight;
+};
+
+export type GetLibraryAudioBackupPreflight = typeof GetLibraryAudioBackupPreflight[keyof typeof GetLibraryAudioBackupPreflight];
+
+
+export const GetLibraryAudioBackupPreflight = {
+  NUMBER_1: '1',
+} as const;
 

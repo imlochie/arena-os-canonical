@@ -12,6 +12,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "@/routing/Link";
 import { useListeningHost } from "@/components/waveyard/listening/ListeningHost";
+import { ConnectedLibraries } from "../studio/ConnectedLibraries";
 import StemEngineSetup from "./StemEngineSetup";
 import { publishWaveyardQueueChange, subscribeToWaveyardQueueChanges } from "./queue-sync";
 
@@ -29,10 +30,11 @@ import {
 
 const AUDIO_ACCEPT = "audio/wav,audio/mpeg,audio/flac,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.flac,.m4a,.aac,.ogg";
 const MAX_PARALLEL_LIBRARY_UPLOAD_BYTES = 64 * 1024 * 1024;
+const APPLE_BACKUP_SERVICES = ["apple"] as const;
 
 interface TrackSummary {
   id: string;
-  sourceAssetId?: string;
+  sourceAssetId?: string | null;
   title: string;
   artist: string;
   album: string;
@@ -60,6 +62,12 @@ interface RetryableLibraryUpload {
 
 function uploadFileIdentity(file: File): string {
   return `${file.name}\u0000${file.size}\u0000${file.lastModified}`;
+}
+
+function formatAudioBackupBytes(bytes: number): string {
+  if (bytes < 1024 ** 2) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
 interface PlaylistSummary {
@@ -128,6 +136,8 @@ function TrackRow({
   onLabels,
   onStartSeparation,
   onRetrySeparation,
+  audioBackupSelected,
+  onToggleAudioBackup,
   starting,
   retrying,
 }: {
@@ -141,6 +151,8 @@ function TrackRow({
   onLabels: (track: TrackSummary, labels: string[]) => void;
   onStartSeparation: (track: TrackSummary) => void;
   onRetrySeparation: (track: TrackSummary) => void;
+  audioBackupSelected: boolean;
+  onToggleAudioBackup: (track: TrackSummary) => void;
   starting: boolean;
   retrying: boolean;
 }) {
@@ -215,6 +227,17 @@ function TrackRow({
       <StemBadge availability={track.stemAvailability} />
       <span className="track-duration">{formatPlayClock(track.durationSeconds)}</span>
       <div className="track-actions">
+        {track.sourceAssetId && (
+          <label className="track-backup-choice">
+            <input
+              type="checkbox"
+              aria-label={`Include ${track.title} in audio backup`}
+              checked={audioBackupSelected}
+              onChange={() => onToggleAudioBackup(track)}
+            />
+            <span>Backup</span>
+          </label>
+        )}
         <button type="button" className="button" onClick={() => onPlay(track)} data-testid={`button-play-${track.id}`}>Play</button>
         <button type="button" className="button secondary" onClick={() => onNext(track)} title="Line up on the next deck" data-testid={`button-next-${track.id}`}>Next</button>
         <button type="button" className="button secondary" title="Add to the saved queue and the live listening order" onClick={() => onQueue(track)}>+ Queue</button>
@@ -312,6 +335,10 @@ export function MusicHome() {
   const [dragActive, setDragActive] = useState(false);
   const [dropBusy, setDropBusy] = useState<string | null>(null);
   const [busySeparationTrackIds, setBusySeparationTrackIds] = useState<Set<string>>(() => new Set());
+  const [selectedAudioBackupIds, setSelectedAudioBackupIds] = useState<Set<string>>(() => new Set());
+  const [audioBackupBusy, setAudioBackupBusy] = useState(false);
+  const [audioBackupMessage, setAudioBackupMessage] = useState<string | null>(null);
+  const [streamingBackupsOpen, setStreamingBackupsOpen] = useState(false);
   const dragDepth = useRef(0);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const trackRequestVersion = useRef(0);
@@ -816,6 +843,67 @@ export function MusicHome() {
     if (activeCollection === null) return tracks;
     return tracks.filter((track) => evaluateCollection(collectionTrack(track), activeCollection, libraryClockMs));
   }, [tracks, activeCollection, collectionTrack, libraryClockMs]);
+  const visibleAudioTracks = useMemo(
+    () => visibleTracks.filter((track) => track.sourceAssetId != null),
+    [visibleTracks],
+  );
+
+  const toggleAudioBackupTrack = useCallback((track: TrackSummary) => {
+    if (track.sourceAssetId == null) return;
+    setSelectedAudioBackupIds((current) => {
+      const next = new Set(current);
+      if (next.has(track.id)) next.delete(track.id);
+      else next.add(track.id);
+      return next;
+    });
+    setAudioBackupMessage(null);
+  }, []);
+
+  const selectVisibleAudioTracks = useCallback(() => {
+    if (visibleAudioTracks.length > 100) {
+      setAudioBackupMessage("A backup can contain at most 100 tracks. Search or choose tracks individually to make smaller batches.");
+      return;
+    }
+    setSelectedAudioBackupIds(new Set(visibleAudioTracks.map((track) => track.id)));
+    setAudioBackupMessage(null);
+  }, [visibleAudioTracks]);
+
+  const downloadAudioBackup = useCallback(async () => {
+    const ids = Array.from(selectedAudioBackupIds);
+    if (ids.length === 0) {
+      setAudioBackupMessage("Select at least one track with a stored original audio file.");
+      return;
+    }
+    if (ids.length > 100) {
+      setAudioBackupMessage("A backup can contain at most 100 tracks. Remove some selections and retry.");
+      return;
+    }
+
+    const downloadUrl = new URL("/api/library/audio-backup", window.location.origin);
+    downloadUrl.searchParams.set("ids", ids.join(","));
+    const preflightUrl = new URL(downloadUrl);
+    preflightUrl.searchParams.set("preflight", "1");
+    setAudioBackupBusy(true);
+    setAudioBackupMessage(null);
+    try {
+      const response = await fetch(preflightUrl, { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setAudioBackupMessage(typeof body.error === "string" ? body.error : "The selected audio could not be backed up.");
+        return;
+      }
+      const count = typeof body.audioFiles === "number" ? body.audioFiles : ids.length;
+      const bytes = typeof body.totalBytes === "number" ? body.totalBytes : 0;
+      setAudioBackupMessage(
+        `Starting a ZIP of ${count} exact original file${count === 1 ? "" : "s"} (${formatAudioBackupBytes(bytes)}) with a CSV manifest. Apple Music subscription audio is not included.`,
+      );
+      window.location.assign(downloadUrl.toString());
+    } catch {
+      setAudioBackupMessage("Could not prepare the audio backup. Check the connection and retry.");
+    } finally {
+      setAudioBackupBusy(false);
+    }
+  }, [selectedAudioBackupIds]);
 
   const collectionCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1297,6 +1385,57 @@ export function MusicHome() {
             {visibleTracks.length} track{visibleTracks.length === 1 ? "" : "s"}
           </span>
         </div>
+        <section className="library-audio-backup" aria-label="Audio file backup">
+          <div>
+            <strong>Back up local audio</strong>
+            <p>Select tracks to download their exact stored originals in a ZIP with a CSV manifest.</p>
+          </div>
+          <div className="library-audio-backup-actions">
+            <button
+              type="button"
+              className="button secondary"
+              onClick={selectVisibleAudioTracks}
+              disabled={visibleAudioTracks.length === 0 || visibleAudioTracks.length > 100}
+              title={visibleAudioTracks.length > 100 ? "Select a smaller set or search first." : undefined}
+            >
+              Select visible originals ({visibleAudioTracks.length})
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => { setSelectedAudioBackupIds(new Set()); setAudioBackupMessage(null); }}
+              disabled={selectedAudioBackupIds.size === 0 || audioBackupBusy}
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={() => void downloadAudioBackup()}
+              disabled={selectedAudioBackupIds.size === 0 || selectedAudioBackupIds.size > 100 || audioBackupBusy}
+            >
+              {audioBackupBusy ? "Preparing…" : `Download audio ZIP (${selectedAudioBackupIds.size})`}
+            </button>
+          </div>
+          <small>Up to 100 tracks / 2 GiB per ZIP. This includes only original audio files stored in Waveyard—not Apple Music subscription streams.</small>
+          {audioBackupMessage !== null && <p className="library-message" role="status" aria-live="polite">{audioBackupMessage}</p>}
+        </section>
+        <details
+          className="library-streaming-backups"
+          onToggle={(event) => setStreamingBackupsOpen(event.currentTarget.open)}
+        >
+          <summary>Apple Music metadata snapshots (CSV, XML, JSON)</summary>
+          <p className="library-backup-note">
+            Import a CSV, XML or JSON library metadata snapshot, then download it as CSV or JSON. This saves track and playlist details only; it does not copy Apple Music subscription audio.
+          </p>
+          {streamingBackupsOpen && (
+            <ConnectedLibraries
+              projectId=""
+              allowedServices={APPLE_BACKUP_SERVICES}
+              dispatchEnabled={false}
+            />
+          )}
+        </details>
         {loaded && trackLoadFailed && (
           <div className="library-message" role="alert" data-testid="track-load-failure">
             <span>
@@ -1334,6 +1473,8 @@ export function MusicHome() {
                 onLabels={setTrackLabels}
                 onStartSeparation={startSeparation}
                 onRetrySeparation={retrySeparation}
+                audioBackupSelected={selectedAudioBackupIds.has(track.id)}
+                onToggleAudioBackup={toggleAudioBackupTrack}
                 starting={busySeparationTrackIds.has(track.id) && track.stemAvailability.status === "not-started"}
                 retrying={busySeparationTrackIds.has(track.id) && (track.stemAvailability.status === "rejected" || track.stemAvailability.status === "failed")}
               />

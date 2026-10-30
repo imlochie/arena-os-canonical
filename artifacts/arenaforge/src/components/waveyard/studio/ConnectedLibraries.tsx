@@ -17,11 +17,10 @@
  *   • DISPATCH, NOT RIP — "bring into studio" sends a track through the
  *     app's real intake (an authorized link or a file you drop); nothing
  *     is ever ripped from a stream.
- *   • SYNC + BACKUP — every snapshot is a stored backup with a diff
- *     against the previous one ("what changed since last sync"), JSON +
- *     CSV exports, and JSON import for any service (Apple/YouTube
- *     adapters are ready; their live connection flows arrive with your
- *     credentials — next wave).
+ *   • SYNC + BACKUP — every stored snapshot can be compared with the
+ *     previous one and exported as JSON/CSV. Spotify has a live read-only
+ *     sync; Apple Music and YouTube currently support CSV/JSON imports only.
+ *     No subscription audio is exported.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -37,6 +36,7 @@ import {
 import {
   parseBackup,
   snapshotStats,
+  parseAppleMusicLibraryXml,
   type ExternalTrack,
   type LibrarySnapshot,
   type SnapshotDiff,
@@ -48,6 +48,7 @@ import {
  *  keeps a mis-dropped audio file from being parsed as text (DoS) — the
  *  parse itself is limit-enforcing but the read should be bounded first. */
 const MAX_IMPORT_BYTES = 64 * 1024 * 1024;
+const DEFAULT_STREAMING_SERVICES: readonly StreamingService[] = ["spotify", "apple", "youtube"];
 
 type AccountSummary = {
   id: string;
@@ -77,7 +78,15 @@ const SERVICE_LABELS: Record<StreamingService, string> = {
   youtube: "YouTube",
 };
 
-export function ConnectedLibraries({ projectId }: { projectId: string }) {
+export function ConnectedLibraries({
+  projectId,
+  allowedServices = DEFAULT_STREAMING_SERVICES,
+  dispatchEnabled = true,
+}: {
+  projectId: string;
+  allowedServices?: readonly StreamingService[];
+  dispatchEnabled?: boolean;
+}) {
   const [accounts, setAccounts] = useState<AccountSummary[] | null>(null);
   const [spotifyClientId, setSpotifyClientId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -101,16 +110,17 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
     if (!response.ok) return;
     const body = await response.json().catch(() => ({}));
     const loaded = (body.accounts ?? []) as AccountSummary[];
-    setAccounts(loaded);
+    const visibleAccounts = loaded.filter((account) => allowedServices.includes(account.service));
+    setAccounts(visibleAccounts);
     // Sync-on-open (vision §V6): land straight in the freshest snapshot with
     // its diff already computed — exactly once, never stomping a user choice.
     if (!snapshotOpenRef.current) {
-      const freshest = loaded
+      const freshest = visibleAccounts
         .filter((account) => account.latestSnapshotId !== null)
         .sort((a, b) => (a.lastSyncAt ?? "") < (b.lastSyncAt ?? "") ? 1 : -1)[0];
       if (freshest !== undefined) void openSnapshotRef.current(freshest.latestSnapshotId!);
     }
-  }, []);
+  }, [allowedServices]);
 
   const openSnapshot = useCallback(async (snapshotId: string) => {
     snapshotOpenRef.current = true;
@@ -204,7 +214,20 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
       }
       const text = await file.text();
       let parsed: LibrarySnapshot | null;
-      if (/\.csv$/i.test(file.name) || (!/\.json$/i.test(file.name) && !text.trimStart().startsWith("{"))) {
+      const isXml = /\.xml$/i.test(file.name) || /^\s*(?:<\?xml[\s\S]*?\?>\s*)?<plist\b/i.test(text);
+      if (isXml) {
+        if (service !== "apple") {
+          setError("Apple Music Library XML can only be imported as an Apple Music backup.");
+          return;
+        }
+        parsed = parseAppleMusicLibraryXml(text, file.name.replace(/\.[^.]+$/, "") || "Apple Music Library");
+        if (parsed === null) {
+          setError("That XML is not a readable Apple/iTunes library export. No audio files or local paths were imported.");
+          return;
+        }
+        const stats = snapshotStats(parsed);
+        setNotice(`Read ${stats.tracks} track entries and ${stats.playlists} playlists from ${file.name} — storing metadata only…`);
+      } else if (/\.csv$/i.test(file.name) || (!/\.json$/i.test(file.name) && !text.trimStart().startsWith("{"))) {
         // CSV import (vision §V6): our own export, Exportify, or TuneMyMusic —
         // one playlist per file (or per playlist column), same diff/export path.
         parsed = parseCsvSnapshot(text, service, file.name.replace(/\.[^.]+$/, "") || "CSV import");
@@ -311,15 +334,14 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
         <small>sync · backup · diff · export</small>
       </div>
       <p className="stream-lib-wall" role="note">
-        Streaming services license their audio to their own apps (that is stem.fm&apos;s catalog deal — not an API any third party gets).
-        The APIs that ARE real give us your library: playlists, likes, identity. So Waveyard treats your libraries as the catalog,
-        dispatches tracks into the stem pipeline through real intake (authorized link or your file — never a rip), and keeps every
-        snapshot as a backup. The personal edge, honestly built.
+        {allowedServices.length === 1 && allowedServices[0] === "apple"
+          ? "Apple Music backup here is CSV/JSON library metadata only. Direct Apple account sync and subscription-audio export are not available in this build."
+          : "Streaming services license their audio to their own apps; their APIs do not provide full downloadable subscription tracks. Waveyard stores library snapshots as metadata and only ingests audio files you provide or links you are authorized to use."}
       </p>
 
       <div className="stream-lib-grid">
         {/* Spotify — the live connection */}
-        <article className={`stream-card ${spotifyAccount !== null ? "connected" : ""}`}>
+        {allowedServices.includes("spotify") && <article className={`stream-card ${spotifyAccount !== null ? "connected" : ""}`}>
           <header><b>Spotify</b>{spotifyAccount !== null && <span>{spotifyAccount.snapshotCount} backups{spotifyAccount.trackCount !== null ? ` · ${spotifyAccount.trackCount} tracks` : ""}</span>}</header>
           <label className="stream-client">
             <span>Client ID (your Spotify app)</span>
@@ -338,21 +360,21 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
             {spotifyAccount?.lastSyncAt != null && <small>last sync {new Date(spotifyAccount.lastSyncAt).toLocaleString()}</small>}
           </div>
           <small className="stream-hint">Read-only scopes (playlists + liked). Create the app at developer.spotify.com, add this page&apos;s URL as a redirect URI. Your ID lives in this browser; the server never sees credentials.</small>
-        </article>
+        </article>}
 
         {/* Apple + YouTube — import today, live flows with credentials */}
-        {(["apple", "youtube"] as const).map((service) => {
+        {(["apple", "youtube"] as const).filter((service) => allowedServices.includes(service)).map((service) => {
           const account = accountFor(service);
           return (
             <article key={service} className={`stream-card ${account !== null ? "connected" : ""}`}>
               <header><b>{SERVICE_LABELS[service]}</b>{account !== null && <span>{account.snapshotCount} backups{account.trackCount !== null ? ` · ${account.trackCount} tracks` : ""}</span>}</header>
               <div className="stream-card-actions">
                 <label className="button secondary file-button">
-                  Import JSON or CSV
+                  Import CSV, XML or JSON
                   <input
                     aria-label={`Import ${SERVICE_LABELS[service]} backup`}
                     type="file"
-                    accept="application/json,.csv,text/csv"
+                  accept="application/json,.csv,text/csv,.xml,text/xml,application/xml"
                     disabled={busy !== null}
                     onChange={(event) => { const file = event.target.files?.[0]; if (file !== undefined) void importBackupFile(service, file); event.target.value = ""; }}
                   />
@@ -361,7 +383,7 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
               </div>
               <small className="stream-hint">
                 {service === "apple"
-                  ? "Adapter ready (library playlists + songs, durations; no isrc in library data). Live MusicKit sync arrives with your Apple developer token — next wave."
+                  ? "CSV/JSON/iTunes-style XML snapshot import and CSV/JSON export only. Direct Apple Music sign-in is not wired; this backup contains metadata, not subscription audio."
                   : "Adapter ready (YouTube Data API: your playlists/likes; channel stands in for artist, no durations at item level). Live sync arrives with your Google OAuth client — next wave. No official YouTube Music API exists."}
               </small>
             </article>
@@ -410,14 +432,14 @@ export function ConnectedLibraries({ projectId }: { projectId: string }) {
                       <b>{track.title}</b>
                       <small>{track.artists.join(", ") || "unknown artist"}{track.album !== null ? ` · ${track.album}` : ""}{track.durationMs !== null ? ` · ${Math.round(track.durationMs / 1000)}s` : ""}</small>
                     </div>
-                    <button className="deck-chip" onClick={() => { setDispatchTrack(track); setDispatchUrl(""); }}>Bring into studio</button>
+                    {dispatchEnabled && <button className="deck-chip" onClick={() => { setDispatchTrack(track); setDispatchUrl(""); }}>Bring into studio</button>}
                   </div>
                 ))}
                 {tracksShown.length === 0 && <small className="stream-hint">Nothing matches.</small>}
               </div>
             </div>
           </div>
-          {dispatchTrack !== null && (
+          {dispatchEnabled && dispatchTrack !== null && (
             <div className="stream-dispatch">
               <p>
                 <b>{dispatchTrack.title}</b> — the studio ingests audio you are authorized to use: paste a link your deployment&apos;s

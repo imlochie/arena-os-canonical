@@ -253,6 +253,7 @@ function safeParse(text: string): unknown {
 function failSummary(trackId: string): TrackSummary {
   return {
     id: trackId,
+    sourceAssetId: null,
     title: "(removed track)",
     artist: "",
     album: "",

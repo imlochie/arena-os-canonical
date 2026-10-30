@@ -6,8 +6,12 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from './apiError';
+export * from './getLibraryAudioBackupParams';
+export * from './getLibraryAudioBackupPreflight';
 export * from './getLibraryTracksParams';
 export * from './healthStatus';
+export * from './libraryAudioBackupPreflightResponse';
 export * from './libraryTrackListResponse';
 export * from './libraryTrackSeparationStartResponse';
 export * from './libraryTrackSeparationStartResponseState';

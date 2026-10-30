@@ -65,7 +65,7 @@ import {
 export interface TrackSummary {
   id: string;
   /** Private source asset ID used by the owner's original-file download action. */
-  sourceAssetId: string;
+  sourceAssetId: string | null;
   title: string;
   artist: string;
   album: string;

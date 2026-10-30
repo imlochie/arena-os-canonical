@@ -18,6 +18,7 @@ import {
   matchVerdict,
   normalizeArtist,
   normalizeTitle,
+  parseAppleMusicLibraryXml,
   parseBackup,
   parseCsvSnapshot,
   parseLibrarySnapshot,
@@ -289,4 +290,68 @@ test("CSV import rejects what is not a track list — never guesses", () => {
   assert.equal(parseCsvSnapshot("a,b\n1,2\n", "spotify"), null, "no title/artist columns");
   assert.equal(parseCsvSnapshot('title,artists\n"unterminated quote that never closes, artists\n', "spotify"), null);
   assert.equal(parseCsvSnapshot("title,artists\n,Artist\n", "spotify"), null, "empty-title rows only → no tracks");
+});
+
+test("Apple Library XML imports playlists and metadata without reading local audio paths", () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Name</key><string>My Library &amp; More</string>
+  <key>Tracks</key><dict>
+    <key>101</key><dict>
+      <key>Track ID</key><integer>101</integer>
+      <key>Persistent ID</key><string>AA001</string>
+      <key>Name</key><string>Song &amp; One</string>
+      <key>Artist</key><string>Artist One</string>
+      <key>Album</key><string>Album A</string>
+      <key>Total Time</key><integer>210000</integer>
+      <key>Loved</key><true/>
+      <key>Location</key><string>file:///private/Apple%20Music/Protected.m4p</string>
+    </dict>
+    <key>102</key><dict>
+      <key>Track ID</key><integer>102</integer>
+      <key>Persistent ID</key><string>AA002</string>
+      <key>Name</key><string>Song Two</string>
+      <key>Artist</key><string>Artist Two</string>
+      <key>Total Time</key><integer>180000</integer>
+      <key>Location</key><string>file:///private/Apple%20Music/ProtectedTwo.m4p</string>
+    </dict>
+  </dict>
+  <key>Playlists</key><array>
+    <dict>
+      <key>Master</key><true/>
+      <key>Name</key><string>Library</string>
+      <key>Playlist Items</key><array><dict><key>Track ID</key><integer>101</integer></dict></array>
+    </dict>
+    <dict>
+      <key>Playlist Persistent ID</key><string>PLAY01</string>
+      <key>Name</key><string>Women's Mix</string>
+      <key>Description</key><string>Imported playlist</string>
+      <key>Playlist Items</key><array>
+        <dict><key>Track ID</key><integer>102</integer></dict>
+        <dict><key>Track ID</key><integer>101</integer></dict>
+      </array>
+    </dict>
+  </array>
+</dict></plist>`;
+
+  const parsed = parseAppleMusicLibraryXml(xml);
+  assert.notEqual(parsed, null);
+  assert.equal(parsed!.service, "apple");
+  assert.equal(parsed!.accountName, "My Library & More");
+  assert.equal(parsed!.playlists[0].name, "My Library & More");
+  assert.deepEqual(parsed!.playlists[0].tracks.map((item) => item.title), ["Song & One", "Song Two"]);
+  assert.deepEqual(parsed!.likedTracks.map((item) => item.externalId), ["AA001"]);
+  const playlist = parsed!.playlists.find((item) => item.externalId === "PLAY01");
+  assert.notEqual(playlist, undefined);
+  assert.deepEqual(playlist!.tracks.map((item) => item.externalId), ["AA002", "AA001"]);
+  assert.equal(playlist!.description, "Imported playlist");
+  assert.equal(playlist!.tracks[0].durationMs, 180_000);
+  assert.equal(JSON.stringify(parsed).includes("Protected.m4p"), false, "the XML's file paths are never copied into a backup");
+});
+
+test("Apple Library XML rejects malformed or non-library documents", () => {
+  assert.equal(parseAppleMusicLibraryXml("not XML"), null);
+  assert.equal(parseAppleMusicLibraryXml("<plist><dict><key>Tracks</key><string>bad</string></dict></plist>"), null);
+  assert.equal(parseAppleMusicLibraryXml("<plist><dict><key>Tracks</key><dict></dict></dict></plist>"), null);
 });

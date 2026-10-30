@@ -224,6 +224,11 @@ try {
   let mockStartCount = 0;
   let mockNotStartedRating = 0;
   let uploadAttempts = 0;
+  const audioBackupPreflightIds = [];
+  const audioBackupDownloadIds = [];
+  const appleBackupAccountId = "arena-smoke-apple-account";
+  const appleBackupSnapshotId = "arena-smoke-apple-snapshot";
+  let appleBackupSnapshot = null;
   const uploadAttemptNames = [];
   const batchTrackIdsByName = new Map([
     ["batch-one.wav", "arena-smoke-batch-one"],
@@ -371,9 +376,96 @@ try {
   const bassStemWav = makePcmWav(220, 0.16);
   const otherStemWav = makePcmWav(330, 0.12);
   const donorStemWav = makePcmWav(880, 0.8);
+  await context.route("**/api/streaming/**", async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/streaming/accounts" && route.request().method() === "GET") {
+      const stats = appleBackupSnapshot === null ? null : {
+        playlists: appleBackupSnapshot.playlists.length,
+        tracks: appleBackupSnapshot.playlists.reduce((total, playlist) => total + playlist.tracks.length, 0),
+      };
+      const accounts = appleBackupSnapshot === null ? [] : [{
+        id: appleBackupAccountId,
+        service: "apple",
+        displayName: "My Apple Music",
+        snapshotCount: 1,
+        lastSyncAt: appleBackupSnapshot.takenAt,
+        trackCount: stats.tracks,
+        latestSnapshotId: appleBackupSnapshotId,
+      }];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accounts }) });
+    } else if (url.pathname === "/api/streaming/accounts" && route.request().method() === "POST") {
+      assert.equal(route.request().postDataJSON().service, "apple");
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ account: { id: appleBackupAccountId, service: "apple", displayName: "My Apple Music" } }),
+      });
+    } else if (url.pathname === `/api/streaming/accounts/${appleBackupAccountId}/snapshots` && route.request().method() === "POST") {
+      appleBackupSnapshot = route.request().postDataJSON().snapshot;
+      assert.equal(appleBackupSnapshot.service, "apple");
+      assert.equal(appleBackupSnapshot.playlists[0].tracks[0].title, "Apple Library Song");
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          snapshot: {
+            id: appleBackupSnapshotId,
+            takenAt: appleBackupSnapshot.takenAt,
+            playlistCount: appleBackupSnapshot.playlists.length,
+            trackCount: appleBackupSnapshot.playlists.reduce((total, playlist) => total + playlist.tracks.length, 0),
+          },
+        }),
+      });
+    } else if (url.pathname === `/api/streaming/snapshots/${appleBackupSnapshotId}` && route.request().method() === "GET") {
+      const trackCount = appleBackupSnapshot.playlists.reduce((total, playlist) => total + playlist.tracks.length, 0);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          snapshot: {
+            id: appleBackupSnapshotId,
+            service: "apple",
+            takenAt: appleBackupSnapshot.takenAt,
+            playlistCount: appleBackupSnapshot.playlists.length,
+            trackCount,
+            library: appleBackupSnapshot,
+          },
+          diff: null,
+        }),
+      });
+    } else if (url.pathname === `/api/streaming/snapshots/${appleBackupSnapshotId}/export`) {
+      const format = url.searchParams.get("format") === "csv" ? "csv" : "json";
+      await route.fulfill({
+        status: 200,
+        contentType: format === "csv" ? "text/csv; charset=utf-8" : "application/json",
+        headers: { "Content-Disposition": `attachment; filename="waveyard-apple-library.${format}"` },
+        body: format === "csv" ? "playlist,position,title,artists,album,isrc,duration_ms,service,external_id\r\n" : JSON.stringify(appleBackupSnapshot),
+      });
+    } else {
+      await route.continue();
+    }
+  });
   await context.route("**/api/library/**", async route => {
     const url = new URL(route.request().url());
-    if (url.pathname === "/api/library/sessions" && route.request().method() === "POST") {
+    if (url.pathname === "/api/library/audio-backup" && route.request().method() === "GET") {
+      const ids = (url.searchParams.get("ids") ?? "").split(",").filter(Boolean);
+      if (url.searchParams.get("preflight") === "1") {
+        audioBackupPreflightIds.push(...ids);
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ audioFiles: ids.length, totalBytes: 2048, maximumFiles: 100, maximumBytes: 2 * 1024 ** 3 }),
+        });
+      } else {
+        audioBackupDownloadIds.push(...ids);
+        await route.fulfill({
+          status: 200,
+          contentType: "application/zip",
+          headers: { "Content-Disposition": 'attachment; filename="waveyard-audio-backup-2026-10-31.zip"' },
+          body: Buffer.from("mock-zip"),
+        });
+      }
+    } else if (url.pathname === "/api/library/sessions" && route.request().method() === "POST") {
       await route.fulfill({
         status: 201,
         contentType: "application/json",
@@ -664,6 +756,46 @@ try {
   const downloadStarted = page.waitForEvent("download");
   await originalDownloadLink.click();
   assert.equal((await downloadStarted).suggestedFilename(), "September.mp3", "the source endpoint returns the original filename");
+  await recoveryRow.getByRole("checkbox", { name: "Include Retryable track in audio backup" }).check();
+  const audioBackupDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download audio ZIP (1)" }).click();
+  assert.equal((await audioBackupDownload).suggestedFilename(), "waveyard-audio-backup-2026-10-31.zip");
+  assert.deepEqual(audioBackupPreflightIds, [recoveryTrack.id], "audio backup preflights only the selected track");
+  assert.deepEqual(audioBackupDownloadIds, [recoveryTrack.id], "the browser downloads the selected original file archive");
+  await page.getByRole("status").filter({ hasText: "CSV manifest" }).waitFor();
+  report.push("Library audio backup preflights selected files and starts a streaming ZIP download with a CSV manifest.");
+  await page.getByText("Apple Music metadata snapshots (CSV, XML, JSON)", { exact: true }).click();
+  await page.getByTestId("connected-libraries").waitFor();
+  await page.getByText("Direct Apple Music sign-in is not wired", { exact: false }).waitFor();
+  const appleBackupInput = page.getByLabel("Import Apple Music backup");
+  assert.equal(
+    await appleBackupInput.getAttribute("accept"),
+    "application/json,.csv,text/csv,.xml,text/xml,application/xml",
+    "Apple Music backup accepts CSV, JSON, and iTunes-style XML metadata",
+  );
+  await appleBackupInput.setInputFiles({
+    name: "Apple Library.xml",
+    mimeType: "application/xml",
+    buffer: Buffer.from(`<?xml version="1.0"?><plist version="1.0"><dict>
+      <key>Tracks</key><dict><key>501</key><dict>
+        <key>Track ID</key><integer>501</integer><key>Persistent ID</key><string>LIB001</string>
+        <key>Name</key><string>Apple Library Song</string><key>Artist</key><string>Example Artist</string>
+        <key>Album</key><string>Test Album</string><key>Total Time</key><integer>150000</integer>
+        <key>Location</key><string>file:///private/Protected.m4p</string>
+      </dict></dict>
+      <key>Playlists</key><array><dict>
+        <key>Playlist Persistent ID</key><string>APPLE-PLAYLIST</string><key>Name</key><string>My Playlist</string>
+        <key>Playlist Items</key><array><dict><key>Track ID</key><integer>501</integer></dict></array>
+      </dict></array>
+    </dict></plist>`),
+  });
+  await page.getByRole("status").filter({ hasText: "Imported your Apple Music library" }).waitFor();
+  await page.getByRole("button", { name: /My Playlist/ }).click();
+  await page.getByText("Apple Library Song", { exact: true }).waitFor();
+  const appleCsvDownload = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Download CSV" }).click();
+  assert.equal((await appleCsvDownload).suggestedFilename(), "waveyard-apple-library.csv");
+  report.push("Apple Music Library XML imports as a metadata snapshot and exports as CSV; the source file path and protected audio are not copied.");
   releaseSecondPlaylistResponse();
   await page.getByTestId("library-refresh-warning").waitFor();
   await page.getByRole("button", { name: "Retry library refresh", exact: true }).click();
