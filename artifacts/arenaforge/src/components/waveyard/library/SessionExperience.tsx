@@ -296,7 +296,10 @@ function SessionDeck({
     () => [...new Set([...assetIds, ...stagedIds])],
     [assetIds, stagedIds],
   );
-  const transport = useStemTransport(transportIds, duration);
+  // Staged handoff audio must not be treated as a required live channel until
+  // the replacement is ready. In particular, a failed donor load must not
+  // pause the source that is currently audible.
+  const transport = useStemTransport(transportIds, duration, assetIds);
   const mediaElements = useRef<Record<string, HTMLAudioElement | null>>({});
   const pendingHandoff = useRef<{
     target: SessionTrackItem;

@@ -12,25 +12,46 @@ declare global {
     replaceAssets: () => void;
     removeElement: () => void;
     remountElements: () => void;
+    stageMissingNonPlaybackChannel: () => void;
+    restoreStagedChannel: () => void;
+    activateStagedChannels: () => Promise<void>;
   }
 }
 
 function Fixture() {
   const [ids, setIds] = useState(["vocals", "drums"]);
+  const [playbackIds, setPlaybackIds] = useState(["vocals", "drums"]);
   const [mix, setMix] = useState({
     vocals: { volume: 1, pan: 0, muted: false, solo: false },
     drums: { volume: 1, pan: 0, muted: false, solo: false },
   });
-  const [missing, setMissing] = useState(false);
+  const [missingId, setMissingId] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
-  const transport = useStemTransport(ids, 2);
+  const transport = useStemTransport(ids, 2, playbackIds);
 
   Object.assign(window, {
     transport,
     refreshAssets: () => setIds((current) => [...current]),
-    replaceAssets: () => setIds(["bass", "melody"]),
-    removeElement: () => setMissing(true),
+    replaceAssets: () => {
+      setIds(["bass", "melody"]);
+      setPlaybackIds(["bass", "melody"]);
+      setMissingId(null);
+    },
+    removeElement: () => setMissingId("drums"),
     remountElements: () => setRevision((value) => value + 1),
+    stageMissingNonPlaybackChannel: () => {
+      setIds(["vocals", "drums", "bass", "other"]);
+      setPlaybackIds(["vocals", "drums"]);
+      setMissingId("bass");
+    },
+    restoreStagedChannel: () => setMissingId(null),
+    activateStagedChannels: async () => {
+      const nextIds = ["bass", "other"];
+      await transport.playChannels(nextIds, transport.position);
+      setIds(nextIds);
+      setPlaybackIds(nextIds);
+      setMissingId(null);
+    },
   });
 
   function change(channel: "vocals" | "drums", patch: Partial<typeof mix.vocals>) {
@@ -63,7 +84,7 @@ function Fixture() {
       </button>
       <output data-testid="playing">{String(transport.playing)}</output>
       <output data-testid="error">{transport.error}</output>
-      {ids.map((id) => missing && id === "drums" ? null : (
+      {ids.map((id) => missingId === id ? null : (
         <audio
           key={`${id}-${revision}`}
           data-id={id}

@@ -232,13 +232,21 @@ export function resolveActiveMixerState(
   };
 }
 
-export function useStemTransport(assetIds: string[], duration: number) {
+export function useStemTransport(
+  assetIds: string[],
+  duration: number,
+  playbackAssetIds: string[] = assetIds,
+) {
   // Polling may construct a fresh array for identical assets. Treat equal IDs
   // as the same deck so renders do not restart its audio clock or effects.
   const idsKey = JSON.stringify(assetIds);
   const ids = useMemo<string[]>(() => JSON.parse(idsKey), [idsKey]);
+  const playbackIdsKey = JSON.stringify(playbackAssetIds);
+  const playbackIds = useMemo<string[]>(() => JSON.parse(playbackIdsKey), [playbackIdsKey]);
   const currentIds = useRef(ids);
   currentIds.current = ids;
+  const currentPlaybackIds = useRef(playbackIds);
+  currentPlaybackIds.current = playbackIds;
   const previousIds = useRef(ids);
   const media = useRef<Record<string, HTMLAudioElement | null>>({});
   const graphs = useRef<Record<string, AudioGraph>>({});
@@ -389,17 +397,17 @@ export function useStemTransport(assetIds: string[], duration: number) {
   );
 
   const currentPosition = useCallback(() => {
-    const anchor = ids
+    const anchor = playbackIds
       .map((id) => media.current[id])
       .find((element) => element && !element.paused)
-      ?? media.current[ids[0]];
+      ?? media.current[playbackIds[0]];
     const current = anchor?.currentTime;
     if (typeof current === "number" && Number.isFinite(current)) {
       positionRef.current = current;
       return current;
     }
     return positionRef.current;
-  }, [ids]);
+  }, [playbackIds]);
 
   /** Apply insert chains (live): rebuilds the subgraph of every playing graph. */
   const applyInserts = useCallback(
@@ -518,16 +526,16 @@ export function useStemTransport(assetIds: string[], duration: number) {
     wantsPlayback.current = true;
     try {
       setError(null);
-      if (ids.length === 0) {
+      if (playbackIds.length === 0) {
         throw new Error("No audio is ready. Import audio or wait for processing to finish.");
       }
-      const elements = ids.map((id) => {
+      const elements = playbackIds.map((id) => {
         const element = media.current[id];
         if (!element) throw new Error(`Stem ${id} is not loaded. Reopen this track and retry.`);
         if (element.error) throw new Error(`Stem ${id} could not be loaded. Check its source file and retry.`);
         return element;
       });
-      for (const id of ids) ensureGraph(id);
+      for (const id of playbackIds) ensureGraph(id);
       if (masterGain.current) masterGain.current.gain.value = masterVolume;
       applyMix(mixValues.current);
       // Saved insert intent may have been restored before any audio graph
@@ -539,7 +547,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
         if (!wantsPlayback.current) elements.forEach((element) => element.pause());
         return;
       }
-      if (ids.some((id) => !currentIds.current.includes(id))) {
+      if (playbackIds.some((id) => !currentPlaybackIds.current.includes(id))) {
         elements.forEach((element) => element.pause());
         return;
       }
@@ -554,35 +562,39 @@ export function useStemTransport(assetIds: string[], duration: number) {
         if (!wantsPlayback.current) elements.forEach((element) => element.pause());
         return;
       }
-      if (ids.some((id) => !currentIds.current.includes(id))) {
+      if (playbackIds.some((id) => !currentPlaybackIds.current.includes(id))) {
         elements.forEach((element) => element.pause());
         return;
       }
       if (results.some((result) => result.status === "rejected")) {
         throw new Error("One or more stems could not play. Check the audio files and retry.");
       }
-      liveLayers.current?.sync(ids);
+      liveLayers.current?.sync(playbackIds);
       setPlaying(true);
     } catch (cause) {
       if (request !== playRequest.current) return;
       setError(cause instanceof Error ? cause.message : "Audio playback failed. Reopen the track and retry.");
       pause();
     }
-  }, [applyInserts, applyMix, ensureGraph, ids, masterVolume, pause, duration]);
+  }, [applyInserts, applyMix, ensureGraph, playbackIds, masterVolume, pause, duration]);
 
   useEffect(() => {
     if (!playing) return;
     const tick = (now: number) => {
-      if (ids.some((id) => !media.current[id] || media.current[id]?.error)) {
+      // A handoff can replace the active channel set while the previous
+      // animation frame is already queued. Do not validate removed elements
+      // against that stale closure during the commit before effect cleanup.
+      if (playbackIds !== currentPlaybackIds.current) return;
+      if (playbackIds.some((id) => !media.current[id] || media.current[id]?.error)) {
         setError("A required stem became unavailable during playback. Reopen the track and retry.");
         pause();
         return;
       }
       const anchor =
-        ids
+        playbackIds
           .map((id) => media.current[id])
           .find((element) => element && !element.paused) ??
-        media.current[ids[0]];
+        media.current[playbackIds[0]];
       if (!anchor) {
         pause();
         return;
@@ -592,14 +604,14 @@ export function useStemTransport(assetIds: string[], duration: number) {
       if (loop.enabled && loop.end > loop.start && current >= loop.end) {
         seek(loop.start);
         current = loop.start;
-        if (ids.some((id) => media.current[id]?.paused)) void play();
-      } else if (ids.every((id) => media.current[id]?.ended)) {
+        if (playbackIds.some((id) => media.current[id]?.paused)) void play();
+      } else if (playbackIds.every((id) => media.current[id]?.ended)) {
         positionRef.current = current;
         setPosition(current);
         pause();
         return;
       }
-      for (const id of ids) {
+      for (const id of playbackIds) {
         const element = media.current[id];
         // This is a browser-level drift correction, not a sample-perfect DAW claim.
         if (
@@ -617,7 +629,7 @@ export function useStemTransport(assetIds: string[], duration: number) {
     };
     clockId.current = requestAnimationFrame(tick);
     return stopClock;
-  }, [ids, loop, pause, play, playing, seek, stopClock]);
+  }, [playbackIds, loop, pause, play, playing, seek, stopClock]);
 
   useEffect(
     () => () => {

@@ -776,7 +776,26 @@ try {
   await page.waitForFunction(() => {
     const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-drums"));
     return source?.inputNode?.nextNode?.gain?.value < 0.01;
-  }, null, { timeout: 2500 });
+  }, null, { timeout: 2500 }).catch(async error => {
+    const diagnostic = await page.evaluate(() => {
+      const audio = document.querySelector('[data-role="current"] audio[src$="/a-drums"]');
+      return {
+        playing: document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed"),
+        mutePressed: document.querySelector('[aria-label="Mute drums"]')?.getAttribute("aria-pressed"),
+        audio: audio ? { paused: audio.paused, readyState: audio.readyState, currentTime: audio.currentTime } : null,
+        sources: window.audioProbe.sources
+          .filter(source => source.mediaElement.src.endsWith("/a-drums"))
+          .map(source => ({
+            isCurrent: source.mediaElement === audio,
+            paused: source.mediaElement.paused,
+            gain: source.inputNode?.nextNode?.gain?.value,
+          })),
+        status: document.querySelector('[data-testid="session-status"]')?.textContent,
+      };
+    });
+    console.log("LIVE_MUTE_DIAGNOSTIC", JSON.stringify(diagnostic));
+    throw error;
+  });
   await current.getByLabel("Restore all current stems").click();
   await page.waitForFunction(() => ["vocals", "drums", "bass", "other"].every(type => {
     const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`));

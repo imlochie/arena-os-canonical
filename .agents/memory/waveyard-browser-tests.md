@@ -14,3 +14,9 @@ A broad trace that attaches metadata to every native audio node and retains ever
 **Why:** Audio graph instrumentation can change timing and object lifetime, and transition controls may appear before the audio fade reaches its midpoint.
 
 **How to apply:** Prefer pure equal-power envelope tests and narrow existing gain probes. For browser fade assertions, poll a live gain value for the target envelope instead of sleeping a fixed delay after the transition control appears, then verify the intended incoming track. Add per-node tracing only when necessary, and first verify it does not alter playback timing.
+
+For live source-to-stems handoffs, distinguish registered/staged audio elements from the channels currently required for playback. A failed staged channel must not pause the audible source, and a queued clock frame from the old channel set must not validate elements removed by the commit.
+
+**Why:** A staged-source failure exposed that the shared transport clock treated every registered element as active; the handoff could then report success while every replacement element was paused.
+
+**How to apply:** Keep active playback IDs explicit during staging. Test both a missing staged channel while the current mix advances and a successful commit where the new channels play without a stale-frame error.

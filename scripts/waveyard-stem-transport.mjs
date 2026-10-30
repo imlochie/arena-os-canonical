@@ -264,6 +264,36 @@ test("a missing stem rejects playback instead of reporting partial success", { t
   assert.ok(await page.locator("audio").evaluateAll((elements) => elements.every((element) => element.paused)));
 });
 
+test("an unavailable staged channel does not interrupt the active mix", { timeout: 20_000 }, async (t) => {
+  const page = await openFixture(t);
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await waitForText(page, "playing", "true");
+  const playbackStart = await page.locator('audio[data-id="vocals"]').evaluate((audio) => audio.currentTime);
+  await page.evaluate(() => window.stageMissingNonPlaybackChannel());
+  await page.waitForFunction((before) => {
+    const audio = document.querySelector('audio[data-id="vocals"]');
+    return window.transport.playing &&
+      audio instanceof HTMLAudioElement &&
+      !audio.paused &&
+      audio.currentTime > before + 0.1;
+  }, playbackStart, { timeout: 5_000 });
+  await waitForEmpty(page, "error");
+  await page.evaluate(() => window.restoreStagedChannel());
+  await page.waitForFunction(() => ["bass", "other"].every((id) => {
+    const audio = document.querySelector(`audio[data-id="${id}"]`);
+    return audio instanceof HTMLAudioElement && audio.readyState >= 2;
+  }));
+  await page.evaluate(() => window.activateStagedChannels());
+  await page.waitForFunction(() => {
+    const audio = document.querySelector('audio[data-id="bass"]');
+    return window.transport.playing &&
+      audio instanceof HTMLAudioElement &&
+      !audio.paused &&
+      audio.currentTime > 0;
+  }, null, { timeout: 5_000 });
+  await waitForEmpty(page, "error");
+});
+
 test("saved master inserts affect the real signal on first play", { timeout: 20_000 }, async (t) => {
   const page = await openFixture(t);
   await page.getByRole("button", { name: "Master insert" }).click();

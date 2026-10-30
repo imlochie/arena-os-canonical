@@ -326,7 +326,8 @@ try {
   await page.getByTestId("queue-mutation-error").getByText("Could not update the saved queue order", { exact: false }).waitFor();
   assert.deepEqual(savedQueue.map((item) => item.track.id), [ids[0], ids[1], ids[0]], "a rejected reorder retains the previous queue order");
   failNextQueueClear = true;
-  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await page.getByRole("region", { name: "Your music" })
+    .getByRole("button", { name: "Clear", exact: true }).click();
   await page.getByTestId("queue-mutation-error").getByText("Could not clear the saved queue", { exact: false }).waitFor();
   assert.equal(savedQueue.length, 3, "a rejected queue clear retains every saved row");
   assert.equal(session.tracks.length, 3, "a rejected queue clear retains every linked session entry");
@@ -508,7 +509,8 @@ try {
   assert.ok(currentTimeAfterTabMove >= currentTimeBeforeTabMove - 0.1, "the playing tab is not rewound by a queue move");
   assert.ok(secondTabTimeAfterMove >= secondTabTimeBeforeMove - 0.1, "the other tab is not rewound by the queue refresh");
 
-  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await page.getByRole("region", { name: "Your music" })
+    .getByRole("button", { name: "Clear", exact: true }).click();
   await waitForFixture(() => session.tracks.length === 2 && savedQueue.length === 0, "clearing linked saved rows");
   assert.deepEqual(session.tracks.map((item) => item.track.id), [ids[1], ids[2]], "clearing the saved queue leaves direct playlist songs in the session");
   assert.equal(session.currentSessionTrackId, "session-track-4", "clearing a later queue row keeps the current direct playlist entry");
