@@ -64,6 +64,8 @@ import {
 
 export interface TrackSummary {
   id: string;
+  /** Private source asset ID used by the owner's original-file download action. */
+  sourceAssetId: string;
   title: string;
   artist: string;
   album: string;
@@ -189,6 +191,7 @@ async function availabilityBySource(
 function toSummary(row: TrackRow, availability: StemAvailability): TrackSummary {
   return {
     id: row.id,
+    sourceAssetId: row.sourceAssetId,
     title: row.title,
     artist: row.artist,
     album: row.album,

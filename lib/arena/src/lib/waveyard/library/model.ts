@@ -155,9 +155,14 @@ export function resolveStemAvailability(input: StemAvailabilityInput): StemAvail
     const progress = stage === "separating" || stage === "finalizing"
       ? parseSeparationProgress(input.separationJob?.metadata)
       : undefined;
+    const reason = stage === "queued"
+      ? "Stem separation is queued. The full source remains playable."
+      : stage === "preparing"
+        ? "The separation worker is preparing. The full source remains playable."
+        : "Stem separation is running. The full source remains playable.";
     return {
       status: "processing",
-      reason: "Stem separation is still running — playback uses the full source until it completes.",
+      reason,
       ...(stage ? { stage } : {}),
       ...(progress ? { progress } : {}),
     };

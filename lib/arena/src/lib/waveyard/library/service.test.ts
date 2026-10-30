@@ -303,9 +303,9 @@ test("a library track with no separation job starts once and reports the active 
   const progressDetail = await service.getTrack(START_OWNER, track.id);
   assert.deepEqual(progressDetail?.stemAvailability, {
     status: "processing",
-    reason: "Stem separation is still running — playback uses the full source until it completes.",
+    reason: "Stem separation is running. The full source remains playable.",
     stage: "separating",
-    progress: { percent: 36, phase: "2/4" },
+    progress: { percent: 36, phase: "pass 2/4" },
   });
   const [listedTrack] = await service.listTracks({ ownerId: START_OWNER, search: "Unprocessed" });
   assert.deepEqual(listedTrack?.stemAvailability, progressDetail?.stemAvailability);
@@ -450,6 +450,7 @@ test("listing and search operate on real persisted metadata", async () => {
   const all = await service.listTracks({ ownerId: OWNER });
   assert.equal(all.length, 2);
   assert.equal(all[0].id, trackB.id, "newest first");
+  assert.equal(all[0].sourceAssetId, sourceIdByTrackId.get(trackB.id), "the owner-scoped list exposes the exact original asset for backup");
 
   for (const [query, expectedId] of [
     ["aphex", trackA.id],

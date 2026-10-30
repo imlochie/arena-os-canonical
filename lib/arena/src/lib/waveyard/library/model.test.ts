@@ -82,7 +82,25 @@ test("resolveStemAvailability: passthrough bridge = source-only, with the honest
 test("resolveStemAvailability: separation pending = processing", () => {
   const availability = resolveStemAvailability({ stems: [], separationPending: true });
   assert.equal(availability.status, "processing");
-  assert.match(availability.reason, /still running/);
+  assert.match(availability.reason, /running/);
+});
+
+test("resolveStemAvailability distinguishes queued separation from active work", () => {
+  const queued = resolveStemAvailability({
+    stems: [],
+    separationPending: true,
+    separationJob: {
+      id: "job-queued",
+      status: "queued",
+      stage: "queued",
+      errorCode: null,
+    },
+  });
+  assert.equal(queued.status, "processing");
+  if (queued.status !== "processing") throw new Error("Expected a queued separation.");
+  assert.equal(queued.stage, "queued");
+  assert.match(queued.reason, /queued/i);
+  assert.match(queued.reason, /playable/i);
 });
 
 test("resolveStemAvailability exposes current progress, but ignores stale progress before separation starts", () => {

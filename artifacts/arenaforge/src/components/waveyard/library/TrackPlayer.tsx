@@ -536,7 +536,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
   const availabilityNote = separated
     ? null
     : track.stemAvailability.status === "processing"
-      ? "Stems are separating in the background — playing the full source until they are ready."
+      ? track.stemAvailability.reason ?? "Stem separation is running — playing the full source until the stems are ready."
       : track.stemAvailability.reason ?? "Playing the full, unseparated source.";
 
   return (
@@ -580,7 +580,7 @@ export function TrackPlayer({ trackId }: { trackId: string }) {
         {stemChannels.map((channel) => {
           const values = mix[channel.assetId] ?? { volume: 1, pan: 0, muted: false, solo: false };
           const meter = meters !== null ? meters[channel.assetId] : undefined;
-          const anySolo = Object.values(mix).some((entry) => entry.solo);
+          const anySolo = assetIds.some((id) => mix[id]?.solo);
           const active = separated && !(values.muted || (anySolo && !values.solo));
           return (
             <div

@@ -244,6 +244,7 @@ try {
   let maxBatchUploadsInFlight = 0;
   const recoveryTrack = {
     id: "arena-smoke-stem-recovery",
+    sourceAssetId: "arena-smoke-source-asset",
     title: "Retryable track",
     artist: "Smoke test",
     album: "",
@@ -279,8 +280,15 @@ try {
       {
         ...notStartedTrack,
         rating: mockNotStartedRating,
-        stemAvailability: mockNotStartedState === "processing"
-          ? { status: "processing", reason: "Separation is running." }
+        stemAvailability: mockNotStartedState === "queued"
+          ? { status: "processing", reason: "Stem separation is queued. The full source remains playable.", stage: "queued" }
+          : mockNotStartedState === "processing"
+            ? {
+                status: "processing",
+                reason: "Stem separation is running. The full source remains playable.",
+                stage: "separating",
+                progress: { percent: 36, phase: "pass 2/4" },
+              }
           : mockNotStartedState === "separated"
             ? { status: "separated", stemCount: 4 }
             : { status: "not-started", reason: "No job started." },
@@ -460,8 +468,9 @@ try {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname.endsWith("/separation") && route.request().method() === "POST") {
       mockStartCount += 1;
-      mockNotStartedState = "processing";
-      setTimeout(() => { mockNotStartedState = "separated"; }, 4000);
+      mockNotStartedState = "queued";
+      setTimeout(() => { mockNotStartedState = "processing"; }, 5000);
+      setTimeout(() => { mockNotStartedState = "separated"; }, 9000);
       await route.fulfill({
         status: 202,
         contentType: "application/json",
@@ -623,6 +632,17 @@ try {
       body: JSON.stringify({ job: { id: "arena-smoke-stem-job", status: "queued" } }),
     });
   });
+  await page.route("**/api/assets/arena-smoke-source-asset?download=1", async (route) => {
+    assert.equal(route.request().method(), "GET", "original-file backup uses the private asset read route");
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "Content-Type": "audio/mpeg",
+        "Content-Disposition": 'attachment; filename="September.mp3"',
+      },
+      body: Buffer.from("smoke-test-audio"),
+    });
+  });
   await page.goto(`${base}/waveyard`, { waitUntil: "networkidle" });
   const recoveryRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Retryable track" });
   const notStartedRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Not started track" });
@@ -635,12 +655,22 @@ try {
   await page.getByRole("button", { name: "Retry track refresh", exact: true }).click();
   await secondPlaylistStarted;
   await recoveryRow.getByText("SEPARATION REJECTED", { exact: true }).waitFor();
+  const originalDownloadLink = recoveryRow.getByRole("link", { name: "Download original audio for Retryable track" });
+  assert.equal(
+    await originalDownloadLink.getAttribute("href"),
+    "/api/assets/arena-smoke-source-asset?download=1",
+    "backup downloads the exact original private source asset",
+  );
+  const downloadStarted = page.waitForEvent("download");
+  await originalDownloadLink.click();
+  assert.equal((await downloadStarted).suggestedFilename(), "September.mp3", "the source endpoint returns the original filename");
   releaseSecondPlaylistResponse();
   await page.getByTestId("library-refresh-warning").waitFor();
   await page.getByRole("button", { name: "Retry library refresh", exact: true }).click();
   await page.getByTestId("library-refresh-warning").waitFor({ state: "detached" });
   await page.getByTestId("track-load-failure").waitFor({ state: "detached" });
   report.push("A failed track-list request shows retry instead of false emptiness; a playlist outage leaves tracks available and recovers on retry.");
+  report.push("A library track can download its exact original private audio file with the stored source filename.");
   let resolveSlowSearchStarted;
   const slowSearchStarted = new Promise((resolve) => { resolveSlowSearchStarted = resolve; });
   let resolveSlowSearchFinished;
@@ -921,13 +951,15 @@ try {
   await notStartedRow.getByText("SEPARATING…", { exact: true }).waitFor();
   await page.getByRole("status").filter({ hasText: "Not started track: separation started." }).waitFor();
   assert.equal(mockStartCount, 1, "starting separation for an unprocessed track must submit one job");
-  assert.equal(mockNotStartedState, "processing", "the worker remains active during the library interaction");
+  assert.equal(mockNotStartedState, "queued", "the local worker queue is serial and reports waiting jobs honestly");
+  await notStartedRow.getByText("QUEUED", { exact: true }).waitFor({ timeout: 6000 });
+  await notStartedRow.getByText("SEPARATING · 36% · pass 2/4", { exact: true }).waitFor({ timeout: 9000 });
   assert.equal(await notStartedRow.getByRole("button", { name: "Play" }).isEnabled(), true);
   assert.equal(await notStartedRow.getByRole("button", { name: "Next" }).isEnabled(), true);
   await notStartedRow.getByRole("button", { name: "Rate Not started track: 4 stars" }).click();
   await notStartedRow.getByRole("button", { name: "Clear Not started track: 4 stars" }).waitFor();
   assert.equal(mockNotStartedRating, 4, "a library edit saves while separation is active");
-  report.push("Library playback controls and track rating remain usable during background separation.");
+  report.push("The library distinguishes queued from active separation, then keeps playback controls and rating usable while work runs.");
   await page.reload({ waitUntil: "networkidle" });
   const reloadedNotStartedRow = page.locator('[data-testid="library-track"]').filter({ hasText: "Not started track" });
   await reloadedNotStartedRow.locator('[aria-label="Rating: 4 of 5"]').waitFor();

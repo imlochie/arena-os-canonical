@@ -13,6 +13,17 @@ Set-Location $root
 if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
   throw "This measurement targets Windows x64."
 }
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+  throw "Install Node.js LTS 22+ and reopen PowerShell before running the Waveyard measurement."
+}
+$nodeMajor = [int]((node --version).TrimStart("v").Split(".")[0])
+if ($nodeMajor -lt 22) {
+  throw "Node.js 22 or newer is required to run the Waveyard measurement."
+}
+$playwrightPackage = Join-Path $PSScriptRoot "node_modules\playwright-core\package.json"
+if (-not (Test-Path -LiteralPath $playwrightPackage -PathType Leaf)) {
+  throw "Install this workspace's dependencies first by running pnpm install from the project root."
+}
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
   throw "ArenaForge.exe was not found at the supplied path."
 }

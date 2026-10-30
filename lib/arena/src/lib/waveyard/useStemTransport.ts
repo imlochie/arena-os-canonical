@@ -199,6 +199,27 @@ export function isEffectivelyMuted(
   return values.muted || (anySolo && !values.solo);
 }
 
+const DEFAULT_MIXER_VALUES: MixerValues = {
+  volume: 1,
+  pan: 0,
+  muted: false,
+  solo: false,
+};
+
+/** Resolve mixer intent only for the currently loaded audio channels. */
+export function resolveActiveMixerState(
+  ids: readonly string[],
+  values: Readonly<Record<string, MixerValues>>,
+) {
+  const controls = Object.fromEntries(
+    ids.map((id) => [id, values[id] ?? DEFAULT_MIXER_VALUES]),
+  ) as Record<string, MixerValues>;
+  return {
+    controls,
+    anySolo: ids.some((id) => controls[id].solo),
+  };
+}
+
 export function useStemTransport(ids: string[], duration: number) {
   const media = useRef<Record<string, HTMLAudioElement | null>>({});
   const graphs = useRef<Record<string, AudioGraph>>({});
@@ -433,12 +454,12 @@ export function useStemTransport(ids: string[], duration: number) {
   // not construct an AudioContext here; play() creates graphs lazily.
   const applyMix = useCallback(
     (values: Record<string, MixerValues>) => {
-      mixValues.current = values;
-      const anySolo = Object.values(values).some((track) => track.solo);
+      const { controls, anySolo } = resolveActiveMixerState(ids, values);
+      mixValues.current = controls;
       for (const id of ids) {
         const graph = graphs.current[id];
-        const control = values[id];
-        if (!graph || !control) continue;
+        const control = controls[id];
+        if (!graph) continue;
         // Phase inversion is a real polarity flip (negative gain), not a flag.
         const magnitude = isEffectivelyMuted(control, anySolo) ? 0 : control.volume;
         graph.gain.gain.value = control.phaseInvert ? -magnitude : magnitude;

@@ -31,7 +31,7 @@ import { dirname, join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 
 import type { drizzle } from "drizzle-orm/node-postgres";
 
@@ -206,6 +206,128 @@ async function updateJob(
     .update(processingJobs)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(processingJobs.id, id));
+}
+
+async function updateJobUnlessComplete(
+  database: NonNullable<SeparationHandlerDeps["db"]>,
+  id: string,
+  patch: Partial<typeof processingJobs.$inferInsert>,
+) {
+  await database
+    .update(processingJobs)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(and(eq(processingJobs.id, id), ne(processingJobs.status, "complete")));
+}
+
+async function readSeparationPublication(
+  database: NonNullable<SeparationHandlerDeps["db"]>,
+  id: string,
+) {
+  try {
+    const [job] = await database
+      .select({ status: processingJobs.status })
+      .from(processingJobs)
+      .where(eq(processingJobs.id, id));
+    const rows = await database
+      .select({ storageKey: stemAssets.storageKey })
+      .from(stemAssets)
+      .where(eq(stemAssets.separationJobId, id));
+    return {
+      status: job?.status ?? null,
+      referencedKeys: new Set(rows.map((row) => row.storageKey)),
+    };
+  } catch {
+    // Unknown publication state is not permission to delete output files.
+    return null;
+  }
+}
+
+async function rememberUncertainCleanup(
+  database: NonNullable<SeparationHandlerDeps["db"]>,
+  id: string,
+  keys: string[],
+  message: string,
+  fallbackMetadata?: string | null,
+) {
+  if (keys.length === 0) return;
+  let metadata = fallbackMetadata;
+  try {
+    const [job] = await database
+      .select({ status: processingJobs.status, metadata: processingJobs.metadata })
+      .from(processingJobs)
+      .where(eq(processingJobs.id, id));
+    if (!job || job.status === "complete") return;
+    metadata = job.metadata;
+  } catch {
+    // The status guard below prevents overwriting a completed job if this read
+    // is unavailable. Retain the original metadata plus cleanup keys.
+  }
+  try {
+    await updateJobUnlessComplete(database, id, {
+      errorMessage: message,
+      metadata: JSON.stringify({
+        ...jobMetadata(metadata),
+        cleanupFailedKeys: [
+          ...new Set([
+            ...(Array.isArray(jobMetadata(metadata).cleanupFailedKeys)
+              ? (jobMetadata(metadata).cleanupFailedKeys as string[])
+              : []),
+            ...keys,
+          ]),
+        ],
+      }),
+    });
+  } catch {
+    // Preserve the objects even when the database cannot record reconciliation
+    // metadata. Startup's age-bounded orphan cleanup can reclaim them later.
+  }
+}
+
+async function cleanupUnpublishedOutputs(
+  database: NonNullable<SeparationHandlerDeps["db"]>,
+  id: string,
+  keys: string[],
+  storage: ReturnType<typeof getStorage>,
+  fallbackMetadata?: string | null,
+) {
+  if (keys.length === 0) return;
+  const publication = await readSeparationPublication(database, id);
+  if (!publication) {
+    await rememberUncertainCleanup(
+      database,
+      id,
+      keys,
+      "Separation output was retained because publication status could not be verified. Cleanup keys are recorded for reconciliation.",
+      fallbackMetadata,
+    );
+    return;
+  }
+  if (publication.status === "complete") {
+    const unreferenced = keys.filter((key) => !publication.referencedKeys.has(key));
+    if (unreferenced.length > 0) {
+      await rememberUncertainCleanup(
+        database,
+        id,
+        unreferenced,
+        "Separation is complete; unreferenced output was retained because the published stem set did not match the worker output.",
+        fallbackMetadata,
+      );
+    }
+    return;
+  }
+
+  const unreferenced = keys.filter((key) => !publication.referencedKeys.has(key));
+  const results = await Promise.allSettled(unreferenced.map((key) => storage.delete(key)));
+  const failedKeys = unreferenced.filter((_, index) => results[index]?.status === "rejected");
+  if (failedKeys.length > 0) {
+    await rememberUncertainCleanup(
+      database,
+      id,
+      failedKeys,
+      "Separation stopped without publishing these output objects. Cleanup keys are recorded for reconciliation.",
+      fallbackMetadata,
+    );
+  }
 }
 
 function interleavePlanar(channels: Float32Array[]): Float32Array {
@@ -538,7 +660,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       runModels = [...new Set(runs.map((run) => run.spec.id))];
     }
 
-    await flushProgress();
+    await flushProgress().catch(() => undefined);
     await updateJob(database, job.id, {
       status: "finalizing",
       stage: "validating",
@@ -552,8 +674,9 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
       await writeFile(stemPath, wav);
       const checksum = await checksumFile(stemPath);
       const storageKey = privateObjectKey(job.projectId, "stem", "wav");
-      await storage.putFile(storageKey, stemPath, "audio/wav");
+      // A storage provider may write the object and then lose its acknowledgement.
       uploadedKeys.push(storageKey);
+      await storage.putFile(storageKey, stemPath, "audio/wav");
       values.push({
         projectId: job.projectId,
         sourceAssetId: source.id,
@@ -637,12 +760,23 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     completed = true;
   } catch (error) {
     await flushProgress();
+    const publication = await readSeparationPublication(database, job.id);
+    const commitWasConfirmed =
+      publication?.status === "complete" &&
+      uploadedKeys.length > 0 &&
+      uploadedKeys.every((key) => publication.referencedKeys.has(key));
+    if (commitWasConfirmed) {
+      // The transaction committed; only its acknowledgement was lost. The
+      // durable job and stem rows are the source of truth, not this promise.
+      completed = true;
+      return;
+    }
     let errorCode = "separation_failed";
     if (error instanceof SeparationUnavailableError) errorCode = "separation_unavailable";
     else if (error instanceof DependencyMissingError) errorCode = "dependency_missing";
     else if (error instanceof Error && /44100/.test(error.message)) errorCode = "decode_failed";
     const message = error instanceof Error ? error.message.slice(0, 1800) : "Unknown separation failure.";
-    await updateJob(database, job.id, {
+    await updateJobUnlessComplete(database, job.id, {
       status: "failed",
       stage: "failed",
       errorCode,
@@ -652,7 +786,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
     throw error;
   } finally {
     if (!completed) {
-      await Promise.allSettled(uploadedKeys.map((key) => storage.delete(key)));
+      await cleanupUnpublishedOutputs(database, job.id, uploadedKeys, storage, job.metadata);
     }
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

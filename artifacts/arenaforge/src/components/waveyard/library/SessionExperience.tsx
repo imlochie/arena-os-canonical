@@ -130,7 +130,14 @@ function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOp
     const finishing = availability.stage === "finalizing" || availability.progress?.percent === 100;
     const percent = availability.progress ? ` · ${availability.progress.percent}%` : "";
     const sourceLabel = item.sourceAssetId === null ? "" : " · full source available";
-    return { ready: false, canUseFullSource: item.sourceAssetId !== null, label: `${finishing ? "Finishing" : "Separating"}${percent}${sourceLabel}` };
+    const stageLabel = availability.stage === "queued"
+      ? "Queued"
+      : availability.stage === "preparing"
+        ? "Preparing"
+        : finishing
+          ? "Finishing"
+          : "Separating";
+    return { ready: false, canUseFullSource: item.sourceAssetId !== null, label: `${stageLabel}${percent}${sourceLabel}` };
   }
   if (availability?.status === "failed" || availability?.status === "rejected") {
     const sourceLabel = item.sourceAssetId === null ? " · retry in Library" : " · full source available";

@@ -32,6 +32,7 @@ const MAX_PARALLEL_LIBRARY_UPLOAD_BYTES = 64 * 1024 * 1024;
 
 interface TrackSummary {
   id: string;
+  sourceAssetId?: string;
   title: string;
   artist: string;
   album: string;
@@ -86,12 +87,21 @@ function StemBadge({ availability }: { availability: TrackSummary["stemAvailabil
     : "";
   const finishing = availability.status === "processing" &&
     (availability.stage === "finalizing" || progress?.percent === 100);
+  const stageLabel = availability.stage === "queued"
+    ? "QUEUED"
+    : availability.stage === "preparing"
+      ? "PREPARING…"
+      : availability.stage === "running"
+        ? "STARTING…"
+        : availability.stage === "finalizing"
+          ? "FINISHING…"
+          : "SEPARATING…";
   const label = progress
     ? `${finishing ? "FINISHING" : "SEPARATING"} · ${progress.percent}%${phase}`
     :
     availability.status === "separated" ? `${availability.stemCount} STEMS`
     : availability.status === "source-only" ? "SOURCE"
-    : availability.status === "processing" ? "SEPARATING…"
+    : availability.status === "processing" ? stageLabel
     : availability.status === "rejected" ? "SEPARATION REJECTED"
     : availability.status === "failed" ? "SEPARATION FAILED"
     : availability.status === "not-started" ? "NOT STARTED"
@@ -208,6 +218,16 @@ function TrackRow({
         <button type="button" className="button" onClick={() => onPlay(track)} data-testid={`button-play-${track.id}`}>Play</button>
         <button type="button" className="button secondary" onClick={() => onNext(track)} title="Line up on the next deck" data-testid={`button-next-${track.id}`}>Next</button>
         <button type="button" className="button secondary" title="Add to the saved queue and the live listening order" onClick={() => onQueue(track)}>+ Queue</button>
+        {track.sourceAssetId && (
+          <a
+            className="button secondary"
+            href={`/api/assets/${encodeURIComponent(track.sourceAssetId)}?download=1`}
+            aria-label={`Download original audio for ${track.title}`}
+            title="Download the exact original audio file stored in your private library"
+          >
+            Download original
+          </a>
+        )}
         {track.stemAvailability.status === "not-started" && (
           <button
             type="button"
