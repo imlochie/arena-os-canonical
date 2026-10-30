@@ -4,7 +4,11 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { stageWindowsMediaTools, verifyArchiveDigest } from "./ffmpeg-bundle.mjs";
+import {
+  FFMPEG_RELEASE,
+  stageWindowsMediaTools,
+  verifyArchiveDigest,
+} from "./ffmpeg-bundle.mjs";
 
 function fakeWindowsX64Image() {
   const image = Buffer.alloc(256);
@@ -14,6 +18,11 @@ function fakeWindowsX64Image() {
   image.writeUInt16LE(0x8664, 0x84);
   return image;
 }
+
+test("pins one named Windows x64 LGPL FFmpeg archive by SHA-256", () => {
+  assert.match(FFMPEG_RELEASE.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(new URL(FFMPEG_RELEASE.url).pathname.split("/").at(-1), FFMPEG_RELEASE.archiveName);
+});
 
 test("stages only the Windows x64 FFmpeg tools and their shared libraries", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "arena-ffmpeg-stage-test-"));
