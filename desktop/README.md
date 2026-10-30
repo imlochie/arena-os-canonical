@@ -91,15 +91,16 @@ after reviewing the replacement release and its license.
 
 After installing the rebuilt app, open Waveyard once and wait until it says
 “Stem engine ready” (use “Prepare stems” if needed), then close ArenaForge.
-Choose a real stereo PCM 16-bit, 44.1 kHz WAV under 15 minutes. The default
-measures the full file; for a faster first check, pass `-MaxSeconds 20` and
-optionally `-StartSeconds 20` to sample a later section. With the workspace
-checkout and its installed dependencies on the Windows machine, run:
+Choose a real supported audio file under 15 minutes, such as the MP3 sample
+provided for this project. The default measures the full file; for a faster
+first check, pass `-MaxSeconds 20` and optionally `-StartSeconds 20` to create
+a temporary excerpt without changing the original. With the workspace checkout
+and its installed dependencies on the Windows machine, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\desktop\Measure-Waveyard.ps1 `
   -Executable "C:\path\to\ArenaForge.exe" `
-  -AudioPath "C:\path\to\song.wav" `
+  -AudioPath "C:\path\to\song.mp3" `
   -MaxSeconds 20 `
   -StartSeconds 20
 ```

@@ -1,6 +1,6 @@
 /**
  * Real Windows Waveyard check. This uses the installed app, its local worker,
- * prepared ONNX weights, and one real PCM WAV. Audio and its filename are
+ * prepared ONNX weights, and one real audio file. Audio and its filename are
  * never copied into the report; all app data is isolated in a temporary root.
  */
 import assert from "node:assert/strict";
@@ -12,7 +12,11 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { _electron } from "playwright-core";
-import { writePcmWavExcerpt } from "./waveyard-audio.mjs";
+import {
+  probeAudioFile,
+  writeCompressedAudioExcerpt,
+  writePcmWavExcerpt,
+} from "./waveyard-audio.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outputDir = path.resolve(here, "../generated-artifacts/windows-waveyard");
@@ -20,6 +24,9 @@ const reportName = `report-${new Date().toISOString().replace(/[:.]/g, "-")}.jso
 const reportPath = path.join(outputDir, reportName);
 const exe = process.argv[2];
 const audioPath = process.argv[3];
+const mediaToolsDir = exe ? path.join(path.dirname(exe), "resources", "bin") : "";
+const ffmpegPath = mediaToolsDir ? path.join(mediaToolsDir, "ffmpeg.exe") : "";
+const ffprobePath = mediaToolsDir ? path.join(mediaToolsDir, "ffprobe.exe") : "";
 const defaultModelsPath = process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, "Arena", "waveyard", "models")
   : "";
@@ -119,7 +126,7 @@ async function readPcmWav(filePath) {
     assert.equal(format.code, 1, "Use PCM audio (not compressed WAV).");
     assert.equal(format.bitsPerSample, 16, "Use 16-bit PCM WAV audio.");
     assert.equal(format.channels, 2, "Use stereo audio for this separation check.");
-    assert.equal(format.sampleRate, 44_100, "Use 44.1 kHz audio; FFmpeg is not bundled.");
+    assert.equal(format.sampleRate, 44_100, "The fast PCM excerpt path expects 44.1 kHz audio.");
     assert(dataBytes > 0, "The WAV file has no audio data.");
     const durationSeconds = dataBytes / (format.sampleRate * format.channels * (format.bitsPerSample / 8));
     assert(durationSeconds <= 900, "Choose a track shorter than 15 minutes for this first measurement.");
@@ -280,7 +287,7 @@ async function run() {
   assert.equal(process.platform, "win32", "This check only counts when run on Windows.");
   assert.equal(process.arch, "x64", "This package targets Windows x64.");
   assert(exe && path.isAbsolute(exe), "Pass the absolute path to the installed ArenaForge.exe.");
-  assert(audioPath && path.isAbsolute(audioPath), "Pass the absolute path to a real WAV file.");
+  assert(audioPath && path.isAbsolute(audioPath), "Pass the absolute path to a real audio file.");
   assert(modelsPath && path.isAbsolute(modelsPath), "Pass or configure the local Waveyard model-cache path.");
   assert(
     Number.isInteger(maxSeconds) && (maxSeconds === 0 || (maxSeconds >= 2 && maxSeconds <= 20)),
@@ -288,10 +295,34 @@ async function run() {
   );
   assert(Number.isInteger(startSeconds) && startSeconds >= 0 && startSeconds <= 899, "Start time must be an integer from 0 to 899 seconds.");
   assert(await stat(exe).catch(() => null), "The ArenaForge executable was not found.");
+  assert(await stat(ffmpegPath).catch(() => null), "The installed app is missing its bundled FFmpeg binary.");
+  assert(await stat(ffprobePath).catch(() => null), "The installed app is missing its bundled FFprobe binary.");
   const modelsStat = await stat(modelsPath).catch(() => null);
   assert(modelsStat?.isDirectory(), "The model cache was not found; prepare the four stem models in Waveyard first.");
   await assertAppClosed();
-  const sourceFile = await readPcmWav(audioPath);
+  const extension = path.extname(audioPath).toLowerCase();
+  assert(
+    [".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".wma"].includes(extension),
+    "Choose a supported audio file such as MP3, M4A, WAV, FLAC, or OGG.",
+  );
+  const sourceMetadata = await probeAudioFile(audioPath, ffprobePath);
+  const sourceStat = await stat(audioPath);
+  assert(sourceMetadata.durationSeconds <= 900, "Choose a track shorter than 15 minutes for this first measurement.");
+  let pcmWavInfo = null;
+  if (extension === ".wav") {
+    try {
+      pcmWavInfo = await readPcmWav(audioPath);
+    } catch {
+      // FFmpeg will make the bounded excerpt for WAV variants that cannot use
+      // the fast, format-preserving PCM byte-copy path.
+    }
+  }
+  const sourceFile = {
+    ...sourceMetadata,
+    sizeBytes: sourceStat.size,
+    pcmWavInfo,
+  };
+  record(`Bundled FFprobe read the selected ${sourceMetadata.codec} audio file`);
   await sampleGpuNames();
 
   isolatedDataRoot = await mkdtemp(path.join(os.tmpdir(), "arena-waveyard-measure-"));
@@ -302,14 +333,24 @@ async function run() {
     sizeBytes: sourceFile.sizeBytes,
   };
   if (startSeconds > 0 || maxSeconds > 0) {
-    measurementAudioPath = path.join(isolatedDataRoot, "waveyard-measurement.wav");
-    excerpt = await writePcmWavExcerpt(audioPath, measurementAudioPath, sourceFile, {
-      startSeconds,
-      maxSeconds,
-    });
+    measurementAudioPath = path.join(isolatedDataRoot, `waveyard-measurement${extension}`);
+    if (pcmWavInfo) {
+      excerpt = await writePcmWavExcerpt(audioPath, measurementAudioPath, pcmWavInfo, {
+        startSeconds,
+        maxSeconds,
+      });
+    } else {
+      excerpt = await writeCompressedAudioExcerpt(audioPath, measurementAudioPath, {
+        ffmpegPath,
+        ffprobePath,
+        startSeconds,
+        maxSeconds,
+      });
+    }
   }
   report.file = {
     format: sourceFile.format,
+    codec: sourceFile.codec,
     sourceSizeBytes: sourceFile.sizeBytes,
     sourceDurationSeconds: sourceFile.durationSeconds,
     processedStartSeconds: excerpt.startSeconds,
@@ -363,7 +404,7 @@ async function run() {
   const trackId = uploadBody.track?.id;
   assert(typeof trackId === "string", "Audio import did not return a library track.");
   report.timings.uploadToQueueSeconds = Number(((performance.now() - uploadStarted) / 1000).toFixed(2));
-  record("Real WAV uploaded through the Waveyard library workflow");
+  record(`Real ${sourceFile.codec} audio uploaded through the Waveyard library workflow`);
 
   const trackPayload = await apiGet(`/api/library/tracks/${trackId}`);
   const track = trackPayload.track;
