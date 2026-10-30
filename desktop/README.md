@@ -73,12 +73,19 @@ port fails explicitly instead of silently changing the app's browser origin.
 Existing databases are never deleted or reinitialised to fix startup errors.
 The bundled PostgreSQL major remains 16 to match the retained desktop runtime.
 
-The package includes the CPU ONNX Runtime needed by Waveyard's local separator.
-Separation model weights are downloaded separately through Waveyard and are not
-bundled. CUDA/GPU providers and FFmpeg are not bundled; use a PCM 44.1 kHz WAV
-for a CPU separation check unless FFmpeg is installed separately. This package
-still needs a real Windows Waveyard run before its speed or audio quality is
-verified.
+The package includes the CPU ONNX Runtime needed by Waveyard's local separator
+and a pinned Windows x64 LGPL shared FFmpeg/FFprobe build for compressed audio,
+waveforms, and exports. The FFmpeg archive is SHA-256 verified, cached under
+`generated-artifacts/windows-tool-cache`, and its license is included beside
+the binaries in `resources/bin`. The shared libraries and tools add about
+150 MiB installed. Separation model weights remain a separate one-time download
+through Waveyard; CUDA/GPU providers are not bundled. This package still needs
+a real Windows Waveyard run before its speed or audio quality is verified.
+
+The FFmpeg package build downloads its pinned archive from GitHub during the
+first Windows package build. If the upstream `latest` asset changes, the
+checksum fails safely; update the pinned archive name and SHA-256 together
+after reviewing the replacement release and its license.
 
 ## Measure Waveyard on Windows
 

@@ -8,6 +8,8 @@ module.exports = {
     { from: "stage/web", to: "web" },
     { from: "stage/chromium", to: "chromium" },
     { from: "stage/embedded-postgres", to: "embedded-postgres" },
+    { from: "stage/bin", to: "bin" },
+    { from: "THIRD-PARTY-NOTICES.md", to: "THIRD-PARTY-NOTICES.md" },
     { from: "../lib/arena/desktop-migrations", to: "desktop-migrations", filter: ["*.sql"] },
   ],
   asar: true,

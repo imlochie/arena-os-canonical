@@ -1,9 +1,36 @@
 import assert from "node:assert/strict";
-import { open } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { open, stat } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 
 const PCM_WAV_HEADER_BYTES = 44;
 const COPY_CHUNK_BYTES = 1024 * 1024;
+const execFileAsync = promisify(execFile);
+
+export async function probeAudioFile(filePath, ffprobePath) {
+  assert(path.isAbsolute(filePath), "The source audio path must be absolute.");
+  assert(path.isAbsolute(ffprobePath), "The bundled FFprobe path must be absolute.");
+  const { stdout } = await execFileAsync(ffprobePath, [
+    "-v", "error",
+    "-show_entries", "format=format_name,duration:stream=codec_name,codec_type,channels,sample_rate,bits_per_sample",
+    "-of", "json",
+    filePath,
+  ], { timeout: 60_000, windowsHide: true, maxBuffer: 1024 * 1024 });
+  const metadata = JSON.parse(stdout);
+  const audio = metadata.streams?.find((stream) => stream.codec_type === "audio");
+  const durationSeconds = Number(metadata.format?.duration);
+  assert(audio, "The selected file does not contain an audio stream.");
+  assert(Number.isFinite(durationSeconds) && durationSeconds > 1, "The selected audio duration could not be read.");
+  return {
+    format: String(metadata.format?.format_name ?? "unknown"),
+    codec: String(audio.codec_name ?? "unknown"),
+    channels: Number.isFinite(Number(audio.channels)) ? Number(audio.channels) : null,
+    sampleRateHz: Number.isFinite(Number(audio.sample_rate)) ? Number(audio.sample_rate) : null,
+    bitsPerSample: Number.isFinite(Number(audio.bits_per_sample)) ? Number(audio.bits_per_sample) : null,
+    durationSeconds: Number(durationSeconds.toFixed(2)),
+  };
+}
 
 function pcmWavHeader({ dataBytes, sampleRateHz, channels, bitsPerSample }) {
   const header = Buffer.alloc(PCM_WAV_HEADER_BYTES);
@@ -111,4 +138,45 @@ export async function writePcmWavExcerpt(sourcePath, targetPath, sourceInfo, {
     await source.close();
     await target?.close();
   }
+}
+
+export async function writeCompressedAudioExcerpt(sourcePath, targetPath, {
+  ffmpegPath,
+  ffprobePath,
+  startSeconds = 0,
+  maxSeconds = 0,
+} = {}) {
+  assert(Number.isInteger(startSeconds) && startSeconds >= 0, "Start time must be a non-negative whole number of seconds.");
+  assert(
+    Number.isInteger(maxSeconds) && (maxSeconds === 0 || (maxSeconds >= 2 && maxSeconds <= 20)),
+    "Maximum duration must be 0 (full remaining file) or 2–20 seconds.",
+  );
+  assert(path.resolve(sourcePath) !== path.resolve(targetPath), "The excerpt must not overwrite the original audio file.");
+  assert(path.isAbsolute(ffmpegPath), "The bundled FFmpeg path must be absolute.");
+  assert(path.isAbsolute(ffprobePath), "The bundled FFprobe path must be absolute.");
+
+  const args = ["-hide_banner", "-loglevel", "error"];
+  if (startSeconds > 0) args.push("-ss", String(startSeconds));
+  args.push("-i", sourcePath, "-map", "0:a:0", "-c:a", "copy", "-vn", "-sn", "-dn");
+  if (maxSeconds > 0) args.push("-t", String(maxSeconds));
+  args.push("-y", targetPath);
+  await execFileAsync(ffmpegPath, args, { timeout: 120_000, windowsHide: true, maxBuffer: 1024 * 1024 });
+
+  const output = await stat(targetPath);
+  assert(output.size > 0, "FFmpeg did not create a usable audio excerpt.");
+  const metadata = await probeAudioFile(targetPath, ffprobePath);
+  assert(metadata.durationSeconds > 1, "The compressed excerpt contains less than one second of audio.");
+  if (maxSeconds > 0) {
+    assert(
+      metadata.durationSeconds <= maxSeconds + 2,
+      "The compressed excerpt is longer than the requested measurement window.",
+    );
+  }
+  return {
+    startSeconds,
+    durationSeconds: metadata.durationSeconds,
+    sizeBytes: output.size,
+    format: metadata.format,
+    codec: metadata.codec,
+  };
 }

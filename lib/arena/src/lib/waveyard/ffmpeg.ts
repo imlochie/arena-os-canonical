@@ -1,10 +1,9 @@
 /**
  * FFmpeg/FFprobe resolution — the single place binaries are discovered.
  *
- * Order (audited in docs/desktop-runtime-plan.md §3):
- *  1. ARENA_FFMPEG_PATH / ARENA_FFPROBE_PATH env (packaged mode: the
- *     desktop supervisor passes explicit paths to bundled binaries)
- *  2. ARENA_APP_BIN_DIR (the packaged app's bin/)
+ * Order:
+ *  1. ARENA_FFMPEG_PATH / ARENA_FFPROBE_PATH env (an explicit override)
+ *  2. ARENA_APP_BIN_DIR (the desktop supervisor points this at resources/bin)
  *  3. @ffmpeg-installer / @ffprobe-installer (npm platform packages)
  *  4. system PATH - secondary, reported as source "system", absolute path
  *

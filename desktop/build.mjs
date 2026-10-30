@@ -4,6 +4,7 @@ import { cp, mkdir, rm, access, readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { stageFfmpegBundle } from "./ffmpeg-bundle.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -94,6 +95,10 @@ async function main() {
   const stage = path.join(here, "stage");
   await rm(stage, { recursive: true, force: true });
   await mkdir(path.join(stage, "server", "node_modules"), { recursive: true });
+  await stageFfmpegBundle({
+    cacheDir: path.join(root, "generated-artifacts", "windows-tool-cache"),
+    destinationBin: path.join(stage, "bin"),
+  });
   await cp(path.join(root, "artifacts/api-server/dist"), path.join(stage, "server"), { recursive: true });
   await cp(path.join(root, "artifacts/arenaforge/dist/public"), path.join(stage, "web"), { recursive: true });
   const playwrightRoot = path.dirname(require.resolve("playwright-core/package.json"));

@@ -111,6 +111,7 @@ async function start() {
     env: {
       ...process.env, ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production",
       ARENA_DESKTOP_MODE: "1", ARENA_DATA_DIR: root, ARENA_RESOURCES_DIR: resources,
+      ARENA_APP_BIN_DIR: path.join(resources, "bin"),
       ARENA_WEB_ROOT: path.join(resources, "web"), CHROMIUM_PATH: chromium,
       PORT: String(serverPort),
       DATABASE_URL: `postgres://arena:${encodeURIComponent(dbPassword)}@127.0.0.1:${dbPort}/arena`,
