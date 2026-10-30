@@ -16,6 +16,7 @@ import { join } from "node:path";
 
 import { findMdxModel } from "./mdx";
 import {
+  createSessionWithProviderFallback,
   SeparationUnavailableError,
   createMdxSession,
   resolveModelsDir,
@@ -90,6 +91,29 @@ test("createMdxSession: missing runtime is a typed unavailable error, never a cr
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("Windows automatic provider fallback reports the provider that opened successfully", async () => {
+  const attempts: string[][] = [];
+  const cpuSession: MdxSessionLike = { run: async () => ({}), release: () => {} };
+  const result = await createSessionWithProviderFallback(async (providers) => {
+    attempts.push(providers);
+    if (providers[0] === "dml") throw new Error("DirectML initialization failed");
+    return cpuSession;
+  }, "auto", "win32");
+
+  assert.deepEqual(attempts, [["dml"], ["cpu"]]);
+  assert.strictEqual(result.session, cpuSession);
+  assert.equal(result.resolvedDevice, "cpu", "the result must describe the successful CPU fallback, not the failed DirectML attempt");
+
+  const directMlSession: MdxSessionLike = { run: async () => ({}), release: () => {} };
+  const directMlAttempts: string[][] = [];
+  const directMlResult = await createSessionWithProviderFallback(async (providers) => {
+    directMlAttempts.push(providers);
+    return directMlSession;
+  }, "auto", "win32");
+  assert.deepEqual(directMlAttempts, [["dml"]], "do not initialize CPU after DirectML succeeds");
+  assert.equal(directMlResult.resolvedDevice, "dml");
 });
 
 test("sessionInfer: feeds [1,4,dimF,dimT] under input name 'input' and returns the float32 output", async () => {

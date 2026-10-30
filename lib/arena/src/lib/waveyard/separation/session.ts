@@ -54,6 +54,28 @@ export interface MdxSessionLike {
   release(): void | Promise<void>;
 }
 
+/** Open the first supported provider and report the provider that actually succeeded. */
+export async function createSessionWithProviderFallback<T>(
+  createSession: (executionProviders: string[]) => Promise<T>,
+  requestedDevice: "auto" | "cpu" | "cuda",
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ session: T; resolvedDevice: string }> {
+  let lastError: unknown = null;
+  for (const executionProviders of executionProviderAttempts(requestedDevice, platform)) {
+    try {
+      return {
+        session: await createSession(executionProviders),
+        resolvedDevice: executionProviders[0],
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(String(lastError ?? "No ONNX Runtime execution provider was available."));
+}
+
 /** Test seam: how the onnxruntime-node module is obtained. Production uses
  *  a lazy import so this file (and everything importing it) loads fine on a
  *  machine where the package is not installed. */

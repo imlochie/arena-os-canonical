@@ -53,13 +53,12 @@ import {
 import { runDeepSeparation } from "@workspace/arena/lib/waveyard/separation/deep";
 import { DEEP_MODEL_ID, isDeepSeparationMode } from "@workspace/arena/lib/waveyard/separation/modes";
 import {
-  executionProviderAttempts,
+  createSessionWithProviderFallback,
   loadOrtModule,
   sessionInfer,
   SeparationUnavailableError,
   WAVEYARD_ORT_INTRA_OP_THREADS,
   verifyModelFile,
-  type MdxSessionLike,
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { DependencyMissingError } from "@workspace/arena/lib/waveyard/measure/pcm";
 
@@ -96,34 +95,32 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
         "Reinstall the app; if it persists, this build is missing its inference runtime.",
     );
   }
-  const attempts = executionProviderAttempts(requestedDevice);
-  let lastError: unknown = null;
-  for (const executionProviders of attempts) {
-    try {
-      const session: MdxSessionLike = await ort.InferenceSession.create(modelPath, {
+  try {
+    const { session, resolvedDevice } = await createSessionWithProviderFallback(
+      (executionProviders) => ort.InferenceSession.create(modelPath, {
         executionProviders,
         // Leave one CPU available on larger machines for playback and app work.
         intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         interOpNumThreads: 1,
         enableCpuMemArena: false,
         enableMemPattern: false,
-      });
-      return {
-        infer: sessionInfer(session, (type, data, dims) => new ort.Tensor(type, data, dims)),
-        release: async () => {
-          await session.release();
-        },
-        resolvedDevice: executionProviders[0],
-      };
-    } catch (error) {
-      lastError = error;
-    }
+      }),
+      requestedDevice,
+    );
+    return {
+      infer: sessionInfer(session, (type, data, dims) => new ort.Tensor(type, data, dims)),
+      release: async () => {
+        await session.release();
+      },
+      resolvedDevice,
+    };
+  } catch (error) {
+    throw new SeparationUnavailableError(
+      `Could not open separation model "${spec.id}" for inference: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
-  throw new SeparationUnavailableError(
-    `Could not open separation model "${spec.id}" for inference: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
-    }`,
-  );
 }
 
 type WorkerDemixResult = {
