@@ -3,12 +3,14 @@
 Runs Waveyard's real-audio stem separation measurement locally on Windows.
 
 .DESCRIPTION
-Requires a 44.1 kHz stereo PCM WAV file and installed project dependencies.
+Accepts WAV, MP3, FLAC, M4A, AAC, and OGG files plus installed project dependencies.
+Compressed formats and WAV files outside native 16-bit PCM at 44.1 kHz require
+ffmpeg to be available through Arena's local resolver.
 Audio is processed locally and is not uploaded. The JSON report records the
 Windows runtime, CPU, model hashes, input details, elapsed time, and stem metrics.
 
-.PARAMETER WavPath
-Path to the input WAV file.
+.PARAMETER AudioPath
+Path to a local supported audio file.
 
 .PARAMETER ReportPath
 Optional report destination. Defaults to generated-artifacts/waveyard-real-audio-windows.json.
@@ -17,13 +19,14 @@ Optional report destination. Defaults to generated-artifacts/waveyard-real-audio
 Maximum audio duration to process. Defaults to 20 seconds; accepts 2 to 20 seconds.
 
 .EXAMPLE
-.\scripts\waveyard-real-audio-windows.ps1 -WavPath "C:\Music\sample.wav"
+.\scripts\waveyard-real-audio-windows.ps1 -AudioPath "C:\Music\sample.mp3"
 #>
 
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [string]$WavPath,
+  [Alias("WavPath")]
+  [string]$AudioPath,
 
   [string]$ReportPath = "generated-artifacts/waveyard-real-audio-windows.json",
 
@@ -37,9 +40,11 @@ if ($MaxSeconds -lt 2 -or $MaxSeconds -gt 20) {
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$resolvedWavPath = (Resolve-Path -LiteralPath $WavPath).Path
-if ([System.IO.Path]::GetExtension($resolvedWavPath).ToLowerInvariant() -ne ".wav") {
-  throw "This runner currently requires a 44.1 kHz stereo PCM WAV file. It does not convert MP3 or upload audio."
+$resolvedAudioPath = (Resolve-Path -LiteralPath $AudioPath).Path
+$audioExtension = [System.IO.Path]::GetExtension($resolvedAudioPath).ToLowerInvariant()
+$allowedAudioExtensions = @(".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg")
+if ($allowedAudioExtensions -notcontains $audioExtension) {
+  throw "Use a WAV, MP3, FLAC, M4A, AAC, or OGG audio file."
 }
 
 $resolvedReportPath = if ([System.IO.Path]::IsPathRooted($ReportPath)) {
@@ -69,27 +74,39 @@ if (-not $pnpmExecutable) {
   $pnpmExecutable = $pnpm.Name
 }
 
-$previousWavPath = $env:WAVEYARD_REAL_AUDIO_WAV
+$previousInputPath = $env:WAVEYARD_REAL_AUDIO_INPUT
 $previousReportPath = $env:WAVEYARD_REAL_AUDIO_REPORT
 $previousMaxSeconds = $env:WAVEYARD_REAL_AUDIO_MAX_SECONDS
 Push-Location $repoRoot
 try {
-  $env:WAVEYARD_REAL_AUDIO_WAV = $resolvedWavPath
+  $env:WAVEYARD_REAL_AUDIO_INPUT = $resolvedAudioPath
   $env:WAVEYARD_REAL_AUDIO_REPORT = $resolvedReportPath
   $env:WAVEYARD_REAL_AUDIO_MAX_SECONDS = [string]$MaxSeconds
 
+  $runStartedAt = [DateTime]::UtcNow
   & $pnpmExecutable --filter @workspace/scripts exec tsx --test --test-name-pattern "real audio excerpt" $testPath
   $testExitCode = $LASTEXITCODE
   if ($testExitCode -ne 0) {
     throw "Waveyard real-audio run failed with exit code $testExitCode."
   }
+  if (-not (Test-Path -LiteralPath $resolvedReportPath)) {
+    throw "The measurement passed but did not create its JSON report at $resolvedReportPath."
+  }
+  $reportFile = Get-Item -LiteralPath $resolvedReportPath
+  if ($reportFile.LastWriteTimeUtc -lt $runStartedAt.AddSeconds(-2)) {
+    throw "The report at $resolvedReportPath is stale; no new Windows result was recorded."
+  }
+  $report = Get-Content -LiteralPath $resolvedReportPath -Raw | ConvertFrom-Json
+  if ($report.platform -ne "win32") {
+    throw "The report records platform '$($report.platform)', not win32. It is not Windows evidence."
+  }
 
   Write-Host "Measurement report saved to $resolvedReportPath"
 } finally {
-  if ($null -eq $previousWavPath) {
-    Remove-Item Env:WAVEYARD_REAL_AUDIO_WAV -ErrorAction SilentlyContinue
+  if ($null -eq $previousInputPath) {
+    Remove-Item Env:WAVEYARD_REAL_AUDIO_INPUT -ErrorAction SilentlyContinue
   } else {
-    $env:WAVEYARD_REAL_AUDIO_WAV = $previousWavPath
+    $env:WAVEYARD_REAL_AUDIO_INPUT = $previousInputPath
   }
   if ($null -eq $previousReportPath) {
     Remove-Item Env:WAVEYARD_REAL_AUDIO_REPORT -ErrorAction SilentlyContinue

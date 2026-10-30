@@ -33,7 +33,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { cpus, release, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -45,6 +45,7 @@ import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/sy
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { SEPARATION_QUEUE } from "@workspace/arena/lib/waveyard/queue";
+import { decodeSourceToStereoPcm } from "../measure/pcm";
 import { stemAssets, processingJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
@@ -450,11 +451,12 @@ test("the pinned four-model recipe completes through the production worker on re
   }
 });
 
-// Opt-in real-audio measurement. A bounded 2–20 second excerpt of a 44.1 kHz
-// PCM WAV keeps an opt-in CPU measurement useful without turning it into a long
-// full-library processing job.
-const realAudioWavPath = process.env.WAVEYARD_REAL_AUDIO_WAV;
-if (realAudioWavPath) {
+// Opt-in real-audio measurement. Arena decodes supported local audio formats
+// into 44.1 kHz stereo PCM, then bounds processing to a 2–20 second excerpt.
+const realAudioInputPath =
+  process.env.WAVEYARD_REAL_AUDIO_INPUT?.trim() ||
+  process.env.WAVEYARD_REAL_AUDIO_WAV?.trim();
+if (realAudioInputPath) {
   test("the pinned four-model recipe separates a real audio excerpt", { timeout: 600_000 }, async (t) => {
     const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const workspaceRoot = resolve(arenaRoot, "../..");
@@ -465,14 +467,21 @@ if (realAudioWavPath) {
       assert.equal(await checksumFile(modelPath), spec.sha256, `${spec.id} must match its registry checksum`);
     }
 
-    const sourcePath = resolve(realAudioWavPath);
-    const sourceBytes = new Uint8Array(await readFile(sourcePath));
-    const sourceDecoded = decodeWav16(sourceBytes);
-    assert.ok(sourceDecoded, "the supplied real-audio file must be readable PCM WAV");
-    assert.equal(sourceDecoded.sampleRate, 44_100, "the measurement file must be 44.1 kHz");
-    assert.equal(sourceDecoded.channels, 2, "the measurement file must be stereo");
-    assert.ok(sourceDecoded.frames > 44_100, "use more than one second of real audio");
-    assert.ok(sourceDecoded.frames <= 15 * 60 * 44_100, "keep the source within the worker's decode limit");
+    const sourcePath = resolve(realAudioInputPath);
+    const inputPreparationStartedAt = Date.now();
+    const sourceBytes = (await stat(sourcePath)).size;
+    const sourceDecoded = await decodeSourceToStereoPcm(
+      sourcePath,
+      {},
+      {},
+      { requireSampleRate: 44_100 },
+    );
+    assert.equal(sourceDecoded.sampleRate, 44_100, "the decoded measurement file must be 44.1 kHz");
+    assert.equal(sourceDecoded.pcm.length % 2, 0, "the decoded measurement file must be stereo");
+    const sourceFrames = sourceDecoded.pcm.length / 2;
+    const audioDecodeMs = Date.now() - inputPreparationStartedAt;
+    assert.ok(sourceFrames > 44_100, "use more than one second of real audio");
+    assert.ok(sourceFrames <= 15 * 60 * 44_100, "keep the source within the worker's decode limit");
 
     const maxSecondsText = process.env.WAVEYARD_REAL_AUDIO_MAX_SECONDS?.trim() || "20";
     const maxSeconds = Number(maxSecondsText);
@@ -480,12 +489,11 @@ if (realAudioWavPath) {
       Number.isInteger(maxSeconds) && maxSeconds >= 2 && maxSeconds <= 20,
       "WAVEYARD_REAL_AUDIO_MAX_SECONDS must be an integer from 2 to 20",
     );
-    const processedFrames = Math.min(sourceDecoded.frames, maxSeconds * sourceDecoded.sampleRate);
-    const processedSamples = sourceDecoded.samples.subarray(0, processedFrames * sourceDecoded.channels);
-    const processedWav = processedFrames === sourceDecoded.frames
-      ? sourceBytes
-      : encodeWav16(processedSamples, sourceDecoded.sampleRate);
-    const sourceDurationSeconds = Number((sourceDecoded.frames / sourceDecoded.sampleRate).toFixed(2));
+    const excerptPreparationStartedAt = Date.now();
+    const processedFrames = Math.min(sourceFrames, maxSeconds * sourceDecoded.sampleRate);
+    const processedSamples = sourceDecoded.pcm.subarray(0, processedFrames * 2);
+    const processedWav = encodeWav16(processedSamples, sourceDecoded.sampleRate);
+    const sourceDurationSeconds = Number((sourceFrames / sourceDecoded.sampleRate).toFixed(2));
     const processedDurationSeconds = Number((processedFrames / sourceDecoded.sampleRate).toFixed(2));
     const excerptDirectory = await mkdtemp(join(tmpdir(), "waveyard-real-audio-"));
     const excerptPath = join(excerptDirectory, "excerpt.wav");
@@ -493,6 +501,7 @@ if (realAudioWavPath) {
     let fixtureState: SeparationFixture | undefined;
     try {
       await writeFile(excerptPath, processedWav);
+      const excerptPreparationMs = Date.now() - excerptPreparationStartedAt;
       const f = await fixture({ model: "stems_4", sourceWavPath: excerptPath });
       fixtureState = f;
 
@@ -545,19 +554,26 @@ if (realAudioWavPath) {
         ortThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         models: FOUR_STEM_MODELS.map(({ id, sha256 }) => ({ id, sha256 })),
         input: {
-          filename: basename(realAudioWavPath),
-          bytes: sourceBytes.byteLength,
+          filename: basename(realAudioInputPath),
+          bytes: sourceBytes,
           sha256: await checksumFile(sourcePath),
           durationSeconds: sourceDurationSeconds,
           processedDurationSeconds,
           sampleRate: sourceDecoded.sampleRate,
-          channels: sourceDecoded.channels,
+          channels: 2,
         },
         result: {
           resolvedDevice: job.resolvedDevice,
           elapsedMs,
           realtimeFactor: Number((elapsedMs / (processedDurationSeconds * 1000)).toFixed(2)),
           stems: measuredStems,
+        },
+        timings: {
+          audioDecodeMs,
+          excerptPreparationMs,
+          separationElapsedMs: elapsedMs,
+          measuredInputToStemsMs: audioDecodeMs + excerptPreparationMs + elapsedMs,
+          excludes: "PGlite fixture setup, model copying, library import/upload, and subjective separation quality",
         },
         evidenceLimit: "Real audio and pinned-model execution on the recorded platform; this does not establish Windows performance unless platform is win32, or subjective separation quality.",
       };
