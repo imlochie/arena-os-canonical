@@ -18,8 +18,14 @@ Optional report destination. Defaults to generated-artifacts/waveyard-real-audio
 .PARAMETER MaxSeconds
 Maximum audio duration to process. Defaults to 20 seconds; accepts 2 to 20 seconds.
 
+.PARAMETER StartSeconds
+Whole-second offset into the audio file. Defaults to the beginning.
+
 .EXAMPLE
 .\scripts\waveyard-real-audio-windows.ps1 -AudioPath "C:\Music\sample.mp3"
+
+.EXAMPLE
+.\scripts\waveyard-real-audio-windows.ps1 -AudioPath "C:\Music\sample.mp3" -StartSeconds 25
 #>
 
 [CmdletBinding()]
@@ -30,13 +36,18 @@ param(
 
   [string]$ReportPath = "generated-artifacts/waveyard-real-audio-windows.json",
 
-  [int]$MaxSeconds = 20
+  [int]$MaxSeconds = 20,
+
+  [int]$StartSeconds = 0
 )
 
 $ErrorActionPreference = "Stop"
 
 if ($MaxSeconds -lt 2 -or $MaxSeconds -gt 20) {
   throw "MaxSeconds must be an integer from 2 to 20."
+}
+if ($StartSeconds -lt 0 -or $StartSeconds -gt 899) {
+  throw "StartSeconds must be an integer from 0 to 899."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -77,11 +88,13 @@ if (-not $pnpmExecutable) {
 $previousInputPath = $env:WAVEYARD_REAL_AUDIO_INPUT
 $previousReportPath = $env:WAVEYARD_REAL_AUDIO_REPORT
 $previousMaxSeconds = $env:WAVEYARD_REAL_AUDIO_MAX_SECONDS
+$previousStartSeconds = $env:WAVEYARD_REAL_AUDIO_START_SECONDS
 Push-Location $repoRoot
 try {
   $env:WAVEYARD_REAL_AUDIO_INPUT = $resolvedAudioPath
   $env:WAVEYARD_REAL_AUDIO_REPORT = $resolvedReportPath
   $env:WAVEYARD_REAL_AUDIO_MAX_SECONDS = [string]$MaxSeconds
+  $env:WAVEYARD_REAL_AUDIO_START_SECONDS = [string]$StartSeconds
 
   $runStartedAt = [DateTime]::UtcNow
   & $pnpmExecutable --filter @workspace/scripts exec tsx --test --test-name-pattern "real audio excerpt" $testPath
@@ -117,6 +130,11 @@ try {
     Remove-Item Env:WAVEYARD_REAL_AUDIO_MAX_SECONDS -ErrorAction SilentlyContinue
   } else {
     $env:WAVEYARD_REAL_AUDIO_MAX_SECONDS = $previousMaxSeconds
+  }
+  if ($null -eq $previousStartSeconds) {
+    Remove-Item Env:WAVEYARD_REAL_AUDIO_START_SECONDS -ErrorAction SilentlyContinue
+  } else {
+    $env:WAVEYARD_REAL_AUDIO_START_SECONDS = $previousStartSeconds
   }
   Pop-Location
 }

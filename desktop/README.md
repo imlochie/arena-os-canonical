@@ -84,13 +84,17 @@ verified.
 
 After installing the rebuilt app, open Waveyard once and wait until it says
 “Stem engine ready” (use “Prepare stems” if needed), then close ArenaForge.
-Choose a real stereo PCM 16-bit, 44.1 kHz WAV under 15 minutes. With the
-workspace checkout and its installed dependencies on the Windows machine, run:
+Choose a real stereo PCM 16-bit, 44.1 kHz WAV under 15 minutes. The default
+measures the full file; for a faster first check, pass `-MaxSeconds 20` and
+optionally `-StartSeconds 20` to sample a later section. With the workspace
+checkout and its installed dependencies on the Windows machine, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\desktop\Measure-Waveyard.ps1 `
   -Executable "C:\path\to\ArenaForge.exe" `
-  -AudioPath "C:\path\to\song.wav"
+  -AudioPath "C:\path\to\song.wav" `
+  -MaxSeconds 20 `
+  -StartSeconds 20
 ```
 
 The test uses a temporary app-data directory and reads the existing model cache;
@@ -99,4 +103,5 @@ separation, first playable stem timing, resolved model/device, machine and file
 metadata, process-tree memory, and verifies that four actual stems play while
 vocal isolation changes the live audio gains. It writes only that report to
 `generated-artifacts/windows-waveyard/report-<timestamp>.json`. Share the
-report, not the audio file, to finish the Windows measurement.
+report, not the audio file, to finish the Windows measurement. The report
+separates the source file's duration from the selected excerpt's offset and length.

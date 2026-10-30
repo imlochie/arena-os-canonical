@@ -489,9 +489,26 @@ if (realAudioInputPath) {
       Number.isInteger(maxSeconds) && maxSeconds >= 2 && maxSeconds <= 20,
       "WAVEYARD_REAL_AUDIO_MAX_SECONDS must be an integer from 2 to 20",
     );
+    const startSecondsText = process.env.WAVEYARD_REAL_AUDIO_START_SECONDS?.trim() || "0";
+    const startSeconds = Number(startSecondsText);
+    assert.ok(
+      Number.isInteger(startSeconds) && startSeconds >= 0 && startSeconds <= 899,
+      "WAVEYARD_REAL_AUDIO_START_SECONDS must be an integer from 0 to 899",
+    );
     const excerptPreparationStartedAt = Date.now();
-    const processedFrames = Math.min(sourceFrames, maxSeconds * sourceDecoded.sampleRate);
-    const processedSamples = sourceDecoded.pcm.subarray(0, processedFrames * 2);
+    const startFrame = startSeconds * sourceDecoded.sampleRate;
+    assert.ok(
+      sourceFrames - startFrame > sourceDecoded.sampleRate,
+      "the selected start time must leave more than one second of real audio",
+    );
+    const processedFrames = Math.min(
+      sourceFrames - startFrame,
+      maxSeconds * sourceDecoded.sampleRate,
+    );
+    const processedSamples = sourceDecoded.pcm.subarray(
+      startFrame * 2,
+      (startFrame + processedFrames) * 2,
+    );
     const processedWav = encodeWav16(processedSamples, sourceDecoded.sampleRate);
     const sourceDurationSeconds = Number((sourceFrames / sourceDecoded.sampleRate).toFixed(2));
     const processedDurationSeconds = Number((processedFrames / sourceDecoded.sampleRate).toFixed(2));
@@ -558,6 +575,7 @@ if (realAudioInputPath) {
           bytes: sourceBytes,
           sha256: await checksumFile(sourcePath),
           durationSeconds: sourceDurationSeconds,
+          processedStartSeconds: startSeconds,
           processedDurationSeconds,
           sampleRate: sourceDecoded.sampleRate,
           channels: 2,

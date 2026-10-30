@@ -25,6 +25,24 @@ test("native API serves the built SPA, blocks cross-site reads and shuts down th
   await admin.query(`create schema "${schema}"`);
   await admin.query(`create table "${schema}".space_missions (status text, status_detail text, updated_at timestamptz)`);
   await admin.query(`create table "${schema}".processing_jobs (id text, type text, status text, stage text, error_code text, error_message text, completed_at timestamptz, updated_at timestamptz)`);
+  await admin.query(`create table "${schema}".source_assets (storage_key text)`);
+  await admin.query(`create table "${schema}".waveform_assets (storage_key text)`);
+  await admin.query(`create table "${schema}".waveform_jobs (
+    id uuid,
+    project_id uuid,
+    source_asset_id uuid,
+    stem_asset_id uuid,
+    status text,
+    stage text,
+    attempts integer,
+    idempotency_key text,
+    error_code text,
+    error_message text,
+    started_at timestamptz,
+    completed_at timestamptz,
+    created_at timestamptz,
+    updated_at timestamptz
+  )`);
   const child = spawn(process.execPath, [script], {
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     env: { ...process.env, PGOPTIONS: `-c search_path=${schema}`, NODE_ENV: "production", PORT: String(port), ARENA_DESKTOP_MODE: "1", ARENA_DATA_DIR: root, ARENA_WEB_ROOT: web },

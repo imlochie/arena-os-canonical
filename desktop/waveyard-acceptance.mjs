@@ -12,6 +12,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { _electron } from "playwright-core";
+import { writePcmWavExcerpt } from "./waveyard-audio.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outputDir = path.resolve(here, "../generated-artifacts/windows-waveyard");
@@ -23,6 +24,8 @@ const defaultModelsPath = process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, "Arena", "waveyard", "models")
   : "";
 const modelsPath = process.argv[4] || process.env.WAVEYARD_MODELS_DIR || defaultModelsPath;
+const maxSeconds = Number(process.argv[5] ?? 0);
+const startSeconds = Number(process.argv[6] ?? 0);
 const requiredModels = ["kim_vocal_2", "kuielab_b_drums", "kuielab_b_bass", "kuielab_b_other"];
 const execFileAsync = promisify(execFile);
 const report = {
@@ -89,6 +92,7 @@ async function readPcmWav(filePath) {
 
     let format = null;
     let dataBytes = 0;
+    let dataOffset = 0;
     let offset = 12;
     while (offset + 8 <= bytesRead) {
       const name = header.toString("ascii", offset, offset + 4);
@@ -104,6 +108,7 @@ async function readPcmWav(filePath) {
         };
       } else if (name === "data") {
         dataBytes = Math.min(chunkSize, Math.max(0, info.size - chunkStart));
+        dataOffset = chunkStart;
       }
       if (format && dataBytes > 0) break;
       offset = chunkStart + chunkSize + (chunkSize % 2);
@@ -120,9 +125,13 @@ async function readPcmWav(filePath) {
     assert(durationSeconds <= 900, "Choose a track shorter than 15 minutes for this first measurement.");
     return {
       format: "WAV PCM 16-bit",
+      formatCode: format.code,
       sizeBytes: info.size,
       channels: format.channels,
       sampleRateHz: format.sampleRate,
+      bitsPerSample: format.bitsPerSample,
+      dataOffset,
+      dataBytes,
       durationSeconds: Number(durationSeconds.toFixed(2)),
     };
   } finally {
@@ -273,14 +282,43 @@ async function run() {
   assert(exe && path.isAbsolute(exe), "Pass the absolute path to the installed ArenaForge.exe.");
   assert(audioPath && path.isAbsolute(audioPath), "Pass the absolute path to a real WAV file.");
   assert(modelsPath && path.isAbsolute(modelsPath), "Pass or configure the local Waveyard model-cache path.");
+  assert(
+    Number.isInteger(maxSeconds) && (maxSeconds === 0 || (maxSeconds >= 2 && maxSeconds <= 20)),
+    "Maximum duration must be 0 (full remaining file) or 2–20 seconds.",
+  );
+  assert(Number.isInteger(startSeconds) && startSeconds >= 0 && startSeconds <= 899, "Start time must be an integer from 0 to 899 seconds.");
   assert(await stat(exe).catch(() => null), "The ArenaForge executable was not found.");
   const modelsStat = await stat(modelsPath).catch(() => null);
   assert(modelsStat?.isDirectory(), "The model cache was not found; prepare the four stem models in Waveyard first.");
   await assertAppClosed();
-  report.file = await readPcmWav(audioPath);
+  const sourceFile = await readPcmWav(audioPath);
   await sampleGpuNames();
 
   isolatedDataRoot = await mkdtemp(path.join(os.tmpdir(), "arena-waveyard-measure-"));
+  let measurementAudioPath = audioPath;
+  let excerpt = {
+    startSeconds: 0,
+    durationSeconds: sourceFile.durationSeconds,
+    sizeBytes: sourceFile.sizeBytes,
+  };
+  if (startSeconds > 0 || maxSeconds > 0) {
+    measurementAudioPath = path.join(isolatedDataRoot, "waveyard-measurement.wav");
+    excerpt = await writePcmWavExcerpt(audioPath, measurementAudioPath, sourceFile, {
+      startSeconds,
+      maxSeconds,
+    });
+  }
+  report.file = {
+    format: sourceFile.format,
+    sourceSizeBytes: sourceFile.sizeBytes,
+    sourceDurationSeconds: sourceFile.durationSeconds,
+    processedStartSeconds: excerpt.startSeconds,
+    processedDurationSeconds: excerpt.durationSeconds,
+    sizeBytes: excerpt.sizeBytes,
+    channels: sourceFile.channels,
+    sampleRateHz: sourceFile.sampleRateHz,
+    durationSeconds: excerpt.durationSeconds,
+  };
   await launch();
   record("Packaged Windows app launched with an isolated library and local model cache");
 
@@ -317,7 +355,7 @@ async function run() {
       && response.request().method() === "POST",
     { timeout: 5 * 60_000 },
   );
-  await page.getByLabel("Add music files", { exact: true }).setInputFiles(audioPath);
+  await page.getByLabel("Add music files", { exact: true }).setInputFiles(measurementAudioPath);
   const uploadResponse = await uploadResponsePromise;
   const uploadBody = await uploadResponse.json().catch(() => ({}));
   assert(uploadResponse.ok(), uploadBody.error ?? `Audio import returned ${uploadResponse.status()}.`);
