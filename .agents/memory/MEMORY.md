@@ -4,8 +4,10 @@
 - [Arcade capability scope](arcade-capability-scope.md) — prompt-created games, authorized imports, gameplay edits, and local progress are core; presets are examples.
 - [EmulatorJS save handling](emulatorjs-save-handling.md) — telemetry-only save hooks can disable the runtime’s built-in browser persistence.
 - [Waveyard processing evidence](waveyard-processing.md) — model readiness is not processing proof; verify pinned input shapes and bound native session lifetimes.
+- [Waveyard real-audio test runner](waveyard-real-audio-runner.md) — use resolver-aware TypeScript loading; native type stripping alone cannot resolve the test's extensionless imports.
 - [Waveyard cross-tab transport](waveyard-transport-sync.md) — mirror playhead and track state between tabs without autoplaying a second audio engine; passive heartbeats must not override newer controls.
 - [Windows browser model requirements](browser-model-requirements.md) — the model must be free, without provider usage quotas, and work on the user's laptop.
+- [Windows validation timing](windows-validation-timing.md) — keep preparing Windows checks, but defer asking for user runs until product gaps are nearly cleared.
 - [Waveyard database test runtime](waveyard-db-tests.md) — temporary PostgreSQL test failures before assertions are runtime failures, not evidence about queue behavior.
 - [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.
 - [Waveyard CPU worker packaging](waveyard-cpu-worker.md) — bundle CPU-intensive worker code separately; source workers can inherit unsupported runtime flags.

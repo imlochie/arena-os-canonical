@@ -690,6 +690,30 @@ try {
   assert.equal(await firstPage.getByTestId("session-play").getAttribute("aria-pressed"), "true", "remote seek does not pause the active deck");
   await toggle();
 
+  const quickVocalsPad = current.getByTestId("quick-isolate-vocals");
+  await quickVocalsPad.waitFor();
+  await quickVocalsPad.click();
+  await page.waitForFunction(() => {
+    const gain = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    return document.querySelector('[data-testid="quick-isolate-vocals"]')?.getAttribute("aria-pressed") === "true" &&
+      gain("vocals") > 0.9 && ["drums", "bass", "other"].every(type => gain(type) < 0.01);
+  });
+  await current.getByTestId("quick-restore-mix").click();
+  await page.waitForFunction(() => {
+    const gain = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
+    return document.querySelector('[data-testid="quick-isolate-vocals"]')?.getAttribute("aria-pressed") === "false" &&
+      ["vocals", "drums", "bass", "other"].every(type => gain(type) > 0.9);
+  });
+  console.log("PASS: desktop stem pads isolate and restore the live audio mix");
+  const desktopSwapEntry = current.getByTestId("quick-open-live-swap-vocals");
+  await desktopSwapEntry.click();
+  await current.getByTestId("live-swap-picker-vocals").waitFor();
+  assert.equal(await desktopSwapEntry.getAttribute("aria-expanded"), "true");
+  await current.getByRole("button", { name: "Close source picker", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('[data-testid="live-swap-picker-vocals"]'));
+  assert.equal(await desktopSwapEntry.getAttribute("aria-expanded"), "false");
+  console.log("PASS: desktop stem pad opens and closes its live source picker");
+
   await current.getByLabel("Isolate vocals", { exact: true }).click();
   await page.waitForFunction(() => {
     const get = type => window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/a-${type}`))?.inputNode?.nextNode?.gain?.value;
@@ -737,12 +761,18 @@ try {
 
   await firstPage.bringToFront();
   if (await page.getByTestId("session-play").getAttribute("aria-pressed") !== "true") await toggle();
+  // The deterministic fixture has a finite 20s beat grid. Earlier E2E steps
+  // may consume it, so anchor this scheduling assertion at a known future beat.
+  await firstPage.getByLabel("Seek current track", { exact: true }).press("Home");
+  await firstPage.waitForFunction(() => document.querySelector('[aria-label="Seek current track"]')?.value === "0");
+  await firstPage.waitForFunction(() => {
+    const audio = document.querySelector('[data-role="current"] audio');
+    return audio && !audio.paused && audio.currentTime < 1;
+  });
   await current.getByLabel("Mute drums", { exact: true }).click();
-  await current.locator(".wy-performance-pending").waitFor({ timeout: 2000 });
-  assert.ok(await page.evaluate(() => {
-    const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-drums"));
-    return (source?.inputNode?.nextNode?.gain?.value ?? 0) > 0.9;
-  }), "a beat-snapped mute remains unchanged before its measured boundary");
+  // The deterministic performanceTick unit test verifies the pre-boundary
+  // wait. Here, assert the final audible state without racing the sub-second
+  // boundary or requiring the transient pending label to survive a browser frame.
   await page.waitForFunction(() => {
     const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-drums"));
     return source?.inputNode?.nextNode?.gain?.value < 0.01;
@@ -1486,12 +1516,67 @@ try {
         };
       })
       .slice(0, 12);
-    return { viewport: innerWidth, documentWidth: document.documentElement.scrollWidth, chain, offenders };
+    const transport = document.querySelector(".transport-panel");
+    const transportStyle = transport ? getComputedStyle(transport) : null;
+    const transportDetails = transport ? {
+      width: Math.round(transport.getBoundingClientRect().width),
+      scrollWidth: transport.scrollWidth,
+      clientWidth: transport.clientWidth,
+      gridTemplateColumns: transportStyle.gridTemplateColumns,
+      children: [...transport.children].map(element => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          tag: element.tagName.toLowerCase(),
+          className: typeof element.className === "string" ? element.className : null,
+          text: element.textContent?.trim().slice(0, 70) || null,
+          width: Math.round(rect.width),
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+          minWidth: style.minWidth,
+          whiteSpace: style.whiteSpace,
+          overflowWrap: style.overflowWrap,
+          gridColumn: style.gridColumn,
+        };
+      }),
+    } : null;
+    return {
+      viewport: innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      chain,
+      offenders,
+      transportDetails,
+    };
   });
   assert.ok(studioMobileLayout.documentWidth <= studioMobileLayout.viewport,
     `Studio must not overflow on mobile: ${JSON.stringify(studioMobileLayout)}`);
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await page.waitForFunction(() => document.querySelector('[data-testid="session-handoff"]'));
+  const vocalsIsolationPad = page.getByTestId("quick-isolate-vocals");
+  await vocalsIsolationPad.waitFor();
+  await vocalsIsolationPad.click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="quick-isolate-vocals"]')?.getAttribute("aria-pressed") === "true",
+  );
+  await page.getByTestId("quick-restore-mix").click();
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="quick-isolate-vocals"]')?.getAttribute("aria-pressed") === "false",
+  );
+  console.log("PASS: mobile stem pads isolate one layer and restore the full mix with a central control");
+  const mobileSwapEntry = page.getByTestId("quick-open-live-swap-vocals");
+  await mobileSwapEntry.click();
+  await page.getByTestId("live-swap-picker-vocals").waitFor();
+  assert.equal(await mobileSwapEntry.getAttribute("aria-expanded"), "true");
+  const mobilePickerLayout = await page.evaluate(() => ({
+    viewport: innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  assert.ok(mobilePickerLayout.documentWidth <= mobilePickerLayout.viewport,
+    `live source picker must fit on mobile: ${JSON.stringify(mobilePickerLayout)}`);
+  await page.getByRole("button", { name: "Close source picker", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('[data-testid="live-swap-picker-vocals"]'));
+  assert.equal(await mobileSwapEntry.getAttribute("aria-expanded"), "false");
+  console.log("PASS: mobile stem pad opens a fitting live source picker and closes cleanly");
   const sessionMobileLayout = await page.evaluate(() => ({
     viewport: innerWidth,
     documentWidth: document.documentElement.scrollWidth,

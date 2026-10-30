@@ -224,6 +224,8 @@ function SessionDeck({
   performanceDisabled,
   onReset,
   stemExtra,
+  openSwapPickerStem,
+  onOpenSwapPicker,
   onLiveLayerReady,
   onReturnToSource,
   onApi,
@@ -254,6 +256,8 @@ function SessionDeck({
   performanceDisabled: boolean;
   onReset: () => void;
   stemExtra?: (stemType: string) => ReactNode;
+  openSwapPickerStem?: string | null;
+  onOpenSwapPicker?: (stemType: string) => void;
   onLiveLayerReady?: (sessionTrackId: string, stemType: string) => void;
   onReturnToSource?: () => void;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
@@ -263,6 +267,12 @@ function SessionDeck({
 }) {
   const assetIds = useMemo(() => item?.playback?.assetIds ?? [], [item?.playback]);
   const duration = item?.track.durationSeconds ?? 0;
+  const quickPadLayout = item?.stems.length === 4
+    && ["vocals", "drums", "bass", "other"].every((stemType) =>
+      item.stems.some((stem) => stem.stemType === stemType),
+    )
+    ? "four"
+    : "grid";
   const [handoffTarget, setHandoffTarget] = useState<SessionTrackItem | null>(null);
   const holdGestureRef = useRef<"pointer" | "keyboard" | null>(null);
   const suppressHoldClickRef = useRef(false);
@@ -627,6 +637,58 @@ function SessionDeck({
                 </div>
               )}
               {active && <p className="wy-deck-note wy-live-note">Live swaps stay on this song&rsquo;s clock · shorter layers loop; use the Camelot wheel to cue compatible tracks.</p>}
+              {active && (
+                <div className="wy-stem-pad-section">
+                  <div className="wy-stem-pad-caption">
+                    <strong>Quick isolate</strong>
+                    <span>Tap a stem to hear it alone; restore all when ready.</span>
+                  </div>
+                  <div className="wy-stem-pad-grid" data-layout={quickPadLayout} role="group" aria-label="Quick stem isolation">
+                    {item.stems.map((stem) => {
+                      const isolated = performanceSettings.isolatedStem === stem.stemType;
+                      return (
+                        <div key={stem.id} className="wy-stem-pad-cell" data-stem-type={stem.stemType}>
+                          <button
+                            type="button"
+                            className="wy-stem-pad"
+                            data-testid={`quick-isolate-${stem.stemType}`}
+                            aria-label={`Quick isolate ${stem.stemType}`}
+                            aria-pressed={isolated}
+                            disabled={performanceDisabled}
+                            onClick={() => onPerformanceAction({ kind: "isolate", stem: stem.stemType })}
+                          >
+                            <span className="wy-stem-pad-glyph" aria-hidden="true">{stem.stemType.slice(0, 1).toUpperCase()}</span>
+                            <span className="wy-stem-pad-name">{stem.stemType}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="wy-stem-pad-swap"
+                            data-testid={`quick-open-live-swap-${stem.stemType}`}
+                            aria-label={`Open source picker to swap ${stem.stemType}`}
+                            aria-expanded={openSwapPickerStem === stem.stemType}
+                            disabled={onOpenSwapPicker === undefined}
+                            title={`Swap ${stem.stemType} from another track`}
+                            onClick={() => onOpenSwapPicker?.(stem.stemType)}
+                          >
+                            <span aria-hidden="true">⇄</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      className="wy-stem-pad-reset"
+                      data-testid="quick-restore-mix"
+                      aria-label="Restore full stem mix"
+                      disabled={performanceDisabled}
+                      onClick={onReset}
+                    >
+                      <span aria-hidden="true">↻</span>
+                      <small>ALL</small>
+                    </button>
+                  </div>
+                </div>
+              )}
               {active && (
                 <div className="wy-performance-controls" role="group" aria-label="Live stem performance">
                   <label>
@@ -2680,6 +2742,8 @@ export default function SessionExperience({
       performanceDisabled: phase !== "idle",
       onReset: () => { if (item) resetMix(item); },
       stemExtra: isActive ? swapExtra : undefined,
+      openSwapPickerStem: openSwapStem,
+      onOpenSwapPicker: isActive ? (stemType: string) => setOpenSwapStem(stemType) : undefined,
       onLiveLayerReady: isActive ? markLiveLayerReady : undefined,
       onReturnToSource: isActive && item?.playback?.kind === "stems" && item.sourceAssetId !== null
         ? () => void returnToFullTrack(item.id)

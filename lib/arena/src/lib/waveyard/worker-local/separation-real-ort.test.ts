@@ -33,14 +33,15 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { copyFile, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { cpus, release, tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { eq } from "drizzle-orm";
 
-import { decodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
+import { decodeWav16, encodeWav16 } from "@workspace/arena/lib/waveyard/mixer/synth";
 import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
 import { getStorage } from "@workspace/arena/lib/waveyard/storage";
 import { SEPARATION_QUEUE } from "@workspace/arena/lib/waveyard/queue";
@@ -449,12 +450,12 @@ test("the pinned four-model recipe completes through the production worker on re
   }
 });
 
-// Opt-in real-audio measurement. Point this at a short, representative 44.1 kHz
-// PCM WAV excerpt so the same pinned weights and production retry/worker path
-// can be measured without making the default test suite depend on user media.
+// Opt-in real-audio measurement. A bounded 2–20 second excerpt of a 44.1 kHz
+// PCM WAV keeps an opt-in CPU measurement useful without turning it into a long
+// full-library processing job.
 const realAudioWavPath = process.env.WAVEYARD_REAL_AUDIO_WAV;
 if (realAudioWavPath) {
-  test("the pinned four-model recipe separates a real audio excerpt", { timeout: 300_000 }, async (t) => {
+  test("the pinned four-model recipe separates a real audio excerpt", { timeout: 600_000 }, async (t) => {
     const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const workspaceRoot = resolve(arenaRoot, "../..");
     const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
@@ -464,16 +465,36 @@ if (realAudioWavPath) {
       assert.equal(await checksumFile(modelPath), spec.sha256, `${spec.id} must match its registry checksum`);
     }
 
-    const f = await fixture({ model: "stems_4", sourceWavPath: resolve(realAudioWavPath) });
+    const sourcePath = resolve(realAudioWavPath);
+    const sourceBytes = new Uint8Array(await readFile(sourcePath));
+    const sourceDecoded = decodeWav16(sourceBytes);
+    assert.ok(sourceDecoded, "the supplied real-audio file must be readable PCM WAV");
+    assert.equal(sourceDecoded.sampleRate, 44_100, "the measurement file must be 44.1 kHz");
+    assert.equal(sourceDecoded.channels, 2, "the measurement file must be stereo");
+    assert.ok(sourceDecoded.frames > 44_100, "use more than one second of real audio");
+    assert.ok(sourceDecoded.frames <= 15 * 60 * 44_100, "keep the source within the worker's decode limit");
+
+    const maxSecondsText = process.env.WAVEYARD_REAL_AUDIO_MAX_SECONDS?.trim() || "20";
+    const maxSeconds = Number(maxSecondsText);
+    assert.ok(
+      Number.isInteger(maxSeconds) && maxSeconds >= 2 && maxSeconds <= 20,
+      "WAVEYARD_REAL_AUDIO_MAX_SECONDS must be an integer from 2 to 20",
+    );
+    const processedFrames = Math.min(sourceDecoded.frames, maxSeconds * sourceDecoded.sampleRate);
+    const processedSamples = sourceDecoded.samples.subarray(0, processedFrames * sourceDecoded.channels);
+    const processedWav = processedFrames === sourceDecoded.frames
+      ? sourceBytes
+      : encodeWav16(processedSamples, sourceDecoded.sampleRate);
+    const sourceDurationSeconds = Number((sourceDecoded.frames / sourceDecoded.sampleRate).toFixed(2));
+    const processedDurationSeconds = Number((processedFrames / sourceDecoded.sampleRate).toFixed(2));
+    const excerptDirectory = await mkdtemp(join(tmpdir(), "waveyard-real-audio-"));
+    const excerptPath = join(excerptDirectory, "excerpt.wav");
     let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
+    let fixtureState: SeparationFixture | undefined;
     try {
-      const sourceBytes = new Uint8Array(await readFile(f.sourcePath));
-      const sourceDecoded = decodeWav16(sourceBytes);
-      assert.ok(sourceDecoded, "the supplied real-audio excerpt must be readable PCM WAV");
-      assert.equal(sourceDecoded.sampleRate, 44_100, "the measurement excerpt must be 44.1 kHz");
-      assert.equal(sourceDecoded.channels, 2, "the measurement excerpt must be stereo");
-      assert.ok(sourceDecoded.frames > 44_100, "use more than one second of real audio");
-      assert.ok(sourceDecoded.frames <= 15 * 60 * 44_100, "keep the excerpt within the worker's decode limit");
+      await writeFile(excerptPath, processedWav);
+      const f = await fixture({ model: "stems_4", sourceWavPath: excerptPath });
+      fixtureState = f;
 
       for (const spec of FOUR_STEM_MODELS) {
         await copyFile(join(modelDirectory, spec.file), join(f.modelsDir, spec.file));
@@ -492,7 +513,7 @@ if (realAudioWavPath) {
       harness = createLocalRetryHarness(f.database);
       const startedAt = Date.now();
       const retry = await retrySeparationJob(f.database, f.job.id);
-      assert.equal(await harness.broker.drain(240_000), true, "the real-audio recipe drains through the production worker");
+      assert.equal(await harness.broker.drain(570_000), true, "the real-audio recipe drains through the production worker");
       const elapsedMs = Date.now() - startedAt;
       assert.deepEqual(retry, { queued: true });
 
@@ -508,22 +529,47 @@ if (realAudioWavPath) {
         const decoded = decodeWav16(new Uint8Array(await readFile(storedPath!)));
         assert.ok(decoded, `${stem.stemType} output is a readable WAV`);
         assert.equal(decoded.sampleRate, 44_100);
-        assert.equal(decoded.frames, sourceDecoded.frames, `${stem.stemType} retains the full excerpt duration`);
+        assert.equal(decoded.frames, processedFrames, `${stem.stemType} retains the processed excerpt duration`);
         measuredStems[stem.stemType] = audioMetrics(decoded.samples);
         assert.ok(measuredStems[stem.stemType].rmsDbfs > -90, `${stem.stemType} output is not silent`);
       }
-      t.diagnostic(JSON.stringify({
-        inputSeconds: Number((sourceDecoded.frames / sourceDecoded.sampleRate).toFixed(2)),
-        inputSampleRate: sourceDecoded.sampleRate,
-        inputChannels: sourceDecoded.channels,
-        resolvedDevice: job.resolvedDevice,
-        elapsedMs,
-        stems: measuredStems,
-        evidenceLimit: "real audio and pinned-model execution; not Windows-runtime or subjective-quality verification",
-      }));
+      const report = {
+        schemaVersion: 1,
+        platform: process.platform,
+        osRelease: release(),
+        architecture: process.arch,
+        nodeVersion: process.version,
+        cpuModel: cpus()[0]?.model ?? null,
+        logicalCpuCount: cpus().length,
+        executor: "production retry -> local worker broker",
+        ortThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
+        models: FOUR_STEM_MODELS.map(({ id, sha256 }) => ({ id, sha256 })),
+        input: {
+          filename: basename(realAudioWavPath),
+          bytes: sourceBytes.byteLength,
+          sha256: await checksumFile(sourcePath),
+          durationSeconds: sourceDurationSeconds,
+          processedDurationSeconds,
+          sampleRate: sourceDecoded.sampleRate,
+          channels: sourceDecoded.channels,
+        },
+        result: {
+          resolvedDevice: job.resolvedDevice,
+          elapsedMs,
+          realtimeFactor: Number((elapsedMs / (processedDurationSeconds * 1000)).toFixed(2)),
+          stems: measuredStems,
+        },
+        evidenceLimit: "Real audio and pinned-model execution on the recorded platform; this does not establish Windows performance unless platform is win32, or subjective separation quality.",
+      };
+      const reportPath = process.env.WAVEYARD_REAL_AUDIO_REPORT?.trim();
+      if (reportPath) {
+        await writeFile(resolve(reportPath), `${JSON.stringify(report, null, 2)}\n`);
+      }
+      t.diagnostic(JSON.stringify(report));
     } finally {
       await harness?.restore();
-      await f.close();
+      await fixtureState?.close();
+      await rm(excerptDirectory, { recursive: true, force: true });
     }
   });
 }
