@@ -198,7 +198,7 @@ try {
   const updated = await json(`/api/projects/${createdProject}`);
   assert.equal(updated.project.name, "Migration smoke updated");
   report.push("Project create, detail, reload, update passed.");
-  for (const path of ["/chat", "/rooms", "/rooms/assistant", "/command", "/leaderboard", "/assistants", "/studio", "/waveyard", "/waveyard/create", "/waveyard/discover", "/spaces", "/college", "/privacy"]) {
+  for (const path of ["/chat", "/rooms", "/rooms/assistant", "/command", "/leaderboard", "/assistants", "/studio", "/waveyard", "/waveyard/create", "/waveyard/discover", "/spaces", "/college", "/privacy", "/toolbox"]) {
     await page.goto(base + path, { waitUntil: "networkidle" });
     const text = await page.locator("body").innerText();
     assert(!text.includes("Something went wrong"), `${path} crashed`);
@@ -206,6 +206,18 @@ try {
     assert(text.length > 150, `${path} is blank`);
     report.push(`${path} loaded.`);
   }
+  await page.goto(`${base}/privacy`, { waitUntil: "networkidle" });
+  const privacyText = await page.locator("body").innerText();
+  assert(privacyText.includes("hosted Arena server"), "privacy page must identify hosted request routing");
+  assert(privacyText.includes("does not make browser-to-server traffic or storage local"), "Local Mode must not claim network isolation");
+  const privacySummary = await json("/api/privacy/summary");
+  assert.equal(privacySummary.residency, "Arena server database");
+  assert.equal(privacySummary.training, "not used by Arena to train models");
+  await page.goto(`${base}/toolbox`, { waitUntil: "networkidle" });
+  assert((await page.locator("body").innerText()).includes("Files are sent to the Arena API for processing"), "Toolbox must disclose hosted file processing");
+  await page.goto(`${base}/rooms`, { waitUntil: "networkidle" });
+  assert.equal(await page.locator('[data-testid="room-card-arcade"]').count(), 1, "Arcade must be discoverable in the handoff room index");
+  report.push("Privacy boundaries, hosted Toolbox processing, and Arcade room discovery are explicit.");
   let mockStemState = "rejected";
   let mockRetryCount = 0;
   let mockNotStartedState = "not-started";
