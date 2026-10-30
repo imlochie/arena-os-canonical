@@ -18,6 +18,7 @@ import {
   writeCompressedAudioExcerpt,
   writePcmWavExcerpt,
 } from "./waveyard-audio.mjs";
+import { createModelPassObserver } from "./waveyard-progress.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outputDir = path.resolve(here, "../generated-artifacts/windows-waveyard");
@@ -265,40 +266,9 @@ async function waitForSeparation(track) {
   let latestJob = null;
   let latestProject = null;
   let stems = [];
-  let activePass = null;
-  const observedPasses = [];
-  const finishActivePass = (observedAt = performance.now()) => {
-    if (!activePass) return;
-    observedPasses.push({
-      phase: activePass.phase,
-      model: activePass.model,
-      observedDurationSeconds: Number(((observedAt - activePass.startedAt) / 1000).toFixed(2)),
-    });
-    activePass = null;
-  };
-  const captureProgress = (job) => {
-    let metadata = job?.metadata ?? {};
-    if (typeof metadata === "string") {
-      try {
-        metadata = JSON.parse(metadata);
-      } catch {
-        metadata = {};
-      }
-    }
-    const progress = metadata?.progress;
-    const nextPass = typeof progress?.phase === "string" && typeof progress?.model === "string"
-      ? { phase: progress.phase, model: progress.model }
-      : null;
-    if (activePass && (nextPass?.phase !== activePass.phase || nextPass?.model !== activePass.model)) {
-      finishActivePass();
-    }
-    if (nextPass && !activePass) {
-      activePass = { ...nextPass, startedAt: performance.now() };
-    }
-  };
+  const passObserver = createModelPassObserver();
   const saveObservedPasses = () => {
-    finishActivePass();
-    report.timings.progressObservedModelPasses = observedPasses;
+    report.timings.progressObservedModelPasses = passObserver.finish();
     report.timings.progressObservationIntervalSeconds = 2;
   };
   while (Date.now() < deadline) {
@@ -306,7 +276,7 @@ async function waitForSeparation(track) {
     latestJob = (latestProject.jobs ?? []).find(
       (job) => job.type === "separation" && job.sourceAssetId === track.source.id,
     ) ?? null;
-    captureProgress(latestJob);
+    passObserver.observe(latestJob);
     stems = (latestProject.stems ?? []).filter(
       (stem) => stem.sourceAssetId === track.source.id && stem.engine !== "passthrough-unseparated",
     );
