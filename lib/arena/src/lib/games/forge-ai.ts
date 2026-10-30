@@ -128,6 +128,12 @@ export async function forgeGameWithAI(
   if (!validation.ok) {
     const err = new Error(`AI draft failed validation: ${validation.issues.join("; ")}`);
     (err as any).validation = validation;
+    (err as any).draft = {
+      code,
+      title: titleFromPrompt(prompt),
+      gameType: detectGameType(prompt),
+      validation,
+    };
     throw err;
   }
 

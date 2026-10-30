@@ -11,6 +11,7 @@ import { insertArcadeGame } from "@workspace/arena/lib/arcadeStore";
 import { isEphemeralBody, logPrivacyEvent } from "@workspace/arena/lib/privacy";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireApiAccess } from "@workspace/arena/lib/security/api-access";
+import { verifyArcadeRuntime } from "./runtime-verification";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -66,9 +67,33 @@ export async function POST(req: Request) {
       const code = String(body.clientCode);
       const v = validateGameCode(code);
       if (!v.ok) {
-        return Response.json({ error: "generated code failed validation", issues: v.issues }, { status: 400 });
+        return Response.json({
+          error: "Generated code failed Arcade's static checks and was not published.",
+          issues: v.issues,
+          draft: code.length <= 120_000 ? {
+            code,
+            title: prompt.slice(0, 40) || "Unverified game",
+            gameType: body.gameType ?? detectGameType(prompt || "ai game"),
+            runtimeVerification: { status: "failed", scope: "startup-render-only", issues: v.issues },
+          } : undefined,
+        }, { status: 422 });
       }
       const gameType = (body.gameType as GameType) ?? detectGameType(prompt || "ai game");
+      const runtimeVerification = await verifyArcadeRuntime(code);
+      if (runtimeVerification.status !== "passed") {
+        return Response.json({
+          error: runtimeVerification.status === "unavailable"
+            ? "Arcade could not start its isolated browser check. The game was not published."
+            : "The game did not pass its isolated startup check. The game was not published.",
+          draft: {
+            code,
+            title: prompt.slice(0, 40) || "Unverified game",
+            gameType,
+            runtimeVerification,
+          },
+          runtimeVerification,
+        }, { status: 422 });
+      }
       if (ephemeral) {
         await logPrivacyEvent("ephemeral_arcade", `engine=on-device-ai type=${gameType}`);
         return Response.json({
@@ -82,6 +107,7 @@ export async function POST(req: Request) {
             createdAt: new Date().toISOString(),
           },
           validation: v,
+          runtimeVerification,
         });
       }
       const row = await insertArcadeGame(db, {
@@ -92,13 +118,35 @@ export async function POST(req: Request) {
         parentId: parentId ?? null,
         ownerId: user.id,
       });
-      return Response.json({ game: row, validation: v }, { status: 201 });
+      return Response.json({ game: row, validation: v, runtimeVerification }, { status: 201 });
     }
 
     // Path 2: instant offline pipeline (verified core + remix).
     const forceType = (body.gameType as GameType | undefined) || undefined;
     const g = generateGameOffline(prompt, forceType === "arena" && !body.gameType ? undefined : forceType);
     const v = validateGameCode(g.code);
+    if (!v.ok) {
+      return Response.json({
+        error: "Generated code failed Arcade's static checks and was not published.",
+        issues: v.issues,
+        draft: {
+          code: g.code,
+          title: g.title,
+          gameType: g.gameType,
+          runtimeVerification: { status: "failed", scope: "startup-render-only", issues: v.issues },
+        },
+      }, { status: 422 });
+    }
+    const runtimeVerification = await verifyArcadeRuntime(g.code);
+    if (runtimeVerification.status !== "passed") {
+      return Response.json({
+        error: runtimeVerification.status === "unavailable"
+          ? "Arcade could not start its isolated browser check. The game was not published."
+          : "The game did not pass its isolated startup check. The game was not published.",
+        draft: { code: g.code, title: g.title, gameType: g.gameType, runtimeVerification },
+        runtimeVerification,
+      }, { status: 422 });
+    }
     if (ephemeral) {
       await logPrivacyEvent("ephemeral_arcade", `engine=${g.engine} type=${g.gameType}`);
       return Response.json({
@@ -112,14 +160,12 @@ export async function POST(req: Request) {
           createdAt: new Date().toISOString(),
         },
         validation: v,
+        runtimeVerification,
         ms: g.ms,
       });
     }
     // Persist only code that passed validation — a failed validation must
     // never become a stored "game" the catalogue then serves to everyone.
-    if (!v.ok) {
-      return Response.json({ error: "generated code failed validation", issues: v.issues }, { status: 422 });
-    }
     const row = await insertArcadeGame(db, {
       prompt,
       gameType: g.gameType,
@@ -128,7 +174,7 @@ export async function POST(req: Request) {
       parentId: parentId ?? null,
       ownerId: user.id,
     });
-    return Response.json({ game: row, validation: v, ms: g.ms }, { status: 201 });
+    return Response.json({ game: row, validation: v, runtimeVerification, ms: g.ms }, { status: 201 });
   } catch (e) {
     console.error(e);
     return Response.json({ error: "arcade generation failed" }, { status: 500 });

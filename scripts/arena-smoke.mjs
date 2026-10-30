@@ -1317,11 +1317,21 @@ try {
   let expectedModelId = "openai";
   let expectedLocalOnly = false;
   let failNextGeneration = false;
+  let failNextRuntimeCheck = false;
   let holdNextGeneration = false;
   let heldGenerationHasSource = false;
   let generationStartedResolve = null;
   let releaseHeldGeneration = null;
   const generatedPong = '<!doctype html><html><head><title>Generated Pong</title></head><body><p id="generated-pong">AI Pong</p><canvas width="320" height="180"></canvas><script>let x=0;const c=document.querySelector("canvas"),ctx=c.getContext("2d");addEventListener("keydown",e=>{if(e.key==="ArrowRight")x++});function loop(){ctx.fillStyle="#111";ctx.fillRect(0,0,320,180);ctx.fillStyle="#fff";ctx.fillRect(x,20,8,30);requestAnimationFrame(loop)}loop();</script></body></html>';
+  const passedStartupVerification = {
+    status: "passed",
+    scope: "startup-render-only",
+    issues: [],
+    canvas: { width: 320, height: 180 },
+    animationFrames: 12,
+    blockedRequests: 0,
+  };
+  const brokenDraftCode = generatedPong.replace("AI Pong", "draft-preserved-marker");
   const localProofGame = String.raw`<!doctype html>
 <html lang="en">
 <head>
@@ -1427,12 +1437,34 @@ try {
         body: JSON.stringify({
           code: localProofGame,
           title: "Temporary local model proof",
+          runtimeVerification: passedStartupVerification,
           runtime: {
             ms: 12,
             backend: "turboagent",
             modelId: expectedModelId,
             via: "turboagent:qwen2.5:3b",
             fallback: false,
+          },
+        }),
+      });
+      return;
+    }
+    if (failNextRuntimeCheck) {
+      failNextRuntimeCheck = false;
+      await route.fulfill({
+        status: 422,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "The game did not pass its isolated startup check. The game was not published.",
+          draft: {
+            code: brokenDraftCode,
+            title: "Broken Pong Draft",
+            gameType: "pong",
+            runtimeVerification: {
+              status: "failed",
+              scope: "startup-render-only",
+              issues: ["The game did not start its animation loop."],
+            },
           },
         }),
       });
@@ -1458,7 +1490,7 @@ try {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ code: generatedPong, title: "Late game", runtime: { ms: 12 } }),
+          body: JSON.stringify({ code: generatedPong, title: "Late game", runtimeVerification: passedStartupVerification, runtime: { ms: 12 } }),
         });
       } catch {
         // The browser should have cancelled this request before the late reply.
@@ -1504,6 +1536,7 @@ try {
             : isMultiBallRevision
               ? "Revised Pong"
               : "Revised local platformer",
+        runtimeVerification: passedStartupVerification,
         runtime: {
           ms: 12,
           backend: expectedLocalOnly ? "turboagent" : "openai",
@@ -1573,7 +1606,7 @@ try {
   assert(localModelProofSeen, "The local-model proof button must make an ephemeral request through the selected model");
   await page.getByLabel("Game prompt").fill("Pong with a rotating gate");
   await page.getByRole("button", { name: "🎮 Create & play" }).click();
-  await page.getByText("Local model Pong is playable").waitFor({ timeout: 10000 });
+  await page.getByText("Local model Pong passed the isolated startup check").waitFor({ timeout: 10000 });
   assert.match(
     await page.getByTestId("game-runtime-provenance").innerText(),
     /Local TurboAgent.*qwen2\.5:3b/,
@@ -1582,7 +1615,7 @@ try {
   assert(localServerGenerationSeen, "Local Mode must route new games to the selected local Model Hub model without WebGPU");
   await page.getByLabel("Game change").fill("Add a multi-ball mode");
   await page.getByRole("button", { name: "Apply change" }).click();
-  await page.getByText(/Revised Pong is playable/).waitFor({ timeout: 10000 });
+  await page.getByText(/Revised Pong passed the isolated startup check/).waitFor({ timeout: 10000 });
   assert(localServerRevisionSeen, "Local Mode edits must route the existing source to the selected local model");
   report.push("Local Mode routed new-game and source-revision requests to the selected local TurboAgent model with no provider keys (mocked inference endpoint).");
   const prepareHeldGeneration = (hasSource) => {
@@ -1623,6 +1656,17 @@ try {
   );
   await page.locator('iframe[title="Add a multi-ball mode"]').waitFor({ timeout: 10000 });
   report.push("A failed new game prompt preserves the last playable game.");
+  failNextRuntimeCheck = true;
+  await page.getByLabel("Game prompt").fill("A game with a startup error");
+  await page.getByRole("button", { name: "🎮 Create & play" }).click();
+  await page.getByText(/Draft saved as “Broken Pong Draft”; your current game was left unchanged/).waitFor({ timeout: 10000 });
+  await page.locator('iframe[title="Add a multi-ball mode"]').waitFor({ timeout: 10000 });
+  assert.equal(await page.getByText(/draft · unverified/).count(), 1, "a failed runtime check must be visible as an unverified local draft");
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Open offline game Broken Pong Draft" }).click();
+  await page.getByRole("button", { name: /Code/ }).click();
+  await page.getByText(/draft-preserved-marker/).waitFor({ timeout: 10000 });
+  report.push("A runtime-rejected game is retained as an unverified local draft, while the previously playable game remains untouched.");
   let reaAnalysisRequests = 0;
   page.on("request", request => {
     if (request.url().includes("/api/arcade/import/analyze")) reaAnalysisRequests += 1;

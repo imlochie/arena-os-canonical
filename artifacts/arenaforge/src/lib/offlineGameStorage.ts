@@ -9,12 +9,15 @@ export type SavedOfflineGame = {
   title: string;
   prompt: string;
   gameType: GameType;
-  engine: GameEngine;
+  engine: GameEngine | "ai-codegen";
   code: string;
   saveSlotId: string;
   starter: boolean;
   createdAt: number;
   updatedAt: number;
+  draft?: boolean;
+  verificationStatus?: "passed" | "failed" | "unavailable";
+  verificationIssues?: string[];
 };
 
 function openDatabase(): Promise<IDBDatabase> {

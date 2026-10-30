@@ -3,6 +3,7 @@ import { insertArcadeGame } from "@workspace/arena/lib/arcadeStore";
 import { forgeGameWithAI } from "@workspace/arena/lib/games/forge-ai";
 import { requireUser } from "@workspace/arena/lib/waveyard/local-context";
 import { requireApiAccess } from "@workspace/arena/lib/security/api-access";
+import { verifyArcadeRuntime } from "../runtime-verification";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 240;
@@ -38,10 +39,25 @@ export async function POST(req: Request) {
       signal: req.signal,
     });
     if (req.signal.aborted) return new Response(null, { status: 499 });
+    const runtimeVerification = await verifyArcadeRuntime(result.code);
+    if (req.signal.aborted) return new Response(null, { status: 499 });
+    if (runtimeVerification.status !== "passed") {
+      const message = runtimeVerification.status === "unavailable"
+        ? "Arcade could not start its isolated browser check. The game was not published."
+        : "The game did not pass its isolated startup check. The game was not published.";
+      return Response.json({
+        error: message,
+        draft: {
+          code: result.code,
+          title: result.title,
+          gameType: result.gameType,
+          runtimeVerification,
+        },
+        runtimeVerification,
+      }, { status: 422 });
+    }
     let game: any = null;
-    // Persist only code that passed validation. The response still carries
-    // the generated code either way — the code is the deliverable — but a
-    // failed validation never becomes a stored catalogue entry.
+    // Persist only code that passed static and isolated-browser startup checks.
     if (result.validation?.ok && body?.ephemeral !== true) {
       try {
         game = await insertArcadeGame(db, {
@@ -53,7 +69,16 @@ export async function POST(req: Request) {
           ownerId: user.id,
         });
       } catch {
-        /* persistence is best-effort; the code itself is the deliverable */
+        return Response.json({
+          error: "The game passed startup checks but could not be saved to the game library.",
+          draft: {
+            code: result.code,
+            title: result.title,
+            gameType: result.gameType,
+            runtimeVerification,
+          },
+          runtimeVerification,
+        }, { status: 503 });
       }
     }
     return Response.json({
@@ -62,6 +87,7 @@ export async function POST(req: Request) {
       engine: result.engine,
       title: result.title,
       validation: result.validation,
+      runtimeVerification,
       repairsUsed: result.repairsUsed,
       runtime: result.runtime,
     });
@@ -80,6 +106,6 @@ export async function POST(req: Request) {
         { status: 503 },
       );
     }
-    return Response.json({ error: message }, { status: 422 });
+    return Response.json({ error: message, draft: (e as any)?.draft }, { status: 422 });
   }
 }

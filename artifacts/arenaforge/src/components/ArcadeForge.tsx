@@ -69,6 +69,7 @@ const OFFLINE_STARTERS = [
   },
 ];
 const LOCAL_CHECK_CHANNEL = "arenaforge-local-model-check";
+const STARTUP_CHECK_CHANNEL = "arenaforge-game-startup-check";
 const LOCAL_CHECK_PROMPT =
   "Create a tiny original HTML5 game for a local model test: draw a blue square on a canvas, move it with arrow keys, let it collect one gold coin, and show a score HUD. Use requestAnimationFrame. Make it one complete offline HTML file with no external URLs or assets.";
 
@@ -97,6 +98,52 @@ function createLocalModelCheckDocument(code: string, saveId: string, nonce: stri
     `requestAnimationFrame(function(){requestAnimationFrame(function(){send("ready","")})})});})();</script>`;
   const document = createGameSandboxDocument(code, saveId);
   return document.replace(/<\/head>/i, `${probe}</head>`);
+}
+
+function verifyGameInIsolatedPreview(code: string, saveId: string): Promise<{ ok: boolean; issues: string[] }> {
+  return new Promise((resolve) => {
+    const nonce = crypto.randomUUID();
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.setAttribute("aria-hidden", "true");
+    frame.style.cssText = "position:fixed;left:-10000px;top:0;width:900px;height:700px;opacity:0;pointer-events:none;border:0;z-index:-1";
+    let finished = false;
+    const finish = (result: { ok: boolean; issues: string[] }) => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      frame.remove();
+      resolve(result);
+    };
+    const onMessage = (event: MessageEvent) => {
+      const message = event.data;
+      if (event.source !== frame.contentWindow ||
+          message?.channel !== STARTUP_CHECK_CHANNEL ||
+          message?.nonce !== nonce ||
+          message?.type !== "result") return;
+      finish({ ok: message.ok === true, issues: Array.isArray(message.issues) ? message.issues.map(String).slice(0, 8) : [] });
+    };
+    const timer = window.setTimeout(() => {
+      finish({ ok: false, issues: ["The game did not finish starting in the isolated preview."] });
+    }, 10_000);
+    const probe =
+      `<script data-arena-startup-check>(function(){` +
+      `var channel=${JSON.stringify(STARTUP_CHECK_CHANNEL)},nonce=${JSON.stringify(nonce)},calls=0,errors=[];` +
+      `var raf=window.requestAnimationFrame.bind(window);window.requestAnimationFrame=function(cb){calls++;return raf(cb)};` +
+      `function report(){var canvas=document.querySelector("canvas");var issues=errors.slice(0);` +
+      `if(!canvas)issues.push("The game did not create a canvas.");` +
+      `else if(canvas.width<32||canvas.height<32||canvas.width>2048||canvas.height>2048)issues.push("The game canvas has invalid dimensions.");` +
+      `if(calls<1)issues.push("The game did not start its animation loop.");` +
+      `try{parent.postMessage({channel:channel,nonce:nonce,type:"result",ok:issues.length===0,issues:issues},"*")}catch(e){}}` +
+      `window.addEventListener("error",function(e){errors.push(String(e.message||"script error").slice(0,220))},true);` +
+      `window.addEventListener("unhandledrejection",function(e){errors.push(String(e.reason&&e.reason.message||e.reason||"promise rejection").slice(0,220))});` +
+      `document.addEventListener("DOMContentLoaded",function(){setTimeout(report,350)});})();</script>`;
+    window.addEventListener("message", onMessage);
+    frame.srcdoc = createGameSandboxDocument(code, saveId).replace(/<\/head>/i, `${probe}</head>`);
+    document.body.append(frame);
+  });
 }
 
 function resolveSaveSlot(gameId: string): string {
@@ -292,7 +339,13 @@ export default function ArcadeForge() {
           }
           localStorage.setItem(OFFLINE_STARTERS_SEEDED_KEY, "1");
         }
-        if (active) setOfflineGames(stored.sort((a, b) => a.title.localeCompare(b.title)));
+        if (active) {
+          setOfflineGames((current) => {
+            const byId = new Map(stored.map((item) => [item.id, item]));
+            for (const item of current) byId.set(item.id, item);
+            return [...byId.values()].sort((a, b) => a.title.localeCompare(b.title));
+          });
+        }
       } catch (e) {
         if (active) setOfflineShelfError(e instanceof Error ? e.message : "Could not load offline games.");
       } finally {
@@ -490,8 +543,38 @@ export default function ArcadeForge() {
       body: JSON.stringify({ ...payload, ...privacyFlags() }),
     }).then(async (r) => {
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error ?? "save failed");
-      return j.game;
+      if (!r.ok) {
+        if (typeof j?.draft?.code === "string") {
+          try {
+            const savedDraft = await preserveUnverifiedDraft(
+              String(payload.prompt ?? "Unverified game"),
+              j.draft.code,
+              j.draft.runtimeVerification,
+              j.draft.title,
+              j.draft.gameType,
+            );
+            throw new Error(`${j.error ?? "The game did not pass its startup check."} Draft saved as “${savedDraft.title}”; your current game was left unchanged.`);
+          } catch (error) {
+            if (error instanceof Error && error.message.includes("Draft saved as")) throw error;
+            throw new Error(`${j.error ?? "The game did not pass its startup check."} The draft could not be saved locally: ${error instanceof Error ? error.message : "storage unavailable"}.`);
+          }
+        }
+        throw new Error(j.error ?? "save failed");
+      }
+      if (j.runtimeVerification?.status !== "passed") {
+        if (typeof payload.clientCode === "string") {
+          const savedDraft = await preserveUnverifiedDraft(
+            String(payload.prompt ?? "Unverified game"),
+            payload.clientCode,
+            j.runtimeVerification,
+            undefined,
+            payload.gameType,
+          );
+          throw new Error(`The server did not confirm an isolated startup check. Draft saved as “${savedDraft.title}”; no game was published.`);
+        }
+        throw new Error("The server did not confirm an isolated startup check. No game was published.");
+      }
+      return { ...j.game, runtimeVerification: j.runtimeVerification };
     });
   }
 
@@ -513,7 +596,7 @@ export default function ArcadeForge() {
       setGame({ ...saved, code: g.code, genMs: ms, engine: g.engine, saveSlotId: saved.id });
       fetchHistory();
     }
-    setNotice(`⚡ ${g.title} forged in ${ms}ms (${g.engine}) — validated, ${(g.code.length / 1024).toFixed(1)}KB single file.`);
+    setNotice(`⚡ ${g.title} generated in ${ms}ms (${g.engine}) and passed the isolated startup check. Play it to verify its mechanics.`);
   }
 
   async function saveOfflineRevision(
@@ -524,10 +607,54 @@ export default function ArcadeForge() {
   ): Promise<SavedOfflineGame> {
     const existing = offlineGames.find((item) => item.id === id);
     if (!existing) throw new Error("This offline game is no longer in your local shelf.");
-    const updated = { ...existing, prompt: promptText, code, engine, updatedAt: Date.now() };
+    const updated = {
+      ...existing,
+      prompt: promptText,
+      code,
+      engine,
+      updatedAt: Date.now(),
+      draft: false,
+      verificationStatus: "passed" as const,
+      verificationIssues: [],
+    };
     await saveOfflineSavedGames([updated]);
     setOfflineGames((current) => current.map((item) => item.id === id ? updated : item));
     return updated;
+  }
+
+  async function preserveUnverifiedDraft(
+    promptText: string,
+    code: string,
+    verification: { status?: string; issues?: string[] } | undefined,
+    titleHint?: string,
+    gameTypeHint?: string,
+  ): Promise<SavedOfflineGame> {
+    const id = `arcade-draft:${crypto.randomUUID()}`;
+    const gameType = GAME_TYPES.find((item) => item.id === gameTypeHint)?.id ?? detectGameType(promptText);
+    const title = (titleHint?.trim() || promptText.trim().slice(0, 40) || "Unverified game").slice(0, 80);
+    const status = verification?.status === "unavailable" ? "unavailable" : "failed";
+    const draft: SavedOfflineGame = {
+      id,
+      title,
+      prompt: promptText,
+      gameType,
+      engine: "ai-codegen",
+      code,
+      saveSlotId: id,
+      starter: false,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      draft: true,
+      verificationStatus: status,
+      verificationIssues: Array.isArray(verification?.issues) ? verification.issues.map(String).slice(0, 8) : [],
+    };
+    await saveOfflineSavedGames([draft]);
+    setOfflineGames((current) => [
+      draft,
+      ...current.filter((item) => item.id !== draft.id),
+    ].sort((a, b) => a.title.localeCompare(b.title)));
+    setNotice(`“${title}” is saved as an unverified draft in Offline starter games. Your previous game is unchanged.`);
+    return draft;
   }
 
   async function runServerAI(
@@ -561,9 +688,27 @@ export default function ArcadeForge() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (typeof body?.draft?.code === "string") {
+          try {
+            const savedDraft = await preserveUnverifiedDraft(
+              p,
+              body.draft.code,
+              body.draft.runtimeVerification,
+              body.draft.title,
+              body.draft.gameType,
+            );
+            throw new Error(`${body.error ?? "The game did not pass its startup check."} Draft saved as “${savedDraft.title}”; your current game was left unchanged.`);
+          } catch (error) {
+            if (error instanceof Error && error.message.includes("Draft saved as")) throw error;
+            throw new Error(`${body.error ?? "The game did not pass its startup check."} The draft could not be saved locally: ${error instanceof Error ? error.message : "storage unavailable"}.`);
+          }
+        }
         throw new Error(body.error ?? "No game-writing model is reachable.");
       }
-      if (typeof body.code !== "string") throw new Error("The model did not return a complete playable game.");
+      if (typeof body.code !== "string") throw new Error("The model did not return complete game source.");
+      if (body.runtimeVerification?.status !== "passed") {
+        throw new Error("The server did not return a passing isolated startup check. The game was not opened as playable.");
+      }
       const rt = body.runtime ?? {};
       const temporaryLocalRevision = Boolean(localOfflineId && flags.ephemeral);
       const gameId = temporaryLocalRevision ? crypto.randomUUID() : localOfflineId ?? body.game?.id ?? crypto.randomUUID();
@@ -581,6 +726,7 @@ export default function ArcadeForge() {
         code: body.code,
         engine: "ai-codegen",
         runtime: rt,
+        runtimeVerification: body.runtimeVerification,
         genMs: rt.ms,
         ephemeral: flags.ephemeral,
         saveSlotId: gameSaveSlot,
@@ -588,8 +734,8 @@ export default function ArcadeForge() {
       });
       if (!flags.ephemeral && !localOfflineId) fetchHistory();
       setNotice(localSaved
-        ? `Updated “${localSaved.title}” in your offline shelf. The original game slot and progress are preserved.`
-        : `${body.title ?? "Game"} is playable${body.repairsUsed ? " (repaired after validation)" : ""}. You can now ask for a specific change.`);
+        ? `Updated “${localSaved.title}” in your offline shelf after the isolated startup check. The original game slot and progress are preserved.`
+        : `${body.title ?? "Game"} passed the isolated startup check. Play it to verify the requested mechanics.`);
     } finally {
       if (controller && abortRef.current === controller) abortRef.current = null;
     }
@@ -632,6 +778,16 @@ export default function ArcadeForge() {
         throw new Error(`The generated game did not pass validation: ${v.issues.join("; ")}`);
       }
       const type = detectGameType(p);
+      if (localOfflineId) {
+        const startup = await verifyGameInIsolatedPreview(code, localOfflineId);
+        if (!startup.ok) {
+          if (!privacyFlags().ephemeral) {
+            const savedDraft = await preserveUnverifiedDraft(p, code, { status: "failed", issues: startup.issues }, p, type);
+            throw new Error(`The revision failed the isolated startup check. Draft saved as “${savedDraft.title}”; the original offline game and its progress were left unchanged.`);
+          }
+          throw new Error(`The temporary revision failed the isolated startup check: ${startup.issues.join("; ")}`);
+        }
+      }
       const runtime = {
         backend: "webllm",
         modelId: loadedModelId() ?? engineModel ?? modelId,
@@ -670,7 +826,7 @@ export default function ArcadeForge() {
           ephemeral: true,
           saveSlotId: temporaryId,
         });
-        setNotice("Temporary revision is ready. The saved offline original was not changed.");
+        setNotice("Temporary revision passed the isolated startup check. The saved offline original was not changed.");
         return;
       }
       const saved = await persistGame({ prompt: p, clientCode: code, gameType: type, parentId });
@@ -687,7 +843,7 @@ export default function ArcadeForge() {
         saveSlotId: gameSaveSlot,
       });
       if (!saved.ephemeral) fetchHistory();
-      setNotice(`🧠 On-device AI forged a ${(code.length / 1024).toFixed(1)}KB game in ${(res.ms / 1000).toFixed(1)}s (${res.tokps} tok/s) — 100% offline, validated.`);
+      setNotice(`🧠 On-device AI generated a ${(code.length / 1024).toFixed(1)}KB game in ${(res.ms / 1000).toFixed(1)}s (${res.tokps} tok/s). It passed the isolated startup check; play it to verify its mechanics.`);
     } finally {
       setStreamed("");
       abortRef.current = null;
@@ -936,7 +1092,9 @@ export default function ArcadeForge() {
     setPrompt(saved.prompt);
     setWorkspace("create");
     setTab("play");
-    setNotice("Opened from your offline shelf. Play it, inspect its source, or prompt a change.");
+    setNotice(saved.draft
+      ? "Opened an unverified draft from your offline shelf. Inspect or try it; the saved game it came from was not changed."
+      : "Opened from your offline shelf. Play it, inspect its source, or prompt a change.");
     setError(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -1350,6 +1508,19 @@ export default function ArcadeForge() {
                   💾 saved in this browser
                 </span>
               )}
+      {game.draft && (
+        <span className="rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-200 ring-1 ring-amber-300/20">
+          draft · unverified
+        </span>
+      )}
+      {game.runtimeVerification?.status === "passed" && (
+        <span
+          className="rounded-full bg-cyan-400/10 px-2.5 py-1 text-[11px] font-bold text-cyan-100 ring-1 ring-cyan-300/20"
+          title="Canvas rendered and the animation loop started in an isolated browser. Game mechanics and prompt fidelity still need play testing."
+        >
+          startup check passed
+        </span>
+      )}
               <div className="ml-auto flex gap-1.5">
                 <button
                   type="button"
@@ -1440,7 +1611,7 @@ export default function ArcadeForge() {
             <span className="rounded-full bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold text-emerald-200">{offlineGames.length}</span>
           </div>
           <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
-            These playable games and their code stay in this browser. Open one to play, inspect, or prompt a gameplay change.
+            Games and drafts stored in this browser. Drafts have not passed the isolated startup check.
           </p>
           {offlineShelfLoading && <p className="mt-3 text-xs text-slate-500">Loading local games…</p>}
           {offlineShelfError && <p role="alert" className="mt-3 rounded-lg bg-red-500/10 px-2.5 py-2 text-xs text-red-200">{offlineShelfError}</p>}
@@ -1454,8 +1625,8 @@ export default function ArcadeForge() {
                     aria-label={`Open offline game ${saved.title}`}
                     className="block w-full p-2.5 pr-9 text-left"
                   >
-                    <p className="text-[10px] font-black uppercase tracking-wide text-emerald-300">
-                      {GAME_TYPES.find((meta) => meta.id === saved.gameType)?.emoji ?? "🎮"} {saved.gameType} · offline
+                    <p className={`text-[10px] font-black uppercase tracking-wide ${saved.draft ? "text-amber-300" : "text-emerald-300"}`}>
+                      {GAME_TYPES.find((meta) => meta.id === saved.gameType)?.emoji ?? "🎮"} {saved.gameType} · {saved.draft ? "draft · unverified" : "offline"}
                     </p>
                     <p className="mt-0.5 text-xs font-semibold text-slate-100">{saved.title}</p>
                   </button>
