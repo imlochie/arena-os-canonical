@@ -35,7 +35,10 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
   const raf = useRef<number | null>(null);
   const origin = useRef({ contextTime: 0, positionMs: 0 });
   const currentState = useRef<PreviewState | null>(null);
+  const playbackGeneration = useRef(0);
+  const pendingStartMs = useRef<number | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const clear = useCallback(() => {
@@ -64,10 +67,14 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
     return decoded;
   }, [ensureContext]);
 
-  const schedule = useCallback(async (state: PreviewState, startMs: number) => {
+  const schedule = useCallback(async (state: PreviewState, startMs: number, generation: number) => {
+    if (generation !== playbackGeneration.current) return false;
+    pendingStartMs.current = startMs;
+    setPending(true);
     const audio = ensureContext();
     const assetIds = [...new Set(state.tracks.flatMap((track) => track.clips.map((clip) => clip.stemAssetId)))];
     await Promise.all(assetIds.map(ensureBuffer));
+    if (generation !== playbackGeneration.current) return false;
     clear();
     const master = audio.createGain();
     master.gain.value = state.masterVolume;
@@ -131,33 +138,62 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
       }
     }
     origin.current = { contextTime: audio.currentTime, positionMs: startMs };
+    pendingStartMs.current = null;
+    setPending(false);
+    return true;
   }, [clear, ensureBuffer, ensureContext]);
 
-  const pause = useCallback(() => {
-    if (!context.current) return;
-    const next = origin.current.positionMs + (context.current.currentTime - origin.current.contextTime) * 1000;
+  const failPreview = useCallback((cause: unknown, generation: number) => {
+    if (generation !== playbackGeneration.current) return;
+    pendingStartMs.current = null;
+    currentState.current = null;
     clear();
-    origin.current = { contextTime: 0, positionMs: next };
+    setPending(false);
+    setPlaying(false);
+    setError(cause instanceof Error ? cause.message : "Arrangement preview could not start.");
+  }, [clear]);
+
+  const pause = useCallback(() => {
+    if (!context.current && pendingStartMs.current === null) return;
+    const next = pendingStartMs.current ?? (
+      origin.current.positionMs + ((context.current?.currentTime ?? origin.current.contextTime) - origin.current.contextTime) * 1000
+    );
+    playbackGeneration.current += 1;
+    pendingStartMs.current = null;
+    currentState.current = null;
+    clear();
+    origin.current = { contextTime: context.current?.currentTime ?? 0, positionMs: next };
     onPosition(next);
+    setPending(false);
     setPlaying(false);
   }, [clear, onPosition]);
 
   const play = useCallback(async (state: PreviewState, fromMs: number) => {
+    const generation = ++playbackGeneration.current;
+    pendingStartMs.current = fromMs;
+    currentState.current = state;
+    setPending(true);
     try {
       setError(null);
-      currentState.current = state;
       const audio = ensureContext();
       if (audio.state === "suspended") await audio.resume();
-      await schedule(state, fromMs);
+      if (generation !== playbackGeneration.current) return;
+      const didSchedule = await schedule(state, fromMs, generation);
+      if (!didSchedule || generation !== playbackGeneration.current) return;
       setPlaying(true);
       const tick = () => {
+        if (generation !== playbackGeneration.current) return;
         const active = currentState.current;
         if (!active || !context.current) return;
         const positionMs = origin.current.positionMs + (context.current.currentTime - origin.current.contextTime) * 1000;
         if (active.loopEndMs !== null && active.loopEndMs > active.loopStartMs && positionMs >= active.loopEndMs) {
-          void schedule(active, active.loopStartMs).then(() => {
-            raf.current = requestAnimationFrame(tick);
-          });
+          void schedule(active, active.loopStartMs, generation)
+            .then((loopScheduled) => {
+              if (loopScheduled && generation === playbackGeneration.current) {
+                raf.current = requestAnimationFrame(tick);
+              }
+            })
+            .catch((cause) => failPreview(cause, generation));
           return;
         }
         const endMs = Math.max(0, ...active.tracks.flatMap((track) => track.clips.map((clip) => clip.timelineStartMs + clip.durationMs)));
@@ -167,18 +203,25 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
       };
       raf.current = requestAnimationFrame(tick);
     } catch (cause) {
-      clear();
-      setPlaying(false);
-      setError(cause instanceof Error ? cause.message : "Arrangement preview could not start.");
+      failPreview(cause, generation);
     }
-  }, [clear, ensureContext, onPosition, pause, schedule]);
+  }, [ensureContext, failPreview, onPosition, pause, schedule]);
 
   const stop = useCallback(() => {
+    playbackGeneration.current += 1;
+    pendingStartMs.current = null;
+    currentState.current = null;
     clear();
     origin.current = { contextTime: 0, positionMs: 0 };
     onPosition(0);
+    setPending(false);
     setPlaying(false);
   }, [clear, onPosition]);
-  useEffect(() => () => { clear(); void context.current?.close(); }, [clear]);
-  return { playing, error, play, pause, stop };
+  useEffect(() => () => {
+    playbackGeneration.current += 1;
+    pendingStartMs.current = null;
+    clear();
+    void context.current?.close();
+  }, [clear]);
+  return { playing, pending, error, play, pause, stop };
 }

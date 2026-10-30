@@ -1306,6 +1306,48 @@ try {
     elements.map(element => Number.parseFloat(element.style.left)),
   );
   assert.ok(clipOffsets.some(offset => offset > 0), "the second song is placed after the first on the arrangement timeline");
+  const delayedPreviewAssetId = studioRemixData.tracks[0].stemAssetId;
+  let releaseArrangementAsset;
+  let signalArrangementAssetRequest;
+  let signalArrangementAssetResponse;
+  const arrangementAssetRequest = new Promise(resolve => { signalArrangementAssetRequest = resolve; });
+  const arrangementAssetResponse = new Promise(resolve => { signalArrangementAssetResponse = resolve; });
+  heldAssetId = delayedPreviewAssetId;
+  heldAssetGate = new Promise(resolve => { releaseArrangementAsset = resolve; });
+  signalHeldAssetRequest = signalArrangementAssetRequest;
+  signalHeldAssetRouteFinished = signalArrangementAssetResponse;
+  const startedSourceCount = await page.evaluate(() =>
+    window.audioProbe.buffers.filter(source => source.startedOffset !== undefined).length,
+  );
+  await page.getByRole("button", { name: "Preview arrangement", exact: true }).click();
+  const cancelPreviewButton = page.getByRole("button", { name: "Cancel arrangement preview", exact: true });
+  await cancelPreviewButton.waitFor();
+  assert.equal(await cancelPreviewButton.getAttribute("aria-busy"), "true",
+    "the arrangement transport exposes its pending audio-load state");
+  await arrangementAssetRequest;
+  await cancelPreviewButton.click();
+  await page.getByRole("button", { name: "Preview arrangement", exact: true }).waitFor();
+  releaseArrangementAsset();
+  heldAssetId = null;
+  heldAssetGate = null;
+  signalHeldAssetRequest = null;
+  signalHeldAssetRouteFinished = null;
+  await arrangementAssetResponse;
+  await page.waitForTimeout(100);
+  assert.equal(
+    await page.evaluate(() => window.audioProbe.buffers.filter(source => source.startedOffset !== undefined).length),
+    startedSourceCount,
+    "a late decoded asset response cannot start audio after the user cancels the arrangement preview",
+  );
+  await page.getByRole("button", { name: "Preview arrangement", exact: true }).click();
+  const pausePreviewButton = page.getByRole("button", { name: "Pause arrangement", exact: true });
+  await pausePreviewButton.waitFor();
+  await page.waitForFunction((previousCount) =>
+    window.audioProbe.buffers.filter(source => source.startedOffset !== undefined).length > previousCount,
+  startedSourceCount);
+  await pausePreviewButton.click();
+  await page.getByRole("button", { name: "Preview arrangement", exact: true }).waitFor();
+  console.log("PASS: Studio preview cancellation prevents a late audio response from restarting playback; a fresh preview plays.");
   await page.getByRole("tab", { name: "Analyze" }).click();
   await page.locator('[data-testid="source-section-map-a-source"] .source-section-marker').click();
   await page.getByTestId("source-section-inspection-section-a-1").waitFor();
