@@ -2076,3 +2076,9 @@ try {
   if (fallbackBattleId) await context.request.delete(`${base}/api/battles/${fallbackBattleId}`);
   await browser.close();
 }
+
+execFileSync(
+  process.execPath,
+  ["--test", new URL("./waveyard-stem-transport.mjs", import.meta.url).pathname],
+  { stdio: "inherit" },
+);

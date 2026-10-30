@@ -1728,6 +1728,138 @@ test("deep pass with no prepared engine: honest separation_unavailable, nothing 
   }
 });
 
+test("a lost separation commit acknowledgement preserves the committed stem set", async () => {
+  const f = await fixture();
+  const storage = getStorage();
+  const putFile = storage.putFile;
+  const uploadedKeys: string[] = [];
+  const db = new Proxy(f.database, {
+    get(target, key) {
+      if (key === "transaction") {
+        return async (...args: Parameters<typeof target.transaction>) => {
+          await target.transaction(...args);
+          throw new Error("controlled lost separation commit acknowledgement");
+        };
+      }
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+  try {
+    storage.putFile = async (...args) => {
+      uploadedKeys.push(args[0]);
+      await putFile.apply(storage, args);
+    };
+
+    await handleSeparationJob(payloadOf(f), { db, openEngine: identityEngine() });
+
+    const [job] = await f.database
+      .select()
+      .from(processingJobs)
+      .where(eq(processingJobs.id, f.job.id));
+    const stems = await f.database
+      .select()
+      .from(stemAssets)
+      .where(eq(stemAssets.separationJobId, f.job.id));
+    assert.equal(job.status, "complete");
+    assert.equal(stems.length, 2);
+    assert.equal(uploadedKeys.length, stems.length);
+    for (const stem of stems) {
+      assert.ok(uploadedKeys.includes(stem.storageKey));
+      assert.equal(await storage.exists(stem.storageKey), true);
+    }
+  } finally {
+    storage.putFile = putFile;
+    await f.close();
+  }
+});
+
+test("unknown separation publication status retains outputs and records reconciliation keys", async () => {
+  const f = await fixture();
+  const storage = getStorage();
+  const putFile = storage.putFile;
+  const uploadedKeys: string[] = [];
+  let transactionAttempted = false;
+  const db = new Proxy(f.database, {
+    get(target, key) {
+      if (key === "transaction") {
+        return async () => {
+          transactionAttempted = true;
+          throw new Error("controlled commit status unavailable");
+        };
+      }
+      if (key === "select") {
+        return (...args: Parameters<typeof target.select>) => {
+          if (transactionAttempted) throw new Error("controlled publication lookup outage");
+          return target.select(...args);
+        };
+      }
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+  try {
+    storage.putFile = async (...args) => {
+      uploadedKeys.push(args[0]);
+      await putFile.apply(storage, args);
+    };
+
+    await assert.rejects(
+      handleSeparationJob(payloadOf(f), { db, openEngine: identityEngine() }),
+      /controlled commit status unavailable/,
+    );
+
+    const [job] = await f.database
+      .select()
+      .from(processingJobs)
+      .where(eq(processingJobs.id, f.job.id));
+    assert.equal(job.status, "failed");
+    assert.deepEqual(JSON.parse(job.metadata).cleanupFailedKeys, uploadedKeys);
+    assert.equal(uploadedKeys.length, 2);
+    for (const key of uploadedKeys) assert.equal(await storage.exists(key), true);
+    assert.equal(
+      (await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id))).length,
+      0,
+    );
+  } finally {
+    storage.putFile = putFile;
+    await f.close();
+  }
+});
+
+test("a storage write that rejects after writing is tracked and removed when unpublished", async () => {
+  const f = await fixture();
+  const storage = getStorage();
+  const putFile = storage.putFile;
+  const uploadedKeys: string[] = [];
+
+  try {
+    storage.putFile = async (...args) => {
+      uploadedKeys.push(args[0]);
+      await putFile.apply(storage, args);
+      throw new Error("controlled failure after writing stem object");
+    };
+
+    await assert.rejects(
+      handleSeparationJob(payloadOf(f), { db: f.database, openEngine: identityEngine() }),
+      /failure after writing stem object/,
+    );
+
+    assert.equal(uploadedKeys.length, 1);
+    assert.equal(await storage.exists(uploadedKeys[0]!), false);
+    assert.equal(
+      (await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id))).length,
+      0,
+    );
+    assert.equal(await storage.exists(f.source.storageKey), true);
+  } finally {
+    storage.putFile = putFile;
+    await f.close();
+  }
+});
+
 test("deep seam: the decoded 44.1 kHz PCM is the engine input, no MDX engine opens, lanes persist exactly", async () => {
   const f = await fixture({ model: "deep_6s" });
   try {

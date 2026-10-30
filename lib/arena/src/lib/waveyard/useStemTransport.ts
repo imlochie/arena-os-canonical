@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveStemLayers } from "./live-stem-layers";
 
 export type MixerValues = {
@@ -26,6 +26,18 @@ type AudioGraph = {
   /** The tail node feeding mono (pan or gain). */
   tail: AudioNode;
 };
+
+function disconnectGraph(graph: AudioGraph) {
+  graph.source.mediaElement.pause();
+  graph.source.disconnect();
+  graph.inputGain.disconnect();
+  graph.gain.disconnect();
+  graph.pan?.disconnect();
+  graph.mono.disconnect();
+  graph.analyser.disconnect();
+  graph.inserts?.input.disconnect();
+  graph.inserts?.output.disconnect();
+}
 
 export type ChannelMeter = { peak: number; rms: number; clipped: boolean };
 
@@ -220,7 +232,14 @@ export function resolveActiveMixerState(
   };
 }
 
-export function useStemTransport(ids: string[], duration: number) {
+export function useStemTransport(assetIds: string[], duration: number) {
+  // Polling may construct a fresh array for identical assets. Treat equal IDs
+  // as the same deck so renders do not restart its audio clock or effects.
+  const idsKey = JSON.stringify(assetIds);
+  const ids = useMemo<string[]>(() => JSON.parse(idsKey), [idsKey]);
+  const currentIds = useRef(ids);
+  currentIds.current = ids;
+  const previousIds = useRef(ids);
   const media = useRef<Record<string, HTMLAudioElement | null>>({});
   const graphs = useRef<Record<string, AudioGraph>>({});
   const context = useRef<AudioContext | null>(null);
@@ -236,6 +255,8 @@ export function useStemTransport(ids: string[], duration: number) {
   const masterTap = useRef<MediaStreamAudioDestinationNode | null>(null);
   const clockId = useRef<number | null>(null);
   const lastUiUpdate = useRef(0);
+  const playRequest = useRef(0);
+  const wantsPlayback = useRef(false);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   // Commands such as seek(0); play() run in one event/effect. React state
@@ -334,24 +355,6 @@ export function useStemTransport(ids: string[], duration: number) {
     }));
   }, [prepareChannels]);
 
-  useEffect(() => {
-    for (const [id, graph] of Object.entries(graphs.current)) {
-      if (ids.includes(id)) continue;
-      liveLayers.current?.remove(id);
-      graph.source.mediaElement.pause();
-      graph.source.disconnect();
-      graph.inputGain.disconnect();
-      graph.gain.disconnect();
-      graph.pan?.disconnect();
-      graph.mono.disconnect();
-      graph.analyser.disconnect();
-      graph.inserts?.input.disconnect();
-      graph.inserts?.output.disconnect();
-      delete graphs.current[id];
-      delete media.current[id];
-    }
-  }, [ids]);
-
   const register = useCallback(
     (id: string, element: HTMLAudioElement | null) => {
       const graph = graphs.current[id];
@@ -359,14 +362,7 @@ export function useStemTransport(ids: string[], duration: number) {
         // Returning to a track creates new media elements. A source node
         // belongs to its original element, not merely to its asset id.
         liveLayers.current?.remove(id);
-        graph.source.disconnect();
-        graph.inputGain.disconnect();
-        graph.gain.disconnect();
-        graph.pan?.disconnect();
-        graph.mono.disconnect();
-        graph.analyser.disconnect();
-        graph.inserts?.input.disconnect();
-        graph.inserts?.output.disconnect();
+        disconnectGraph(graph);
         delete graphs.current[id];
       }
       media.current[id] = element;
@@ -375,6 +371,7 @@ export function useStemTransport(ids: string[], duration: number) {
   );
   const seek = useCallback(
     (seconds: number) => {
+      if (!Number.isFinite(seconds)) return;
       const next = Math.min(
         duration || Number.MAX_SAFE_INTEGER,
         Math.max(0, seconds),
@@ -428,6 +425,11 @@ export function useStemTransport(ids: string[], duration: number) {
       // Master chain sits between masterGain and its analyser/splitter/destination.
       if (context.current && masterGain.current && masterAnalyser.current) {
         try { masterGain.current.disconnect(); } catch {}
+        if (masterInsertsSubgraph.current) {
+          try { masterInsertsSubgraph.current.input.disconnect(); } catch {}
+          try { masterInsertsSubgraph.current.output.disconnect(); } catch {}
+          masterInsertsSubgraph.current = null;
+        }
         let head: AudioNode = masterGain.current;
         if (master.length > 0) {
           const sub = buildChainSubgraph(context.current, master);
@@ -480,43 +482,102 @@ export function useStemTransport(ids: string[], duration: number) {
     clockId.current = null;
   }, []);
   const pause = useCallback(() => {
-    for (const id of ids) media.current[id]?.pause();
+    playRequest.current += 1;
+    wantsPlayback.current = false;
+    for (const element of Object.values(media.current)) element?.pause();
     liveLayers.current?.pause();
     stopClock();
     setPlaying(false);
-  }, [ids, stopClock]);
+  }, [stopClock]);
+
+  useEffect(() => {
+    const previous = previousIds.current;
+    const replacedDeck =
+      previous.length > 0 && !previous.some((id) => ids.includes(id));
+    previousIds.current = ids;
+    if (replacedDeck) {
+      pause();
+      positionRef.current = 0;
+      setPosition(0);
+    }
+    for (const [id, graph] of Object.entries(graphs.current)) {
+      if (ids.includes(id)) continue;
+      liveLayers.current?.remove(id);
+      disconnectGraph(graph);
+      delete graphs.current[id];
+      delete media.current[id];
+    }
+  }, [ids, pause]);
   const stop = useCallback(() => {
     pause();
     seek(0);
   }, [pause, seek]);
 
   const play = useCallback(async () => {
+    const request = ++playRequest.current;
+    wantsPlayback.current = true;
     try {
       setError(null);
+      if (ids.length === 0) {
+        throw new Error("No audio is ready. Import audio or wait for processing to finish.");
+      }
+      const elements = ids.map((id) => {
+        const element = media.current[id];
+        if (!element) throw new Error(`Stem ${id} is not loaded. Reopen this track and retry.`);
+        if (element.error) throw new Error(`Stem ${id} could not be loaded. Check its source file and retry.`);
+        return element;
+      });
       for (const id of ids) ensureGraph(id);
       if (masterGain.current) masterGain.current.gain.value = masterVolume;
       applyMix(mixValues.current);
+      // Saved insert intent may have been restored before any audio graph
+      // existed. Build it now, inside the first user-initiated play action.
+      applyInserts(insertChains.current, masterChain.current);
       if (context.current?.state === "suspended")
         await context.current.resume();
+      if (request !== playRequest.current) {
+        if (!wantsPlayback.current) elements.forEach((element) => element.pause());
+        return;
+      }
+      if (ids.some((id) => !currentIds.current.includes(id))) {
+        elements.forEach((element) => element.pause());
+        return;
+      }
       const start = duration > 0 && positionRef.current >= duration - 0.01 ? 0 : positionRef.current;
       positionRef.current = start;
       setPosition(start);
-      for (const id of ids) {
-        const element = media.current[id];
-        if (element) element.currentTime = start;
+      for (const element of elements) element.currentTime = start;
+      // Wait for every media promise. Promise.all can reject early while other
+      // stems are still pending and may start after a pause/error cleanup.
+      const results = await Promise.allSettled(elements.map((element) => element.play()));
+      if (request !== playRequest.current) {
+        if (!wantsPlayback.current) elements.forEach((element) => element.pause());
+        return;
       }
-      await Promise.all(ids.map(async (id) => media.current[id]?.play()));
+      if (ids.some((id) => !currentIds.current.includes(id))) {
+        elements.forEach((element) => element.pause());
+        return;
+      }
+      if (results.some((result) => result.status === "rejected")) {
+        throw new Error("One or more stems could not play. Check the audio files and retry.");
+      }
       liveLayers.current?.sync(ids);
       setPlaying(true);
-    } catch {
-      setError("Browser playback was blocked or one stem could not be loaded.");
+    } catch (cause) {
+      if (request !== playRequest.current) return;
+      setError(cause instanceof Error ? cause.message : "Audio playback failed. Reopen the track and retry.");
       pause();
     }
-  }, [applyMix, ensureGraph, ids, masterVolume, pause, duration]);
+  }, [applyInserts, applyMix, ensureGraph, ids, masterVolume, pause, duration]);
 
   useEffect(() => {
     if (!playing) return;
     const tick = (now: number) => {
+      if (ids.some((id) => !media.current[id] || media.current[id]?.error)) {
+        setError("A required stem became unavailable during playback. Reopen the track and retry.");
+        pause();
+        return;
+      }
       const anchor =
         ids
           .map((id) => media.current[id])
@@ -526,11 +587,16 @@ export function useStemTransport(ids: string[], duration: number) {
         pause();
         return;
       }
-      const current = anchor.currentTime;
+      let current = anchor.currentTime;
       positionRef.current = current;
       if (loop.enabled && loop.end > loop.start && current >= loop.end) {
         seek(loop.start);
-        void play();
+        current = loop.start;
+        if (ids.some((id) => media.current[id]?.paused)) void play();
+      } else if (ids.every((id) => media.current[id]?.ended)) {
+        positionRef.current = current;
+        setPosition(current);
+        pause();
         return;
       }
       for (const id of ids) {
@@ -557,6 +623,8 @@ export function useStemTransport(ids: string[], duration: number) {
     () => () => {
       // Track changes replace ids/pause callbacks, but must NOT close this
       // physical deck's AudioContext. Close only when the deck unmounts.
+      playRequest.current += 1;
+      wantsPlayback.current = false;
       for (const element of Object.values(media.current)) element?.pause();
       liveLayers.current?.dispose();
       stopClock();
