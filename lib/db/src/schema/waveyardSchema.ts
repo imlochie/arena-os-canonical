@@ -896,6 +896,8 @@ export const listenSessionTracks = pgTable("wy_listen_session_tracks", {
   position: integer("position").notNull(),
   stemMix: text("stem_mix").notNull().default("{}"),
   transition: text("transition").notNull().default("{}"),
+  /** Explicit playback choice for this session entry; null follows track availability. */
+  playbackPreference: text("playback_preference"),
   ...timestamps,
 }, (table) => [
   index("wy_listen_session_tracks_session_pos_idx").on(table.sessionId, table.position),

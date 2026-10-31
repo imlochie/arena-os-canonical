@@ -885,13 +885,36 @@ test("session: per-track stem mix and transition persist and round-trip", async 
   const updated = await sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, {
     stemMix: { vocals: 0, drums: 1.4, bass: 0.8 },
     transition: { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"], performance },
+    playbackPreference: "source",
   });
   assert.deepEqual(updated.tracks[0].stemMix, { vocals: 0, drums: 1.4, bass: 0.8 });
   assert.deepEqual(updated.tracks[0].transition, { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"], performance });
+  assert.equal(updated.tracks[0].playbackPreference, "source");
+  assert.equal(updated.tracks[0].playback?.kind, "source");
 
   const reread = await sessions.getSession(OWNER, created.id);
   assert.deepEqual(reread.tracks[0].stemMix, { vocals: 0, drums: 1.4, bass: 0.8 }, "mix survives a fresh read");
   assert.deepEqual(reread.tracks[0].transition, { mode: "bar", crossfadeSeconds: 8, keepStems: ["drums"], performance });
+  assert.equal(reread.tracks[0].playbackPreference, "source", "playback choice survives a fresh session read");
+
+  const selectedStems = await sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, {
+    playbackPreference: "stems",
+  });
+  assert.equal(selectedStems.tracks[0].playbackPreference, "stems");
+  assert.equal(selectedStems.tracks[0].playback?.kind, "stems");
+  assert.deepEqual(
+    selectedStems.tracks[0].playback?.assetIds,
+    detail.tracks[0].stems.map((stem) => stem.id),
+    "a saved stems choice resolves to the real available stem assets",
+  );
+  const reopened = await sessions.getSession(OWNER, created.id);
+  assert.equal(reopened.tracks[0].playbackPreference, "stems");
+  assert.equal(reopened.tracks[0].playback?.kind, "stems", "fresh session reads restore the selected playback mode");
+  await assert.rejects(
+    () => sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, { playbackPreference: "invalid" }),
+    /playback preference is invalid/i,
+    "invalid playback preferences are refused",
+  );
 
   await assert.rejects(
     () => sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, { transition: { mode: "warp", crossfadeSeconds: 1 } }),

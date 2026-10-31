@@ -476,6 +476,7 @@ try {
   const liveDrumsAssetId = "arena-smoke-live-drums";
   const liveBassAssetId = "arena-smoke-live-bass";
   const liveOtherAssetId = "arena-smoke-live-other";
+  const liveCurrentSourceAssetId = "arena-smoke-live-original-source";
   const liveNextVocalsAssetId = "arena-smoke-live-next-vocals";
   const liveNextDrumsAssetId = "arena-smoke-live-next-drums";
   const liveNextBassAssetId = "arena-smoke-live-next-bass";
@@ -487,15 +488,16 @@ try {
     id: liveSessionTrackId,
     position: 0,
     queueItemId: null,
-    track: { id: liveCurrentTrackId, title: "Live source track", artist: "Smoke test", durationSeconds: 8 },
-    sourceAssetId: null,
+    track: { id: liveCurrentTrackId, title: "Live source track", artist: "Smoke test", durationSeconds: 45 },
+    sourceAssetId: liveCurrentSourceAssetId,
     stems: [
-      { id: liveVocalsAssetId, stemType: "vocals", engine: "smoke-test", durationSeconds: 8 },
-      { id: liveDrumsAssetId, stemType: "drums", engine: "smoke-test", durationSeconds: 8 },
-      { id: liveBassAssetId, stemType: "bass", engine: "smoke-test", durationSeconds: 8 },
-      { id: liveOtherAssetId, stemType: "other", engine: "smoke-test", durationSeconds: 8 },
+      { id: liveVocalsAssetId, stemType: "vocals", engine: "smoke-test", durationSeconds: 45 },
+      { id: liveDrumsAssetId, stemType: "drums", engine: "smoke-test", durationSeconds: 45 },
+      { id: liveBassAssetId, stemType: "bass", engine: "smoke-test", durationSeconds: 45 },
+      { id: liveOtherAssetId, stemType: "other", engine: "smoke-test", durationSeconds: 45 },
     ],
     playback: { kind: "stems", assetIds: [liveVocalsAssetId, liveDrumsAssetId, liveBassAssetId, liveOtherAssetId] },
+    playbackPreference: null,
     stemMix: { vocals: 1, drums: 1, bass: 1, other: 1 },
     transition: { mode: "manual", crossfadeSeconds: 1, keepStems: ["drums"] },
     analysis: { bpm: 120, musicalKey: "C major", beatGridMs: [0, 500, 1000, 1500] },
@@ -556,7 +558,7 @@ try {
   });
   const liveLibraryPayload = () => ({
     tracks: [
-      { ...recoveryTrack, id: liveCurrentTrackId, title: "Live source track", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 4, stemTypes: ["vocals", "drums", "bass", "other"] } },
+      { ...recoveryTrack, id: liveCurrentTrackId, title: "Live source track", durationSeconds: 45, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 4, stemTypes: ["vocals", "drums", "bass", "other"] } },
       { ...recoveryTrack, id: liveNextTrackId, title: "Next source track", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 4, stemTypes: ["vocals", "drums", "bass", "other"] } },
       { ...recoveryTrack, id: liveDonorTrackId, title: "Donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["vocals"] } },
       { ...recoveryTrack, id: liveDrumDonorTrackId, title: "Drum donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["drums"] } },
@@ -566,6 +568,11 @@ try {
     ],
   });
   const quietStemWav = makePcmWav(440, 0.08);
+  const liveSourceWav = makePcmWav(440, 0.35, 45);
+  const liveVocalsWav = makePcmWav(440, 0.08, 45);
+  const liveDrumsWav = makePcmWav(110, 0.25, 45);
+  const liveBassWav = makePcmWav(220, 0.16, 45);
+  const liveOtherWav = makePcmWav(330, 0.12, 45);
   const drumStemWav = makePcmWav(110, 0.25);
   const bassStemWav = makePcmWav(220, 0.16);
   const otherStemWav = makePcmWav(330, 0.12);
@@ -724,6 +731,12 @@ try {
       const request = route.request().postDataJSON();
       if (request.stemMix) item.stemMix = { ...request.stemMix };
       if (request.transition) item.transition = { ...request.transition };
+      if (request.playbackPreference) {
+        item.playbackPreference = request.playbackPreference;
+        item.playback = request.playbackPreference === "source"
+          ? { kind: "source", assetIds: [item.sourceAssetId] }
+          : { kind: "stems", assetIds: item.stems.filter(stem => stem.engine !== "passthrough-unseparated").map(stem => stem.id) };
+      }
       liveTrackPatchRequestCount += 1;
       if (item.id === liveSessionTrackId && request.stemMix?.drums === 0) resolveIsolatedMixSave();
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
@@ -868,6 +881,10 @@ try {
       await route.fulfill({ status: 200, contentType: "audio/wav", body: quietStemWav });
       return;
     }
+    if (assetId === liveCurrentSourceAssetId) {
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: liveSourceWav });
+      return;
+    }
     if (assetId === liveDonorVocalsAssetId) {
       liveDonorFetchCount += 1;
       if (liveDonorFetchCount === 1) {
@@ -887,19 +904,19 @@ try {
       return;
     }
     if (assetId === liveVocalsAssetId) {
-      await route.fulfill({ status: 200, contentType: "audio/wav", body: quietStemWav });
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: liveVocalsWav });
       return;
     }
     if (assetId === liveDrumsAssetId) {
-      await route.fulfill({ status: 200, contentType: "audio/wav", body: drumStemWav });
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: liveDrumsWav });
       return;
     }
     if (assetId === liveBassAssetId) {
-      await route.fulfill({ status: 200, contentType: "audio/wav", body: bassStemWav });
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: liveBassWav });
       return;
     }
     if (assetId === liveOtherAssetId) {
-      await route.fulfill({ status: 200, contentType: "audio/wav", body: otherStemWav });
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: liveOtherWav });
       return;
     }
     if ([liveNextVocalsAssetId, liveNextDrumsAssetId, liveNextBassAssetId, liveNextOtherAssetId].includes(assetId)) {
@@ -1532,6 +1549,29 @@ try {
   await page.getByText("Live source track", { exact: true }).first().waitFor();
   const sourceVocals = page.locator(`audio[src$="/${liveVocalsAssetId}"]`);
   const sourceDrums = page.locator(`audio[src$="/${liveDrumsAssetId}"]`);
+  await page.getByTestId("session-play").click();
+  await page.waitForFunction((assetId) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
+  }, liveVocalsAssetId, { timeout: 12_000 });
+  await page.getByTestId(`button-return-full-track-${liveSessionTrackId}`).click();
+  await page.getByTestId("session-status").filter({ hasText: "Returned to the full track" }).waitFor({ timeout: 8_000 });
+  assert.equal(liveCurrentItem.playbackPreference, "source", "returning to the full track must save the per-session choice");
+  assert.equal(liveCurrentItem.playback.kind, "source");
+  await page.waitForFunction((assetId) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+  }, liveCurrentSourceAssetId, { timeout: 8_000 });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
+  await page.locator(`audio[src$="/${liveCurrentSourceAssetId}"]`).waitFor({ state: "attached", timeout: 8_000 });
+  assert.equal(liveCurrentItem.playbackPreference, "source", "reopening the session must retain full-track playback");
+  await page.getByTestId(`button-switch-stems-${liveSessionTrackId}`).waitFor({ timeout: 8_000 });
+  await page.getByTestId(`button-switch-stems-${liveSessionTrackId}`).click();
+  await page.getByTestId("session-status").filter({ hasText: "Switched" }).waitFor({ timeout: 8_000 });
+  assert.equal(liveCurrentItem.playbackPreference, "stems", "the reopened full-track session must still allow a return to stems");
+  report.push("A full-track choice survives a session reload, remains gaplessly switchable, and can be changed back to stems.");
+
   await page.getByTestId("session-play").click();
   await page.waitForFunction((assetId) => {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);

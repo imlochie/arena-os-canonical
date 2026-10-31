@@ -55,6 +55,7 @@ interface SessionTrackItem {
   sourceAssetId: string | null;
   stems: Array<{ id: string; stemType: string; engine: string; durationSeconds: number }>;
   playback: { assetIds: string[]; kind: "stems" | "source" } | null;
+  playbackPreference: "source" | "stems" | null;
   stemMix: Record<string, number>;
   transition: TransitionConfig;
   analysis: { bpm: number | null; musicalKey: string | null; beatGridMs: number[] | null } | null;
@@ -84,6 +85,16 @@ interface SessionDetail {
   }>;
   createdAt: string;
   updatedAt: string;
+}
+
+function stemsPlaybackTarget(item: SessionTrackItem): SessionTrackItem | null {
+  const stems = item.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
+  if (stems.length === 0) return null;
+  return {
+    ...item,
+    playback: { kind: "stems", assetIds: stems.map((stem) => stem.id) },
+    playbackPreference: "stems",
+  };
 }
 
 interface PendingLiveSwap {
@@ -1057,7 +1068,11 @@ export default function SessionExperience({
           currentIdRef.current = restoredCurrent;
           sessionRef.current = detail;
           setMixes(nextMixes);
-          setStemsReady({});
+          setStemsReady(Object.fromEntries(detail.tracks.flatMap((item) => {
+            if (item.playbackPreference !== "source" || item.playback?.kind !== "source") return [];
+            const target = stemsPlaybackTarget(item);
+            return target === null ? [] : [[item.id, target]];
+          })));
           setTransitions(nextTransitions);
           setCurrentId(restoredCurrent);
           setSession(detail);
@@ -2401,27 +2416,45 @@ export default function SessionExperience({
           if (deck?.transport.playing && deckItem) audible.add(deckItem.id);
         }
         const held: Record<string, SessionTrackItem> = {};
+        const readyFromSavedSource: Record<string, SessionTrackItem> = {};
         const merged = fresh.tracks.map((item) => {
+          if (item.playbackPreference === "source" && item.playback?.kind === "source") {
+            const target = stemsPlaybackTarget(item);
+            if (target !== null) readyFromSavedSource[item.id] = target;
+          }
           const old = prev.tracks.find((t) => t.id === item.id);
           const changed = old !== undefined && old.playback?.kind !== item.playback?.kind;
           if (changed && audible.has(item.id)) {
-            held[item.id] = item;
+            held[item.id] = readyFromSavedSource[item.id] ?? item;
             return old;
           }
           return item;
         });
         // Only replace state when something actually changed.
-        const before = JSON.stringify(prev.tracks.map((t) => [t.id, t.playback?.kind, t.stems.length, t.analysis?.bpm ?? null]));
-        const after = JSON.stringify(merged.map((t) => [t.id, t.playback?.kind, t.stems.length, t.analysis?.bpm ?? null]));
+        const before = JSON.stringify(prev.tracks.map((t) => [t.id, t.playback?.kind, t.playbackPreference, t.stems.length, t.analysis?.bpm ?? null]));
+        const after = JSON.stringify(merged.map((t) => [t.id, t.playback?.kind, t.playbackPreference, t.stems.length, t.analysis?.bpm ?? null]));
         if (before !== after || prev.tracks.length !== merged.length) {
           const next = { ...prev, tracks: merged, swaps: fresh.swaps };
           sessionRef.current = next;
           setSession(next);
         }
+        const switchTargets: Record<string, SessionTrackItem> = {};
+        for (const item of merged) {
+          if (item.playback?.kind !== "source") continue;
+          const target = item.playbackPreference === "source"
+            ? stemsPlaybackTarget(item)
+            : held[item.id]?.playback?.kind === "stems"
+              ? held[item.id]
+              : null;
+          if (target !== null) switchTargets[item.id] = target;
+        }
         setStemsReady((current) => {
-          const keys = Object.keys(held);
-          if (keys.length === Object.keys(current).length && keys.every((k) => k in current)) return current;
-          return { ...current, ...held };
+          const signature = (targets: Record<string, SessionTrackItem>) => JSON.stringify(
+            Object.entries(targets)
+              .map(([key, item]) => [key, item.playback?.kind, item.playback?.assetIds])
+              .sort(([left], [right]) => String(left).localeCompare(String(right))),
+          );
+          return signature(current) === signature(switchTargets) ? current : switchTargets;
         });
       } catch {
         /* polling is opportunistic; the next tick retries */
@@ -2452,7 +2485,8 @@ export default function SessionExperience({
       setStatus("The separated stems could not be prepared. The original track keeps playing.");
       return;
     }
-    const next = { ...s, tracks: s.tracks.map((t) => (t.id === itemId ? ready : t)) };
+    const selected: SessionTrackItem = { ...ready, playbackPreference: "stems" };
+    const next = { ...s, tracks: s.tracks.map((t) => (t.id === itemId ? selected : t)) };
     sessionRef.current = next;
     setSession(next);
     setStemsReady((current) => {
@@ -2460,7 +2494,17 @@ export default function SessionExperience({
       delete copy[itemId];
       return copy;
     });
-    setStatus(`Switched “${ready.track.title}” to stems at ${formatClock(prepared.position)} without interrupting playback.`);
+    try {
+      const response = await fetch(`/api/library/sessions/${s.id}/tracks/${itemId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ playbackPreference: "stems" }),
+      });
+      if (!response.ok) throw new Error("The playback choice could not be saved.");
+      setStatus(`Switched “${ready.track.title}” to stems at ${formatClock(prepared.position)} without interrupting playback.`);
+    } catch {
+      setStatus(`Switched “${ready.track.title}” to stems, but the choice could not be saved. Try switching again when the session is online.`);
+    }
   }, [stemsReady, deckItems, mixes]);
 
   const returnToFullTrack = useCallback(async (itemId: string) => {
@@ -2476,6 +2520,7 @@ export default function SessionExperience({
     const sourceItem: SessionTrackItem = {
       ...item,
       playback: { kind: "source", assetIds: [item.sourceAssetId] },
+      playbackPreference: "source",
     };
     setStatus(`Preparing the full track for “${item.track.title}”…`);
     const prepared = await api.prepareHandoff(sourceItem, {});
@@ -2487,7 +2532,17 @@ export default function SessionExperience({
     sessionRef.current = next;
     setSession(next);
     setStemsReady((current) => ({ ...current, [itemId]: item }));
-    setStatus(`Returned to the full track at ${formatClock(prepared.position)} without interrupting playback.`);
+    try {
+      const response = await fetch(`/api/library/sessions/${s.id}/tracks/${itemId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ playbackPreference: "source" }),
+      });
+      if (!response.ok) throw new Error("The playback choice could not be saved.");
+      setStatus(`Returned to the full track at ${formatClock(prepared.position)} without interrupting playback.`);
+    } catch {
+      setStatus(`Returned to the full track at ${formatClock(prepared.position)}, but the choice could not be saved. Try switching again when the session is online.`);
+    }
   }, [deckItems]);
 
   const compatibility = useMemo(() => {

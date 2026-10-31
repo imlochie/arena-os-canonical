@@ -12,6 +12,7 @@ export const runtime = "nodejs";
 
 const patchSchema = z.object({
   stemMix: z.record(z.string(), z.number()).optional(),
+  playbackPreference: z.enum(["source", "stems"]).nullable().optional(),
   transition: z
     .object({
       mode: z.enum(["manual", "beat", "bar"]),
@@ -41,7 +42,7 @@ export async function PATCH(
     const { id, itemId } = await params;
     if (!isUuid(id) || !isUuid(itemId)) return Response.json({ error: "Invalid id parameter." }, { status: 400 });
     const parsed = patchSchema.safeParse(await request.json().catch(() => null));
-    if (!parsed.success) return Response.json({ error: "Invalid stem mix or transition." }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "Invalid stem mix, playback preference, or transition." }, { status: 400 });
     const session = await updateSessionTrack(user.id, id, itemId, parsed.data);
     return Response.json({ session });
   } catch (error) {

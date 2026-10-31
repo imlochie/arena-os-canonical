@@ -93,6 +93,8 @@ export interface SessionTrackPayload {
   /** What a deck should load — stems when separated, source otherwise.
    * Null when the track was deleted (deck shows it honestly). */
   playback: { assetIds: string[]; kind: "stems" | "source" } | null;
+  /** Explicit per-session playback choice; null follows the track's default. */
+  playbackPreference: "source" | "stems" | null;
   stemMix: StemMix;
   transition: TransitionConfig;
   /** Real analysis evidence for the compatibility panel + beat alignment
@@ -138,6 +140,7 @@ interface SessionTrackRow {
   position: number;
   stemMix: string;
   transition: string;
+  playbackPreference: string | null;
 }
 
 async function loadSessionTracks(sessionId: string): Promise<SessionTrackRow[]> {
@@ -149,6 +152,7 @@ async function loadSessionTracks(sessionId: string): Promise<SessionTrackRow[]> 
       position: listenSessionTracks.position,
       stemMix: listenSessionTracks.stemMix,
       transition: listenSessionTracks.transition,
+      playbackPreference: listenSessionTracks.playbackPreference,
     })
     .from(listenSessionTracks)
     .where(eq(listenSessionTracks.sessionId, sessionId))
@@ -213,7 +217,8 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
         track: (detail as TrackSummary | null) ?? summaries.get(row.trackId) ?? failSummary(row.trackId),
         sourceAssetId: detail?.source.id ?? null,
         stems: detail?.stems ?? [],
-        playback: detail?.playback ?? null,
+        playback: detail === null ? null : sessionPlayback(detail, row.playbackPreference),
+        playbackPreference: normalizePlaybackPreference(row.playbackPreference),
         stemMix: parseStemMix(row.stemMix),
         transition: normalizeTransitionConfig(safeParse(row.transition)) ?? defaultTransitionConfig(),
         analysis: analyses.get(row.id) ?? null,
@@ -238,6 +243,26 @@ async function sessionPayload(sessionId: string): Promise<SessionDetailPayload> 
     createdAt: session.createdAt.toISOString(),
     updatedAt: session.updatedAt.toISOString(),
   };
+}
+
+function sessionPlayback(
+  detail: TrackDetail,
+  preference: string | null,
+): SessionTrackPayload["playback"] {
+  if (preference === "source" && detail.source.id) {
+    return { assetIds: [detail.source.id], kind: "source" };
+  }
+  if (preference === "stems") {
+    const realStems = detail.stems.filter((stem) => stem.engine !== "passthrough-unseparated");
+    if (realStems.length > 0) {
+      return { assetIds: realStems.map((stem) => stem.id), kind: "stems" };
+    }
+  }
+  return detail.playback;
+}
+
+function normalizePlaybackPreference(value: string | null): "source" | "stems" | null {
+  return value === "source" || value === "stems" ? value : null;
 }
 
 function safeParse(text: string): unknown {
@@ -463,7 +488,7 @@ export async function updateSessionTrack(
   ownerId: string,
   sessionId: string,
   sessionTrackId: string,
-  patch: { stemMix?: unknown; transition?: unknown },
+  patch: { stemMix?: unknown; transition?: unknown; playbackPreference?: unknown },
 ): Promise<SessionDetailPayload> {
   await ownedSession(ownerId, sessionId);
   const [row] = await db
@@ -473,7 +498,13 @@ export async function updateSessionTrack(
     .limit(1);
   if (row === undefined) throw new SessionTrackNotFoundError();
 
-  const values: Partial<{ stemMix: string; transition: string }> = {};
+  const values: Partial<{ stemMix: string; transition: string; playbackPreference: "source" | "stems" | null }> = {};
+  if (patch.playbackPreference !== undefined) {
+    if (patch.playbackPreference !== "source" && patch.playbackPreference !== "stems" && patch.playbackPreference !== null) {
+      throw new Error("The playback preference is invalid.");
+    }
+    values.playbackPreference = patch.playbackPreference;
+  }
   if (patch.stemMix !== undefined) {
     const mix = normalizeStemMix(patch.stemMix);
     if (Object.keys(mix).length === 0 && Object.keys(patch.stemMix ?? {}).length > 0) {
