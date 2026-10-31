@@ -924,27 +924,29 @@ test("session: restore state persists and round-trips; foreign session tracks ne
   await sessions.deleteSession(OWNER, created.id);
 });
 
-test("session stem swap: real swap recorded with provenance; impossible swaps refused honestly", async () => {
-  // Give track B ONE real stem (drums) so it can both donate and be swapped.
+test("session stem swaps: distinct donors round-trip into Studio; impossible swaps refused honestly", async () => {
+  // Give track B two real stem types so both can be replaced independently.
   const sourceB = sourceIdByTrackId.get(trackB.id)!;
   const [jobB] = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, sourceB)).limit(1);
-  await db.db.insert(schema.stemAssets).values({
-    projectId: trackB.studioProjectId,
-    sourceAssetId: sourceB,
-    separationJobId: jobB.id,
-    stemType: "drums",
-    engine: "demucs",
-    model: "htdemucs",
-    modelVersion: "test",
-    storageKey: "test/b-drums.wav",
-    checksumSha256: "checksum-b-drums",
-    durationSeconds: 3,
-    sampleRate: 44100,
-    channels: 1,
-    codec: "wav",
-    format: "wav",
-    fileSizeBytes: 100,
-  });
+  for (const stemType of ["drums", "vocals"]) {
+    await db.db.insert(schema.stemAssets).values({
+      projectId: trackB.studioProjectId,
+      sourceAssetId: sourceB,
+      separationJobId: jobB.id,
+      stemType,
+      engine: "demucs",
+      model: "htdemucs",
+      modelVersion: "test",
+      storageKey: `test/b-${stemType}.wav`,
+      checksumSha256: `checksum-b-${stemType}`,
+      durationSeconds: 3,
+      sampleRate: 44100,
+      channels: 1,
+      codec: "wav",
+      format: "wav",
+      fileSizeBytes: 100,
+    });
+  }
 
   const created = await sessions.createSession(OWNER, "Swap set");
   const detail = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackB.id });
@@ -984,32 +986,57 @@ test("session stem swap: real swap recorded with provenance; impossible swaps re
     swap.donorTrack?.stems.find((stem) => stem.stemType === "drums")?.id,
     "the exact donor stem asset is pinned",
   );
+  const swappedWithVocals = await sessions.recordStemSwap({
+    ownerId: OWNER,
+    sessionId: created.id,
+    sessionTrackId: sessionTrackB,
+    stemType: "vocals",
+    toTrackId: trackA.id,
+    atSeconds: 16,
+  });
+  assert.equal(swappedWithVocals.swaps.length, 2, "distinct stem swaps stay active together");
+  const drumSwap = swappedWithVocals.swaps.find((entry) => entry.stemType === "drums");
+  const vocalSwap = swappedWithVocals.swaps.find((entry) => entry.stemType === "vocals");
+  assert.ok(drumSwap && vocalSwap);
+  assert.equal(drumSwap.toTrackId, trackA.id);
+  assert.equal(vocalSwap.toTrackId, trackA.id);
+  assert.notEqual(drumSwap.toStemAssetId, vocalSwap.toStemAssetId,
+    "different stem types pin different assets even when they share a donor track");
 
   const swapHandoff = await sessions.sendSessionToStudio(OWNER, created.id, [sessionTrackB], [
-    { sessionTrackId: sessionTrackB, stemMix: { drums: 0.37 } },
+    { sessionTrackId: sessionTrackB, stemMix: { drums: 0.37, vocals: 0.72 } },
   ]);
-  assert.equal(swapHandoff.preservedSwapCount, 1, "the saved live swap is reported as carried into Studio");
+  assert.equal(swapHandoff.preservedSwapCount, 2, "both saved live swaps are reported as carried into Studio");
   const swappedStudioTracks = await db.db.select().from(schema.remixTracks)
     .where(eq(schema.remixTracks.remixSessionId, swapHandoff.remixSessionId));
-  assert.equal(swappedStudioTracks.length, 1, "the selected source has one real drum stem");
-  assert.equal(swappedStudioTracks[0].stemAssetId, swap.toStemAssetId, "Studio binds the exact donor audio asset");
-  assert.equal(swappedStudioTracks[0].volume, 0.37, "the latest unsaved session fader value is carried into Studio");
-  assert.match(swappedStudioTracks[0].name, new RegExp(trackA.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-    "the Studio lane identifies the live-swap donor");
+  assert.equal(swappedStudioTracks.length, 2, "Studio contains both real stem lanes");
+  for (const [stemType, donorSwap] of [["drums", drumSwap], ["vocals", vocalSwap]] as const) {
+    const studioTrack = swappedStudioTracks.find((entry) => entry.stemAssetId === donorSwap.toStemAssetId);
+    assert.ok(studioTrack, `Studio binds the exact ${stemType} donor audio asset`);
+    assert.equal(studioTrack.volume, stemType === "drums" ? 0.37 : 0.72,
+      `the latest ${stemType} fader value is carried into Studio`);
+    assert.match(studioTrack.name, new RegExp(trackA.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      `the ${stemType} lane identifies the live-swap donor`);
+  }
 
-  // Refusal: B has no real "vocals" layer to replace.
+  // Refusal: B has no real "other" layer to replace.
   await assert.rejects(
-    () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "vocals", toTrackId: trackA.id, atSeconds: 1 }),
+    () => sessions.recordStemSwap({ ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB, stemType: "other", toTrackId: trackA.id, atSeconds: 1 }),
     (error: Error) => error instanceof sessions.StemSwapRefusedError && /current track has no real/i.test(error.message),
   );
   const replaced = await sessions.recordStemSwap({
     ownerId: OWNER, sessionId: created.id, sessionTrackId: sessionTrackB,
     stemType: "drums", toTrackId: trackA.id, atSeconds: 18,
   });
-  assert.equal(replaced.swaps.length, 1, "one active donor per stem after repeated live selections");
-  assert.equal(replaced.swaps[0].atSeconds, 18);
-  const restored = await sessions.removeStemSwap(OWNER, created.id, replaced.swaps[0].id);
-  assert.equal(restored.swaps.length, 0, "Original must not reveal an older shadow swap");
+  assert.equal(replaced.swaps.length, 2, "one active donor per stem after repeated live selections");
+  assert.equal(replaced.swaps.find((entry) => entry.stemType === "drums")?.atSeconds, 18);
+  const restored = await sessions.removeStemSwap(
+    OWNER,
+    created.id,
+    replaced.swaps.find((entry) => entry.stemType === "drums")!.id,
+  );
+  assert.deepEqual(restored.swaps.map((entry) => entry.stemType), ["vocals"],
+    "removing one swap leaves the other stem's donor choice intact");
   await db.db.insert(schema.listenSessionSwaps).values({
     sessionId: created.id,
     sessionTrackId: sessionTrackB,

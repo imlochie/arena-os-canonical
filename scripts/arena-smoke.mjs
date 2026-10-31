@@ -366,6 +366,7 @@ try {
   const liveCurrentTrackId = "arena-smoke-live-current-track";
   const liveNextTrackId = "arena-smoke-live-next-track";
   const liveDonorTrackId = "arena-smoke-live-donor-track";
+  const liveDrumDonorTrackId = "arena-smoke-live-drum-donor-track";
   const liveDrumsOnlyTrackId = "arena-smoke-live-drums-only-track";
   const liveCamelotTrackId = "arena-smoke-live-camelot-track";
   const liveProcessingTrackId = "arena-smoke-live-processing-track";
@@ -378,6 +379,7 @@ try {
   const liveNextBassAssetId = "arena-smoke-live-next-bass";
   const liveNextOtherAssetId = "arena-smoke-live-next-other";
   const liveDonorVocalsAssetId = "arena-smoke-live-donor-vocals";
+  const liveDrumDonorDrumsAssetId = "arena-smoke-live-drum-donor-drums";
   const liveCamelotSourceAssetId = "arena-smoke-live-camelot-source";
   const liveCurrentItem = {
     id: liveSessionTrackId,
@@ -414,7 +416,7 @@ try {
     analysis: { bpm: 120, musicalKey: "C major", beatGridMs: [0, 500, 1000, 1500] },
   };
   const liveSessionTracks = [liveCurrentItem];
-  let liveSwap = null;
+  let liveSwaps = [];
   let liveSwapRequestCount = 0;
   let liveSwapDeleteRequestCount = 0;
   let liveTrackAddRequestCount = 0;
@@ -422,6 +424,7 @@ try {
   let studioHandoffPayload = null;
   let liveTrackPatchRequestCount = 0;
   let liveDonorFetchCount = 0;
+  let liveDrumDonorFetchCount = 0;
   let signalFirstDonorFetchStarted;
   const firstDonorFetchStarted = new Promise(resolve => { signalFirstDonorFetchStarted = resolve; });
   let releaseFirstDonorFetch;
@@ -435,7 +438,7 @@ try {
     currentSessionTrackId: liveSessionTrackId,
     positionSeconds: 0,
     tracks: liveSessionTracks,
-    swaps: liveSwap === null ? [] : [liveSwap],
+    swaps: liveSwaps,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -454,6 +457,7 @@ try {
       { ...recoveryTrack, id: liveCurrentTrackId, title: "Live source track", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 4, stemTypes: ["vocals", "drums", "bass", "other"] } },
       { ...recoveryTrack, id: liveNextTrackId, title: "Next source track", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "C major" }, stemAvailability: { status: "separated", stemCount: 4, stemTypes: ["vocals", "drums", "bass", "other"] } },
       { ...recoveryTrack, id: liveDonorTrackId, title: "Donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["vocals"] } },
+      { ...recoveryTrack, id: liveDrumDonorTrackId, title: "Drum donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["drums"] } },
       { ...recoveryTrack, id: liveDrumsOnlyTrackId, title: "Drums-only separated track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["drums"] } },
       { ...recoveryTrack, id: liveCamelotTrackId, title: "Camelot library match", artist: "Smoke test", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "A minor" }, stemAvailability: { status: "source-only", reason: "Separation has not started." } },
       { ...recoveryTrack, id: liveProcessingTrackId, title: "Processing donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "processing", reason: "Stem separation is running.", stage: "separating", progress: { percent: 36, phase: "pass 2/4 · Drums · chunk 2 of 3" } } },
@@ -464,6 +468,7 @@ try {
   const bassStemWav = makePcmWav(220, 0.16);
   const otherStemWav = makePcmWav(330, 0.12);
   const donorStemWav = makePcmWav(880, 0.8);
+  const drumDonorStemWav = makePcmWav(165, 0.65);
   await context.route("**/api/streaming/**", async route => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/streaming/accounts" && route.request().method() === "GET") {
@@ -605,7 +610,7 @@ try {
           handoff: {
             projectId: studioProjectId,
             remixTrackCount: 8,
-            preservedSwapCount: 1,
+            preservedSwapCount: 2,
             preservedTransitionCount: 1,
           },
         }),
@@ -644,28 +649,35 @@ try {
     } else if (url.pathname === `/api/library/sessions/${liveSessionId}/swaps` && route.request().method() === "POST") {
       const request = route.request().postDataJSON();
       assert.equal(request.sessionTrackId, liveSessionTrackId);
-      assert.equal(request.stemType, "vocals");
-      assert.equal(request.toTrackId, liveDonorTrackId);
+      const donor = request.stemType === "vocals"
+        ? { id: liveDonorTrackId, title: "Donor track", stemId: liveDonorVocalsAssetId }
+        : request.stemType === "drums"
+          ? { id: liveDrumDonorTrackId, title: "Drum donor track", stemId: liveDrumDonorDrumsAssetId }
+          : null;
+      assert(donor, `Unexpected live stem swap type: ${request.stemType}`);
+      assert.equal(request.toTrackId, donor.id, `${request.stemType} must select its matching donor track`);
       liveSwapRequestCount += 1;
-      liveSwap = {
-        id: "arena-smoke-live-swap-record",
+      const swap = {
+        id: `arena-smoke-live-swap-${request.stemType}`,
         sessionTrackId: liveSessionTrackId,
-        stemType: "vocals",
+        stemType: request.stemType,
         fromTrackId: liveCurrentTrackId,
-        toTrackId: liveDonorTrackId,
+        toTrackId: donor.id,
         atSeconds: request.atSeconds,
         createdAt: new Date().toISOString(),
         donorTrack: {
-          id: liveDonorTrackId,
-          title: "Donor track",
-          stems: [{ id: liveDonorVocalsAssetId, stemType: "vocals", durationSeconds: 8 }],
+          id: donor.id,
+          title: donor.title,
+          stems: [{ id: donor.stemId, stemType: request.stemType, durationSeconds: 8 }],
         },
       };
+      liveSwaps = [...liveSwaps.filter((entry) => entry.stemType !== request.stemType), swap];
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname === `/api/library/sessions/${liveSessionId}/swaps` && route.request().method() === "DELETE") {
-      assert.equal(url.searchParams.get("swapId"), liveSwap?.id, "cancelling removes the exact pending live swap");
+      const swapId = url.searchParams.get("swapId");
+      assert(liveSwaps.some((swap) => swap.id === swapId), "cancelling removes the exact pending live swap");
       liveSwapDeleteRequestCount += 1;
-      liveSwap = null;
+      liveSwaps = liveSwaps.filter((swap) => swap.id !== swapId);
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname.endsWith("/separation") && route.request().method() === "POST") {
       mockStartCount += 1;
@@ -765,6 +777,11 @@ try {
       } catch (error) {
         if (liveDonorFetchCount !== 1) throw error;
       }
+      return;
+    }
+    if (assetId === liveDrumDonorDrumsAssetId) {
+      liveDrumDonorFetchCount += 1;
+      await route.fulfill({ status: 200, contentType: "audio/wav", body: drumDonorStemWav });
       return;
     }
     if (assetId === liveVocalsAssetId) {
@@ -1412,6 +1429,7 @@ try {
   await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
   await page.getByText("Live source track", { exact: true }).first().waitFor();
   const sourceVocals = page.locator(`audio[src$="/${liveVocalsAssetId}"]`);
+  const sourceDrums = page.locator(`audio[src$="/${liveDrumsAssetId}"]`);
   await page.getByTestId("session-play").click();
   await page.waitForFunction((assetId) => {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);
@@ -1425,6 +1443,15 @@ try {
     return peak > 0.02;
   }, null, { timeout: 8_000 });
   const originalVocalPeak = await vocalsMeter.evaluate((bar) => Number(
+    bar.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0,
+  ));
+  const drumsMeter = page.locator(".wy-stem-drums .wy-stem-meter i");
+  await page.waitForFunction(() => {
+    const bar = document.querySelector(".wy-stem-drums .wy-stem-meter i");
+    const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
+    return peak > 0.02;
+  }, null, { timeout: 8_000 });
+  const originalDrumPeak = await drumsMeter.evaluate((bar) => Number(
     bar.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0,
   ));
   await page.getByTestId("open-live-swap-vocals").click();
@@ -1451,7 +1478,7 @@ try {
   const cancelSlowSwap = page.getByRole("button", { name: "Cancel vocals switch to Donor track" });
   await cancelSlowSwap.click();
   await page.getByTestId("session-status").filter({ hasText: "vocals switch cancelled" }).waitFor({ timeout: 8_000 });
-  assert.equal(liveSwap, null, "cancelling removes the pending donor from the session");
+  assert.equal(liveSwaps.length, 0, "cancelling removes the pending donor from the session");
   assert.equal(liveSwapDeleteRequestCount, 1, "cancelling sends one removal request for the pending donor");
   releaseFirstDonorFetch();
   await page.waitForTimeout(250);
@@ -1491,6 +1518,37 @@ try {
   }, { assetId: liveVocalsAssetId, after: clockBeforeSwap }, { timeout: 5_000 });
   const clockAfterSwap = await sourceVocals.evaluate((audio) => audio.currentTime);
   assert(clockAfterSwap > clockBeforeSwap + 0.2, `the recipient song clock must continue through a live stem swap (${clockBeforeSwap.toFixed(2)} → ${clockAfterSwap.toFixed(2)})`);
+  await page.getByTestId("open-live-swap-drums").click();
+  await page.getByTestId(`live-swap-candidate-drums-${liveDrumDonorTrackId}`).click();
+  await page.getByTestId("session-status").filter({ hasText: "drums source saved" }).waitFor({ timeout: 8_000 });
+  const swappedDrumsAudio = page.locator('audio[aria-label="drums audio (swapped layer)"]');
+  await page.waitForFunction((originalAssetId) => {
+    const audio = [...document.querySelectorAll('audio[aria-label="drums audio (swapped layer)"]')]
+      .find((element) => element.getAttribute("src")?.endsWith(`/api/assets/${originalAssetId}`));
+    const bar = document.querySelector(".wy-stem-drums .wy-stem-meter i");
+    const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
+    return audio instanceof HTMLAudioElement && peak > 0;
+  }, liveDrumsAssetId, { timeout: 8_000 });
+  assert.equal(await swappedDrumsAudio.getAttribute("src"), `/api/assets/${liveDrumsAssetId}`,
+    "the session keeps the recipient element while replacing its active drum audio buffer");
+  assert.equal(await sourceDrums.count(), 1, "the recipient drum element remains associated with the current session track");
+  assert(liveDrumDonorFetchCount >= 1,
+    "the matching drum donor asset must be requested as the replacement audio buffer");
+  await page.waitForFunction((after) => {
+    const bar = document.querySelector(".wy-stem-drums .wy-stem-meter i");
+    const peak = Number(bar?.getAttribute("style")?.match(/scaleX\(([^)]+)\)/)?.[1] ?? 0);
+    return peak > after * 1.5;
+  }, originalDrumPeak, { timeout: 8_000 });
+  assert.equal(liveSwaps.length, 2, "two live swaps on distinct stems must remain in the session");
+  assert.deepEqual(
+    liveSwaps.map(({ stemType, toTrackId }) => ({ stemType, toTrackId })).sort((a, b) => a.stemType.localeCompare(b.stemType)),
+    [
+      { stemType: "drums", toTrackId: liveDrumDonorTrackId },
+      { stemType: "vocals", toTrackId: liveDonorTrackId },
+    ],
+    "each saved stem swap must retain its own donor track",
+  );
+  assert.equal(liveSwapRequestCount, 3, "the canceled attempt and both successful stem swaps each persist once");
   const isolateVocals = page.getByRole("button", { name: "Isolate vocals", exact: true });
   await isolateVocals.click();
   assert.equal(await isolateVocals.getAttribute("aria-pressed"), "true");
@@ -1549,9 +1607,9 @@ try {
   await page.getByTestId("session-handoff").click();
   await page.getByRole("status").filter({ hasText: "Studio arrangement created with 8 remix tracks" }).waitFor({ timeout: 8_000 });
   assert(
-    (await page.locator(".sess-handoff").innerText()).includes("1 live stem swap carried over")
+    (await page.locator(".sess-handoff").innerText()).includes("2 live stem swaps carried over")
       && (await page.locator(".sess-handoff").innerText()).includes("1 session crossfade carried over"),
-    "the session result must report the carried live swap and supported crossfade",
+    "the session result must report both carried live swaps and the supported crossfade",
   );
   const openStudioAfterHandoff = page.getByRole("link", { name: "Open in Studio" });
   assert.equal(
@@ -1563,10 +1621,11 @@ try {
   assert.equal(errors.length, errorsBeforeLiveSwap, "live swapping and isolation must not throw browser errors");
   const studioCurrentSourceId = "arena-smoke-session-current-source";
   const studioDonorSourceId = "arena-smoke-session-donor-source";
+  const studioDrumDonorSourceId = "arena-smoke-session-drum-donor-source";
   const studioNextSourceId = "arena-smoke-session-next-source";
   const studioStemRows = [
     { id: liveDonorVocalsAssetId, sourceAssetId: studioDonorSourceId, stemType: "vocals" },
-    { id: liveDrumsAssetId, sourceAssetId: studioCurrentSourceId, stemType: "drums" },
+    { id: liveDrumDonorDrumsAssetId, sourceAssetId: studioDrumDonorSourceId, stemType: "drums" },
     { id: liveBassAssetId, sourceAssetId: studioCurrentSourceId, stemType: "bass" },
     { id: liveOtherAssetId, sourceAssetId: studioCurrentSourceId, stemType: "other" },
     { id: liveNextVocalsAssetId, sourceAssetId: studioNextSourceId, stemType: "vocals" },
@@ -1588,6 +1647,7 @@ try {
   const studioSourceRows = [
     { id: studioCurrentSourceId, originalFilename: "Live source track.wav", durationSeconds: 8, linkedFromLibrary: true },
     { id: studioDonorSourceId, originalFilename: "Donor track.wav", durationSeconds: 8, linkedFromLibrary: true },
+    { id: studioDrumDonorSourceId, originalFilename: "Drum donor track.wav", durationSeconds: 8, linkedFromLibrary: true },
     { id: studioNextSourceId, originalFilename: "Next source track.wav", durationSeconds: 8, linkedFromLibrary: true },
   ];
   assert(
@@ -1730,13 +1790,13 @@ try {
   await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
   await page.locator(".timeline-track").nth(7).waitFor({ state: "visible", timeout: 15_000 });
   assert(studioProjectRequestCount >= 1, "Open in Studio must load the linked project through its project API");
-  assert.equal(await page.locator('[data-testid^="source-stems-"]').count(), 3,
-    "the project API result must expose current, donor, and following linked audio sources");
+  assert.equal(await page.locator('[data-testid^="source-stems-"]').count(), 4,
+    "the project API result must expose current, both donor, and following linked audio sources");
   assert.equal(await page.locator(".timeline-track").count(), 8,
     "the linked remix must load all eight stem tracks into the timeline");
   assert.equal(await page.locator(".clip").count(), 8,
     "the linked remix must load its saved audio clips, not an empty arrangement");
-  assert.equal(await page.getByLabel("Live source track.wav — Drums arrangement volume").inputValue(), "0",
+  assert.equal(await page.getByLabel("Drum donor track.wav — Drums arrangement volume").inputValue(), "0",
     "the isolated stem level must be present in the Studio mix");
   const donorStudioAudio = page.locator(`audio[src$="/${liveDonorVocalsAssetId}"]`);
   await donorStudioAudio.waitFor({ state: "attached" });
@@ -1748,15 +1808,38 @@ try {
     (await donorStudioAudio.getAttribute("src"))?.endsWith(`/api/assets/${liveDonorVocalsAssetId}`),
     "the Studio vocals layer must use the donor audio selected by the live swap",
   );
-  const outgoingVocalsTrack = page.locator(".timeline-track").filter({ hasText: "Donor track.wav — Vocals" });
+  assert.equal(
+    await page.locator(`[data-testid="source-stems-${studioDonorSourceId}"] audio`).getAttribute("src"),
+    `/api/assets/${liveDonorVocalsAssetId}`,
+    "the vocal donor source group must contain the matching vocals asset",
+  );
+  const donorDrumStudioAudio = page.locator(`audio[src$="/${liveDrumDonorDrumsAssetId}"]`);
+  await donorDrumStudioAudio.waitFor({ state: "attached" });
+  await page.waitForFunction((assetId) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && audio.readyState >= HTMLMediaElement.HAVE_METADATA;
+  }, liveDrumDonorDrumsAssetId, { timeout: 8_000 });
+  assert(
+    (await donorDrumStudioAudio.getAttribute("src"))?.endsWith(`/api/assets/${liveDrumDonorDrumsAssetId}`),
+    "the Studio drums layer must use the different donor audio selected for drums",
+  );
+  assert.equal(
+    await page.locator(`[data-testid="source-stems-${studioDrumDonorSourceId}"] audio`).getAttribute("src"),
+    `/api/assets/${liveDrumDonorDrumsAssetId}`,
+    "the drum donor source group must contain its own matching drums asset",
+  );
+  const donorVocalsTrack = page.locator(".timeline-track").filter({ hasText: "Donor track.wav — Vocals" });
+  const donorDrumsTrack = page.locator(".timeline-track").filter({ hasText: "Drum donor track.wav — Drums" });
+  assert.equal(await donorVocalsTrack.count(), 1, "the vocal lane must identify the vocal donor");
+  assert.equal(await donorDrumsTrack.count(), 1, "the drum lane must identify the drum donor");
+  const outgoingVocalsTrack = donorVocalsTrack;
   await outgoingVocalsTrack.locator(".clip").click();
   await page.getByLabel("Fade out (ms)").waitFor();
   assert.equal(await page.getByLabel("Fade out (ms)").inputValue(), "1000",
     "the outgoing clip must restore its supported crossfade fade-out");
-  const retainedDrumsTrack = page.locator(".timeline-track").filter({ hasText: "Live source track.wav — Drums" });
-  await retainedDrumsTrack.locator(".clip").click();
+  await donorDrumsTrack.locator(".clip").click();
   assert.equal(await page.getByLabel("Fade out (ms)").inputValue(), "0",
-    "the session's keep-drums transition setting must remain intact");
+    "the swapped drum lane must retain the session's keep-drums transition setting");
   const incomingVocalsTrack = page.locator(".timeline-track").filter({ hasText: "Next source track.wav — Vocals" });
   await incomingVocalsTrack.locator(".clip").click();
   assert.equal(await page.getByLabel("Fade in (ms)").inputValue(), "1000",
@@ -1769,10 +1852,32 @@ try {
   assert(studioRemixRequestCount >= 2, "reloading Studio must refetch the saved remix arrangement");
   assert.equal(await page.locator(".timeline-track").count(), 8, "all linked remix tracks must return after reload");
   assert.equal(await page.locator(".clip").count(), 8, "all saved clips must return after reload");
-  assert.equal(await page.getByLabel("Live source track.wav — Drums arrangement volume").inputValue(), "0",
+  await page.waitForFunction(({ vocalAssetId, drumAssetId }) => {
+    return [vocalAssetId, drumAssetId].every((assetId) => {
+      const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+      return audio instanceof HTMLAudioElement && audio.readyState >= HTMLMediaElement.HAVE_METADATA;
+    });
+  }, { vocalAssetId: liveDonorVocalsAssetId, drumAssetId: liveDrumDonorDrumsAssetId }, { timeout: 8_000 });
+  assert.equal(await page.getByLabel("Drum donor track.wav — Drums arrangement volume").inputValue(), "0",
     "the isolated stem mix value must survive reload");
   assert.equal(await page.locator(`audio[src$="/${liveDonorVocalsAssetId}"]`).count(), 1,
-    "the live-swapped donor stem must remain the source audio after reload");
+    "the live-swapped vocal donor stem must remain the source audio after reload");
+  assert.equal(await page.locator(`audio[src$="/${liveDrumDonorDrumsAssetId}"]`).count(), 1,
+    "the different live-swapped drum donor must remain the source audio after reload");
+  assert.equal(
+    await page.locator(`[data-testid="source-stems-${studioDonorSourceId}"] audio`).getAttribute("src"),
+    `/api/assets/${liveDonorVocalsAssetId}`,
+    "the vocal donor source group must still contain the matching vocals asset after reload",
+  );
+  assert.equal(
+    await page.locator(`[data-testid="source-stems-${studioDrumDonorSourceId}"] audio`).getAttribute("src"),
+    `/api/assets/${liveDrumDonorDrumsAssetId}`,
+    "the drum donor source group must still contain the matching drums asset after reload",
+  );
+  assert.equal(await page.locator(".timeline-track").filter({ hasText: "Donor track.wav — Vocals" }).count(), 1,
+    "the reloaded vocal lane must still identify its matching donor");
+  assert.equal(await page.locator(".timeline-track").filter({ hasText: "Drum donor track.wav — Drums" }).count(), 1,
+    "the reloaded drum lane must still identify its matching donor");
   await page.locator(".timeline-track").filter({ hasText: "Donor track.wav — Vocals" }).locator(".clip").click();
   assert.equal(await page.getByLabel("Fade out (ms)").inputValue(), "1000",
     "the outgoing supported transition must survive reload");
@@ -1843,7 +1948,7 @@ try {
   }
   await page.setViewportSize(desktopViewport);
   report.push("At 320px and 402px, the arrangement scrolls internally with no page overflow; touch-sized play, seek, and arrangement preview controls respond to taps.");
-  report.push("A session handoff opens a linked, audio-backed Studio arrangement; clips, isolated mix, donor swap, and supported crossfades survive reload.");
+  report.push("A session handoff opens a linked, audio-backed Studio arrangement; clips, isolated mix, two distinct donor swaps, and supported crossfades survive reload.");
   report.push("A slow live stem switch can be cancelled without rewinding playback; later swaps, isolation, Camelot cueing, and mobile stem controls pass.");
 
   mockLiveSessionActive = false;
