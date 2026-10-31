@@ -6,6 +6,8 @@ import {
   sessionInfer,
   SeparationUnavailableError,
   executionProviderAttempts,
+  WAVEYARD_ORT_EXECUTION_MODE,
+  WAVEYARD_ORT_INTER_OP_THREADS,
   WAVEYARD_ORT_INTRA_OP_THREADS,
   verifyModelFile,
   type MdxSessionLike,
@@ -44,7 +46,8 @@ async function run() {
         // Keep inference bounded so it can share a machine with playback and
         // ordinary API work. The full JS demix pipeline also stays off-thread.
         intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
-        interOpNumThreads: 1,
+        interOpNumThreads: WAVEYARD_ORT_INTER_OP_THREADS,
+        executionMode: WAVEYARD_ORT_EXECUTION_MODE,
         // All model calls use fixed tensor dimensions. ONNX Runtime's arena
         // and memory pattern reuse buffers across chunks instead of allocating
         // them repeatedly.

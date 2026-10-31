@@ -30,14 +30,30 @@ export class SeparationUnavailableError extends Error {
   }
 }
 
+export type SeparationExecutionMode = "sequential" | "parallel";
+
+export function separationExecutionMode(
+  configuredMode = process.env.WAVEYARD_ORT_EXECUTION_MODE,
+  platform: NodeJS.Platform = process.platform,
+): SeparationExecutionMode {
+  // Keep Windows sequential so the packaged DirectML path is never forced
+  // into an unverified graph mode. Linux CPU was measured faster in parallel.
+  if (platform === "win32") return "sequential";
+  if (configuredMode === undefined || configuredMode === null) {
+    return platform === "linux" ? "parallel" : "sequential";
+  }
+  return configuredMode.trim().toLowerCase() === "parallel" ? "parallel" : "sequential";
+}
+
 /** Scale inference without taking every CPU from playback and ordinary app work. */
 export function separationInferenceThreads(
   availableCpus = availableParallelism(),
   configuredThreads?: string | null,
+  executionMode: SeparationExecutionMode = "sequential",
 ): number {
   const cores = Number.isFinite(availableCpus) ? Math.max(1, Math.floor(availableCpus)) : 1;
   // Leave one CPU for playback/API work and one for the worker's JS transforms.
-  const recommended = cores <= 2 ? 1 : Math.min(4, cores - 2);
+  const recommended = executionMode === "parallel" || cores <= 2 ? 1 : Math.min(4, cores - 2);
   const configured = configuredThreads === undefined
     ? process.env.WAVEYARD_ORT_INTRA_OP_THREADS
     : configuredThreads;
@@ -46,7 +62,31 @@ export function separationInferenceThreads(
   return Math.min(parsed, recommended);
 }
 
-export const WAVEYARD_ORT_INTRA_OP_THREADS = separationInferenceThreads();
+/** Parallel graph mode uses a second, separately bounded ONNX thread pool. */
+export function separationInterOpThreads(
+  availableCpus = availableParallelism(),
+  executionMode: SeparationExecutionMode = separationExecutionMode(),
+  configuredThreads?: string | null,
+): number {
+  const cores = Number.isFinite(availableCpus) ? Math.max(1, Math.floor(availableCpus)) : 1;
+  const recommended = executionMode === "parallel"
+    ? Math.min(2, Math.max(1, Math.floor(cores / 2)))
+    : 1;
+  const configured = configuredThreads === undefined
+    ? process.env.WAVEYARD_ORT_INTER_OP_THREADS
+    : configuredThreads;
+  const parsed = configured === undefined || configured === null ? Number.NaN : Number(configured);
+  if (!Number.isInteger(parsed) || parsed < 1) return recommended;
+  return Math.min(parsed, recommended);
+}
+
+export const WAVEYARD_ORT_EXECUTION_MODE = separationExecutionMode();
+export const WAVEYARD_ORT_INTRA_OP_THREADS = separationInferenceThreads(
+  availableParallelism(),
+  undefined,
+  WAVEYARD_ORT_EXECUTION_MODE,
+);
+export const WAVEYARD_ORT_INTER_OP_THREADS = separationInterOpThreads();
 
 /** Auto prefers the platform's packaged GPU provider; CPU is the fallback. */
 export function executionProviderAttempts(
@@ -117,6 +157,7 @@ export interface OrtModuleLike {
       executionProviders?: string[];
       intraOpNumThreads?: number;
       interOpNumThreads?: number;
+      executionMode?: SeparationExecutionMode;
       enableCpuMemArena?: boolean;
       enableMemPattern?: boolean;
     }): Promise<MdxSessionLike>;
@@ -182,6 +223,11 @@ export async function createMdxSession(
   try {
     return await ort.InferenceSession.create(path, {
       executionProviders: opts.executionProviders ?? ["cpu"],
+      intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
+      interOpNumThreads: WAVEYARD_ORT_INTER_OP_THREADS,
+      executionMode: WAVEYARD_ORT_EXECUTION_MODE,
+      enableCpuMemArena: true,
+      enableMemPattern: true,
     });
   } catch (err) {
     throw new SeparationUnavailableError(

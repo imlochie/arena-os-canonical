@@ -54,7 +54,11 @@ import { demixMdxInWorker, handleSeparationJob } from "./separation";
 import { getLocalJobBroker, resetLocalJobBrokerForTests } from "./broker";
 import {
   executionProviderAttempts,
+  separationExecutionMode,
+  separationInterOpThreads,
   separationInferenceThreads,
+  WAVEYARD_ORT_EXECUTION_MODE,
+  WAVEYARD_ORT_INTER_OP_THREADS,
   WAVEYARD_ORT_INTRA_OP_THREADS,
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { fixture, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
@@ -130,7 +134,18 @@ test("automatic separation prefers the platform GPU provider and falls back to C
   assert.equal(separationInferenceThreads(4, "2"), 2, "allow a smaller inference budget on shared CPUs");
   assert.equal(separationInferenceThreads(4, "999"), 2, "never let configuration exceed the safe recommendation");
   assert.equal(separationInferenceThreads(4, "invalid"), 2, "ignore invalid thread counts");
+  assert.equal(separationExecutionMode("parallel", "linux"), "parallel");
+  assert.equal(separationExecutionMode("parallel", "win32"), "sequential");
+  assert.equal(separationExecutionMode(undefined, "linux"), "parallel");
+  assert.equal(separationExecutionMode(undefined, "win32"), "sequential");
+  assert.equal(separationExecutionMode("invalid", "linux"), "sequential");
+  assert.equal(separationInferenceThreads(4, null, "parallel"), 1, "reserve one thread for parallel graph scheduling");
+  assert.equal(separationInterOpThreads(4, "sequential", null), 1);
+  assert.equal(separationInterOpThreads(4, "parallel", null), 2, "bound the parallel graph pool");
+  assert.equal(separationInterOpThreads(4, "parallel", "999"), 2, "do not exceed the parallel pool budget");
   assert.ok(WAVEYARD_ORT_INTRA_OP_THREADS >= 1 && WAVEYARD_ORT_INTRA_OP_THREADS <= 4);
+  assert.ok(WAVEYARD_ORT_INTER_OP_THREADS >= 1 && WAVEYARD_ORT_INTER_OP_THREADS <= 2);
+  assert.ok(["sequential", "parallel"].includes(WAVEYARD_ORT_EXECUTION_MODE));
 });
 
 // ------------------------------------------------------ hand-crafted ONNX
@@ -457,7 +472,7 @@ test("the pinned four-model recipe completes through the production worker on re
       assert.equal(decoded.frames, SAMPLES);
     }
     t.diagnostic(
-      `Pinned four-model retry completed on ${job.resolvedDevice} with ${WAVEYARD_ORT_INTRA_OP_THREADS} ORT threads in ${elapsedMs} ms; library read ${requestLatencyMs} ms; max playback timer gap ${maxPlaybackGapMs} ms. Synthetic fixture proves execution, not separation quality.`,
+      `Pinned four-model retry completed on ${job.resolvedDevice} with ${WAVEYARD_ORT_EXECUTION_MODE} mode (intra=${WAVEYARD_ORT_INTRA_OP_THREADS}, inter=${WAVEYARD_ORT_INTER_OP_THREADS}) in ${elapsedMs} ms; library read ${requestLatencyMs} ms; max playback timer gap ${maxPlaybackGapMs} ms. Synthetic fixture proves execution, not separation quality.`,
     );
   } finally {
     await harness?.restore();
@@ -669,7 +684,7 @@ if (realAudioInputPath) {
         },
       );
       const report = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         platform: process.platform,
         osRelease: release(),
         architecture: process.arch,
@@ -677,7 +692,9 @@ if (realAudioInputPath) {
         cpuModel: cpus()[0]?.model ?? null,
         logicalCpuCount: cpus().length,
         executor: "production retry -> local worker broker",
-        ortThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
+        ortExecutionMode: WAVEYARD_ORT_EXECUTION_MODE,
+        ortIntraOpThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
+        ortInterOpThreads: WAVEYARD_ORT_INTER_OP_THREADS,
         ortMemoryArenaEnabled: true,
         ortMemoryPatternEnabled: true,
         models: FOUR_STEM_MODELS.map(({ id, sha256 }) => ({ id, sha256 })),

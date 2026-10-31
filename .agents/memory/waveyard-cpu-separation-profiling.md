@@ -3,8 +3,8 @@ name: Waveyard CPU separation profiling
 description: Performance findings and profiling priorities for local four-stem CPU separation.
 ---
 
-On the measured Linux CPU path, TypeScript STFT/ISTFT work dominated the four-model separation runtime; ONNX inference was a minority of measured transform time. Repeated FFT twiddle-factor calculation was a meaningful avoidable cost.
+On 2026-10-31, an 8-second real-audio excerpt on a four-CPU Linux runtime took 95 seconds with three ONNX threads. Two intra-op threads plus reusable FFT scratch took 65 seconds; one thread took 71 seconds. Parallel graph mode with one intra-op and two inter-op threads took 56–58 seconds, with a 84–91 ms playback-timer gap. After scratch reuse, model inference remained the largest stage. Windows stays sequential because its DirectML path has not been tested with parallel graph mode.
 
-**Why:** Stage-level timings on the production local-worker path showed that optimizing ONNX options alone would miss the largest CPU cost. The cached-twiddle optimization retained the existing transform test guarantees and improved the same 20-second benchmark.
+**Why:** Production-worker measurements showed both CPU oversubscription and per-frame FFT scratch allocation were affecting the experience. Bounded parallel graph execution further improved this Linux CPU run, but should not be applied to the unverified Windows DirectML path.
 
-**How to apply:** When local separation is slow, use the opt-in real-audio report’s stage timings first. Treat Linux results as Linux-only evidence, and do not infer separation quality from RMS or peak measurements.
+**How to apply:** Use parallel graph mode on the measured Linux CPU path, with bounded intra/inter-op threads; keep Windows sequential until tested with DirectML and CPU fallback. Inspect stage reports before tuning further. These measurements prove output integrity, not subjective separation quality or Windows performance.

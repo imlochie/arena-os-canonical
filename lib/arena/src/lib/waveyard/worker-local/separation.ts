@@ -58,6 +58,8 @@ import {
   loadOrtModule,
   sessionInfer,
   SeparationUnavailableError,
+  WAVEYARD_ORT_EXECUTION_MODE,
+  WAVEYARD_ORT_INTER_OP_THREADS,
   WAVEYARD_ORT_INTRA_OP_THREADS,
   verifyModelFile,
 } from "@workspace/arena/lib/waveyard/separation/session";
@@ -104,7 +106,8 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
         executionProviders,
         // Leave one CPU available on larger machines for playback and app work.
         intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
-        interOpNumThreads: 1,
+        interOpNumThreads: WAVEYARD_ORT_INTER_OP_THREADS,
+        executionMode: WAVEYARD_ORT_EXECUTION_MODE,
         enableCpuMemArena: true,
         enableMemPattern: true,
       }),
