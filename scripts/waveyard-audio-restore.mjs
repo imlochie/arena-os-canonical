@@ -24,21 +24,26 @@ try {
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  let uploadedType = null;
-  let uploadedBytes = null;
+  const uploads = [];
 
   await context.route("**/api/library/audio-backup/restore", async (route) => {
     const request = route.request();
-    uploadedType = await request.headerValue("content-type");
-    uploadedBytes = request.postDataBuffer();
+    uploads.push({
+      contentType: await request.headerValue("content-type"),
+      bytes: request.postDataBuffer(),
+    });
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ totalTracks: 1, restored: 1, duplicates: 0, failed: 0, results: [{ status: "restored", title: "Acceptance fixture" }] }),
+      body: JSON.stringify(uploads.length === 1
+        ? { totalTracks: 2, restored: 1, duplicates: 0, failed: 1, results: [{ status: "restored", title: "Acceptance fixture" }, { status: "failed", title: "Unreadable fixture" }] }
+        : { totalTracks: 2, restored: 0, duplicates: 1, failed: 0, results: [{ status: "duplicate", title: "Acceptance fixture" }, { status: "restored", title: "Unreadable fixture" }] }),
     });
   });
 
   await page.goto(`${base}/waveyard`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Apple Music catalog backup" }).click();
+  await page.getByText(/exports retain playlist order and available track details and listening stats/i).waitFor({ timeout: 10000 });
   const restoreButton = page.getByRole("button", { name: "Restore originals" });
   await restoreButton.waitFor({ state: "visible", timeout: 15000 });
   assert.equal(await restoreButton.isDisabled(), true, "restore stays disabled until a ZIP and disk-space confirmation are provided");
@@ -53,14 +58,23 @@ try {
   await page.getByRole("checkbox", { name: /enough disk space/i }).check();
   assert.equal(await restoreButton.isEnabled(), true);
   await restoreButton.click();
-  await page.getByRole("status").filter({ hasText: "Restored 1 original" }).waitFor({ timeout: 10000 });
+  await page.getByRole("status").filter({ hasText: "1 failed" }).waitFor({ timeout: 10000 });
 
-  assert.equal(uploadedType, "application/zip");
-  assert.deepEqual(uploadedBytes, archiveBytes, "the selected ZIP is sent intact as the raw request body");
-  assert.equal(await page.getByRole("status").filter({ hasText: "Restored 1 original" }).count(), 1);
+  const retryButton = page.getByRole("button", { name: "Retry failed tracks" });
+  assert.equal(await retryButton.isEnabled(), true, "a partial result keeps the archive available for retry");
+  assert.equal(await page.getByRole("checkbox", { name: /enough disk space/i }).isChecked(), true);
+  await retryButton.click();
+  await page.getByRole("status").filter({ hasText: "skipped 1 duplicate" }).waitFor({ timeout: 10000 });
+
+  assert.equal(uploads.length, 2, "the same archive can be retried after a partial restore");
+  for (const upload of uploads) {
+    assert.equal(upload.contentType, "application/zip");
+    assert.deepEqual(upload.bytes, archiveBytes, "the selected ZIP is sent intact as the raw request body");
+  }
+  assert.equal(await page.getByRole("checkbox", { name: /enough disk space/i }).isChecked(), false);
   assert.deepEqual(pageErrors, []);
   await context.close();
-  console.log("PASS: Waveyard ZIP restore requires disk confirmation, uploads the selected bytes, and shows the returned result.");
+  console.log("PASS: Apple metadata backup is discoverable; Waveyard ZIP restore requires disk confirmation, uploads the selected bytes, retains partial archives, and retries safely.");
 } finally {
   await browser.close();
 }

@@ -212,13 +212,46 @@ test("backups round-trip and reject hostile files", () => {
   assert.equal(backupToJson(original), backupToJson(snapshot()));
 });
 
+test("JSON backup preserves the full supported track metadata", () => {
+  const original = snapshot({
+    playlists: [{
+      externalId: "p1",
+      name: "Archive",
+      description: null,
+      tracks: [track({
+        trackNumber: 7,
+        discNumber: 2,
+        year: 1980,
+        albumArtist: "AC/DC",
+        trackCount: 10,
+        discCount: 2,
+        genre: "Hard rock",
+        composer: "Angus Young",
+        artworkUrl: "https://images.example.test/cover.jpg",
+        rating: 80,
+        playCount: 120_000,
+        skipCount: 3,
+        dateAdded: "2024-02-03T04:05:06.000Z",
+        lastPlayedAt: "2026-01-02T03:04:05.000Z",
+        releaseDate: "1980-07-25T00:00:00.000Z",
+        bitRate: 256,
+        sampleRate: 44100,
+        kind: "Apple Music AAC audio file",
+        comments: "Imported from Apple Music",
+      })],
+    }],
+    likedTracks: [],
+  });
+  assert.deepEqual(parseBackup(backupToJson(original)), original);
+});
+
 test("CSV export escapes honestly (TuneMyMusic parity)", () => {
   const csv = snapshotToCsv(snapshot({
     playlists: [{ externalId: "p1", name: 'My "best" list', description: null, tracks: [track({ title: "Song, with comma" })] }],
     likedTracks: [],
   }));
   const lines = csv.split("\n");
-  assert.equal(lines[0], "playlist,position,title,artists,album,isrc,duration_ms,service,external_id,track_number,disc_number,year,genre,composer,artwork_url");
+  assert.equal(lines[0], "playlist,position,title,artists,album,isrc,duration_ms,service,external_id,track_number,disc_number,year,genre,composer,artwork_url,album_artist,track_count,disc_count,rating,play_count,skip_count,date_added,last_played_at,release_date,bit_rate,sample_rate,kind,comments");
   assert.ok(lines[1].includes('"My ""best"" list"'), "playlist quotes doubled");
   assert.ok(lines[1].includes('"Song, with comma"'), "title comma quoted");
   assert.ok(lines[1].includes("AUSBM0000001"));
@@ -239,12 +272,25 @@ test("CSV import round-trips our own export", () => {
         track({
           trackNumber: 7,
           discNumber: 2,
+          trackCount: 10,
+          discCount: 2,
           year: 1980,
+          albumArtist: "AC/DC",
           genre: "Hard rock",
           composer: "Angus Young",
           artworkUrl: "https://images.example.test/cover.jpg",
+          rating: 80,
+          playCount: 120_000,
+          skipCount: 3,
+          dateAdded: "2024-02-03T04:05:06.000Z",
+          lastPlayedAt: "2026-01-02T03:04:05.000Z",
+          releaseDate: "1980-07-25T00:00:00.000Z",
+          bitRate: 256,
+          sampleRate: 44100,
+          kind: "Apple Music AAC audio file",
+          comments: "Imported from Apple Music",
         }),
-        track({ externalId: "t2", title: "Thunderstruck" }),
+        track({ externalId: "t2", title: "Thunderstruck", artists: ["Artist, With Comma", "Guest Artist"] }),
       ],
     }],
   });
@@ -263,10 +309,24 @@ test("CSV import round-trips our own export", () => {
   assert.equal(roadTrip.tracks[0].durationMs, 255_000);
   assert.equal(roadTrip.tracks[0].trackNumber, 7);
   assert.equal(roadTrip.tracks[0].discNumber, 2);
+  assert.equal(roadTrip.tracks[0].trackCount, 10);
+  assert.equal(roadTrip.tracks[0].discCount, 2);
   assert.equal(roadTrip.tracks[0].year, 1980);
+  assert.equal(roadTrip.tracks[0].albumArtist, "AC/DC");
   assert.equal(roadTrip.tracks[0].genre, "Hard rock");
   assert.equal(roadTrip.tracks[0].composer, "Angus Young");
   assert.equal(roadTrip.tracks[0].artworkUrl, "https://images.example.test/cover.jpg");
+  assert.equal(roadTrip.tracks[0].rating, 80);
+  assert.equal(roadTrip.tracks[0].playCount, 120_000);
+  assert.equal(roadTrip.tracks[0].skipCount, 3);
+  assert.equal(roadTrip.tracks[0].dateAdded, "2024-02-03T04:05:06.000Z");
+  assert.equal(roadTrip.tracks[0].lastPlayedAt, "2026-01-02T03:04:05.000Z");
+  assert.equal(roadTrip.tracks[0].releaseDate, "1980-07-25T00:00:00.000Z");
+  assert.equal(roadTrip.tracks[0].bitRate, 256);
+  assert.equal(roadTrip.tracks[0].sampleRate, 44100);
+  assert.equal(roadTrip.tracks[0].kind, "Apple Music AAC audio file");
+  assert.equal(roadTrip.tracks[0].comments, "Imported from Apple Music");
+  assert.deepEqual(roadTrip.tracks[1].artists, ["Artist, With Comma", "Guest Artist"]);
 });
 
 test("CSV import accepts Exportify headers, quoting, and multi-artist cells", () => {
@@ -327,13 +387,26 @@ test("Apple Library XML imports playlists and metadata without reading local aud
       <key>Persistent ID</key><string>AA001</string>
       <key>Name</key><string>Song &amp; One</string>
       <key>Artist</key><string>Artist One</string>
+      <key>Album Artist</key><string>Album Artist One</string>
       <key>Album</key><string>Album A</string>
       <key>Total Time</key><integer>210000</integer>
       <key>Track Number</key><integer>4</integer>
+      <key>Track Count</key><integer>12</integer>
       <key>Disc Number</key><integer>2</integer>
+      <key>Disc Count</key><integer>2</integer>
       <key>Year</key><integer>1980</integer>
       <key>Genre</key><string>Hard rock</string>
       <key>Composer</key><string>Angus Young</string>
+      <key>Rating</key><integer>80</integer>
+      <key>Play Count</key><integer>120000</integer>
+      <key>Skip Count</key><integer>3</integer>
+      <key>Date Added</key><date>2024-02-03T04:05:06Z</date>
+      <key>Play Date UTC</key><date>2026-01-02T03:04:05Z</date>
+      <key>Release Date</key><date>1980-07-25T00:00:00Z</date>
+      <key>Bit Rate</key><integer>256</integer>
+      <key>Sample Rate</key><integer>44100</integer>
+      <key>Kind</key><string>Apple Music AAC audio file</string>
+      <key>Comments</key><string>Imported, from &quot;Apple Music&quot;</string>
       <key>Loved</key><true/>
       <key>Location</key><string>file:///private/Apple%20Music/Protected.m4p</string>
     </dict>
@@ -380,10 +453,30 @@ test("Apple Library XML imports playlists and metadata without reading local aud
   assert.equal(song.trackNumber, 4);
   assert.equal(song.discNumber, 2);
   assert.equal(song.year, 1980);
+  assert.equal(song.albumArtist, "Album Artist One");
+  assert.equal(song.trackCount, 12);
+  assert.equal(song.discCount, 2);
   assert.equal(song.genre, "Hard rock");
   assert.equal(song.composer, "Angus Young");
+  assert.equal(song.rating, 80);
+  assert.equal(song.playCount, 120_000);
+  assert.equal(song.skipCount, 3);
+  assert.equal(song.dateAdded, "2024-02-03T04:05:06.000Z");
+  assert.equal(song.lastPlayedAt, "2026-01-02T03:04:05.000Z");
+  assert.equal(song.releaseDate, "1980-07-25T00:00:00.000Z");
+  assert.equal(song.bitRate, 256);
+  assert.equal(song.sampleRate, 44100);
+  assert.equal(song.kind, "Apple Music AAC audio file");
+  assert.equal(song.comments, 'Imported, from "Apple Music"');
   assert.equal(song.artworkUrl, null, "the XML exposes no portable artwork URL");
   assert.equal(JSON.stringify(parsed).includes("Protected.m4p"), false, "the XML's file paths are never copied into a backup");
+  assert.deepEqual(parseBackup(backupToJson(parsed!)), parsed, "Apple XML metadata survives a JSON backup round-trip");
+  const csvSnapshot = parseCsvSnapshot(snapshotToCsv(parsed!), "apple", "reimport");
+  const csvSong = csvSnapshot?.playlists.flatMap((item) => item.tracks).find((item) => item.externalId === "AA001");
+  assert.equal(csvSong?.playCount, 120_000, "Apple listening counts survive CSV export and import");
+  assert.equal(csvSong?.rating, 80);
+  assert.equal(csvSong?.albumArtist, "Album Artist One");
+  assert.equal(csvSong?.comments, 'Imported, from "Apple Music"');
 });
 
 test("snapshot validation rejects unsafe artwork URLs and impossible metadata numbers", () => {
@@ -393,12 +486,22 @@ test("snapshot validation rejects unsafe artwork URLs and impossible metadata nu
       discNumber: 70_000,
       year: 30_000,
       artworkUrl: "javascript:alert(1)",
+      rating: 101,
+      playCount: -1,
+      skipCount: 1_000_000_001,
+      sampleRate: 768_001,
+      dateAdded: "not a date",
     })],
   }));
   assert.equal(parsed?.likedTracks[0].trackNumber, null);
   assert.equal(parsed?.likedTracks[0].discNumber, null);
   assert.equal(parsed?.likedTracks[0].year, null);
   assert.equal(parsed?.likedTracks[0].artworkUrl, null);
+  assert.equal(parsed?.likedTracks[0].rating, null);
+  assert.equal(parsed?.likedTracks[0].playCount, null);
+  assert.equal(parsed?.likedTracks[0].skipCount, null);
+  assert.equal(parsed?.likedTracks[0].sampleRate, null);
+  assert.equal(parsed?.likedTracks[0].dateAdded, null);
 });
 
 test("snapshot audio reconciliation distinguishes strong, ambiguous, review, and missing matches", () => {

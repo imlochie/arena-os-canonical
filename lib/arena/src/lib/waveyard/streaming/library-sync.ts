@@ -45,11 +45,24 @@ export type ExternalTrack = {
   durationMs: number | null;
   trackNumber?: number | null;
   discNumber?: number | null;
+  trackCount?: number | null;
+  discCount?: number | null;
   year?: number | null;
+  albumArtist?: string | null;
   genre?: string | null;
   composer?: string | null;
   /** A provider URL reference; this does not mean the artwork file is archived. */
   artworkUrl?: string | null;
+  rating?: number | null;
+  playCount?: number | null;
+  skipCount?: number | null;
+  dateAdded?: string | null;
+  lastPlayedAt?: string | null;
+  releaseDate?: string | null;
+  bitRate?: number | null;
+  sampleRate?: number | null;
+  kind?: string | null;
+  comments?: string | null;
 };
 
 /** One playlist (canonical form). */
@@ -82,10 +95,16 @@ function cleanString(value: unknown, maxLength: number): string | null {
   return trimmed.slice(0, maxLength);
 }
 
+function cleanIsoDate(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 function boundedMetadataInteger(value: unknown, minimum: number, maximum: number): number | null {
   const parsed = typeof value === "number"
     ? value
-    : typeof value === "string" && /^\d{1,5}$/.test(value.trim())
+    : typeof value === "string" && /^\d{1,10}$/.test(value.trim())
       ? Number(value.trim())
       : Number.NaN;
   return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : null;
@@ -124,10 +143,23 @@ function parseTrack(raw: unknown, service: StreamingService): ExternalTrack | nu
     durationMs: typeof input.durationMs === "number" && Number.isFinite(input.durationMs) && input.durationMs >= 0 ? Math.round(input.durationMs) : null,
     ...(has("trackNumber") ? { trackNumber: boundedMetadataInteger(input.trackNumber, 1, 65535) } : {}),
     ...(has("discNumber") ? { discNumber: boundedMetadataInteger(input.discNumber, 1, 65535) } : {}),
+    ...(has("trackCount") ? { trackCount: boundedMetadataInteger(input.trackCount, 1, 65535) } : {}),
+    ...(has("discCount") ? { discCount: boundedMetadataInteger(input.discCount, 1, 65535) } : {}),
     ...(has("year") ? { year: boundedMetadataInteger(input.year, 1000, 9999) } : {}),
+    ...(has("albumArtist") ? { albumArtist: cleanString(input.albumArtist, 200) } : {}),
     ...(has("genre") ? { genre: cleanString(input.genre, 200) } : {}),
     ...(has("composer") ? { composer: cleanString(input.composer, 200) } : {}),
     ...(has("artworkUrl") ? { artworkUrl: cleanArtworkUrl(input.artworkUrl) } : {}),
+    ...(has("rating") ? { rating: boundedMetadataInteger(input.rating, 0, 100) } : {}),
+    ...(has("playCount") ? { playCount: boundedMetadataInteger(input.playCount, 0, 1_000_000_000) } : {}),
+    ...(has("skipCount") ? { skipCount: boundedMetadataInteger(input.skipCount, 0, 1_000_000_000) } : {}),
+    ...(has("dateAdded") ? { dateAdded: cleanIsoDate(input.dateAdded) } : {}),
+    ...(has("lastPlayedAt") ? { lastPlayedAt: cleanIsoDate(input.lastPlayedAt) } : {}),
+    ...(has("releaseDate") ? { releaseDate: cleanIsoDate(input.releaseDate) } : {}),
+    ...(has("bitRate") ? { bitRate: boundedMetadataInteger(input.bitRate, 1, 1_000_000) } : {}),
+    ...(has("sampleRate") ? { sampleRate: boundedMetadataInteger(input.sampleRate, 1, 768_000) } : {}),
+    ...(has("kind") ? { kind: cleanString(input.kind, 200) } : {}),
+    ...(has("comments") ? { comments: cleanString(input.comments, 2000) } : {}),
   };
 }
 
@@ -484,6 +516,25 @@ export function backupToJson(snapshot: LibrarySnapshot): string {
     album: track.album,
     isrc: track.isrc,
     durationMs: track.durationMs,
+    ...(track.trackNumber !== undefined ? { trackNumber: track.trackNumber } : {}),
+    ...(track.discNumber !== undefined ? { discNumber: track.discNumber } : {}),
+    ...(track.year !== undefined ? { year: track.year } : {}),
+    ...(track.genre !== undefined ? { genre: track.genre } : {}),
+    ...(track.composer !== undefined ? { composer: track.composer } : {}),
+    ...(track.artworkUrl !== undefined ? { artworkUrl: track.artworkUrl } : {}),
+    ...(track.albumArtist !== undefined ? { albumArtist: track.albumArtist } : {}),
+    ...(track.trackCount !== undefined ? { trackCount: track.trackCount } : {}),
+    ...(track.discCount !== undefined ? { discCount: track.discCount } : {}),
+    ...(track.rating !== undefined ? { rating: track.rating } : {}),
+    ...(track.playCount !== undefined ? { playCount: track.playCount } : {}),
+    ...(track.skipCount !== undefined ? { skipCount: track.skipCount } : {}),
+    ...(track.dateAdded !== undefined ? { dateAdded: track.dateAdded } : {}),
+    ...(track.lastPlayedAt !== undefined ? { lastPlayedAt: track.lastPlayedAt } : {}),
+    ...(track.releaseDate !== undefined ? { releaseDate: track.releaseDate } : {}),
+    ...(track.bitRate !== undefined ? { bitRate: track.bitRate } : {}),
+    ...(track.sampleRate !== undefined ? { sampleRate: track.sampleRate } : {}),
+    ...(track.kind !== undefined ? { kind: track.kind } : {}),
+    ...(track.comments !== undefined ? { comments: track.comments } : {}),
   });
   return JSON.stringify({
     format: "waveyard-library-backup",
@@ -522,7 +573,7 @@ function csvCell(value: string): string {
 
 /** CSV export (TuneMyMusic parity): one row per playlist track + liked. */
 export function snapshotToCsv(snapshot: LibrarySnapshot): string {
-  const header = "playlist,position,title,artists,album,isrc,duration_ms,service,external_id,track_number,disc_number,year,genre,composer,artwork_url";
+  const header = "playlist,position,title,artists,album,isrc,duration_ms,service,external_id,track_number,disc_number,year,genre,composer,artwork_url,album_artist,track_count,disc_count,rating,play_count,skip_count,date_added,last_played_at,release_date,bit_rate,sample_rate,kind,comments";
   const rows: string[] = [];
   const trackRow = (playlist: string, position: number, track: ExternalTrack) =>
     [
@@ -541,6 +592,19 @@ export function snapshotToCsv(snapshot: LibrarySnapshot): string {
       csvCell(track.genre ?? ""),
       csvCell(track.composer ?? ""),
       csvCell(track.artworkUrl ?? ""),
+      csvCell(track.albumArtist ?? ""),
+      track.trackCount ?? "",
+      track.discCount ?? "",
+      track.rating ?? "",
+      track.playCount ?? "",
+      track.skipCount ?? "",
+      csvCell(track.dateAdded ?? ""),
+      csvCell(track.lastPlayedAt ?? ""),
+      csvCell(track.releaseDate ?? ""),
+      track.bitRate ?? "",
+      track.sampleRate ?? "",
+      csvCell(track.kind ?? ""),
+      csvCell(track.comments ?? ""),
     ].join(",");
   for (const playlist of snapshot.playlists) {
     playlist.tracks.forEach((track, index) => rows.push(trackRow(playlist.name, index, track)));
@@ -585,7 +649,9 @@ const normaliseHeader = (value: string): string => value.trim().toLowerCase().re
 
 const CSV_COLUMN_ALIASES: Record<
   "playlist" | "title" | "artists" | "album" | "isrc" | "durationMs" | "externalId" |
-  "trackNumber" | "discNumber" | "year" | "genre" | "composer" | "artworkUrl",
+  "trackNumber" | "discNumber" | "trackCount" | "discCount" | "year" | "genre" | "composer" | "artworkUrl" |
+  "albumArtist" | "rating" | "playCount" | "skipCount" | "dateAdded" | "lastPlayedAt" | "releaseDate" |
+  "bitRate" | "sampleRate" | "kind" | "comments",
   readonly string[]
 > = {
   // Ours first (round-trip guarantee), then Exportify, then TuneMyMusic.
@@ -598,10 +664,23 @@ const CSV_COLUMN_ALIASES: Record<
   externalId: ["external_id", "track id", "id"],
   trackNumber: ["track_number", "track number", "track no"],
   discNumber: ["disc_number", "disc number", "disc no"],
+  trackCount: ["track_count", "track count"],
+  discCount: ["disc_count", "disc count"],
   year: ["year", "release year"],
+  albumArtist: ["album_artist", "album artist"],
   genre: ["genre"],
   composer: ["composer", "composers"],
   artworkUrl: ["artwork_url", "artwork url", "cover art url"],
+  rating: ["rating", "stars"],
+  playCount: ["play_count", "play count", "plays"],
+  skipCount: ["skip_count", "skip count", "skips"],
+  dateAdded: ["date_added", "date added"],
+  lastPlayedAt: ["last_played_at", "last played at", "last played"],
+  releaseDate: ["release_date", "release date"],
+  bitRate: ["bit_rate", "bit rate", "bitrate"],
+  sampleRate: ["sample_rate", "sample rate"],
+  kind: ["kind", "file kind"],
+  comments: ["comments", "comment"],
 };
 
 function parseDurationMs(value: string): number | null {
@@ -646,6 +725,19 @@ export function parseCsvSnapshot(text: string, service: StreamingService, playli
   const genreColumn = columnIndex("genre");
   const composerColumn = columnIndex("composer");
   const artworkUrlColumn = columnIndex("artworkUrl");
+  const albumArtistColumn = columnIndex("albumArtist");
+  const trackCountColumn = columnIndex("trackCount");
+  const discCountColumn = columnIndex("discCount");
+  const ratingColumn = columnIndex("rating");
+  const playCountColumn = columnIndex("playCount");
+  const skipCountColumn = columnIndex("skipCount");
+  const dateAddedColumn = columnIndex("dateAdded");
+  const lastPlayedAtColumn = columnIndex("lastPlayedAt");
+  const releaseDateColumn = columnIndex("releaseDate");
+  const bitRateColumn = columnIndex("bitRate");
+  const sampleRateColumn = columnIndex("sampleRate");
+  const kindColumn = columnIndex("kind");
+  const commentsColumn = columnIndex("comments");
 
   // Rows in file order, each tagged with its playlist cell (when the export
   // carries one — ours does; Exportify is one file per playlist).
@@ -655,8 +747,8 @@ export function parseCsvSnapshot(text: string, service: StreamingService, playli
     const title = cells[titleColumn]?.trim() ?? "";
     if (title === "") continue;
     const artistCell = cells[artistsColumn] ?? "";
-    const artists = artistCell
-      .split(/;|,/)
+    const artistParts = artistCell.includes(";") ? artistCell.split(";") : artistCell.split(",");
+    const artists = artistParts
       .map((part) => part.trim())
       .filter((part) => part !== "");
     collected.push({
@@ -671,10 +763,23 @@ export function parseCsvSnapshot(text: string, service: StreamingService, playli
         durationMs: durationColumn !== -1 ? parseDurationMs(cells[durationColumn] ?? "") : null,
         trackNumber: trackNumberColumn !== -1 ? boundedMetadataInteger(cells[trackNumberColumn], 1, 65535) : null,
         discNumber: discNumberColumn !== -1 ? boundedMetadataInteger(cells[discNumberColumn], 1, 65535) : null,
+        trackCount: trackCountColumn !== -1 ? boundedMetadataInteger(cells[trackCountColumn], 1, 65535) : null,
+        discCount: discCountColumn !== -1 ? boundedMetadataInteger(cells[discCountColumn], 1, 65535) : null,
         year: yearColumn !== -1 ? boundedMetadataInteger(cells[yearColumn], 1000, 9999) : null,
         genre: genreColumn !== -1 ? cleanString(cells[genreColumn], 200) : null,
         composer: composerColumn !== -1 ? cleanString(cells[composerColumn], 200) : null,
         artworkUrl: artworkUrlColumn !== -1 ? cleanArtworkUrl(cells[artworkUrlColumn]) : null,
+        ...(albumArtistColumn !== -1 ? { albumArtist: cleanString(cells[albumArtistColumn], 200) } : {}),
+        ...(ratingColumn !== -1 ? { rating: boundedMetadataInteger(cells[ratingColumn], 0, 100) } : {}),
+        ...(playCountColumn !== -1 ? { playCount: boundedMetadataInteger(cells[playCountColumn], 0, 1_000_000_000) } : {}),
+        ...(skipCountColumn !== -1 ? { skipCount: boundedMetadataInteger(cells[skipCountColumn], 0, 1_000_000_000) } : {}),
+        ...(dateAddedColumn !== -1 ? { dateAdded: cleanIsoDate(cells[dateAddedColumn]) } : {}),
+        ...(lastPlayedAtColumn !== -1 ? { lastPlayedAt: cleanIsoDate(cells[lastPlayedAtColumn]) } : {}),
+        ...(releaseDateColumn !== -1 ? { releaseDate: cleanIsoDate(cells[releaseDateColumn]) } : {}),
+        ...(bitRateColumn !== -1 ? { bitRate: boundedMetadataInteger(cells[bitRateColumn], 1, 1_000_000) } : {}),
+        ...(sampleRateColumn !== -1 ? { sampleRate: boundedMetadataInteger(cells[sampleRateColumn], 1, 768_000) } : {}),
+        ...(kindColumn !== -1 ? { kind: cleanString(cells[kindColumn], 200) } : {}),
+        ...(commentsColumn !== -1 ? { comments: cleanString(cells[commentsColumn], 2000) } : {}),
       },
     });
   }
@@ -895,10 +1000,23 @@ export function parseAppleMusicLibraryXml(xml: string, libraryName = "Apple Musi
       trackNumber,
       discNumber,
       year,
+      albumArtist: plistString(record["Album Artist"], 200),
       genre: plistString(record.Genre, 200),
       composer: plistString(record.Composer, 200),
       // iTunes Library.xml does not provide a portable artwork URL or bytes.
       artworkUrl: null,
+      trackCount: boundedMetadataInteger(record["Track Count"], 1, 65535),
+      discCount: boundedMetadataInteger(record["Disc Count"], 1, 65535),
+      rating: boundedMetadataInteger(record.Rating, 0, 100),
+      playCount: boundedMetadataInteger(record["Play Count"], 0, 1_000_000_000),
+      skipCount: boundedMetadataInteger(record["Skip Count"], 0, 1_000_000_000),
+      dateAdded: cleanIsoDate(record["Date Added"]),
+      lastPlayedAt: cleanIsoDate(record["Play Date UTC"]),
+      releaseDate: cleanIsoDate(record["Release Date"]),
+      bitRate: boundedMetadataInteger(record["Bit Rate"], 1, 1_000_000),
+      sampleRate: boundedMetadataInteger(record["Sample Rate"], 1, 768_000),
+      kind: plistString(record.Kind, 200),
+      comments: plistString(record.Comments, 2000),
     };
     allTracks.push(track);
     byReference.set(dictionaryId, track);

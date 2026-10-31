@@ -13,20 +13,26 @@
 
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { and, eq } from "drizzle-orm";
 import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
+import { getStorage } from "../storage";
+import { createAudioBackupCsv, createVerifiedAudioBackupZip } from "./audio-backup";
+import { restoreVerifiedAudioBackupZip } from "./audio-restore";
 
 const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..", "..", "..", "..");
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
 const RECOVERY_OWNER = "33333333-3333-4333-8333-333333333333";
 const START_OWNER = "44444444-4444-4444-8444-444444444444";
+const RESTORE_OWNER = "55555555-5555-4555-8555-555555555555";
 
 type ServiceModule = typeof import("./service");
 type SessionServiceModule = typeof import("./session-service");
@@ -1340,4 +1346,92 @@ test("library intake preserves embedded title, artist, and album tags for audio 
   const [storedTrack] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, imported.track.id)).limit(1);
   assert.equal(storedTrack.sourceChecksumSha256, exactAudioChecksum,
     "tag extraction must not transcode or replace the original audio bytes");
+});
+
+test("audio backup restore creates a playable local library track and skips the same audio on retry", async () => {
+  const fixturePath = path.join(root!, "audio-backup-round-trip.wav");
+  writeWav(fixturePath, 2, 440);
+  const audioBytes = statSync(fixturePath).size;
+  const audioChecksum = await checksumFile(fixturePath);
+  const backupTrackId = randomUUID();
+  const backupPath = `audio/Restore Artist/Restore Album/${backupTrackId} - Restored Session.wav`;
+  const manifestBytes = Buffer.from(createAudioBackupCsv([{
+    trackId: backupTrackId,
+    title: "Restored Session",
+    artist: "Restore Artist",
+    album: "Restore Album",
+    durationSeconds: 2,
+    codec: "pcm_s16le",
+    originalFilename: "restored-session.wav",
+    archivePath: backupPath,
+    fileSizeBytes: audioBytes,
+    checksumSha256: audioChecksum,
+  }]));
+  const archive = await createVerifiedAudioBackupZip([
+    {
+      name: backupPath,
+      bytes: audioBytes,
+      sha256: audioChecksum,
+      open: async () => createReadStream(fixturePath),
+    },
+    {
+      name: "manifest.csv",
+      bytes: manifestBytes.length,
+      sha256: createHash("sha256").update(manifestBytes).digest("hex"),
+      open: async () => Readable.from([manifestBytes]),
+    },
+  ]);
+
+  try {
+    const restoreOne = async (row: {
+      originalFilename: string;
+      title: string;
+      artist: string;
+      album: string;
+    }, filePath: string) => service.addTrackFromAudioFile({
+      ownerId: RESTORE_OWNER,
+      filePath,
+      filename: row.originalFilename,
+      mimeType: "audio/wav",
+      title: row.title,
+      artist: row.artist,
+      album: row.album,
+      prepareSeparation: false,
+    });
+
+    const firstRestore = await restoreVerifiedAudioBackupZip(archive.path, restoreOne);
+    const firstImport = firstRestore.results[0];
+    assert.ok(firstImport, "the verified archive imports one library track");
+    assert.equal(firstImport.created, true);
+    assert.equal(firstImport.track.title, "Restored Session");
+    assert.equal(firstImport.track.artist, "Restore Artist");
+    assert.equal(firstImport.track.album, "Restore Album");
+    assert.equal(firstImport.track.durationSeconds, 2);
+
+    const [storedTrack] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, firstImport.track.id)).limit(1);
+    assert.ok(storedTrack);
+    const [storedSource] = await db.db.select().from(schema.sourceAssets).where(eq(schema.sourceAssets.id, storedTrack.sourceAssetId)).limit(1);
+    assert.ok(storedSource);
+    const trackDetail = await service.getTrack(RESTORE_OWNER, firstImport.track.id);
+    assert.ok(trackDetail);
+    assert.equal(trackDetail.playback.kind, "source", "the player resolves the restored track to its original audio");
+    assert.deepEqual(trackDetail.playback.assetIds, [storedSource.id]);
+    assert.equal(storedSource.checksumSha256, audioChecksum);
+    assert.equal(storedSource.sampleRate, 44100);
+    assert.equal(storedSource.channels, 1);
+    assert.equal(storedSource.fileSizeBytes, audioBytes);
+
+    const storedAudioPath = getStorage().getLocalPath(storedSource.storageKey);
+    assert.ok(storedAudioPath, "the restored source uses the app's local audio storage");
+    assert.deepEqual(readFileSync(storedAudioPath), readFileSync(fixturePath), "restore preserves the exact original WAV bytes");
+
+    const processingRows = await db.db.select().from(schema.processingJobs).where(eq(schema.processingJobs.sourceAssetId, storedSource.id));
+    assert.equal(processingRows.length, 0, "archive restore does not silently enqueue heavy processing");
+
+    const retry = await restoreVerifiedAudioBackupZip(archive.path, restoreOne);
+    assert.equal(retry.results[0].created, false, "replaying a partially completed restore is idempotent by content");
+    assert.equal((await service.listTracks({ ownerId: RESTORE_OWNER })).length, 1);
+  } finally {
+    await archive.dispose();
+  }
 });

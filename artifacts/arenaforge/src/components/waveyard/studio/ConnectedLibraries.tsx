@@ -437,7 +437,7 @@ export function ConnectedLibraries({
               </div>
               <small className="stream-hint">
                 {service === "apple"
-                  ? "CSV/JSON/iTunes-style XML snapshot import and CSV/JSON export only. Direct Apple Music sign-in is not wired; this backup contains metadata, not subscription audio."
+                  ? "Import an Apple/iTunes XML library or CSV/JSON snapshot; exports retain playlist order and available track details and listening stats. Local paths and subscription audio are never copied. Direct Apple sign-in isn’t available."
                   : "Adapter ready (YouTube Data API: your playlists/likes; channel stands in for artist, no durations at item level). Live sync arrives with your Google OAuth client — next wave. No official YouTube Music API exists."}
               </small>
             </article>
