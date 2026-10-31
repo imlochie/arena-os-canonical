@@ -6,6 +6,7 @@
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "waveyard-audio-restore": "node ./waveyard-audio-restore.mjs",
+    "waveyard-audio-capture-ui": "node ./waveyard-audio-capture-ui.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

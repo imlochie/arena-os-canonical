@@ -6,6 +6,7 @@ import {
   getAudioCaptureImportResult,
   getAudioCaptureSessionDirectory,
   removeAudioCaptureFiles,
+  runAudioCaptureImport,
   setAudioCaptureImportResult,
   stopAudioCapture,
 } from "../../../../../lib/waveyard/audio-capture-manager";
@@ -25,26 +26,29 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const capture = await stopAudioCapture(user.id, id);
     if (!capture) return Response.json({ error: "Capture session not found." }, { status: 404 });
 
-    const result = await addTrackFromAudioFile({
-      ownerId: user.id,
-      filePath: capture.path,
-      filename: `${sanitizedFilename(capture.metadata.title)}.wav`,
-      mimeType: "audio/wav",
-      title: capture.metadata.title,
-      artist: capture.metadata.artist,
-      album: capture.metadata.album,
+    const response = await runAudioCaptureImport(user.id, id, async () => {
+      const result = await addTrackFromAudioFile({
+        ownerId: user.id,
+        filePath: capture.path,
+        filename: `${sanitizedFilename(capture.metadata.title)}.wav`,
+        mimeType: "audio/wav",
+        title: capture.metadata.title,
+        artist: capture.metadata.artist,
+        album: capture.metadata.album,
+      });
+      const response = StopLibraryAudioCaptureResponse.parse({
+        track: result.track,
+        created: result.created,
+        separationQueued: result.separationQueued,
+        sampleFrames: capture.result.sampleFrames,
+        durationSeconds: capture.result.sampleFrames / capture.format.sampleRate,
+        format: capture.format,
+        discontinuityCount: capture.discontinuityCount,
+      });
+      setAudioCaptureImportResult(user.id, id, response);
+      await removeAudioCaptureFiles(capture.sessionDirectory);
+      return response;
     });
-    const response = StopLibraryAudioCaptureResponse.parse({
-      track: result.track,
-      created: result.created,
-      separationQueued: result.separationQueued,
-      sampleFrames: capture.result.sampleFrames,
-      durationSeconds: capture.result.sampleFrames / capture.format.sampleRate,
-      format: capture.format,
-      discontinuityCount: capture.discontinuityCount,
-    });
-    setAudioCaptureImportResult(user.id, id, response);
-    await removeAudioCaptureFiles(capture.sessionDirectory);
     return Response.json(response);
   } catch (error) {
     if (error instanceof Response) return error;

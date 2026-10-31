@@ -11,6 +11,8 @@ import type { Rf64Format, Rf64RecordingResult } from "@workspace/arena/lib/wavey
 
 const execFileAsync = promisify(execFile);
 const sessions = new Map<string, CaptureSession>();
+const completedImports = new Map<string, CompletedCaptureImport>();
+const inFlightImports = new Map<string, { ownerId: string; promise: Promise<unknown> }>();
 const START_TIMEOUT_MS = 20_000;
 const STOP_TIMEOUT_MS = 15_000;
 const SHUTDOWN_STOP_TIMEOUT_MS = 5_000;
@@ -18,6 +20,8 @@ const SHUTDOWN_PIPE_SETTLE_TIMEOUT_MS = 2_000;
 const CAPTURE_DISK_RESERVE_BYTES = 1024 * 1024 * 1024;
 const CAPTURE_DISK_CHECK_INTERVAL_MS = 5_000;
 const MAX_DEVICE_OUTPUT_BYTES = 1_000_000;
+const COMPLETED_IMPORT_CACHE_TTL_MS = 30 * 60 * 1000;
+const MAX_COMPLETED_IMPORT_CACHE_ENTRIES = 128;
 
 export interface AudioCaptureDevice {
   id: string;
@@ -150,7 +154,15 @@ interface CaptureSession {
   stopPromise?: Promise<AudioCaptureFinalized | null>;
   diskMonitor?: NodeJS.Timeout;
   diskMonitorBusy?: boolean;
-  importedResponse?: unknown;
+  importing?: boolean;
+}
+
+interface CompletedCaptureImport {
+  ownerId: string;
+  response: unknown;
+  sessionDirectory: string;
+  snapshot: AudioCaptureSnapshot;
+  expiresAt: number;
 }
 
 function captureHostPath(): string | null {
@@ -203,6 +215,17 @@ export function estimateCaptureSecondsRemaining(
   return Math.max(0, Math.floor((availableBytes - reserveBytes) / bytesPerSecond));
 }
 
+function pruneCompletedImports(now = Date.now()): void {
+  for (const [id, entry] of completedImports) {
+    if (entry.expiresAt <= now) completedImports.delete(id);
+  }
+  while (completedImports.size > MAX_COMPLETED_IMPORT_CACHE_ENTRIES) {
+    const oldestId = completedImports.keys().next().value;
+    if (oldestId === undefined) break;
+    completedImports.delete(oldestId);
+  }
+}
+
 export async function getAudioCaptureOptions(ownerId?: string): Promise<{
   available: boolean;
   devices: AudioCaptureDevice[];
@@ -212,6 +235,7 @@ export async function getAudioCaptureOptions(ownerId?: string): Promise<{
   recoveries?: AudioCaptureRecovery[];
   recoveryError?: string;
 }> {
+  pruneCompletedImports();
   const active = ownerId
     ? [...sessions.values()].find((session) =>
       session.ownerId === ownerId &&
@@ -594,12 +618,15 @@ export async function startAudioCapture(
 }
 
 export function getAudioCaptureStatus(ownerId: string, id: string): AudioCaptureSnapshot | null {
+  pruneCompletedImports();
   const session = sessions.get(id);
-  if (!session || session.ownerId !== ownerId) return null;
-  return snapshot(session);
+  if (session?.ownerId === ownerId) return snapshot(session);
+  const cached = completedImports.get(id);
+  return cached?.ownerId === ownerId ? cached.snapshot : null;
 }
 
 async function scanRecoverableAudioCaptures(ownerId: string): Promise<AudioCaptureRecoveryFile[]> {
+  pruneCompletedImports();
   if (!process.env.ARENA_DATA_DIR) return [];
   const root = captureRoot();
   if (!existsSync(root)) return [];
@@ -608,6 +635,7 @@ async function scanRecoverableAudioCaptures(ownerId: string): Promise<AudioCaptu
   for (const entry of entries) {
     if (!entry.isDirectory() || !/^[0-9a-f-]{36}$/i.test(entry.name)) continue;
     const session = sessions.get(entry.name);
+    if (session?.importing) continue;
     if (
       session &&
       (["starting", "recording", "stopping"].includes(session.status) ||
@@ -684,18 +712,59 @@ export async function getRecoverableAudioCapture(ownerId: string, id: string): P
 }
 
 export function getAudioCaptureImportResult(ownerId: string, id: string): unknown | null {
-  const session = sessions.get(id);
-  return session?.ownerId === ownerId ? session.importedResponse ?? null : null;
+  pruneCompletedImports();
+  const cached = completedImports.get(id);
+  return cached?.ownerId === ownerId ? cached.response : null;
 }
 
 export function setAudioCaptureImportResult(ownerId: string, id: string, value: unknown): void {
+  pruneCompletedImports();
   const session = sessions.get(id);
-  if (session?.ownerId === ownerId) session.importedResponse = value;
+  if (!session || session.ownerId !== ownerId || session.status !== "completed") return;
+  completedImports.delete(id);
+  completedImports.set(id, {
+    ownerId,
+    response: value,
+    sessionDirectory: session.sessionDirectory,
+    snapshot: snapshot(session),
+    expiresAt: Date.now() + COMPLETED_IMPORT_CACHE_TTL_MS,
+  });
+  sessions.delete(id);
+  pruneCompletedImports();
+}
+
+export function runAudioCaptureImport<T>(
+  ownerId: string,
+  id: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const inFlight = inFlightImports.get(id);
+  if (inFlight?.ownerId === ownerId) return inFlight.promise as Promise<T>;
+
+  const session = sessions.get(id);
+  if (!session || session.ownerId !== ownerId || session.status !== "completed") {
+    return Promise.reject(new Error("Capture session is no longer available for import."));
+  }
+
+  session.importing = true;
+  let promise!: Promise<T>;
+  promise = Promise.resolve()
+    .then(operation)
+    .finally(() => {
+      if (inFlightImports.get(id)?.promise === promise) inFlightImports.delete(id);
+      const current = sessions.get(id);
+      if (current?.ownerId === ownerId) current.importing = false;
+    });
+  inFlightImports.set(id, { ownerId, promise });
+  return promise;
 }
 
 export function getAudioCaptureSessionDirectory(ownerId: string, id: string): string | null {
+  pruneCompletedImports();
   const session = sessions.get(id);
-  return session?.ownerId === ownerId ? session.sessionDirectory : null;
+  if (session?.ownerId === ownerId) return session.sessionDirectory;
+  const cached = completedImports.get(id);
+  return cached?.ownerId === ownerId ? cached.sessionDirectory : null;
 }
 
 export function clearRecoveredAudioCapture(ownerId: string, id: string): void {
@@ -703,6 +772,8 @@ export function clearRecoveredAudioCapture(ownerId: string, id: string): void {
   if (session?.ownerId === ownerId && (session.status === "failed" || session.status === "completed")) {
     sessions.delete(id);
   }
+  const cached = completedImports.get(id);
+  if (cached?.ownerId === ownerId) completedImports.delete(id);
 }
 
 export function stopAudioCapture(ownerId: string, id: string): Promise<AudioCaptureFinalized | null> {

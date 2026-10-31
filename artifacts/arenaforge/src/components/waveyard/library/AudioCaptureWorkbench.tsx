@@ -102,10 +102,10 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     if (!response.ok) throw new Error(data.error ?? "Could not check Windows audio capture.");
     const next = data as CaptureOptions;
     setOptions(next);
-    if (next.activeSession) setSession(next.activeSession);
-    if (!deviceId && next.devices.length) {
-      setDeviceId(next.devices.find((device) => device.isDefault)?.id ?? next.devices[0].id);
-    }
+    setSession(next.activeSession ?? null);
+    const fallbackDeviceId = next.devices.find((device) => device.isDefault)?.id ?? next.devices[0]?.id ?? "";
+    setDeviceId((current) =>
+      next.devices.some((device) => device.id === current) ? current : fallbackDeviceId);
     return next;
   };
 
@@ -129,6 +129,15 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
           cache: "no-store",
         });
         const data = await readJson(response);
+        if (!response.ok && response.status === 404) {
+          const latest = await refreshOptions();
+          if (cancelled) return;
+          const preserved = latest.recoveries?.some((recovery) => recovery.sessionId === session.sessionId);
+          setMessage(preserved
+            ? "Recording stopped unexpectedly. Its preserved audio is ready to recover below."
+            : "The recording session is no longer available. Check preserved recordings below.");
+          return;
+        }
         if (!response.ok) throw new Error(data.error ?? "Could not update recording status.");
         if (cancelled) return;
         const updated = data as CaptureSession;

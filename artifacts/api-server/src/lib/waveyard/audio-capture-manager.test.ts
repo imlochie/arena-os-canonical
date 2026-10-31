@@ -11,12 +11,16 @@ import {
   createCaptureStorageBudget,
   estimateCaptureSecondsRemaining,
   getAudioCaptureOptions,
+  getAudioCaptureImportResult,
+  getAudioCaptureSessionDirectory,
   getAudioCaptureStatus,
   getRecoverableAudioCapture,
   listRecoverableAudioCaptures,
   shutdownAudioCaptures,
   startAudioCapture,
   stopAudioCapture,
+  setAudioCaptureImportResult,
+  runAudioCaptureImport,
 } from "./audio-capture-manager";
 
 const originalEnvironment = {
@@ -211,8 +215,41 @@ printf '%s\\n' '{"type":"stopped"}' >&2
   assert.ok(firstStop);
   assert.equal(repeatedStop, firstStop);
   assert.equal(firstStop.result.sampleFrames, 12);
+  const importedResponse = { trackId: "deduplicated-result", created: true };
+  let importCalls = 0;
+  let releaseImport!: () => void;
+  let markImportStarted!: () => void;
+  const importGate = new Promise<void>((resolve) => { releaseImport = resolve; });
+  const importStarted = new Promise<void>((resolve) => { markImportStarted = resolve; });
+  const importOperation = async () => {
+    importCalls += 1;
+    markImportStarted();
+    await importGate;
+    setAudioCaptureImportResult(ownerId, second.sessionId, importedResponse);
+    return importedResponse;
+  };
+  const firstImport = runAudioCaptureImport(ownerId, second.sessionId, importOperation);
+  const duplicateImport = runAudioCaptureImport(ownerId, second.sessionId, async () => {
+    throw new Error("A duplicate request must join the in-flight import.");
+  });
+  assert.equal(firstImport, duplicateImport, "concurrent stop retries join one import");
+  await importStarted;
+  assert.equal(importCalls, 1);
+  assert.equal(
+    (await listRecoverableAudioCaptures(ownerId)).some((capture) => capture.sessionId === second.sessionId),
+    false,
+    "a completed file is not offered for recovery while the stop request imports it",
+  );
+  releaseImport();
+  assert.deepEqual(await Promise.all([firstImport, duplicateImport]), [importedResponse, importedResponse]);
+  const captureDirectory = firstStop.sessionDirectory;
+  assert.deepEqual(getAudioCaptureImportResult(ownerId, second.sessionId), importedResponse);
+  assert.equal(getAudioCaptureSessionDirectory(ownerId, second.sessionId), captureDirectory);
+  assert.equal(getAudioCaptureStatus(ownerId, second.sessionId)?.status, "completed");
+  assert.equal(await stopAudioCapture(ownerId, second.sessionId), null, "the full child/session state is released after import");
   assert.deepEqual(await shutdownAudioCaptures(), { stopped: 0, preserved: 0, forced: 0, unresponsive: 0 });
   clearRecoveredAudioCapture(ownerId, second.sessionId);
+  assert.equal(getAudioCaptureImportResult(ownerId, second.sessionId), null, "recovery cleanup also releases its small retry cache entry");
 
   const lowSpace = await startAudioCapture(ownerId, { title: "Low-space safety stop test" });
   process.env.ARENA_DATA_DIR = "/proc";
