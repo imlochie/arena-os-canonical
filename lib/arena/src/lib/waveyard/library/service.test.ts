@@ -19,7 +19,8 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
+import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
+import { requireTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 
 const repoRoot = path.resolve(path.dirname(process.argv[1] ?? "."), "..", "..", "..", "..");
 const OWNER = "11111111-1111-4111-8111-111111111111";
@@ -1268,4 +1269,48 @@ test("smart collections: CRUD with strict validation, evaluated live over real t
   assert.equal(await service.deleteSmartCollection(OWNER, created!.id), true);
   assert.equal(await service.deleteSmartCollection(OWNER, created!.id), false);
   assert.equal((await service.listSmartCollections(OWNER)).length, 0);
+});
+
+test("library intake preserves embedded title, artist, and album tags for audio backups", async () => {
+  const plainPath = path.join(root!, "tag-source.wav");
+  const taggedPath = path.join(root!, "tagged-library-audio.wav");
+  writeWav(plainPath, 2, 330);
+  const ffmpeg = await requireTool("ffmpeg");
+  const tagged = spawnSync(ffmpeg.path, [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-i",
+    plainPath,
+    "-metadata",
+    "title=Embedded Title",
+    "-metadata",
+    "artist=Embedded Artist",
+    "-metadata",
+    "album=Embedded Album",
+    "-c:a",
+    "copy",
+    "-y",
+    taggedPath,
+  ], { encoding: "utf8" });
+  assert.equal(tagged.status, 0, tagged.stderr);
+  const probed = await probeAudio(taggedPath);
+  assert.deepEqual(probed.tags, {
+    title: "Embedded Title",
+    artist: "Embedded Artist",
+    album: "Embedded Album",
+  });
+  const exactAudioChecksum = await checksumFile(taggedPath);
+  const imported = await service.addTrackFromAudioFile({
+    ownerId: OTHER,
+    filePath: taggedPath,
+    filename: "01 - Filename Artist - Filename Title.wav",
+    mimeType: "audio/wav",
+  });
+  assert.equal(imported.track.title, "Embedded Title");
+  assert.equal(imported.track.artist, "Embedded Artist");
+  assert.equal(imported.track.album, "Embedded Album");
+  const [storedTrack] = await db.db.select().from(schema.tracks).where(eq(schema.tracks.id, imported.track.id)).limit(1);
+  assert.equal(storedTrack.sourceChecksumSha256, exactAudioChecksum,
+    "tag extraction must not transcode or replace the original audio bytes");
 });

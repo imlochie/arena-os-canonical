@@ -36,6 +36,12 @@ export type SeparationJobPayload = {
   parentStemAssetId?: string;
 };
 
+export type AudioTags = {
+  title?: string;
+  artist?: string;
+  album?: string;
+};
+
 export type AudioMetadata = {
   durationSeconds: number;
   sampleRate: number;
@@ -44,6 +50,7 @@ export type AudioMetadata = {
   bitrate: number | null;
   container: string;
   sizeBytes: number;
+  tags?: AudioTags;
 };
 
 export const WAVEFORM_RESOLUTIONS = [256, 512, 1024, 2048, 4096] as const;

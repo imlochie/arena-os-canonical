@@ -10,6 +10,7 @@ import {
 } from "@workspace/db/waveyardSchema";
 import { enqueueSeparation, enqueueWaveform } from "./queue";
 import { getStorage, privateObjectKey } from "./storage";
+import type { AudioMetadata } from "./types";
 
 export type SourceAcquisitionProvenance = {
   method: "local-upload" | "authorized-url";
@@ -34,6 +35,8 @@ type IngestSourceFileInput = {
   device: "auto" | "cpu" | "cuda";
   provenance: SourceAcquisitionProvenance;
   prepareProcessing?: boolean;
+  /** Reuse a prior trusted probe when the caller also needs its embedded tags. */
+  probedAudio?: AudioMetadata;
 };
 
 type QueuedIngestResult = {
@@ -62,7 +65,7 @@ export async function ingestSourceFile(
   input: IngestSourceFileInput,
 ): Promise<QueuedIngestResult | UnqueuedIngestResult> {
   const cleanName = sanitizedFilename(input.filename);
-  const metadata = await probeAudio(input.filePath);
+  const metadata = input.probedAudio ?? await probeAudio(input.filePath);
   const checksum = await checksumFile(input.filePath);
   const storageKey = privateObjectKey(input.projectId, "source", extname(cleanName));
   let stored = false;

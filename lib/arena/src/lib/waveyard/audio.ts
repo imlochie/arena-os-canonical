@@ -93,17 +93,23 @@ export async function probeAudio(path: string): Promise<AudioMetadata> {
     "-v",
     "error",
     "-show_entries",
-    "format=format_name,duration,bit_rate:stream=codec_name,sample_rate,channels",
+    "format=format_name,duration,bit_rate:format_tags=title,artist,album,album_artist:stream=codec_name,sample_rate,channels:stream_tags=title,artist,album,album_artist",
     "-of",
     "json",
     path,
   ]);
   const report = JSON.parse(stdout) as {
-    format?: { format_name?: string; duration?: string; bit_rate?: string };
+    format?: {
+      format_name?: string;
+      duration?: string;
+      bit_rate?: string;
+      tags?: Record<string, unknown>;
+    };
     streams?: Array<{
       codec_name?: string;
       sample_rate?: string;
       channels?: number;
+      tags?: Record<string, unknown>;
     }>;
   };
   const stream = report.streams?.find(
@@ -116,6 +122,28 @@ export async function probeAudio(path: string): Promise<AudioMetadata> {
   const codec = stream?.codec_name;
   const sampleRate = stream?.sample_rate;
   const channels = stream?.channels;
+  const tagSources = [report.format?.tags, stream?.tags];
+  const readTag = (...keys: string[]) => {
+    for (const source of tagSources) {
+      if (!source) continue;
+      const value = Object.entries(source).find(([key]) =>
+        keys.includes(key.toLowerCase()),
+      )?.[1];
+      if (typeof value !== "string") continue;
+      const clean = value
+        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 512);
+      if (clean.length > 0) return clean;
+    }
+    return undefined;
+  };
+  const tags = {
+    title: readTag("title"),
+    artist: readTag("artist", "album_artist"),
+    album: readTag("album"),
+  };
   if (
     !stream ||
     !codec ||
@@ -135,6 +163,7 @@ export async function probeAudio(path: string): Promise<AudioMetadata> {
     bitrate: report.format?.bit_rate ? Number(report.format.bit_rate) : null,
     container: report.format?.format_name ?? "unknown",
     sizeBytes,
+    ...(Object.values(tags).some((value) => value !== undefined) ? { tags } : {}),
   };
 }
 

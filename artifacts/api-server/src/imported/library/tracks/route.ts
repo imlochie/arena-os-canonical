@@ -65,6 +65,7 @@ export async function POST(request: Request) {
       mimeType: upload.type || "application/octet-stream",
       title: typeof form.get("title") === "string" ? String(form.get("title")) : undefined,
       artist: typeof form.get("artist") === "string" ? String(form.get("artist")) : undefined,
+      album: typeof form.get("album") === "string" ? String(form.get("album")) : undefined,
     });
     return Response.json(
       {

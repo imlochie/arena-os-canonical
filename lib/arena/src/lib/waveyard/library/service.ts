@@ -38,7 +38,7 @@ import {
   stemAssets,
   tracks,
 } from "@workspace/db/waveyardSchema";
-import { checksumFile } from "@workspace/arena/lib/waveyard/audio";
+import { checksumFile, probeAudio } from "@workspace/arena/lib/waveyard/audio";
 import {
   normalizeLabels,
   normalizeRating,
@@ -335,9 +335,11 @@ export async function addTrackFromAudioFile(input: {
       return { track: summary, created: false, separationQueued: false };
     }
 
+    const probedAudio = await probeAudio(input.filePath);
     const derived = deriveTrackMetadata(input.filename);
-    const title = (input.title ?? "").trim() || derived.title;
-    const artist = (input.artist ?? "").trim() || derived.artist;
+    const title = (input.title ?? "").trim() || probedAudio.tags?.title || derived.title;
+    const artist = (input.artist ?? "").trim() || probedAudio.tags?.artist || derived.artist;
+    const album = (input.album ?? "").trim() || probedAudio.tags?.album || "";
 
     // A previous request may have completed source/job creation but lost its
     // client before it inserted the library track. Reuse that committed intake
@@ -362,7 +364,7 @@ export async function addTrackFromAudioFile(input: {
           sourceChecksumSha256: checksum,
           title,
           artist,
-          album: input.album ?? "",
+          album,
           sourceAssetId: orphanedIntake.source.id,
           projectId: orphanedIntake.projectId,
           durationSeconds: orphanedIntake.source.durationSeconds,
@@ -397,6 +399,7 @@ export async function addTrackFromAudioFile(input: {
       filePath: input.filePath,
       filename: input.filename,
       mimeType: input.mimeType,
+      probedAudio,
       model: input.model ?? defaultSeparationModel(),
       device: input.device ?? "auto",
       provenance: { method: "local-upload" as const, title, artist, metadata: { intake: "waveyard-library" } },
@@ -412,7 +415,7 @@ export async function addTrackFromAudioFile(input: {
         sourceChecksumSha256: checksum,
         title,
         artist,
-        album: input.album ?? "",
+        album,
         sourceAssetId: ingest.source.id,
         projectId: container.id,
         durationSeconds: ingest.source.durationSeconds,
