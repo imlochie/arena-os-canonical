@@ -59,6 +59,31 @@ retained locally for diagnosis; do not upload its browser profiles or database.
 Linux builds, fake-model tests, hosted previews and screenshots do not establish
 that this check passed.
 
+## Focused Arcade local-model check
+
+To verify only Arcade prompt generation, without making success depend on a
+separate browser-task capability, close ArenaForge and run this from PowerShell
+in the workspace. Build and install the current checkout first with
+`desktop/Start-Windows.ps1` unless the executable already contains this checkout:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File desktop/Check-Arcade-Windows.ps1 `
+  -Executable "C:\full\path\to\ArenaForge.exe" `
+  -Model "qwen2.5:3b"
+```
+
+This requires Windows x64, Node.js 22+ and installed workspace dependencies for
+the Playwright runner, plus Ollama running on `127.0.0.1:11434` with the named
+model already installed. The app itself does not require system Node.js after
+packaging. For a starting model, use Qwen 2.5 3B with at least 12 GB RAM, or
+Qwen 2.5 1.5B with 8–11 GB RAM. These are hardware starting points, not speed
+or quality guarantees. No provider credentials or WebGPU are used.
+
+The generated `arcade-result.json` records prompt generation, import and
+gameplay-edit as separate flows. Only prompt generation runs in this check;
+import and gameplay-edit are explicitly marked `not_run`, not inferred from
+the generation result.
+
 ## Data and shutdown
 
 Default state: `%LOCALAPPDATA%\Arena`, matching the original desktop convention.

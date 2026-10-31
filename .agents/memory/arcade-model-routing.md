@@ -45,6 +45,12 @@ Do not claim local game generation works based only on WebGPU detection or succe
 
 **How to apply:** Treat the on-device generation check as device-specific evidence; a headless browser without WebGPU must report “not verified,” never pass.
 
+WebGPU API exposure is not proof that an adapter is usable: Chromium can leave `navigator.gpu` present while `requestAdapter()` returns no adapter. Also distinguish a minimal local-generation smoke prompt from representative game-quality testing.
+
+**Why:** Chromium 152 exposed the API in a local preview with GPU/WebGPU disabled, while the small CPU model passed Arcade's focused game check but failed a more demanding Pong prompt.
+
+**How to apply:** Check adapter availability, then separately verify source validation and isolated startup. Report the prompt and model used; a minimal smoke pass proves the route works, not that every custom game prompt will succeed.
+
 Model backend labels are a runtime contract. Keep model selection, Local Mode routing, the local-model proof action, cancellation, and runtime provenance aligned for every server-routed local backend. Restrict local inference to loopback and never disguise an unreachable model as generated game code.
 
 **Why:** A catalogued TurboAgent model was being routed differently from Model Hub models: Local Mode chose the WebGPU path, and the local proof control did not recognize it.
