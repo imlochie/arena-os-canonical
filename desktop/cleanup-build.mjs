@@ -1,8 +1,9 @@
-import { readdir, rm } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { removeDirWithRetry } from "./fs-cleanup.mjs";
 
-export async function cleanupSuccessfulBuild({ stageDir, distDir, installerDir }) {
+export async function cleanupSuccessfulBuild({ stageDir, distDir, installerDir, removeDir = removeDirWithRetry }) {
   const entries = await readdir(installerDir, { withFileTypes: true });
   const installerExists = entries.some(
     (entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"),
@@ -10,8 +11,8 @@ export async function cleanupSuccessfulBuild({ stageDir, distDir, installerDir }
   if (!installerExists) {
     throw new Error("No Windows installer was found; preserving generated staging files for diagnosis.");
   }
-  await rm(stageDir, { recursive: true, force: true });
-  await rm(distDir, { recursive: true, force: true });
+  await removeDir(stageDir);
+  await removeDir(distDir);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

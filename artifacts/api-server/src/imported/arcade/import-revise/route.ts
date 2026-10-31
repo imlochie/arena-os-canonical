@@ -35,9 +35,14 @@ export async function POST(req: Request) {
       keys: body?.localOnly === true ? undefined : body?.keys,
       localOnly: body?.localOnly === true,
       modelId: body?.modelId ? String(body.modelId) : undefined,
+      signal: req.signal,
     });
+    if (req.signal.aborted) return new Response(null, { status: 499 });
     return Response.json({ code: result.code, runtime: result.runtime });
   } catch (error) {
+    if (req.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+      return new Response(null, { status: 499 });
+    }
     const message = error instanceof Error ? error.message : "imported-game revision failed";
     const noModel = (error as any)?.noModel === true || /no connected code-writing model/i.test(message);
     return Response.json(

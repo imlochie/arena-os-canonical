@@ -2454,6 +2454,8 @@ try {
   const revisedGameHtml = `<!doctype html><html><head><title>Revised fixture</title></head><body><canvas id="patched" width="240" height="160"></canvas><script>let score=0;const c=document.getElementById("patched"),x=c.getContext("2d");function loop(){score++;x.fillStyle="#13b981";x.fillRect(0,0,c.width,c.height);document.title="Score "+score;requestAnimationFrame(loop)}loop();addEventListener("keydown",()=>{});addEventListener("touchstart",()=>{});</script><!-- ${"original test-only game code ".repeat(60)} --></body></html>`;
   const revisedArchiveHtml = '<!doctype html><html><head><title>Revised offline project</title><style>#tile{width:48px;height:48px;background-image:url("data:ARENA_ASSET_TOKEN_0001");background-size:cover}</style></head><body><p id="hud">Score 0</p><div id="tile"></div><img id="dynamic-sprite" src="data:ARENA_ASSET_TOKEN_0004"><audio id="sfx" src="data:ARENA_ASSET_TOKEN_0002"></audio><button id="play-sfx">Play sound</button><button id="play-dynamic-sfx">Play dynamic sound</button><script>let score=Number(localStorage.getItem("zip-score")||0);const hud=document.getElementById("hud");hud.textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score+=2;localStorage.setItem("zip-score",String(score));hud.textContent="Score "+score}});const dynamicSfx=new Audio("data:ARENA_ASSET_TOKEN_0003");dynamicSfx.id="dynamic-sfx";document.body.appendChild(dynamicSfx);document.getElementById("play-sfx").addEventListener("click",()=>{void document.getElementById("sfx").play()});document.getElementById("play-dynamic-sfx").addEventListener("click",()=>{void dynamicSfx.play()});</script></body></html>';
   let revisionRequestSeen = false;
+  let cancelRevisionStarted = false;
+  let releaseCancelRevisionRoute;
   let archiveAudioBase64 = "";
   await page.route("**/api/arcade/import/revise", async route => {
     const body = route.request().postDataJSON();
@@ -2461,6 +2463,12 @@ try {
     assert.equal(body.modelId, expectedModelId, "Imported-source revisions must use the selected model source");
     assert.equal(Boolean(body.localOnly), expectedLocalOnly, "Imported-source revisions must preserve Local Mode");
     if (expectedLocalOnly) assert.equal(body.keys, undefined, "Local Mode must not send provider keys for imported source");
+    if (body.prompt === "Cancel this revision") {
+      cancelRevisionStarted = true;
+      await new Promise(resolve => { releaseCancelRevisionRoute = resolve; });
+      try { await route.abort("aborted"); } catch {}
+      return;
+    }
     revisionRequestSeen = true;
     if (body.prompt === "Add a pause overlay") {
       assert(body.priorCode.includes("Open homebrew fixture"), "Imported source must be included in the revision request");
@@ -2480,6 +2488,24 @@ try {
       body: JSON.stringify({ code: body.prompt === "Make movement faster" ? revisedArchiveHtml : revisedGameHtml }),
     });
   });
+  const cancelRequest = page.waitForRequest(request =>
+    request.url().includes("/api/arcade/import/revise") &&
+    request.postDataJSON()?.prompt === "Cancel this revision",
+  );
+  const cancelledRequestFailure = page.waitForEvent("requestfailed", request =>
+    request.url().includes("/api/arcade/import/revise") &&
+    request.postDataJSON()?.prompt === "Cancel this revision",
+  );
+  await page.getByLabel("Revise this browser game").fill("Cancel this revision");
+  await page.getByRole("button", { name: "Apply revision" }).click();
+  await cancelRequest;
+  assert(cancelRevisionStarted, "The cancel revision request did not reach the selected model route");
+  await page.getByTestId("button-cancel-imported-revision").click();
+  releaseCancelRevisionRoute?.();
+  const failedRevisionRequest = await cancelledRequestFailure;
+  assert(failedRevisionRequest.failure()?.errorText, "Stopping an imported-game revision must abort its in-flight request");
+  await page.getByText("Revision cancelled. The imported game and its progress are unchanged.").waitFor();
+  assert.equal(await browserFrame.locator("#patched").count(), 0, "A cancelled revision must leave the imported source untouched");
   await page.getByLabel("Revise this browser game").fill("Add a pause overlay");
   await page.getByRole("button", { name: "Apply revision" }).click();
   await page.getByText("Revision applied to the current playable file.").waitFor({ timeout: 10000 });

@@ -156,6 +156,7 @@ export async function reviseImportedHtmlWithAI(
     keys?: { openrouter?: string; groq?: string; gemini?: string; turboagent?: string; openai?: string; mistral?: string };
     localOnly?: boolean;
     modelId?: string;
+    signal?: AbortSignal;
   } = {},
   deps: { generate?: typeof generate } = {},
 ): Promise<{ code: string; runtime: { backend?: string; modelId: string; via?: string; fallback?: boolean; ms: number } }> {
@@ -183,8 +184,14 @@ export async function reviseImportedHtmlWithAI(
     maxTokens: 16_000,
     keys: opts.localOnly ? undefined : opts.keys,
     localOnly: opts.localOnly,
+    signal: opts.signal,
     allowPublicFallback: false,
   });
+  if (opts.signal?.aborted) {
+    const error = new Error("The operation was aborted.");
+    error.name = "AbortError";
+    throw error;
+  }
   if (result.fallback) {
     const error = new Error("No connected code-writing model is available for this imported-game revision.");
     (error as any).noModel = true;

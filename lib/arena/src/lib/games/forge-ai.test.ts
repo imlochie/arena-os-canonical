@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildPong } from "./classics";
-import { forgeGameWithAI } from "./forge-ai";
+import { forgeGameWithAI, reviseImportedHtmlWithAI } from "./forge-ai";
 import { isClassicCorePrompt } from "./index";
 
 test("classic titles inside custom requests never select a preset core", () => {
@@ -67,4 +67,34 @@ test("oversized revision source is refused before calling a model", async () => 
     generate: (async () => { called = true; throw new Error("must not run"); }) as any,
   }), /too large to revise/);
   assert.equal(called, false);
+});
+
+test("imported-game revisions pass cancellation to the selected model", async () => {
+  const controller = new AbortController();
+  const source = buildPong();
+  let request: any;
+  const pending = reviseImportedHtmlWithAI(
+    "Add a pause overlay",
+    source,
+    { modelId: "hub:ollama:qwen2.5-3b", localOnly: true, signal: controller.signal },
+    {
+      generate: (async (input: any) => {
+        request = input;
+        return new Promise((_resolve, reject) => {
+          input.signal.addEventListener("abort", () => {
+            const error = new Error("cancelled");
+            error.name = "AbortError";
+            reject(error);
+          }, { once: true });
+        });
+      }) as any,
+    },
+  );
+  assert.equal(request.signal, controller.signal);
+  assert.equal(request.modelId, "hub:ollama:qwen2.5-3b");
+  assert.equal(request.localOnly, true);
+  assert.equal(request.keys, undefined);
+  assert.equal(request.allowPublicFallback, false);
+  controller.abort();
+  await assert.rejects(pending, (error: any) => error.name === "AbortError");
 });

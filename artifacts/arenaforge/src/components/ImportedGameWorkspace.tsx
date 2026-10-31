@@ -42,7 +42,7 @@ type ReaGameAnalysis = {
 };
 
 type ImportedGameWorkspaceProps = {
-  onReviseSource(sourceHtml: string, instruction: string): Promise<string>;
+  onReviseSource(sourceHtml: string, instruction: string, signal: AbortSignal): Promise<string>;
   onUseRemakePrompt(prompt: string): void;
 };
 
@@ -380,6 +380,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const htmlFrameRef = useRef<HTMLIFrameElement>(null);
   const nesRef = useRef<NES | null>(null);
+  const revisionAbortRef = useRef<AbortController | null>(null);
   const buttonsRef = useRef<Map<string, ButtonKey>>(new Map());
   const selected = games.find((game) => game.id === selectedId) ?? null;
   const selectedEmulatorRom = useMemo(
@@ -394,6 +395,8 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     htmlFrameRef,
     selected?.kind === "html" ? selected.id : null,
   );
+
+  useEffect(() => () => revisionAbortRef.current?.abort(), []);
 
   useEffect(() => {
     if (!selected || selected.kind !== "nes") {
@@ -642,6 +645,8 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
 
   const revise = async () => {
     if (!selected || selected.kind !== "html" || !instruction.trim() || busy) return;
+    const controller = new AbortController();
+    revisionAbortRef.current = controller;
     setBusy(true);
     setError("");
     setNotice("");
@@ -649,7 +654,12 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
       if (!compactHtml || compactHtml.source.length > 50_000) {
         throw new Error("Game code sent for revision is limited to 50 KB after bundled media is removed.");
       }
-      const modelRevision = await onReviseSource(compactHtml.source, instruction.trim());
+      const modelRevision = await onReviseSource(compactHtml.source, instruction.trim(), controller.signal);
+      if (controller.signal.aborted) {
+        const aborted = new Error("Revision cancelled.");
+        aborted.name = "AbortError";
+        throw aborted;
+      }
       const revised = restoreEmbeddedAssets(modelRevision, compactHtml.assets);
       if (typeof revised !== "string") throw new Error("The revision did not return HTML source.");
       const issue = htmlSafetyIssue(revised);
@@ -658,8 +668,14 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
       setInstruction("");
       setNotice("Revision applied to the current playable file.");
     } catch (cause) {
-      setError(`Revision failed: ${errorMessage(cause)}`);
+      if (controller.signal.aborted || (cause instanceof Error && cause.name === "AbortError")) {
+        setError("");
+        setNotice("Revision cancelled. The imported game and its progress are unchanged.");
+      } else {
+        setError(`Revision failed: ${errorMessage(cause)}`);
+      }
     } finally {
+      if (revisionAbortRef.current === controller) revisionAbortRef.current = null;
       setBusy(false);
     }
   };
@@ -1027,9 +1043,21 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                    <p className="text-[10px] leading-relaxed text-slate-500">The selected model receives game code and your instruction; bundled media bytes are kept local. Use local-only mode for private source.</p>
                   <p className="text-[10px] leading-relaxed text-slate-500">A change is applied only when it returns complete HTML that passes Arcade's game safety checks.</p>
                    {compactHtml && compactHtml.source.length > 50_000 && <p className="text-[10px] text-amber-200">This game has more than 50 KB of executable source after media is excluded. It can still be played locally.</p>}
-                   <button type="button" onClick={() => void revise()} disabled={busy || !instruction.trim() || !compactHtml || compactHtml.source.length > 50_000} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
-                    {busy ? "Revising…" : "Apply revision"}
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void revise()} disabled={busy || !instruction.trim() || !compactHtml || compactHtml.source.length > 50_000} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
+                      {busy ? "Revising…" : "Apply revision"}
+                    </button>
+                    {busy && revisionAbortRef.current && (
+                      <button
+                        type="button"
+                        data-testid="button-cancel-imported-revision"
+                        onClick={() => revisionAbortRef.current?.abort()}
+                        className="rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-200 hover:bg-red-500/20"
+                      >
+                        Stop revision
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : selected.kind === "nes" ? (
                 <div className="space-y-2">

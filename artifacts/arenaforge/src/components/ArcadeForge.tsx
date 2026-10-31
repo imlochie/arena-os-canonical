@@ -1030,7 +1030,7 @@ export default function ArcadeForge() {
     }
   }
 
-  async function reviseImportedSource(source: string, instruction: string): Promise<string> {
+  async function reviseImportedSource(source: string, instruction: string, signal: AbortSignal): Promise<string> {
     if (source.length > 50_000) {
       throw new Error("Game source sent for revision is limited to 50 KB after media is removed.");
     }
@@ -1054,6 +1054,7 @@ export default function ArcadeForge() {
         user:
           `Modify this complete HTML browser game according to the requested change.\n\n` +
           `REQUESTED CHANGE:\n${instruction}\n\nCURRENT GAME SOURCE:\n${source}`,
+        signal,
       });
       const revised = extractGameCode(result.text);
       if (!revised) throw new Error("The model did not return a complete HTML game.");
@@ -1063,6 +1064,7 @@ export default function ArcadeForge() {
     const response = await fetch("/api/arcade/import/revise", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal,
       body: JSON.stringify({
         prompt: instruction,
         priorCode: source,
