@@ -30,9 +30,9 @@ if ($tags.models.name -notcontains $Model) {
 }
 
 Write-Host "This check uses the packaged app, the installed local Ollama model, and an isolated data directory."
-Write-Host "WebGPU is explicitly disabled. Import and gameplay editing are reported as separate, untested flows."
+Write-Host "WebGPU is explicitly disabled. Import and gameplay editing are untested; Pong mechanics are checked in the isolated preview."
 & node "$PSScriptRoot\arcade-acceptance.mjs" (Resolve-Path $Executable).Path $Model
 if ($LASTEXITCODE -ne 0) {
   throw "The live local-model Arcade check failed. Inspect generated-artifacts\windows-check\arcade-result.json."
 }
-Write-Host "Arcade prompt-generation check passed. Share only generated-artifacts\windows-check\arcade-result.json."
+Write-Host "Arcade generation and Pong mechanics check passed. Share only generated-artifacts\windows-check\arcade-result.json."

@@ -25,7 +25,7 @@ const promptCases = [
   },
   {
     id: "pong-mechanics",
-    prompt: "Create an original single-screen Pong game with two paddles, a bouncing ball, visible score, arrow-key controls, and an immediate playable start.",
+    prompt: "Create an original single-screen HTML5 Pong game with two paddles and a bouncing ball. Player 1 controls the left paddle with W and S; Player 2 controls the right paddle with ArrowUp and ArrowDown. Show both scores at the top center. Start playing immediately, award a point when the ball passes a paddle, and let R restart the game and reset both scores to zero. Use a canvas and make it one complete offline HTML file with no external URLs or assets.",
   },
 ];
 const report = {
@@ -45,6 +45,7 @@ const report = {
   flows: {
     import: { status: "not_run", reason: "Import is a separate browser-local flow." },
     promptGeneration: { status: "pending", cases: [] },
+    gameplayMechanics: { status: "pending", cases: [] },
     gameplayEdit: { status: "not_run", reason: "Gameplay edits are a separate source-revision flow." },
   },
   checks: [],
@@ -81,6 +82,212 @@ async function launch() {
   await page.waitForURL("**/spaces", { timeout: 150_000 });
   await page.getByRole("heading", { name: "Browser tasks in private workspaces" }).waitFor();
   base = new URL(page.url()).origin;
+}
+
+async function samplePongFrame(gameFrame, includePixels = false) {
+  return gameFrame.evaluate((returnPixels) => {
+    const canvas = document.querySelector("canvas");
+    if (!(canvas instanceof HTMLCanvasElement)) throw new Error("The Pong preview has no canvas.");
+    const width = 96;
+    const height = 60;
+    const sample = document.createElement("canvas");
+    sample.width = width;
+    sample.height = height;
+    const context = sample.getContext("2d", { willReadFrequently: true });
+    const source = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context || !source) throw new Error("The Pong preview does not expose a readable 2D canvas.");
+    context.drawImage(canvas, 0, 0, width, height);
+    const { data } = context.getImageData(0, 0, width, height);
+    const pixels = returnPixels ? new Array(width * height) : null;
+    const bright = new Uint8Array(width * height);
+    for (let index = 0; index < width * height; index++) {
+      const offset = index * 4;
+      const red = data[offset];
+      const green = data[offset + 1];
+      const blue = data[offset + 2];
+      const color = ((red >> 4) << 8) | ((green >> 4) << 4) | (blue >> 4);
+      if (pixels) pixels[index] = color;
+      bright[index] = Math.max(red, green, blue) > 180 &&
+        Math.min(red, green, blue) > 45 && data[offset + 3] > 120 ? 1 : 0;
+    }
+
+    // Locate the small bright moving object in the court, excluding the score
+    // row and paddle lanes. This is evidence for movement/bounce, not a game API.
+    const visited = new Uint8Array(width * height);
+    const candidates = [];
+    for (let start = width * 0.1 | 0; start < width * 0.9; start++) {
+      for (let row = height * 0.16 | 0; row < height * 0.9; row++) {
+        const origin = row * width + start;
+        if (!bright[origin] || visited[origin]) continue;
+        const stack = [origin];
+        visited[origin] = 1;
+        let minX = start, maxX = start, minY = row, maxY = row, count = 0;
+        while (stack.length) {
+          const point = stack.pop();
+          const x = point % width;
+          const y = Math.floor(point / width);
+          count++;
+          minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            const nextX = x + dx, nextY = y + dy;
+            if (nextX < 1 || nextX >= width - 1 || nextY < 1 || nextY >= height - 1) continue;
+            const next = nextY * width + nextX;
+            if (bright[next] && !visited[next]) { visited[next] = 1; stack.push(next); }
+          }
+        }
+        const boxWidth = maxX - minX + 1;
+        const boxHeight = maxY - minY + 1;
+        if (count >= 3 && count <= 100 && boxWidth >= 2 && boxHeight >= 2 && boxWidth <= 12 && boxHeight <= 12) {
+          const x = (minX + maxX) / 2;
+          const y = (minY + maxY) / 2;
+          const centerDistance = Math.abs(x - width / 2) / width + Math.abs(y - height / 2) / height;
+          candidates.push({ x, y, centerDistance, count });
+        }
+      }
+    }
+    candidates.sort((a, b) => a.centerDistance - b.centerDistance);
+
+    const scorePixels = [];
+    for (let row = 1; row < height * 0.16; row++) {
+      for (let column = width * 0.28 | 0; column < width * 0.72; column++) {
+        const offset = (row * width + column) * 4;
+        scorePixels.push(((data[offset] >> 4) << 8) | ((data[offset + 1] >> 4) << 4) | (data[offset + 2] >> 4));
+      }
+    }
+    const scoreText = (document.body.innerText || "").replace(/\s+/g, " ").match(
+      /(?:score\s*[:=]?\s*\d+(?:\s*[-:]\s*\d+)?|(?:player\s*1|p1)\s*[:=]?\s*\d+\s+(?:player\s*2|p2)\s*[:=]?\s*\d+|\b\d+\s*[-:]\s*\d+\b)/i,
+    )?.[0] ?? null;
+    return { width, height, ...(pixels ? { pixels } : {}), ball: candidates[0] ? { x: candidates[0].x, y: candidates[0].y } : null, scorePixels, scoreText };
+  }, includePixels);
+}
+
+function countPixelChanges(before, after, region = "all") {
+  let changed = 0;
+  for (let y = 10; y < 54; y++) {
+    for (let x = 0; x < 96; x++) {
+      if (region === "left" && x >= 18) continue;
+      if (region === "right" && x < 78) continue;
+      const index = y * 96 + x;
+      if (before.pixels[index] !== after.pixels[index]) changed++;
+    }
+  }
+  return changed;
+}
+
+function scoreChanged(initial, current) {
+  if (initial.scoreText && current.scoreText) return initial.scoreText !== current.scoreText;
+  let changed = 0;
+  for (let index = 0; index < initial.scorePixels.length; index++) {
+    if (initial.scorePixels[index] !== current.scorePixels[index]) changed++;
+  }
+  return changed >= 3;
+}
+
+function scoreReset(initial, current) {
+  if (initial.scoreText && current.scoreText) return initial.scoreText === current.scoreText;
+  let changed = 0;
+  for (let index = 0; index < initial.scorePixels.length; index++) {
+    if (initial.scorePixels[index] !== current.scorePixels[index]) changed++;
+  }
+  return changed <= 2;
+}
+
+async function pressPongKey(gameFrame, canvas, key) {
+  await canvas.click({ force: true });
+  await page.keyboard.down(key);
+  await page.waitForTimeout(260);
+  await page.keyboard.up(key);
+  await page.waitForTimeout(100);
+}
+
+async function verifyPongMechanics(gameFrame, testCase) {
+  const canvas = gameFrame.locator("canvas").first();
+  await canvas.waitFor({ timeout: 10_000 });
+  await canvas.click({ force: true });
+  await page.waitForTimeout(350);
+  const initial = await samplePongFrame(gameFrame, true);
+  const checks = {
+    leftPaddleUp: false,
+    leftPaddleDown: false,
+    rightPaddleUp: false,
+    rightPaddleDown: false,
+    ballMovement: false,
+    ballBounce: false,
+    scoreChange: false,
+    restartResetsScore: false,
+  };
+  const observations = { controls: {}, ballSamples: 0, bounceAxis: null, scoreBefore: initial.scoreText, scoreAfter: null };
+
+  for (const control of [
+    { name: "leftPaddleUp", key: "w", side: "left" },
+    { name: "leftPaddleDown", key: "s", side: "left" },
+    { name: "rightPaddleUp", key: "ArrowUp", side: "right" },
+    { name: "rightPaddleDown", key: "ArrowDown", side: "right" },
+  ]) {
+    const before = await samplePongFrame(gameFrame, true);
+    await pressPongKey(gameFrame, canvas, control.key);
+    const after = await samplePongFrame(gameFrame, true);
+    const own = countPixelChanges(before, after, control.side);
+    const other = countPixelChanges(before, after, control.side === "left" ? "right" : "left");
+    observations.controls[control.name] = { edgePixelsChanged: own, oppositeEdgePixelsChanged: other };
+    checks[control.name] = own >= 4 && own > other;
+  }
+
+  let previousBall = null;
+  let previousDirection = { x: 0, y: 0 };
+  let scoreStreak = 0;
+  let lastScoreState = initial;
+  const started = Date.now();
+  while (Date.now() - started < 30_000 && (!checks.ballBounce || !checks.scoreChange)) {
+    await page.waitForTimeout(120);
+    const current = await samplePongFrame(gameFrame);
+    if (current.ball) {
+      observations.ballSamples++;
+      if (previousBall) {
+        const dx = current.ball.x - previousBall.x;
+        const dy = current.ball.y - previousBall.y;
+        if (Math.abs(dx) + Math.abs(dy) >= 1) checks.ballMovement = true;
+        for (const axis of ["x", "y"]) {
+          const delta = axis === "x" ? dx : dy;
+          const dimension = axis === "x" ? current.width : current.height;
+          const prior = previousDirection[axis];
+          // Ignore teleport-sized score resets and single-pixel antialias noise.
+          if (Math.abs(delta) > 1 && Math.abs(delta) < dimension * 0.18 && prior && Math.sign(delta) !== Math.sign(prior)) {
+            checks.ballBounce = true;
+            observations.bounceAxis = axis;
+          }
+          if (Math.abs(delta) > 1 && Math.abs(delta) < dimension * 0.18) previousDirection[axis] = delta;
+        }
+      }
+      previousBall = current.ball;
+    }
+    if (scoreChanged(initial, current)) {
+      scoreStreak++;
+      lastScoreState = current;
+      if (scoreStreak >= 2) checks.scoreChange = true;
+    } else {
+      scoreStreak = 0;
+    }
+  }
+  observations.scoreAfter = lastScoreState.scoreText;
+  if (checks.scoreChange) {
+    await pressPongKey(gameFrame, canvas, "r");
+    await page.waitForTimeout(500);
+    const restarted = await samplePongFrame(gameFrame);
+    checks.restartResetsScore = scoreReset(initial, restarted);
+    observations.scoreAfterRestart = restarted.scoreText;
+  }
+  const failed = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+  return {
+    id: testCase.id,
+    model: report.model,
+    status: failed.length === 0 ? "passed" : "failed",
+    checks,
+    observations,
+    ...(failed.length ? { failureType: "gameplay-mechanics", failures: failed } : {}),
+  };
 }
 
 try {
@@ -196,6 +403,15 @@ try {
             : generationResponse.status() === 503
               ? "model-routing-or-runtime"
               : "generation";
+        if (testCase.id === "pong-mechanics") {
+          report.flows.gameplayMechanics.cases.push({
+            id: testCase.id,
+            model,
+            status: "not_run",
+            failureType: result.failureType,
+            reason: result.reason,
+          });
+        }
         console.error(`FAILED (${testCase.id}): ${result.reason}`);
         continue;
       }
@@ -222,6 +438,31 @@ try {
       const caseRuntimeErrors = runtimeErrors.slice(rendererErrorOffset);
       assert.deepEqual(caseRuntimeErrors, [], `Generated game renderer errors: ${caseRuntimeErrors.join("; ")}`);
 
+      if (testCase.id === "pong-mechanics") {
+        const mechanics = {
+          id: testCase.id,
+          model,
+          status: "not_run",
+          checks: {},
+          reason: null,
+        };
+        report.flows.gameplayMechanics.cases.push(mechanics);
+        try {
+          const result = await verifyPongMechanics(gameFrame, testCase);
+          Object.assign(mechanics, result);
+          if (result.status === "passed") {
+            pass(`${model} Pong controls, ball movement/bounce, scoring, and restart passed in Arcade's isolated preview`);
+          } else {
+            console.error(`FAILED (Pong gameplay mechanics): ${result.failures.join(", ")}`);
+          }
+        } catch (error) {
+          mechanics.status = "failed";
+          mechanics.failureType = "gameplay-mechanics";
+          mechanics.reason = error instanceof Error ? error.message : String(error);
+          console.error(`FAILED (Pong gameplay mechanics): ${mechanics.reason}`);
+        }
+      }
+
       Object.assign(result, {
         status: "passed",
         backend: generated.runtime.backend,
@@ -234,6 +475,22 @@ try {
       pass(`${model} generated ${testCase.id}; validation and isolated startup passed without WebGPU`);
     } catch (error) {
       result.reason = error instanceof Error ? error.message : String(error);
+      result.failureType ??= !result.checks.selectedModelUsed
+        ? "model-routing-or-runtime"
+        : !result.checks.validation
+          ? "arcade-validation"
+          : !result.checks.isolatedStartup || !result.checks.canvasLoaded
+            ? "isolated-startup"
+            : "generation-or-renderer";
+      if (testCase.id === "pong-mechanics" && !report.flows.gameplayMechanics.cases.some((item) => item.id === testCase.id)) {
+        report.flows.gameplayMechanics.cases.push({
+          id: testCase.id,
+          model,
+          status: "not_run",
+          failureType: result.failureType,
+          reason: result.reason,
+        });
+      }
       console.error(`FAILED (${testCase.id}): ${result.reason}`);
     }
   }
@@ -246,12 +503,26 @@ try {
   report.flows.promptGeneration.model = model;
   report.flows.promptGeneration.webgpuAdapterAvailable = false;
   report.flows.promptGeneration.providerCredentialsSent = false;
-  report.passed = passedCases === cases.length;
-  assert.equal(report.passed, true, `Only ${passedCases}/${cases.length} representative prompts passed; see per-prompt results.`);
+  const mechanicCases = report.flows.gameplayMechanics.cases;
+  const mechanicsPassed = mechanicCases.length === 1 && mechanicCases[0].status === "passed";
+  report.flows.gameplayMechanics.status = mechanicsPassed
+    ? "passed"
+    : mechanicCases.length === 0 || mechanicCases.every((item) => item.status === "not_run") ? "not_run" : "failed";
+  report.passed = passedCases === cases.length && mechanicsPassed;
+  assert.equal(report.passed, true,
+    `Generation/startup passed for ${passedCases}/${cases.length} prompts; Pong mechanics status: ${report.flows.gameplayMechanics.status}. See per-flow results.`);
 } catch (error) {
   report.failure = error instanceof Error ? error.message : String(error);
   if (report.flows.promptGeneration.status === "pending") {
     report.flows.promptGeneration = { status: "failed", reason: report.failure };
+  }
+  if (report.flows.gameplayMechanics.status === "pending") {
+    report.flows.gameplayMechanics = {
+      status: "not_run",
+      cases: report.flows.gameplayMechanics.cases,
+      reason: report.failure,
+      blockedBy: "environment-or-prerequisite",
+    };
   }
   console.error(`FAILED: ${report.failure}`);
   process.exitCode = 1;

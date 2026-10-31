@@ -82,16 +82,23 @@ powershell -ExecutionPolicy Bypass -File desktop/Check-Arcade-Windows.ps1 `
 The same run tests both prompts, in order:
 
 1. A small canvas game with arrow-key movement, one collectible, and a score.
-2. A single-screen Pong game with two paddles, a bouncing ball, score, keyboard
-   controls, and an immediate start.
+2. A single-screen Pong game with two paddles, separate W/S and arrow-key
+   controls, a bouncing ball, a visible score, an immediate start, and an R-key
+   restart that resets the score.
 
 Run it again with `-Model "qwen2.5:3b"` to compare the larger documented Qwen
 candidate. Each invocation uses only the named, already-installed model; model
 results are not substituted or combined. The JSON records both prompt outcomes
 even when one fails, and a run exits unsuccessfully unless both prompts pass.
-The test only establishes local routing, Arcade validation, and isolated
-startup. It does not prove the game mechanics match the prompt; play-test those
-mechanics separately. Each run updates `arcade-result.json` and also writes a
+The Pong case is opened in Arcade's normal isolated game preview and receives
+both paddle controls. The runner samples the canvas to check each paddle's
+movement, tracks the ball for movement and a direction reversal, waits for a
+visible score change, then presses R and checks that the score returns to its
+starting state. These are browser-observed gameplay checks, not source-code
+heuristics. They are recorded under `flows.gameplayMechanics`, independently
+from local-model routing, Arcade validation, and isolated startup. A Pong
+generation/startup pass with failed mechanics is not an overall acceptance
+pass. Each run updates `arcade-result.json` and also writes a
 model-specific report (for example, `arcade-result-qwen2.5-coder_1.5b.json`) so
 running the next model does not erase the previous model's results.
 
@@ -110,6 +117,11 @@ import and gameplay-edit are explicitly marked `not_run`, not inferred from
 the generation result. Each prompt records whether the selected local model was
 used, provider credentials were omitted, Arcade validation passed, the isolated
 startup check passed, and a canvas loaded in the packaged app.
+
+This Linux workspace has no Windows executable or Ollama service, so it cannot
+produce a fresh real-model gameplay result. Run the PowerShell command above
+once for every local model whose report you want to evaluate; each report is
+model-specific and includes its own Pong mechanic results.
 
 ### Evidence status
 
