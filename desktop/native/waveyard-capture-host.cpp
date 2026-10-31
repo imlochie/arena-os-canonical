@@ -3,10 +3,13 @@
 
 #include <windows.h>
 #include <audioclient.h>
+#include <audioclientactivationparams.h>
+#include <tlhelp32.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
 #include <propsys.h>
 #include <wrl/client.h>
+#include <wrl/implements.h>
 
 #include <algorithm>
 #include <atomic>
@@ -79,6 +82,8 @@ std::string jsonEscape(const std::string& value) {
   }
   return output.str();
 }
+
+#include "process-loopback.h"
 
 std::string base64(const BYTE* bytes, std::size_t length) {
   constexpr char alphabet[] =
@@ -187,7 +192,7 @@ void listDevices() {
            << "\",\"name\":\"" << jsonEscape(friendlyName(device.Get()))
            << "\",\"isDefault\":" << (id == defaultId ? "true" : "false") << '}';
   }
-  output << "]}";
+  output << "]," << applicationOptionsJson() << "}";
   writeLine(GetStdHandle(STD_OUTPUT_HANDLE), output.str());
 }
 
@@ -308,9 +313,10 @@ class PcmOutputQueue {
 };
 
 std::string audioFormatEvent(const std::wstring& id, const std::string& name,
-    const WAVEFORMATEX* format, std::size_t formatBytes) {
+    const WAVEFORMATEX* format, std::size_t formatBytes, DWORD processId = 0) {
   std::ostringstream output;
-  output << "{\"type\":\"ready\",\"mode\":\"system-loopback\",\"deviceId\":\""
+  output << "{\"type\":\"ready\",\"mode\":\"" << (processId ? "process-loopback" : "system-loopback")
+         << "\",\"processId\":" << processId << ",\"deviceId\":\""
          << jsonEscape(utf8(id)) << "\",\"deviceName\":\"" << jsonEscape(name)
          << "\",\"formatChunkBase64\":\""
          << base64(reinterpret_cast<const BYTE*>(format), formatBytes)
@@ -321,24 +327,51 @@ std::string audioFormatEvent(const std::wstring& id, const std::string& name,
   return output.str();
 }
 
-void recordLoopback(const std::wstring& requestedId) {
-  auto enumerator = createEnumerator();
-  ComPtr<IMMDevice> device;
-  if (requestedId.empty()) {
-    requireHr(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device),
-        "Find default playback endpoint");
-  } else {
-    requireHr(enumerator->GetDevice(requestedId.c_str(), &device), "Open selected playback endpoint");
-  }
-  const std::wstring id = endpointId(device.Get());
-  const std::string name = friendlyName(device.Get());
-
+void recordLoopback(const std::wstring& requestedId, DWORD processId,
+    const std::string& expectedStartTime) {
+  OwnedHandle process(processId ? OpenProcess(
+      PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, processId) : nullptr);
+  if (processId && (!processLoopbackSupported() || !requestedId.empty()))
+    throw std::runtime_error("Application capture requires Windows build 20348+ and cannot select an output endpoint.");
+  if (processId && (!process.get() || processStartTime(process.get()) != expectedStartTime ||
+      WaitForSingleObject(process.get(), 0) != WAIT_TIMEOUT))
+    throw std::runtime_error("The selected application exited or restarted. Refresh applications and select it again.");
+  DWORD ownSession = 0, targetSession = 0;
+  if (processId && (!ProcessIdToSessionId(GetCurrentProcessId(), &ownSession) ||
+      !ProcessIdToSessionId(processId, &targetSession) || ownSession != targetSession))
+    throw std::runtime_error("Select an application in the current Windows session.");
+  std::wstring id;
+  std::string name;
   ComPtr<IAudioClient> audioClient;
-  requireHr(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-      reinterpret_cast<void**>(audioClient.GetAddressOf())), "Activate WASAPI playback client");
-
   WAVEFORMATEX* mixFormat = nullptr;
-  requireHr(audioClient->GetMixFormat(&mixFormat), "Read Windows playback mix format");
+  if (processId) {
+    auto activation = Microsoft::WRL::Make<ProcessActivation>();
+    if (!activation) throw std::runtime_error("Could not allocate process activation.");
+    audioClient = activation->activate(processId);
+    // The virtual process device has no physical endpoint-native mix format.
+    // Request an explicit float capture format; Windows may convert sources.
+    mixFormat = static_cast<WAVEFORMATEX*>(CoTaskMemAlloc(sizeof(WAVEFORMATEX)));
+    if (!mixFormat) throw std::runtime_error("Could not allocate process capture format.");
+    *mixFormat = {};
+    mixFormat->wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+    mixFormat->nChannels = 2;
+    mixFormat->nSamplesPerSec = 48000;
+    mixFormat->wBitsPerSample = 32;
+    mixFormat->nBlockAlign = 8;
+    mixFormat->nAvgBytesPerSec = 48000 * 8;
+    name = "Application process tree";
+  } else {
+    auto enumerator = createEnumerator();
+    ComPtr<IMMDevice> device;
+    if (requestedId.empty())
+      requireHr(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device), "Find default playback endpoint");
+    else requireHr(enumerator->GetDevice(requestedId.c_str(), &device), "Open selected playback endpoint");
+    id = endpointId(device.Get());
+    name = friendlyName(device.Get());
+    requireHr(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+        reinterpret_cast<void**>(audioClient.GetAddressOf())), "Activate WASAPI playback client");
+    requireHr(audioClient->GetMixFormat(&mixFormat), "Read Windows playback mix format");
+  }
   if (!mixFormat) throw std::runtime_error("Windows returned an empty playback mix format.");
   const std::size_t formatBytes = sizeof(WAVEFORMATEX) + mixFormat->cbSize;
   if (formatBytes > kMaxFormatBytes || mixFormat->nChannels == 0 ||
@@ -356,7 +389,8 @@ void recordLoopback(const std::wstring& requestedId) {
 
   HRESULT initialize = audioClient->Initialize(
       AUDCLNT_SHAREMODE_SHARED,
-      AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+      AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+          (processId ? AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM : 0),
       0, 0, mixFormat, nullptr);
   if (FAILED(initialize)) {
     CloseHandle(audioEvent);
@@ -378,12 +412,14 @@ void recordLoopback(const std::wstring& requestedId) {
     throw std::runtime_error(hresultMessage("Create WASAPI capture client", getService));
   }
 
-  emitEvent(audioFormatEvent(id, name, mixFormat, formatBytes));
+  emitEvent(audioFormatEvent(id, name, mixFormat, formatBytes, processId));
   CoTaskMemFree(mixFormat);
   ControlPipe control;
   const ULONGLONG handshakeStart = GetTickCount64();
   bool started = false;
   while (!started) {
+    if (processId && WaitForSingleObject(process.get(), 0) != WAIT_TIMEOUT)
+      throw std::runtime_error("The selected application exited before capture started. Refresh and select it again.");
     std::string command;
     if (control.pollLine(command)) {
       if (command == "start") started = true;
@@ -410,6 +446,10 @@ void recordLoopback(const std::wstring& requestedId) {
   std::uint64_t totalFrames = 0;
 
   while (!shouldStop) {
+    if (processId && WaitForSingleObject(process.get(), 0) != WAIT_TIMEOUT) {
+      emitEvent("{\"type\":\"source-ended\",\"message\":\"The selected application exited. Recording stopped; save the captured audio or refresh and select the restarted application. It was not followed automatically.\"}");
+      break;
+    }
     std::string command;
     if (control.pollLine(command) && command == "stop") shouldStop = true;
     if (control.closed()) shouldStop = true;
@@ -496,13 +536,14 @@ std::wstring optionValue(int argc, wchar_t* argv[], const std::wstring& option) 
 
 int run(int argc, wchar_t* argv[]) {
   if (argc < 2) {
-    std::wcerr << L"Usage: waveyard-capture-host.exe version | devices | record [--device-id ID]\n";
+    std::wcerr << L"Usage: waveyard-capture-host.exe version | devices | record [--device-id ID | --process-id PID --process-start-time TICKS]\n";
     return 2;
   }
   const std::wstring command = argv[1];
   if (command == L"version") {
     writeLine(GetStdHandle(STD_OUTPUT_HANDLE),
-        "{\"protocolVersion\":1,\"captureModes\":[\"system-loopback\"]}");
+        std::string("{\"protocolVersion\":1,\"captureModes\":[\"system-loopback\"") +
+        (processLoopbackSupported() ? ",\"process-loopback\"" : "") + "]}");
     return 0;
   }
   if (command != L"devices" && command != L"record") {
@@ -519,7 +560,29 @@ int run(int argc, wchar_t* argv[]) {
     if (command == L"devices") {
       listDevices();
     } else {
-      recordLoopback(optionValue(argc, argv, L"--device-id"));
+      std::vector<std::wstring> seenOptions;
+      for (int index = 2; index < argc; index += 2) {
+        const std::wstring option = argv[index];
+        if (index + 1 >= argc || !argv[index + 1][0] ||
+            (option != L"--device-id" && option != L"--process-id" && option != L"--process-start-time") ||
+            std::find(seenOptions.begin(), seenOptions.end(), option) != seenOptions.end())
+          throw std::runtime_error("Invalid recording arguments; no automatic source fallback.");
+        seenOptions.push_back(option);
+      }
+      const auto pidText = optionValue(argc, argv, L"--process-id");
+      const auto startTime = optionValue(argc, argv, L"--process-start-time");
+      const auto deviceId = optionValue(argc, argv, L"--device-id");
+      if (pidText.empty() != startTime.empty() || (!pidText.empty() && !deviceId.empty()))
+        throw std::runtime_error("Choose one application with its creation time, or one output device, not both.");
+      DWORD pid = 0;
+      if (!pidText.empty()) {
+        if (pidText.find_first_not_of(L"0123456789") != std::wstring::npos)
+          throw std::runtime_error("Invalid process ID.");
+        const auto parsed = std::stoull(pidText);
+        if (!parsed || parsed > MAXDWORD) throw std::runtime_error("Invalid process ID.");
+        pid = static_cast<DWORD>(parsed);
+      }
+      recordLoopback(deviceId, pid, utf8(startTime));
     }
   } catch (const std::exception& error) {
     emitEvent("{\"type\":\"error\",\"message\":\"" + jsonEscape(error.what()) + "\"}");

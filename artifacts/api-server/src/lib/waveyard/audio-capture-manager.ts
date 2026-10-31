@@ -30,6 +30,12 @@ export interface AudioCaptureDevice {
   isDefault: boolean;
 }
 
+export interface AudioCaptureApplication {
+  processId: number;
+  processStartTime: string;
+  name: string;
+}
+
 export interface AudioCaptureFormat {
   sampleRate: number;
   channels: number;
@@ -50,6 +56,8 @@ export interface AudioCaptureSnapshot {
   sessionId: string;
   status: AudioCaptureState;
   title: string;
+  captureMode?: "system-loopback" | "process-loopback";
+  processId?: number;
   startedAt?: string;
   elapsedSeconds: number;
   discontinuityCount: number;
@@ -66,6 +74,8 @@ export interface AudioCaptureStartInput {
   artist?: string;
   album?: string;
   deviceId?: string;
+  processId?: number;
+  processStartTime?: string;
 }
 
 export interface AudioCaptureFinalized {
@@ -112,6 +122,7 @@ interface NativeEvent {
   type: string;
   message?: string;
   mode?: string;
+  processId?: number;
   deviceId?: string;
   deviceName?: string;
   formatChunkBase64?: string;
@@ -235,6 +246,9 @@ function pruneCompletedImports(now = Date.now()): void {
 export async function getAudioCaptureOptions(ownerId?: string): Promise<{
   available: boolean;
   devices: AudioCaptureDevice[];
+  applications?: AudioCaptureApplication[];
+  processLoopbackSupported?: boolean;
+  processLoopbackReason?: string;
   reason?: string;
   storage?: AudioCaptureStorageBudget;
   activeSession?: AudioCaptureSnapshot;
@@ -298,7 +312,10 @@ export async function getAudioCaptureOptions(ownerId?: string): Promise<{
       maxBuffer: MAX_DEVICE_OUTPUT_BYTES,
       windowsHide: true,
     });
-    const value = JSON.parse(stdout) as { devices?: unknown };
+    const value = JSON.parse(stdout) as {
+      devices?: unknown; applications?: unknown;
+      processLoopbackSupported?: unknown; processLoopbackReason?: unknown;
+    };
     if (!Array.isArray(value.devices) || value.devices.length > 128) {
       throw new Error("The Windows capture host returned an invalid playback-device list.");
     }
@@ -313,10 +330,29 @@ export async function getAudioCaptureOptions(ownerId?: string): Promise<{
       }
       return device as AudioCaptureDevice;
     });
+    const processLoopbackSupported = value.processLoopbackSupported === true;
+    const applications: AudioCaptureApplication[] = [];
+    if (processLoopbackSupported) {
+      if (!Array.isArray(value.applications) || value.applications.length > 8192)
+        throw new Error("The Windows capture host returned an invalid application list.");
+      for (const item of value.applications) {
+        if (!item || typeof item !== "object" ||
+            !Number.isSafeInteger(item.processId) || item.processId <= 0 || item.processId > 4294967295 ||
+            typeof item.processStartTime !== "string" || !/^[0-9]{1,20}$/.test(item.processStartTime) ||
+            typeof item.name !== "string" || item.name.length > 1024)
+          throw new Error("The Windows capture host returned an invalid application.");
+        applications.push(item as AudioCaptureApplication);
+      }
+    }
     return {
-      available: devices.length > 0 && storage.canRecord,
+      available: (devices.length > 0 || processLoopbackSupported) && storage.canRecord,
       devices,
-      ...(devices.length === 0 ? { reason: "Windows has no active playback endpoint to capture." } : {}),
+      applications,
+      processLoopbackSupported,
+      processLoopbackReason: typeof value.processLoopbackReason === "string" && value.processLoopbackReason
+        ? value.processLoopbackReason : processLoopbackSupported ? undefined
+          : "Application isolation is unavailable in this capture host. Whole-output recording remains available.",
+      ...(devices.length === 0 && !processLoopbackSupported ? { reason: "Windows has no active playback endpoint to capture." } : {}),
       storage,
       ...(activeSession ? { activeSession } : {}),
       ...(recoveries?.length ? { recoveries } : {}),
@@ -342,6 +378,8 @@ function snapshot(session: CaptureSession): AudioCaptureSnapshot {
     sessionId: session.id,
     status: session.status,
     title: session.metadata.title,
+    captureMode: session.metadata.processId ? "process-loopback" : "system-loopback",
+    ...(session.metadata.processId ? { processId: session.metadata.processId } : {}),
     ...(session.startedAt ? { startedAt: session.startedAt } : {}),
     elapsedSeconds: Math.max(0, (end - start) / 1000),
     discontinuityCount: session.discontinuityCount,
@@ -388,7 +426,8 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
   if (event.type === "ready") {
     if (session.recorder) throw new Error("Capture host sent more than one ready event.");
     if (
-      event.mode !== "system-loopback" ||
+      event.mode !== (session.metadata.processId ? "process-loopback" : "system-loopback") ||
+      (session.metadata.processId !== undefined && event.processId !== session.metadata.processId) ||
       typeof event.formatChunkBase64 !== "string" ||
       !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(event.formatChunkBase64)
     ) {
@@ -475,6 +514,21 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
     session.discontinuityCount += 1;
     return;
   }
+  if (event.type === "source-ended") {
+    if (!session.metadata.processId) throw new Error("Unexpected application exit in whole-output recording.");
+    session.notice = event.message || "The selected application exited. Save this recording, then refresh and select the restarted app.";
+    // The native host is already stopping itself. Writing another command can
+    // race its closing stdin and turn a clean source exit into an EPIPE failure.
+    session.stopSent = true;
+    if (session.diskMonitor) {
+      clearInterval(session.diskMonitor);
+      session.diskMonitor = undefined;
+    }
+    if (session.status !== "failed") session.status = "stopping";
+    // Do not await here: finalization waits for this event chain and child exit.
+    void stopAudioCapture(session.ownerId, session.id).catch((error: unknown) => failSession(session, error));
+    return;
+  }
   if (event.type === "stopped") {
     session.nativeStopped = true;
     return;
@@ -483,7 +537,10 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
     session.nativeStopped = true;
     return;
   }
-  if (event.type === "warning") return;
+  if (event.type === "warning") {
+    session.notice = event.message || "Windows reported a capture warning.";
+    return;
+  }
   if (event.type === "error") {
     throw new Error(event.message || "Windows audio capture failed.");
   }
@@ -555,6 +612,11 @@ export async function startAudioCapture(
   if (input.deviceId !== undefined && (input.deviceId.length === 0 || input.deviceId.length > 4096 || input.deviceId.includes("\0"))) {
     throw new Error("The selected playback endpoint is invalid.");
   }
+  if (input.processId !== undefined || input.processStartTime !== undefined) {
+    if (!Number.isSafeInteger(input.processId) || input.processId! <= 0 || input.processId! > 4294967295 ||
+        !input.processStartTime || !/^[0-9]{1,20}$/.test(input.processStartTime) || input.deviceId !== undefined)
+      throw new Error("Select one application with its current process identity, or one whole-output endpoint, not both.");
+  }
 
   const id = randomUUID();
   const storageBudget = await readCaptureStorageBudget();
@@ -573,7 +635,9 @@ export async function startAudioCapture(
     flag: "wx",
     mode: 0o600,
   });
-  const args = ["record", ...(input.deviceId ? ["--device-id", input.deviceId] : [])];
+  const args = ["record", ...(input.processId
+    ? ["--process-id", String(input.processId), "--process-start-time", input.processStartTime!]
+    : input.deviceId ? ["--device-id", input.deviceId] : [])];
   const child = spawn(host, args, {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -613,13 +677,17 @@ export async function startAudioCapture(
       }).catch((error) => failSession(session, error));
       session.stderrBuffer = "";
     }
-    session.endedAt = new Date().toISOString();
-    if (code !== 0 || !session.nativeStopped) {
-      if (!session.failure) session.failure = `Windows capture host exited unexpectedly (${code ?? signal ?? "unknown"}).`;
-      session.status = "failed";
-      session.rejectStarted(new Error(session.failure));
-    }
-    session.resolveClose({ code, signal });
+    // Pipe close can race the async stderr handler. Settle the final native
+    // events before deciding whether "stopped" was actually absent.
+    void session.eventChain.finally(() => {
+      session.endedAt = new Date().toISOString();
+      if (code !== 0 || !session.nativeStopped) {
+        if (!session.failure) session.failure = `Windows capture host exited unexpectedly (${code ?? signal ?? "unknown"}).`;
+        session.status = "failed";
+        session.rejectStarted(new Error(session.failure));
+      }
+      session.resolveClose({ code, signal });
+    });
   });
 
   const timeout = setTimeout(() => failSession(session, new Error("Windows capture host did not start in time.")), START_TIMEOUT_MS);

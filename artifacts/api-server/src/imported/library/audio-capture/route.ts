@@ -32,6 +32,9 @@ export async function POST(request: Request) {
     if (!parsed.success) {
       return Response.json({ error: parsed.error.message }, { status: 400 });
     }
+    const applicationMode = parsed.data.processId !== undefined || parsed.data.processStartTime !== undefined;
+    if (applicationMode && (parsed.data.processId === undefined || !parsed.data.processStartTime || parsed.data.deviceId !== undefined))
+      return Response.json({ error: "Choose one application with its process identity, or one whole-output device." }, { status: 400 });
 
     const options = await getAudioCaptureOptions();
     if (!options.available) {
@@ -44,6 +47,12 @@ export async function POST(request: Request) {
     }
     if (parsed.data.deviceId && !options.devices.some((device) => device.id === parsed.data.deviceId)) {
       return Response.json({ error: "The selected Windows playback endpoint is no longer available." }, { status: 409 });
+    }
+    if (applicationMode && (!options.processLoopbackSupported || !options.applications?.some((app) =>
+      app.processId === parsed.data.processId && app.processStartTime === parsed.data.processStartTime))) {
+      return Response.json({ error: options.processLoopbackSupported
+        ? "The selected application exited or restarted. Refresh applications and select it again."
+        : options.processLoopbackReason || "Application capture is unavailable. Choose whole output explicitly." }, { status: 409 });
     }
 
     const session = await startAudioCapture(user.id, parsed.data);

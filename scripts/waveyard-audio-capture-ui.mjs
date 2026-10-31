@@ -23,6 +23,8 @@ try {
 
   let optionsRequests = 0;
   let signalPhase = "silent";
+  let applicationPresent = true;
+  let applicationSupported = true;
   let startPayload;
   const page = await context.newPage();
   const pageErrors = [];
@@ -43,6 +45,10 @@ try {
         body: JSON.stringify({
           available: true,
           devices,
+          processLoopbackSupported: applicationSupported,
+          processLoopbackReason: applicationSupported ? undefined : "Application isolation is unavailable in this test host.",
+          applications: applicationPresent
+            ? [{ processId: 4242, processStartTime: "123456789", name: "AuthorizedPlayer.exe" }] : [],
           storage: { availableBytes: 8 * 1024 ** 3, reserveBytes: 1024 ** 3, canRecord: true },
           ...(optionsRequests >= 3 ? {
             recoveries: [{
@@ -76,11 +82,15 @@ try {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          sessionId: "capture-ui-test", title: "Authorized capture test", status: "recording",
+          sessionId: "capture-ui-test", title: "Authorized capture test",
+          status: signalPhase === "ended" ? "completed" : "recording",
+          captureMode: startPayload?.processId ? "process-loopback" : "system-loopback",
+          processId: startPayload?.processId,
+          ...(signalPhase === "ended" ? { message: "The selected application exited. Save captured audio." } : {}),
           elapsedSeconds: 6, discontinuityCount: 0,
           format: { sampleRate: 48_000, channels: 2, bitsPerSample: 16, blockAlign: 4 },
           signal: {
-            state: signalPhase, peak: signalPhase === "active" ? 0.5 : 0,
+            state: signalPhase === "ended" ? "active" : signalPhase, peak: signalPhase === "active" ? 0.5 : 0,
             capturedSeconds: 4, signalSeen: signalPhase !== "silent",
             clippedSamples: 0, invalidSamples: 0,
           },
@@ -135,13 +145,41 @@ try {
   await page.getByText(/preserved audio is ready to recover below/i).waitFor();
   assert.equal(await page.getByText("Preserved recordings").isVisible(), true);
   signalPhase = "silent";
+  await page.getByLabel("Capture source").selectOption("application");
+  assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true);
+  await page.getByLabel("Windows application").selectOption("4242:123456789");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const sourceBounds = await page.getByLabel("Windows application").boundingBox();
+  assert(sourceBounds && sourceBounds.x >= 0 && sourceBounds.x + sourceBounds.width <= 390,
+    "application selection fits the mobile viewport");
+  await page.setViewportSize({ width: 1280, height: 1000 });
   await page.getByRole("button", { name: "Start recording" }).click();
+  assert.equal(startPayload.processId, 4242);
+  assert.equal(startPayload.processStartTime, "123456789");
+  assert.equal("deviceId" in startPayload, false, "isolated capture must never send an output endpoint");
   await page.getByRole("button", { name: "Stop and add to library" }).click();
   await page.getByText(/Warning: no signal above -80 dBFS was detected/).waitFor();
   await page.getByText(/Automatic stem separation was not requested/).waitFor();
+  await page.getByLabel("Track title").fill("Source exit test");
+  await page.getByRole("checkbox", { name: /authorized to record this audio/i }).check();
+  await page.getByRole("button", { name: "Start recording" }).click();
+  signalPhase = "ended";
+  await page.getByRole("button", { name: "Add captured audio to library", exact: true }).waitFor();
+  await page.locator(".library-audio-capture-session").getByText("The selected application exited. Save captured audio.").waitFor();
+  await page.getByRole("button", { name: "Add captured audio to library", exact: true }).click();
+  await page.getByLabel("Track title").waitFor();
+  applicationPresent = false;
+  await page.getByRole("button", { name: "Refresh devices" }).click();
+  await page.waitForFunction(() => document.querySelector('select[aria-label="Windows application"]')?.value === "");
+  assert.equal(await page.getByLabel("Capture source").inputValue(), "application",
+    "an exited source does not silently change to whole output");
+  applicationSupported = false;
+  await page.getByRole("button", { name: "Refresh devices" }).click();
+  await page.getByText("Application isolation is unavailable in this test host.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Start recording" }).isDisabled(), true);
   assert.deepEqual(pageErrors, []);
   await context.close();
-  console.log("PASS: valid device selection; real signal states and peak display; a missing session exposes preserved audio without reloading.");
+  console.log("PASS: explicit device/application selection and isolated payload; PCM signal UI; mobile bounds; missing-session recovery and silent-file warning (mocked HTTP, not Windows audio).");
 } finally {
   await browser.close();
 }

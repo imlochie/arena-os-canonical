@@ -1,0 +1,38 @@
+name: Windows native audio isolation
+
+# This needs an interactive Windows desktop with a functioning render endpoint.
+# Hosted headless runners are not evidence of real loopback isolation.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  process-isolation:
+    runs-on: [self-hosted, Windows, X64, arena-audio]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install desktop build tooling
+        run: pnpm install --frozen-lockfile --filter "@workspace/desktop..."
+      - name: Compile current native host with Windows SDK
+        run: node --input-type=module -e "import path from 'node:path'; import {buildWaveyardCaptureHost} from './desktop/build.mjs'; await buildWaveyardCaptureHost(path.resolve('generated-artifacts/native-audio'));"
+      - name: Prove system positive control and process isolation
+        run: node desktop/windows-process-capture-acceptance.mjs generated-artifacts/native-audio/waveyard-capture-host.exe
+      - name: Upload actual audio test result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-process-capture-result
+          path: generated-artifacts/windows-process-capture/result.json
+          if-no-files-found: warn
+          retention-days: 14

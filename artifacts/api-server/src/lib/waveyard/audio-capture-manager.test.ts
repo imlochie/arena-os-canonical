@@ -75,6 +75,100 @@ test("capture budget preserves a disk reserve and estimates time from PCM rate",
   assert.equal(estimateCaptureSecondsRemaining(reserveBytes, reserveBytes, format), 0);
 });
 
+test("process capture pins the selected identity and preserves audio when the source exits", {
+  skip: originalPlatform?.value === "win32",
+}, async () => {
+  const root = await makeTemporaryRoot();
+  const resources = path.join(root, "resources");
+  const hostDirectory = path.join(resources, "native");
+  await mkdir(hostDirectory, { recursive: true });
+  process.env.ARENA_DATA_DIR = root;
+  process.env.ARENA_RESOURCES_DIR = resources;
+  process.env.ARENA_DESKTOP_MODE = "1";
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+  const formatChunk = Buffer.alloc(16);
+  formatChunk.writeUInt16LE(1, 0);
+  formatChunk.writeUInt16LE(2, 2);
+  formatChunk.writeUInt32LE(48000, 4);
+  formatChunk.writeUInt32LE(192000, 8);
+  formatChunk.writeUInt16LE(4, 12);
+  formatChunk.writeUInt16LE(16, 14);
+  const ready = JSON.stringify({
+    type: "ready", mode: "process-loopback", processId: 42,
+    formatChunkBase64: formatChunk.toString("base64"),
+    sampleRate: 48000, channels: 2, bitsPerSample: 16, blockAlign: 4,
+  });
+  const hostPath = path.join(hostDirectory, "waveyard-capture-host.exe");
+  await writeFile(hostPath, `#!/bin/sh
+if [ "$1" = "devices" ]; then
+printf '%s\\n' '{"devices":[],"processLoopbackSupported":true,"applications":[{"processId":42,"processStartTime":"123","name":"Tone.exe"}]}'
+exit 0
+fi
+[ "$1" = "record" ] && [ "$2" = "--process-id" ] && [ "$3" = "42" ] && [ "$4" = "--process-start-time" ] && [ "$5" = "123" ] && [ "$#" = "5" ] || exit 7
+printf '%s\\n' '${ready}' >&2
+IFS= read -r command
+[ "$command" = "start" ] || exit 4
+printf '%s\\n' '{"type":"started"}' >&2
+printf '\\001\\001\\001\\001'
+sleep 0.1
+printf '%s\\n' '{"type":"source-ended","message":"Application exited; save captured audio and refresh to record again."}' >&2
+printf '%s\\n' '{"type":"stopped"}' >&2
+`);
+  await chmod(hostPath, 0o755);
+  const options = await getAudioCaptureOptions("process-owner");
+  assert.equal(options.available, true, "process capture is not bound to a physical endpoint");
+  assert.deepEqual(options.applications, [{ processId: 42, processStartTime: "123", name: "Tone.exe" }]);
+  await assert.rejects(startAudioCapture("process-owner", {
+    title: "Bad", processId: 42, processStartTime: "123", deviceId: "speakers",
+  }), /not both/);
+  await assert.rejects(startAudioCapture("process-owner", {
+    title: "Bad", processId: 42,
+  }), /process identity/);
+  const input = { title: "Application tone", processId: 42, processStartTime: "123" };
+  const started = await startAudioCapture("process-owner", input);
+  assert.equal(started.captureMode, "process-loopback");
+  assert.equal(started.processId, 42);
+  assert.equal(getAudioCaptureStatus("other-owner", started.sessionId), null);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (getAudioCaptureStatus("process-owner", started.sessionId)?.status === "completed") break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const ended = getAudioCaptureStatus("process-owner", started.sessionId);
+  assert.equal(ended?.status, "completed", "native source exit finalizes instead of recording silence forever");
+  assert.match(ended?.message ?? "", /Application exited/);
+  const saved = await stopAudioCapture("process-owner", started.sessionId);
+  assert.ok(saved);
+  assert.equal(saved.result.sampleFrames, 1);
+  assert.deepEqual(saved.metadata, input);
+  const manifest = JSON.parse(await readFile(path.join(saved.sessionDirectory, "session.json"), "utf8"));
+  assert.equal(manifest.metadata.processStartTime, "123");
+  assert.equal((await getRecoverableAudioCapture("process-owner", started.sessionId))?.title, input.title);
+  clearRecoveredAudioCapture("process-owner", started.sessionId);
+});
+
+test("requesting process capture rejects a host that silently switches to whole output", {
+  skip: originalPlatform?.value === "win32",
+}, async () => {
+  const root = await makeTemporaryRoot();
+  const resources = path.join(root, "resources");
+  const hostDirectory = path.join(resources, "native");
+  await mkdir(hostDirectory, { recursive: true });
+  process.env.ARENA_DATA_DIR = root;
+  process.env.ARENA_RESOURCES_DIR = resources;
+  process.env.ARENA_DESKTOP_MODE = "1";
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+  const hostPath = path.join(hostDirectory, "waveyard-capture-host.exe");
+  await writeFile(hostPath, `#!/bin/sh
+printf '%s\\n' '{"type":"ready","mode":"system-loopback","formatChunkBase64":"AAAA"}' >&2
+IFS= read -r command
+printf '%s\\n' '{"type":"stopped"}' >&2
+`);
+  await chmod(hostPath, 0o755);
+  await assert.rejects(startAudioCapture("no-fallback-owner", {
+    title: "Must stay isolated", processId: 42, processStartTime: "123",
+  }), /invalid audio-format handshake/);
+});
+
 test("low free space blocks Windows capture before creating a session", {
   skip: originalPlatform?.value === "win32",
 }, async () => {

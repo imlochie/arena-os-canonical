@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { LibraryAudioCaptureSignal } from "@workspace/api-client-react";
+import type { LibraryAudioCaptureSignal, LibraryAudioCaptureApplication } from "@workspace/api-client-react";
 
 type CaptureDevice = {
   id: string;
@@ -27,6 +27,8 @@ type CaptureSession = {
   sessionId: string;
   status: "starting" | "recording" | "stopping" | "completed" | "failed";
   title: string;
+  captureMode?: "system-loopback" | "process-loopback";
+  processId?: number;
   startedAt?: string;
   elapsedSeconds: number;
   discontinuityCount: number;
@@ -56,6 +58,9 @@ function signalWarning(signal?: LibraryAudioCaptureSignal): string {
 type CaptureOptions = {
   available: boolean;
   devices: CaptureDevice[];
+  applications?: LibraryAudioCaptureApplication[];
+  processLoopbackSupported?: boolean;
+  processLoopbackReason?: string;
   reason?: string;
   storage?: CaptureStorageBudget;
   activeSession?: CaptureSession;
@@ -95,6 +100,8 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
   const [options, setOptions] = useState<CaptureOptions | null>(null);
   const [session, setSession] = useState<CaptureSession | null>(null);
   const [deviceId, setDeviceId] = useState("");
+  const [captureMode, setCaptureMode] = useState<"application" | "output">("output");
+  const [applicationKey, setApplicationKey] = useState("");
   const [title, setTitle] = useState("");
   const [artist, setArtist] = useState("");
   const [album, setAlbum] = useState("");
@@ -115,6 +122,8 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     const fallbackDeviceId = next.devices.find((device) => device.isDefault)?.id ?? next.devices[0]?.id ?? "";
     setDeviceId((current) =>
       next.devices.some((device) => device.id === current) ? current : fallbackDeviceId);
+    setApplicationKey((current) => next.applications?.some((app) =>
+      `${app.processId}:${app.processStartTime}` === current) ? current : "");
     return next;
   };
 
@@ -174,6 +183,10 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
 
   const start = async () => {
     if (!options?.available || !rightsReviewed || !title.trim() || busy) return;
+    const application = options.applications?.find((app) =>
+      `${app.processId}:${app.processStartTime}` === applicationKey);
+    if (captureMode === "application" && (!options.processLoopbackSupported || !application)) return;
+    if (captureMode === "output" && !deviceId) return;
     setBusy(true);
     setMessage(null);
     try {
@@ -184,7 +197,9 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
           title: title.trim(),
           artist: artist.trim() || undefined,
           album: album.trim() || undefined,
-          deviceId: deviceId || undefined,
+          ...(captureMode === "application" && application
+            ? { processId: application.processId, processStartTime: application.processStartTime }
+            : { deviceId }),
           rightsReviewed: true,
         }),
       });
@@ -253,7 +268,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
     setMessage(null);
     try {
       await refreshOptions();
-      setMessage("Playback devices and preserved recordings are up to date.");
+      setMessage("Applications, playback devices and preserved recordings are up to date.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not refresh Windows playback devices.");
     } finally {
@@ -262,14 +277,17 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
   };
 
   const recording = session && ["starting", "recording", "stopping"].includes(session.status);
-  const recoveries = options?.recoveries ?? [];
+  const recoveries = (options?.recoveries ?? []).filter((recovery) =>
+    !(session?.status === "completed" && recovery.sessionId === session.sessionId));
+  const canStartSource = captureMode === "application"
+    ? options?.processLoopbackSupported && !!applicationKey : !!deviceId;
 
   return (
     <section className="library-audio-backup library-audio-capture" aria-label="Record Windows playback">
       <div className="library-audio-capture-heading">
         <div>
           <strong>Record Windows playback</strong>
-          <p>Capture a permitted live output mix directly into your Waveyard library.</p>
+          <p>Record one application or a whole output directly into your Waveyard library.</p>
         </div>
         {session?.status === "recording" && (
           <span className="library-audio-capture-live" role="status">
@@ -284,9 +302,11 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       </div>
 
       <p className="library-audio-capture-notice">
-        This records all audio routed through the selected Windows output, not one app in isolation.
+        Application mode includes the selected process and its children across outputs; other apps are excluded.
+        Whole-output mode includes every app routed through that device, including notifications.
         Protected or blocked output may be unavailable. Windows may already have mixed or resampled the source;
-        endpoint-native capture does not guarantee bit-perfect source audio.
+        application capture uses 48 kHz stereo float PCM, not necessarily the source format.
+        Whole-output capture uses the endpoint mix format. Neither guarantees bit-perfect source audio.
         Record only audio you are authorized to capture.
       </p>
 
@@ -294,6 +314,8 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
         <div className={`library-audio-capture-session is-${session.status}`} role="status" aria-live="polite">
           <div>
             <strong>{session.title}</strong>
+            {session.captureMode && <span>{session.captureMode === "process-loopback"
+              ? `Application process ${session.processId} and its children` : "Whole-output recording · includes other apps"}</span>}
             <span>{formatPcm(session.format)}</span>
             {session.signal && (
               <span data-testid="capture-signal">
@@ -339,15 +361,16 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
               </span>
             )}
           </div>
-          {recording && (
-            <button type="button" onClick={() => void stop()} disabled={busy || session.status !== "recording"}>
-              {busy || session.status === "stopping" ? "Finalizing…" : "Stop and add to library"}
+          {(recording || session.status === "completed") && (
+            <button type="button" onClick={() => void stop()} disabled={busy || !["recording", "completed"].includes(session.status)}>
+              {busy || session.status === "stopping" ? "Finalizing…" : session.status === "completed"
+                ? "Add captured audio to library" : "Stop and add to library"}
             </button>
           )}
         </div>
       )}
 
-      {!recording && (
+      {!recording && session?.status !== "completed" && (
         <div className="library-audio-capture-form">
           {options?.storage && (
             <p className="library-audio-capture-notice" role="status">
@@ -357,6 +380,32 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
             </p>
           )}
           <label>
+            Capture source
+            <select aria-label="Capture source" value={captureMode}
+              onChange={(event) => setCaptureMode(event.target.value as "application" | "output")}
+              disabled={busy}>
+              <option value="output">Whole output · includes other apps</option>
+              <option value="application" disabled={!options?.processLoopbackSupported}>One application · exclude other apps</option>
+            </select>
+          </label>
+          {!options?.processLoopbackSupported && (
+            <p className="library-audio-capture-notice">
+              {options?.processLoopbackReason ?? "Application isolation requires the packaged Windows host and Windows build 20348 or later."}
+            </p>
+          )}
+          {captureMode === "application" ? <label>
+            Windows application
+            <select aria-label="Windows application" value={applicationKey}
+              onChange={(event) => setApplicationKey(event.target.value)} disabled={busy || !options?.available}>
+              <option value="">Select a running application</option>
+              {options?.applications?.map((app) => <option
+                key={`${app.processId}:${app.processStartTime}`} value={`${app.processId}:${app.processStartTime}`}>
+                {app.name} · PID {app.processId}
+              </option>)}
+            </select>
+            <span>Includes child processes. For browsers, select the parent browser process; multiple tabs may share it.
+              If the app restarts, refresh and select it again. Nothing switches to whole-output capture automatically.</span>
+          </label> : <label>
             Windows playback device
             <select
               aria-label="Windows playback device"
@@ -373,7 +422,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
                 </option>
               ))}
             </select>
-          </label>
+          </label>}
           <label>
             Track title
             <input
@@ -417,7 +466,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
           <button
             type="button"
             onClick={() => void start()}
-            disabled={!options?.available || !rightsReviewed || !title.trim() || busy}
+            disabled={!options?.available || !canStartSource || !rightsReviewed || !title.trim() || busy}
           >
             {busy ? "Starting…" : "Start recording"}
           </button>

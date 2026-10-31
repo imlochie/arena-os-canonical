@@ -135,7 +135,8 @@ async function run() {
   assert.equal(captureHostResult.status, 0, captureHostResult.stderr);
   const captureProtocol = JSON.parse(captureHostResult.stdout.trim());
   assert.equal(captureProtocol.protocolVersion, 1);
-  assert.deepEqual(captureProtocol.captureModes, ["system-loopback"]);
+  assert(captureProtocol.captureModes.includes("system-loopback"));
+  assert(captureProtocol.captureModes.every((mode) => ["system-loopback", "process-loopback"].includes(mode)));
   pass("waveyard_capture_host_loads");
 
   begin("waveyard_capture_runtime_wired");
@@ -150,6 +151,15 @@ async function run() {
   assert(Number.isFinite(captureOptions.storage.availableBytes));
   assert.equal(captureOptions.storage.reserveBytes, 1024 ** 3);
   assert.equal(typeof captureOptions.storage.canRecord, "boolean");
+  if (captureOptions.storage.canRecord) {
+    assert.equal(typeof captureOptions.processLoopbackSupported, "boolean");
+    assert(Array.isArray(captureOptions.applications));
+    for (const app of captureOptions.applications) {
+      assert(Number.isInteger(app.processId) && app.processId > 0);
+      assert.match(app.processStartTime, /^[0-9]{1,20}$/);
+      assert.equal(typeof app.name, "string");
+    }
+  }
   pass("waveyard_capture_runtime_wired");
 
   begin("database_backup_restore_round_trip");

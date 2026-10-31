@@ -18,5 +18,12 @@ export interface LibraryAudioCaptureStartInput {
   album?: string;
   /** @maxLength 4096 */
   deviceId?: string;
+  /**
+     * @minimum 1
+     * @maximum 4294967295
+     */
+  processId?: number;
+  /** @pattern ^[0-9]{1,20}$ */
+  processStartTime?: string;
   rightsReviewed: true;
 }

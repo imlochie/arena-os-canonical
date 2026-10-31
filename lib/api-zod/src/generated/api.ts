@@ -165,6 +165,9 @@ export const CreateLibraryConversionResponse = zod.object({
 /**
  * @summary Check Windows audio loopback capture availability
  */
+export const getLibraryAudioCaptureOptionsResponseApplicationsItemProcessIdMax = 4294967295;
+
+export const getLibraryAudioCaptureOptionsResponseApplicationsItemProcessStartTimeRegExp = new RegExp('^[0-9]{1,20}$');
 export const getLibraryAudioCaptureOptionsResponseStorageAvailableBytesMin = 0;
 
 export const getLibraryAudioCaptureOptionsResponseStorageReserveBytesMin = 0;
@@ -201,6 +204,13 @@ export const GetLibraryAudioCaptureOptionsResponse = zod.object({
   "name": zod.string(),
   "isDefault": zod.boolean()
 })),
+  "applications": zod.array(zod.object({
+  "processId": zod.number().int().min(1).max(getLibraryAudioCaptureOptionsResponseApplicationsItemProcessIdMax),
+  "processStartTime": zod.string().regex(getLibraryAudioCaptureOptionsResponseApplicationsItemProcessStartTimeRegExp),
+  "name": zod.string()
+})).optional(),
+  "processLoopbackSupported": zod.boolean().optional(),
+  "processLoopbackReason": zod.string().optional(),
   "reason": zod.string().optional(),
   "storage": zod.object({
   "availableBytes": zod.number().int().min(getLibraryAudioCaptureOptionsResponseStorageAvailableBytesMin),
@@ -212,6 +222,8 @@ export const GetLibraryAudioCaptureOptionsResponse = zod.object({
   "sessionId": zod.string().uuid(),
   "status": zod.enum(['starting', 'recording', 'stopping', 'completed', 'failed']),
   "title": zod.string(),
+  "captureMode": zod.enum(['system-loopback', 'process-loopback']).optional(),
+  "processId": zod.number().int().optional(),
   "startedAt": zod.coerce.date().optional(),
   "elapsedSeconds": zod.number().min(getLibraryAudioCaptureOptionsResponseActiveSessionElapsedSecondsMin),
   "discontinuityCount": zod.number().int().min(getLibraryAudioCaptureOptionsResponseActiveSessionDiscontinuityCountMin),
@@ -250,6 +262,9 @@ export const startLibraryAudioCaptureBodyAlbumMax = 200;
 
 export const startLibraryAudioCaptureBodyDeviceIdMax = 4096;
 
+export const startLibraryAudioCaptureBodyProcessIdMax = 4294967295;
+
+export const startLibraryAudioCaptureBodyProcessStartTimeRegExp = new RegExp('^[0-9]{1,20}$');
 
 
 export const StartLibraryAudioCaptureBody = zod.object({
@@ -257,6 +272,8 @@ export const StartLibraryAudioCaptureBody = zod.object({
   "artist": zod.string().max(startLibraryAudioCaptureBodyArtistMax).optional(),
   "album": zod.string().max(startLibraryAudioCaptureBodyAlbumMax).optional(),
   "deviceId": zod.string().max(startLibraryAudioCaptureBodyDeviceIdMax).optional(),
+  "processId": zod.number().int().min(1).max(startLibraryAudioCaptureBodyProcessIdMax).optional(),
+  "processStartTime": zod.string().regex(startLibraryAudioCaptureBodyProcessStartTimeRegExp).optional(),
   "rightsReviewed": zod.literal(true)
 })
 
@@ -424,6 +441,8 @@ export const GetLibraryAudioCaptureStatusResponse = zod.object({
   "sessionId": zod.string().uuid(),
   "status": zod.enum(['starting', 'recording', 'stopping', 'completed', 'failed']),
   "title": zod.string(),
+  "captureMode": zod.enum(['system-loopback', 'process-loopback']).optional(),
+  "processId": zod.number().int().optional(),
   "startedAt": zod.coerce.date().optional(),
   "elapsedSeconds": zod.number().min(getLibraryAudioCaptureStatusResponseElapsedSecondsMin),
   "discontinuityCount": zod.number().int().min(getLibraryAudioCaptureStatusResponseDiscontinuityCountMin),

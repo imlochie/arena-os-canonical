@@ -13,7 +13,7 @@ const hostPath = path.resolve(
 const timeoutMs = 15_000;
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-function makeToneWave() {
+export function makeToneWave(frequency = 440) {
   const sampleRate = 48_000;
   const seconds = 3;
   const frameCount = sampleRate * seconds;
@@ -34,15 +34,15 @@ function makeToneWave() {
   wav.writeUInt32LE(dataBytes, 40);
   for (let frame = 0; frame < frameCount; frame += 1) {
     const edge = Math.min(1, frame / 1200, (frameCount - frame - 1) / 1200);
-    const sample = Math.round(24_000 * Math.max(0, edge) * Math.sin((2 * Math.PI * 440 * frame) / sampleRate));
+    const sample = Math.round(24_000 * Math.max(0, edge) * Math.sin((2 * Math.PI * frequency * frame) / sampleRate));
     wav.writeInt16LE(sample, 44 + frame * 2);
   }
   return wav;
 }
 
-function parseFormat(event) {
-  if (event.mode !== "system-loopback" || typeof event.formatChunkBase64 !== "string") {
-    throw new Error("Capture host returned an invalid system-loopback format event.");
+export function parseFormat(event, expectedMode = "system-loopback") {
+  if (event.mode !== expectedMode || typeof event.formatChunkBase64 !== "string") {
+    throw new Error(`Capture host returned an invalid ${expectedMode} format event.`);
   }
   const chunk = Buffer.from(event.formatChunkBase64, "base64");
   if (chunk.length < 16) throw new Error("Capture host returned a truncated WAVEFORMATEX chunk.");
@@ -92,7 +92,7 @@ function readNormalizedSample(buffer, offset, format) {
   return buffer.readInt32LE(offset) / 2_147_483_648;
 }
 
-function measureTone(pcm, format) {
+export function measureTone(pcm, format, frequency = 440) {
   const bytesPerSample = format.bitsPerSample / 8;
   const frames = Math.floor(pcm.length / format.blockAlign);
   if (frames < format.sampleRate) throw new Error("The capture contains less than one second of audio.");
@@ -100,7 +100,7 @@ function measureTone(pcm, format) {
   let peak = 0;
   let q1 = 0;
   let q2 = 0;
-  const omega = (2 * Math.PI * 440) / format.sampleRate;
+  const omega = (2 * Math.PI * frequency) / format.sampleRate;
   const coefficient = 2 * Math.cos(omega);
   let samples = 0;
   for (let frame = 0; frame < frames; frame += 1) {
@@ -120,7 +120,7 @@ function measureTone(pcm, format) {
   return { frames, rms, peak, toneAmplitude };
 }
 
-function createEventReader(child) {
+export function createEventReader(child) {
   const queued = [];
   const waiters = new Map();
   let buffer = "";
@@ -289,7 +289,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

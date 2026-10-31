@@ -7,12 +7,15 @@
  */
 import type { LibraryAudioCaptureFormat } from './libraryAudioCaptureFormat';
 import type { LibraryAudioCaptureSignal } from './libraryAudioCaptureSignal';
+import type { LibraryAudioCaptureStatusResponseCaptureMode } from './libraryAudioCaptureStatusResponseCaptureMode';
 import type { LibraryAudioCaptureStatusResponseStatus } from './libraryAudioCaptureStatusResponseStatus';
 
 export interface LibraryAudioCaptureStatusResponse {
   sessionId: string;
   status: LibraryAudioCaptureStatusResponseStatus;
   title: string;
+  captureMode?: LibraryAudioCaptureStatusResponseCaptureMode;
+  processId?: number;
   startedAt?: Date;
   /** @minimum 0 */
   elapsedSeconds: number;

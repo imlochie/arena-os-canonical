@@ -176,6 +176,17 @@ export interface LibraryAudioCaptureDevice {
   isDefault: boolean;
 }
 
+export interface LibraryAudioCaptureApplication {
+  /**
+     * @minimum 1
+     * @maximum 4294967295
+     */
+  processId: number;
+  /** @pattern ^[0-9]{1,20}$ */
+  processStartTime: string;
+  name: string;
+}
+
 export interface LibraryAudioCaptureStorageBudget {
   /** @minimum 0 */
   availableBytes: number;
@@ -194,6 +205,14 @@ export const LibraryAudioCaptureStatusResponseStatus = {
   stopping: 'stopping',
   completed: 'completed',
   failed: 'failed',
+} as const;
+
+export type LibraryAudioCaptureStatusResponseCaptureMode = typeof LibraryAudioCaptureStatusResponseCaptureMode[keyof typeof LibraryAudioCaptureStatusResponseCaptureMode];
+
+
+export const LibraryAudioCaptureStatusResponseCaptureMode = {
+  'system-loopback': 'system-loopback',
+  'process-loopback': 'process-loopback',
 } as const;
 
 export interface LibraryAudioCaptureFormat {
@@ -237,6 +256,8 @@ export interface LibraryAudioCaptureStatusResponse {
   sessionId: string;
   status: LibraryAudioCaptureStatusResponseStatus;
   title: string;
+  captureMode?: LibraryAudioCaptureStatusResponseCaptureMode;
+  processId?: number;
   startedAt?: string;
   /** @minimum 0 */
   elapsedSeconds: number;
@@ -256,6 +277,9 @@ export interface LibraryAudioCaptureStatusResponse {
 export interface LibraryAudioCaptureOptionsResponse {
   available: boolean;
   devices: LibraryAudioCaptureDevice[];
+  applications?: LibraryAudioCaptureApplication[];
+  processLoopbackSupported?: boolean;
+  processLoopbackReason?: string;
   reason?: string;
   storage?: LibraryAudioCaptureStorageBudget;
   activeSession?: LibraryAudioCaptureStatusResponse;
@@ -294,6 +318,13 @@ export interface LibraryAudioCaptureStartInput {
   album?: string;
   /** @maxLength 4096 */
   deviceId?: string;
+  /**
+     * @minimum 1
+     * @maximum 4294967295
+     */
+  processId?: number;
+  /** @pattern ^[0-9]{1,20}$ */
+  processStartTime?: string;
   rightsReviewed: true;
 }
 

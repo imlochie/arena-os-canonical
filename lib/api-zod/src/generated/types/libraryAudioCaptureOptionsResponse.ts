@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { LibraryAudioCaptureApplication } from './libraryAudioCaptureApplication';
 import type { LibraryAudioCaptureDevice } from './libraryAudioCaptureDevice';
 import type { LibraryAudioCaptureStatusResponse } from './libraryAudioCaptureStatusResponse';
 import type { LibraryAudioCaptureStorageBudget } from './libraryAudioCaptureStorageBudget';
@@ -12,6 +13,9 @@ import type { LibraryAudioCaptureStorageBudget } from './libraryAudioCaptureStor
 export interface LibraryAudioCaptureOptionsResponse {
   available: boolean;
   devices: LibraryAudioCaptureDevice[];
+  applications?: LibraryAudioCaptureApplication[];
+  processLoopbackSupported?: boolean;
+  processLoopbackReason?: string;
   reason?: string;
   storage?: LibraryAudioCaptureStorageBudget;
   activeSession?: LibraryAudioCaptureStatusResponse;
