@@ -10,6 +10,7 @@ import {
 import { db, pool } from "@workspace/db";
 import { closeAllBrowserSessions } from "@workspace/arena/lib/spaces/browser";
 import { runWaveyardStartupRecovery, waitForServerListening } from "./lib/waveyard-startup-recovery";
+import { shutdownAudioCaptures } from "./lib/waveyard/audio-capture-manager";
 
 const rawPort = process.env["PORT"];
 
@@ -100,10 +101,35 @@ let stopping = false;
 async function shutdown() {
   if (stopping) return;
   stopping = true;
-  server.close();
   const deadline = setTimeout(() => process.exit(1), 20_000);
   deadline.unref();
   try {
+    const serverClosed = new Promise<void>((resolve) => {
+      if (!server.listening) {
+        resolve();
+        return;
+      }
+      server.close(() => resolve());
+    });
+
+    const captureShutdown = await shutdownAudioCaptures();
+    if (captureShutdown.preserved > 0) {
+      logger.info(captureShutdown, "Active Waveyard capture was preserved for recovery");
+    }
+    if (captureShutdown.forced > 0 || captureShutdown.unresponsive > 0) {
+      logger.warn(captureShutdown, "A Waveyard capture host required forced shutdown");
+    }
+
+    let serverCloseTimer: NodeJS.Timeout | undefined;
+    const requestsDrained = await Promise.race([
+      serverClosed.then(() => true),
+      new Promise<boolean>((resolve) => {
+        serverCloseTimer = setTimeout(() => resolve(false), 8_000);
+      }),
+    ]);
+    if (serverCloseTimer) clearTimeout(serverCloseTimer);
+    if (!requestsDrained) logger.warn("HTTP requests did not drain before the shutdown deadline");
+
     const drained = await drainLocalWorker();
     if (!drained) {
       logger.warn(

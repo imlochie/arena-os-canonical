@@ -13,6 +13,8 @@ const execFileAsync = promisify(execFile);
 const sessions = new Map<string, CaptureSession>();
 const START_TIMEOUT_MS = 20_000;
 const STOP_TIMEOUT_MS = 15_000;
+const SHUTDOWN_STOP_TIMEOUT_MS = 5_000;
+const SHUTDOWN_PIPE_SETTLE_TIMEOUT_MS = 2_000;
 const MAX_DEVICE_OUTPUT_BYTES = 1_000_000;
 
 export interface AudioCaptureDevice {
@@ -70,6 +72,13 @@ export interface AudioCaptureRecoveryFile extends AudioCaptureRecovery {
   sessionDirectory: string;
 }
 
+export interface AudioCaptureShutdownResult {
+  stopped: number;
+  preserved: number;
+  forced: number;
+  unresponsive: number;
+}
+
 interface PersistedCaptureManifest {
   sessionId: string;
   ownerId: string;
@@ -122,6 +131,7 @@ interface CaptureSession {
   rejectStarted: (error: Error) => void;
   closePromise: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   resolveClose: (result: { code: number | null; signal: NodeJS.Signals | null }) => void;
+  stopPromise?: Promise<AudioCaptureFinalized | null>;
   importedResponse?: unknown;
 }
 
@@ -555,9 +565,20 @@ export function clearRecoveredAudioCapture(ownerId: string, id: string): void {
   }
 }
 
-export async function stopAudioCapture(ownerId: string, id: string): Promise<AudioCaptureFinalized | null> {
+export function stopAudioCapture(ownerId: string, id: string): Promise<AudioCaptureFinalized | null> {
   const session = sessions.get(id);
-  if (!session || session.ownerId !== ownerId) return null;
+  if (!session || session.ownerId !== ownerId) return Promise.resolve(null);
+  if (session.stopPromise) return session.stopPromise;
+  const operation = stopAudioCaptureSession(session);
+  let shared: Promise<AudioCaptureFinalized | null>;
+  shared = operation.finally(() => {
+    if (session.stopPromise === shared) session.stopPromise = undefined;
+  });
+  session.stopPromise = shared;
+  return shared;
+}
+
+async function stopAudioCaptureSession(session: CaptureSession): Promise<AudioCaptureFinalized> {
   if (session.status === "completed" && session.final) return session.final;
   if (session.status === "failed") {
     sendStop(session);
@@ -612,6 +633,101 @@ export async function stopAudioCapture(ownerId: string, id: string): Promise<Aud
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function settlesWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<{ completed: true; value: T } | { completed: false }> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ completed: true as const, value })),
+      new Promise<{ completed: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ completed: false }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Stop native capture children before the API exits. Audio is left as a
+ * recoverable RF64 instead of being silently discarded or importing it while
+ * the library/database are shutting down.
+ */
+export async function shutdownAudioCaptures(): Promise<AudioCaptureShutdownResult> {
+  const pending = [...sessions.values()].filter((session) =>
+    ["starting", "recording", "stopping"].includes(session.status) ||
+    (session.status === "failed" && session.recorder && !session.final));
+  const result: AudioCaptureShutdownResult = { stopped: 0, preserved: 0, forced: 0, unresponsive: 0 };
+
+  await Promise.all(pending.map(async (session) => {
+    if (!session.failure) session.failure = "Arena closed during recording; the audio was preserved for recovery.";
+    if (session.status === "starting") {
+      session.status = "failed";
+      session.rejectStarted(new Error(session.failure));
+      sendStop(session);
+      let closed = await settlesWithin(session.closePromise, SHUTDOWN_STOP_TIMEOUT_MS);
+      if (!closed.completed) {
+        result.forced += 1;
+        session.child.kill();
+        closed = await settlesWithin(session.closePromise, SHUTDOWN_PIPE_SETTLE_TIMEOUT_MS);
+      }
+      if (!closed.completed) {
+        result.unresponsive += 1;
+        return;
+      }
+      const pipes = await settlesWithin(
+        Promise.all([session.eventChain, session.pcmChain]),
+        SHUTDOWN_PIPE_SETTLE_TIMEOUT_MS,
+      );
+      if (!pipes.completed) {
+        result.unresponsive += 1;
+        return;
+      }
+      result.stopped += 1;
+      if (session.recorder) {
+        try {
+          await session.recorder.leaveRecoverable();
+          result.preserved += 1;
+        } catch {
+          result.unresponsive += 1;
+        }
+      }
+      return;
+    }
+
+    const gracefulStop = stopAudioCapture(session.ownerId, session.id).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    let stopped = await settlesWithin(gracefulStop, SHUTDOWN_STOP_TIMEOUT_MS + SHUTDOWN_PIPE_SETTLE_TIMEOUT_MS);
+    if (!stopped.completed) {
+      result.forced += 1;
+      session.child.kill();
+      stopped = await settlesWithin(gracefulStop, SHUTDOWN_PIPE_SETTLE_TIMEOUT_MS);
+    }
+    if (!stopped.completed) {
+      result.unresponsive += 1;
+      return;
+    }
+
+    result.stopped += 1;
+    if (stopped.value.ok && stopped.value.value) {
+      result.preserved += 1;
+    } else if (!stopped.value.ok && session.recorder) {
+      try {
+        await session.recorder.leaveRecoverable();
+        result.preserved += 1;
+      } catch {
+        result.unresponsive += 1;
+      }
+    }
+  }));
+
+  return result;
 }
 
 export async function removeAudioCaptureFiles(sessionDirectory: string): Promise<void> {
