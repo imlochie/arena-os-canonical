@@ -41,6 +41,8 @@ import {
   type LibrarySnapshot,
   type SnapshotDiff,
   parseCsvSnapshot,
+  reconcileSnapshotAudio,
+  type LocalAudioRecord,
   type StreamingService,
 } from "@workspace/arena/lib/waveyard/streaming/library-sync";
 
@@ -69,6 +71,8 @@ type SnapshotView = {
   library: LibrarySnapshot;
 };
 
+type LocalAudioTrackSummary = LocalAudioRecord & { sourceAssetId: string };
+
 const SPOTIFY_CLIENT_KEY = "waveyard:spotify-client-id";
 const PKCE_KEY = "waveyard:spotify-pkce";
 
@@ -77,6 +81,13 @@ const SERVICE_LABELS: Record<StreamingService, string> = {
   apple: "Apple Music",
   youtube: "YouTube",
 };
+
+const AUDIO_MATCH_LABELS = {
+  matched: "Likely local audio",
+  ambiguous: "Multiple local candidates",
+  review: "Possible local candidate",
+  missing: "Metadata only",
+} as const;
 
 export function ConnectedLibraries({
   projectId,
@@ -94,6 +105,10 @@ export function ConnectedLibraries({
   const [notice, setNotice] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SnapshotView | null>(null);
   const [diff, setDiff] = useState<SnapshotDiff | null>(null);
+  const [localAudioTracks, setLocalAudioTracks] = useState<LocalAudioRecord[] | null>(null);
+  const [localAudioLoading, setLocalAudioLoading] = useState(false);
+  const [localAudioError, setLocalAudioError] = useState<string | null>(null);
+  const [localAudioLimitReached, setLocalAudioLimitReached] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<string>("liked");
   const [search, setSearch] = useState("");
   const [dispatchTrack, setDispatchTrack] = useState<ExternalTrack | null>(null);
@@ -104,6 +119,39 @@ export function ConnectedLibraries({
   // the auto-open below) it is never stomped by a later account reload.
   const snapshotOpenRef = useRef(false);
   const openSnapshotRef = useRef<(snapshotId: string) => void>(() => {});
+
+  const loadLocalAudioTracks = useCallback(async () => {
+    setLocalAudioLoading(true);
+    setLocalAudioError(null);
+    try {
+      const response = await fetch("/api/library/tracks?limit=500", { cache: "no-store" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error ?? "Could not compare against Waveyard audio.");
+      const rows = Array.isArray(body.tracks) ? body.tracks as Array<Record<string, unknown>> : [];
+      const audioRows = rows.filter((row): row is Record<string, unknown> & LocalAudioTrackSummary =>
+        typeof row.id === "string" &&
+        typeof row.sourceAssetId === "string" &&
+        typeof row.title === "string" &&
+        typeof row.artist === "string" &&
+        typeof row.album === "string" &&
+        typeof row.durationSeconds === "number" &&
+        Number.isFinite(row.durationSeconds),
+      );
+      setLocalAudioTracks(audioRows.map(({ id, title, artist, album, durationSeconds }) => ({
+        id,
+        title,
+        artist,
+        album,
+        durationSeconds,
+      })));
+      setLocalAudioLimitReached(rows.length >= 500);
+    } catch (cause) {
+      setLocalAudioTracks(null);
+      setLocalAudioError(cause instanceof Error ? cause.message : "Could not compare against Waveyard audio.");
+    } finally {
+      setLocalAudioLoading(false);
+    }
+  }, []);
 
   const loadAccounts = useCallback(async () => {
     const response = await fetch("/api/streaming/accounts", { cache: "no-store" });
@@ -133,7 +181,8 @@ export function ConnectedLibraries({
     setSnapshot(body.snapshot ?? null);
     setDiff(body.diff ?? null);
     setSelectedPlaylist("liked");
-  }, []);
+    void loadLocalAudioTracks();
+  }, [loadLocalAudioTracks]);
   useEffect(() => { openSnapshotRef.current = openSnapshot; }, [openSnapshot]);
 
   // Bootstrap + the PKCE callback (Spotify redirects back with ?code&state).
@@ -324,6 +373,11 @@ export function ConnectedLibraries({
     return pool.filter((track) => `${track.title} ${track.artists.join(" ")} ${track.album ?? ""}`.toLowerCase().includes(needle)).slice(0, 200);
   }, [search, selectedPlaylist, snapshot]);
 
+  const audioCoverage = useMemo(() => {
+    if (snapshot === null || localAudioTracks === null) return null;
+    return reconcileSnapshotAudio(snapshot.library, localAudioTracks);
+  }, [localAudioTracks, snapshot]);
+
   return (
     <section className="stream-lib" data-testid="connected-libraries" aria-label="Connected streaming libraries">
       <div className="panel-title">
@@ -405,6 +459,52 @@ export function ConnectedLibraries({
               <a className="button secondary" href={`/api/streaming/snapshots/${snapshot.id}/export?format=csv`}>Download CSV</a>
             </div>
           </div>
+          <section className="stream-audio-coverage" aria-label="Catalog audio availability" data-testid="snapshot-audio-coverage">
+            <div className="stream-audio-coverage-heading">
+              <b>Audio already in Waveyard</b>
+              <button type="button" className="deck-chip" onClick={() => void loadLocalAudioTracks()} disabled={localAudioLoading}>
+                {localAudioLoading ? "Checking…" : "Refresh comparison"}
+              </button>
+            </div>
+            {localAudioError !== null ? (
+              <p role="alert">{localAudioError}</p>
+            ) : audioCoverage === null ? (
+              <p role="status">{localAudioLoading ? "Comparing this catalog with stored Waveyard audio…" : "Waiting for the library comparison."}</p>
+            ) : (
+              <>
+                <p>
+                  {audioCoverage.summary.total} unique catalog tracks checked ·{" "}
+                  {audioCoverage.summary.matched} likely local ·{" "}
+                  {audioCoverage.summary.ambiguous} ambiguous ·{" "}
+                  {audioCoverage.summary.review} possible ·{" "}
+                  {audioCoverage.summary.missing} metadata only
+                </p>
+                <small>
+                  Suggestions use title, artist, and duration; they do not verify audio bytes or create a permanent link.
+                  {localAudioLimitReached ? " Only the 500 most recently added local tracks were checked, so results may be incomplete." : ""}
+                </small>
+                {audioCoverage.matches.length > 0 && (
+                  <details>
+                    <summary>Review track comparisons</summary>
+                    <ul className="stream-audio-coverage-list">
+                      {audioCoverage.matches.slice(0, 30).map((match, index) => (
+                        <li key={`${match.track.service}:${match.track.externalId}:${index}`}>
+                          <span><b>{match.track.title}</b> — {match.track.artists.join(", ") || "unknown artist"}</span>
+                          <small>
+                            {AUDIO_MATCH_LABELS[match.status]}
+                            {match.candidates.length > 0
+                              ? ` · ${match.candidates.map((candidate) => `${candidate.title} (${Math.round(candidate.score * 100)}%)`).join("; ")}`
+                              : ""}
+                          </small>
+                        </li>
+                      ))}
+                    </ul>
+                    {audioCoverage.matches.length > 30 && <small>Showing 30 of {audioCoverage.matches.length} unique catalog tracks.</small>}
+                  </details>
+                )}
+              </>
+            )}
+          </section>
           {diff !== null && (
             <p className={`stream-diff ${diffIsEmptyLocal(diff) ? "quiet" : ""}`} role="status">
               {diffIsEmptyLocal(diff)

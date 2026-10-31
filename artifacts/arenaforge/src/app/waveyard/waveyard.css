@@ -1000,6 +1000,11 @@
 .stream-client{display:grid;gap:4px;font-size:11px;color:var(--muted)}
 .stream-client input{background:#181b13;border:1px solid #4b5832;color:var(--ink);padding:7px;border-radius:6px;font-size:11px}
 .stream-card-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.stream-audio-coverage{display:grid;gap:7px;margin:12px 0;padding:12px 14px;border:1px solid color-mix(in srgb,var(--line),white 10%);border-radius:10px;background:color-mix(in srgb,var(--panel),transparent 10%)}
+.stream-audio-coverage-heading{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.stream-audio-coverage p,.stream-audio-coverage small{margin:0;color:var(--muted);font-size:11px;line-height:1.5}
+.stream-audio-coverage-list{display:grid;gap:7px;margin:8px 0 0;padding-left:18px}
+.stream-audio-coverage-list li{display:grid;gap:2px;font-size:11px}
 .stream-hint{font-size:10.5px;line-height:1.5;color:var(--muted)}
 .file-button{position:relative;overflow:hidden;display:inline-flex;align-items:center}
 .file-button input{position:absolute;inset:0;opacity:0;cursor:pointer}

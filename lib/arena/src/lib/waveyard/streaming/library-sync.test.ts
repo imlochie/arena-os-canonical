@@ -22,6 +22,7 @@ import {
   parseBackup,
   parseCsvSnapshot,
   parseLibrarySnapshot,
+  reconcileSnapshotAudio,
   snapshotStats,
   snapshotToCsv,
   type ExternalTrack,
@@ -398,6 +399,44 @@ test("snapshot validation rejects unsafe artwork URLs and impossible metadata nu
   assert.equal(parsed?.likedTracks[0].discNumber, null);
   assert.equal(parsed?.likedTracks[0].year, null);
   assert.equal(parsed?.likedTracks[0].artworkUrl, null);
+});
+
+test("snapshot audio reconciliation distinguishes strong, ambiguous, review, and missing matches", () => {
+  const snapshotWithCoverage = snapshot({
+    playlists: [
+      {
+        externalId: "p1",
+        name: "Archive",
+        description: null,
+        tracks: [
+          track({ externalId: "strong", title: "Back in Black" }),
+          track({ externalId: "review", title: "Candidate Song", artists: ["Artist"], durationMs: 100_000 }),
+          track({ externalId: "ambiguous", title: "Duplicate Song", artists: ["Artist"], durationMs: 180_000 }),
+          track({ externalId: "missing", title: "No Local Copy", artists: ["Artist"] }),
+        ],
+      },
+      {
+        externalId: "p2",
+        name: "Another playlist",
+        description: null,
+        tracks: [track({ externalId: "strong", title: "Back in Black" })],
+      },
+    ],
+    likedTracks: [],
+  });
+  const result = reconcileSnapshotAudio(snapshotWithCoverage, [
+    { id: "local-strong", title: "Back in Black", artist: "AC/DC", album: "Back in Black", durationSeconds: 255 },
+    { id: "local-review", title: "Candidate Song", artist: "Artist", album: null, durationSeconds: 105 },
+    { id: "local-ambiguous-a", title: "Duplicate Song", artist: "Artist", album: null, durationSeconds: 180 },
+    { id: "local-ambiguous-b", title: "Duplicate Song", artist: "Artist", album: null, durationSeconds: 180 },
+  ]);
+
+  assert.deepEqual(result.summary, { total: 4, matched: 1, ambiguous: 1, review: 1, missing: 1 });
+  assert.equal(result.matches.find((item) => item.track.externalId === "strong")?.status, "matched");
+  assert.equal(result.matches.find((item) => item.track.externalId === "ambiguous")?.status, "ambiguous");
+  assert.equal(result.matches.find((item) => item.track.externalId === "review")?.status, "review");
+  assert.equal(result.matches.find((item) => item.track.externalId === "missing")?.status, "missing");
+  assert.equal(result.matches[1].candidates[0].score, 0.825);
 });
 
 test("Apple Library XML rejects malformed or non-library documents", () => {

@@ -273,6 +273,99 @@ export function matchVerdict(score: number): MatchVerdict {
   return "none";
 }
 
+export type LocalAudioRecord = {
+  id: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  durationSeconds: number;
+};
+
+export type SnapshotAudioMatch = {
+  track: ExternalTrack;
+  status: "matched" | "ambiguous" | "review" | "missing";
+  score: number;
+  candidates: Array<{ id: string; title: string; artist: string; score: number }>;
+};
+
+/**
+ * Compare catalog entries with already-stored Waveyard audio. Local tracks
+ * currently have no provider ISRC, so this reports suggestions from title,
+ * artist, and duration; it never creates a durable identity link.
+ */
+export function reconcileSnapshotAudio(
+  snapshot: LibrarySnapshot,
+  localAudio: readonly LocalAudioRecord[],
+): {
+  matches: SnapshotAudioMatch[];
+  summary: { total: number; matched: number; ambiguous: number; review: number; missing: number };
+} {
+  const uniqueCatalogTracks = new Map<string, ExternalTrack>();
+  for (const track of [...snapshot.playlists.flatMap((playlist) => playlist.tracks), ...snapshot.likedTracks]) {
+    const key = `${track.service}:${track.externalId}`;
+    if (!uniqueCatalogTracks.has(key)) uniqueCatalogTracks.set(key, track);
+  }
+
+  const localByTitle = new Map<string, LocalAudioRecord[]>();
+  for (const local of localAudio) {
+    const title = normalizeTitle(local.title);
+    if (!title) continue;
+    const sameTitle = localByTitle.get(title) ?? [];
+    sameTitle.push(local);
+    localByTitle.set(title, sameTitle);
+  }
+
+  const matches: SnapshotAudioMatch[] = [...uniqueCatalogTracks.values()].map((track) => {
+    const possible = (localByTitle.get(normalizeTitle(track.title)) ?? [])
+      .map((local) => {
+        const candidate: ExternalTrack = {
+          service: track.service,
+          externalId: local.id,
+          title: local.title,
+          artists: local.artist.trim() ? [local.artist] : [],
+          album: local.album,
+          isrc: null,
+          durationMs: Number.isFinite(local.durationSeconds) && local.durationSeconds > 0
+            ? Math.round(local.durationSeconds * 1000)
+            : null,
+        };
+        return {
+          id: local.id,
+          title: local.title,
+          artist: local.artist,
+          score: matchScore(track, candidate),
+        };
+      })
+      .sort((left, right) => right.score - left.score);
+    const strong = possible.filter((candidate) => matchVerdict(candidate.score) === "same");
+    const topScore = possible[0]?.score ?? 0;
+    const status = strong.length > 1
+      ? "ambiguous"
+      : strong.length === 1
+        ? "matched"
+        : matchVerdict(topScore) === "likely"
+          ? "review"
+          : "missing";
+    return {
+      track,
+      status,
+      score: topScore,
+      candidates: possible.filter((candidate) => matchVerdict(candidate.score) !== "none").slice(0, 3),
+    };
+  });
+
+  return {
+    matches,
+    summary: {
+      total: matches.length,
+      matched: matches.filter((item) => item.status === "matched").length,
+      ambiguous: matches.filter((item) => item.status === "ambiguous").length,
+      review: matches.filter((item) => item.status === "review").length,
+      missing: matches.filter((item) => item.status === "missing").length,
+    },
+  };
+}
+
 export type TrackGroup = {
   /** Canonical display track (the richest member: most fields present). */
   representative: ExternalTrack;
