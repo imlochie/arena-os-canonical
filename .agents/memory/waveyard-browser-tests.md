@@ -9,6 +9,12 @@ Keep session fixture pages mounted while practical. When navigation is part of a
 
 **How to apply:** Serve audio fixtures with `Cache-Control: no-store` for failure cases. Record recipient time when each donor buffer starts; normalize both offset and recipient clock modulo donor duration, then compare circular distance so end-of-loop and start-of-loop values match. For cancellation, hold the donor fetch, cancel through the UI, verify the original clock and gain continue with no donor buffer created, then release the held route before teardown. After queue changes, wait for the expected current-track identity alongside active audio and the Playing state; state-only checks can match the outgoing track.
 
+For beat-snapped browser checks, schedule against a future synthetic boundary with enough lead for a loaded headless browser; use unit tests for exact pre-boundary and late-callback decisions. Run the live audio-graph test separately from the broad route smoke.
+
+**Why:** A sub-second beat target was intermittently missed under browser-test scheduling load, correctly triggering the app's late-change cancellation rather than changing the mix late.
+
+**How to apply:** Keep the browser assertion focused on audible gain and allow a realistic scheduling window. Do not treat a missed synthetic boundary under test contention as proof of a user-facing audio defect.
+
 A broad trace that attaches metadata to every native audio node and retains every gain node caused the cross-tab playback check to time out before the fade assertions; reverting that instrumentation restored the test.
 
 **Why:** Audio graph instrumentation can change timing and object lifetime, and transition controls may appear before the audio fade reaches its midpoint.

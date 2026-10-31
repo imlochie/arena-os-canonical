@@ -7,6 +7,15 @@ const require = createRequire(new URL("../artifacts/api-server/package.json", im
 const { chromium } = require("playwright-core");
 const sessionId = "00000000-0000-4000-8000-000000000007";
 const types = ["vocals", "drums", "bass", "other"];
+function waitForSignal(signal, label, timeoutMs = 15_000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label} after ${timeoutMs}ms.`)), timeoutMs);
+    Promise.resolve(signal).then(
+      value => { clearTimeout(timer); resolve(value); },
+      error => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 function wav(seconds, frequency) {
   const n = 22050 * seconds, data = Buffer.alloc(44 + n * 2);
   data.write("RIFF"); data.writeUInt32LE(data.length - 8, 4); data.write("WAVEfmt ", 8);
@@ -34,7 +43,7 @@ const tracks = ["a", "b", "c"].map((id, index) => {
     analysis: {
       bpm: index === 1 ? 124 : 120,
       musicalKey: ["A minor", "C major", "C# major"][index],
-      beatGridMs: index === 0 ? Array.from({ length: 40 }, (_, beat) => beat * 500) : null,
+      beatGridMs: index === 0 ? Array.from({ length: 6 }, (_, beat) => beat * 4_000) : null,
     } };
 });
 const sourceOnlyTrack = { ...tracks[0], stems: [], playback: { kind: "source", assetIds: ["a-source"] } };
@@ -771,17 +780,19 @@ try {
   });
   await current.getByLabel("Mute drums", { exact: true }).click();
   // The deterministic performanceTick unit test verifies the pre-boundary
-  // wait. Here, assert the final audible state without racing the sub-second
-  // boundary or requiring the transient pending label to survive a browser frame.
+  // wait. The wide synthetic grid gives the browser four seconds to apply the
+  // actual audio-graph change without racing a sub-second boundary under load.
   await page.waitForFunction(() => {
     const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith("/a-drums"));
     return source?.inputNode?.nextNode?.gain?.value < 0.01;
-  }, null, { timeout: 2500 }).catch(async error => {
+  }, null, { timeout: 6000 }).catch(async error => {
     const diagnostic = await page.evaluate(() => {
       const audio = document.querySelector('[data-role="current"] audio[src$="/a-drums"]');
       return {
         playing: document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed"),
         mutePressed: document.querySelector('[aria-label="Mute drums"]')?.getAttribute("aria-pressed"),
+        visibility: document.visibilityState,
+        focused: document.hasFocus(),
         audio: audio ? { paused: audio.paused, readyState: audio.readyState, currentTime: audio.currentTime } : null,
         sources: window.audioProbe.sources
           .filter(source => source.mediaElement.src.endsWith("/a-drums"))
@@ -848,7 +859,7 @@ try {
   assert.match(donorCLabel, /BPM match[\s\S]*Key differs/,
     `the picker distinguishes a key mismatch from a tempo match: ${donorCLabel}`);
   await donorBOption.click();
-  await slowDonorRequested;
+  await waitForSignal(slowDonorRequested, "the live stem donor request");
   const cancelSlowSwap = page.getByTestId("cancel-live-stem-swap-swap-vocals");
   await cancelSlowSwap.waitFor();
   await page.waitForFunction(before => {
@@ -875,7 +886,7 @@ try {
   heldAssetGate = null;
   signalHeldAssetRequest = null;
   releaseSlowDonor();
-  await slowDonorRouteFinished;
+  await waitForSignal(slowDonorRouteFinished, "the live stem donor response");
   signalHeldAssetRouteFinished = null;
 
   const currentTrackIdForTempoTest = session.currentSessionTrackId ?? "a";
@@ -1131,7 +1142,7 @@ try {
   heldAssetId = "a-source";
   signalHeldAssetRequest = notifyHeldRequest;
   await page.getByTestId("button-return-full-track-a").click();
-  await heldRequest;
+  await waitForSignal(heldRequest, "the original-track source request during return-to-track");
   await page.getByTestId("source-handoff-status").waitFor();
   const duringReturn = await current.locator("audio").evaluateAll(elements => elements.map(element => ({
     src: element.src, paused: element.paused, time: element.currentTime,
@@ -1288,7 +1299,7 @@ try {
   const studioHandoffStarted = new Promise(resolve => { notifyStudioHandoffStarted = resolve; });
   signalStudioHandoffStarted = notifyStudioHandoffStarted;
   await page.getByTestId("session-handoff").evaluate(button => { button.click(); button.click(); });
-  await studioHandoffStarted;
+  await waitForSignal(studioHandoffStarted, "the session-to-Studio handoff request");
   assert.equal(studioHandoffRequests, 1, "a rapid double click submits only one Studio handoff");
   assert.equal(await page.getByTestId("session-handoff").isDisabled(), true,
     "the handoff button stays disabled while Studio is creating the arrangement");
@@ -1343,15 +1354,15 @@ try {
   await cancelPreviewButton.waitFor();
   assert.equal(await cancelPreviewButton.getAttribute("aria-busy"), "true",
     "the arrangement transport exposes its pending audio-load state");
-  await arrangementAssetRequest;
+  await waitForSignal(arrangementAssetRequest, "the Studio arrangement preview audio request");
   await cancelPreviewButton.click();
   await page.getByRole("button", { name: "Preview arrangement", exact: true }).waitFor();
   releaseArrangementAsset();
   heldAssetId = null;
   heldAssetGate = null;
   signalHeldAssetRequest = null;
+  await waitForSignal(arrangementAssetResponse, "the cancelled Studio arrangement audio response");
   signalHeldAssetRouteFinished = null;
-  await arrangementAssetResponse;
   await page.waitForTimeout(100);
   assert.equal(
     await page.evaluate(() => window.audioProbe.buffers.filter(source => source.startedOffset !== undefined).length),
@@ -1423,7 +1434,7 @@ try {
     response.url().endsWith(`/api/remixes/${studioRemixId}`) && response.request().method() === "PUT",
   );
   await reloadedVocalsVolume.fill("0.62");
-  await studioSaveHeld;
+  await waitForSignal(studioSaveHeld, "the first held Studio arrangement save");
   await reloadedVocalsVolume.fill("0.79");
   await page.waitForTimeout(850);
   const savesWhileFirstIsHeld = studioRemixPutCount;
@@ -1527,7 +1538,7 @@ try {
     window.dispatchEvent(new PopStateEvent("popstate"));
   }, secondStudioProjectUrl);
   await secondProjectNavigation;
-  await secondStudioProjectRequested;
+  await waitForSignal(secondStudioProjectRequested, "the second Studio project request");
   await page.getByText("Opening private studio…", { exact: true }).waitFor();
   assert.equal(await page.getByRole("heading", { name: "Session · Live layer regression" }).count(), 0,
     "the prior arrangement is hidden while another project loads");

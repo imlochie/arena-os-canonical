@@ -21,8 +21,8 @@ The user does not want TunePat as a dependency or paid requirement when a legiti
 
 **How to apply:** Prefer first-party import/export for metadata and exact-file backup for locally accessible originals. Clearly label the boundary; do not add TunePat dependency or DRM-bypass logic.
 
-The current Waveyard implementation already includes prepared live stem swaps, temporary held isolation, per-track gain recall, and beat/bar snap scheduling; verify current behavior and tests before treating those historical commits as regressions. The divergent branch also contains a browser gameplay/publication gate for Arcade plus portable Studio export bundles and local conversion archives that are not present in current main. Its 2048 source patch is a specific example, not a general reverse-engineering capability.
+Treat branch-only capability notes as leads, not current-state facts. A feature may have been ported to main since the note was written, while related export or conversion flows remain branch-only. The 2048 source patch is a specific example, not a general reverse-engineering capability.
 
-**Why:** A commit absent by ancestry can still have an equivalent implementation, while a related demo or test does not prove the underlying general capability exists.
+**Why:** Branch audits showed that prior notes can become stale: some historical Arcade validation and audio-backup work now exists in main, while the broader local-conversion archive flow is still absent.
 
-**How to apply:** Compare capability semantics and acceptance coverage in both trees. Prioritize targeted ports of the Arcade runtime gate and Waveyard export/conversion workflows; do not cherry-pick old framework code or mistake a pinned game example for universal game modification.
+**How to apply:** Recheck the current server route, UI entry point, and end-to-end acceptance coverage before calling work lost or complete. Compare capability semantics, not only ancestry or filenames, and port targeted behavior rather than old framework scaffolding.
