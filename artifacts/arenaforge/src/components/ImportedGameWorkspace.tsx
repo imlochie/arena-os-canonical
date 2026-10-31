@@ -21,6 +21,7 @@ type ImportedGame = {
   name: string;
   kind: "html" | "nes" | "emulator";
   source: string;
+  revisionUndoSource?: string;
   addedAt: number;
   system?: ArcadeEmulatorSystemId;
   romData?: ArrayBuffer;
@@ -341,7 +342,11 @@ function isStoredImportedGame(value: unknown): value is ImportedGame {
     typeof game.addedAt !== "number"
   ) return false;
 
-  if (game.kind === "html") return htmlSafetyIssue(game.source) === null;
+  if (game.kind === "html") {
+    return htmlSafetyIssue(game.source) === null &&
+      (game.revisionUndoSource === undefined ||
+        (typeof game.revisionUndoSource === "string" && htmlSafetyIssue(game.revisionUndoSource) === null));
+  }
   if (game.kind === "nes") {
     try {
       const bytes = fromBase64(game.source);
@@ -637,10 +642,40 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
     }
   };
 
-  const updateHtml = async (id: string, source: string) => {
-    const next = games.map((game) => game.id === id ? { ...game, source } : game);
-    await saveGames(next);
+  const applyHtmlRevision = async (id: string, source: string) => {
+    const current = games.find((game) => game.id === id);
+    if (!current || current.kind !== "html" || current.revisionUndoSource !== undefined) return false;
+    const next = games.map((game) => game.id === id
+      ? { ...game, source, revisionUndoSource: game.source }
+      : game);
+    const saved = await saveGames(next);
+    gameSaves.reloadGame();
     setReaAnalysis((current) => current?.gameId === id ? null : current);
+    return saved;
+  };
+
+  const keepHtmlRevision = async () => {
+    if (!selected || selected.kind !== "html" || selected.revisionUndoSource === undefined) return;
+    const next = games.map((game) => {
+      if (game.id !== selected.id || game.kind !== "html" || game.revisionUndoSource === undefined) return game;
+      const { revisionUndoSource: _revisionUndoSource, ...accepted } = game;
+      return accepted;
+    });
+    await saveGames(next);
+    setNotice("Revision kept. Your saved progress is unchanged.");
+  };
+
+  const undoHtmlRevision = async () => {
+    if (!selected || selected.kind !== "html" || selected.revisionUndoSource === undefined) return;
+    const next = games.map((game) => {
+      if (game.id !== selected.id || game.kind !== "html" || game.revisionUndoSource === undefined) return game;
+      const { revisionUndoSource, ...restored } = game;
+      return { ...restored, source: revisionUndoSource };
+    });
+    await saveGames(next);
+    gameSaves.reloadGame();
+    setReaAnalysis((current) => current?.gameId === selected.id ? null : current);
+    setNotice("Earlier game source restored. Your saved progress is unchanged.");
   };
 
   const revise = async () => {
@@ -664,9 +699,12 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
       if (typeof revised !== "string") throw new Error("The revision did not return HTML source.");
       const issue = htmlSafetyIssue(revised);
       if (issue) throw new Error(`Revision not applied: ${issue}`);
-      await updateHtml(selected.id, revised);
+      if (selected.revisionUndoSource !== undefined) {
+        throw new Error("Keep or undo the current revision before applying another.");
+      }
+      await applyHtmlRevision(selected.id, revised);
       setInstruction("");
-      setNotice("Revision applied to the current playable file.");
+      setNotice("Revision applied. Play it, then keep it or undo it.");
     } catch (cause) {
       if (controller.signal.aborted || (cause instanceof Error && cause.name === "AbortError")) {
         setError("");
@@ -1044,7 +1082,7 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                   <p className="text-[10px] leading-relaxed text-slate-500">A change is applied only when it returns complete HTML that passes Arcade's game safety checks.</p>
                    {compactHtml && compactHtml.source.length > 50_000 && <p className="text-[10px] text-amber-200">This game has more than 50 KB of executable source after media is excluded. It can still be played locally.</p>}
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => void revise()} disabled={busy || !instruction.trim() || !compactHtml || compactHtml.source.length > 50_000} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
+                    <button type="button" onClick={() => void revise()} disabled={busy || selected.revisionUndoSource !== undefined || !instruction.trim() || !compactHtml || compactHtml.source.length > 50_000} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-black text-slate-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40">
                       {busy ? "Revising…" : "Apply revision"}
                     </button>
                     {busy && revisionAbortRef.current && (
@@ -1058,6 +1096,20 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
                       </button>
                     )}
                   </div>
+                  {selected.revisionUndoSource !== undefined && (
+                    <div className="rounded-lg border border-amber-300/20 bg-amber-300/[0.06] p-3" data-testid="imported-revision-undo">
+                      <p className="text-[11px] font-bold text-amber-100">Review this revision in the game above.</p>
+                      <p className="mt-1 text-[10px] leading-relaxed text-slate-400">Keep it to accept, or restore the earlier source. Your game identity and browser progress stay the same.</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button type="button" onClick={() => void keepHtmlRevision()} className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-[10px] font-bold text-emerald-100 hover:bg-emerald-300/15" data-testid="button-keep-imported-revision">
+                          Keep revision
+                        </button>
+                        <button type="button" onClick={() => void undoHtmlRevision()} className="rounded-lg border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-[10px] font-bold text-amber-100 hover:bg-amber-300/15" data-testid="button-undo-imported-revision">
+                          Undo revision
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : selected.kind === "nes" ? (
                 <div className="space-y-2">

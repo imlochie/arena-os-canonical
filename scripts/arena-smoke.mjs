@@ -2923,6 +2923,8 @@ try {
     revisionRequestSeen = true;
     if (body.prompt === "Add a pause overlay") {
       assert(body.priorCode.includes("Open homebrew fixture"), "Imported source must be included in the revision request");
+    } else if (body.prompt === "Reject unsafe revision") {
+      assert(body.priorCode.includes("Open homebrew fixture"), "Rejected revisions must use the current imported source");
     } else if (body.prompt === "Make movement faster") {
       assert(body.priorCode.includes("data:ARENA_ASSET_TOKEN_0001"), "Bundled images must stay out of model input");
       assert(!body.priorCode.includes("data:image/svg+xml;base64,"), "Binary image bytes must remain in the browser");
@@ -2936,7 +2938,13 @@ try {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ code: body.prompt === "Make movement faster" ? revisedArchiveHtml : revisedGameHtml }),
+      body: JSON.stringify({
+        code: body.prompt === "Make movement faster"
+          ? revisedArchiveHtml
+          : body.prompt === "Reject unsafe revision"
+            ? '<!doctype html><html><head><script src="https://example.invalid/game.js"></script></head><body></body></html>'
+            : revisedGameHtml,
+      }),
     });
   });
   const cancelRequest = page.waitForRequest(request =>
@@ -2957,11 +2965,55 @@ try {
   assert(failedRevisionRequest.failure()?.errorText, "Stopping an imported-game revision must abort its in-flight request");
   await page.getByText("Revision cancelled. The imported game and its progress are unchanged.").waitFor();
   assert.equal(await browserFrame.locator("#patched").count(), 0, "A cancelled revision must leave the imported source untouched");
+  assert.equal(await page.getByTestId("imported-revision-undo").count(), 0, "A cancelled revision must not create an undo entry");
+  const readImportedFixture = async () => page.evaluate(async () => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("arenaforge-imported-games", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const records = await new Promise((resolve, reject) => {
+      const request = database.transaction("games", "readonly").objectStore("games").getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return records.find(record => record.name === "open-homebrew-fixture.html");
+  });
+  const importedFixtureBeforeRevision = await readImportedFixture();
+  assert(importedFixtureBeforeRevision?.id, "The test game must already have a saved identity");
+  await page.getByLabel("Revise this browser game").fill("Reject unsafe revision");
+  await page.getByRole("button", { name: "Apply revision" }).click();
+  await page.getByText(/Revision failed:.*external resource/).waitFor({ timeout: 10000 });
+  assert.equal(await page.getByTestId("imported-revision-undo").count(), 0, "A safety-rejected revision must not create an undo entry");
+  assert.equal(await page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]').locator("#game").count(), 1);
   await page.getByLabel("Revise this browser game").fill("Add a pause overlay");
   await page.getByRole("button", { name: "Apply revision" }).click();
-  await page.getByText("Revision applied to the current playable file.").waitFor({ timeout: 10000 });
+  await page.getByText("Revision applied. Play it, then keep it or undo it.").waitFor({ timeout: 10000 });
   assert(revisionRequestSeen, "Prompt revision did not use the selected model route");
   await page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]').locator("#patched").waitFor();
+  assert.equal(await page.getByTestId("button-keep-imported-revision").isEnabled(), true);
+  assert.equal(await page.getByTestId("button-undo-imported-revision").isEnabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Apply revision" }).isDisabled(), true, "A pending undo must not be overwritten by another revision");
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "Import and emulate" }).click();
+  await page.getByTestId("imported-revision-undo").waitFor({ timeout: 10000 });
+  assert.equal(await page.getByRole("button", { name: "Apply revision" }).isDisabled(), true, "A pending undo must remain available after a browser reload");
+  await page.getByTestId("button-undo-imported-revision").click();
+  const restoredImportedFixture = page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]');
+  await restoredImportedFixture.locator("#game").waitFor();
+  assert.equal(await restoredImportedFixture.locator("#hud").innerText(), "Score 1", "Undo must restore the earlier source with its existing browser progress");
+  assert.equal(await page.getByTestId("imported-revision-undo").count(), 0, "Undo must clear the pending revision entry");
+  const importedFixtureAfterUndo = await readImportedFixture();
+  assert.equal(importedFixtureAfterUndo?.id, importedFixtureBeforeRevision.id, "Undo must preserve the imported game's identity");
+  assert.equal(importedFixtureAfterUndo?.source, importedFixtureBeforeRevision.source, "Undo must restore the exact earlier source");
+  await page.getByLabel("Revise this browser game").fill("Add a pause overlay");
+  await page.getByRole("button", { name: "Apply revision" }).click();
+  await page.getByTestId("imported-revision-undo").waitFor({ timeout: 10000 });
+  await page.getByTestId("button-keep-imported-revision").click();
+  await page.getByTestId("imported-revision-undo").waitFor({ state: "detached" });
+  await page.getByLabel("Revise this browser game").fill("Add a pause overlay");
+  assert.equal(await page.getByRole("button", { name: "Apply revision" }).isDisabled(), false, "Accepting a revision must allow the next revision");
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
   const archive = new JSZip();
   archive.file("game/index.html", '<!doctype html><html><head><title>Offline project</title><link rel="stylesheet" href="game.css"></head><body><p id="hud">Score 0</p><div id="tile"></div><audio id="sfx" src="assets/tone.wav"></audio><button id="play-sfx">Play sound</button><button id="play-dynamic-sfx">Play dynamic sound</button><script src="game.js"></script></body></html>');
@@ -3028,7 +3080,7 @@ try {
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
   await page.getByLabel("Revise this browser game").fill("Make movement faster");
   await page.getByRole("button", { name: "Apply revision" }).click();
-  await page.getByText("Revision applied to the current playable file.").waitFor({ timeout: 10000 });
+  await page.getByText("Revision applied. Play it, then keep it or undo it.").waitFor({ timeout: 10000 });
   const revisedArchiveFrame = page.frameLocator('iframe[title="Playable game: open-homebrew-project.zip"]');
   const revisedArchiveScript = await revisedArchiveFrame.locator("script").evaluateAll(scripts => scripts.map(script => script.textContent ?? "").join("\n"));
   assert(revisedArchiveScript.includes("score+=2"), "The imported game's actual scoring logic must be rewritten");
@@ -3056,6 +3108,8 @@ try {
   await revisedArchiveFrame.locator("#tile").evaluate(element => element.ownerDocument.defaultView?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
   await page.waitForTimeout(50);
   assert.equal(await revisedArchiveFrame.locator("#hud").innerText(), "Score 3", "Prompt revision must change imported gameplay, not just theme");
+  await page.getByTestId("button-keep-imported-revision").click();
+  await page.getByTestId("imported-revision-undo").waitFor({ state: "detached" });
   await page.locator('input[accept=".html,.htm,.zip,text/html,application/zip"]').setInputFiles({
     name: "blocked-remote-resource.html",
     mimeType: "text/html",

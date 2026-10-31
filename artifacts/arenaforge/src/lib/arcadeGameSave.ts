@@ -130,5 +130,9 @@ export function useArcadeGameSave(
     setReloadKey((key) => key + 1);
   }, [frameRef, gameId]);
 
-  return { hasSavedProgress, reloadKey, clearSavedProgress };
+  const reloadGame = useCallback(() => {
+    setReloadKey((key) => key + 1);
+  }, []);
+
+  return { hasSavedProgress, reloadKey, clearSavedProgress, reloadGame };
 }
