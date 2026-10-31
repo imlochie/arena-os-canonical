@@ -22,13 +22,33 @@ export async function cleanupSuccessfulBuild({
   await removeDir(unpackedDir);
 }
 
+export async function cleanupInterruptedBuild({
+  stageDir,
+  distDir,
+  unpackedDir,
+  removeDir = removeDirWithRetry,
+}) {
+  await removeDir(stageDir);
+  await removeDir(distDir);
+  await removeDir(unpackedDir);
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const desktopDir = path.dirname(fileURLToPath(import.meta.url));
   const workspaceRoot = path.dirname(desktopDir);
-  await cleanupSuccessfulBuild({
-    stageDir: path.join(desktopDir, "stage"),
-    distDir: path.join(desktopDir, "dist"),
-    installerDir: path.join(workspaceRoot, "generated-artifacts", "windows"),
-  });
-  console.log("Removed temporary desktop staging and unpacked files; the Windows installer and download caches remain.");
+  const stageDir = path.join(desktopDir, "stage");
+  const distDir = path.join(desktopDir, "dist");
+  const installerDir = path.join(workspaceRoot, "generated-artifacts", "windows");
+  const unpackedDir = path.join(installerDir, "win-unpacked");
+  const cleanupMode = process.argv[2];
+  if (cleanupMode && cleanupMode !== "--failed-build") {
+    throw new Error("Use no option for successful-build cleanup or --failed-build for interrupted staging.");
+  }
+  if (cleanupMode === "--failed-build") {
+    await cleanupInterruptedBuild({ stageDir, distDir, unpackedDir });
+    console.log("Removed only generated staging and unpacked build files. Installer files, download caches, user data, and original media remain.");
+  } else {
+    await cleanupSuccessfulBuild({ stageDir, distDir, installerDir, unpackedDir });
+    console.log("Removed temporary desktop staging and unpacked files; the Windows installer and download caches remain.");
+  }
 }

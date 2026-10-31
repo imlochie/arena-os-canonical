@@ -22,39 +22,127 @@ function Invoke-Pnpm {
 if ($Action -eq "Build") {
   Write-Host "This downloads build dependencies, Electron, PostgreSQL and Chromium."
   Write-Host "It does not upload your workspace data, install an AI model, or change an existing Arena database."
-  $spaceLocations = @("workspace=$root")
-  if ($env:TEMP) { $spaceLocations += "temporary files=$env:TEMP" }
-  if ($env:LOCALAPPDATA) { $spaceLocations += "user caches=$env:LOCALAPPDATA" }
+  $tempPath = [IO.Path]::GetTempPath()
+  $spaceLocations = @(
+    "workspace=$root",
+    "temporary files=$tempPath",
+    "desktop staging=$(Join-Path $PSScriptRoot 'stage')",
+    "desktop bundle=$(Join-Path $PSScriptRoot 'dist')",
+    "installer output=$(Join-Path $root 'generated-artifacts\windows')",
+    "FFmpeg download cache=$(Join-Path $root 'generated-artifacts\windows-tool-cache')"
+  )
+  if ($env:LOCALAPPDATA) {
+    $spaceLocations += "user caches=$env:LOCALAPPDATA"
+    $spaceLocations += "Chromium download cache=$(Join-Path $env:LOCALAPPDATA 'ms-playwright')"
+    $spaceLocations += "Electron build cache=$(Join-Path $env:LOCALAPPDATA 'electron-builder\Cache')"
+  }
   $spaceOutput = & node (Join-Path $PSScriptRoot "build-space-preflight.mjs") `
     @spaceLocations
   if ($LASTEXITCODE -ne 0) { throw "Could not inspect build disk space. No dependency installation has started." }
   $spaceReport = $spaceOutput | ConvertFrom-Json
   foreach ($location in $spaceReport.locations) {
     if ($null -eq $location.availableGiB) {
-      Write-Warning "Free space could not be checked for $($location.label): $($location.inspectionError)"
+      Write-Host ("{0}: could not inspect {1}: {2}" -f $location.label, $location.path, $location.inspectionError)
     } else {
-      Write-Host ("{0}: {1} GiB free at {2}" -f $location.label, $location.availableGiB, $location.path)
+      Write-Host ("{0}: {1} GiB free (checking {2})" -f $location.label, $location.availableGiB, $location.checkedPath)
     }
   }
-  $lowSpace = @($spaceReport.locations | Where-Object { $_.belowWarningThreshold })
-  if ($lowSpace.Count -gt 0) {
-    Write-Warning "A build location has less than 20 GiB free or could not be inspected. This is an early warning threshold, not a measured minimum; the Windows build's peak disk use has not yet been measured."
-    $answer = Read-Host "To continue anyway, type CONTINUE. Press Enter to stop before dependency installation"
-    if ($answer -cne "CONTINUE") {
-      throw "Build stopped before dependency installation; no existing app data or generated build files were changed."
+  Write-Host ("Required free space on every listed volume: {0} GiB (set ARENA_BUILD_MIN_FREE_GIB to configure)" -f $spaceReport.minimumFreeGiB)
+  if ($spaceReport.insufficientSpace) {
+    throw "Build stopped before dependency installation or downloads because one or more volumes are below the required free-space threshold or could not be checked. Free space or set ARENA_BUILD_MIN_FREE_GIB to a threshold chosen from a measured build; no app data or generated files were deleted."
+  }
+  $sampleFile = Join-Path $tempPath "arena-build-space-$PID.jsonl"
+  Remove-Item $sampleFile -Force -ErrorAction SilentlyContinue
+  $monitorLocationsJson = ConvertTo-Json -InputObject @($spaceLocations) -Compress
+  $monitor = Start-Job -ArgumentList @($monitorLocationsJson, $sampleFile) -ScriptBlock {
+    param($locationsJson, $samplePath)
+    $locations = ConvertFrom-Json $locationsJson
+    while ($true) {
+      $samples = foreach ($entry in $locations) {
+        $separator = $entry.IndexOf("=")
+        $label = $entry.Substring(0, $separator)
+        $target = $entry.Substring($separator + 1)
+        try {
+          $driveRoot = [IO.Path]::GetPathRoot($target)
+          $drive = [IO.DriveInfo]::new($driveRoot)
+          if ($drive.IsReady) {
+            [pscustomobject]@{ label = $label; freeBytes = $drive.AvailableFreeSpace }
+          }
+        } catch {}
+      }
+      $line = ConvertTo-Json -InputObject ([pscustomobject]@{ locations = @($samples) }) -Compress
+      [IO.File]::AppendAllText($samplePath, $line + [Environment]::NewLine)
+      Start-Sleep -Seconds 2
     }
   }
-  if ($FullWorkspace) {
-    Write-Host "Installing every workspace package as requested."
-    Invoke-Pnpm install --frozen-lockfile
-  } else {
-    Write-Host "Installing only the desktop app, API, web app and their workspace dependencies."
-    Invoke-Pnpm install --frozen-lockfile `
-      --filter "@workspace/arenaforge..." `
-      --filter "@workspace/api-server..." `
-      --filter "@workspace/desktop..."
+  $spaceSamples = @()
+  try {
+    if ($FullWorkspace) {
+      Write-Host "Installing every workspace package as requested."
+      Invoke-Pnpm install --frozen-lockfile
+    } else {
+      Write-Host "Installing only the desktop app, API, web app and their workspace dependencies."
+      Invoke-Pnpm install --frozen-lockfile `
+        --filter "@workspace/arenaforge..." `
+        --filter "@workspace/api-server..." `
+        --filter "@workspace/desktop..."
+    }
+    Invoke-Pnpm --filter @workspace/desktop run dist:win
+  } finally {
+    if ($monitor) {
+      Stop-Job $monitor -ErrorAction SilentlyContinue
+      Receive-Job $monitor -ErrorAction SilentlyContinue | Out-Null
+      Remove-Job $monitor -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $sampleFile) {
+      foreach ($line in Get-Content $sampleFile) {
+        try { $spaceSamples += ($line | ConvertFrom-Json) } catch {}
+      }
+      Remove-Item $sampleFile -Force -ErrorAction SilentlyContinue
+    }
+    $peakConsumptionBytes = [double]0
+    $sampleCount = 0
+    foreach ($initial in $spaceReport.locations) {
+      if ($null -eq $initial.availableBytes) { continue }
+      foreach ($sampleSet in $spaceSamples) {
+        foreach ($sample in $sampleSet.locations) {
+          if ($sample.label -eq $initial.label) {
+            $sampleCount++
+            $consumed = [double]$initial.availableBytes - [double]$sample.freeBytes
+            if ($consumed -gt $peakConsumptionBytes) { $peakConsumptionBytes = $consumed }
+          }
+        }
+      }
+    }
+    $measuredPeakGiB = $null
+    if ($sampleCount -gt 0) {
+      $measuredPeakGiB = [math]::Round($peakConsumptionBytes / [math]::Pow(1024, 3), 2)
+    }
+    $measurement = [pscustomobject]@{
+      measuredAtUtc = [DateTime]::UtcNow.ToString("o")
+      measuredPeakConsumptionGiB = $measuredPeakGiB
+      minimumFreeGiB = $spaceReport.minimumFreeGiB
+      sampleIntervalSeconds = 2
+      locations = $spaceReport.locations
+    }
+    try {
+      $measurementDir = Join-Path $root "generated-artifacts"
+      New-Item -ItemType Directory -Path $measurementDir -Force | Out-Null
+      $reportJson = $measurement | ConvertTo-Json -Depth 6
+      [IO.File]::WriteAllText(
+        (Join-Path $measurementDir "windows-build-space.json"),
+        $reportJson,
+        [Text.UTF8Encoding]::new($false)
+      )
+      if ($null -ne $measuredPeakGiB) {
+        Write-Host ("Measured peak disk consumption in this build: {0} GiB; next run adds 25% headroom, with a {1} GiB minimum." -f $measuredPeakGiB, $spaceReport.configuredMinimumGiB)
+      } else {
+        Write-Warning "No disk-space samples were recorded. The next build will use the configured minimum."
+      }
+    } catch {
+      Write-Warning "Could not save the Windows build-space measurement. The next build will use the configured minimum."
+    }
   }
-  Invoke-Pnpm --filter @workspace/desktop run dist:win
   Write-Host "Installer: $root\generated-artifacts\windows"
   Write-Host "Install it, close ArenaForge, then run this script with -Action Check -Executable 'full path to ArenaForge.exe'."
   exit 0

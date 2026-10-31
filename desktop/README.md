@@ -13,11 +13,17 @@ Windows build, not a Windows-verified installer.
 
 The build downloads dependencies, Electron, Chromium, and embedded PostgreSQL.
 No user credentials are required. A packaged app needs no system Node.js.
-Before installing dependencies, the Windows script reports free space on the
-workspace, temporary-file, and user-cache volumes. Under 20 GiB—or when a
-volume cannot be checked—it asks before proceeding. That is an early-warning
-threshold, not a measured build requirement or guarantee; no disk cleanup is
-performed automatically.
+Before installing dependencies, the Windows script reports free space for the
+workspace, temporary directory, installer output, FFmpeg cache, and user build
+caches. It stops before installs or downloads if any checked location has less
+than the required free space, or if a location cannot be checked. The initial
+minimum floor is 20 GiB; set `$env:ARENA_BUILD_MIN_FREE_GIB = '24'` in PowerShell
+before running the script to raise it. During each build the script samples free
+space every two seconds and saves the largest observed consumption to
+`generated-artifacts/windows-build-space.json`. Later runs use 125% of that
+measured consumption, or the configured minimum if larger. This is sampled
+usage, so a brief peak between samples may be missed. The report is local and
+ignored by version control. No disk cleanup is performed automatically.
 Do not build from `.migration-backup`; the new path does not depend on it.
 The build script installs only the desktop app, API, web app and their workspace
 dependencies. This changes which packages are linked in `node_modules` for that
@@ -28,7 +34,12 @@ clears the previous generated `desktop/stage` before compiling. After a
 successful installer build, temporary `desktop/stage`, `desktop/dist`, and the
 duplicate `generated-artifacts/windows/win-unpacked` app tree are removed; the
 installer and reusable download caches remain. Failed builds retain their
-current staging files for diagnosis.
+current staging files for diagnosis. After stopping any build processes, remove
+only generated staging from an interrupted build with
+`node desktop/cleanup-build.mjs --failed-build`. This deletes `desktop/stage`,
+`desktop/dist`, and `generated-artifacts/windows/win-unpacked`; it preserves the
+installer, download caches, app data, and original media. If you need the
+partial files for diagnosis, inspect or copy them before running cleanup.
 The installer is currently unsigned; do not describe it as signed or production-verified.
 
 ## Free local model
