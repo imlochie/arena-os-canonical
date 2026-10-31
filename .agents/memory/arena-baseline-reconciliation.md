@@ -26,3 +26,9 @@ Treat branch-only capability notes as leads, not current-state facts. A feature 
 **Why:** Branch audits showed that prior notes can become stale: some historical Arcade validation and audio-backup work now exists in main, while the broader local-conversion archive flow is still absent.
 
 **How to apply:** Recheck the current server route, UI entry point, and end-to-end acceptance coverage before calling work lost or complete. Compare capability semantics, not only ancestry or filenames, and port targeted behavior rather than old framework scaffolding.
+
+The historical `scripts/pg-backup.mjs` is not a safe drop-in for the current desktop layout: it copies `data/postgres`, while the current install stores its generated database password separately at `runtime/db-password.json`. It also treats an unreadable or missing postmaster PID as evidence that PostgreSQL is not running.
+
+**Why:** Restoring that utility unchanged could produce a database copy the app cannot authenticate to, or copy a live cluster after an uncertain PID check.
+
+**How to apply:** Before restoring this capability, preserve and verify the matching credential as part of a protected backup, fail closed when process state is uncertain, prevent the backup destination from being inside the source, and test a round trip against the current Windows data root.
