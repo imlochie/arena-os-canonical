@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, mock, test } from "node:test";
-import { LiveStemLayers } from "./live-stem-layers";
+import { LIVE_STEM_SWITCH_TIMEOUT_MS, LiveStemLayers } from "./live-stem-layers";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
@@ -88,6 +88,58 @@ function fixture(
 function response(ok = true) {
   return { ok, status: ok ? 200 : 503, arrayBuffer: async () => new ArrayBuffer(4) } as Response;
 }
+
+test("a stalled switch times out without muting or resetting the original, and a late response stays silent", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture();
+  let release!: (response: Response) => void;
+  let signal: AbortSignal | undefined;
+  globalThis.fetch = (_url, init) => {
+    signal = init?.signal as AbortSignal;
+    // Deliberately ignore abort, as a decoder or a buffered response can.
+    return new Promise<Response>(resolve => { release = resolve; });
+  };
+  try {
+    const pending = f.layers.replace("vocals", "/stalled");
+    const rejected = assert.rejects(pending, /timed out after 15 seconds/);
+    mock.timers.tick(LIVE_STEM_SWITCH_TIMEOUT_MS);
+    await rejected;
+    assert.equal(signal?.aborted, true);
+    assert.equal(f.channel.inputGain.gain.value, 1);
+    assert.equal(f.media.paused, false);
+    assert.equal(f.media.currentTime, 7);
+    release(response());
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(f.sources.length, 0);
+    globalThis.fetch = async () => response();
+    f.media.currentTime = 11;
+    await f.layers.replace("vocals", "/retry");
+    assert.equal(f.sources[0]?.offset, 11 % 3, "retry aligns to the live clock, not the timed-out selection");
+  } finally {
+    f.layers.dispose();
+    mock.timers.reset();
+  }
+});
+
+test("cancelling preparation preserves an already audible donor even when its replacement ignores abort", async () => {
+  const f = fixture();
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.replace("vocals", "/audible");
+    let release!: (response: Response) => void;
+    globalThis.fetch = () => new Promise<Response>(resolve => { release = resolve; });
+    const pending = f.layers.replace("vocals", "/stalled");
+    f.layers.cancelPending("vocals");
+    await pending;
+    assert.equal(f.sources[0]?.stopped, false);
+    assert.equal(f.channel.inputGain.gain.value, 0, "the existing donor, not the original, stays selected");
+    release(response());
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(f.sources.length, 1);
+  } finally { f.layers.dispose(); }
+});
 
 test("preparation leaves original audible; ready donor joins the unchanged recipient clock", async () => {
   const f = fixture();

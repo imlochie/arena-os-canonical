@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LiveStemLayers } from "./live-stem-layers";
+export { LiveStemSwitchTimeoutError } from "./live-stem-layers";
 
 export type MixerValues = {
   volume: number;
@@ -360,6 +361,7 @@ export function useStemTransport(
     if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
     return liveLayers.current!.preload(url, tempoStretchRatio, selectedAt);
   }, [ensureGraph]);
+  const cancelPendingStem = useCallback((id: string) => liveLayers.current!.cancelPending(id), []);
   const prepareChannels = useCallback((channelIds: string[]) => {
     for (const id of channelIds) {
       if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
@@ -811,6 +813,7 @@ export function useStemTransport(
     register,
     replaceStem,
     preloadStem,
+    cancelPendingStem,
     prepareChannels,
     playChannels,
     readSpectrum,

@@ -1,3 +1,12 @@
+export const LIVE_STEM_SWITCH_TIMEOUT_MS = 15_000;
+
+export class LiveStemSwitchTimeoutError extends Error {
+  constructor() {
+    super("The stem switch timed out after 15 seconds. The previous audio continues; try again.");
+    this.name = "LiveStemSwitchTimeoutError";
+  }
+}
+
 type Channel = {
   source: MediaElementAudioSourceNode;
   inputGain: GainNode;
@@ -46,7 +55,7 @@ type RecentStem = {
 type PendingSwap = {
   controller: AbortController;
   key: string;
-  promise: Promise<void>;
+  promise: Promise<void | false>;
 };
 
 type BufferStretcher = (
@@ -393,6 +402,12 @@ export class LiveStemLayers {
     return operation.promise;
   }
 
+  /** Stop only the preparation, never the currently audible layer or its clock. */
+  cancelPending(id: string) {
+    this.pending.get(id)?.controller.abort();
+    this.pending.delete(id);
+  }
+
   private async installReplacement(
     id: string,
     url: string,
@@ -401,9 +416,24 @@ export class LiveStemLayers {
     previous: Layer | undefined,
     operation: PendingSwap,
   ) {
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
     try {
-      const prepared = await this.getPreparedBuffer(url, tempoStretchRatio, operation.controller.signal, selectedAt);
-      if (operation.controller.signal.aborted || this.pending.get(id) !== operation) return;
+      const deadline = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(new DOMException("Live stem preparation was cancelled.", "AbortError"));
+        operation.controller.signal.addEventListener("abort", onAbort, { once: true });
+        timer = setTimeout(() => {
+          timedOut = true;
+          operation.controller.abort();
+          reject(new LiveStemSwitchTimeoutError());
+        }, LIVE_STEM_SWITCH_TIMEOUT_MS);
+      });
+      const prepared = await Promise.race([
+        this.getPreparedBuffer(url, tempoStretchRatio, operation.controller.signal, selectedAt),
+        deadline,
+      ]);
+      if (operation.controller.signal.aborted || this.pending.get(id) !== operation) return false;
       const ctx = this.context();
       const channel = this.channel(id);
       if (!channel) throw new Error("The receiving stem is no longer loaded.");
@@ -417,9 +447,14 @@ export class LiveStemLayers {
       this.ramp(channel.inputGain, 0);
       if (layer.source) this.reportAudible(layer);
       if (previous) this.retire(previous);
+      return undefined;
     } catch (error) {
+      if (timedOut) throw new LiveStemSwitchTimeoutError();
       if (!operation.controller.signal.aborted) throw error;
+      return false;
     } finally {
+      clearTimeout(timer);
+      if (onAbort) operation.controller.signal.removeEventListener("abort", onAbort);
       if (this.pending.get(id) === operation) this.pending.delete(id);
     }
   }

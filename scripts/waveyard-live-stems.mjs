@@ -96,6 +96,7 @@ let heldAssetId = null;
 let heldAssetGate = null;
 let signalHeldAssetRequest = null;
 let signalHeldAssetRouteFinished = null;
+let pendingSwapDeleteGate = null;
 let timedAssetId = null;
 let timedAssetDelayMs = 0;
 const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
@@ -374,6 +375,7 @@ try {
         session.tracks.forEach((track, index) => { track.position = index; });
       }
     } else if (request.method() === "DELETE") {
+      if (pendingSwapDeleteGate) await pendingSwapDeleteGate;
       session.swaps = session.swaps.filter(s => s.id !== url.searchParams.get("swapId"));
     } else if (url.pathname.endsWith("/state") && body) Object.assign(session, body);
     else if (request.method() === "PATCH" && body) {
@@ -628,6 +630,87 @@ try {
       },
     });
   });
+  async function verifyStemSwitchRecovery() {
+    for (const scenario of ["cancel", "timeout"]) {
+      session.currentSessionTrackId = "a";
+      session.positionSeconds = 0;
+      session.swaps = [];
+      await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+      await page.waitForFunction(() => {
+        const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+        return audio.length === 4 && audio.every(element =>
+          element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+        );
+      });
+      const deck = page.locator('[data-role="current"]');
+      let releaseDonor, signalRequest, finishRoute, releaseDelete;
+      heldAssetId = "b-vocals";
+      heldAssetGate = new Promise(resolve => { releaseDonor = resolve; });
+      const requested = new Promise(resolve => { signalRequest = resolve; });
+      const routeFinished = new Promise(resolve => { finishRoute = resolve; });
+      signalHeldAssetRequest = signalRequest;
+      signalHeldAssetRouteFinished = finishRoute;
+      const buffersBefore = await page.evaluate(() => window.audioProbe.buffers.length);
+      try {
+        await page.getByTestId("session-play").click();
+        await deck.getByTestId("open-live-swap-vocals").click();
+        await deck.getByTestId("live-swap-candidate-vocals-b").click();
+        await waitForSignal(requested, `the stalled donor for ${scenario}`);
+        const pending = page.getByTestId("live-swap-pending-vocals");
+        await pending.filter({ hasText: /Preparing.*current playback continues/ }).waitFor();
+        if (scenario === "cancel") {
+          // Persistence is stalled too: cancellation must take effect locally.
+          pendingSwapDeleteGate = new Promise(resolve => { releaseDelete = resolve; });
+          await page.getByTestId("cancel-live-stem-swap-swap-vocals").click();
+        }
+        await page.getByTestId("session-status")
+          .filter({ hasText: scenario === "cancel" ? /vocals switch cancelled/i : /stem switch timed out after 15 seconds/i })
+          .waitFor({ timeout: 20_000 });
+        const afterStop = await deck.locator("audio").evaluateAll(elements => elements.map(audio => ({
+          time: audio.currentTime, paused: audio.paused,
+        })));
+        assert.ok(afterStop.every(audio => !audio.paused && (scenario !== "timeout" || audio.time > 14)),
+          `${scenario} leaves every original channel playing: ${JSON.stringify(afterStop)}`);
+        assert.ok(Math.max(...afterStop.map(audio => audio.time)) - Math.min(...afterStop.map(audio => audio.time)) < 0.2,
+          `${scenario} keeps original channels aligned`);
+        await page.waitForFunction(before => {
+          const audio = document.querySelector('[data-role="current"] audio[src$="/a-vocals"]');
+          return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > before + 0.2;
+        }, afterStop[0].time, { timeout: 3000 });
+        heldAssetId = null;
+        heldAssetGate = null;
+        releaseDonor();
+        await waitForSignal(routeFinished, `the late ${scenario} donor response`);
+        await page.waitForTimeout(250);
+        assert.equal(await page.evaluate(() => window.audioProbe.buffers.length), buffersBefore,
+          `a late ${scenario} response cannot install a donor buffer`);
+        assert.ok(Math.abs(await page.evaluate(() =>
+          window.audioProbe.sources.find(source => source.mediaElement.src.endsWith("/a-vocals"))?.inputNode?.gain.value ?? 0,
+        ) - 1) < 0.01, `${scenario} keeps the original vocal signal audible`);
+        if (scenario === "cancel") {
+          assert.equal(session.swaps.length, 1, "cancellation is effective while deletion is still pending");
+          pendingSwapDeleteGate = null;
+          releaseDelete();
+        }
+        await pending.waitFor({ state: "detached" });
+        assert.equal(session.swaps.length, 0, `${scenario} removes the saved pending choice`);
+        await page.getByTestId("session-play").click();
+      } finally {
+        heldAssetId = null;
+        heldAssetGate = null;
+        signalHeldAssetRequest = null;
+        signalHeldAssetRouteFinished = null;
+        pendingSwapDeleteGate = null;
+        releaseDonor?.();
+        releaseDelete?.();
+      }
+    }
+    console.log("PASS: cancellation and the real preparation timeout keep original audio audible and aligned; late donors stay silent even while cancellation persistence stalls");
+  }
+
+  if (process.argv.includes("--switch-recovery-only")) {
+    await verifyStemSwitchRecovery();
+  } else {
   await page.goto("http://localhost:80/waveyard");
   await page.evaluate(() => localStorage.clear());
   failNextModelCheck = true;
@@ -1291,6 +1374,9 @@ try {
     "a pause command in the mirror tab pauses the active tab");
   await secondPage.close();
 
+  // Keep the long deadline's reload/wait independent of the mirror fixture.
+  await verifyStemSwitchRecovery();
+
   // Auto-crossfade must start from the configured end window, preserve the
   // equal-power incoming level, and advance without a manual Mix/Finish click.
   session.tracks = tracks;
@@ -1937,4 +2023,5 @@ try {
   assert.ok(sessionMobileLayout.documentWidth <= sessionMobileLayout.viewport,
     `session must not overflow on mobile: ${JSON.stringify(sessionMobileLayout)}`);
   console.log("PASS: live stem swaps are cancellable without interrupting playback; source recovery and the session-to-Studio handoff remain usable");
+  }
 } finally { await browser.close(); }

@@ -3,7 +3,7 @@
 import Link from "@/routing/Link";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { LibraryTrackSummary } from "@workspace/api-client-react";
-import { useStemTransport, type ChannelMeter, type MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
+import { useStemTransport, LiveStemSwitchTimeoutError, type ChannelMeter, type MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
 import { isMultiPassSeparationPhase } from "@workspace/arena/lib/waveyard/library/model";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
@@ -179,6 +179,7 @@ export interface HostCommand {
 }
 
 type DeckApi = {
+  itemId: string | null;
   transport: ReturnType<typeof useStemTransport>;
   hasStemChannels: boolean;
   applyStemVolumes: (volumes: Record<string, number>) => void;
@@ -242,6 +243,7 @@ function SessionDeck({
   openSwapPickerStem,
   onOpenSwapPicker,
   onLiveLayerReady,
+  onLiveLayerFailed,
   onReturnToSource,
   onApi,
   onPlaying,
@@ -275,6 +277,7 @@ function SessionDeck({
   openSwapPickerStem?: string | null;
   onOpenSwapPicker?: (stemType: string) => void;
   onLiveLayerReady?: (sessionTrackId: string, stemType: string) => void;
+  onLiveLayerFailed?: (sessionTrackId: string, stemType: string, message: string) => void;
   onReturnToSource?: () => void;
   onApi: (deckIndex: number, api: DeckApi | null) => void;
   onPlaying: (deckIndex: number, playing: boolean) => void;
@@ -340,8 +343,13 @@ function SessionDeck({
     setLoadingLayers(layers.some(([, donor]) => donor !== null));
     const replacements = layers.map(([id, donor, tempoStretchRatio, selectedAt]) => {
       const stemType = stemTypeByAsset.get(id) ?? "source";
-      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined).then(() => {
-        if (!stale && donor !== null && item !== null) onLiveLayerReady?.(item.id, stemType);
+      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined).then((installed) => {
+        if (!stale && installed !== false && donor !== null && item !== null) onLiveLayerReady?.(item.id, stemType);
+      }).catch((error: unknown) => {
+        if (!stale && donor !== null && item !== null && error instanceof LiveStemSwitchTimeoutError) {
+          onLiveLayerFailed?.(item.id, stemType, error instanceof Error ? error.message : "Live stem loading failed.");
+        }
+        throw error;
       });
     });
     void Promise.all(replacements)
@@ -351,7 +359,7 @@ function SessionDeck({
       })
       .finally(() => { if (!stale) setLoadingLayers(false); });
     return () => { stale = true; };
-  }, [swapKey, stemTypeByAsset, tempoStretchRatios, transport.replaceStem, onLiveLayerReady, item?.id, swapRetry]);
+  }, [swapKey, stemTypeByAsset, tempoStretchRatios, transport.replaceStem, onLiveLayerReady, onLiveLayerFailed, item?.id, swapRetry]);
 
   const applyStemVolumes = useCallback(
     (volumes: Record<string, number>) => {
@@ -467,6 +475,7 @@ function SessionDeck({
 
   useEffect(() => {
     onApi(deckIndex, {
+      itemId: item?.id ?? null,
       transport,
       applyStemVolumes,
       preloadStem: (recipientStemId, donorStemId, ratio, selectedAt) =>
@@ -912,6 +921,7 @@ export default function SessionExperience({
   const [phase, setPhase] = useState<FadePhase>("idle");
   const [savingSwap, setSavingSwap] = useState(false);
   const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
+  const [cancelledSwapIds, setCancelledSwapIds] = useState<Set<string>>(() => new Set());
   const [swapSelectionTimes, setSwapSelectionTimes] = useState<Record<string, number>>({});
   const [openSwapStem, setOpenSwapStem] = useState<string | null>(null);
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
@@ -1128,13 +1138,14 @@ export default function SessionExperience({
     if (session === null || currentItem === null) return map;
     for (const swap of session.swaps) {
       if (swap.sessionTrackId !== currentItem.id) continue;
+      if (cancelledSwapIds.has(swap.id)) continue;
       const donor = session.tracks.find((t) => t.track.id === swap.toTrackId);
       const donorStem = donor?.stems.find((s) => s.stemType === swap.stemType)
         ?? swap.donorTrack?.stems.find((s) => s.stemType === swap.stemType);
       if (donorStem) map[swap.stemType] = donorStem.id;
     }
     return map;
-  }, [session, currentItem]);
+  }, [session, currentItem, cancelledSwapIds]);
 
   const activeSwapTempoStretchRatios = useMemo(() => {
     const ratios: Record<string, number> = {};
@@ -2127,6 +2138,19 @@ export default function SessionExperience({
   const revertSwap = useCallback(
     async (swapId: string, successMessage = "Original stem restored.") => {
       if (session === null) return;
+      const pending = pendingSwaps.find((swap) => swap.swapId === swapId);
+      if (pending) {
+        setCancelledSwapIds((previous) => new Set([...previous, swapId]));
+        // Cancel locally before waiting for persistence. A late donor response
+        // must not take over even if the delete request is slow or fails.
+        for (const deck of decksRef.current) {
+          if (deck?.itemId !== pending.sessionTrackId) continue;
+          const item = session.tracks.find((track) => track.id === pending.sessionTrackId);
+          const stemId = item?.stems.find((stem) => stem.stemType === pending.stemType)?.id;
+          if (stemId) deck.transport.cancelPendingStem(stemId);
+        }
+        setStatus(successMessage);
+      }
       setSavingSwap(true);
       try {
         const detail = await mutate(`/api/library/sessions/${session.id}/swaps?swapId=${swapId}`, { method: "DELETE" });
@@ -2138,8 +2162,17 @@ export default function SessionExperience({
         setSavingSwap(false);
       }
     },
-    [session, mutate],
+    [session, mutate, pendingSwaps],
   );
+
+  const liveLayerFailureRef = useRef<(sessionTrackId: string, stemType: string, message: string) => void>(() => {});
+  liveLayerFailureRef.current = (sessionTrackId, stemType, message) => {
+    const pending = pendingSwaps.find((swap) => swap.sessionTrackId === sessionTrackId && swap.stemType === stemType);
+    if (pending) void revertSwap(pending.swapId, message);
+  };
+  const markLiveLayerFailed = useCallback((sessionTrackId: string, stemType: string, message: string) => {
+    liveLayerFailureRef.current(sessionTrackId, stemType, message);
+  }, []);
 
   const markLiveLayerReady = useCallback((sessionTrackId: string, stemType: string) => {
     setPendingSwaps((previous) => previous.filter(
@@ -2157,6 +2190,10 @@ export default function SessionExperience({
   useEffect(() => {
     const savedSwapIds = new Set(session?.swaps.map((swap) => swap.id) ?? []);
     setPendingSwaps((previous) => previous.filter((pending) => savedSwapIds.has(pending.swapId)));
+    setCancelledSwapIds((previous) => {
+      const next = new Set([...previous].filter((id) => savedSwapIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
   }, [session?.swaps]);
 
   // -------------------------------------------------------- studio handoff
@@ -2848,6 +2885,7 @@ export default function SessionExperience({
       openSwapPickerStem: openSwapStem,
       onOpenSwapPicker: isActive ? (stemType: string) => setOpenSwapStem(stemType) : undefined,
       onLiveLayerReady: isActive ? markLiveLayerReady : undefined,
+      onLiveLayerFailed: isActive ? markLiveLayerFailed : undefined,
       onReturnToSource: isActive && item?.playback?.kind === "stems" && item.sourceAssetId !== null
         ? () => void returnToFullTrack(item.id)
         : undefined,
@@ -2921,7 +2959,9 @@ export default function SessionExperience({
 
       {pendingSwaps.map((pending) => (
         <p key={pending.swapId} className="sess-status wy-ready" role="status" data-testid={`live-swap-pending-${pending.stemType}`}>
-          Preparing {pending.stemType} from “{pending.donorTitle}”; current playback continues.{" "}
+          {cancelledSwapIds.has(pending.swapId)
+            ? `${pending.stemType} switch stopped; current playback continues. `
+            : `Preparing ${pending.stemType} from “${pending.donorTitle}”; current playback continues. `}
           <button
             type="button"
             className="button tiny"
@@ -2930,7 +2970,7 @@ export default function SessionExperience({
             disabled={savingSwap}
             onClick={() => void revertSwap(pending.swapId, `${pending.stemType} switch cancelled; the previous audio continues.`)}
           >
-            {savingSwap ? "Cancelling…" : "Cancel switch"}
+            {savingSwap ? "Cancelling…" : cancelledSwapIds.has(pending.swapId) ? "Retry removing switch" : "Cancel switch"}
           </button>
         </p>
       ))}
