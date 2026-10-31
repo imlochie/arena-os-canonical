@@ -1021,7 +1021,7 @@ try {
   });
   await page.getByRole("status").filter({ hasText: "Imported your Apple Music library" }).waitFor();
   await page.getByRole("button", { name: /My Playlist/ }).click();
-  await page.getByText("Apple Library Song", { exact: true }).waitFor();
+  await page.locator(".stream-tracks").getByText("Apple Library Song", { exact: true }).waitFor();
   const appleCsvDownload = page.waitForEvent("download");
   await page.getByRole("link", { name: "Download CSV" }).click();
   assert.equal((await appleCsvDownload).suggestedFilename(), "waveyard-apple-library.csv");
@@ -2902,8 +2902,28 @@ try {
   await restoredBrowserFrame.locator("#game").waitFor({ timeout: 10000 });
   assert.equal(await restoredBrowserFrame.locator("#hud").innerText(), "Score 1", "HTML game progress must survive a page reload");
   await page.evaluate(() => localStorage.setItem("af_local_mode", "1"));
-  const revisedGameHtml = `<!doctype html><html><head><title>Revised fixture</title></head><body><canvas id="patched" width="240" height="160"></canvas><script>let score=0;const c=document.getElementById("patched"),x=c.getContext("2d");function loop(){score++;x.fillStyle="#13b981";x.fillRect(0,0,c.width,c.height);document.title="Score "+score;requestAnimationFrame(loop)}loop();addEventListener("keydown",()=>{});addEventListener("touchstart",()=>{});</script><!-- ${"original test-only game code ".repeat(60)} --></body></html>`;
+  const revisedGameHtml = `<!doctype html><html><head><title>Revised fixture</title></head><body><p id="hud">Score 0</p><canvas id="patched" width="240" height="160"></canvas><script>const c=document.getElementById("patched"),x=c.getContext("2d"),hud=document.getElementById("hud");let score=Number(localStorage.getItem("fixture-score")||0);hud.textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score+=2;localStorage.setItem("fixture-score",String(score));hud.textContent="Score "+score}});function loop(){x.fillStyle="#13b981";x.fillRect(0,0,c.width,c.height);requestAnimationFrame(loop)}loop();addEventListener("touchstart",()=>{});</script><!-- ${"original test-only game code ".repeat(60)} --></body></html>`;
   const revisedArchiveHtml = '<!doctype html><html><head><title>Revised offline project</title><style>#tile{width:48px;height:48px;background-image:url("data:ARENA_ASSET_TOKEN_0001");background-size:cover}</style></head><body><p id="hud">Score 0</p><div id="tile"></div><img id="dynamic-sprite" src="data:ARENA_ASSET_TOKEN_0004"><audio id="sfx" src="data:ARENA_ASSET_TOKEN_0002"></audio><button id="play-sfx">Play sound</button><button id="play-dynamic-sfx">Play dynamic sound</button><script>let score=Number(localStorage.getItem("zip-score")||0);const hud=document.getElementById("hud");hud.textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score+=2;localStorage.setItem("zip-score",String(score));hud.textContent="Score "+score}});const dynamicSfx=new Audio("data:ARENA_ASSET_TOKEN_0003");dynamicSfx.id="dynamic-sfx";document.body.appendChild(dynamicSfx);document.getElementById("play-sfx").addEventListener("click",()=>{void document.getElementById("sfx").play()});document.getElementById("play-dynamic-sfx").addEventListener("click",()=>{void dynamicSfx.play()});</script></body></html>';
+  const readImportedFixture = async () => page.evaluate(async () => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("arenaforge-imported-games", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const records = await new Promise((resolve, reject) => {
+      const request = database.transaction("games", "readonly").objectStore("games").getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return records.find(record => record.name === "open-homebrew-fixture.html");
+  });
+  const importedFixtureBeforeRevision = await readImportedFixture();
+  assert(importedFixtureBeforeRevision?.id, "The test game must already have a saved identity");
+  const importedSaveKey = `arenaforge.game-save.v1:${importedFixtureBeforeRevision.id}`;
+  const importedSaveBeforeRevision = await page.evaluate(key => localStorage.getItem(key), importedSaveKey);
+  assert(importedSaveBeforeRevision, "The test game progress must be saved before revisions");
+  assert.equal(JSON.parse(importedSaveBeforeRevision)["fixture-score"], "1", "The save must contain the starting game progress");
   let revisionRequestSeen = false;
   let cancelRevisionStarted = false;
   let releaseCancelRevisionRoute;
@@ -2966,32 +2986,37 @@ try {
   await page.getByText("Revision cancelled. The imported game and its progress are unchanged.").waitFor();
   assert.equal(await browserFrame.locator("#patched").count(), 0, "A cancelled revision must leave the imported source untouched");
   assert.equal(await page.getByTestId("imported-revision-undo").count(), 0, "A cancelled revision must not create an undo entry");
-  const readImportedFixture = async () => page.evaluate(async () => {
-    const database = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("arenaforge-imported-games", 1);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    const records = await new Promise((resolve, reject) => {
-      const request = database.transaction("games", "readonly").objectStore("games").getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    database.close();
-    return records.find(record => record.name === "open-homebrew-fixture.html");
-  });
-  const importedFixtureBeforeRevision = await readImportedFixture();
-  assert(importedFixtureBeforeRevision?.id, "The test game must already have a saved identity");
+  const importedFixtureAfterCancellation = await readImportedFixture();
+  assert.equal(importedFixtureAfterCancellation?.source, importedFixtureBeforeRevision.source, "A cancelled revision must leave imported source unchanged");
+  assert.equal(
+    await page.evaluate(key => localStorage.getItem(key), importedSaveKey),
+    importedSaveBeforeRevision,
+    "A cancelled revision must leave the exact saved progress unchanged",
+  );
   await page.getByLabel("Revise this browser game").fill("Reject unsafe revision");
   await page.getByRole("button", { name: "Apply revision" }).click();
   await page.getByText(/Revision failed:.*external resource/).waitFor({ timeout: 10000 });
   assert.equal(await page.getByTestId("imported-revision-undo").count(), 0, "A safety-rejected revision must not create an undo entry");
   assert.equal(await page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]').locator("#game").count(), 1);
+  const importedFixtureAfterRejection = await readImportedFixture();
+  assert.equal(importedFixtureAfterRejection?.source, importedFixtureBeforeRevision.source, "A rejected revision must leave imported source unchanged");
+  assert.equal(
+    await page.evaluate(key => localStorage.getItem(key), importedSaveKey),
+    importedSaveBeforeRevision,
+    "A rejected revision must leave the exact saved progress unchanged",
+  );
   await page.getByLabel("Revise this browser game").fill("Add a pause overlay");
   await page.getByRole("button", { name: "Apply revision" }).click();
   await page.getByText("Revision applied. Play it, then keep it or undo it.").waitFor({ timeout: 10000 });
   assert(revisionRequestSeen, "Prompt revision did not use the selected model route");
-  await page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]').locator("#patched").waitFor();
+  const revisedFixtureFrame = page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]');
+  await revisedFixtureFrame.locator("#patched").waitFor();
+  assert.equal(await revisedFixtureFrame.locator("#hud").innerText(), "Score 1", "A successful prompt revision must load the existing saved progress");
+  assert.equal(
+    await page.evaluate(key => localStorage.getItem(key), importedSaveKey),
+    importedSaveBeforeRevision,
+    "A successful revision must preserve the exact save until gameplay changes it",
+  );
   assert.equal(await page.getByTestId("button-keep-imported-revision").isEnabled(), true);
   assert.equal(await page.getByTestId("button-undo-imported-revision").isEnabled(), true);
   assert.equal(await page.getByRole("button", { name: "Apply revision" }).isDisabled(), true, "A pending undo must not be overwritten by another revision");
@@ -2999,6 +3024,14 @@ try {
   await page.getByRole("tab", { name: "Import and emulate" }).click();
   await page.getByTestId("imported-revision-undo").waitFor({ timeout: 10000 });
   assert.equal(await page.getByRole("button", { name: "Apply revision" }).isDisabled(), true, "A pending undo must remain available after a browser reload");
+  const revisedFixtureAfterReload = page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]');
+  await revisedFixtureAfterReload.locator("#patched").waitFor();
+  assert.equal(await revisedFixtureAfterReload.locator("#hud").innerText(), "Score 1", "Saved progress must remain available in the revised game after reload");
+  assert.equal(
+    await page.evaluate(key => localStorage.getItem(key), importedSaveKey),
+    importedSaveBeforeRevision,
+    "A browser reload after revision must retain the exact saved progress",
+  );
   await page.getByTestId("button-undo-imported-revision").click();
   const restoredImportedFixture = page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]');
   await restoredImportedFixture.locator("#game").waitFor();
