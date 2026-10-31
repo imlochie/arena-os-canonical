@@ -17,6 +17,7 @@ import {
   buildStemChannels,
   deriveTrackMetadata,
   formatPlayClock,
+  isMultiPassSeparationPhase,
   libraryContainerProjectName,
   normalizeStemMix,
   parseStemMix,
@@ -26,6 +27,12 @@ import {
   shouldCountPlay,
   withUnityDefaults,
 } from "./model";
+
+test("multi-pass detection works for raw phases and user-facing phase labels", () => {
+  assert.equal(isMultiPassSeparationPhase("2/4"), true);
+  assert.equal(isMultiPassSeparationPhase("pass 2/4 · Drums · chunk 2 of 3"), true);
+  assert.equal(isMultiPassSeparationPhase("pass 1/1 · Vocals"), false);
+});
 
 test("buildStemChannels: the four defaults render in stable order, all available when separated", () => {
   const channels = buildStemChannels(["drums", "other", "vocals", "bass"]);
@@ -112,12 +119,21 @@ test("resolveStemAvailability exposes current progress, but ignores stale progre
       status: "processing",
       stage: "separating",
       errorCode: null,
-      metadata: JSON.stringify({ progress: { percent: 42.4, phase: "2/4", model: "kuielab_b_drums" } }),
+      metadata: JSON.stringify({
+        progress: {
+          done: 2,
+          total: 3,
+          percent: 42.4,
+          phase: "2/4",
+          model: "kuielab_b_drums",
+          kind: "chunk",
+        },
+      }),
     },
   });
   assert.equal(running.status, "processing");
   if (running.status !== "processing") throw new Error("Expected a processing track.");
-  assert.deepEqual(running.progress, { percent: 42, phase: "pass 2/4 · Drums" });
+  assert.deepEqual(running.progress, { percent: 42, phase: "pass 2/4 · Drums · chunk 2 of 3" });
 
   const unknownPass = resolveStemAvailability({
     stems: [],

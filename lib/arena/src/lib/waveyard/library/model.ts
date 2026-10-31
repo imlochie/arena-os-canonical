@@ -59,7 +59,7 @@ export function buildStemChannels(stemTypes: readonly string[]): StemChannel[] {
 /** Honest stem availability for a track, derived from REAL stem rows. */
 export interface SeparationProgress {
   percent: number;
-  /** Friendly current-pass label, e.g. "pass 2/4 · Drums". */
+  /** Friendly current-pass label, e.g. "pass 2/4 · Drums · chunk 2 of 3". */
   phase?: string;
 }
 
@@ -91,18 +91,43 @@ export interface StemAvailabilityInput {
  * "source"-typed stem with this engine when separation cannot run. */
 export const PASSTHROUGH_ENGINE = "passthrough-unseparated";
 
+export function isMultiPassSeparationPhase(phaseValue: unknown): boolean {
+  if (typeof phaseValue !== "string") return false;
+  const match = /^(?:pass\s+)?\d+\/(\d+)(?:\s|$)/i.exec(phaseValue.trim());
+  return match !== null && Number(match[1]) > 1;
+}
+
 function parseSeparationProgress(metadata: string | null | undefined): SeparationProgress | undefined {
   if (!metadata) return undefined;
   try {
     const value = JSON.parse(metadata) as {
-      progress?: { percent?: unknown; phase?: unknown; model?: unknown };
+      progress?: {
+        percent?: unknown;
+        phase?: unknown;
+        model?: unknown;
+        done?: unknown;
+        total?: unknown;
+        kind?: unknown;
+      };
     };
     const progress = value?.progress;
     if (typeof progress?.percent !== "number" || !Number.isFinite(progress.percent)) return undefined;
-    const phase = formatSeparationProgressPhase(progress.phase, progress.model);
+    const basePhase = formatSeparationProgressPhase(progress.phase, progress.model);
+    const total = typeof progress.total === "number" && Number.isFinite(progress.total) && progress.total > 0
+      ? Math.floor(progress.total)
+      : undefined;
+    const done = typeof progress.done === "number" && Number.isFinite(progress.done)
+      ? Math.max(0, Math.min(total ?? Number.MAX_SAFE_INTEGER, Math.floor(progress.done)))
+      : undefined;
+    const chunk = isMultiPassSeparationPhase(progress.phase) &&
+      progress.kind === "chunk" &&
+      done !== undefined &&
+      total !== undefined
+      ? ` · chunk ${done} of ${total}`
+      : "";
     return {
       percent: Math.min(100, Math.max(0, Math.round(progress.percent))),
-      ...(phase ? { phase } : {}),
+      ...(basePhase ? { phase: `${basePhase}${chunk}` } : {}),
     };
   } catch {
     return undefined;

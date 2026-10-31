@@ -11,7 +11,10 @@ import { separationTargetOptions } from "@workspace/arena/lib/waveyard/separatio
 import { PublicationPanel } from "./PublicationPanel";
 import { WaveyardHandoffPanel } from "./WaveyardHandoffPanel";
 import { evaluateAutomaticBuildFinalization } from "@workspace/arena/lib/waveyard/automatic-build-finalization";
-import { formatSeparationProgressPhase } from "@workspace/arena/lib/waveyard/library/model";
+import {
+  formatSeparationProgressPhase,
+  isMultiPassSeparationPhase,
+} from "@workspace/arena/lib/waveyard/library/model";
 import { separationDeviceHint, separationDeviceLabel } from "@workspace/arena/lib/waveyard/separation/device-status";
 
 type ProjectData = {
@@ -58,6 +61,7 @@ function parseJobProgress(metadata: string | null): {
   percent: number;
   phase?: string;
   kind?: "model-pass" | "chunk";
+  multiPass?: boolean;
 } | null {
   if (!metadata) return null;
   try {
@@ -80,6 +84,7 @@ function parseJobProgress(metadata: string | null): {
         ? { phase: formatSeparationProgressPhase(progress.phase, progress.model) ?? progress.phase }
         : {}),
       ...(progress.kind === "model-pass" || progress.kind === "chunk" ? { kind: progress.kind } : {}),
+      ...(isMultiPassSeparationPhase(progress.phase) ? { multiPass: true } : {}),
     };
   } catch {
     return null;
@@ -516,10 +521,14 @@ async function prepareEngine(model: string, jobId: string) {
             const progress = parseJobProgress(latest.metadata);
             if (latest.stage === "separating" && progress) {
               if (progress.kind === "model-pass" && progress.phase) {
-                return `${progress.phase} in progress · ${progress.percent}%. Keep this page open or return later.`;
+                return progress.multiPass
+                  ? `${progress.phase} starting. Each stem pass takes a different amount of time.`
+                  : `${progress.phase} in progress · ${progress.percent}%. Keep this page open or return later.`;
               }
               if (progress.kind === "chunk") {
-                return `Separating — ${progress.percent}% · ${progress.phase ?? "in progress"} · chunk ${progress.done} of ${progress.total}. Keep this page open or return later.`;
+                return progress.multiPass
+                  ? `Separating · ${progress.phase ?? "current pass"} · chunk ${progress.done} of ${progress.total}. Pass times vary.`
+                  : `Separating — ${progress.percent}% · ${progress.phase ?? "in progress"} · chunk ${progress.done} of ${progress.total}. Keep this page open or return later.`;
               }
               return `Separating — ${progress.percent}% (part ${progress.done} of ${progress.total}). Keep this page open or return later.`;
             }

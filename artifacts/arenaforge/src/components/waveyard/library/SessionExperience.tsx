@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { LibraryTrackSummary } from "@workspace/api-client-react";
 import { useStemTransport, type ChannelMeter, type MixerValues } from "@workspace/arena/lib/waveyard/useStemTransport";
 import { useHardwareMediaKeys } from "@workspace/arena/lib/waveyard/stem2";
+import { isMultiPassSeparationPhase } from "@workspace/arena/lib/waveyard/library/model";
 import Stem2Panel from "@/components/waveyard/stem2/Stem2Panel";
 import CamelotWheel from "./CamelotWheel";
 import LiveStemSwapPicker, {
@@ -128,7 +129,12 @@ function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOp
   }
   if (availability?.status === "processing") {
     const finishing = availability.stage === "finalizing" || availability.progress?.percent === 100;
-    const percent = availability.progress ? ` · ${availability.progress.percent}%` : "";
+    const progress = availability.progress;
+    const progressDetail = progress
+      ? progress.phase && isMultiPassSeparationPhase(progress.phase)
+        ? ` · ${progress.phase}`
+        : ` · ${progress.percent}%${progress.phase ? ` · ${progress.phase}` : ""}`
+      : "";
     const sourceLabel = item.sourceAssetId === null ? "" : " · full source available";
     const stageLabel = availability.stage === "queued"
       ? "Queued"
@@ -137,7 +143,7 @@ function getStudioTrackReadiness(item: SessionTrackItem, library: LibraryTrackOp
         : finishing
           ? "Finishing"
           : "Separating";
-    return { ready: false, canUseFullSource: item.sourceAssetId !== null, label: `${stageLabel}${percent}${sourceLabel}` };
+    return { ready: false, canUseFullSource: item.sourceAssetId !== null, label: `${stageLabel}${progressDetail}${sourceLabel}` };
   }
   if (availability?.status === "failed" || availability?.status === "rejected") {
     const sourceLabel = item.sourceAssetId === null ? " · retry in Library" : " · full source available";
@@ -2900,11 +2906,13 @@ export default function SessionExperience({
             </p>
           )}
         {sessionSeparationProgress.map(({ id, title, stage, progress }) => {
-          const phase = progress?.phase
-            ? /^\d+\/\d+$/.test(progress.phase) ? ` · pass ${progress.phase}` : ` · ${progress.phase}`
+          const progressDetail = progress
+            ? progress.phase && isMultiPassSeparationPhase(progress.phase)
+              ? ` · ${progress.phase}`
+              : ` · ${progress.percent}%${progress.phase ? ` · ${progress.phase}` : ""}`
             : "";
           const label = progress
-            ? `${stage === "finalizing" || progress.percent === 100 ? "Finishing" : "Separating"} · ${progress.percent}%${phase}`
+            ? `${stage === "finalizing" || progress.percent === 100 ? "Finishing" : "Separating"}${progressDetail}`
             : "Separating";
           return (
             <p key={id} className="sess-status" role="status" data-testid={`session-separation-progress-${id}`}>

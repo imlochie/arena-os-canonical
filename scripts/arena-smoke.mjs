@@ -278,7 +278,7 @@ try {
                 status: "processing",
                 reason: "Stem separation is still running.",
                 stage: "separating",
-                progress: { percent: 36, phase: "2/4" },
+                progress: { percent: 36, phase: "pass 2/4 · Drums · chunk 2 of 3" },
               }
             : { status: "separated", stemCount: 4 },
       },
@@ -292,7 +292,7 @@ try {
                 status: "processing",
                 reason: "Stem separation is running. The full source remains playable.",
                 stage: "separating",
-                progress: { percent: 36, phase: "pass 2/4" },
+                progress: { percent: 36, phase: "pass 2/4 · Drums · chunk 2 of 3" },
               }
           : mockNotStartedState === "separated"
             ? { status: "separated", stemCount: 4 }
@@ -1074,10 +1074,37 @@ try {
   await recoveryRow.getByText("SEPARATING…", { exact: true }).waitFor();
   await page.getByRole("status").filter({ hasText: "Retryable track: separation retry started." }).waitFor();
   assert.equal(mockRetryCount, 1, "retrying a rejected separation must submit one idempotent job retry");
-  await recoveryRow.getByText("SEPARATING · 36% · pass 2/4", { exact: true }).waitFor({ timeout: 6000 });
+  await recoveryRow.getByText("SEPARATING · pass 2/4 · Drums · chunk 2 of 3", { exact: true }).waitFor({ timeout: 6000 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileProgressLayout = await page.evaluate(() => ({
+    viewportWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    offenders: [...document.querySelectorAll("body *")]
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          tag: element.tagName.toLowerCase(),
+          className: typeof element.className === "string" ? element.className : "",
+          text: (element.textContent ?? "").trim().slice(0, 80),
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+          width: Math.round(rect.width),
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        };
+      })
+      .filter((item) => item.left < -2 || item.right > window.innerWidth + 2)
+      .sort((a, b) => b.right - a.right)
+      .slice(0, 8),
+  }));
+  assert(
+    mobileProgressLayout.documentWidth <= mobileProgressLayout.viewportWidth + 2,
+    `multi-pass progress must not create horizontal overflow on mobile: ${JSON.stringify(mobileProgressLayout)}`,
+  );
+  await page.setViewportSize({ width: 1280, height: 900 });
   await recoveryRow.getByText("4 STEMS", { exact: true }).waitFor({ timeout: 12000 });
   assert.equal(await page.getByRole("button", { name: "Retry separation for Retryable track" }).count(), 0);
-  report.push("The library shows live separation percentage, retries a rejected job in place, and updates to separated without a reload.");
+  report.push("The library shows the active stem pass and chunk without a misleading whole-job percentage, retries a rejected job in place, and updates without a reload.");
   const startSeparationButton = notStartedRow.getByRole("button", { name: "Start separation for Not started track" });
   await startSeparationButton.click();
   await notStartedRow.getByText("SEPARATING…", { exact: true }).waitFor();
@@ -1085,7 +1112,7 @@ try {
   assert.equal(mockStartCount, 1, "starting separation for an unprocessed track must submit one job");
   assert.equal(mockNotStartedState, "queued", "the local worker queue is serial and reports waiting jobs honestly");
   await notStartedRow.getByText("QUEUED", { exact: true }).waitFor({ timeout: 6000 });
-  await notStartedRow.getByText("SEPARATING · 36% · pass 2/4", { exact: true }).waitFor({ timeout: 9000 });
+  await notStartedRow.getByText("SEPARATING · pass 2/4 · Drums · chunk 2 of 3", { exact: true }).waitFor({ timeout: 9000 });
   assert.equal(await notStartedRow.getByRole("button", { name: "Play" }).isEnabled(), true);
   assert.equal(await notStartedRow.getByRole("button", { name: "Next" }).isEnabled(), true);
   await notStartedRow.getByRole("button", { name: "Rate Not started track: 4 stars" }).click();

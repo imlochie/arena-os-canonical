@@ -526,7 +526,7 @@
 .track-backup-choice input{accent-color:var(--acid)}
 .empty{color:var(--muted);font-size:13px;margin:8px 0}
 .track-list{display:grid}
-.track-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto auto auto;gap:16px;align-items:center;padding:12px 6px;border-bottom:1px solid var(--line)}
+.track-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto auto auto;gap:16px;align-items:center;padding:12px 6px;border-bottom:1px solid var(--line);min-width:0}
 .track-row:hover{background:#141810}
 .track-art{width:48px;height:48px;display:grid;place-items:center;background:linear-gradient(135deg,#2a321c,#101208);color:var(--acid);font-size:19px;font-weight:800;border:1px solid var(--line)}
 .track-art:hover{border-color:var(--acid)}
@@ -536,7 +536,7 @@
 .track-title:hover{color:var(--acid)}
 .track-sub{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .track-duration{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
-.track-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.track-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;min-width:0}
 .track-playlist-select{background:#11130e;border:1px solid #3b3e38;color:var(--ink);padding:9px 10px;font-size:12px}
 .stem-badge{font:11px ui-monospace,monospace;letter-spacing:.06em;padding:4px 8px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
 .stem-badge.separated{color:var(--acid);border-color:#465126}
@@ -588,7 +588,7 @@
 .session-preview h1{font-size:clamp(44px,6vw,88px);letter-spacing:-.08em;line-height:.9;margin:14px 0 18px}
 .session-preview p{color:var(--muted);font-size:15px;line-height:1.6}
 .session-preview .player-actions{margin-top:22px}
-@media(max-width:900px){.library-hero{grid-template-columns:1fr}.track-row{grid-template-columns:42px minmax(0,1fr) auto;row-gap:8px}.track-duration{display:none}.track-actions{grid-column:1/-1;justify-content:flex-start}.library-audio-backup-actions{align-items:stretch}.player-head{flex-direction:column;align-items:flex-start}.wplayer-transport{grid-template-columns:auto auto 1fr auto}.player-master{display:none}.player-stem{grid-template-columns:96px 1fr 34px 34px}.recent-row{grid-auto-columns:minmax(120px,60vw)}}
+@media(max-width:900px){.library-hero{grid-template-columns:1fr}.track-list{min-width:0}.track-row{grid-template-columns:42px minmax(0,1fr);row-gap:8px}.track-duration{display:none}.stem-badge{grid-column:2;justify-self:start;max-width:100%;white-space:normal;overflow-wrap:anywhere}.track-actions{grid-column:1/-1;justify-content:flex-start}.library-audio-backup-actions{align-items:stretch}.player-head{flex-direction:column;align-items:flex-start}.wplayer-transport{grid-template-columns:auto auto 1fr auto}.player-master{display:none}.player-stem{grid-template-columns:96px 1fr 34px 34px}.recent-row{grid-auto-columns:minmax(120px,60vw)}}
 
 /* ===== P2 player: dominant stems, transport, queue drawer ===== */
 .player-shell.p2{gap:22px}

@@ -17,7 +17,10 @@ import StemEngineSetup from "./StemEngineSetup";
 import { ConversionWorkbench } from "./ConversionWorkbench";
 import { publishWaveyardQueueChange, subscribeToWaveyardQueueChanges } from "./queue-sync";
 
-import { formatPlayClock } from "@workspace/arena/lib/waveyard/library/model";
+import {
+  formatPlayClock,
+  isMultiPassSeparationPhase,
+} from "@workspace/arena/lib/waveyard/library/model";
 import type { LibraryTrackSeparationStartResponse } from "@workspace/api-client-react";
 import {
   SMART_RULE_FIELDS,
@@ -91,8 +94,11 @@ interface QueueItem {
 
 function StemBadge({ availability }: { availability: TrackSummary["stemAvailability"] }) {
   const progress = availability.status === "processing" ? availability.progress : undefined;
-  const phase = progress?.phase
-    ? /^\d+\/\d+$/.test(progress.phase) ? ` · pass ${progress.phase}` : ` · ${progress.phase}`
+  const phase = progress?.phase ? ` · ${progress.phase}` : "";
+  const progressDetail = progress
+    ? progress.phase && isMultiPassSeparationPhase(progress.phase)
+      ? progress.phase
+      : `${progress.percent}%${phase}`
     : "";
   const finishing = availability.status === "processing" &&
     (availability.stage === "finalizing" || progress?.percent === 100);
@@ -106,7 +112,7 @@ function StemBadge({ availability }: { availability: TrackSummary["stemAvailabil
           ? "FINISHING…"
           : "SEPARATING…";
   const label = progress
-    ? `${finishing ? "FINISHING" : "SEPARATING"} · ${progress.percent}%${phase}`
+    ? `${finishing ? "FINISHING" : "SEPARATING"} · ${progressDetail}`
     :
     availability.status === "separated" ? `${availability.stemCount} STEMS`
     : availability.status === "source-only" ? "SOURCE"
@@ -119,7 +125,7 @@ function StemBadge({ availability }: { availability: TrackSummary["stemAvailabil
     <span
       className={`stem-badge ${availability.status}`}
       title={availability.reason ?? "Separated stems are ready."}
-      aria-label={progress ? `Stem separation ${progress.percent}%${phase}` : label}
+      aria-label={progress ? `Stem separation ${progressDetail}` : label}
     >
       {label}
     </span>
