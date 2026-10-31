@@ -13,6 +13,7 @@
 - [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.
 - [Waveyard Apple Music backups](waveyard-apple-music-backup.md) — build generic authorized Windows loopback capture and metadata/audio backups without promising protected-stream copies.
 - [Waveyard CPU worker packaging](waveyard-cpu-worker.md) — bundle CPU-intensive worker code separately; source workers can inherit unsupported runtime flags.
+- [Capture performance evidence](waveyard-capture-performance.md) — keep signal observation bounded; separate observer cost and retention from disk, HTTP probes and runtime warmup.
 - [Waveyard CPU separation profiling](waveyard-cpu-separation-profiling.md) — measured local 4-stem CPU cost is dominated by JS STFT/ISTFT transforms, so profile before tuning ONNX inference.
 - [Waveyard product expectation](waveyard-stemfm-expectation.md) — live stem replacement and isolation are core, and session-to-Studio handoff must lead to a usable arrangement.
 - [Arena product expectations](arena-product-expectations.md) — prioritize demonstrable local tools and open-source alternatives over claims, presets, and page-load checks.

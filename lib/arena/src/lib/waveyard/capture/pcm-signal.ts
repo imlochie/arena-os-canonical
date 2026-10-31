@@ -30,7 +30,10 @@ export class PcmSignalMonitor {
   private readonly width: number;
   private readonly encoding: number;
   private readonly supported: boolean;
-  private tail = Buffer.alloc(0);
+  private readonly partialFrame: Buffer;
+  private readonly sampleDivisor: number;
+  private readonly fullScale: number;
+  private tail: Buffer = Buffer.alloc(0);
   private frames = 0;
   private lastDataAt: number | undefined;
   private lastSignalAt: number | undefined;
@@ -59,16 +62,50 @@ export class PcmSignalMonitor {
       && this.blockAlign >= this.channels * this.width
       && ((encoding === 1 && [1, 2, 3, 4].includes(this.width))
         || (encoding === 3 && [4, 8].includes(this.width)));
+    this.partialFrame = Buffer.alloc(this.supported ? this.blockAlign : 0);
+    this.sampleDivisor = encoding === 1 ? 2 ** (this.width * 8 - 1) : 1;
+    this.fullScale = encoding === 1 ? 1 - 1 / this.sampleDivisor : 1;
   }
 
   write(chunk: Buffer, now = Date.now()): void {
     if (!this.supported || chunk.length === 0) return;
-    const bytes = this.tail.length ? Buffer.concat([this.tail, chunk]) : chunk;
-    const completeBytes = bytes.length - bytes.length % this.blockAlign;
-    this.tail = Buffer.from(bytes.subarray(completeBytes));
-    if (completeBytes === 0) return;
     let peak = 0;
-    for (let frame = 0; frame < completeBytes; frame += this.blockAlign) {
+    let frames = 0;
+    let start = 0;
+    if (this.tail.length) {
+      const needed = this.blockAlign - this.tail.length;
+      const taken = Math.min(needed, chunk.length);
+      chunk.copy(this.partialFrame, this.tail.length, 0, taken);
+      if (taken < needed) {
+        this.tail = this.partialFrame.subarray(0, this.tail.length + taken);
+        return;
+      }
+      peak = this.observe(this.partialFrame, 0, this.blockAlign);
+      frames++;
+      start = needed;
+    }
+    const end = chunk.length - (chunk.length - start) % this.blockAlign;
+    if (end > start) {
+      peak = Math.max(peak, this.observe(chunk, start, end));
+      frames += (end - start) / this.blockAlign;
+    }
+    // Only the incomplete frame is copied. Never concatenate a previous tail
+    // with an entire incoming pipe chunk or retain a view of that chunk.
+    chunk.copy(this.partialFrame, 0, end);
+    this.tail = this.partialFrame.subarray(0, chunk.length - end);
+    if (frames === 0) return;
+    this.frames += frames;
+    this.peak = peak;
+    this.lastDataAt = now;
+    if (peak >= SIGNAL_THRESHOLD) {
+      this.signalSeen = true;
+      this.lastSignalAt = now;
+    }
+  }
+
+  private observe(bytes: Buffer, start: number, end: number): number {
+    let peak = 0;
+    for (let frame = start; frame < end; frame += this.blockAlign) {
       for (let channel = 0; channel < this.channels; channel++) {
         const offset = frame + channel * this.width;
         let value: number;
@@ -77,25 +114,18 @@ export class PcmSignalMonitor {
         } else if (this.width === 1) {
           value = (bytes[offset] - 128) / 128;
         } else {
-          value = bytes.readIntLE(offset, this.width) / 2 ** (this.width * 8 - 1);
+          value = bytes.readIntLE(offset, this.width) / this.sampleDivisor;
         }
         if (!Number.isFinite(value)) {
           this.invalidSamples++;
           continue;
         }
         const magnitude = Math.abs(value);
-        const fullScale = this.encoding === 1 ? 1 - 1 / 2 ** (this.width * 8 - 1) : 1;
-        if (magnitude >= fullScale) this.clippedSamples++;
+        if (magnitude >= this.fullScale) this.clippedSamples++;
         peak = Math.max(peak, Math.min(1, magnitude));
       }
     }
-    this.frames += completeBytes / this.blockAlign;
-    this.peak = peak;
-    this.lastDataAt = now;
-    if (peak >= SIGNAL_THRESHOLD) {
-      this.signalSeen = true;
-      this.lastSignalAt = now;
-    }
+    return peak;
   }
 
   snapshot(now = Date.now()): CaptureSignal {
