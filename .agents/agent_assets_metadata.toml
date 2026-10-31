@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "GCv1HH9HswXLrk0KrEEu0"
+uri = "file://generated-artifacts/waveyard-separation-quality/audition-review.html"
+type = "html"
+title = "Waveyard stem audition review"
+description = "Offline player with aligned reference and separated stems for two CC BY-NC-SA evaluation tracks."
+logical_id = "50f70701-14be-4085-9977-fc64ef0b44f1"
+content_hash = "sha256:863d69bbab61299dbaa46bec4d8f26923b61a03affd731f647b4889e91e377d5"
+size = 2330291
+mtime_ms = 1793429331029
+storage_uri = "gcs://replit-rams-assets-reed/rams/assets/repl:b53713d8-01c8-40f0-a614-44f04b47779a/50f70701-14be-4085-9977-fc64ef0b44f1/a49606d2-daaa-4c75-9689-0b875628d3f8"
+storage_version_token = "1793429335920915"
+content_type = "text/html"

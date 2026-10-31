@@ -367,6 +367,8 @@
     "./lib/waveyard/separation/mdx.test": "./src/lib/waveyard/separation/mdx.test.ts",
     "./lib/waveyard/separation/mdx": "./src/lib/waveyard/separation/mdx.ts",
     "./lib/waveyard/separation/modes": "./src/lib/waveyard/separation/modes.ts",
+    "./lib/waveyard/separation/quality.test": "./src/lib/waveyard/separation/quality.test.ts",
+    "./lib/waveyard/separation/quality": "./src/lib/waveyard/separation/quality.ts",
     "./lib/waveyard/separation/retry.test": "./src/lib/waveyard/separation/retry.test.ts",
     "./lib/waveyard/separation/retry": "./src/lib/waveyard/separation/retry.ts",
     "./lib/waveyard/separation/seed.test": "./src/lib/waveyard/separation/seed.test.ts",

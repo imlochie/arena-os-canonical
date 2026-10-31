@@ -33,7 +33,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { cpus, release, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -48,6 +48,7 @@ import { SEPARATION_QUEUE } from "@workspace/arena/lib/waveyard/queue";
 import { decodeSourceToStereoPcm } from "../measure/pcm";
 import { stemAssets, processingJobs } from "@workspace/db/waveyardSchema";
 import { findMdxModel } from "@workspace/arena/lib/waveyard/separation/mdx";
+import { evaluateFourStemSeparation, type FourStemSamples } from "@workspace/arena/lib/waveyard/separation/quality";
 import { retrySeparationJob } from "@workspace/arena/lib/waveyard/separation/retry";
 import type { OpenedEngine } from "./separation";
 import { demixMdxInWorker, handleSeparationJob } from "./separation";
@@ -485,6 +486,7 @@ test("the pinned four-model recipe completes through the production worker on re
 const realAudioInputPath =
   process.env.WAVEYARD_REAL_AUDIO_INPUT?.trim() ||
   process.env.WAVEYARD_REAL_AUDIO_WAV?.trim();
+const referenceManifestPath = process.env.WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST?.trim();
 if (realAudioInputPath) {
   test("the pinned four-model recipe separates a real audio excerpt", { timeout: 600_000 }, async (t) => {
     const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -637,6 +639,9 @@ if (realAudioInputPath) {
 
       const measuredStems: Record<string, ReturnType<typeof audioMetrics>> = {};
       const outputIntegrity: Record<string, { readablePcm16Stereo44100: boolean; correctDuration: boolean; finiteSamples: boolean; inPcmRange: boolean }> = {};
+      const estimatePcm = {} as FourStemSamples;
+      const auditionDirectory = process.env.WAVEYARD_REAL_AUDIO_AUDITION_DIR?.trim();
+      if (auditionDirectory) await mkdir(resolve(auditionDirectory), { recursive: true });
       for (const stem of stems) {
         const storedPath = getStorage().getLocalPath(stem.storageKey);
         assert.ok(storedPath && existsSync(storedPath), `${stem.stemType} output exists in storage`);
@@ -650,6 +655,17 @@ if (realAudioInputPath) {
         assert.ok(finiteSamples, `${stem.stemType} contains only finite samples`);
         assert.ok(inPcmRange, `${stem.stemType} stays within the normalized PCM range`);
         measuredStems[stem.stemType] = audioMetrics(decoded.samples);
+        assert.ok(
+          ["vocals", "drums", "bass", "other"].includes(stem.stemType),
+          `unexpected four-stem output ${stem.stemType}`,
+        );
+        estimatePcm[stem.stemType as keyof FourStemSamples] = decoded.samples;
+        if (auditionDirectory) {
+          await writeFile(
+            join(resolve(auditionDirectory), `${stem.stemType}-estimate.wav`),
+            encodeWav16(decoded.samples, decoded.sampleRate),
+          );
+        }
         assert.ok(measuredStems[stem.stemType].rmsDbfs > -90, `${stem.stemType} output is not silent`);
         outputIntegrity[stem.stemType] = {
           readablePcm16Stereo44100: true,
@@ -684,7 +700,7 @@ if (realAudioInputPath) {
         },
       );
       const report = {
-        schemaVersion: 3,
+        schemaVersion: 4,
         platform: process.platform,
         osRelease: release(),
         architecture: process.arch,
@@ -738,6 +754,67 @@ if (realAudioInputPath) {
         },
         evidenceLimit: "Real audio and pinned-model execution on the recorded platform; this does not establish Windows performance unless platform is win32, or subjective separation quality.",
       };
+      if (referenceManifestPath) {
+        const referenceManifest = JSON.parse(await readFile(resolve(referenceManifestPath), "utf8")) as {
+          dataset: string;
+          datasetUrl: string;
+          track: string;
+          license: string;
+          attribution: string;
+          referenceStems: Record<keyof FourStemSamples, string>;
+          listeningReview?: string;
+        };
+        const referencePcm = {} as FourStemSamples;
+        for (const stemType of ["vocals", "drums", "bass", "other"] as const) {
+          const decoded = await decodeSourceToStereoPcm(
+            resolve(referenceManifest.referenceStems[stemType]),
+            {},
+            {},
+            { requireSampleRate: 44_100 },
+          );
+          assert.equal(decoded.sampleRate, sourceDecoded.sampleRate);
+          assert.equal(
+            decoded.pcm.length,
+            sourceDecoded.pcm.length,
+            `${stemType} reference must be time/sample aligned with the mix excerpt`,
+          );
+          referencePcm[stemType] = decoded.pcm;
+          if (auditionDirectory) {
+            await writeFile(
+              join(resolve(auditionDirectory), `${stemType}-reference.wav`),
+              encodeWav16(decoded.pcm, decoded.sampleRate),
+            );
+          }
+        }
+        if (auditionDirectory) {
+          await writeFile(join(resolve(auditionDirectory), "mixture.wav"), encodeWav16(processedSamples, 44_100));
+        }
+        const qualityMetrics = evaluateFourStemSeparation(
+          processedSamples,
+          referencePcm,
+          estimatePcm,
+          Math.min(22_050, Math.floor(processedFrames / 4)),
+        );
+        Object.assign(report.result, {
+          referenceEvaluation: {
+            dataset: referenceManifest.dataset,
+            datasetUrl: referenceManifest.datasetUrl,
+            track: referenceManifest.track,
+            license: referenceManifest.license,
+            attribution: referenceManifest.attribution,
+            ...(auditionDirectory ? { auditionDirectory: resolve(auditionDirectory) } : {}),
+            metrics: {
+              method: "SI-SDR: stereo flattened with one least-squares gain; each estimate compared with its aligned reference and unseparated mixture. Recombined stem sum compared with the original mix using SI-SDR and unscaled residual SDR.",
+              edgePolicy: "Reference SI-SDR excludes the first and last 0.5 seconds (or one quarter of a shorter excerpt) to reduce model padding/overlap edge influence; recombination metrics use the full excerpt.",
+              ...qualityMetrics,
+            },
+            listeningReview: referenceManifest.listeningReview ?? {
+              status: "not-performed",
+              note: "The automated environment cannot audition audio. Objective scores do not substitute for listening; review the included per-stem audition files before making a usability claim.",
+            },
+          },
+        });
+      }
       const reportPath = process.env.WAVEYARD_REAL_AUDIO_REPORT?.trim();
       if (reportPath) {
         await writeFile(resolve(reportPath), `${JSON.stringify(report, null, 2)}\n`);
