@@ -15,6 +15,7 @@ function fixture(
       length: 144_000,
       numberOfChannels: 2,
     },
+  channelIds = ["vocals"],
 ) {
   const sources: Array<{ offset: number; stopped: boolean; loop: boolean }> = [];
   const gains: Array<{ automation: Array<{ type: string; value?: number; time: number }> }> = [];
@@ -57,15 +58,31 @@ function fixture(
       return node;
     },
   };
-  const media = { currentTime: 7, paused: false, ended: false };
-  const channel = { source: { mediaElement: media }, inputGain: context.createGain(), gain: context.createGain() };
+  const channels = new Map(channelIds.map(id => {
+    const media = { currentTime: 7, paused: false, ended: false };
+    return [id, {
+      source: { mediaElement: media },
+      inputGain: context.createGain(),
+      gain: context.createGain(),
+    }];
+  }));
+  const channel = channels.get("vocals")!;
   const layers = new LiveStemLayers(
     () => context as unknown as AudioContext,
-    () => channel as unknown as ReturnType<ConstructorParameters<typeof LiveStemLayers>[1]>,
+    id => (channels.get(id) ?? null) as unknown as ReturnType<ConstructorParameters<typeof LiveStemLayers>[1]>,
     stretchBuffer,
     onTiming,
   );
-  return { layers, channel, media, sources, gains, context, get decodeCount() { return decodeCount; } };
+  return {
+    layers,
+    channel,
+    channels,
+    media: channel.source.mediaElement,
+    sources,
+    gains,
+    context,
+    get decodeCount() { return decodeCount; },
+  };
 }
 
 function response(ok = true) {
@@ -352,6 +369,48 @@ test("recent donor eviction leaves playback running and evicted donors prepare a
     assert.equal(fetches.at(-1), "/donor-a", "an evicted donor is downloaded again");
     assert.equal(f.sources.length, 5);
     assert.equal(activeDonor.stopped, false, "the active donor continues through preparation and crossfade start");
+  } finally { f.layers.dispose(); }
+});
+
+test("recent-cache pressure across stem channels preserves playback and each channel's retained donor", async () => {
+  const f = fixture(undefined, undefined, undefined, ["vocals", "drums"]);
+  const fetches: string[] = [];
+  globalThis.fetch = async (url) => {
+    fetches.push(String(url));
+    return response();
+  };
+  try {
+    await f.layers.replace("vocals", "/vocal-a");
+    await f.layers.replace("drums", "/drum-a");
+    await f.layers.replace("vocals", "/vocal-b");
+    await f.layers.replace("drums", "/drum-b");
+    await f.layers.replace("vocals", "/vocal-c");
+    await f.layers.replace("drums", "/drum-c");
+
+    const activeVocals = f.sources[4];
+    const activeDrums = f.sources[5];
+    assert.equal(activeVocals.stopped, false);
+    assert.equal(activeDrums.stopped, false, "vocal cache pressure cannot stop the active drum layer");
+
+    await f.layers.replace("vocals", "/vocal-a");
+    assert.equal(fetches.filter(url => url === "/vocal-a").length, 2, "the oldest donor was evicted and must be prepared again");
+    const drumsAfterVocalSwap = f.sources[5];
+    assert.equal(drumsAfterVocalSwap.stopped, false, "reloading an evicted vocal donor leaves drums playing");
+
+    const fetchCountBeforeVocalReturn = fetches.length;
+    await f.layers.replace("vocals", "/vocal-c");
+    assert.equal(fetches.length, fetchCountBeforeVocalReturn, "vocals can return to their own retained recent donor");
+    const activeVocalsAfterReturn = f.sources.at(-1)!;
+    assert.equal(activeVocalsAfterReturn.stopped, false);
+    assert.equal(drumsAfterVocalSwap.stopped, false, "the vocal return does not interrupt drums");
+
+    await f.layers.replace("drums", "/drum-d");
+    await f.layers.replace("drums", "/drum-e");
+    const fetchCountBeforeDrumReturn = fetches.length;
+    await f.layers.replace("drums", "/drum-d");
+    assert.equal(fetches.length, fetchCountBeforeDrumReturn, "drums can return to their own retained recent donor");
+    assert.equal(f.sources.at(-1)!.stopped, false);
+    assert.equal(activeVocalsAfterReturn.stopped, false, "drum swaps and cache eviction leave vocals playing");
   } finally { f.layers.dispose(); }
 });
 
