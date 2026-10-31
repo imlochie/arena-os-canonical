@@ -22,6 +22,28 @@ function Invoke-Pnpm {
 if ($Action -eq "Build") {
   Write-Host "This downloads build dependencies, Electron, PostgreSQL and Chromium."
   Write-Host "It does not upload your workspace data, install an AI model, or change an existing Arena database."
+  $spaceLocations = @("workspace=$root")
+  if ($env:TEMP) { $spaceLocations += "temporary files=$env:TEMP" }
+  if ($env:LOCALAPPDATA) { $spaceLocations += "user caches=$env:LOCALAPPDATA" }
+  $spaceOutput = & node (Join-Path $PSScriptRoot "build-space-preflight.mjs") `
+    @spaceLocations
+  if ($LASTEXITCODE -ne 0) { throw "Could not inspect build disk space. No dependency installation has started." }
+  $spaceReport = $spaceOutput | ConvertFrom-Json
+  foreach ($location in $spaceReport.locations) {
+    if ($null -eq $location.availableGiB) {
+      Write-Warning "Free space could not be checked for $($location.label): $($location.inspectionError)"
+    } else {
+      Write-Host ("{0}: {1} GiB free at {2}" -f $location.label, $location.availableGiB, $location.path)
+    }
+  }
+  $lowSpace = @($spaceReport.locations | Where-Object { $_.belowWarningThreshold })
+  if ($lowSpace.Count -gt 0) {
+    Write-Warning "A build location has less than 20 GiB free or could not be inspected. This is an early warning threshold, not a measured minimum; the Windows build's peak disk use has not yet been measured."
+    $answer = Read-Host "To continue anyway, type CONTINUE. Press Enter to stop before dependency installation"
+    if ($answer -cne "CONTINUE") {
+      throw "Build stopped before dependency installation; no existing app data or generated build files were changed."
+    }
+  }
   if ($FullWorkspace) {
     Write-Host "Installing every workspace package as requested."
     Invoke-Pnpm install --frozen-lockfile

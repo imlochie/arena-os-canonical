@@ -13,6 +13,11 @@ Windows build, not a Windows-verified installer.
 
 The build downloads dependencies, Electron, Chromium, and embedded PostgreSQL.
 No user credentials are required. A packaged app needs no system Node.js.
+Before installing dependencies, the Windows script reports free space on the
+workspace, temporary-file, and user-cache volumes. Under 20 GiB—or when a
+volume cannot be checked—it asks before proceeding. That is an early-warning
+threshold, not a measured build requirement or guarantee; no disk cleanup is
+performed automatically.
 Do not build from `.migration-backup`; the new path does not depend on it.
 The build script installs only the desktop app, API, web app and their workspace
 dependencies. This changes which packages are linked in `node_modules` for that
