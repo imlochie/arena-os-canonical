@@ -9,12 +9,37 @@ type Layer = {
   buffer: AudioBuffer;
   input: GainNode;
   source: AudioBufferSourceNode | null;
+  timing: PreparedAudio | null;
+};
+
+type PreparedAudio = {
+  buffer: AudioBuffer;
+  selectedAt: number;
+  downloadMs: number;
+  decodeMs: number;
+  tempoMatchMs: number;
+  transferBytes: number;
+};
+
+export type LiveStemTiming = {
+  selectionToAudibleMs: number;
+  downloadMs: number;
+  decodeMs: number;
+  tempoMatchMs: number;
+  tempoStretchRatio: number;
+  transferBytes: number;
 };
 
 type PreparedStem = {
   controller: AbortController;
   timer: ReturnType<typeof setTimeout>;
-  promise: Promise<AudioBuffer>;
+  promise: Promise<PreparedAudio>;
+};
+
+type PendingSwap = {
+  controller: AbortController;
+  key: string;
+  promise: Promise<void>;
 };
 
 type BufferStretcher = (
@@ -89,7 +114,7 @@ const stretchBufferInWorker: BufferStretcher = (context, buffer, ratio, signal) 
  */
 export class LiveStemLayers {
   private layers = new Map<string, Layer>();
-  private pending = new Map<string, AbortController>();
+  private pending = new Map<string, PendingSwap>();
   private prepared = new Map<string, PreparedStem>();
   private retired = new Set<Layer>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
@@ -98,6 +123,7 @@ export class LiveStemLayers {
     private context: () => AudioContext,
     private channel: (id: string) => Channel | null,
     private stretchBuffer: BufferStretcher = stretchBufferInWorker,
+    private onTiming?: (timing: LiveStemTiming) => void,
   ) {}
 
   private ramp(gain: GainNode, value: number) {
@@ -144,6 +170,20 @@ export class LiveStemLayers {
     layer.source = source;
   }
 
+  private reportAudible(layer: Layer) {
+    const timing = layer.timing;
+    if (!timing) return;
+    this.onTiming?.({
+      selectionToAudibleMs: Math.max(0, performance.now() - timing.selectedAt),
+      downloadMs: timing.downloadMs,
+      decodeMs: timing.decodeMs,
+      tempoMatchMs: timing.tempoMatchMs,
+      tempoStretchRatio: layer.tempoStretchRatio,
+      transferBytes: timing.transferBytes,
+    });
+    layer.timing = null;
+  }
+
   private preparedKey(url: string, tempoStretchRatio: number) {
     return `${url}\u0000${tempoStretchRatio.toFixed(4)}`;
   }
@@ -156,20 +196,43 @@ export class LiveStemLayers {
     if (abort) prepared.controller.abort();
   }
 
-  private async prepareBuffer(url: string, tempoStretchRatio: number, signal: AbortSignal) {
+  private async prepareBuffer(
+    url: string,
+    tempoStretchRatio: number,
+    signal: AbortSignal,
+    selectedAt: number,
+  ): Promise<PreparedAudio> {
+    const downloadStartedAt = performance.now();
     const response = await fetch(url, { signal });
     if (!response.ok) throw new Error(`Stem download failed (${response.status}).`);
     const bytes = await response.arrayBuffer();
+    const downloadMs = performance.now() - downloadStartedAt;
+    // decodeAudioData may detach its input buffer, so keep the transfer size
+    // before handing the bytes to the browser decoder.
+    const transferBytes = bytes.byteLength;
     if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
     const ctx = this.context();
+    const decodeStartedAt = performance.now();
     const decoded = await ctx.decodeAudioData(bytes);
+    const decodeMs = performance.now() - decodeStartedAt;
     if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
-    const buffer = Math.abs(tempoStretchRatio - 1) < 0.001
-      ? decoded
-      : await this.stretchBuffer(ctx, decoded, tempoStretchRatio, signal);
+    let buffer = decoded;
+    let tempoMatchMs = 0;
+    if (Math.abs(tempoStretchRatio - 1) >= 0.001) {
+      const tempoMatchStartedAt = performance.now();
+      buffer = await this.stretchBuffer(ctx, decoded, tempoStretchRatio, signal);
+      tempoMatchMs = performance.now() - tempoMatchStartedAt;
+    }
     if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
     if (!(buffer.duration > 0)) throw new Error("The donor stem has no playable audio.");
-    return buffer;
+    return {
+      buffer,
+      selectedAt,
+      downloadMs,
+      decodeMs,
+      tempoMatchMs,
+      transferBytes,
+    };
   }
 
   /**
@@ -177,7 +240,7 @@ export class LiveStemLayers {
    * decoded (and, when needed, tempo-matched) buffer is short-lived and never
    * becomes audible until replace() installs it.
    */
-  preload(url: string, tempoStretchRatio = 1): Promise<void> {
+  preload(url: string, tempoStretchRatio = 1, selectedAt = performance.now()): Promise<void> {
     if (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2) {
       return Promise.reject(new Error("The live stem tempo ratio must be between 0.5× and 2×."));
     }
@@ -193,7 +256,7 @@ export class LiveStemLayers {
 
     const controller = new AbortController();
     let entry!: PreparedStem;
-    const promise = this.prepareBuffer(url, tempoStretchRatio, controller.signal).catch((error: unknown) => {
+    const promise = this.prepareBuffer(url, tempoStretchRatio, controller.signal, selectedAt).catch((error: unknown) => {
       if (this.prepared.get(key) === entry) this.discardPrepared(key, false);
       throw error;
     });
@@ -205,10 +268,15 @@ export class LiveStemLayers {
     return promise.then(() => undefined);
   }
 
-  private async getPreparedBuffer(url: string, tempoStretchRatio: number, signal: AbortSignal) {
+  private async getPreparedBuffer(
+    url: string,
+    tempoStretchRatio: number,
+    signal: AbortSignal,
+    selectedAt: number,
+  ) {
     const key = this.preparedKey(url, tempoStretchRatio);
     const prepared = this.prepared.get(key);
-    if (!prepared) return this.prepareBuffer(url, tempoStretchRatio, signal);
+    if (!prepared) return this.prepareBuffer(url, tempoStretchRatio, signal, selectedAt);
 
     // A live replacement now owns the warm operation. Cancelling that swap
     // also stops its download or tempo worker, rather than leaving work behind.
@@ -224,7 +292,14 @@ export class LiveStemLayers {
   }
 
   async replace(id: string, url: string | null, tempoStretchRatio = 1) {
-    this.pending.get(id)?.abort();
+    const selectedAt = performance.now();
+    if (url && (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2)) {
+      throw new Error("The live stem tempo ratio must be between 0.5× and 2×.");
+    }
+    const key = url ? this.preparedKey(url, tempoStretchRatio) : "";
+    const currentPending = this.pending.get(id);
+    if (key && currentPending?.key === key) return currentPending.promise;
+    currentPending?.controller.abort();
     this.pending.delete(id);
     const previous = this.layers.get(id);
     if (!url) {
@@ -235,29 +310,43 @@ export class LiveStemLayers {
       this.retire(previous);
       return;
     }
-    if (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2) {
-      throw new Error("The live stem tempo ratio must be between 0.5× and 2×.");
-    }
     if (previous?.url === url && Math.abs(previous.tempoStretchRatio - tempoStretchRatio) < 0.001) return;
-    const operation = new AbortController();
+    const operation: PendingSwap = {
+      controller: new AbortController(),
+      key,
+      promise: Promise.resolve(),
+    };
     this.pending.set(id, operation);
+    operation.promise = this.installReplacement(id, url, tempoStretchRatio, selectedAt, previous, operation);
+    return operation.promise;
+  }
+
+  private async installReplacement(
+    id: string,
+    url: string,
+    tempoStretchRatio: number,
+    selectedAt: number,
+    previous: Layer | undefined,
+    operation: PendingSwap,
+  ) {
     try {
-      const buffer = await this.getPreparedBuffer(url, tempoStretchRatio, operation.signal);
-      if (operation.signal.aborted || this.pending.get(id) !== operation) return;
+      const prepared = await this.getPreparedBuffer(url, tempoStretchRatio, operation.controller.signal, selectedAt);
+      if (operation.controller.signal.aborted || this.pending.get(id) !== operation) return;
       const ctx = this.context();
       const channel = this.channel(id);
       if (!channel) throw new Error("The receiving stem is no longer loaded.");
       const input = ctx.createGain();
       input.gain.value = 0;
       input.connect(channel.gain);
-      const layer: Layer = { url, tempoStretchRatio, buffer, input, source: null };
+      const layer: Layer = { url, tempoStretchRatio, buffer: prepared.buffer, input, source: null, timing: prepared };
       this.start(layer, channel);
       this.layers.set(id, layer);
       this.ramp(input, 1);
       this.ramp(channel.inputGain, 0);
+      if (layer.source) this.reportAudible(layer);
       if (previous) this.retire(previous);
     } catch (error) {
-      if (!operation.signal.aborted) throw error;
+      if (!operation.controller.signal.aborted) throw error;
     } finally {
       if (this.pending.get(id) === operation) this.pending.delete(id);
     }
@@ -267,7 +356,10 @@ export class LiveStemLayers {
     for (const id of ids) {
       const layer = this.layers.get(id);
       const channel = layer && this.channel(id);
-      if (layer && channel) this.start(layer, channel);
+      if (layer && channel) {
+        this.start(layer, channel);
+        if (layer.source) this.reportAudible(layer);
+      }
     }
   }
 
@@ -276,7 +368,7 @@ export class LiveStemLayers {
   }
 
   remove(id: string) {
-    this.pending.get(id)?.abort();
+    this.pending.get(id)?.controller.abort();
     this.pending.delete(id);
     const layer = this.layers.get(id);
     if (layer) {

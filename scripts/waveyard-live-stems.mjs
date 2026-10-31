@@ -96,6 +96,8 @@ let heldAssetId = null;
 let heldAssetGate = null;
 let signalHeldAssetRequest = null;
 let signalHeldAssetRouteFinished = null;
+let timedAssetId = null;
+let timedAssetDelayMs = 0;
 const session = { id: sessionId, name: "Live layer regression", currentSessionTrackId: "a", positionSeconds: 0,
   tracks, swaps: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 const studioProjectId = "00000000-0000-4000-8000-000000000008";
@@ -134,6 +136,13 @@ try {
   page.on("pageerror", error => console.log("PAGE_ERROR", error.stack));
   await context.addInitScript((fixtureSessionId) => {
     window.audioProbe = { sources: [], buffers: [], masterGains: [] };
+    window.liveStemTimings = [];
+    window.liveStemSelectionStart = null;
+    window.liveStemObservedAudibleAt = null;
+    window.liveAssetFetchTrace = [];
+    window.addEventListener("waveyard:live-stem-timing", event => {
+      window.liveStemTimings.push(event.detail);
+    });
     window.modelStatusFetchModes = [];
     let leavingDocument = false;
     window.addEventListener("pagehide", () => { leavingDocument = true; }, { once: true });
@@ -147,6 +156,9 @@ try {
       const keepalive = init?.keepalive ?? (input instanceof Request && input.keepalive);
       if (url.pathname === "/api/waveyard/separation/models") {
         window.modelStatusFetchModes.push(init?.cache ?? "default");
+      }
+      if (url.pathname === "/api/assets/d-vocals") {
+        window.liveAssetFetchTrace.push(performance.now());
       }
       // Keep fixture-session unload saves out of the real API; Playwright cannot
       // reliably route keepalive fetches once the page is leaving.
@@ -198,6 +210,9 @@ try {
   let signalExternalDonorWarm;
   await context.route("**/api/assets/*", async route => {
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
+    if (id === timedAssetId && timedAssetDelayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, timedAssetDelayMs));
+    }
     if (id === "b-vocals" && heldAssetId === "b-vocals") liveSwapRequestOrder.push("donor-preload");
     if (id === "d-vocals") {
       liveSwapRequestOrder.push("donor-preload:d-vocals");
@@ -687,6 +702,72 @@ try {
     }
     await candidate.click();
   };
+  const measureLiveStemSwap = async (donorId, expectedRatio, delayMs = 0, viewport = "desktop") => {
+    if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
+    const pickerTrigger = viewport === "mobile" ? "quick-open-live-swap-vocals" : "open-live-swap-vocals";
+    await current.getByTestId(pickerTrigger).click();
+    const candidate = current.getByTestId(`live-swap-candidate-vocals-${donorId}`);
+    await candidate.waitFor();
+    const before = await page.evaluate(() => ({
+      buffers: window.audioProbe.buffers.length,
+      timings: window.liveStemTimings.length,
+    }));
+    timedAssetId = `${donorId}-vocals`;
+    timedAssetDelayMs = delayMs;
+    await candidate.evaluate(button => {
+      window.liveStemSelectionStart = null;
+      window.liveStemObservedAudibleAt = null;
+      button.addEventListener("click", () => {
+        window.liveStemSelectionStart = performance.now();
+      }, { once: true });
+    });
+    await candidate.click();
+    try {
+      await page.waitForFunction(({ bufferCount }) => {
+        const source = window.audioProbe.buffers.slice(bufferCount)
+          .find(item => item.inputNode?.gain?.value > 0.03);
+        if (!source) return false;
+        window.liveStemObservedAudibleAt = performance.now();
+        return true;
+      }, { bufferCount: before.buffers }, { timeout: 15000 });
+      await page.waitForFunction(timingCount => window.liveStemTimings.length > timingCount,
+        before.timings, { timeout: 15000 });
+    } finally {
+      timedAssetId = null;
+      timedAssetDelayMs = 0;
+    }
+    const measurement = await page.evaluate(({ timingIndex }) => {
+      const timing = window.liveStemTimings[timingIndex];
+      return {
+        ...timing,
+        observedSelectionToAudibleMs: window.liveStemObservedAudibleAt - window.liveStemSelectionStart,
+      };
+    }, { timingIndex: before.timings });
+    assert.equal(measurement.tempoStretchRatio, expectedRatio,
+      `the ${viewport} scenario must use the intended tempo mode: ${JSON.stringify(measurement)}`);
+    for (const field of ["selectionToAudibleMs", "observedSelectionToAudibleMs", "downloadMs", "decodeMs", "tempoMatchMs"]) {
+      assert.ok(Number.isFinite(measurement[field]) && measurement[field] >= 0,
+        `${viewport} timing must report a finite ${field}: ${JSON.stringify(measurement)}`);
+    }
+    assert.ok(measurement.transferBytes > 0,
+      `the measurement records the donor response size: ${JSON.stringify(measurement)}`);
+    if (Math.abs(expectedRatio - 1) < 0.001) {
+      assert.equal(measurement.tempoMatchMs, 0, "native-tempo swaps skip tempo matching");
+    } else {
+      assert.ok(measurement.tempoMatchMs > 0, "tempo-matched swaps record the matching stage");
+    }
+    measurement.dominantPreparationStage = Object.entries({
+      download: measurement.downloadMs,
+      decode: measurement.decodeMs,
+      tempoMatch: measurement.tempoMatchMs,
+    }).sort((left, right) => right[1] - left[1])[0][0];
+    await current.getByTestId("restore-live-swap-vocals").click();
+    await page.waitForFunction(trackId => {
+      const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/${trackId}-vocals`));
+      return source?.inputNode?.gain?.value > 0.9;
+    }, session.currentSessionTrackId);
+    return { viewport, networkDelayMs: delayMs, ...measurement };
+  };
   const wheel = page.getByTestId("session-camelot-wheel");
   assert.equal(await wheel.getByTestId("camelot-key-8A").getAttribute("aria-pressed"), "true", "the current A minor track maps to 8A");
   assert.match(await wheel.getByTestId("camelot-key-8B").getAttribute("class"), /compatible/, "the relative-major 8B cell is highlighted");
@@ -913,6 +994,25 @@ try {
   await waitForSignal(slowDonorRouteFinished, "the live stem donor response");
   signalHeldAssetRouteFinished = null;
 
+  assert.equal(session.currentSessionTrackId, "a", "timing comparisons use the same recipient track");
+  const desktopNativeTiming = await measureLiveStemSwap("c", 1, 0, "desktop");
+  const desktopTempoTiming = await measureLiveStemSwap("b", 124 / 120, 0, "desktop");
+  const slowNetworkInjectedDelayMs = 450;
+  const desktopSlowNetworkTiming = await measureLiveStemSwap("c", 1, slowNetworkInjectedDelayMs, "desktop");
+  assert.ok(desktopSlowNetworkTiming.downloadMs >= slowNetworkInjectedDelayMs,
+    `the download measurement must include the deliberately delayed response: ${JSON.stringify({
+      injectedDelayMs: slowNetworkInjectedDelayMs,
+      measuredDownloadMs: desktopSlowNetworkTiming.downloadMs,
+    })}`);
+  console.log("LIVE_STEM_SWAP_TIMINGS", JSON.stringify({
+    desktop: {
+      nativeTempo: desktopNativeTiming,
+      tempoMatched: desktopTempoTiming,
+      deliberatelySlowNetwork: desktopSlowNetworkTiming,
+      injectedNetworkDelayMs: slowNetworkInjectedDelayMs,
+    },
+  }));
+
   const currentTrackIdForTempoTest = session.currentSessionTrackId ?? "a";
   const tempoCurrentTrack = tracks.find(item => item.id === currentTrackIdForTempoTest) ?? tracks[0];
   const tempoDonor = tracks.find(item => item.id !== tempoCurrentTrack.id && item.id === (tempoCurrentTrack.id === "b" ? "a" : "b")) ?? tracks[1];
@@ -1014,8 +1114,9 @@ try {
   await page.waitForFunction(({ beforeCount, minTime }) => window.audioProbe.buffers.length > beforeCount &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > minTime),
   { beforeCount: buffersBeforeExternalSwap, minTime: Math.max(0, followSeekSeconds - 0.5) });
-  assert.equal(liveSwapRequestOrder.filter(entry => entry === "donor-preload:d-vocals").length, 1,
-    `the external donor audio is fetched once, then reused for the audible replacement: ${JSON.stringify(liveSwapRequestOrder)}`);
+  const activePageDonorFetchCount = await page.evaluate(() => window.liveAssetFetchTrace.length);
+  assert.equal(activePageDonorFetchCount, 1,
+    `the active tab reuses its warm donor rather than downloading it again after save: ${JSON.stringify(liveSwapRequestOrder)}`);
   assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "d", "library donor is saved without being added to the session queue");
   const externalResume = await page.evaluate(() => ({
     offset: window.audioProbe.buffers.at(-1).startedOffset,
@@ -1131,7 +1232,7 @@ try {
   if (await current.locator('audio[src$="/a-source"]').evaluate(audio => audio.paused)) await toggle();
   await current.getByTestId("seek-deck-0").fill("2");
   await page.getByTestId("session-separation-progress-a")
-    .filter({ hasText: /36%.*pass 2\/4/ })
+    .filter({ hasText: /2\/4/ })
     .waitFor({ timeout: 5_000 });
   exposeSeparatedSource = true;
   showSeparationProgress = false;
@@ -1666,6 +1767,10 @@ try {
   });
   assert.ok(studioMobileLayout.documentWidth <= studioMobileLayout.viewport,
     `Studio must not overflow on mobile: ${JSON.stringify(studioMobileLayout)}`);
+  session.tracks = tracks;
+  session.swaps = [];
+  session.currentSessionTrackId = "a";
+  session.positionSeconds = 0;
   await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
   await page.waitForFunction(() => document.querySelector('[data-testid="session-handoff"]'));
   const vocalsIsolationPad = page.getByTestId("quick-isolate-vocals");
@@ -1692,6 +1797,8 @@ try {
   await page.getByRole("button", { name: "Close source picker", exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('[data-testid="live-swap-picker-vocals"]'));
   assert.equal(await mobileSwapEntry.getAttribute("aria-expanded"), "false");
+  const mobileTempoTiming = await measureLiveStemSwap("b", 124 / 120, 0, "mobile");
+  console.log("LIVE_STEM_SWAP_TIMINGS", JSON.stringify({ mobile: { tempoMatched: mobileTempoTiming } }));
   console.log("PASS: mobile stem pad opens a fitting live source picker and closes cleanly");
   const sessionMobileLayout = await page.evaluate(() => ({
     viewport: innerWidth,

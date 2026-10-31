@@ -342,15 +342,21 @@ export function useStemTransport(
         return context.current;
       },
       (id) => ensureGraph(id),
+      undefined,
+      (timing) => {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("waveyard:live-stem-timing", { detail: timing }));
+        }
+      },
     );
   }
   const replaceStem = useCallback((id: string, url: string | null, tempoStretchRatio = 1) => {
     if (url) ensureGraph(id);
     return liveLayers.current!.replace(id, url, tempoStretchRatio);
   }, [ensureGraph]);
-  const preloadStem = useCallback((id: string, url: string, tempoStretchRatio = 1) => {
+  const preloadStem = useCallback((id: string, url: string, tempoStretchRatio = 1, selectedAt?: number) => {
     if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
-    return liveLayers.current!.preload(url, tempoStretchRatio);
+    return liveLayers.current!.preload(url, tempoStretchRatio, selectedAt);
   }, [ensureGraph]);
   const prepareChannels = useCallback((channelIds: string[]) => {
     for (const id of channelIds) {

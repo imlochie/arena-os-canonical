@@ -182,7 +182,7 @@ type DeckApi = {
   transport: ReturnType<typeof useStemTransport>;
   hasStemChannels: boolean;
   applyStemVolumes: (volumes: Record<string, number>) => void;
-  preloadStem: (recipientStemId: string, donorStemId: string, tempoStretchRatio: number) => Promise<void>;
+  preloadStem: (recipientStemId: string, donorStemId: string, tempoStretchRatio: number, selectedAt?: number) => Promise<void>;
   prepareHandoff: (
     target: SessionTrackItem,
     volumes: Record<string, number>,
@@ -466,8 +466,8 @@ function SessionDeck({
     onApi(deckIndex, {
       transport,
       applyStemVolumes,
-      preloadStem: (recipientStemId, donorStemId, ratio) =>
-        transport.preloadStem(recipientStemId, `/api/assets/${donorStemId}`, ratio),
+      preloadStem: (recipientStemId, donorStemId, ratio, selectedAt) =>
+        transport.preloadStem(recipientStemId, `/api/assets/${donorStemId}`, ratio, selectedAt),
       hasStemChannels: item?.playback?.kind === "stems" && (item?.stems ?? []).some((stem) => assetIds.includes(stem.id)),
       prepareHandoff,
     });
@@ -2036,6 +2036,7 @@ export default function SessionExperience({
   const requestSwap = useCallback(
     async (stemType: string, donor: { id: string; title: string; stems?: SessionTrackItem["stems"]; bpm?: number | null }) => {
       if (session === null || currentItem === null) return;
+      const selectedAt = performance.now();
       const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
       if (validation && !validation.ok) {
         setStatus(validation.reason);
@@ -2059,7 +2060,7 @@ export default function SessionExperience({
           donorStem = body.track?.stems?.find((stem) => stem.stemType === stemType);
         }
         if (!donorStem) return;
-        await decksRef.current[activeDeck]?.preloadStem(recipientStemId, donorStem.id, tempoStretchRatio);
+        await decksRef.current[activeDeck]?.preloadStem(recipientStemId, donorStem.id, tempoStretchRatio, selectedAt);
       })().catch(() => {
         // Warming is best-effort. The normal swap path retries the download
         // and reports its real error without interrupting the current layer.

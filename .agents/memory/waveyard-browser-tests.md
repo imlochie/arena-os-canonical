@@ -26,3 +26,9 @@ For live source-to-stems handoffs, distinguish registered/staged audio elements 
 **Why:** A staged-source failure exposed that the shared transport clock treated every registered element as active; the handoff could then report success while every replacement element was paused.
 
 **How to apply:** Keep active playback IDs explicit during staging. Test both a missing staged channel while the current mix advances and a successful commit where the new channels play without a stale-frame error.
+
+For live-stem performance browser tests, report download, decode, tempo-match, and audible-start timings; use a controlled network delay instead of machine-specific latency gates.
+
+**Why:** Headless Chromium varied by hundreds of milliseconds between download and decode stages on the same fixture, so a smaller injected delay could be obscured by normal scheduling noise.
+
+**How to apply:** Compare the phase breakdowns and verify the measured download includes the injected delay. A mobile-sized Chromium viewport is useful layout and flow coverage, but it is not real-device or mobile-engine performance evidence.

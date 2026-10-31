@@ -5,7 +5,10 @@ import { LiveStemLayers } from "./live-stem-layers";
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
-function fixture(stretchBuffer?: ConstructorParameters<typeof LiveStemLayers>[2]) {
+function fixture(
+  stretchBuffer?: ConstructorParameters<typeof LiveStemLayers>[2],
+  onTiming?: ConstructorParameters<typeof LiveStemLayers>[3],
+) {
   const sources: Array<{ offset: number; stopped: boolean; loop: boolean }> = [];
   const gains: Array<{ automation: Array<{ type: string; value?: number; time: number }> }> = [];
   let decodeCount = 0;
@@ -50,6 +53,7 @@ function fixture(stretchBuffer?: ConstructorParameters<typeof LiveStemLayers>[2]
     () => context as unknown as AudioContext,
     () => channel as unknown as ReturnType<ConstructorParameters<typeof LiveStemLayers>[1]>,
     stretchBuffer,
+    onTiming,
   );
   return { layers, channel, media, sources, gains, context, get decodeCount() { return decodeCount; } };
 }
@@ -126,6 +130,26 @@ test("a late download cannot override a newer selection", async () => {
   } finally { f.layers.dispose(); }
 });
 
+test("duplicate in-flight selections share the same download and playback", async () => {
+  const f = fixture();
+  let responseDonor!: (value: Response) => void;
+  let fetchCount = 0;
+  globalThis.fetch = () => {
+    fetchCount += 1;
+    return new Promise<Response>(resolve => { responseDonor = resolve; });
+  };
+  try {
+    const first = f.layers.replace("vocals", "/same-donor");
+    const duplicate = f.layers.replace("vocals", "/same-donor");
+    assert.equal(fetchCount, 1, "a rerendered selection does not start another donor download");
+    responseDonor(response());
+    await Promise.all([first, duplicate]);
+    assert.equal(f.sources.length, 1, "only one audible layer is installed for the shared selection");
+  } finally {
+    f.layers.dispose();
+  }
+});
+
 test("tempo-matched donor audio is prepared before the original layer fades out", async () => {
   const ratios: number[] = [];
   const f = fixture(async (_context, _buffer, ratio, signal) => {
@@ -164,6 +188,58 @@ test("preloading decodes and tempo-matches a chosen donor before replacement wit
     assert.equal(f.sources.length, 1);
     assert.equal(f.channel.inputGain.gain.value, 0, "the original fades only when the warmed donor is ready");
   } finally { f.layers.dispose(); }
+});
+
+test("live swap timings separate download, decode, and tempo matching for native and matched donors", async () => {
+  const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
+  const nativeTimings: Array<{ selectionToAudibleMs: number; downloadMs: number; decodeMs: number; tempoMatchMs: number; tempoStretchRatio: number; transferBytes: number }> = [];
+  const native = fixture(undefined, timing => nativeTimings.push(timing));
+  native.context.decodeAudioData = async () => {
+    await wait(8);
+    return { duration: 3 } as AudioBuffer;
+  };
+  globalThis.fetch = async () => {
+    await wait(8);
+    return response();
+  };
+  try {
+    const selectedAt = performance.now();
+    await native.layers.preload("/native", 1, selectedAt);
+    await native.layers.replace("vocals", "/native", 1);
+    assert.equal(nativeTimings.length, 1);
+    assert.equal(nativeTimings[0].tempoStretchRatio, 1);
+    assert.equal(nativeTimings[0].tempoMatchMs, 0, "native-tempo donors skip the tempo-matching stage");
+    assert.ok(nativeTimings[0].downloadMs >= 0);
+    assert.ok(nativeTimings[0].decodeMs >= 0);
+    assert.ok(nativeTimings[0].selectionToAudibleMs >= nativeTimings[0].downloadMs);
+    assert.equal(nativeTimings[0].transferBytes, 4);
+  } finally {
+    native.layers.dispose();
+  }
+
+  const matchedTimings: Array<{ selectionToAudibleMs: number; downloadMs: number; decodeMs: number; tempoMatchMs: number; tempoStretchRatio: number; transferBytes: number }> = [];
+  const matched = fixture(async (_context, _buffer, _ratio) => {
+    await wait(8);
+    return { duration: 6 } as AudioBuffer;
+  }, timing => matchedTimings.push(timing));
+  matched.context.decodeAudioData = async () => {
+    await wait(8);
+    return { duration: 3 } as AudioBuffer;
+  };
+  try {
+    const selectedAt = performance.now();
+    await matched.layers.preload("/matched", 0.8, selectedAt);
+    await matched.layers.replace("vocals", "/matched", 0.8);
+    assert.equal(matchedTimings.length, 1);
+    assert.equal(matchedTimings[0].tempoStretchRatio, 0.8);
+    assert.ok(matchedTimings[0].downloadMs >= 0);
+    assert.ok(matchedTimings[0].decodeMs >= 0);
+    assert.ok(matchedTimings[0].tempoMatchMs > 0);
+    assert.ok(matchedTimings[0].selectionToAudibleMs >=
+      matchedTimings[0].downloadMs + matchedTimings[0].decodeMs + matchedTimings[0].tempoMatchMs);
+  } finally {
+    matched.layers.dispose();
+  }
 });
 
 test("a failed warm-up is discarded so the real swap can retry the donor request", async () => {
