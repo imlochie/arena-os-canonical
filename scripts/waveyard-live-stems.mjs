@@ -192,8 +192,17 @@ try {
   }, sessionId);
   let failAsset = null;
   let failedAssetRequests = 0;
+  const liveSwapRequestOrder = [];
+  let externalDonorSaveGate = null;
+  let signalExternalDonorSave;
+  let signalExternalDonorWarm;
   await context.route("**/api/assets/*", async route => {
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
+    if (id === "b-vocals" && heldAssetId === "b-vocals") liveSwapRequestOrder.push("donor-preload");
+    if (id === "d-vocals") {
+      liveSwapRequestOrder.push("donor-preload:d-vocals");
+      signalExternalDonorWarm?.();
+    }
     const isHeldAssetRequest = id === heldAssetId && heldAssetGate !== null;
     if (isHeldAssetRequest) {
       signalHeldAssetRequest?.();
@@ -265,6 +274,11 @@ try {
       { ...libraryRows[0], id: "d", title: "Test D", stemAvailability: { status: "separated", stemCount: 4, stemTypes: types }, studioProjectId: "fixture-project-d" },
     ] } });
   });
+  await context.route("**/api/library/tracks/d", route => route.fulfill({ json: { track: {
+    id: "d",
+    stems: externalStemKeys,
+    analysis: null,
+  } } }));
   await context.route(`**/api/library/tracks/${preparationDonorId}/separation`, route => {
     if (route.request().method() !== "POST") return route.fallback();
     preparationStartRequests += 1;
@@ -319,6 +333,13 @@ try {
       } } });
     }
     if (url.pathname.endsWith("/swaps") && request.method() === "POST") {
+      if (body.toTrackId === "b" && body.stemType === "vocals") liveSwapRequestOrder.push("save");
+      if (body.toTrackId === "d" && body.stemType === "vocals" && externalDonorSaveGate) {
+        liveSwapRequestOrder.push("save-start:d");
+        signalExternalDonorSave?.();
+        await externalDonorSaveGate;
+        liveSwapRequestOrder.push("save-complete:d");
+      }
       session.swaps = session.swaps.filter(s => !(s.sessionTrackId === body.sessionTrackId && s.stemType === body.stemType));
       session.swaps.push({ ...body, id: `swap-${body.stemType}`, fromTrackId: "a", createdAt: new Date().toISOString(),
         donorTrack: body.toTrackId === "d" ? { id: "d", title: "Test D", stems: externalStemKeys } : undefined });
@@ -843,6 +864,7 @@ try {
   let finishSlowDonorRoute;
   const slowDonorRouteFinished = new Promise(resolve => { finishSlowDonorRoute = resolve; });
   heldAssetId = "b-vocals";
+  liveSwapRequestOrder.length = 0;
   heldAssetGate = slowDonorGate;
   signalHeldAssetRequest = signalSlowDonorRequest;
   signalHeldAssetRouteFinished = finishSlowDonorRoute;
@@ -860,6 +882,8 @@ try {
     `the picker distinguishes a key mismatch from a tempo match: ${donorCLabel}`);
   await donorBOption.click();
   await waitForSignal(slowDonorRequested, "the live stem donor request");
+  assert.deepEqual(liveSwapRequestOrder.slice(0, 2), ["donor-preload", "save"],
+    "the selected donor starts downloading before the session waits for its save response");
   const cancelSlowSwap = page.getByTestId("cancel-live-stem-swap-swap-vocals");
   await cancelSlowSwap.waitFor();
   await page.waitForFunction(before => {
@@ -968,10 +992,30 @@ try {
   const unknownAnalysisDonor = current.getByTestId("live-swap-candidate-vocals-d");
   assert.match(await unknownAnalysisDonor.getAttribute("aria-label"), /BPM unknown; Key unknown/,
     "the picker labels absent donor analysis instead of implying compatibility");
+  liveSwapRequestOrder.length = 0;
+  let releaseExternalDonorSave;
+  externalDonorSaveGate = new Promise(resolve => { releaseExternalDonorSave = resolve; });
+  const externalSaveStarted = new Promise(resolve => { signalExternalDonorSave = resolve; });
+  const externalWarmStarted = new Promise(resolve => { signalExternalDonorWarm = resolve; });
   await unknownAnalysisDonor.click();
+  try {
+    await waitForSignal(externalSaveStarted, "the external donor save request");
+    await waitForSignal(externalWarmStarted, "the external library donor audio preload");
+    assert.ok(liveSwapRequestOrder.includes("donor-preload:d-vocals"),
+      "a library donor begins preloading before the save response completes");
+    assert.equal(liveSwapRequestOrder.includes("save-complete:d"), false,
+      "the save response is still held while the donor audio warms");
+  } finally {
+    externalDonorSaveGate = null;
+    releaseExternalDonorSave();
+    signalExternalDonorSave = undefined;
+    signalExternalDonorWarm = undefined;
+  }
   await page.waitForFunction(({ beforeCount, minTime }) => window.audioProbe.buffers.length > beforeCount &&
     [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.currentTime > minTime),
   { beforeCount: buffersBeforeExternalSwap, minTime: Math.max(0, followSeekSeconds - 0.5) });
+  assert.equal(liveSwapRequestOrder.filter(entry => entry === "donor-preload:d-vocals").length, 1,
+    `the external donor audio is fetched once, then reused for the audible replacement: ${JSON.stringify(liveSwapRequestOrder)}`);
   assert.equal(session.swaps.find(s => s.stemType === "vocals").toTrackId, "d", "library donor is saved without being added to the session queue");
   const externalResume = await page.evaluate(() => ({
     offset: window.audioProbe.buffers.at(-1).startedOffset,

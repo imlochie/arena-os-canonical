@@ -176,6 +176,7 @@ type DeckApi = {
   transport: ReturnType<typeof useStemTransport>;
   hasStemChannels: boolean;
   applyStemVolumes: (volumes: Record<string, number>) => void;
+  preloadStem: (recipientStemId: string, donorStemId: string, tempoStretchRatio: number) => Promise<void>;
   prepareHandoff: (
     target: SessionTrackItem,
     volumes: Record<string, number>,
@@ -459,10 +460,12 @@ function SessionDeck({
     onApi(deckIndex, {
       transport,
       applyStemVolumes,
+      preloadStem: (recipientStemId, donorStemId, ratio) =>
+        transport.preloadStem(recipientStemId, `/api/assets/${donorStemId}`, ratio),
       hasStemChannels: item?.playback?.kind === "stems" && (item?.stems ?? []).some((stem) => assetIds.includes(stem.id)),
       prepareHandoff,
     });
-  }, [deckIndex, transport, applyStemVolumes, prepareHandoff, onApi]);
+  }, [deckIndex, transport, item, applyStemVolumes, prepareHandoff, onApi]);
   useEffect(() => () => onApi(deckIndex, null), [deckIndex, onApi]);
 
   useEffect(() => {
@@ -2025,13 +2028,36 @@ export default function SessionExperience({
 
   // ------------------------------------------------------------------ swaps
   const requestSwap = useCallback(
-    async (stemType: string, donor: { id: string; title: string; stems?: SessionTrackItem["stems"] }) => {
+    async (stemType: string, donor: { id: string; title: string; stems?: SessionTrackItem["stems"]; bpm?: number | null }) => {
       if (session === null || currentItem === null) return;
       const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
       if (validation && !validation.ok) {
         setStatus(validation.reason);
         return;
       }
+      const recipientStemId = currentItem.stems.find((stem) => stem.stemType === stemType)?.id;
+      const tempoStretchRatio = liveStemTempoStretchRatio(
+        currentItem.analysis?.bpm ?? null,
+        donor.bpm ?? null,
+      ) ?? 1;
+      // Resolve a library donor's real stem asset and warm the audio while the
+      // save request is in flight. This does no playback work; replaceStem
+      // still owns validation, cancellation, and the audible crossfade.
+      void (async () => {
+        if (!recipientStemId) return;
+        let donorStem = donor.stems?.find((stem) => stem.stemType === stemType);
+        if (!donorStem) {
+          const response = await fetch(`/api/library/tracks/${donor.id}`, { cache: "no-store" });
+          if (!response.ok) return;
+          const body = await response.json() as { track?: { stems?: SessionTrackItem["stems"] } };
+          donorStem = body.track?.stems?.find((stem) => stem.stemType === stemType);
+        }
+        if (!donorStem) return;
+        await decksRef.current[activeDeck]?.preloadStem(recipientStemId, donorStem.id, tempoStretchRatio);
+      })().catch(() => {
+        // Warming is best-effort. The normal swap path retries the download
+        // and reports its real error without interrupting the current layer.
+      });
       setSavingSwap(true);
       setStatus(`Saving ${stemType} source from “${donor.title}”… current playback continues.`);
       try {
@@ -2700,11 +2726,16 @@ export default function SessionExperience({
         onChoose={(donorId) => {
           const donor = donors.find((item) => item.track.id === donorId);
           if (donor) {
-            void requestSwap(stemType, { id: donor.track.id, title: donor.track.title, stems: donor.stems });
+            void requestSwap(stemType, {
+              id: donor.track.id,
+              title: donor.track.title,
+              stems: donor.stems,
+              bpm: donor.analysis?.bpm ?? null,
+            });
             return;
           }
           const source = libraryDonors.find((item) => item.id === donorId);
-          if (source) void requestSwap(stemType, { id: source.id, title: source.title });
+          if (source) void requestSwap(stemType, { id: source.id, title: source.title, bpm: source.analysis?.bpm ?? null });
         }}
         onPrepare={(trackId) => { void startSessionTrackSeparation(trackId); }}
         onRestore={() => {

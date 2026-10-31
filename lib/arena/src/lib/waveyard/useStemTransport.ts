@@ -348,6 +348,10 @@ export function useStemTransport(
     if (url) ensureGraph(id);
     return liveLayers.current!.replace(id, url, tempoStretchRatio);
   }, [ensureGraph]);
+  const preloadStem = useCallback((id: string, url: string, tempoStretchRatio = 1) => {
+    if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
+    return liveLayers.current!.preload(url, tempoStretchRatio);
+  }, [ensureGraph]);
   const prepareChannels = useCallback((channelIds: string[]) => {
     for (const id of channelIds) {
       if (!ensureGraph(id)) throw new Error("A stem audio channel could not be prepared.");
@@ -756,6 +760,7 @@ export function useStemTransport(
   return {
     register,
     replaceStem,
+    preloadStem,
     prepareChannels,
     playChannels,
     readSpectrum,

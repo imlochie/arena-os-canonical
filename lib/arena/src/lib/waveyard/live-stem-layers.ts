@@ -11,12 +11,21 @@ type Layer = {
   source: AudioBufferSourceNode | null;
 };
 
+type PreparedStem = {
+  controller: AbortController;
+  timer: ReturnType<typeof setTimeout>;
+  promise: Promise<AudioBuffer>;
+};
+
 type BufferStretcher = (
   context: AudioContext,
   buffer: AudioBuffer,
   ratio: number,
   signal: AbortSignal,
 ) => Promise<AudioBuffer>;
+
+const PREPARED_STEM_TTL_MS = 30_000;
+const MAX_PREPARED_STEMS = 2;
 
 const stretchBufferInWorker: BufferStretcher = (context, buffer, ratio, signal) => {
   if (typeof Worker === "undefined") {
@@ -81,6 +90,7 @@ const stretchBufferInWorker: BufferStretcher = (context, buffer, ratio, signal) 
 export class LiveStemLayers {
   private layers = new Map<string, Layer>();
   private pending = new Map<string, AbortController>();
+  private prepared = new Map<string, PreparedStem>();
   private retired = new Set<Layer>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -134,6 +144,85 @@ export class LiveStemLayers {
     layer.source = source;
   }
 
+  private preparedKey(url: string, tempoStretchRatio: number) {
+    return `${url}\u0000${tempoStretchRatio.toFixed(4)}`;
+  }
+
+  private discardPrepared(key: string, abort: boolean) {
+    const prepared = this.prepared.get(key);
+    if (!prepared) return;
+    this.prepared.delete(key);
+    clearTimeout(prepared.timer);
+    if (abort) prepared.controller.abort();
+  }
+
+  private async prepareBuffer(url: string, tempoStretchRatio: number, signal: AbortSignal) {
+    const response = await fetch(url, { signal });
+    if (!response.ok) throw new Error(`Stem download failed (${response.status}).`);
+    const bytes = await response.arrayBuffer();
+    if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
+    const ctx = this.context();
+    const decoded = await ctx.decodeAudioData(bytes);
+    if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
+    const buffer = Math.abs(tempoStretchRatio - 1) < 0.001
+      ? decoded
+      : await this.stretchBuffer(ctx, decoded, tempoStretchRatio, signal);
+    if (signal.aborted) throw new DOMException("Stem preparation was cancelled.", "AbortError");
+    if (!(buffer.duration > 0)) throw new Error("The donor stem has no playable audio.");
+    return buffer;
+  }
+
+  /**
+   * Warm the selected donor while its session change is being saved. The
+   * decoded (and, when needed, tempo-matched) buffer is short-lived and never
+   * becomes audible until replace() installs it.
+   */
+  preload(url: string, tempoStretchRatio = 1): Promise<void> {
+    if (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2) {
+      return Promise.reject(new Error("The live stem tempo ratio must be between 0.5× and 2×."));
+    }
+    const key = this.preparedKey(url, tempoStretchRatio);
+    const existing = this.prepared.get(key);
+    if (existing) return existing.promise.then(() => undefined);
+
+    while (this.prepared.size >= MAX_PREPARED_STEMS) {
+      const oldestKey = this.prepared.keys().next().value as string | undefined;
+      if (oldestKey === undefined) break;
+      this.discardPrepared(oldestKey, true);
+    }
+
+    const controller = new AbortController();
+    let entry!: PreparedStem;
+    const promise = this.prepareBuffer(url, tempoStretchRatio, controller.signal).catch((error: unknown) => {
+      if (this.prepared.get(key) === entry) this.discardPrepared(key, false);
+      throw error;
+    });
+    const timer = setTimeout(() => {
+      if (this.prepared.get(key) === entry) this.discardPrepared(key, true);
+    }, PREPARED_STEM_TTL_MS);
+    entry = { controller, timer, promise };
+    this.prepared.set(key, entry);
+    return promise.then(() => undefined);
+  }
+
+  private async getPreparedBuffer(url: string, tempoStretchRatio: number, signal: AbortSignal) {
+    const key = this.preparedKey(url, tempoStretchRatio);
+    const prepared = this.prepared.get(key);
+    if (!prepared) return this.prepareBuffer(url, tempoStretchRatio, signal);
+
+    // A live replacement now owns the warm operation. Cancelling that swap
+    // also stops its download or tempo worker, rather than leaving work behind.
+    this.discardPrepared(key, false);
+    const abortPrepared = () => prepared.controller.abort();
+    signal.addEventListener("abort", abortPrepared, { once: true });
+    if (signal.aborted) abortPrepared();
+    try {
+      return await prepared.promise;
+    } finally {
+      signal.removeEventListener("abort", abortPrepared);
+    }
+  }
+
   async replace(id: string, url: string | null, tempoStretchRatio = 1) {
     this.pending.get(id)?.abort();
     this.pending.delete(id);
@@ -153,17 +242,9 @@ export class LiveStemLayers {
     const operation = new AbortController();
     this.pending.set(id, operation);
     try {
-      const response = await fetch(url, { signal: operation.signal });
-      if (!response.ok) throw new Error(`Stem download failed (${response.status}).`);
-      const bytes = await response.arrayBuffer();
+      const buffer = await this.getPreparedBuffer(url, tempoStretchRatio, operation.signal);
+      if (operation.signal.aborted || this.pending.get(id) !== operation) return;
       const ctx = this.context();
-      const decoded = await ctx.decodeAudioData(bytes);
-      if (operation.signal.aborted || this.pending.get(id) !== operation) return;
-      const buffer = Math.abs(tempoStretchRatio - 1) < 0.001
-        ? decoded
-        : await this.stretchBuffer(ctx, decoded, tempoStretchRatio, operation.signal);
-      if (operation.signal.aborted || this.pending.get(id) !== operation) return;
-      if (!(buffer.duration > 0)) throw new Error("The donor stem has no playable audio.");
       const channel = this.channel(id);
       if (!channel) throw new Error("The receiving stem is no longer loaded.");
       const input = ctx.createGain();
@@ -208,6 +289,7 @@ export class LiveStemLayers {
   dispose() {
     this.pause();
     for (const id of new Set([...this.layers.keys(), ...this.pending.keys()])) this.remove(id);
+    for (const key of this.prepared.keys()) this.discardPrepared(key, true);
     for (const layer of this.retired) layer.input.disconnect();
     this.retired.clear();
     for (const timer of this.timers) clearTimeout(timer);
