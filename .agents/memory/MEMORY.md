@@ -19,3 +19,4 @@
 - [Arena baseline reconciliation](arena-baseline-reconciliation.md) — compare the selected branch and current product docs before edits; don't assume a branch name proves freshness.
 - [Waveyard browser audio tests](waveyard-browser-tests.md) — verify live clocks, disable caching for failures, and wait for the intended track before asserting queue-switch playback.
 - [Waveyard startup recovery](waveyard-startup-recovery.md) — retry transient database outages at boot within bounds; fail fast on schema errors.
+- [Playwright touch isolation](playwright-touch-emulation.md) — scope touch emulation to mobile interaction checks in shared smoke browsers so hover-dependent tests remain desktop-like.

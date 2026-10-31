@@ -29,6 +29,7 @@ let page = await context.newPage();
 const errors = [];
 page.on("pageerror", err => errors.push(err.message));
 const report = [];
+let touchSession = null;
 function makePcmWav(frequency, amplitude, durationSeconds = 8) {
   const sampleRate = 16_000;
   const sampleCount = sampleRate * durationSeconds;
@@ -52,6 +53,21 @@ function makePcmWav(frequency, amplitude, durationSeconds = 8) {
   header.write("data", 36);
   header.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([header, pcm]);
+}
+async function tapCenter(locator) {
+  const bounds = await locator.boundingBox();
+  assert(bounds, "Touch target must have visible bounds");
+  if (!touchSession) {
+    touchSession = await context.newCDPSession(page);
+    await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  }
+  const x = Math.round(bounds.x + bounds.width / 2);
+  const y = Math.round(bounds.y + bounds.height / 2);
+  await touchSession.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x, y, id: 1, radiusX: 1, radiusY: 1, force: 1 }],
+  });
+  await touchSession.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 const reaAnalysisSmoke = execFileSync(
   "pnpm",
@@ -1098,23 +1114,40 @@ try {
   await page.getByRole("tab", { name: "Edit", exact: true }).click();
   const desktopStudioViewport = page.viewportSize();
   if (desktopStudioViewport) {
-    await page.setViewportSize({ width: 402, height: 874 });
-    const studioMobileLayout = await page.evaluate(() => {
-      const transport = document.querySelector('[aria-label="Transport controls"]')?.getBoundingClientRect();
-      return {
-        viewportWidth: document.documentElement.clientWidth,
-        documentWidth: document.documentElement.scrollWidth,
-        transportLeft: transport?.left ?? -1,
-        transportRight: transport?.right ?? Number.POSITIVE_INFINITY,
-      };
-    });
-    assert.equal(studioMobileLayout.documentWidth, studioMobileLayout.viewportWidth,
-      "the Studio page and newly elevated transport must not create mobile horizontal overflow");
-    assert(studioMobileLayout.transportLeft >= 0 && studioMobileLayout.transportRight <= studioMobileLayout.viewportWidth,
-      "the Studio transport must remain completely reachable on a phone-width viewport");
+    for (const width of [320, 402]) {
+      await page.setViewportSize({ width, height: 874 });
+      await page.getByRole("region", { name: "Transport controls" }).scrollIntoViewIfNeeded();
+      const studioMobileLayout = await page.evaluate(() => {
+        const transport = document.querySelector('[aria-label="Transport controls"]')?.getBoundingClientRect();
+        return {
+          viewportWidth: document.documentElement.clientWidth,
+          documentWidth: document.documentElement.scrollWidth,
+          transportLeft: transport?.left ?? -1,
+          transportRight: transport?.right ?? Number.POSITIVE_INFINITY,
+          overflowing: [...document.body.querySelectorAll("*")].map((element) => {
+            const bounds = element.getBoundingClientRect();
+            return {
+              tag: element.tagName,
+              className: typeof element.className === "string" ? element.className : "",
+              id: element.id,
+              left: Math.round(bounds.left),
+              right: Math.round(bounds.right),
+              width: Math.round(bounds.width),
+              scrollWidth: element.scrollWidth,
+              clientWidth: element.clientWidth,
+            };
+          }).filter((element) => element.right > document.documentElement.clientWidth + 1)
+            .sort((left, right) => right.right - left.right).slice(0, 12),
+        };
+      });
+      assert.equal(studioMobileLayout.documentWidth, studioMobileLayout.viewportWidth,
+        `the Studio page and transport must not create horizontal overflow at ${width}px: ${JSON.stringify(studioMobileLayout)}`);
+      assert(studioMobileLayout.transportLeft >= 0 && studioMobileLayout.transportRight <= studioMobileLayout.viewportWidth,
+        `the Studio transport must remain completely reachable at ${width}px`);
+    }
     await page.setViewportSize(desktopStudioViewport);
   }
-  report.push("Studio playback controls now sit beside the timeline, remain visible in Analyze, cannot preview a missing arrangement, and fit a phone viewport.");
+  report.push("Studio playback controls remain visible in Analyze, cannot preview a missing arrangement, and fit 320px and 402px viewports without page overflow.");
   const retryProjectSeparationButton = page.getByRole("button", { name: "Retry separation", exact: true });
   await retryProjectSeparationButton.waitFor();
   await retryProjectSeparationButton.click();
@@ -1603,6 +1636,13 @@ try {
     contentType: "application/json",
     body: JSON.stringify({ versions: [] }),
   }));
+  for (const [index, stem] of studioStemRows.entries()) {
+    await page.route(`**/api/assets/${stem.id}`, (route) => route.fulfill({
+      status: 200,
+      contentType: "audio/wav",
+      body: makePcmWav(220 + index * 55, 0.2),
+    }));
+  }
   await openStudioAfterHandoff.click();
   await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
   await page.locator(".timeline-track").nth(7).waitFor({ state: "visible", timeout: 15_000 });
@@ -1656,6 +1696,70 @@ try {
   await page.locator(".timeline-track").filter({ hasText: "Next source track.wav — Vocals" }).locator(".clip").click();
   assert.equal(await page.getByLabel("Fade in (ms)").inputValue(), "1000",
     "the incoming supported transition must survive reload");
+  const mobileTransport = page.getByRole("region", { name: "Transport controls" });
+  for (const width of [320, 402]) {
+    await page.setViewportSize({ width, height: 874 });
+    const timelineScroller = page.getByRole("region", { name: "Arrangement timeline" });
+    const timelineMetrics = await timelineScroller.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      scrollLeft: element.scrollLeft,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    }));
+    assert(timelineMetrics.scrollWidth > timelineMetrics.clientWidth,
+      `the arrangement timeline must scroll inside its own viewport at ${width}px`);
+    assert.equal(timelineMetrics.documentWidth, timelineMetrics.viewportWidth,
+      `the loaded Studio arrangement must not cause page-level horizontal overflow at ${width}px`);
+    await timelineScroller.evaluate((element) => { element.scrollLeft = 160; });
+    assert(await timelineScroller.evaluate((element) => element.scrollLeft > 0),
+      `the timeline's internal horizontal scroll must remain usable at ${width}px`);
+    await timelineScroller.evaluate((element) => { element.scrollLeft = 0; });
+
+    const playButton = mobileTransport.getByRole("button", { name: "Play", exact: true });
+    const previewButton = mobileTransport.getByRole("button", { name: "Preview arrangement", exact: true });
+    const seekSlider = mobileTransport.getByLabel("Seek project");
+    await mobileTransport.scrollIntoViewIfNeeded();
+    const mobileTargets = await Promise.all([playButton, previewButton, seekSlider].map(async (target) => {
+      const bounds = await target.boundingBox();
+      assert(bounds, "Playback controls must remain visible on a phone");
+      return { left: bounds.x, right: bounds.x + bounds.width, height: bounds.height };
+    }));
+    for (const [index, target] of mobileTargets.entries()) {
+      assert(target.left >= 0 && target.right <= width,
+        `Studio transport target ${index} must remain in the ${width}px viewport`);
+      assert(target.height >= 44,
+        `Studio transport target ${index} must be at least 44px tall at ${width}px`);
+    }
+    if (width === 320) {
+      await tapCenter(seekSlider);
+      await page.waitForFunction(() => Number(document.querySelector('[aria-label="Seek project"]')?.value ?? 0) > 0.5);
+      await tapCenter(playButton);
+      const pauseButton = mobileTransport.getByRole("button", { name: "Pause", exact: true });
+      await pauseButton.waitFor({ state: "visible" });
+      await tapCenter(pauseButton);
+      await playButton.waitFor({ state: "visible" });
+      await tapCenter(previewButton);
+      const pauseArrangement = mobileTransport.getByRole("button", { name: "Pause arrangement", exact: true });
+      await pauseArrangement.waitFor({ state: "visible", timeout: 15_000 });
+      await tapCenter(pauseArrangement);
+      await previewButton.waitFor({ state: "visible" });
+    }
+  }
+  await page.setViewportSize({ width: 320, height: 874 });
+  await page.getByRole("tab", { name: "Analyze", exact: true }).click();
+  await mobileTransport.scrollIntoViewIfNeeded();
+  assert.equal(await mobileTransport.isVisible(), true,
+    "the loaded Studio transport must remain reachable in Analyze at phone width");
+  assert.equal(await mobileTransport.getByRole("button", { name: "Preview arrangement", exact: true }).isVisible(), true,
+    "arrangement preview must remain reachable after switching Studio tabs on a phone");
+  if (touchSession) {
+    await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await touchSession.detach();
+    touchSession = null;
+  }
+  await page.setViewportSize(desktopViewport);
+  report.push("At 320px and 402px, the arrangement scrolls internally with no page overflow; touch-sized play, seek, and arrangement preview controls respond to taps.");
   report.push("A session handoff opens a linked, audio-backed Studio arrangement; clips, isolated mix, donor swap, and supported crossfades survive reload.");
   report.push("A slow live stem switch can be cancelled without rewinding playback; later swaps, isolation, Camelot cueing, and mobile stem controls pass.");
 
