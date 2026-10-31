@@ -9,17 +9,17 @@ When the user names a branch or asks to preserve earlier work, compare it with t
 
 **How to apply:** Check the worktree, refs, ancestry, relevant source, and acceptance tests at the start of substantive Arena work. When the user asks for a branch audit, include every local and remote ref, not only the named branch, and distinguish patch-equivalent commits from unique work. Tell the user which baseline is in use when it differs from a branch they named, and preserve every inspected ref while comparing.
 
-Historical Waveyard conversion work must be described precisely: the TunePat integration only launches the owner's installed app and expects manual output import; a separate local-file conversion/archive workflow handles files the owner already has. Neither extracts protected Apple Music audio. Current library snapshots back up catalog metadata, not the audio files.
+Waveyard has distinct music paths: Apple/iTunes XML or CSV snapshots back up catalogue metadata; Library audio backup archives exact original source files already stored in Waveyard; Toolbox converts user-supplied media. In the hosted preview, Toolbox files are processed by the hosted API, while the packaged desktop app is intended to use its local API. Neither path extracts protected Apple Music subscription audio. The old TunePat bridge only launches the owner's installed app and relies on manual output import.
 
-**Why:** Treating a launcher or metadata snapshot as an Apple Music converter would repeat the product's core failure mode: claiming a capability the user cannot actually use.
+**Why:** Treating a launcher, catalogue snapshot, or general file converter as an Apple Music stream converter would repeat the product's core failure mode: claiming a capability the user cannot actually use.
 
-**How to apply:** When reviewing or proposing Apple Music backup, distinguish catalog/playlist snapshots from local audio conversion and from protected-stream acquisition. Do not claim TunePat conversion exists unless an end-to-end, authorized file workflow is implemented and tested.
+**How to apply:** When reviewing Apple Music backup, distinguish metadata export, exact-original backup, conversion of files the user supplies, and protected-stream acquisition. Do not claim that TunePat conversion or Windows-local processing works without an end-to-end test on that target.
 
-The user does not want TunePat as a dependency or paid requirement when a legitimate built-in path is feasible. Keep metadata exports (Apple/iTunes XML, CSV, or JSON) distinct from an audio ZIP of exact unprotected originals already stored in Waveyard. Never treat a TunePat launcher or an XML file path as audio access, and do not claim protected Apple Music subscription streams can be converted.
+The user does not want TunePat as a dependency or paid requirement when a legitimate built-in path is feasible. Current main has general per-file/batch Toolbox conversion and an audio ZIP of exact originals stored in Waveyard. A historical conversion branch has a dedicated durable music workbench with metadata review and verified converted-batch archives; that behavior is not equivalent to the current Toolbox and should be ported selectively, not restored by merging its different app architecture wholesale.
 
 **Why:** The user wants a usable Apple Music library backup without paying for TunePat, while expecting truthful capability rather than a launcher or promise.
 
-**How to apply:** Prefer first-party import/export for metadata and exact-file backup for locally accessible originals. Clearly label the boundary; do not add TunePat dependency or DRM-bypass logic.
+**How to apply:** Prefer first-party metadata import/export, exact-file backup, and conversion of accessible local files. Treat historical branch behavior as a source of acceptance criteria, preserve the current app structure, and do not add TunePat dependency or DRM-bypass logic.
 
 Treat branch-only capability notes as leads, not current-state facts. A feature may have been ported to main since the note was written, while related export or conversion flows remain branch-only. The 2048 source patch is a specific example, not a general reverse-engineering capability.
 

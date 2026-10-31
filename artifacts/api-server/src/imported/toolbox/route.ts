@@ -3,7 +3,9 @@ import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import {
   MAX_INPUT_BYTES,
+  MAX_QUEUE,
   createConversionJob,
+  discardUpload,
   deleteJob,
   detectHardwareEncoder,
   getJob,
@@ -16,6 +18,11 @@ import { guardedFormData } from "@workspace/arena/lib/security/request-limits";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
+
+function publicJob(job: NonNullable<ReturnType<typeof getJob>>) {
+  const { inputPath: _inputPath, outputPath: _outputPath, ...visible } = job;
+  return visible;
+}
 
 const MIME: Record<string, string> = {
   mp4: "video/mp4",
@@ -59,9 +66,10 @@ export async function GET(req: Request) {
   }
   const hardware = await detectHardwareEncoder();
   return Response.json({
-    jobs: listJobs(),
+    jobs: listJobs().map(publicJob),
     hardware,
     presets: presetCatalog(),
+    maxQueue: MAX_QUEUE,
   });
 }
 
@@ -130,12 +138,19 @@ export async function POST(req: Request) {
         presetId: presetId === "custom" ? "custom" : (presetId as never),
         custom,
       });
-      return Response.json({ job }, { status: 201 });
+      return Response.json({ job: publicJob(job) }, { status: 201 });
     }
     if (action === "delete") {
       const removed = await deleteJob(String(body.id ?? ""));
       if (!removed) {
         return Response.json({ error: "not_deletable", message: "Job not found or still running." }, { status: 409 });
+      }
+      return Response.json({ removed: true });
+    }
+    if (action === "discard-upload") {
+      const removed = await discardUpload(String(body.path ?? ""));
+      if (!removed) {
+        return Response.json({ error: "not_discardable", message: "Upload not found or already queued." }, { status: 409 });
       }
       return Response.json({ removed: true });
     }

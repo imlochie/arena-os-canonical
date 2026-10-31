@@ -9,7 +9,7 @@
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { execTool } from "../../../lib/waveyard/ffmpeg";
+import { execTool } from "@workspace/arena/lib/waveyard/ffmpeg";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,6 +57,7 @@ test("GET returns the manifest: presets, hardware honesty, empty queue", async (
   assert.ok(presets.some((p) => p.id === "image-webp" && p.kind === "image"));
   const hardware = manifest.hardware as string | null;
   assert.ok(hardware === null || /^h264_/.test(hardware));
+  assert.equal(manifest.maxQueue, 16);
   assert.deepEqual(manifest.jobs, []);
 });
 
@@ -83,6 +84,53 @@ test("POST multipart with a text file gets a clean 400, nothing kept", async () 
   assert.equal(response.status, 400);
   const data = await getJson(response);
   assert.equal(data.error, "not_media");
+});
+
+test("discard-upload removes only an unqueued upload inside the private toolbox input folder", async () => {
+  const { storeUpload } = await import("@workspace/arena/lib/toolbox/convert");
+  const stored = await storeUpload({ name: "pending.wav", bytes: new TextEncoder().encode("pending") });
+  const removed = await POST(new Request(BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "discard-upload", path: stored.path }),
+  }));
+  assert.equal(removed.status, 200);
+  assert.equal((await getJson(removed)).removed, true);
+  await assert.rejects(() => readFile(stored.path), { code: "ENOENT" });
+
+  const outside = await POST(new Request(BASE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "discard-upload", path: "/etc/passwd" }),
+  }));
+  assert.equal(outside.status, 409);
+  assert.equal((await getJson(outside)).error, "not_discardable");
+});
+
+test("several audio uploads can be queued independently and return usable MP3 downloads", async () => {
+  const wavPath = join(scratch!, "batch-tone.wav");
+  await execTool("ffmpeg", ["-hide_banner", "-y", "-f", "lavfi", "-i", "sine=frequency=340:duration=0.4", wavPath]);
+  const jobIds: string[] = [];
+  for (const name of ["batch-one.wav", "batch-two.wav"]) {
+    const form = new FormData();
+    form.append("file", new File([await readFile(wavPath)], name, { type: "audio/wav" }));
+    const upload = await getJson(await POST(new Request(BASE, { method: "POST", body: form })));
+    assert.equal((upload.probe as Record<string, unknown>).kind, "audio");
+    const queued = await getJson(await POST(new Request(BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "convert", path: upload.path, name, presetId: "extract-mp3" }),
+    })));
+    jobIds.push((queued.job as Record<string, unknown>).id as string);
+  }
+  for (const id of jobIds) {
+    const done = await waitForDone(id);
+    assert.equal(done.status, "done");
+    assert.equal(done.outCodec, "mp3");
+    const download = await GET(new Request(`${BASE}?file=1&id=${id}`));
+    assert.equal(download.status, 200);
+    assert.ok((await download.arrayBuffer()).byteLength > 100);
+  }
 });
 
 test("full flow through the route: upload → convert → poll → download → clear", async () => {
@@ -114,6 +162,9 @@ test("full flow through the route: upload → convert → poll → download → 
   const done = await waitForDone(jobId);
   assert.equal(done.status, "done");
   assert.equal(done.outCodec, "h264");
+  assert.equal("inputPath" in done, false, "private server paths are not included in the browser job response");
+  assert.equal("outputPath" in done, false, "private server paths are not included in the browser job response");
+  assert.equal("inputPath" in (convertData.job as Record<string, unknown>), false, "create responses also hide private paths");
 
   const download = await GET(new Request(`${BASE}?file=1&id=${jobId}`));
   assert.equal(download.status, 200);

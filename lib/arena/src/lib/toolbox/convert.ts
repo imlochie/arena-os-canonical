@@ -389,6 +389,14 @@ export async function deleteJob(id: string): Promise<boolean> {
   return true;
 }
 
+/** Remove an uploaded file that has not been queued for conversion. */
+export async function discardUpload(path: string): Promise<boolean> {
+  if (!isToolboxInputPath(path) || !existsSync(path)) return false;
+  if ([...jobs.values()].some((job) => job.inputPath === path)) return false;
+  await rm(path, { force: true });
+  return true;
+}
+
 /** Test-only: reset in-memory state between suites. */
 export function resetToolboxForTests(): void {
   if (process.env.NODE_ENV === "production") throw new Error("test helper refused in production");

@@ -19,6 +19,14 @@ type Probe = {
   height: number | null;
 };
 
+type UploadedFile = {
+  path: string;
+  name: string;
+  size: number;
+  probe: Probe;
+  presetId: string;
+};
+
 type Job = {
   id: string;
   presetLabel: string;
@@ -68,10 +76,10 @@ export default function ToolboxPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [hardware, setHardware] = useState<string | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
+  const [maxJobs, setMaxJobs] = useState(16);
   // upload state
   const [uploading, setUploading] = useState(false);
-  const [uploaded, setUploaded] = useState<{ path: string; name: string; size: number; probe: Probe } | null>(null);
-  const [presetId, setPresetId] = useState("fast-1080p");
+  const [uploaded, setUploaded] = useState<UploadedFile[]>([]);
   const [converting, setConverting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   // custom
@@ -87,6 +95,7 @@ export default function ToolboxPage() {
       setJobs(data.jobs ?? []);
       setHardware(data.hardware ?? null);
       setPresets(data.presets ?? []);
+      setMaxJobs(typeof data.maxQueue === "number" ? data.maxQueue : 16);
     } catch {
       /* best effort */
     }
@@ -98,69 +107,120 @@ export default function ToolboxPage() {
     return () => clearInterval(timer);
   }, [refresh]);
 
-  const upload = useCallback(
-    async (file: File) => {
-      setUploading(true);
-      setMessage(null);
-      try {
-        const form = new FormData();
-        form.append("file", file);
-        const response = await fetch("/api/toolbox", { method: "POST", body: form });
-        const data = await response.json();
-        if (!response.ok) {
-          setMessage(`✗ ${data.message ?? response.status}`);
-          return;
-        }
-        setUploaded(data);
-        // preselect a sensible preset for the detected kind
-        const kind = data.probe?.kind ?? "video";
-        const preferred =
-          kind === "image" ? "image-webp" : kind === "audio" ? "extract-mp3" : "fast-1080p";
-        setPresetId(preferred);
-      } catch (e) {
-        setMessage(`✗ ${String(e)}`);
-      } finally {
-        setUploading(false);
+  const uploadFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      const remaining = Math.max(0, maxJobs - jobs.length - uploaded.length);
+      if (files.length > remaining) {
+        setMessage(`The conversion queue has room for ${remaining} more file${remaining === 1 ? "" : "s"}. Clear finished jobs or choose fewer files.`);
       }
+      const toUpload = files.slice(0, remaining);
+      if (toUpload.length === 0) return;
+      const overflowCount = files.length - toUpload.length;
+
+      setUploading(true);
+      const ready: UploadedFile[] = [];
+      const failures: string[] = [];
+      for (const file of toUpload) {
+        try {
+          const form = new FormData();
+          form.append("file", file);
+          const response = await fetch("/api/toolbox", { method: "POST", body: form });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.message ?? `Upload failed (${response.status})`);
+          const probe = data.probe as Probe;
+          const preferred =
+            probe.kind === "image" ? "image-webp" : probe.kind === "audio" ? "extract-mp3" : "fast-1080p";
+          ready.push({ path: data.path, name: data.name ?? file.name, size: data.size ?? file.size, probe, presetId: preferred });
+        } catch (error) {
+          failures.push(`${file.name}: ${error instanceof Error ? error.message : "upload failed"}`);
+        }
+      }
+      setUploaded((current) => [...current, ...ready]);
+      if (failures.length) {
+        setMessage(`${ready.length} ready; ${failures.length} file${failures.length === 1 ? "" : "s"} could not be read${overflowCount ? `; ${overflowCount} skipped because the queue is full` : ""}. ${failures.join("; ")}`);
+      } else {
+        setMessage(`${ready.length} file${ready.length === 1 ? "" : "s"} ready${overflowCount ? `; ${overflowCount} skipped because the queue is full` : ""}. Choose an output for each, then queue them together.`);
+      }
+      setUploading(false);
     },
-    [],
+    [maxJobs, jobs.length, uploaded.length],
   );
 
-  const convert = useCallback(async () => {
-    if (!uploaded || converting) return;
-    setConverting(true);
-    setMessage(null);
+  const setUploadPreset = useCallback((path: string, presetId: string) => {
+    setUploaded((current) => current.map((file) => file.path === path ? { ...file, presetId } : file));
+  }, []);
+
+  const discardPendingUpload = useCallback(async (path: string) => {
     try {
-      const body: Record<string, unknown> = {
-        action: "convert",
-        path: uploaded.path,
-        name: uploaded.name,
-        presetId,
-      };
-      if (presetId === "custom") {
-        body.width = width;
-        body.fps = fps;
-        body.quality = quality;
-      }
       const response = await fetch("/api/toolbox", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ action: "discard-upload", path }),
       });
       const data = await response.json();
-      if (!response.ok) {
-        setMessage(`✗ ${data.message ?? response.status}`);
-        return;
+      if (!response.ok) throw new Error(data.message ?? `Could not remove upload (${response.status})`);
+      setUploaded((current) => current.filter((file) => file.path !== path));
+      setMessage("Removed the unqueued file.");
+    } catch (error) {
+      setMessage(`✗ ${error instanceof Error ? error.message : "Could not remove this upload."}`);
+    }
+  }, []);
+
+  const convert = useCallback(async () => {
+    if (uploaded.length === 0 || converting) return;
+    setConverting(true);
+    setMessage(null);
+    const availableSlots = Math.max(0, maxJobs - jobs.length);
+    let queued = 0;
+    const keep: UploadedFile[] = [];
+    const failures: string[] = [];
+    try {
+      for (const file of uploaded) {
+        if (queued >= availableSlots) {
+          keep.push(file);
+          failures.push(`${file.name}: queue is full`);
+          continue;
+        }
+        const body: Record<string, unknown> = {
+          action: "convert",
+          path: file.path,
+          name: file.name,
+          presetId: file.presetId,
+        };
+        if (file.presetId === "custom") {
+          body.width = width;
+          body.fps = fps;
+          body.quality = quality;
+        }
+        try {
+          const response = await fetch("/api/toolbox", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.message ?? `Could not queue (${response.status})`);
+          queued += 1;
+        } catch (error) {
+          keep.push(file);
+          failures.push(`${file.name}: ${error instanceof Error ? error.message : "could not queue"}`);
+        }
       }
-      setMessage(`✓ Queued: ${data.job.outputName}`);
-      setUploaded(null);
+      setUploaded(keep);
       if (fileRef.current) fileRef.current.value = "";
+      await refresh();
+      setMessage(
+        failures.length
+          ? `${queued} queued; ${failures.length} remain ready to retry. ${failures.join("; ")}`
+          : `✓ Queued ${queued} conversion${queued === 1 ? "" : "s"}.`,
+      );
     } catch (e) {
       setMessage(`✗ ${String(e)}`);
     } finally {
       setConverting(false);
     }
-  }, [uploaded, converting, presetId, width, fps, quality]);
+  }, [uploaded, converting, maxJobs, jobs.length, width, fps, quality, refresh]);
 
   const remove = useCallback(async (id: string) => {
     await fetch("/api/toolbox", {
@@ -170,9 +230,6 @@ export default function ToolboxPage() {
     });
     refresh();
   }, [refresh]);
-
-  const visiblePresets = presets; // all presets shown; cross-kind is legit (mp3 from a video)
-  const selected = visiblePresets.find((p) => p.id === presetId);
 
   return (
     <main className="mx-auto max-w-4xl px-6 py-10">
@@ -200,83 +257,97 @@ export default function ToolboxPage() {
 
       {/* upload + preset */}
       <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-        <h2 className="text-lg font-bold text-white">Convert a file</h2>
-        <label className="mt-3 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-white/15 bg-black/20 px-6 py-8 text-center hover:border-amber-500/50">
+        <h2 className="text-lg font-bold text-white">Convert files</h2>
+        <p className="mt-1 text-xs leading-5 text-slate-400">
+          Add several files, choose an output for each, then queue them together. Audio files are converted from their supplied bytes; protected Apple Music subscription downloads are not unlocked or copied.
+        </p>
+        <label
+          className="mt-3 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-white/15 bg-black/20 px-6 py-8 text-center hover:border-amber-500/50"
+          onDragOver={(event) => {
+            event.preventDefault();
+            if (!uploading) event.dataTransfer.dropEffect = "copy";
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            if (!uploading) void uploadFiles(Array.from(event.dataTransfer.files));
+          }}
+        >
           <Upload size={22} className="text-amber-300" aria-hidden="true" />
           <span className="text-sm text-slate-300">
-            {uploaded ? uploaded.name : "Drop or pick a file (video / audio / image, up to 2 GB)"}
+            {uploading ? "Reading files…" : "Drop or pick files (video / audio / image, up to 2 GB each)"}
           </span>
           <input
             ref={fileRef}
             type="file"
-            className="hidden"
+            className="sr-only"
+            aria-label="Choose files to convert"
+            multiple
             accept="video/*,audio/*,image/*,.mkv,.flac,.opus"
             disabled={uploading}
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void upload(file);
+              const files = Array.from(e.target.files ?? []);
+              if (files.length) void uploadFiles(files);
+              e.currentTarget.value = "";
             }}
           />
         </label>
 
-        {uploaded && (
-          <div className="mt-3 rounded-xl border border-amber-400/15 bg-amber-400/5 p-3 text-sm">
-            <p className="font-bold text-white">
-              {uploaded.name}
-              <span className="ml-2 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300">
-                {uploaded.probe.kind}
-              </span>
-            </p>
-            <p className="mt-1 text-[11px] text-slate-400">
-              {fmtBytes(uploaded.size)}
-              {uploaded.probe.durationSec !== null && ` · ${fmtDuration(uploaded.probe.durationSec)}`}
-              {uploaded.probe.width !== null && ` · ${uploaded.probe.width}×${uploaded.probe.height}`}
-              {uploaded.probe.videoCodec && ` · ${uploaded.probe.videoCodec}`}
-              {uploaded.probe.audioCodec && ` · audio: ${uploaded.probe.audioCodec}`}
-            </p>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <select className={input} value={presetId} onChange={(e) => setPresetId(e.target.value)}>
-                {(["video", "audio", "image"] as const).map((group) => (
-                  <optgroup key={group} label={group.toUpperCase()}>
-                    {visiblePresets
-                      .filter((p) => p.kind === group)
-                      .map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.label} → .{p.targetExt}
-                        </option>
-                      ))}
-                  </optgroup>
-                ))}
-                <optgroup label="CUSTOM">
-                  <option value="custom">Custom (H.264, your knobs)</option>
-                </optgroup>
-              </select>
-              <button className={button} disabled={converting} onClick={() => void convert()}>
-                {converting ? "Queuing…" : "Convert"}
-              </button>
+        {uploaded.length > 0 && (
+          <div className="mt-3 space-y-3" aria-label="Files ready for conversion">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-bold text-white">{uploaded.length} file{uploaded.length === 1 ? "" : "s"} ready</p>
+              <p className="text-[11px] text-slate-400">{Math.max(0, maxJobs - jobs.length)} queue slot{Math.max(0, maxJobs - jobs.length) === 1 ? "" : "s"} available</p>
             </div>
-            {selected && (
-              <p className="mt-2 text-[11px] leading-5 text-slate-400">
-                {selected.description}
-                {selected.notes ? ` — ${selected.notes}` : ""}
-              </p>
-            )}
-            {presetId === "custom" && (
-              <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                <label className="text-[11px] text-slate-400">
-                  Width cap
-                  <input className={input} type="number" min={16} max={7680} value={width} onChange={(e) => setWidth(Number(e.target.value) || 1280)} />
-                </label>
-                <label className="text-[11px] text-slate-400">
-                  FPS cap
-                  <input className={input} type="number" min={1} max={60} value={fps} onChange={(e) => setFps(Number(e.target.value) || 30)} />
-                </label>
-                <label className="text-[11px] text-slate-400">
-                  CRF quality (lower = better)
-                  <input className={input} type="number" min={0} max={51} value={quality} onChange={(e) => setQuality(Number(e.target.value) || 22)} />
-                </label>
+            {uploaded.map((file) => {
+              const availablePresets = presets.filter((preset) =>
+                preset.kind === file.probe.kind || (file.probe.kind === "video" && preset.kind === "audio"),
+              );
+              const selected = availablePresets.find((preset) => preset.id === file.presetId);
+              return (
+                <div key={file.path} className="rounded-xl border border-amber-400/15 bg-amber-400/5 p-3 text-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="break-all font-bold text-white">{file.name}<span className="ml-2 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300">{file.probe.kind}</span></p>
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {fmtBytes(file.size)}
+                        {file.probe.durationSec !== null && ` · ${fmtDuration(file.probe.durationSec)}`}
+                        {file.probe.width !== null && ` · ${file.probe.width}×${file.probe.height}`}
+                        {file.probe.videoCodec && ` · ${file.probe.videoCodec}`}
+                        {file.probe.audioCodec && ` · audio: ${file.probe.audioCodec}`}
+                      </p>
+                    </div>
+                    <button className="rounded-lg border border-white/15 px-3 py-1 text-xs text-slate-400 hover:text-white disabled:opacity-50" disabled={uploading || converting} onClick={() => void discardPendingUpload(file.path)}>
+                      <Trash2 size={11} className="mr-1 inline" aria-hidden="true" />Remove
+                    </button>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <label className="sr-only" htmlFor={`toolbox-preset-${file.path}`}>Output format for {file.name}</label>
+                    <select id={`toolbox-preset-${file.path}`} className={input} value={file.presetId} disabled={converting} onChange={(e) => setUploadPreset(file.path, e.target.value)}>
+                      {(["video", "audio", "image"] as const).map((group) => {
+                        const choices = availablePresets.filter((preset) => preset.kind === group);
+                        return choices.length ? (
+                          <optgroup key={group} label={group.toUpperCase()}>
+                            {choices.map((preset) => <option key={preset.id} value={preset.id}>{preset.label} → .{preset.targetExt}</option>)}
+                          </optgroup>
+                        ) : null;
+                      })}
+                      {file.probe.kind === "video" && <optgroup label="CUSTOM"><option value="custom">Custom H.264</option></optgroup>}
+                    </select>
+                  </div>
+                  {selected && <p className="mt-2 text-[11px] leading-5 text-slate-400">{selected.description}{selected.notes ? ` — ${selected.notes}` : ""}</p>}
+                </div>
+              );
+            })}
+            {uploaded.some((file) => file.presetId === "custom") && (
+              <div className="grid gap-2 rounded-xl border border-white/10 p-3 sm:grid-cols-3">
+                <label className="text-[11px] text-slate-400">Width cap<input className={input} type="number" min={16} max={7680} value={width} onChange={(e) => setWidth(Number(e.target.value) || 1280)} /></label>
+                <label className="text-[11px] text-slate-400">FPS cap<input className={input} type="number" min={1} max={60} value={fps} onChange={(e) => setFps(Number(e.target.value) || 30)} /></label>
+                <label className="text-[11px] text-slate-400">CRF quality (lower = better)<input className={input} type="number" min={0} max={51} value={quality} onChange={(e) => setQuality(Number(e.target.value) || 22)} /></label>
               </div>
             )}
+            <button className={button} disabled={converting || uploading || uploaded.length === 0 || jobs.length >= maxJobs} onClick={() => void convert()}>
+              {converting ? "Queuing…" : `Queue all ${uploaded.length} conversion${uploaded.length === 1 ? "" : "s"}`}
+            </button>
           </div>
         )}
         {message && <p className="mt-2 break-words text-xs text-amber-300">{message}</p>}
