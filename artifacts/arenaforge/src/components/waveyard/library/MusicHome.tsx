@@ -346,6 +346,7 @@ export function MusicHome() {
   const [audioBackupBusy, setAudioBackupBusy] = useState(false);
   const [audioBackupMessage, setAudioBackupMessage] = useState<string | null>(null);
   const [streamingBackupsOpen, setStreamingBackupsOpen] = useState(false);
+  const streamingBackupsRef = useRef<HTMLDetailsElement | null>(null);
   const dragDepth = useRef(0);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const trackRequestVersion = useRef(0);
@@ -1205,6 +1206,25 @@ export function MusicHome() {
       <section className="library-hero" aria-label="Your music">
         <div>
           <h1>Your library</h1>
+          <div className="library-backup-shortcut">
+            <button
+              type="button"
+              className="button secondary"
+              aria-controls="apple-music-metadata-backup"
+              aria-expanded={streamingBackupsOpen}
+              onClick={() => {
+                setStreamingBackupsOpen(true);
+                requestAnimationFrame(() => {
+                  const details = streamingBackupsRef.current;
+                  details?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  details?.querySelector("summary")?.focus({ preventScroll: true });
+                });
+              }}
+            >
+              Apple Music catalog backup
+            </button>
+            <small>Metadata only; local-file audio ZIP stays separate.</small>
+          </div>
           <label className="add-music" id="waveyard-add-music">
             <input
               aria-label="Add music files"
@@ -1433,11 +1453,14 @@ export function MusicHome() {
         />
         <details
           className="library-streaming-backups"
+          id="apple-music-metadata-backup"
+          ref={streamingBackupsRef}
+          open={streamingBackupsOpen}
           onToggle={(event) => setStreamingBackupsOpen(event.currentTarget.open)}
         >
           <summary>Apple Music metadata snapshots (CSV, XML, JSON)</summary>
           <p className="library-backup-note">
-            Import a CSV, XML or JSON library metadata snapshot, then download it as CSV or JSON. This saves track and playlist details only; it does not copy Apple Music subscription audio.
+            Import a CSV, XML or JSON library metadata snapshot, then download it as CSV or JSON. This backs up track and playlist metadata only—not protected Apple Music subscription audio. Use the separate “Back up local audio” controls above for exact originals stored in Waveyard.
           </p>
           {streamingBackupsOpen && (
             <ConnectedLibraries

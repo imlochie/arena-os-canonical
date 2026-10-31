@@ -883,9 +883,49 @@ try {
   assert.deepEqual(audioBackupDownloadIds, [recoveryTrack.id], "the browser downloads the selected original file archive");
   await page.getByRole("status").filter({ hasText: "CSV manifest" }).waitFor();
   report.push("Library audio backup preflights selected files and starts a streaming ZIP download with a CSV manifest.");
-  await page.getByText("Apple Music metadata snapshots (CSV, XML, JSON)", { exact: true }).click();
+  const appleBackupShortcut = page.getByRole("button", { name: "Apple Music catalog backup", exact: true });
+  const appleCatalogDesktopViewport = page.viewportSize();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const appleShortcutLayout = await appleBackupShortcut.evaluate((button) => {
+    const rect = button.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      viewportWidth: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportHeight: window.innerHeight,
+    };
+  });
+  assert(appleShortcutLayout.top >= 0 && appleShortcutLayout.bottom <= appleShortcutLayout.viewportHeight,
+    "Apple catalog shortcut is visible in the phone-sized first screen");
+  assert(appleShortcutLayout.left >= 0 && appleShortcutLayout.right <= appleShortcutLayout.viewportWidth,
+    "Apple catalog shortcut fits the phone viewport");
+  assert(appleShortcutLayout.documentWidth <= appleShortcutLayout.viewportWidth + 2,
+    "Apple catalog shortcut does not cause horizontal phone overflow");
+  await appleBackupShortcut.focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => {
+    const details = document.getElementById("apple-music-metadata-backup");
+    if (!(details instanceof HTMLDetailsElement) || !details.open) return false;
+    const rect = details.getBoundingClientRect();
+    return rect.bottom > 0 && rect.top < window.innerHeight;
+  });
+  assert.equal(await appleBackupShortcut.getAttribute("aria-expanded"), "true",
+    "keyboard activation opens the Apple catalog backup disclosure");
+  assert.equal(
+    await page.locator("#apple-music-metadata-backup > summary").evaluate((summary) => document.activeElement === summary),
+    true,
+    "keyboard activation moves focus to the opened Apple catalog controls",
+  );
+  await page.setViewportSize(appleCatalogDesktopViewport ?? { width: 1280, height: 900 });
   await page.getByTestId("connected-libraries").waitFor();
   await page.getByText("Direct Apple Music sign-in is not wired", { exact: false }).waitFor();
+  await page.getByText(/backs up track and playlist metadata only—not protected Apple Music subscription audio/).waitFor();
+  report.push("The Apple catalog shortcut is visible and fits on a phone, and keyboard activation opens and scrolls to metadata-only controls.");
   const appleBackupInput = page.getByLabel("Import Apple Music backup");
   assert.equal(
     await appleBackupInput.getAttribute("accept"),
