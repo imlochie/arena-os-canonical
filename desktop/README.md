@@ -190,6 +190,25 @@ port fails explicitly instead of silently changing the app's browser origin.
 Existing databases are never deleted or reinitialised to fix startup errors.
 The bundled PostgreSQL major remains 16 to match the retained desktop runtime.
 
+### Arena database backup and restore
+
+Use the desktop app's **Data** menu to create or restore an Arena database
+backup. Creating a backup pauses Arena, confirms a clean PostgreSQL shutdown,
+copies the database cluster, and verifies every copied file before restarting.
+If PostgreSQL's process state cannot be confirmed, the backup is refused.
+
+The backup contains Arena's PostgreSQL records and the matching database
+credential encrypted with a passphrase you choose (minimum 12 characters).
+Arena does not save that passphrase; it is required for restore. Store the
+backup and passphrase separately and securely. Restore verifies the backup and
+credential, requires a new empty data folder, and starts Arena from that folder;
+the existing data folder is left in place.
+
+This is a database backup only. It does **not** include Waveyard audio/storage,
+downloaded models, browser profiles, workspace files, or other local files.
+Those folders need their own backup if they must be preserved. The app states
+this scope in both backup and restore dialogs.
+
 The package includes ONNX Runtime's CPU engine and the Windows x64 DirectML
 runtime dependencies (`DirectML.dll`, DXCompiler, and DXIL) for Waveyard's local
 separator, plus a pinned Windows x64 LGPL shared FFmpeg/FFprobe build for

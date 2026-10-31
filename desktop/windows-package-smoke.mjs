@@ -7,11 +7,12 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron } from "playwright-core";
+import { createArenaBackup, restoreArenaBackup } from "./arena-backup.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outputDir = path.resolve(
@@ -28,6 +29,7 @@ const checkIds = [
   "bundled_ffprobe_resolves",
   "waveyard_capture_host_loads",
   "waveyard_capture_runtime_wired",
+  "database_backup_restore_round_trip",
 ];
 const report = {
   passed: false,
@@ -41,6 +43,8 @@ const report = {
 let activeCheck = null;
 let dataRoot = null;
 let desktop = null;
+let restoreRoot = null;
+let backupDir = null;
 
 function begin(id) {
   activeCheck = id;
@@ -148,6 +152,54 @@ async function run() {
   assert.equal(typeof captureOptions.storage.canRecord, "boolean");
   pass("waveyard_capture_runtime_wired");
 
+  begin("database_backup_restore_round_trip");
+  const sentinelTitle = `Backup round trip ${Date.now()}`;
+  const createdSpace = await page.request.post(`${base}/api/spaces`, {
+    data: { title: sentinelTitle, prompt: "Windows package backup acceptance record" },
+    timeout: 20_000,
+  });
+  assert.equal(createdSpace.status(), 201);
+  const sentinel = (await createdSpace.json()).space;
+  assert(sentinel?.id);
+  await desktop.close();
+  desktop = null;
+  const databaseCredential = JSON.parse(await readFile(path.join(dataRoot, "runtime/db-password.json"), "utf8"));
+  const backup = await createArenaBackup({
+    root: dataRoot,
+    parentDir: path.dirname(dataRoot),
+    passphrase: "Windows package smoke backup passphrase",
+    databaseStopped: true,
+  });
+  backupDir = backup.backupDir;
+  restoreRoot = await mkdtemp(path.join(os.tmpdir(), "arenaforge-package-restore-"));
+  await rm(restoreRoot, { recursive: true, force: true });
+  await restoreArenaBackup({
+    backupDir,
+    targetRoot: restoreRoot,
+    passphrase: "Windows package smoke backup passphrase",
+  });
+  assert.equal(
+    JSON.parse(await readFile(path.join(restoreRoot, "runtime/db-password.json"), "utf8")).password,
+    databaseCredential.password,
+  );
+  desktop = await _electron.launch({
+    executablePath: executable,
+    timeout: 150_000,
+    env: { ...env, ARENA_DATA_DIR: restoreRoot },
+  });
+  const restoredPage = await desktop.firstWindow({ timeout: 150_000 });
+  await restoredPage.waitForURL("**/spaces", { timeout: 150_000 });
+  const restoredSpacesResponse = await restoredPage.request.get(`${new URL(restoredPage.url()).origin}/api/spaces`, {
+    timeout: 20_000,
+  });
+  assert(restoredSpacesResponse.ok());
+  const restoredSpaces = await restoredSpacesResponse.json();
+  assert(
+    restoredSpaces.spaces.some(space => space.id === sentinel.id && space.title === sentinelTitle),
+    "Arena must start with the restored database and return the preserved record",
+  );
+  pass("database_backup_restore_round_trip");
+
   report.passed = true;
 }
 
@@ -167,6 +219,10 @@ try {
   if (desktop) await desktop.close().catch(() => {});
   if (dataRoot)
     await rm(dataRoot, { recursive: true, force: true }).catch(() => {});
+  if (restoreRoot)
+    await rm(restoreRoot, { recursive: true, force: true }).catch(() => {});
+  if (backupDir)
+    await rm(backupDir, { recursive: true, force: true }).catch(() => {});
   await mkdir(outputDir, { recursive: true });
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   console.log("Result: generated-artifacts/windows-package-smoke/result.json");

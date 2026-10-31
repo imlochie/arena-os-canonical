@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { dataRoot } from "./data-paths.mjs";
 import { DesktopDatabase } from "./database.mjs";
+import { createArenaBackup, restoreArenaBackup, verifyArenaBackup } from "./arena-backup.mjs";
 import { killProcessTree } from "./process-tree.mjs";
 import { stopBeforeQuit } from "./shutdown.mjs";
 
@@ -60,6 +61,187 @@ async function stop() {
     }
   }
   await database?.stop();
+}
+
+function passphraseDialog({ title, description, confirm = false }) {
+  const prompt = new BrowserWindow({
+    parent: window,
+    modal: true,
+    width: 440,
+    height: confirm ? 370 : 320,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title,
+    webPreferences: {
+      preload: path.join(__dirname, "backup-preload.cjs"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  const confirmField = confirm
+    ? '<label>Confirm passphrase<input id="confirm" type="password" autocomplete="new-password" required></label>'
+    : "";
+  const html = `<!doctype html><meta charset="utf-8"><title>${title}</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;padding:24px;background:#111820;color:#f4f3ed;font:14px system-ui}
+    p{color:#b7c0c7;line-height:1.5}label{display:grid;gap:7px;margin-top:17px;color:#d7dedf}
+    input{width:100%;padding:11px;border:1px solid #46545c;border-radius:7px;background:#0b1015;color:white;font:inherit}
+    footer{display:flex;justify-content:flex-end;gap:9px;margin-top:22px}button{padding:9px 16px;border:1px solid #46545c;border-radius:7px;background:#1b252d;color:#fff;font:inherit}
+    button[type=submit]{background:#a6e85c;color:#12200b;border-color:#a6e85c;font-weight:700}#error{color:#ff9b8d;min-height:20px}
+  </style><h2>${title}</h2><p>${description}</p>
+  <form id="form"><label>Backup passphrase<input id="password" type="password" autocomplete="new-password" minlength="12" required></label>
+  ${confirmField}<p id="error" role="alert"></p><footer><button id="cancel" type="button">Cancel</button><button type="submit">Continue</button></footer></form>
+  <script>
+    const form=document.getElementById("form"), password=document.getElementById("password");
+    document.getElementById("cancel").onclick=()=>window.arenaBackupDialog.cancel();
+    form.onsubmit=event=>{event.preventDefault();const value=password.value;
+      if(value.length<12){document.getElementById("error").textContent="Use at least 12 characters.";return;}
+      ${confirm ? 'if(value!==document.getElementById("confirm").value){document.getElementById("error").textContent="The passphrases do not match.";return;}' : ""}
+      window.arenaBackupDialog.submit(value);
+    };
+    password.focus();
+  </script>`;
+  prompt.setMenuBarVisibility(false);
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      ipcMain.removeListener("arena-backup-passphrase", onSubmit);
+      ipcMain.removeListener("arena-backup-cancel", onCancel);
+      if (!prompt.isDestroyed()) prompt.close();
+      resolve(value);
+    };
+    const onSubmit = (event, value) => {
+      if (event.sender !== prompt.webContents || typeof value !== "string" || value.length < 12) return;
+      finish(value);
+    };
+    const onCancel = event => {
+      if (event.sender === prompt.webContents) finish(null);
+    };
+    ipcMain.on("arena-backup-passphrase", onSubmit);
+    ipcMain.on("arena-backup-cancel", onCancel);
+    prompt.once("closed", () => finish(null));
+    void prompt.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  });
+}
+
+function relaunch(dataDir = null) {
+  const env = { ...process.env };
+  if (dataDir) env.ARENA_DATA_DIR = dataDir;
+  app.relaunch({ env });
+  stopping = true;
+  app.exit(0);
+}
+
+function setDataMenu(root) {
+  const backup = async () => {
+    const folder = await dialog.showOpenDialog(window, {
+      title: "Choose where to save the Arena backup",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (folder.canceled || !folder.filePaths[0]) return;
+    const passphrase = await passphraseDialog({
+      title: "Protect the Arena backup",
+      description: "This passphrase encrypts the matching database credential. Arena does not save it. You will need it to restore.",
+      confirm: true,
+    });
+    if (!passphrase) return;
+    const confirmation = await dialog.showMessageBox(window, {
+      type: "warning",
+      title: "Create Arena data backup",
+      message: "Arena will pause and restart to make a safe database copy.",
+      detail: "Includes Arena database records and the encrypted matching database credential. Excludes Waveyard audio and other files, downloaded models, and browser profiles.",
+      buttons: ["Create backup", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (confirmation.response !== 0) return;
+    try {
+      await stop();
+      const result = await createArenaBackup({
+        root,
+        parentDir: folder.filePaths[0],
+        passphrase,
+        databaseStopped: true,
+      });
+      await dialog.showMessageBox({
+        type: "info",
+        title: "Arena backup verified",
+        message: "The database backup was verified file by file.",
+        detail: `${result.backupDir}\n\nRestarting Arena now. Keep the backup passphrase safe.`,
+      });
+      relaunch();
+    } catch (error) {
+      dialog.showErrorBox("Arena backup failed", `${error.message}\n\nNo live database was copied. Arena will restart with the original data.`);
+      relaunch();
+    }
+  };
+
+  const restore = async () => {
+    const selected = await dialog.showOpenDialog(window, {
+      title: "Select a verified Arena backup folder",
+      properties: ["openDirectory"],
+    });
+    if (selected.canceled || !selected.filePaths[0]) return;
+    try {
+      const check = await verifyArenaBackup(selected.filePaths[0]);
+      if (!check.ok) throw new Error(`Backup verification failed: ${check.mismatches.slice(0, 5).join("; ")}`);
+    } catch (error) {
+      dialog.showErrorBox("Arena backup could not be verified", error.message);
+      return;
+    }
+    const target = await dialog.showOpenDialog(window, {
+      title: "Choose a new, empty Arena data folder",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (target.canceled || !target.filePaths[0]) return;
+    const passphrase = await passphraseDialog({
+      title: "Unlock the Arena backup",
+      description: "Enter the passphrase used when this backup was created. The backup only contains database records and its matching credential; Waveyard files and browser profiles are not included.",
+    });
+    if (!passphrase) return;
+    const confirmation = await dialog.showMessageBox(window, {
+      type: "warning",
+      title: "Restore into a new data folder",
+      message: "Arena will stop and restart using the selected folder.",
+      detail: `Restore target: ${target.filePaths[0]}\nThe current Arena data folder will not be overwritten. The destination must be empty.`,
+      buttons: ["Restore and restart", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (confirmation.response !== 0) return;
+    let stopped = false;
+    try {
+      await stop();
+      stopped = true;
+      const result = await restoreArenaBackup({
+        backupDir: selected.filePaths[0],
+        targetRoot: target.filePaths[0],
+        passphrase,
+      });
+      await dialog.showMessageBox({
+        type: "info",
+        title: "Arena data restored",
+        message: "The backup and restored database files were verified.",
+        detail: `PostgreSQL ${result.pgVersion}; ${result.fileCount} database files.\nRestarting Arena with the restored data folder now.`,
+      });
+      relaunch(result.targetRoot);
+    } catch (error) {
+      dialog.showErrorBox("Arena restore failed", `${error.message}\n\nThe current data folder was not overwritten.`);
+      if (stopped) relaunch();
+    }
+  };
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate([{
+    label: "Data",
+    submenu: [
+      { label: "Create encrypted database backup…", click: () => void backup() },
+      { label: "Restore backup to a new data folder…", click: () => void restore() },
+    ],
+  }]));
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -179,4 +361,5 @@ async function start() {
   // A normal launch never enables remote debugging. Acceptance is explicit.
   log("runtime", `ready; platform=${process.platform}; version=${app.getVersion()}; data=${root}`);
   await window.loadURL(`${origin}/spaces`);
+  setDataMenu(root);
 }

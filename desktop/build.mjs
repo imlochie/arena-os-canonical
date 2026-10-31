@@ -207,6 +207,10 @@ async function main() {
     bundle: true, platform: "node", format: "cjs",
     external: ["electron", "pg-native"], target: "node22",
   });
+  await build({
+    entryPoints: [path.join(here, "backup-preload.mjs")], outfile: path.join(here, "dist/backup-preload.cjs"),
+    bundle: true, platform: "node", format: "cjs", external: ["electron"], target: "node22",
+  });
   await recordBuildSpacePhase("staging-ready");
 }
 
