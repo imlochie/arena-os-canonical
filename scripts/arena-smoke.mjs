@@ -502,6 +502,7 @@ try {
     transition: { mode: "manual", crossfadeSeconds: 1, keepStems: ["drums"] },
     analysis: { bpm: 120, musicalKey: "C major", beatGridMs: [0, 500, 1000, 1500] },
   };
+  let rejectUpcomingMode = false;
   const liveNextItem = {
     id: "arena-smoke-live-next-session-track",
     position: 1,
@@ -725,6 +726,11 @@ try {
         }),
       });
     } else if (url.pathname.startsWith(`/api/library/sessions/${liveSessionId}/tracks/`) && route.request().method() === "PATCH") {
+      if (rejectUpcomingMode && url.pathname.endsWith(liveNextItem.id)) {
+        rejectUpcomingMode = false;
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Fixture save outage" }) });
+        return;
+      }
       const itemId = url.pathname.split("/").at(-1);
       const item = liveSessionTracks.find(candidate => candidate.id === itemId);
       assert(item, `Cannot persist a mix for missing session item ${itemId}`);
@@ -1542,6 +1548,8 @@ try {
   report.push("Multi-file library imports show progress, upload two-at-a-time, and load the first selected file into the mixer.");
 
   mockLiveSessionActive = true;
+  liveNextItem.sourceAssetId = liveNextVocalsAssetId;
+  liveSessionTracks.push(liveNextItem);
   await page.evaluate((id) => localStorage.setItem("waveyard.listening.sessionId", id), liveSessionId);
   const errorsBeforeLiveSwap = errors.length;
   await page.goto(`${base}/waveyard/session/${liveSessionId}`, { waitUntil: "domcontentloaded" });
@@ -1554,6 +1562,35 @@ try {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
   }, liveVocalsAssetId, { timeout: 12_000 });
+  await page.getByText(`Session order · ${liveSessionTracks.length}`, { exact: true }).click();
+  const upcomingMode = page.getByTestId(`session-playback-mode-${liveNextItem.id}`);
+  await page.evaluate((assetId) => {
+    window.__modePrepAudio = document.querySelector(`audio[src$="/${assetId}"]`);
+    window.__modePrepTime = window.__modePrepAudio.currentTime;
+    window.__modePrepInterruptions = 0;
+    for (const name of ["pause", "emptied", "loadstart"]) {
+      window.__modePrepAudio.addEventListener(name, () => { window.__modePrepInterruptions++; });
+    }
+  }, liveVocalsAssetId);
+  rejectUpcomingMode = true;
+  await upcomingMode.selectOption("source");
+  await page.getByTestId("session-status").filter({ hasText: "Could not save the playback mode" }).waitFor();
+  assert.equal(await upcomingMode.inputValue(), "stems", "failed saves must not pretend the choice was saved");
+  await upcomingMode.selectOption("source");
+  await page.getByTestId("session-status").filter({ hasText: "Full track saved" }).waitFor();
+  assert.equal(liveNextItem.playbackPreference, "source");
+  assert.equal(liveCurrentItem.playbackPreference, null, "upcoming preparation must not alter the current entry");
+  await upcomingMode.selectOption("stems");
+  await page.getByTestId("session-status").filter({ hasText: "Stems saved" }).waitFor();
+  assert.equal(liveNextItem.playbackPreference, "stems");
+  assert.equal(await page.evaluate((assetId) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio === window.__modePrepAudio && !audio.paused
+      && audio.currentTime > window.__modePrepTime && window.__modePrepInterruptions === 0;
+  }, liveVocalsAssetId), true, "preparing the next entry must retain the audible element and advancing playback");
+  report.push("Upcoming full-track/stems choices save per entry, survive a rejected save/retry, and leave current audio advancing without pause/load events.");
+  liveSessionTracks.splice(liveSessionTracks.indexOf(liveNextItem), 1);
+  liveNextItem.sourceAssetId = null;
   await page.getByTestId(`button-return-full-track-${liveSessionTrackId}`).click();
   await page.getByTestId("session-status").filter({ hasText: "Returned to the full track" }).waitFor({ timeout: 8_000 });
   assert.equal(liveCurrentItem.playbackPreference, "source", "returning to the full track must save the per-session choice");
@@ -3312,6 +3349,9 @@ try {
     await page.getByRole("alert").getByText(`This ROM could not be started: Unsupported mapper: ${mapper}`, { exact: true }).waitFor({ timeout: 10000 });
     assert.equal(await page.getByRole("tab", { name: "Import and emulate" }).count(), 1, `Mapper ${mapper} failure must not stop the page`);
     await page.getByRole("button", { name: `Remove unsupported-mapper-${mapper}.nes` }).click();
+    // Removal saves the shelf asynchronously, then clears its error. Do not
+    // let that late cleanup erase the next import's expected validation error.
+    await page.getByRole("button", { name: `Remove unsupported-mapper-${mapper}.nes` }).waitFor({ state: "detached" });
   }
   await page.locator('input[accept=".nes,application/octet-stream"]').setInputFiles({
     name: "malformed-homebrew.nes",

@@ -910,6 +910,14 @@ test("session: per-track stem mix and transition persist and round-trip", async 
   const reopened = await sessions.getSession(OWNER, created.id);
   assert.equal(reopened.tracks[0].playbackPreference, "stems");
   assert.equal(reopened.tracks[0].playback?.kind, "stems", "fresh session reads restore the selected playback mode");
+  const withDuplicate = await sessions.addTrackToSession({ ownerId: OWNER, sessionId: created.id, trackId: trackA.id });
+  const upcomingId = withDuplicate.tracks[1].id;
+  await sessions.updateSessionTrack(OWNER, created.id, upcomingId, { playbackPreference: "source" });
+  const prepared = await sessions.getSession(OWNER, created.id);
+  assert.equal(prepared.tracks[0].playbackPreference, "stems", "preparing a duplicate song must not change the other session entry");
+  assert.equal(prepared.tracks[1].playbackPreference, "source", "upcoming entries can be prepared before loading a deck");
+  assert.equal(prepared.currentSessionTrackId, reopened.currentSessionTrackId, "preparation must not move the session play pointer");
+  assert.equal(prepared.positionSeconds, reopened.positionSeconds, "preparation must not seek the session");
   await assert.rejects(
     () => sessions.updateSessionTrack(OWNER, created.id, detail.tracks[0].id, { playbackPreference: "invalid" }),
     /playback preference is invalid/i,

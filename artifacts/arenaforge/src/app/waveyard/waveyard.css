@@ -761,7 +761,10 @@
 .sess-queue-jump:hover{color:var(--acid)}
 .sess-queue-jump small{display:block;color:var(--muted);font-size:11px}
 .sess-queue-pos{font:11px ui-monospace,monospace;color:var(--muted)}
-.sess-queue-actions{display:flex;gap:4px}
+.sess-queue-actions{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+.sess-queue-mode{display:flex;align-items:center;gap:6px;font-size:12px}
+.sess-queue-mode select{min-height:36px;max-width:140px}
+@media(max-width:640px){.sess-queue-item{flex-wrap:wrap}.sess-queue-actions{padding:0 8px 8px 32px}}
 .sess-queue-add{border-top:1px solid var(--line);padding-top:10px;display:grid;gap:8px;font-size:12px;color:var(--muted)}
 .sess-queue-add-row{display:flex;gap:8px}
 .sess-queue-add select{flex:1;background:#11130e;border:1px solid var(--line);color:var(--ink);padding:6px 8px;font-size:13px;min-width:0}

@@ -895,6 +895,8 @@ export default function SessionExperience({
   const [addTrackId, setAddTrackId] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
+  const modeSavesRef = useRef(new Set<string>());
+  const [modeSaves, setModeSaves] = useState<Set<string>>(() => new Set());
   const [mixSaveError, setMixSaveError] = useState(false);
   const [handoff, setHandoff] = useState<{
     projectId: string;
@@ -2507,6 +2509,59 @@ export default function SessionExperience({
     }
   }, [stemsReady, deckItems, mixes]);
 
+  // Preparation changes only this entry, never the server's whole session
+  // snapshot: replacing that snapshot could reload an unrelated audible deck.
+  const chooseUpcomingMode = useCallback(async (itemId: string, preference: "source" | "stems") => {
+    const s = sessionRef.current;
+    const item = s?.tracks.find((track) => track.id === itemId);
+    if (!s || !item || !item.sourceAssetId || !stemsPlaybackTarget(item)
+      || itemId === currentIdRef.current || fadeRef.current !== null) return;
+    const key = `${s.id}:${itemId}`;
+    if (modeSavesRef.current.has(key)) return;
+    modeSavesRef.current.add(key);
+    setModeSaves(new Set(modeSavesRef.current));
+    try {
+      const response = await fetch(`/api/library/sessions/${s.id}/tracks/${itemId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ playbackPreference: preference }),
+      });
+      if (!response.ok) throw new Error("The playback choice could not be saved.");
+      const detail = (await response.json()).session as SessionDetail;
+      const saved = detail.tracks.find((track) => track.id === itemId);
+      if (!saved || saved.playbackPreference !== preference) throw new Error("The playback choice was not confirmed.");
+      publishWaveyardQueueChange([s.id]);
+      const latest = sessionRef.current;
+      if (!latest || latest.id !== s.id || !latest.tracks.some((track) => track.id === itemId)) return;
+      const protectedEntry = itemId === currentIdRef.current || fadeRef.current !== null
+        || decksRef.current.some((deck, index) => deck?.transport.playing && deckItems[index]?.id === itemId);
+      const next = { ...latest, tracks: latest.tracks.map((track) => track.id !== itemId ? track : {
+        ...track,
+        playbackPreference: saved.playbackPreference,
+        ...(protectedEntry ? {} : { playback: saved.playback }),
+      }) };
+      sessionRef.current = next;
+      setSession(next);
+      if (!protectedEntry) {
+        setStemsReady((previous) => {
+          const targets = { ...previous };
+          delete targets[itemId];
+          if (preference === "source") {
+            const target = stemsPlaybackTarget(saved);
+            if (target) targets[itemId] = target;
+          }
+          return targets;
+        });
+      }
+      setStatus(`${preference === "source" ? "Full track" : "Stems"} saved for “${item.track.title}”${protectedEntry ? " for its next load; current playback is unchanged" : ""}.`);
+    } catch {
+      if (sessionRef.current?.id === s.id) setStatus(`Could not save the playback mode for “${item.track.title}”. Try again; playback is unchanged.`);
+    } finally {
+      modeSavesRef.current.delete(key);
+      setModeSaves(new Set(modeSavesRef.current));
+    }
+  }, [deckItems]);
+
   const returnToFullTrack = useCallback(async (itemId: string) => {
     const s = sessionRef.current;
     const item = s?.tracks.find((track) => track.id === itemId);
@@ -3334,6 +3389,22 @@ export default function SessionExperience({
                   </span>
                 </button>
                 <span className="sess-queue-actions">
+                  {item.id !== currentItem?.id && item.sourceAssetId !== null && stemsPlaybackTarget(item) !== null && (
+                    <label className="sess-queue-mode">
+                      <span>Playback</span>
+                      <select
+                        aria-label={`Playback mode for ${item.track.title}, entry ${index + 1}`}
+                        data-testid={`session-playback-mode-${item.id}`}
+                        value={item.playbackPreference ?? item.playback?.kind ?? "stems"}
+                        disabled={phase === "fading" || modeSaves.has(`${session.id}:${item.id}`)}
+                        aria-busy={modeSaves.has(`${session.id}:${item.id}`)}
+                        onChange={(event) => void chooseUpcomingMode(item.id, event.target.value as "source" | "stems")}
+                      >
+                        <option value="source">Full track</option>
+                        <option value="stems">Stems</option>
+                      </select>
+                    </label>
+                  )}
                   <button type="button" className="button tiny" aria-label={`Move ${item.track.title} earlier`} disabled={index === 0} onClick={() => moveTrack(item.id, index - 1)}>Up</button>
                   <button type="button" className="button tiny" aria-label={`Move ${item.track.title} later`} disabled={index === session.tracks.length - 1} onClick={() => moveTrack(item.id, index + 1)}>Down</button>
                   <button type="button" className="button tiny" aria-label={`Remove ${item.track.title}`} onClick={() => removeTrack(item.id)}>Remove</button>
