@@ -167,6 +167,8 @@ export function demixMdxInWorker(
       transferList: [left.buffer, right.buffer],
     });
     let settled = false;
+    let result: WorkerDemixResult | undefined;
+    let workerError: Error | undefined;
     const settle = (callback: () => void) => {
       if (settled) return;
       settled = true;
@@ -179,27 +181,32 @@ export function demixMdxInWorker(
         return;
       }
       if (message.type === "error") {
-        const error =
+        workerError =
           message.errorCode === "SEPARATION_UNAVAILABLE"
             ? new SeparationUnavailableError(String(message.message))
             : new Error(String(message.message));
-        settle(() => rejectResult(error));
         return;
       }
       if (message.type === "result") {
-        settle(() =>
-          resolveResult({
-            separated: message.separated as SeparatedStems,
-            resolvedDevice: String(message.resolvedDevice),
-            timings: message.timings as MdxStageTimings,
-          }),
-        );
+        result = {
+          separated: message.separated as SeparatedStems,
+          resolvedDevice: String(message.resolvedDevice),
+          timings: message.timings as MdxStageTimings,
+        };
       }
     });
-    worker.once("error", (error) => settle(() => rejectResult(error)));
+    worker.once("error", (error) => {
+      workerError = error;
+    });
     worker.once("exit", (code) => {
-      if (!settled) {
-        rejectResult(new Error(`Separation inference worker exited before returning a result (code ${code}).`));
+      if (code !== 0) {
+        settle(() => rejectResult(workerError ?? new Error(`Separation inference worker exited with code ${code}.`)));
+      } else if (workerError) {
+        settle(() => rejectResult(workerError!));
+      } else if (result) {
+        settle(() => resolveResult(result!));
+      } else {
+        settle(() => rejectResult(new Error("Separation inference worker exited before returning a result (code 0).")));
       }
     });
   });

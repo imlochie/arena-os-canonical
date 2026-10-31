@@ -493,6 +493,134 @@ test("the pinned four-model recipe completes through the production worker on re
   }
 });
 
+test("repeated pinned four-model jobs do not keep growing process memory after session release", { timeout: 900_000 }, async (t) => {
+  const arenaRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+  const workspaceRoot = resolve(arenaRoot, "../..");
+  const modelDirectory = join(workspaceRoot, "artifacts/api-server/.data/waveyard-models");
+  for (const spec of FOUR_STEM_MODELS) {
+    const modelPath = join(modelDirectory, spec.file);
+    if (!existsSync(modelPath)) {
+      t.skip(`Pinned ${spec.id} weights are not installed locally.`);
+      return;
+    }
+    assert.equal(await checksumFile(modelPath), spec.sha256, `${spec.id} must match its registry checksum`);
+  }
+
+  const repetitionsText = process.env.WAVEYARD_REAL_ORT_MEMORY_REPETITIONS?.trim() || "7";
+  const repetitions = Number(repetitionsText);
+  assert.ok(
+    Number.isInteger(repetitions) && repetitions >= 6 && repetitions <= 12,
+    "WAVEYARD_REAL_ORT_MEMORY_REPETITIONS must be an integer from 6 to 12",
+  );
+  const warmupJobs = 3;
+
+  const f = await fixture({ model: "stems_4" });
+  let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
+  const forceGc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+  const sampleMemory = async () => {
+    forceGc?.();
+    // Allow native worker teardown and allocator bookkeeping to settle before
+    // sampling. RSS includes native allocations from every worker thread.
+    await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 150));
+    const { rss, heapUsed, external, arrayBuffers } = process.memoryUsage();
+    return { rss, heapUsed, external, arrayBuffers };
+  };
+  const toMiB = (bytes: number) => Number((bytes / (1024 * 1024)).toFixed(1));
+  try {
+    for (const spec of FOUR_STEM_MODELS) {
+      await copyFile(join(modelDirectory, spec.file), join(f.modelsDir, spec.file));
+    }
+    await f.database
+      .update(processingJobs)
+      .set({
+        status: "failed",
+        stage: "failed",
+        errorCode: "separation_unavailable",
+        errorMessage: "Memory measurement run initialized.",
+        completedAt: new Date(),
+      })
+      .where(eq(processingJobs.id, f.job.id));
+
+    harness = createLocalRetryHarness(f.database);
+    const baseline = await sampleMemory();
+    const samples: Awaited<ReturnType<typeof sampleMemory>>[] = [];
+    const startedAt = Date.now();
+    for (let run = 0; run < repetitions; run += 1) {
+      if (run > 0) {
+        // Reuse the same durable job and input while exercising a fresh set of
+        // four production worker sessions for each repetition.
+        await f.database
+          .update(processingJobs)
+          .set({
+            status: "failed",
+            stage: "failed",
+            errorCode: "separation_unavailable",
+            errorMessage: `Memory measurement repetition ${run + 1}.`,
+            completedAt: new Date(),
+          })
+          .where(eq(processingJobs.id, f.job.id));
+      }
+      assert.deepEqual(await retrySeparationJob(f.database, f.job.id), { queued: true });
+      const deadline = Date.now() + 240_000;
+      let job = (await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)))[0];
+      while (
+        (job?.status !== "complete" || harness.broker.stats().succeeded < run + 1) &&
+        job?.status !== "failed" &&
+        Date.now() < deadline
+      ) {
+        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 100));
+        job = (await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id)))[0];
+      }
+      assert.equal(job?.status, "complete", `pinned four-model repetition ${run + 1} completes before timeout`);
+      assert.equal(harness.broker.stats().submitted, run + 1, `repetition ${run + 1} reached the local production worker`);
+      assert.equal(harness.broker.stats().succeeded, run + 1, `repetition ${run + 1} succeeded in the local production worker`);
+      assert.equal(job.status, "complete", `repetition ${run + 1} completes`);
+      const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
+      assert.equal(stems.length, 4, `repetition ${run + 1} persists all four stems`);
+      samples.push(await sampleMemory());
+    }
+
+    // ONNX Runtime and worker-thread allocators can take several jobs to reach
+    // their retained working set. Treat the first three jobs as warm-up, then
+    // compare the final half of steady-state samples with the first steady
+    // sample to distinguish one-time retention from continued growth.
+    const firstSteadySample = samples[warmupJobs]!;
+    const postWarmSamples = samples.slice(warmupJobs);
+    const tailRssValues = postWarmSamples
+      .slice(Math.floor(postWarmSamples.length / 2))
+      .map(({ rss }) => rss)
+      .sort((left, right) => left - right);
+    const middleIndex = Math.floor(tailRssValues.length / 2);
+    const tailMedianRss = tailRssValues.length % 2 === 1
+      ? tailRssValues[middleIndex]!
+      : (tailRssValues[middleIndex - 1]! + tailRssValues[middleIndex]!) / 2;
+    const continuedRssGrowth = tailMedianRss - firstSteadySample.rss;
+    const maxContinuedGrowthBytes = 128 * 1024 * 1024;
+    assert.ok(
+      continuedRssGrowth <= maxContinuedGrowthBytes,
+      `RSS continued growing by ${toMiB(continuedRssGrowth)} MiB after warm-up; ` +
+        `allowed ${toMiB(maxContinuedGrowthBytes)} MiB across ${postWarmSamples.length - 1} further jobs. ` +
+        `Samples: ${samples.map(({ rss }) => `${toMiB(rss)} MiB`).join(" → ")}`,
+    );
+
+    t.diagnostic(
+      `Pinned four-model memory run: ${repetitions} completed jobs in ${Date.now() - startedAt} ms; ` +
+        `RSS baseline ${toMiB(baseline.rss)} MiB; post-job RSS ${samples.map(({ rss }) => toMiB(rss)).join(" → ")} MiB; ` +
+        `${warmupJobs} warm-up jobs retained ${toMiB(samples[warmupJobs - 1]!.rss - baseline.rss)} MiB; ` +
+        `first steady RSS ${toMiB(firstSteadySample.rss)} MiB; ` +
+        `final-half median RSS ${toMiB(tailMedianRss)} MiB; continued growth ${toMiB(continuedRssGrowth)} MiB ` +
+        `(limit ${toMiB(maxContinuedGrowthBytes)} MiB); ` +
+        `heapUsed ${samples.map(({ heapUsed }) => toMiB(heapUsed)).join(" → ")} MiB; ` +
+        `external ${samples.map(({ external }) => toMiB(external)).join(" → ")} MiB; ` +
+        `arrayBuffers ${samples.map(({ arrayBuffers }) => toMiB(arrayBuffers)).join(" → ")} MiB; ` +
+        `explicit GC ${forceGc ? "available" : "unavailable"}.`,
+    );
+  } finally {
+    await harness?.restore();
+    await f.close();
+  }
+});
+
 // Opt-in real-audio measurement. Arena decodes supported local audio formats
 // into 44.1 kHz stereo PCM, then bounds processing to a 2–20 second excerpt.
 const realAudioInputPath =

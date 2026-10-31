@@ -68,6 +68,13 @@ async function run() {
     );
   }
 
+  let response:
+    | {
+        separated: Awaited<ReturnType<typeof demixMdx>>;
+        resolvedDevice: string;
+        timings: MdxStageTimings | undefined;
+      }
+    | undefined;
   try {
     let timings: MdxStageTimings | undefined;
     const separated = await demixMdx(
@@ -79,15 +86,21 @@ async function run() {
         timings = measured;
       },
     );
-    const transfers = [
-      separated.primary[0].buffer,
-      separated.primary[1].buffer,
-      separated.secondary[0].buffer,
-      separated.secondary[1].buffer,
-    ];
-    port.postMessage({ type: "result", separated, resolvedDevice, timings }, transfers);
+    response = { separated, resolvedDevice, timings };
   } finally {
+    // Do not signal completion until the native session is released. The
+    // parent runs recipe models sequentially and waits for this worker to
+    // exit before opening the next session.
     await session.release();
+  }
+  if (response) {
+    const transfers = [
+      response.separated.primary[0].buffer,
+      response.separated.primary[1].buffer,
+      response.separated.secondary[0].buffer,
+      response.separated.secondary[1].buffer,
+    ];
+    port.postMessage({ type: "result", ...response }, transfers);
   }
 }
 
