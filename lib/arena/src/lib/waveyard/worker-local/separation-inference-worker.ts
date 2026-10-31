@@ -10,6 +10,7 @@ import {
   verifyModelFile,
   type MdxSessionLike,
 } from "@workspace/arena/lib/waveyard/separation/session";
+import type { MdxStageTimings } from "@workspace/arena/lib/waveyard/separation/mdx";
 
 type RequestData = {
   spec: MdxModelSpec;
@@ -44,8 +45,11 @@ async function run() {
         // ordinary API work. The full JS demix pipeline also stays off-thread.
         intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         interOpNumThreads: 1,
-        enableCpuMemArena: false,
-        enableMemPattern: false,
+        // All model calls use fixed tensor dimensions. ONNX Runtime's arena
+        // and memory pattern reuse buffers across chunks instead of allocating
+        // them repeatedly.
+        enableCpuMemArena: true,
+        enableMemPattern: true,
       });
       resolvedDevice = executionProviders[0];
       break;
@@ -62,11 +66,15 @@ async function run() {
   }
 
   try {
+    let timings: MdxStageTimings | undefined;
     const separated = await demixMdx(
       [new Float32Array(request.left), new Float32Array(request.right)],
       request.spec,
       sessionInfer(session, (type, data, dims) => new ort.Tensor(type, data, dims)),
       (done, total) => port.postMessage({ type: "progress", done, total }),
+      (measured) => {
+        timings = measured;
+      },
     );
     const transfers = [
       separated.primary[0].buffer,
@@ -74,7 +82,7 @@ async function run() {
       separated.secondary[0].buffer,
       separated.secondary[1].buffer,
     ];
-    port.postMessage({ type: "result", separated, resolvedDevice }, transfers);
+    port.postMessage({ type: "result", separated, resolvedDevice, timings }, transfers);
   } finally {
     await session.release();
   }

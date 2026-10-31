@@ -46,6 +46,7 @@ import {
   demixMdx,
   findMdxModel,
   findSeparationRecipe,
+  type MdxStageTimings,
   type MdxInfer,
   type MdxModelSpec,
   type SeparatedStems,
@@ -74,6 +75,8 @@ export type SeparationHandlerDeps = {
   /** The deep pass (owner-prepared Demucs, separation/deep.ts). Injectable
    *  so the e2e test drives the FULL pipeline with a stub engine. */
   runDeep?: typeof runDeepSeparation;
+  /** Measurement seam for worker-side inference stage timings. */
+  onInferenceTiming?: (modelId: string, timings: MdxStageTimings) => void;
 };
 
 export type OpenedEngine = {
@@ -102,8 +105,8 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
         // Leave one CPU available on larger machines for playback and app work.
         intraOpNumThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         interOpNumThreads: 1,
-        enableCpuMemArena: false,
-        enableMemPattern: false,
+        enableCpuMemArena: true,
+        enableMemPattern: true,
       }),
       requestedDevice,
     );
@@ -126,6 +129,7 @@ async function defaultOpenEngine(spec: MdxModelSpec, requestedDevice: "auto" | "
 type WorkerDemixResult = {
   separated: SeparatedStems;
   resolvedDevice: string;
+  timings: MdxStageTimings;
 };
 
 function separationWorkerLocation(): { filename: string } {
@@ -184,6 +188,7 @@ export function demixMdxInWorker(
           resolveResult({
             separated: message.separated as SeparatedStems,
             resolvedDevice: String(message.resolvedDevice),
+            timings: message.timings as MdxStageTimings,
           }),
         );
       }
@@ -604,6 +609,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
                 kind: "chunk",
               });
             });
+            deps.onInferenceTiming?.(modelRun.spec.id, separated.timings);
             resolvedDevice = separated.resolvedDevice;
             for (const run of modelRun.outputs) {
               orderedOutputs.push({
@@ -623,6 +629,7 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
           const engine = await openEngine(modelRun.spec, payload.requestedDevice);
           try {
             resolvedDevice = engine.resolvedDevice;
+            let timings: MdxStageTimings | undefined;
             const separated = await demixMdx([left, right], modelRun.spec, engine.infer, (done, total) => {
               const runFraction = total > 0 ? done / total : 1;
               const percent = Math.floor(((runIndex + runFraction) / modelRuns.length) * 100);
@@ -636,7 +643,10 @@ export async function handleSeparationJob(payloadInput: Record<string, unknown>,
                 model: modelRun.spec.id,
                 kind: "chunk",
               });
+            }, (measured) => {
+              timings = measured;
             });
+            if (timings) deps.onInferenceTiming?.(modelRun.spec.id, timings);
             for (const run of modelRun.outputs) {
               orderedOutputs.push({
                 order: orderByRun.get(run)!,

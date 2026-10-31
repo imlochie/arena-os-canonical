@@ -14,6 +14,9 @@
 
 export type ComplexArray = { re: Float64Array; im: Float64Array };
 
+type TwiddleTable = { cos: Float64Array; sin: Float64Array };
+const twiddleTables = new Map<number, TwiddleTable>();
+
 /** Naive O(n²) DFT — the reference the fast path is tested against. */
 export function naiveDft(input: ComplexArray): ComplexArray {
   const n = input.re.length;
@@ -40,6 +43,26 @@ function smallestPrimeFactor(n: number): number {
     if (n % f === 0) return f;
   }
   return n; // prime
+}
+
+function twiddleTable(n: number, radix: number, subLength: number): TwiddleTable {
+  const cached = twiddleTables.get(n);
+  if (cached) return cached;
+  const cos = new Float64Array(n * radix);
+  const sin = new Float64Array(n * radix);
+  for (let q = 0; q < radix; q += 1) {
+    for (let k = 0; k < subLength; k += 1) {
+      for (let r = 0; r < radix; r += 1) {
+        const index = (q * subLength + k) * radix + r;
+        const angle = (-2 * Math.PI * (r * k)) / n - (2 * Math.PI * (q * r)) / radix;
+        cos[index] = Math.cos(angle);
+        sin[index] = Math.sin(angle);
+      }
+    }
+  }
+  const table = { cos, sin };
+  twiddleTables.set(n, table);
+  return table;
 }
 
 /** In-place recursive mixed-radix Cooley–Tukey FFT on strided data.
@@ -89,15 +112,17 @@ function fftStrided(re: Float64Array, im: Float64Array, n: number, off: number, 
       subIm[r * m + k] = im[off + r * stride + k * f * stride];
     }
   }
+  const twiddles = twiddleTable(n, f, m);
   for (let q = 0; q < f; q += 1) {
     for (let k = 0; k < m; k += 1) {
       let accRe = 0;
       let accIm = 0;
       for (let r = 0; r < f; r += 1) {
-        // w = W_n^{r·k} · W_f^{q·r} = e^{-2πi(rk/n + qr/f)}
-        const angle = -2 * Math.PI * (r * k) / n - 2 * Math.PI * (q * r) / f;
-        const cos = Math.cos(angle);
-        const sin = Math.sin(angle);
+        // w = W_n^{r·k} · W_f^{q·r}; these immutable factors are reused
+        // across every frame and channel in the model's repeated transforms.
+        const twiddleIndex = (q * m + k) * f + r;
+        const cos = twiddles.cos[twiddleIndex]!;
+        const sin = twiddles.sin[twiddleIndex]!;
         const yrRe = subRe[r * m + k];
         const yrIm = subIm[r * m + k];
         accRe += yrRe * cos - yrIm * sin;

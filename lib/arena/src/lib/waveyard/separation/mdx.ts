@@ -194,6 +194,17 @@ export type MdxInfer = (spek: Float32Array, cfg: StftConfig, frames: number) => 
 
 export type ProgressFn = (done: number, total: number) => void;
 
+export type MdxStageTimings = {
+  preprocessingMs: number;
+  stftMs: number;
+  inferenceMs: number;
+  istftMs: number;
+  overlapAddMs: number;
+  reconstructionMs: number;
+  totalMs: number;
+  chunkCount: number;
+};
+
 export interface SeparatedStems {
   /** Planar stereo [-1, 1], original (pre-normalization) scale. */
   primary: Float32Array[];
@@ -251,13 +262,25 @@ export async function demixMdx(
   spec: MdxModelSpec,
   infer: MdxInfer,
   onProgress?: ProgressFn,
+  onTimings?: (timings: MdxStageTimings) => void,
 ): Promise<SeparatedStems> {
+  const totalStartedAt = performance.now();
   const p = spec.params;
   const cfg: StftConfig = { nFft: p.nFft, hop: p.hop, dimF: p.dimF };
   const { chunk, trim, gen, step } = chunkGeometry(p);
   if (gen <= 0) throw new Error(`model ${spec.id}: non-positive gen size (n_fft ${p.nFft} vs chunk ${chunk})`);
 
   const { channels: norm, gain } = normalizePeak(mix);
+  const timings: MdxStageTimings = {
+    preprocessingMs: 0,
+    stftMs: 0,
+    inferenceMs: 0,
+    istftMs: 0,
+    overlapAddMs: 0,
+    reconstructionMs: 0,
+    totalMs: 0,
+    chunkCount: 0,
+  };
   const L = norm[0].length;
   const left = norm[0];
   const right = norm[1];
@@ -278,6 +301,7 @@ export async function demixMdx(
   // chunk gets a shorter window, not a truncation of the full one.
   const useWindow = p.overlap !== 0;
   const windowFull = useWindow ? hannSymmetric(chunk) : null;
+  timings.preprocessingMs = performance.now() - totalStartedAt;
 
   // Reference: total_chunks = (len + step − 1) // step, loop range(0, len, step).
   const total = Math.ceil(paddedLen / step);
@@ -294,7 +318,9 @@ export async function demixMdx(
     cL.set(pLeft.subarray(start, end));
     cR.set(pRight.subarray(start, end));
 
+    let stageStartedAt = performance.now();
     const stft = mdxStft([cL, cR], cfg);
+    timings.stftMs += performance.now() - stageStartedAt;
     // Zero the first three frequency bins (reference: spek[:, :, :3, :] *= 0).
     const rows = 4;
     for (let r = 0; r < rows; r += 1) {
@@ -304,11 +330,16 @@ export async function demixMdx(
       }
     }
 
+    stageStartedAt = performance.now();
     const pred = await infer(stft.data, cfg, stft.frames);
+    timings.inferenceMs += performance.now() - stageStartedAt;
+    stageStartedAt = performance.now();
     const out = mdxIfft(pred, 2, cfg, stft.frames);
+    timings.istftMs += performance.now() - stageStartedAt;
 
     // Weighted overlap-add (reference demix()): windowed when overlapping,
     // plain accumulation when overlap == 0 (divider += 1, no window).
+    stageStartedAt = performance.now();
     if (useWindow) {
       const w = actual === chunk ? windowFull! : hannSymmetric(actual);
       for (let i = 0; i < actual; i += 1) {
@@ -324,6 +355,8 @@ export async function demixMdx(
         divider[start + i] += 1;
       }
     }
+    timings.overlapAddMs += performance.now() - stageStartedAt;
+    timings.chunkCount += 1;
     done += 1;
     onProgress?.(done, total);
   }
@@ -334,6 +367,7 @@ export async function demixMdx(
   const secondaryL = new Float32Array(L);
   const secondaryR = new Float32Array(L);
   const comp = p.compensate;
+  const reconstructionStartedAt = performance.now();
   for (let i = 0; i < L; i += 1) {
     const pos = i + trim;
     const d = divider[pos];
@@ -346,6 +380,9 @@ export async function demixMdx(
     secondaryL[i] = mix[0][i] - vL * comp;
     secondaryR[i] = mix[1][i] - vR * comp;
   }
+  timings.reconstructionMs = performance.now() - reconstructionStartedAt;
+  timings.totalMs = performance.now() - totalStartedAt;
+  onTimings?.(timings);
 
   return {
     primary: [primaryL, primaryR],

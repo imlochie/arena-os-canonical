@@ -58,6 +58,7 @@ import {
   WAVEYARD_ORT_INTRA_OP_THREADS,
 } from "@workspace/arena/lib/waveyard/separation/session";
 import { fixture, payloadOf, SAMPLES, snrDb, type SeparationFixture } from "./separation-fixtures";
+import type { MdxStageTimings } from "@workspace/arena/lib/waveyard/separation/mdx";
 
 const KIM = findMdxModel("kim_vocal_2")!;
 const FOUR_STEM_MODELS = [
@@ -85,7 +86,10 @@ function audioMetrics(samples: Float32Array) {
   };
 }
 
-function createLocalRetryHarness(database: SeparationFixture["database"]) {
+function createLocalRetryHarness(
+  database: SeparationFixture["database"],
+  onInferenceTiming?: (modelId: string, timings: MdxStageTimings) => void,
+) {
   const previousDesktopMode = process.env.ARENA_DESKTOP_MODE;
   const previousRedisUrl = process.env.REDIS_URL;
   process.env.ARENA_DESKTOP_MODE = "1";
@@ -93,7 +97,10 @@ function createLocalRetryHarness(database: SeparationFixture["database"]) {
   resetLocalJobBrokerForTests();
   const broker = getLocalJobBroker();
   broker.register(SEPARATION_QUEUE, (payload) =>
-    handleSeparationJob(payload as Parameters<typeof handleSeparationJob>[0], { db: database }),
+    handleSeparationJob(payload as Parameters<typeof handleSeparationJob>[0], {
+      db: database,
+      onInferenceTiming,
+    }),
   );
   return {
     broker,
@@ -520,6 +527,7 @@ if (realAudioInputPath) {
     const excerptPath = join(excerptDirectory, "excerpt.wav");
     let harness: ReturnType<typeof createLocalRetryHarness> | undefined;
     let fixtureState: SeparationFixture | undefined;
+    const inferenceStageTimings: { model: string; timings: MdxStageTimings }[] = [];
     try {
       await writeFile(excerptPath, processedWav);
       const excerptPreparationMs = Date.now() - excerptPreparationStartedAt;
@@ -540,7 +548,9 @@ if (realAudioInputPath) {
         })
         .where(eq(processingJobs.id, f.job.id));
 
-      harness = createLocalRetryHarness(f.database);
+      harness = createLocalRetryHarness(f.database, (model, timings) => {
+        inferenceStageTimings.push({ model, timings });
+      });
       const modelPassTimings: { phase: string; model: string; elapsedMs: number }[] = [];
       let activePass: { phase: string; model: string; startedAt: number } | null = null;
       let stopSamplingProgress = false;
@@ -608,6 +618,7 @@ if (realAudioInputPath) {
       assert.equal(stems.length, 4, "the recipe persists vocals, drums, bass, and melody");
 
       const measuredStems: Record<string, ReturnType<typeof audioMetrics>> = {};
+      const outputIntegrity: Record<string, { readablePcm16Stereo44100: boolean; correctDuration: boolean; finiteSamples: boolean; inPcmRange: boolean }> = {};
       for (const stem of stems) {
         const storedPath = getStorage().getLocalPath(stem.storageKey);
         assert.ok(storedPath && existsSync(storedPath), `${stem.stemType} output exists in storage`);
@@ -615,11 +626,47 @@ if (realAudioInputPath) {
         assert.ok(decoded, `${stem.stemType} output is a readable WAV`);
         assert.equal(decoded.sampleRate, 44_100);
         assert.equal(decoded.frames, processedFrames, `${stem.stemType} retains the processed excerpt duration`);
+        assert.equal(decoded.channels, 2, `${stem.stemType} remains stereo`);
+        const finiteSamples = decoded.samples.every(Number.isFinite);
+        const inPcmRange = decoded.samples.every((sample) => sample >= -1 && sample <= 1);
+        assert.ok(finiteSamples, `${stem.stemType} contains only finite samples`);
+        assert.ok(inPcmRange, `${stem.stemType} stays within the normalized PCM range`);
         measuredStems[stem.stemType] = audioMetrics(decoded.samples);
         assert.ok(measuredStems[stem.stemType].rmsDbfs > -90, `${stem.stemType} output is not silent`);
+        outputIntegrity[stem.stemType] = {
+          readablePcm16Stereo44100: true,
+          correctDuration: decoded.frames === processedFrames,
+          finiteSamples,
+          inPcmRange,
+        };
       }
+      assert.equal(inferenceStageTimings.length, FOUR_STEM_MODELS.length, "each real model pass reports stage timings");
+      assert.deepEqual(
+        inferenceStageTimings.map(({ model }) => model).sort(),
+        FOUR_STEM_MODELS.map(({ id }) => id).sort(),
+        "stage timings cover all pinned models",
+      );
+      const stageTotals = inferenceStageTimings.reduce(
+        (totals, entry) => {
+          for (const key of ["preprocessingMs", "stftMs", "inferenceMs", "istftMs", "overlapAddMs", "reconstructionMs", "totalMs"] as const) {
+            totals[key] += entry.timings[key];
+          }
+          totals.chunkCount += entry.timings.chunkCount;
+          return totals;
+        },
+        {
+          preprocessingMs: 0,
+          stftMs: 0,
+          inferenceMs: 0,
+          istftMs: 0,
+          overlapAddMs: 0,
+          reconstructionMs: 0,
+          totalMs: 0,
+          chunkCount: 0,
+        },
+      );
       const report = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         platform: process.platform,
         osRelease: release(),
         architecture: process.arch,
@@ -628,6 +675,8 @@ if (realAudioInputPath) {
         logicalCpuCount: cpus().length,
         executor: "production retry -> local worker broker",
         ortThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
+        ortMemoryArenaEnabled: true,
+        ortMemoryPatternEnabled: true,
         models: FOUR_STEM_MODELS.map(({ id, sha256 }) => ({ id, sha256 })),
         input: {
           filename: basename(realAudioInputPath),
@@ -644,12 +693,24 @@ if (realAudioInputPath) {
           elapsedMs,
           realtimeFactor: Number((elapsedMs / (processedDurationSeconds * 1000)).toFixed(2)),
           stems: measuredStems,
+          objectiveOutputChecks: {
+            allFourStemFilesReadablePcm16Stereo44100: Object.values(outputIntegrity).every((checks) => checks.readablePcm16Stereo44100),
+            allFourStemsMatchExcerptDuration: Object.values(outputIntegrity).every((checks) => checks.correctDuration),
+            allSamplesFinite: Object.values(outputIntegrity).every((checks) => checks.finiteSamples),
+            allSamplesWithinPcmRange: Object.values(outputIntegrity).every((checks) => checks.inPcmRange),
+            nonSilentStems: Object.keys(measuredStems).filter((stemType) => measuredStems[stemType]!.rmsDbfs > -90),
+            perStem: outputIntegrity,
+            soundQualityEvaluated: false,
+          },
         },
         timings: {
           audioDecodeMs,
           excerptPreparationMs,
           separationElapsedMs: elapsedMs,
           measuredInputToStemsMs: audioDecodeMs + excerptPreparationMs + elapsedMs,
+          inferenceStageTotals: stageTotals,
+          inferenceTimeSharePercent: Number((stageTotals.inferenceMs / Math.max(1, stageTotals.totalMs) * 100).toFixed(1)),
+          modelInferenceStages: inferenceStageTimings,
           progressObservedModelPasses: modelPassTimings,
           progressSamplingIntervalMs: 500,
           ...(progressSamplingError ? { progressSamplingError } : {}),
