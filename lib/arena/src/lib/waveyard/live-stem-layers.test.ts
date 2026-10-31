@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { afterEach, mock, test } from "node:test";
 import { LiveStemLayers } from "./live-stem-layers";
 
 const originalFetch = globalThis.fetch;
@@ -388,6 +388,67 @@ test("recent donor eviction leaves playback running and evicted donors prepare a
     assert.equal(f.sources.length, 5);
     assert.equal(activeDonor.stopped, false, "the active donor continues through preparation and crossfade start");
   } finally { f.layers.dispose(); }
+});
+
+test("expired recent donors are fetched again instead of served from cache", async () => {
+  const f = fixture();
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return response();
+  };
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await f.layers.replace("vocals", "/expired-donor");
+    await f.layers.replace("vocals", "/current-donor");
+    assert.equal(fetchCount, 2);
+
+    mock.timers.tick(30_000);
+    await f.layers.replace("vocals", "/expired-donor");
+
+    assert.equal(fetchCount, 3, "the expired donor must be downloaded and decoded again");
+  } finally {
+    f.layers.dispose();
+    mock.timers.reset();
+  }
+});
+
+test("expiration releases byte accounting so later donors within budget remain reusable", async () => {
+  const decodedBuffers = [
+    { duration: 4_194_304 / 48_000, length: 4_194_304, numberOfChannels: 2 }, // 32 MiB
+    { duration: 5_242_880 / 48_000, length: 5_242_880, numberOfChannels: 2 }, // 40 MiB
+    { duration: 3_145_728 / 48_000, length: 3_145_728, numberOfChannels: 2 }, // 24 MiB
+    { duration: 1 / 48_000, length: 1, numberOfChannels: 1 },
+  ];
+  const f = fixture(undefined, undefined, () => decodedBuffers.shift() ?? {
+    duration: 1 / 48_000,
+    length: 1,
+    numberOfChannels: 1,
+  });
+  const fetches: string[] = [];
+  globalThis.fetch = async url => {
+    fetches.push(String(url));
+    return response();
+  };
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await f.layers.replace("vocals", "/expiring-32-mib");
+    await f.layers.replace("vocals", "/retained-40-mib");
+    mock.timers.tick(30_000);
+
+    await f.layers.replace("vocals", "/later-24-mib");
+    await f.layers.replace("vocals", "/small-donor");
+    await f.layers.replace("vocals", "/retained-40-mib");
+
+    assert.equal(
+      fetches.filter(url => url === "/retained-40-mib").length,
+      1,
+      "the 40 MiB donor remains reusable beside the 24 MiB donor after the expired 32 MiB is released",
+    );
+  } finally {
+    f.layers.dispose();
+    mock.timers.reset();
+  }
 });
 
 test("recent-cache pressure across stem channels preserves playback and each channel's retained donor", async () => {
