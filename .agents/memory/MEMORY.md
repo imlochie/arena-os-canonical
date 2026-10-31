@@ -16,7 +16,7 @@
 - [Waveyard CPU separation profiling](waveyard-cpu-separation-profiling.md) — measured local 4-stem CPU cost is dominated by JS STFT/ISTFT transforms, so profile before tuning ONNX inference.
 - [Waveyard product expectation](waveyard-stemfm-expectation.md) — live stem replacement and isolation are core, and session-to-Studio handoff must lead to a usable arrangement.
 - [Arena product expectations](arena-product-expectations.md) — prioritize demonstrable local tools and open-source alternatives over claims, presets, and page-load checks.
-- [Arena baseline reconciliation](arena-baseline-reconciliation.md) — compare the selected branch and current product docs before edits; don't assume a branch name proves freshness.
+- [Arena baseline reconciliation](arena-baseline-reconciliation.md) — recover branch intent as user outcomes, then verify current end-to-end workflows; code similarity is not proof.
 - [Waveyard browser audio tests](waveyard-browser-tests.md) — verify live clocks, disable caching for failures, and wait for the intended track before asserting queue-switch playback.
 - [Waveyard startup recovery](waveyard-startup-recovery.md) — retry transient database outages at boot within bounds; fail fast on schema errors.
 - [Playwright touch isolation](playwright-touch-emulation.md) — scope touch emulation to mobile interaction checks in shared smoke browsers so hover-dependent tests remain desktop-like.

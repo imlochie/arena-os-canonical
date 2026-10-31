@@ -144,7 +144,50 @@ async function json(url, options = {}) {
   assert(res.ok(), `${options.method || "GET"} ${url}: ${res.status()} ${await res.text()}`);
   return res.json();
 }
+async function verifyRecentRoomResume() {
+  const resumeContext = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    serviceWorkers: "block",
+  });
+  try {
+    const resumePage = await resumeContext.newPage();
+    await resumePage.goto(`${base}/arcade`, { waitUntil: "networkidle" });
+    await resumePage.waitForFunction(
+      () => localStorage.getItem("arena:last-used-room:v1") === "/arcade",
+    );
+    await resumePage.goto(`${base}/runtime`, { waitUntil: "networkidle" });
+    assert.equal(
+      await resumePage.evaluate(() => localStorage.getItem("arena:last-used-room:v1")),
+      "/arcade",
+      "runtime settings must not replace the last product room",
+    );
+    await resumePage.goto(`${base}/`, { waitUntil: "networkidle" });
+    const resumeCard = resumePage.locator('[aria-label="Continue to your last room"]');
+    await resumeCard.waitFor({ state: "visible" });
+    assert.equal(await resumeCard.getByRole("link").getAttribute("href"), "/arcade");
+    await resumeCard.getByRole("link", { name: "Continue to Arcade" }).click();
+    await resumePage.waitForURL("**/arcade");
+    assert.equal(new URL(resumePage.url()).pathname, "/arcade");
+    await resumePage.goto(`${base}/`, { waitUntil: "networkidle" });
+    const refreshedCard = resumePage.locator('[aria-label="Continue to your last room"]');
+    await refreshedCard.getByRole("button", { name: "Dismiss" }).click();
+    assert.equal(await refreshedCard.count(), 0, "dismiss must clear the local resume card");
+    await resumePage.goto(`${base}/waveyard/studio`, { waitUntil: "domcontentloaded" });
+    await resumePage.waitForFunction(
+      () => localStorage.getItem("arena:last-used-room:v1") === "/waveyard/studio",
+    );
+    await resumePage.goto(`${base}/`, { waitUntil: "networkidle" });
+    const studioResume = resumePage.locator('[aria-label="Continue to your last room"]');
+    await studioResume.waitFor({ state: "visible" });
+    assert.equal(await studioResume.getByRole("link").getAttribute("href"), "/waveyard/studio");
+    assert.match(await studioResume.innerText(), /Waveyard Studio/);
+    report.push("The home screen resumes the last product room, ignores utility pages, and supports dismiss.");
+  } finally {
+    await resumeContext.close();
+  }
+}
 try {
+  await verifyRecentRoomResume();
   await page.goto(base + "/", { waitUntil: "networkidle" });
   await page.getByPlaceholder("Ask anything… two anonymous fighters answer side-by-side, streamed live. You judge. (Ctrl+Enter to send)").fill("List three practical ways to organize a small recording studio.");
   const responsePromise = page.waitForResponse(res => res.url().includes("/api/battles/stream") && res.request().method() === "POST");

@@ -1,6 +1,7 @@
 import Link from "@/routing/Link";
 import BattleArena from "@/components/BattleArena";
 import KeysBar from "@/components/KeysBar";
+import RecentRoomResume from "@/components/RecentRoomResume";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +45,8 @@ export default function HomePage() {
           </Link>
         </p>
       </section>
+
+      <RecentRoomResume />
 
       {/* Quick launch: the eight most-used doors, one line each. */}
       <section className="mb-5">

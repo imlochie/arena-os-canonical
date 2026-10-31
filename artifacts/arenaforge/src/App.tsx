@@ -7,6 +7,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { routes } from "./routes";
 import WaveyardNav from "@/components/waveyard/WaveyardNav";
 import { ListeningHostProvider, ListeningWorkspace, isWorkspaceRoute } from "@/components/waveyard/listening/ListeningHost";
+import { RecentRoomTracker } from "@/components/RecentRoomResume";
 import "./app/globals.css";
 import "./app/waveyard/waveyard.css";
 
@@ -25,6 +26,7 @@ function Shell() {
   }, [location.pathname]);
   const workspaceRoute = isWorkspaceRoute(location.pathname);
   return <ListeningHostProvider>
+    <RecentRoomTracker />
     <SwRegister />
     <OfflineBanner />
     <Nav />
