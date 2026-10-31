@@ -38,6 +38,7 @@ type PreparedStem = {
 
 type RecentStem = {
   buffer: AudioBuffer;
+  bytes: number;
   expiresAt: number;
   timer: ReturnType<typeof setTimeout>;
 };
@@ -59,6 +60,7 @@ const PREPARED_STEM_TTL_MS = 30_000;
 const MAX_PREPARED_STEMS = 2;
 const RECENT_STEM_TTL_MS = 30_000;
 const MAX_RECENT_STEMS = 2;
+const MAX_RECENT_STEM_BYTES = 64 * 1024 * 1024;
 
 const stretchBufferInWorker: BufferStretcher = (context, buffer, ratio, signal) => {
   if (typeof Worker === "undefined") {
@@ -125,6 +127,7 @@ export class LiveStemLayers {
   private pending = new Map<string, PendingSwap>();
   private prepared = new Map<string, PreparedStem>();
   private recent = new Map<string, RecentStem>();
+  private recentBytes = 0;
   private retired = new Set<Layer>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -203,12 +206,20 @@ export class LiveStemLayers {
     if (!recent) return;
     clearTimeout(recent.timer);
     this.recent.delete(key);
+    this.recentBytes -= recent.bytes;
   }
 
   private rememberRecent(layer: Layer) {
     const key = this.preparedKey(layer.url, layer.tempoStretchRatio);
     this.discardRecent(key);
-    while (this.recent.size >= MAX_RECENT_STEMS) {
+    const bytes = layer.buffer.length * layer.buffer.numberOfChannels * Float32Array.BYTES_PER_ELEMENT;
+    // Keep oversized audio available to its live layer, but don't retain it
+    // after that layer is replaced.
+    if (bytes > MAX_RECENT_STEM_BYTES) return;
+    while (
+      this.recent.size >= MAX_RECENT_STEMS ||
+      this.recentBytes + bytes > MAX_RECENT_STEM_BYTES
+    ) {
       const oldestKey = this.recent.keys().next().value as string | undefined;
       if (oldestKey === undefined) break;
       this.discardRecent(oldestKey);
@@ -216,12 +227,14 @@ export class LiveStemLayers {
 
     const entry: RecentStem = {
       buffer: layer.buffer,
+      bytes,
       expiresAt: performance.now() + RECENT_STEM_TTL_MS,
       timer: setTimeout(() => {
-        if (this.recent.get(key) === entry) this.recent.delete(key);
+        if (this.recent.get(key) === entry) this.discardRecent(key);
       }, RECENT_STEM_TTL_MS),
     };
     this.recent.set(key, entry);
+    this.recentBytes += bytes;
   }
 
   private getRecentBuffer(key: string, selectedAt: number): PreparedAudio | null {

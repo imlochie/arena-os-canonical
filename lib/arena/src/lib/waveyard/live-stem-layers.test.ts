@@ -8,13 +8,23 @@ afterEach(() => { globalThis.fetch = originalFetch; });
 function fixture(
   stretchBuffer?: ConstructorParameters<typeof LiveStemLayers>[2],
   onTiming?: ConstructorParameters<typeof LiveStemLayers>[3],
+  decodedAudio:
+    | { duration: number; length: number; numberOfChannels: number }
+    | (() => { duration: number; length: number; numberOfChannels: number }) = {
+      duration: 3,
+      length: 144_000,
+      numberOfChannels: 2,
+    },
 ) {
   const sources: Array<{ offset: number; stopped: boolean; loop: boolean }> = [];
   const gains: Array<{ automation: Array<{ type: string; value?: number; time: number }> }> = [];
   let decodeCount = 0;
   const context = {
     currentTime: 5,
-    decodeAudioData: async () => { decodeCount += 1; return { duration: 3 }; },
+    decodeAudioData: async () => {
+      decodeCount += 1;
+      return (typeof decodedAudio === "function" ? decodedAudio() : decodedAudio) as AudioBuffer;
+    },
     createBufferSource() {
       const source = {
         offset: -1, stopped: false, loop: false, buffer: null,
@@ -342,6 +352,60 @@ test("recent donor eviction leaves playback running and evicted donors prepare a
     assert.equal(fetches.at(-1), "/donor-a", "an evicted donor is downloaded again");
     assert.equal(f.sources.length, 5);
     assert.equal(activeDonor.stopped, false, "the active donor continues through preparation and crossfade start");
+  } finally { f.layers.dispose(); }
+});
+
+test("a donor larger than the recent-cache budget is not retained or interrupted", async () => {
+  const f = fixture(undefined, undefined, {
+    duration: 8_500_000 / 48_000,
+    length: 8_500_000,
+    numberOfChannels: 2,
+  });
+  const fetches: string[] = [];
+  globalThis.fetch = async (url) => {
+    fetches.push(String(url));
+    return response();
+  };
+  try {
+    await f.layers.replace("vocals", "/oversized");
+    await f.layers.replace("vocals", "/other");
+    const activeDonor = f.sources[1];
+
+    await f.layers.replace("vocals", "/oversized");
+
+    assert.deepEqual(fetches, ["/oversized", "/other", "/oversized"]);
+    assert.equal(activeDonor.stopped, false, "skipping an oversized cached copy does not stop active playback");
+    assert.equal(f.sources[2].stopped, false);
+  } finally { f.layers.dispose(); }
+});
+
+test("the aggregate recent-cache budget counts samples across every channel", async () => {
+  const decodedBuffers = [
+    { duration: 9_000_000 / 48_000, length: 9_000_000, numberOfChannels: 1 },
+    { duration: 4_500_000 / 48_000, length: 4_500_000, numberOfChannels: 2 },
+    { duration: 1_000 / 48_000, length: 1_000, numberOfChannels: 1 },
+    { duration: 9_000_000 / 48_000, length: 9_000_000, numberOfChannels: 1 },
+  ];
+  const f = fixture(undefined, undefined, () => decodedBuffers.shift() ?? {
+    duration: 1_000 / 48_000,
+    length: 1_000,
+    numberOfChannels: 1,
+  });
+  const fetches: string[] = [];
+  globalThis.fetch = async (url) => {
+    fetches.push(String(url));
+    return response();
+  };
+  try {
+    await f.layers.replace("vocals", "/mono");
+    await f.layers.replace("vocals", "/stereo");
+    await f.layers.replace("vocals", "/small");
+
+    const activeDonor = f.sources[2];
+    await f.layers.replace("vocals", "/mono");
+
+    assert.deepEqual(fetches, ["/mono", "/stereo", "/small", "/mono"]);
+    assert.equal(activeDonor.stopped, false, "eviction of retained buffers leaves live playback running");
   } finally { f.layers.dispose(); }
 });
 
