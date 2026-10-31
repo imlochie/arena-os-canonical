@@ -31,6 +31,12 @@ type DragState = {
   lastTimelineDeltaMs: number;
   startX: number;
 };
+type LanePointerStart = {
+  pointerId: number;
+  x: number;
+  y: number;
+  lane: HTMLElement;
+};
 
 function replaceClip(remix: Remix, trackId: string, clipIndex: number, clip: RemixClipInput) {
   return {
@@ -86,6 +92,7 @@ export function ArrangementTimeline({
 }) {
   const drag = useRef<DragState | null>(null);
   const draft = useRef<Remix | null>(null);
+  const lanePointerStart = useRef<LanePointerStart | null>(null);
   const automationDrag = useRef<AutomationDragState | null>(null);
   const [selectedAutomationPointId, setSelectedAutomationPointId] = useState<string | null>(null);
   const timelineEndMs = useMemo(
@@ -104,11 +111,19 @@ export function ArrangementTimeline({
     trackId: string,
     clipIndex: number,
     clip: RemixClipInput,
+    touchMove = false,
   ) => {
-    event.preventDefault();
     event.stopPropagation();
     const clipId = clip.id;
     if (!clipId) return;
+    // Touching a clip body selects it, while leaving horizontal movement to
+    // the scrollable timeline. The dedicated move control starts a drag.
+    if (event.pointerType === "touch" && mode === "move" && !touchMove) {
+      onSelectedClipIds([clipId]);
+      onSelection({ trackId, clipIndex });
+      return;
+    }
+    event.preventDefault();
     // Modifier clicks never create a persisted group; they only compose the
     // current UI selection. Shift creates a same-track range, while command /
     // control adds or removes compatible clips on any owned remix track.
@@ -194,6 +209,20 @@ export function ArrangementTimeline({
     }
     drag.current = null;
     draft.current = null;
+  };
+  const cancelDrag = () => {
+    const active = drag.current;
+    if (active) onPreview(active.original);
+    drag.current = null;
+    draft.current = null;
+  };
+  const seekLaneOnTap = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = lanePointerStart.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    lanePointerStart.current = null;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) return;
+    const bounds = start.lane.getBoundingClientRect();
+    onSeek(snapTimelineMs(((event.clientX - bounds.left) / zoom) * 1000, timing));
   };
   const runGroup = (operation: "nudge" | "duplicate" | "delete", payload: Record<string, unknown> = {}) => {
     if (!selectedClipIds.length) return;
@@ -282,8 +311,21 @@ export function ArrangementTimeline({
               <div
                 className="clip-lane"
                 onPointerDown={(event) => {
-                  if (event.target === event.currentTarget) onSeek(snapTimelineMs(((event.nativeEvent.offsetX / zoom) * 1000), timing));
+                  if (event.target !== event.currentTarget) return;
+                  lanePointerStart.current = {
+                    pointerId: event.pointerId,
+                    x: event.clientX,
+                    y: event.clientY,
+                    lane: event.currentTarget,
+                  };
                 }}
+                onPointerMove={(event) => {
+                  const start = lanePointerStart.current;
+                  if (start?.pointerId === event.pointerId && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8)
+                    lanePointerStart.current = null;
+                }}
+                onPointerUp={seekLaneOnTap}
+                onPointerCancel={() => { lanePointerStart.current = null; }}
               >
                 {track.clips.map((clip, index) => {
                   const selected = selection?.trackId === track.id && selection.clipIndex === index;
@@ -295,16 +337,17 @@ export function ArrangementTimeline({
                     onPointerDown={(event) => beginDrag(event, "move", track.id, index, clip)}
                     onPointerMove={updateDrag}
                     onPointerUp={endDrag}
-                    onPointerCancel={endDrag}
+                    onPointerCancel={cancelDrag}
                   >
-                    <span className="trim-handle trim-left" aria-label="Trim clip left" onPointerDown={(event) => beginDrag(event, "trim-left", track.id, index, clip)} />
+                    <span className="trim-handle trim-left" role="button" aria-label={`Trim ${track.name} clip ${index + 1} left`} onPointerDown={(event) => beginDrag(event, "trim-left", track.id, index, clip)} onPointerMove={updateDrag} onPointerUp={endDrag} onPointerCancel={cancelDrag} />
                     <b>{index + 1}</b>
                     <label className="legacy-clip-start">Start<input aria-label={`${track.name} clip ${index + 1} start`} type="number" min="0" step="0.01" value={clip.timelineStartMs / 1000} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => onChange((current) => {
                       const value = Math.max(0, Number(event.target.value) || 0) * 1000;
                       return replaceClip(current, track.id, index, { ...clip, timelineStartMs: clip.beatSnapEnabled ? snapTimelineMs(value, timing) : value });
                     })} /></label>
                     <span className="clip-label">{Math.round(clip.durationMs / 1000)}s</span>
-                    <span className="trim-handle trim-right" aria-label="Trim clip right" onPointerDown={(event) => beginDrag(event, "trim-right", track.id, index, clip)} />
+                    <button type="button" className="clip-move-handle" aria-label={`Move ${track.name} clip ${index + 1}`} onPointerDown={(event) => beginDrag(event, "move", track.id, index, clip, true)} onPointerMove={updateDrag} onPointerUp={endDrag} onPointerCancel={cancelDrag}>↔</button>
+                    <span className="trim-handle trim-right" role="button" aria-label={`Trim ${track.name} clip ${index + 1} right`} onPointerDown={(event) => beginDrag(event, "trim-right", track.id, index, clip)} onPointerMove={updateDrag} onPointerUp={endDrag} onPointerCancel={cancelDrag} />
                   </article>;
                 })}
                 <div className="automation-lane-stack" aria-label={`${track.name} automation lanes`}>

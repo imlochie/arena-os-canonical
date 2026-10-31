@@ -54,20 +54,57 @@ function makePcmWav(frequency, amplitude, durationSeconds = 8) {
   header.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([header, pcm]);
 }
-async function tapCenter(locator) {
+async function touchAt(locator, offsetX, offsetY) {
   const bounds = await locator.boundingBox();
   assert(bounds, "Touch target must have visible bounds");
   if (!touchSession) {
     touchSession = await context.newCDPSession(page);
     await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
   }
-  const x = Math.round(bounds.x + bounds.width / 2);
-  const y = Math.round(bounds.y + bounds.height / 2);
+  const x = Math.round(bounds.x + offsetX);
+  const y = Math.round(bounds.y + offsetY);
   await touchSession.send("Input.dispatchTouchEvent", {
     type: "touchStart",
     touchPoints: [{ x, y, id: 1, radiusX: 1, radiusY: 1, force: 1 }],
   });
   await touchSession.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+}
+async function tapCenter(locator) {
+  const bounds = await locator.boundingBox();
+  assert(bounds, "Touch target must have visible bounds");
+  await touchAt(locator, bounds.width / 2, bounds.height / 2);
+}
+async function dragTouch(locator, deltaX, deltaY, cancel = false, xFraction = 0.5, yFraction = 0.5) {
+  const bounds = await locator.boundingBox();
+  assert(bounds, "Touch drag target must have visible bounds");
+  if (!touchSession) {
+    touchSession = await context.newCDPSession(page);
+    await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  }
+  const startX = Math.round(bounds.x + bounds.width * xFraction);
+  const startY = Math.round(bounds.y + bounds.height * yFraction);
+  await touchSession.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x: startX, y: startY, id: 1, radiusX: 1, radiusY: 1, force: 1 }],
+  });
+  for (let step = 1; step <= 4; step += 1) {
+    await touchSession.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{
+        x: Math.round(startX + deltaX * step / 4),
+        y: Math.round(startY + deltaY * step / 4),
+        id: 1,
+        radiusX: 1,
+        radiusY: 1,
+        force: 1,
+      }],
+    });
+    await page.waitForTimeout(20);
+  }
+  await touchSession.send("Input.dispatchTouchEvent", {
+    type: cancel ? "touchCancel" : "touchEnd",
+    touchPoints: [],
+  });
 }
 const reaAnalysisSmoke = execFileSync(
   "pnpm",
@@ -1788,6 +1825,17 @@ try {
       await route.continue();
     }
   });
+  await page.route(`**/api/remixes/${studioRemixId}/clips/batch-edit`, async (route) => {
+    const request = route.request().postDataJSON();
+    const movedClips = studioRemixResponse.tracks.flatMap((track) => track.clips)
+      .filter((clip) => request.clipIds.includes(clip.id))
+      .map((clip) => ({ ...clip, timelineStartMs: clip.timelineStartMs + Number(request.timelineDeltaMs ?? 0) }));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ clips: movedClips }),
+    });
+  });
   await page.route(`**/api/remixes/${studioRemixId}/versions`, (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -1931,6 +1979,73 @@ try {
     const playButton = mobileTransport.getByRole("button", { name: "Play", exact: true });
     const previewButton = mobileTransport.getByRole("button", { name: "Preview arrangement", exact: true });
     const seekSlider = mobileTransport.getByLabel("Seek project");
+    if (width === 320) {
+      const touchClip = page.locator(".clip").first();
+      await touchClip.scrollIntoViewIfNeeded();
+      const touchSeekBefore = await seekSlider.inputValue();
+      const moveHandle = touchClip.getByRole("button", { name: /^Move / });
+      await tapCenter(moveHandle);
+      assert((await touchClip.getAttribute("class"))?.includes("selected"),
+        "a touch tap on the clip's move control must select it without moving it");
+      assert.equal(await seekSlider.inputValue(), touchSeekBefore,
+        "selecting a clip by touch must not seek the arrangement");
+
+      const emptyLane = page.locator(".clip-lane").first();
+      await emptyLane.scrollIntoViewIfNeeded();
+      await timelineScroller.evaluate((element) => { element.scrollLeft = 0; });
+      const scrollBeforeTouchSwipe = await timelineScroller.evaluate((element) => element.scrollLeft);
+      assert.equal(await timelineScroller.evaluate((element) => getComputedStyle(element).touchAction), "pan-x pan-y",
+        "the mobile timeline must leave horizontal touch movement to native scrolling");
+      const laneTouchPoint = await emptyLane.evaluate((lane) => {
+        const bounds = lane.getBoundingClientRect();
+        const scroller = lane.closest(".timeline-scroll")?.getBoundingClientRect();
+        return {
+          x: Math.max(bounds.left + 10, Math.min(window.innerWidth - 20, (scroller?.left ?? bounds.left) + 140)),
+          y: bounds.top + 3,
+        };
+      });
+      await emptyLane.dispatchEvent("pointerdown", {
+        pointerId: 80, pointerType: "touch", isPrimary: true, button: 0, buttons: 1,
+        clientX: laneTouchPoint.x, clientY: laneTouchPoint.y,
+      });
+      await emptyLane.dispatchEvent("pointermove", {
+        pointerId: 80, pointerType: "touch", isPrimary: true, button: 0, buttons: 1,
+        clientX: laneTouchPoint.x - 64, clientY: laneTouchPoint.y,
+      });
+      await emptyLane.dispatchEvent("pointerup", {
+        pointerId: 80, pointerType: "touch", isPrimary: true, button: 0, buttons: 0,
+        clientX: laneTouchPoint.x - 64, clientY: laneTouchPoint.y,
+      });
+      assert.equal(await seekSlider.inputValue(), touchSeekBefore,
+        "a horizontal touch gesture on the clip lane must not seek the playback position");
+      assert.equal(await timelineScroller.evaluate((element) => element.scrollLeft), scrollBeforeTouchSwipe,
+        "a cancelled horizontal lane gesture must not change the scroll position through timeline seeking");
+
+      await timelineScroller.evaluate((element) => { element.scrollLeft = 0; });
+      const initialClipLeft = await touchClip.evaluate((element) => element.style.left);
+      await dragTouch(moveHandle, 88, 0, true);
+      assert.equal(await touchClip.evaluate((element) => element.style.left), initialClipLeft,
+        "cancelling a touch move must restore the original clip position");
+      await dragTouch(moveHandle, 88, 0);
+      await page.waitForFunction((left) => document.querySelector(".clip")?.style.left !== left, initialClipLeft);
+      const movedClipLeft = await touchClip.evaluate((element) => element.style.left);
+      assert.notEqual(movedClipLeft, initialClipLeft,
+        "the dedicated touch move control must move a clip and preserve timeline snapping");
+
+      const rightTrim = touchClip.locator(".trim-right");
+      await rightTrim.scrollIntoViewIfNeeded();
+      const initialClipWidth = await touchClip.evaluate((element) => element.style.width);
+      await dragTouch(rightTrim, -72, 0, true);
+      assert.equal(await touchClip.evaluate((element) => element.style.width), initialClipWidth,
+        "cancelling a touch trim must preserve the original clip duration");
+      await dragTouch(rightTrim, -72, 0);
+      await page.waitForFunction((widthBefore) => document.querySelector(".clip")?.style.width !== widthBefore, initialClipWidth);
+      assert.notEqual(await touchClip.evaluate((element) => element.style.width), initialClipWidth,
+        "the enlarged touch trim handle must change a clip's duration");
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
+      await page.locator(".timeline-track").nth(7).waitFor({ state: "visible", timeout: 15_000 });
+    }
     await mobileTransport.scrollIntoViewIfNeeded();
     const mobileTargets = await Promise.all([playButton, previewButton, seekSlider].map(async (target) => {
       const bounds = await target.boundingBox();
@@ -1971,6 +2086,7 @@ try {
     touchSession = null;
   }
   await page.setViewportSize(desktopViewport);
+  report.push("At phone widths, touch selects clips without seeking, horizontal lane gestures remain available for scrolling, dedicated controls move and trim clips, and cancelled moves restore the arrangement.");
   report.push("At 320px and 402px, the arrangement scrolls internally with no page overflow; touch-sized play, seek, and arrangement preview controls respond to taps.");
   report.push("A session handoff opens a linked, audio-backed Studio arrangement; clips, isolated mix, two distinct donor swaps, and supported crossfades survive reload.");
   report.push("A slow live stem switch can be cancelled without rewinding playback; later swaps, isolation, Camelot cueing, and mobile stem controls pass.");
