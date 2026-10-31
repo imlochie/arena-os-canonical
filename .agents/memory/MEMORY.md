@@ -11,7 +11,7 @@
 - [Windows validation timing](windows-validation-timing.md) — keep preparing Windows checks, but defer asking for user runs until product gaps are nearly cleared.
 - [Waveyard database test runtime](waveyard-db-tests.md) — temporary PostgreSQL test failures before assertions are runtime failures, not evidence about queue behavior.
 - [Waveyard library import retries](waveyard-library-import-retries.md) — a timed-out import can continue server-side while a retry creates duplicate tracks and jobs.
-- [Waveyard Apple Music backups](waveyard-apple-music-backup.md) — the goal is TunePat-independent CSV metadata plus backups of user-provided local audio, without claiming protected streams can be copied.
+- [Waveyard Apple Music backups](waveyard-apple-music-backup.md) — explore TunePat-independent metadata/audio backups and authorized loopback capture without promising protected-stream copies.
 - [Waveyard CPU worker packaging](waveyard-cpu-worker.md) — bundle CPU-intensive worker code separately; source workers can inherit unsupported runtime flags.
 - [Waveyard CPU separation profiling](waveyard-cpu-separation-profiling.md) — measured local 4-stem CPU cost is dominated by JS STFT/ISTFT transforms, so profile before tuning ONNX inference.
 - [Waveyard product expectation](waveyard-stemfm-expectation.md) — live stem replacement and isolation are core, and session-to-Studio handoff must lead to a usable arrangement.
