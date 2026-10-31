@@ -193,6 +193,19 @@ function makeHomebrewGameBoyRom() {
   ], 0x150);
   return rom;
 }
+function makeHomebrewChip8Rom() {
+  // Original classic CHIP-8 program: wait for a key, then draw a five-row glyph
+  // and loop. The hand-authored opcodes contain no third-party game code/assets.
+  return Buffer.from([
+    0xf0, 0x0a, // LD V0, K
+    0xa2, 0x0c, // LD I, sprite
+    0x60, 0x00, // LD V0, 0
+    0x61, 0x00, // LD V1, 0
+    0xd0, 0x15, // DRW V0, V1, 5
+    0x12, 0x0a, // JP draw
+    0xf0, 0x90, 0xf0, 0x90, 0x90, 0x00,
+  ]);
+}
 async function json(url, options = {}) {
   const res = await context.request.fetch(base + url, options);
   assert(res.ok(), `${options.method || "GET"} ${url}: ${res.status()} ${await res.text()}`);
@@ -3177,6 +3190,32 @@ try {
   await page.getByRole("button", { name: /open-homebrew-fixture\.nes NES homebrew/ }).waitFor({ timeout: 10000 });
   await page.getByRole("button", { name: "Restore save" }).waitFor({ timeout: 10000 });
   report.push("Generated homebrew iNES ROM boots, renders a frame, accepts keyboard/touch controls, and restores a local save state after reload.");
+  await page.getByLabel(/I own this game or have permission to use and play it/).check();
+  await page.getByTestId("input-chip8-rom").setInputFiles({
+    name: "open-homebrew.ch8",
+    mimeType: "application/octet-stream",
+    buffer: makeHomebrewChip8Rom(),
+  });
+  await page.getByText("Classic CHIP-8 program imported to this browser's local shelf.").waitFor({ timeout: 10000 });
+  const chip8Canvas = page.locator('canvas[aria-label="CHIP-8 screen for open-homebrew.ch8"]');
+  await chip8Canvas.waitFor({ timeout: 10000 });
+  await page.getByText(/Running classic CHIP-8/).waitFor({ timeout: 10000 });
+  await chip8Canvas.click();
+  await page.keyboard.down("1");
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector('canvas[aria-label="CHIP-8 screen for open-homebrew.ch8"]');
+    const pixel = canvas?.getContext("2d")?.getImageData(0, 0, 1, 1).data;
+    return Boolean(pixel && pixel[1] > 100);
+  }, { timeout: 10000 });
+  await page.keyboard.up("1");
+  assert((await page.locator("body").innerText()).includes("Prompt modification needs editable source"), "CHIP-8 ROMs must not be passed to prompt gameplay edits");
+  assert((await page.locator("body").innerText()).includes("CHIP-48, Super-CHIP, XO-CHIP"), "Arcade must show CHIP-8 dialect limitations");
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "Import and emulate" }).click();
+  await page.getByText("open-homebrew.ch8", { exact: true }).first().waitFor({ timeout: 10000 });
+  await page.locator('[data-testid="chip8-player"]').getByText(/Progress restored from this browser/).waitFor({ timeout: 10000 });
+  assert(await page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("arenaforge.chip8-state.v1:"))), "CHIP-8 progress must persist in browser-local storage");
+  report.push("Generated classic CHIP-8 homebrew boots, responds to keyboard input, stays outside prompt editing, and restores its browser-local progress after reload.");
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
   await page.getByTestId("input-multisystem-rom").setInputFiles({
     name: "arcade-open-homebrew.gb",
