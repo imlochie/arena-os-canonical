@@ -58,3 +58,4 @@ Thumbs.db
 .data/
 /generated-artifacts/
 /desktop/stage/
+/desktop/dist/

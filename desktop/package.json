@@ -6,7 +6,7 @@
   "main": "dist/main.cjs",
   "scripts": {
     "prepare-app": "node build.mjs",
-    "dist:win": "node build.mjs && electron-builder --win nsis --x64 --config electron-builder.cjs",
+    "dist:win": "node build.mjs && electron-builder --win nsis --x64 --config electron-builder.cjs && node cleanup-build.mjs",
     "test": "node --test *.test.mjs"
   },
   "dependencies": {

@@ -1,6 +1,6 @@
 import { build } from "esbuild";
 import { createRequire } from "node:module";
-import { cp, mkdir, rm, access, readFile } from "node:fs/promises";
+import { cp, mkdir, rm, access, readFile, readdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -73,6 +73,24 @@ export async function copyExternalPackage(packageName, sourceRequire, destinatio
   return destination;
 }
 
+/** Keep only the native runtime this Windows x64 installer can load. */
+export async function pruneOnnxRuntimeForWindowsX64(packageRoot) {
+  const napiRoot = path.join(packageRoot, "bin", "napi-v6");
+  const windowsRoot = path.join(napiRoot, "win32");
+  const windowsX64 = path.join(windowsRoot, "x64");
+  await access(windowsX64);
+  for (const entry of await readdir(napiRoot, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name !== "win32") {
+      await rm(path.join(napiRoot, entry.name), { recursive: true, force: true });
+    }
+  }
+  for (const entry of await readdir(windowsRoot, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name !== "x64") {
+      await rm(path.join(windowsRoot, entry.name), { recursive: true, force: true });
+    }
+  }
+}
+
 export function runPnpm(args, env = {}) {
   // Resolve the pnpm JS entry rather than invoking a .cmd shim through a shell.
   const entry = process.env.npm_execpath;
@@ -104,11 +122,12 @@ async function main() {
   await cp(path.join(root, "artifacts/arenaforge/dist/public"), path.join(stage, "web"), { recursive: true });
   const playwrightRoot = path.dirname(require.resolve("playwright-core/package.json"));
   await cp(playwrightRoot, path.join(stage, "server/node_modules/playwright-core"), { recursive: true });
-  await copyExternalPackage(
+  const onnxRuntimePackage = await copyExternalPackage(
     "onnxruntime-node",
     apiRequire,
     path.join(stage, "server/node_modules"),
   );
+  await pruneOnnxRuntimeForWindowsX64(onnxRuntimePackage);
   const stagedRequire = createRequire(path.join(stage, "server/index.mjs"));
   const onnxRuntime = stagedRequire("onnxruntime-node");
   if (typeof onnxRuntime.InferenceSession?.create !== "function") {
