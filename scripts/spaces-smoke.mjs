@@ -36,8 +36,10 @@ try {
   await card.getByText("This domain is for use in documentation examples", { exact: false }).first().waitFor();
 
   await card.getByRole("textbox", { name: "Browser task", exact: true }).fill("Read this page and save a report.");
-  await card.getByRole("button", { name: "Run browser task", exact: true }).click();
-  await card.getByText("Agent-planned browser tasks need a connected model.", { exact: false }).waitFor();
+  const runTask = card.getByTestId("button-run-mission");
+  assert.equal(await runTask.isDisabled(), true, "Automated tasks must not offer a dead-end run action without a model");
+  await card.getByTestId("status-mission-model-required").getByRole("link", { name: "Open Model Hub to connect a model" }).waitFor();
+  await card.getByText("Manual page browsing remains available without one.", { exact: false }).waitFor();
 
   await page.reload({ waitUntil: "networkidle" });
   await page.getByRole("img", { name: "Last browser capture: Example Domain", exact: true }).waitFor();
@@ -50,7 +52,7 @@ try {
   assert.equal(traversal.status(), 400);
   assert.equal(errors.length, 0, errors.join("; "));
   await page.screenshot({ path: "generated-artifacts/spaces-smoke/workspace.jpg", fullPage: true });
-  console.log("PASS: create paused browser workspace, real page capture/text, persisted observation, honest missing-model state, private-network refusal, and report-path protection.");
+  console.log("PASS: create paused browser workspace, real page capture/text, persisted observation, disabled task launch with model setup path, private-network refusal, and report-path protection.");
 } finally {
   if (spaceId) await context.request.delete(`${base}/api/spaces/${spaceId}`);
   await browser.close();

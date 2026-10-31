@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "@/components/Markdown";
 import { loadKeys } from "@/components/KeysBar";
-import { privacyFlags } from "@workspace/arena/lib/privacyClient";
+import { privacyFlags, usePrivacySettings } from "@workspace/arena/lib/privacyClient";
 import { SPACE_TEMPLATES, SPACE_TEMPLATE_GROUPS, getSpaceTemplate } from "@workspace/arena/lib/spaceTemplates";
 import BrainCard from "@/components/BrainCard";
 import { readBrain } from "@workspace/arena/lib/connectedBrain";
@@ -39,6 +39,23 @@ interface ModelInfo {
   kind: string;
   backend?: string;
   level?: string;
+}
+
+function missionModelBlockReason(
+  selected: ModelInfo | undefined,
+  brainProvider: ReturnType<typeof readBrain>["provider"],
+  localOnly: boolean,
+): string | null {
+  if (!selected && brainProvider === "local") {
+    return "Connect a model before starting an automated task. Manual page browsing remains available without one.";
+  }
+
+  const localInference = selected?.backend === "local-server" || selected?.backend === "turboagent";
+  if (localOnly && !localInference && brainProvider !== "turboagent") {
+    return "Remote models are blocked in Local Mode or while offline. Select a local model or reconnect.";
+  }
+
+  return null;
 }
 
 function fmtCountdown(ms: number): string {
@@ -881,8 +898,16 @@ function MissionPanel({ spaceId, models, focusGoal }: { spaceId: string; models:
   const [taskModel, setTaskModel] = useState(() => {
     try { return localStorage.getItem(`af_browser_model_${spaceId}`) || ""; } catch { return ""; }
   });
+  const privacy = usePrivacySettings();
   const goalRef = useRef<HTMLTextAreaElement>(null);
   const taskModels = models.filter(model => model.kind === "text" && model.id !== "local-engine");
+  const selectedTaskModel = taskModels.find(model => model.id === taskModel);
+  const brain = readBrain();
+  const modelBlockReason = missionModelBlockReason(
+    selectedTaskModel,
+    brain.provider,
+    privacy.localMode || !privacy.online,
+  );
 
   useEffect(() => {
     if (focusGoal) goalRef.current?.focus();
@@ -918,13 +943,9 @@ function MissionPanel({ spaceId, models, focusGoal }: { spaceId: string; models:
     const brain = readBrain();
     const selected = taskModels.find(model => model.id === taskModel);
     const modelId = selected?.id ?? brain.modelId;
-    const localInference = selected?.backend === "local-server" || selected?.backend === "turboagent";
-    if (!selected && brain.provider === "local" && !continueMission) {
-      setError("Agent-planned browser tasks need a connected model. Open page above works without one; the offline engine cannot automate the task.");
-      return;
-    }
-    if (privacyFlags().localOnly && !localInference && brain.provider !== "turboagent" && !continueMission) {
-      setError("Local Mode is on, so remote AI models are disabled. Change the AI mode before starting an agent-planned browser task.");
+    const blockReason = missionModelBlockReason(selected, brain.provider, privacyFlags().localOnly);
+    if (blockReason && !continueMission) {
+      setError(blockReason);
       return;
     }
     setRunning(true);
@@ -1048,7 +1069,7 @@ function MissionPanel({ spaceId, models, focusGoal }: { spaceId: string; models:
       )}
 
       <p className="mt-1 text-[11px] text-slate-400">
-        Needs a connected AI model. Uses this workspace’s browser, pauses for approval before clicks or typing, and saves its results to downloadable reports.
+        Automated tasks use this workspace’s browser, pause for approval before clicks or typing, and save results to downloadable reports.
       </p>
       <label className="mt-2 block text-xs font-bold text-slate-300">
         Task model
@@ -1119,14 +1140,36 @@ function MissionPanel({ spaceId, models, focusGoal }: { spaceId: string; models:
               }
               start(false);
             }}
-            disabled={running}
+            disabled={running || Boolean(modelBlockReason)}
+            aria-describedby={modelBlockReason ? "mission-model-required" : undefined}
+            data-testid="button-run-mission"
             className="rounded-lg bg-cyan-500/15 px-3 py-1.5 text-xs font-bold text-cyan-200 ring-1 ring-cyan-400/30 hover:bg-cyan-500/25 disabled:opacity-40"
-            title="Agents get a real workspace: files, allowlisted commands, fetch, and GitHub publish — journaled, time-budgeted, checkpointable"
+            title={modelBlockReason ?? "Agents get a real workspace: files, allowlisted commands, fetch, and GitHub publish — journaled, time-budgeted, checkpointable"}
           >
-            {running ? "Running task…" : taskMode === "browser" ? "Run browser task" : "Run build mission"}
+            {running ? "Running task…" : modelBlockReason ? "Model setup needed" : taskMode === "browser" ? "Run browser task" : "Run build mission"}
           </button>
         )}
       </div>
+
+      {modelBlockReason && !checkpointed && (
+        <p
+          id="mission-model-required"
+          role="status"
+          data-testid="status-mission-model-required"
+          className="mt-2 text-xs text-amber-300"
+        >
+          {modelBlockReason}{" "}
+          {!selectedTaskModel && brain.provider === "local" && (
+            <a
+              href="/model-hub"
+              data-testid="link-mission-model-hub"
+              className="font-bold text-cyan-200 underline underline-offset-2"
+            >
+              Open Model Hub to connect a model
+            </a>
+          )}
+        </p>
+      )}
 
       {error && <p className="mt-2 text-xs text-amber-300">{error}</p>}
 
