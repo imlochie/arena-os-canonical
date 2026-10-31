@@ -106,6 +106,23 @@ async function dragTouch(locator, deltaX, deltaY, cancel = false, xFraction = 0.
     touchPoints: [],
   });
 }
+async function setSimulatedVisibility(targetPage, visibilityState) {
+  await targetPage.evaluate((nextState) => {
+    if (!Object.hasOwn(document, "__arenaSmokeVisibility")) {
+      Object.defineProperty(document, "__arenaSmokeVisibility", {
+        configurable: true,
+        writable: true,
+        value: document.visibilityState,
+      });
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => document.__arenaSmokeVisibility,
+      });
+    }
+    document.__arenaSmokeVisibility = nextState;
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, visibilityState);
+}
 const reaAnalysisSmoke = execFileSync(
   "pnpm",
   ["--filter", "@workspace/scripts", "exec", "tsx", "./rea-analysis-smoke.ts"],
@@ -2061,16 +2078,122 @@ try {
     if (width === 320) {
       await tapCenter(seekSlider);
       await page.waitForFunction(() => Number(document.querySelector('[aria-label="Seek project"]')?.value ?? 0) > 0.5);
+      await page.evaluate(() => {
+        const contexts = [];
+        const NativeAudioContext = window.AudioContext;
+        Object.defineProperty(window, "__arenaSmokeAudioContexts", { configurable: true, value: contexts });
+        window.AudioContext = new Proxy(NativeAudioContext, {
+          construct(target, args, newTarget) {
+            const audioContext = Reflect.construct(target, args, newTarget);
+            contexts.push(audioContext);
+            return audioContext;
+          },
+        });
+      });
       await tapCenter(playButton);
       const pauseButton = mobileTransport.getByRole("button", { name: "Pause", exact: true });
       await pauseButton.waitFor({ state: "visible" });
+      try {
+        await setSimulatedVisibility(page, "hidden");
+        await page.evaluate(async () => {
+          document.querySelectorAll('audio[aria-label$=" audio"]').forEach((audio) => audio.pause());
+          await window.__arenaSmokeAudioContexts[0]?.suspend();
+        });
+        await setSimulatedVisibility(page, "visible");
+        await page.waitForFunction(() =>
+          window.__arenaSmokeAudioContexts[0]?.state === "running" &&
+          [...document.querySelectorAll('audio[aria-label$=" audio"]')].some((audio) => !audio.paused) &&
+          document.querySelector('[aria-label="Pause"]'),
+        null, { timeout: 10_000 });
+        const stemTimeBefore = await page.locator('audio[aria-label$=" audio"]').first().evaluate((audio) => audio.currentTime);
+        await page.waitForFunction((before) =>
+          [...document.querySelectorAll('audio[aria-label$=" audio"]')].some((audio) => !audio.paused && audio.currentTime > before + 0.15),
+        stemTimeBefore, { timeout: 5_000 });
+        report.push("Stem playback recovers after a simulated phone app switch suspends its audio context and pauses media.");
+      } finally {
+        await setSimulatedVisibility(page, "visible");
+      }
+      await setSimulatedVisibility(page, "hidden");
+      await page.evaluate(() => {
+        const audio = [...document.querySelectorAll('audio[aria-label$=" audio"]')].find((element) => !element.paused);
+        if (!audio) throw new Error("No active stem audio element is available for interruption testing.");
+        const originalPlay = audio.play.bind(audio);
+        let rejectPlay = true;
+        audio.play = () => {
+          if (rejectPlay) {
+            rejectPlay = false;
+            return Promise.reject(new DOMException("play blocked", "NotAllowedError"));
+          }
+          return originalPlay();
+        };
+        document.querySelectorAll('audio[aria-label$=" audio"]').forEach((element) => element.pause());
+      });
+      await setSimulatedVisibility(page, "visible");
+      await mobileTransport.getByRole("alert").filter({ hasText: "Tap Play stems to resume" }).waitFor({ timeout: 5_000 });
+      await playButton.waitFor({ state: "visible" });
+      assert.equal(await page.locator('audio[aria-label$=" audio"]').evaluateAll((audios) => audios.filter((audio) => !audio.paused).length), 0,
+        "a denied media restart must stop every stem instead of leaving partial silent playback");
+      await tapCenter(playButton);
+      await pauseButton.waitFor({ state: "visible", timeout: 5_000 });
+      report.push("A browser-blocked stem restart shows an actionable Play stems state and succeeds after a user tap.");
       await tapCenter(pauseButton);
       await playButton.waitFor({ state: "visible" });
+      const pausedStemTimes = await page.locator('audio[aria-label$=" audio"]').evaluateAll((audios) => audios.map((audio) => audio.currentTime));
+      await setSimulatedVisibility(page, "hidden");
+      await setSimulatedVisibility(page, "visible");
+      await page.waitForTimeout(250);
+      assert.equal(await mobileTransport.getByRole("button", { name: "Play", exact: true }).count(), 1,
+        "returning to Studio must not restart stems that the listener paused");
+      assert.equal(
+        await page.locator('audio[aria-label$=" audio"]').evaluateAll((audios) => audios.filter((audio) => !audio.paused).length),
+        0,
+        "manually paused stem media must remain paused after returning to Studio");
+      const pausedStemTimesAfter = await page.locator('audio[aria-label$=" audio"]').evaluateAll((audios) => audios.map((audio) => audio.currentTime));
+      assert.deepEqual(pausedStemTimesAfter, pausedStemTimes,
+        "manual stem pause must preserve its playhead through a background transition");
       await tapCenter(previewButton);
       const pauseArrangement = mobileTransport.getByRole("button", { name: "Pause arrangement", exact: true });
       await pauseArrangement.waitFor({ state: "visible", timeout: 15_000 });
+      const positionBeforeArrangementInterruption = Number(await seekSlider.inputValue());
+      await setSimulatedVisibility(page, "hidden");
+      await page.evaluate(() => window.__arenaSmokeAudioContexts[1]?.suspend());
+      await setSimulatedVisibility(page, "visible");
+      await page.waitForFunction(() =>
+        window.__arenaSmokeAudioContexts[1]?.state === "running" &&
+        document.querySelector('[aria-label="Pause arrangement"]'),
+      null, { timeout: 10_000 });
+      await page.waitForFunction((before) =>
+        Number(document.querySelector('[aria-label="Seek project"]')?.value ?? 0) > before + 0.1,
+      positionBeforeArrangementInterruption, { timeout: 5_000 });
+      report.push("Arrangement preview resumes at its playhead after a suspended audio context is restored.");
+      await pauseArrangement.evaluate(async () => {
+        const audioContext = window.__arenaSmokeAudioContexts[1];
+        const originalResume = audioContext.resume.bind(audioContext);
+        let rejectResume = true;
+        audioContext.resume = () => {
+          if (rejectResume) {
+            rejectResume = false;
+            return Promise.reject(new DOMException("resume blocked", "NotAllowedError"));
+          }
+          return originalResume();
+        };
+        await audioContext.suspend();
+      });
+      await setSimulatedVisibility(page, "hidden");
+      await setSimulatedVisibility(page, "visible");
+      await mobileTransport.getByRole("alert").filter({ hasText: "Tap Preview arrangement to try again" }).waitFor({ timeout: 5_000 });
+      await previewButton.waitFor({ state: "visible" });
+      assert.equal(await pauseArrangement.count(), 0,
+        "blocked arrangement recovery must not leave a playing indicator for silent audio");
+      await tapCenter(previewButton);
+      await pauseArrangement.waitFor({ state: "visible", timeout: 10_000 });
       await tapCenter(pauseArrangement);
       await previewButton.waitFor({ state: "visible" });
+      await setSimulatedVisibility(page, "hidden");
+      await setSimulatedVisibility(page, "visible");
+      await page.waitForTimeout(250);
+      assert.equal(await pauseArrangement.count(), 0,
+        "returning to Studio must not restart an arrangement the listener paused");
     }
   }
   await page.setViewportSize({ width: 320, height: 874 });

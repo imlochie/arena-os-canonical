@@ -15,6 +15,12 @@ For beat-snapped browser checks, schedule against a future synthetic boundary wi
 
 **How to apply:** Keep the browser assertion focused on audible gain and allow a realistic scheduling window. Do not treat a missed synthetic boundary under test contention as proof of a user-facing audio defect.
 
+For app-background audio recovery tests, this workspace's Chromium build does not expose the CDP `Emulation.setPageVisibilityState` command. Override `document.visibilityState` in the test page and dispatch `visibilitychange`, while suspending real audio contexts and pausing actual media elements.
+
+**Why:** The CDP visibility command failed as unsupported before the Studio recovery assertions could run.
+
+**How to apply:** Use the deterministic document-state shim for lifecycle listeners and keep context/media interruption behavior native; describe this as simulated browser coverage, not physical phone acceptance.
+
 A broad trace that attaches metadata to every native audio node and retains every gain node caused the cross-tab playback check to time out before the fade assertions; reverting that instrumentation restored the test.
 
 **Why:** Audio graph instrumentation can change timing and object lifetime, and transition controls may appear before the audio fade reaches its midpoint.

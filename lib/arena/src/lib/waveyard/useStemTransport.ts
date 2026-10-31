@@ -265,6 +265,8 @@ export function useStemTransport(
   const lastUiUpdate = useRef(0);
   const playRequest = useRef(0);
   const wantsPlayback = useRef(false);
+  const recoveryInFlight = useRef(false);
+  const wasBackgrounded = useRef(false);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   // Commands such as seek(0); play() run in one event/effect. React state
@@ -551,8 +553,10 @@ export function useStemTransport(
       // Saved insert intent may have been restored before any audio graph
       // existed. Build it now, inside the first user-initiated play action.
       applyInserts(insertChains.current, masterChain.current);
-      if (context.current?.state === "suspended")
+      if (context.current && context.current.state !== "running")
         await context.current.resume();
+      if (context.current && context.current.state !== "running")
+        throw new Error("Audio was interrupted. Tap Play stems to resume.");
       if (request !== playRequest.current) {
         if (!wantsPlayback.current) elements.forEach((element) => element.pause());
         return;
@@ -577,16 +581,56 @@ export function useStemTransport(
         return;
       }
       if (results.some((result) => result.status === "rejected")) {
+        const blocked = results.find(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected" &&
+            typeof result.reason === "object" &&
+            result.reason !== null &&
+            "name" in result.reason &&
+            result.reason.name === "NotAllowedError",
+        );
+        if (blocked) throw new Error("Audio was interrupted. Tap Play stems to resume.");
         throw new Error("One or more stems could not play. Check the audio files and retry.");
       }
       liveLayers.current?.sync(playbackIds);
       setPlaying(true);
     } catch (cause) {
       if (request !== playRequest.current) return;
-      setError(cause instanceof Error ? cause.message : "Audio playback failed. Reopen the track and retry.");
+      setError(cause instanceof Error ? cause.message : "Audio playback failed. Tap Play stems to retry.");
       pause();
     }
   }, [applyInserts, applyMix, ensureGraph, playbackIds, masterVolume, pause, duration]);
+
+  useEffect(() => {
+    const recover = () => {
+      if (document.visibilityState !== "visible") {
+        wasBackgrounded.current = true;
+        return;
+      }
+      const returnedFromBackground = wasBackgrounded.current;
+      wasBackgrounded.current = false;
+      if (!wantsPlayback.current || recoveryInFlight.current) return;
+      const elements = currentPlaybackIds.current.map((id) => media.current[id]);
+      const needsRecovery =
+        returnedFromBackground ||
+        context.current?.state !== "running" ||
+        elements.some((element) => !element || element.paused);
+      if (!needsRecovery) return;
+      const current = currentPosition();
+      positionRef.current = current;
+      setPosition(current);
+      recoveryInFlight.current = true;
+      void play().finally(() => { recoveryInFlight.current = false; });
+    };
+    document.addEventListener("visibilitychange", recover);
+    window.addEventListener("pageshow", recover);
+    window.addEventListener("focus", recover);
+    return () => {
+      document.removeEventListener("visibilitychange", recover);
+      window.removeEventListener("pageshow", recover);
+      window.removeEventListener("focus", recover);
+    };
+  }, [currentPosition, play]);
 
   useEffect(() => {
     if (!playing) return;

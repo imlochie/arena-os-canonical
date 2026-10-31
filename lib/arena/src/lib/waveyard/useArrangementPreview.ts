@@ -37,6 +37,8 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
   const currentState = useRef<PreviewState | null>(null);
   const playbackGeneration = useRef(0);
   const pendingStartMs = useRef<number | null>(null);
+  const recoveryInFlight = useRef(false);
+  const wasBackgrounded = useRef(false);
   const [playing, setPlaying] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -168,6 +170,30 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
     setPlaying(false);
   }, [clear, onPosition]);
 
+  const startClock = useCallback((generation: number) => {
+    if (raf.current !== null) cancelAnimationFrame(raf.current);
+    const tick = () => {
+      if (generation !== playbackGeneration.current) return;
+      const active = currentState.current;
+      const audio = context.current;
+      if (!active || !audio) return;
+      const positionMs = origin.current.positionMs + (audio.currentTime - origin.current.contextTime) * 1000;
+      if (active.loopEndMs !== null && active.loopEndMs > active.loopStartMs && positionMs >= active.loopEndMs) {
+        void schedule(active, active.loopStartMs, generation)
+          .then((loopScheduled) => {
+            if (loopScheduled && generation === playbackGeneration.current) startClock(generation);
+          })
+          .catch((cause) => failPreview(cause, generation));
+        return;
+      }
+      const endMs = Math.max(0, ...active.tracks.flatMap((track) => track.clips.map((clip) => clip.timelineStartMs + clip.durationMs)));
+      if (positionMs >= endMs) { pause(); return; }
+      onPosition(positionMs);
+      raf.current = requestAnimationFrame(tick);
+    };
+    raf.current = requestAnimationFrame(tick);
+  }, [failPreview, onPosition, pause, schedule]);
+
   const play = useCallback(async (state: PreviewState, fromMs: number) => {
     const generation = ++playbackGeneration.current;
     pendingStartMs.current = fromMs;
@@ -177,35 +203,70 @@ export function useArrangementPreview(onPosition: (milliseconds: number) => void
       setError(null);
       const audio = ensureContext();
       if (audio.state === "suspended") await audio.resume();
+      if (audio.state !== "running")
+        throw new Error("Audio was interrupted. Tap Preview arrangement to resume.");
       if (generation !== playbackGeneration.current) return;
       const didSchedule = await schedule(state, fromMs, generation);
       if (!didSchedule || generation !== playbackGeneration.current) return;
       setPlaying(true);
-      const tick = () => {
-        if (generation !== playbackGeneration.current) return;
-        const active = currentState.current;
-        if (!active || !context.current) return;
-        const positionMs = origin.current.positionMs + (context.current.currentTime - origin.current.contextTime) * 1000;
-        if (active.loopEndMs !== null && active.loopEndMs > active.loopStartMs && positionMs >= active.loopEndMs) {
-          void schedule(active, active.loopStartMs, generation)
-            .then((loopScheduled) => {
-              if (loopScheduled && generation === playbackGeneration.current) {
-                raf.current = requestAnimationFrame(tick);
-              }
-            })
-            .catch((cause) => failPreview(cause, generation));
-          return;
-        }
-        const endMs = Math.max(0, ...active.tracks.flatMap((track) => track.clips.map((clip) => clip.timelineStartMs + clip.durationMs)));
-        if (positionMs >= endMs) { pause(); return; }
-        onPosition(positionMs);
-        raf.current = requestAnimationFrame(tick);
-      };
-      raf.current = requestAnimationFrame(tick);
+      startClock(generation);
     } catch (cause) {
-      failPreview(cause, generation);
+      const blocked = typeof cause === "object" && cause !== null && "name" in cause && cause.name === "NotAllowedError";
+      failPreview(
+        blocked ? new Error("Audio was interrupted. Tap Preview arrangement to resume.") : cause,
+        generation,
+      );
     }
-  }, [ensureContext, failPreview, onPosition, pause, schedule]);
+  }, [ensureContext, failPreview, schedule, startClock]);
+
+  useEffect(() => {
+    const recover = () => {
+      if (document.visibilityState !== "visible") {
+        wasBackgrounded.current = true;
+        return;
+      }
+      const returnedFromBackground = wasBackgrounded.current;
+      wasBackgrounded.current = false;
+      if (recoveryInFlight.current || pendingStartMs.current !== null) return;
+      const active = currentState.current;
+      const audio = context.current;
+      if (!active || !audio || (!returnedFromBackground && audio.state === "running")) return;
+
+      const generation = playbackGeneration.current;
+      const resumeAt =
+        origin.current.positionMs +
+        (audio.currentTime - origin.current.contextTime) * 1000;
+      recoveryInFlight.current = true;
+      void (async () => {
+        try {
+          if (audio.state !== "running") await audio.resume();
+          if (audio.state !== "running")
+            throw new Error("Audio did not resume after the app returned.");
+          if (generation !== playbackGeneration.current || currentState.current !== active) return;
+          const didSchedule = await schedule(active, resumeAt, generation);
+          if (didSchedule && generation === playbackGeneration.current) {
+            setPlaying(true);
+            startClock(generation);
+          }
+        } catch {
+          failPreview(
+            new Error("Audio couldn't resume automatically. Tap Preview arrangement to try again."),
+            generation,
+          );
+        } finally {
+          recoveryInFlight.current = false;
+        }
+      })();
+    };
+    document.addEventListener("visibilitychange", recover);
+    window.addEventListener("pageshow", recover);
+    window.addEventListener("focus", recover);
+    return () => {
+      document.removeEventListener("visibilitychange", recover);
+      window.removeEventListener("pageshow", recover);
+      window.removeEventListener("focus", recover);
+    };
+  }, [failPreview, schedule, startClock]);
 
   const stop = useCallback(() => {
     playbackGeneration.current += 1;

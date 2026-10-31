@@ -128,8 +128,8 @@ export function StudioTransport({
           onChange={(event) => onMasterVolume(Number(event.target.value))}
         />
       </label>
-      {transport.error && <p className="error">{transport.error}</p>}
-      {arrangementError && <p className="error">{arrangementError}</p>}
+      {transport.error && <p className="error" role="alert">{transport.error}</p>}
+      {arrangementError && <p className="error" role="alert">{arrangementError}</p>}
     </section>
   );
 }
