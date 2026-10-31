@@ -37,10 +37,11 @@ export function separationExecutionMode(
   platform: NodeJS.Platform = process.platform,
 ): SeparationExecutionMode {
   // Keep Windows sequential so the packaged DirectML path is never forced
-  // into an unverified graph mode. Linux CPU was measured faster in parallel.
+  // into an unverified graph mode. A pinned real-audio run on four Linux
+  // CPUs also favored sequential execution; parallel remains opt-in.
   if (platform === "win32") return "sequential";
   if (configuredMode === undefined || configuredMode === null) {
-    return platform === "linux" ? "parallel" : "sequential";
+    return "sequential";
   }
   return configuredMode.trim().toLowerCase() === "parallel" ? "parallel" : "sequential";
 }

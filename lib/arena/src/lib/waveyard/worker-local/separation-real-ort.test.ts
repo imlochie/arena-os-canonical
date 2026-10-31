@@ -137,7 +137,7 @@ test("automatic separation prefers the platform GPU provider and falls back to C
   assert.equal(separationInferenceThreads(4, "invalid"), 2, "ignore invalid thread counts");
   assert.equal(separationExecutionMode("parallel", "linux"), "parallel");
   assert.equal(separationExecutionMode("parallel", "win32"), "sequential");
-  assert.equal(separationExecutionMode(undefined, "linux"), "parallel");
+  assert.equal(separationExecutionMode(undefined, "linux"), "sequential");
   assert.equal(separationExecutionMode(undefined, "win32"), "sequential");
   assert.equal(separationExecutionMode("invalid", "linux"), "sequential");
   assert.equal(separationInferenceThreads(4, null, "parallel"), 1, "reserve one thread for parallel graph scheduling");
@@ -609,11 +609,21 @@ if (realAudioInputPath) {
         }
       })();
       const startedAt = Date.now();
+      let playbackTicks = 0;
+      let lastPlaybackTickAt = startedAt;
+      let maxPlaybackGapMs = 0;
+      const playbackTimer = setInterval(() => {
+        const now = Date.now();
+        maxPlaybackGapMs = Math.max(maxPlaybackGapMs, now - lastPlaybackTickAt);
+        lastPlaybackTickAt = now;
+        playbackTicks += 1;
+      }, 20);
       let retry: Awaited<ReturnType<typeof retrySeparationJob>> | undefined;
       try {
         retry = await retrySeparationJob(f.database, f.job.id);
         assert.equal(await harness.broker.drain(570_000), true, "the real-audio recipe drains through the production worker");
       } finally {
+        clearInterval(playbackTimer);
         stopSamplingProgress = true;
         await sampleProgress;
         if (activePass) {
@@ -636,6 +646,8 @@ if (realAudioInputPath) {
       assert.equal(job.status, "complete");
       const stems = await f.database.select().from(stemAssets).where(eq(stemAssets.separationJobId, f.job.id));
       assert.equal(stems.length, 4, "the recipe persists vocals, drums, bass, and melody");
+      assert.ok(playbackTicks >= 5, `playback timer advanced ${playbackTicks} times during real-audio separation`);
+      assert.ok(maxPlaybackGapMs < 1_000, `playback timer's longest pause was ${maxPlaybackGapMs}ms`);
 
       const measuredStems: Record<string, ReturnType<typeof audioMetrics>> = {};
       const outputIntegrity: Record<string, { readablePcm16Stereo44100: boolean; correctDuration: boolean; finiteSamples: boolean; inPcmRange: boolean }> = {};
@@ -700,7 +712,7 @@ if (realAudioInputPath) {
         },
       );
       const report = {
-        schemaVersion: 4,
+        schemaVersion: 5,
         platform: process.platform,
         osRelease: release(),
         architecture: process.arch,
@@ -744,6 +756,8 @@ if (realAudioInputPath) {
           excerptPreparationMs,
           separationElapsedMs: elapsedMs,
           measuredInputToStemsMs: audioDecodeMs + excerptPreparationMs + elapsedMs,
+          playbackTimerTicks: playbackTicks,
+          maxPlaybackTimerGapMs: maxPlaybackGapMs,
           inferenceStageTotals: stageTotals,
           inferenceTimeSharePercent: Number((stageTotals.inferenceMs / Math.max(1, stageTotals.totalMs) * 100).toFixed(1)),
           modelInferenceStages: inferenceStageTimings,
