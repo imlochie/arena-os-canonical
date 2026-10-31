@@ -5,6 +5,12 @@ import { cpus, release, tmpdir, type as osType } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertQualityReport, summarizePairedQuality } from "./waveyard-quality-comparison.mjs";
+import {
+  summarize,
+  summarizeModelStages,
+  summarizeStageTotals,
+  validatePairedRuns,
+} from "./waveyard-benchmark-summary.mjs";
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const testPath = join(
@@ -40,56 +46,6 @@ const settings = {
 const modes = Object.keys(settings);
 const intermediateDirectory = await mkdtemp(join(tmpdir(), "waveyard-paired-benchmark-"));
 const runs = [];
-
-function summarize(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  const median = sorted.length % 2
-    ? sorted[middle]
-    : (sorted[middle - 1] + sorted[middle]) / 2;
-  const minimum = sorted[0];
-  const maximum = sorted.at(-1);
-  return {
-    median: Number(median.toFixed(1)),
-    minimum,
-    maximum,
-    range: Number((maximum - minimum).toFixed(1)),
-  };
-}
-
-function summarizeStageTotals(modeRuns) {
-  const stageNames = Object.keys(modeRuns[0].timings.inferenceStageTotals);
-  return Object.fromEntries(
-    stageNames.map((stage) => [
-      stage,
-      summarize(modeRuns.map((run) => run.timings.inferenceStageTotals[stage])),
-    ]),
-  );
-}
-
-function summarizeModelStages(modeRuns) {
-  const modelIds = modeRuns[0].timings.modelInferenceStages.map((entry) => entry.model);
-  return Object.fromEntries(
-    modelIds.map((model) => {
-      const keys = Object.keys(
-        modeRuns[0].timings.modelInferenceStages.find((entry) => entry.model === model).timings,
-      );
-      return [
-        model,
-        Object.fromEntries(
-          keys.map((stage) => [
-            stage,
-            summarize(
-              modeRuns.map((run) =>
-                run.timings.modelInferenceStages.find((entry) => entry.model === model).timings[stage],
-              ),
-            ),
-          ]),
-        ),
-      ];
-    }),
-  );
-}
 
 async function measure(mode, repetition, order) {
   const reportFile = join(intermediateDirectory, `${repetition}-${mode}.json`);
@@ -152,6 +108,8 @@ try {
       runs.push(await measure(mode, repetition, order.join(" then ")));
     }
   }
+
+  validatePairedRuns(runs, modes, repetitions);
 
   const inputIdentity = {
     filename: basename(runs[0].input.filename),

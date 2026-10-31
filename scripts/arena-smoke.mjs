@@ -994,7 +994,7 @@ try {
   );
   await page.setViewportSize(appleCatalogDesktopViewport ?? { width: 1280, height: 900 });
   await page.getByTestId("connected-libraries").waitFor();
-  await page.getByText("Direct Apple Music sign-in is not wired", { exact: false }).waitFor();
+  await page.getByText("Direct Apple sign-in isn’t available", { exact: false }).waitFor();
   await page.getByText(/backs up track and playlist metadata only—not protected Apple Music subscription audio/).waitFor();
   report.push("The Apple catalog shortcut is visible and fits on a phone, and keyboard activation opens and scrolls to metadata-only controls.");
   const appleBackupInput = page.getByLabel("Import Apple Music backup");

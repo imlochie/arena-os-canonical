@@ -785,6 +785,17 @@ if (realAudioInputPath) {
         FOUR_STEM_MODELS.length,
         "the production worker should expose a progress interval for each real model pass",
       );
+      assert.deepEqual(
+        modelPassTimings.map(({ model }) => model).sort(),
+        FOUR_STEM_MODELS.map(({ id }) => id).sort(),
+        "progress timing must include every pinned model pass exactly once",
+      );
+      for (const pass of modelPassTimings) {
+        assert.ok(
+          Number.isFinite(pass.elapsedMs) && pass.elapsedMs > 0,
+          `${pass.model} progress timing must be finite and positive`,
+        );
+      }
 
       const [job] = await f.database.select().from(processingJobs).where(eq(processingJobs.id, f.job.id));
       assert.equal(job.status, "complete");
@@ -836,6 +847,29 @@ if (realAudioInputPath) {
         FOUR_STEM_MODELS.map(({ id }) => id).sort(),
         "stage timings cover all pinned models",
       );
+      const expectedTimingKeys = [
+        "preprocessingMs",
+        "stftMs",
+        "inferenceMs",
+        "istftMs",
+        "overlapAddMs",
+        "reconstructionMs",
+        "totalMs",
+        "chunkCount",
+      ].sort();
+      for (const entry of inferenceStageTimings) {
+        assert.deepEqual(
+          Object.keys(entry.timings).sort(),
+          expectedTimingKeys,
+          `${entry.model} timing pass must include every required stage`,
+        );
+        for (const [stage, value] of Object.entries(entry.timings)) {
+          assert.ok(
+            Number.isFinite(value) && value >= 0,
+            `${entry.model} ${stage} timing must be finite and non-negative`,
+          );
+        }
+      }
       const stageTotals = inferenceStageTimings.reduce(
         (totals, entry) => {
           for (const key of ["preprocessingMs", "stftMs", "inferenceMs", "istftMs", "overlapAddMs", "reconstructionMs", "totalMs"] as const) {
