@@ -38,7 +38,7 @@ No score threshold is used as a pass/fail signal. A non-silent or readable file 
 4. Exclude the first and last 0.5 seconds from reference SI-SDR to reduce model padding/overlap edge influence. Use the full excerpt to evaluate the unscaled sum of all four estimates against the original mixture. Report both SI-SDR and unscaled residual SDR, plus residual RMS.
 5. Preserve the paired reference and estimated WAV files under `generated-artifacts/waveyard-separation-quality/` for audition. This directory is ignored by Git; the licensed audio is not committed.
 
-The opt-in runner supports `WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST` with dataset/license attribution and four aligned reference-file paths. `WAVEYARD_REAL_AUDIO_AUDITION_DIR` writes WAVs for listening; `WAVEYARD_REAL_AUDIO_REPORT` writes the objective JSON report. Run the test through the scripts workspace's `tsx` resolver with the absolute test path (see `.agents/memory/waveyard-real-audio-runner.md`).
+The opt-in real-audio benchmark supports `WAVEYARD_REAL_AUDIO_REFERENCE_MANIFEST` with dataset/license attribution and four aligned reference-file paths. `WAVEYARD_REAL_AUDIO_AUDITION_DIR` writes WAVs for listening; `WAVEYARD_REAL_AUDIO_REPORT` writes the report. Set `WAVEYARD_REAL_AUDIO_INPUT` to the audio file and run `node scripts/waveyard-real-audio-benchmark.mjs` for paired sequential 2/1 and bounded-parallel 1/2 CPU runs; `WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS` accepts 2–10 (default 3). The report contains per-run stage timings, elapsed time, playback timer gaps, median/ranges, input/model hashes, and measured OS/CPU. Windows runs are CPU-only and do not represent DirectML performance; Linux measurements are not Windows evidence.
 
 ## Licensed reference material
 

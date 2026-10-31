@@ -35,7 +35,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { cpus, release, tmpdir } from "node:os";
+import { cpus, release, tmpdir, type as osType } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -140,6 +140,18 @@ test("automatic separation prefers the platform GPU provider and falls back to C
   assert.equal(separationExecutionMode(undefined, "linux"), "sequential");
   assert.equal(separationExecutionMode(undefined, "win32"), "sequential");
   assert.equal(separationExecutionMode("invalid", "linux"), "sequential");
+  const previousBenchmarkChild = process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CHILD;
+  const previousCpuOnlyBenchmark = process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CPU_ONLY;
+  try {
+    process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CHILD = "1";
+    process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CPU_ONLY = "1";
+    assert.equal(separationExecutionMode("parallel", "win32"), "parallel");
+  } finally {
+    if (previousBenchmarkChild === undefined) delete process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CHILD;
+    else process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CHILD = previousBenchmarkChild;
+    if (previousCpuOnlyBenchmark === undefined) delete process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CPU_ONLY;
+    else process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CPU_ONLY = previousCpuOnlyBenchmark;
+  }
   assert.equal(separationInferenceThreads(4, null, "parallel"), 1, "reserve one thread for parallel graph scheduling");
   assert.equal(separationInterOpThreads(4, "sequential", null), 1);
   assert.equal(separationInterOpThreads(4, "parallel", null), 2, "bound the parallel graph pool");
@@ -564,6 +576,9 @@ if (realAudioInputPath) {
           stage: "failed",
           errorCode: "separation_unavailable",
           errorMessage: "Measurement run initialized.",
+          ...(process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CPU_ONLY === "1"
+            ? { requestedDevice: "cpu" }
+            : {}),
           completedAt: new Date(),
         })
         .where(eq(processingJobs.id, f.job.id));
@@ -712,14 +727,16 @@ if (realAudioInputPath) {
         },
       );
       const report = {
-        schemaVersion: 5,
+        schemaVersion: 6,
         platform: process.platform,
+        osType: osType(),
         osRelease: release(),
         architecture: process.arch,
         nodeVersion: process.version,
         cpuModel: cpus()[0]?.model ?? null,
         logicalCpuCount: cpus().length,
         executor: "production retry -> local worker broker",
+        requestedDevice: job.requestedDevice,
         ortExecutionMode: WAVEYARD_ORT_EXECUTION_MODE,
         ortIntraOpThreads: WAVEYARD_ORT_INTRA_OP_THREADS,
         ortInterOpThreads: WAVEYARD_ORT_INTER_OP_THREADS,
@@ -766,7 +783,7 @@ if (realAudioInputPath) {
           ...(progressSamplingError ? { progressSamplingError } : {}),
           excludes: "PGlite fixture setup, model copying, library import/upload, and subjective separation quality",
         },
-        evidenceLimit: "Real audio and pinned-model execution on the recorded platform; this does not establish Windows performance unless platform is win32, or subjective separation quality.",
+        evidenceLimit: "Real audio and pinned-model execution only on the recorded OS, CPU, and provider; CPU-only measurements do not establish DirectML performance or subjective separation quality.",
       };
       if (referenceManifestPath) {
         const referenceManifest = JSON.parse(await readFile(resolve(referenceManifestPath), "utf8")) as {

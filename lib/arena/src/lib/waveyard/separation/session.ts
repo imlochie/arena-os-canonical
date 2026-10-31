@@ -37,9 +37,13 @@ export function separationExecutionMode(
   platform: NodeJS.Platform = process.platform,
 ): SeparationExecutionMode {
   // Keep Windows sequential so the packaged DirectML path is never forced
-  // into an unverified graph mode. A pinned real-audio run on four Linux
-  // CPUs also favored sequential execution; parallel remains opt-in.
-  if (platform === "win32") return "sequential";
+  // into an unverified graph mode. The real-audio benchmark may opt into a
+  // CPU-only comparison in an isolated child process; that does not change
+  // the production DirectML default.
+  const cpuBenchmarkChild =
+    process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CHILD === "1" &&
+    process.env.WAVEYARD_REAL_AUDIO_BENCHMARK_CPU_ONLY === "1";
+  if (platform === "win32" && !cpuBenchmarkChild) return "sequential";
   if (configuredMode === undefined || configuredMode === null) {
     return "sequential";
   }

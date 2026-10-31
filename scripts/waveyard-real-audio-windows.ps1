@@ -3,8 +3,9 @@
 Runs a low-level real-audio separation pipeline measurement on Windows.
 
 .DESCRIPTION
-This source-level test exercises the production local worker and pinned models,
-but it does not launch the packaged ArenaForge app or verify live stem playback.
+This paired benchmark runs sequential 2/1 and bounded-parallel 1/2 CPU settings
+for multiple repetitions against the same pinned models and audio excerpt. It
+does not launch the packaged ArenaForge app or verify live stem playback.
 For the complete installed-app Windows acceptance check, use
 desktop/Measure-Waveyard.ps1 instead.
 
@@ -13,6 +14,7 @@ Compressed formats and WAV files outside native 16-bit PCM at 44.1 kHz require
 ffmpeg to be available through Arena's local resolver.
 Audio is processed locally and is not uploaded. The JSON report records the
 Windows runtime, CPU, model hashes, input details, elapsed time, and stem metrics.
+This comparison measures CPU inference; it does not establish DirectML performance.
 
 .PARAMETER AudioPath
 Path to a local supported audio file.
@@ -25,6 +27,9 @@ Maximum audio duration to process. Defaults to 20 seconds; accepts 2 to 20 secon
 
 .PARAMETER StartSeconds
 Whole-second offset into the audio file. Defaults to the beginning.
+
+.PARAMETER Repetitions
+Paired repetitions. Defaults to 3; accepts 2 to 10.
 
 .EXAMPLE
 .\scripts\waveyard-real-audio-windows.ps1 -AudioPath "C:\Music\sample.mp3"
@@ -43,7 +48,9 @@ param(
 
   [int]$MaxSeconds = 20,
 
-  [int]$StartSeconds = 0
+  [int]$StartSeconds = 0,
+
+  [int]$Repetitions = 3
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,6 +60,9 @@ if ($MaxSeconds -lt 2 -or $MaxSeconds -gt 20) {
 }
 if ($StartSeconds -lt 0 -or $StartSeconds -gt 899) {
   throw "StartSeconds must be an integer from 0 to 899."
+}
+if ($Repetitions -lt 2 -or $Repetitions -gt 10) {
+  throw "Repetitions must be an integer from 2 to 10."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -81,28 +91,27 @@ if (-not (Test-Path -LiteralPath (Join-Path $repoRoot "node_modules"))) {
   throw "Project dependencies are missing. Run pnpm install from the project root first."
 }
 
-$pnpm = Get-Command "pnpm.cmd" -ErrorAction SilentlyContinue
-if (-not $pnpm) {
-  $pnpm = Get-Command "pnpm" -ErrorAction Stop
-}
-$pnpmExecutable = $pnpm.Source
-if (-not $pnpmExecutable) {
-  $pnpmExecutable = $pnpm.Name
+$node = Get-Command "node" -ErrorAction Stop
+$nodeExecutable = $node.Source
+if (-not $nodeExecutable) {
+  $nodeExecutable = $node.Name
 }
 
 $previousInputPath = $env:WAVEYARD_REAL_AUDIO_INPUT
 $previousReportPath = $env:WAVEYARD_REAL_AUDIO_REPORT
 $previousMaxSeconds = $env:WAVEYARD_REAL_AUDIO_MAX_SECONDS
 $previousStartSeconds = $env:WAVEYARD_REAL_AUDIO_START_SECONDS
+$previousRepetitions = $env:WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS
 Push-Location $repoRoot
 try {
   $env:WAVEYARD_REAL_AUDIO_INPUT = $resolvedAudioPath
   $env:WAVEYARD_REAL_AUDIO_REPORT = $resolvedReportPath
   $env:WAVEYARD_REAL_AUDIO_MAX_SECONDS = [string]$MaxSeconds
   $env:WAVEYARD_REAL_AUDIO_START_SECONDS = [string]$StartSeconds
+  $env:WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS = [string]$Repetitions
 
   $runStartedAt = [DateTime]::UtcNow
-  & $pnpmExecutable --filter @workspace/scripts exec tsx --test --test-name-pattern "real audio excerpt" $testPath
+  & $nodeExecutable (Join-Path $repoRoot "scripts/waveyard-real-audio-benchmark.mjs")
   $testExitCode = $LASTEXITCODE
   if ($testExitCode -ne 0) {
     throw "Waveyard real-audio run failed with exit code $testExitCode."
@@ -115,8 +124,14 @@ try {
     throw "The report at $resolvedReportPath is stale; no new Windows result was recorded."
   }
   $report = Get-Content -LiteralPath $resolvedReportPath -Raw | ConvertFrom-Json
-  if ($report.platform -ne "win32") {
-    throw "The report records platform '$($report.platform)', not win32. It is not Windows evidence."
+  if ($report.measuredMachine.platform -ne "win32") {
+    throw "The report records platform '$($report.measuredMachine.platform)', not win32. It is not Windows evidence."
+  }
+  if ($report.summary.sequential.repetitions -ne $Repetitions -or $report.summary.parallel.repetitions -ne $Repetitions) {
+    throw "The report does not contain all requested paired repetitions."
+  }
+  if ($report.measuredMachine.cpuModel -eq $null) {
+    throw "The report does not identify the Windows CPU model."
   }
 
   Write-Host "Measurement report saved to $resolvedReportPath"
@@ -140,6 +155,11 @@ try {
     Remove-Item Env:WAVEYARD_REAL_AUDIO_START_SECONDS -ErrorAction SilentlyContinue
   } else {
     $env:WAVEYARD_REAL_AUDIO_START_SECONDS = $previousStartSeconds
+  }
+  if ($null -eq $previousRepetitions) {
+    Remove-Item Env:WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS -ErrorAction SilentlyContinue
+  } else {
+    $env:WAVEYARD_REAL_AUDIO_BENCHMARK_REPETITIONS = $previousRepetitions
   }
   Pop-Location
 }
