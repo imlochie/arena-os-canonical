@@ -1036,6 +1036,45 @@ try {
   signalHeldAssetRouteFinished = null;
 
   assert.equal(session.currentSessionTrackId, "a", "timing comparisons use the same recipient track");
+  session.positionSeconds = 0;
+  session.swaps = [];
+  await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+  await page.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+    return audio.length === 4 && audio.every(element =>
+      element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+    );
+  }, { timeout: 10_000 });
+  current = page.locator('[data-role="current"]');
+  if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
+  await page.evaluate(() => { window.liveStemAssetFetchTrace.length = 0; });
+  const buffersBeforeWarm = await page.evaluate(() => window.audioProbe.buffers.length);
+  const warmedDonorResponse = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/assets/c-vocals" && response.ok(),
+  );
+  await current.getByTestId("open-live-swap-vocals").click();
+  const warmedDonor = current.getByTestId("live-swap-candidate-vocals-c");
+  await warmedDonor.waitFor();
+  await warmedDonor.hover();
+  await warmedDonorResponse;
+  assert.equal(await page.evaluate(() =>
+    window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
+  ), 1, "focusing or deliberately hovering a donor starts one bounded warm request");
+  assert.equal(await page.evaluate(() => window.audioProbe.buffers.length), buffersBeforeWarm,
+    "warming a donor never makes it audible before the user chooses it");
+  assert.ok(await current.locator('audio[src$="/a-vocals"]').evaluate(audio => !audio.paused),
+    "the current mix remains playing while the donor warms");
+  const timingCountBeforeWarmSwap = await page.evaluate(() => window.liveStemTimings.length);
+  await warmedDonor.click();
+  await page.waitForFunction((baseline) => window.audioProbe.buffers.length > baseline, buffersBeforeWarm);
+  await page.waitForFunction((baseline) => window.liveStemTimings.length > baseline, timingCountBeforeWarmSwap);
+  assert.equal(await page.evaluate(() =>
+    window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
+  ), 1, "selecting the warmed donor reuses its in-flight or decoded buffer");
+  console.log("PASS: focusing or hovering warms one donor silently, then reuses it for the live swap");
+
+  session.positionSeconds = 0;
+  session.swaps = [];
   const desktopNativeTiming = await measureLiveStemSwap("c", 1, 0, "desktop");
   const desktopTempoTiming = await measureLiveStemSwap("b", 124 / 120, 0, "desktop");
   const slowNetworkInjectedDelayMs = 450;
@@ -1194,6 +1233,21 @@ try {
     `external library donor follows recipient clock: ${JSON.stringify(externalResume)}`);
   assert.equal(await current.getByTestId("live-stem-tempo-vocals").innerText(),
     "Tempo unavailable · native tempo", "missing BPM is shown honestly instead of implying tempo sync");
+  // Several preceding checks intentionally play real browser audio and can
+  // outlast the short synthetic queue. Rebase this failure assertion on a
+  // fresh recipient so the retry control is not racing an automatic advance.
+  session.currentSessionTrackId = "a";
+  session.positionSeconds = 0;
+  session.swaps = [];
+  await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+  await page.waitForFunction(() => {
+    const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+    return audio.length === 4 && audio.every(element =>
+      element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+    );
+  }, { timeout: 10_000 });
+  current = page.locator('[data-role="current"]');
+  if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
   const failedDonorId = session.currentSessionTrackId === "c" ? "a" : "c";
   failAsset = `${failedDonorId}-bass`;
   await chooseLiveSource("bass", failedDonorId);
@@ -1221,6 +1275,11 @@ try {
   await secondPage.waitForFunction(() => document.querySelector('[data-role="current"]')?.textContent.includes("Test c"));
   assert.ok(await secondPage.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.paused)),
     "a track change mirrors to the other tab without starting duplicate audio");
+  const primaryPlayControl = page.getByTestId("session-play");
+  if (await primaryPlayControl.getAttribute("aria-pressed") !== "true") await primaryPlayControl.click();
+  await secondPage.waitForFunction(() =>
+    document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
+  );
   await secondPage.getByTestId("session-play").click();
   await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");
   await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].every(element => element.paused));

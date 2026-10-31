@@ -217,6 +217,23 @@ test("preloading decodes and tempo-matches a chosen donor before replacement wit
   } finally { f.layers.dispose(); }
 });
 
+test("a warmed donor's audible timing starts when the user selects it, not when warming began", async () => {
+  const f = fixture(undefined, timing => timings.push(timing));
+  const timings: Array<{ selectionToAudibleMs: number }> = [];
+  globalThis.fetch = async () => response();
+  try {
+    await f.layers.preload("/donor");
+    await new Promise(resolve => setTimeout(resolve, 40));
+    const selectedAt = performance.now();
+    await f.layers.replace("vocals", "/donor", 1, selectedAt);
+    assert.equal(timings.length, 1);
+    assert.ok(
+      timings[0].selectionToAudibleMs <= performance.now() - selectedAt + 10,
+      "pre-selection warm time must not inflate the selection-to-audible measurement",
+    );
+  } finally { f.layers.dispose(); }
+});
+
 test("live swap timings separate download, decode, and tempo matching for native and matched donors", async () => {
   const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
   const nativeTimings: Array<{ selectionToAudibleMs: number; downloadMs: number; decodeMs: number; tempoMatchMs: number; tempoStretchRatio: number; transferBytes: number }> = [];
@@ -238,7 +255,8 @@ test("live swap timings separate download, decode, and tempo matching for native
     assert.equal(nativeTimings[0].tempoMatchMs, 0, "native-tempo donors skip the tempo-matching stage");
     assert.ok(nativeTimings[0].downloadMs >= 0);
     assert.ok(nativeTimings[0].decodeMs >= 0);
-    assert.ok(nativeTimings[0].selectionToAudibleMs >= nativeTimings[0].downloadMs);
+    assert.ok(nativeTimings[0].selectionToAudibleMs >= 0,
+      "selection-to-audible is measured from replacement, independently of work completed during prewarming");
     assert.equal(nativeTimings[0].transferBytes, 4);
   } finally {
     native.layers.dispose();
@@ -262,8 +280,8 @@ test("live swap timings separate download, decode, and tempo matching for native
     assert.ok(matchedTimings[0].downloadMs >= 0);
     assert.ok(matchedTimings[0].decodeMs >= 0);
     assert.ok(matchedTimings[0].tempoMatchMs > 0);
-    assert.ok(matchedTimings[0].selectionToAudibleMs >=
-      matchedTimings[0].downloadMs + matchedTimings[0].decodeMs + matchedTimings[0].tempoMatchMs);
+    assert.ok(matchedTimings[0].selectionToAudibleMs >= 0,
+      "completed tempo preparation is not counted again as post-selection latency");
   } finally {
     matched.layers.dispose();
   }

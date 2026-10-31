@@ -220,6 +220,7 @@ function SessionDeck({
   active,
   startAt,
   swaps,
+  swapSelectionTimes,
   tempoStretchRatios,
   masterLevel,
   autoPlay,
@@ -252,6 +253,7 @@ function SessionDeck({
   active: boolean;
   startAt: number;
   swaps: Record<string, string>;
+  swapSelectionTimes: Record<string, number>;
   tempoStretchRatios: Record<string, number>;
   masterLevel: number;
   autoPlay: boolean;
@@ -329,15 +331,16 @@ function SessionDeck({
   const swapKey = JSON.stringify(assetIds.map((id) => {
     const stemType = stemTypeByAsset.get(id) ?? "source";
     const donor = swaps[stemType] ?? null;
-    return [id, donor, donor === null ? 1 : tempoStretchRatios[stemType] ?? 1];
+    const selectedAt = donor === null ? null : swapSelectionTimes[stemType] ?? null;
+    return [id, donor, donor === null ? 1 : tempoStretchRatios[stemType] ?? 1, selectedAt];
   }));
   useEffect(() => {
     let stale = false;
-    const layers = JSON.parse(swapKey) as Array<[string, string | null, number]>;
+    const layers = JSON.parse(swapKey) as Array<[string, string | null, number, number | null]>;
     setLoadingLayers(layers.some(([, donor]) => donor !== null));
-    const replacements = layers.map(([id, donor, tempoStretchRatio]) => {
+    const replacements = layers.map(([id, donor, tempoStretchRatio, selectedAt]) => {
       const stemType = stemTypeByAsset.get(id) ?? "source";
-      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio).then(() => {
+      return transport.replaceStem(id, donor ? `/api/assets/${donor}` : null, tempoStretchRatio, selectedAt ?? undefined).then(() => {
         if (!stale && donor !== null && item !== null) onLiveLayerReady?.(item.id, stemType);
       });
     });
@@ -884,6 +887,7 @@ export default function SessionExperience({
   } | null>(null);
   const [sendingToStudio, setSendingToStudio] = useState(false);
   const studioHandoffInFlight = useRef(false);
+  const liveSwapWarmupsRef = useRef(new Map<string, Promise<void>>());
   const [studioTrackSelection, setStudioTrackSelection] = useState<{ sessionId: string; trackIds: string[] } | null>(null);
   const studioReadyTrackIds = useMemo(
     () => session?.tracks.filter((item) => getStudioTrackReadiness(item, library).ready).map((item) => item.id) ?? [],
@@ -908,6 +912,7 @@ export default function SessionExperience({
   const [phase, setPhase] = useState<FadePhase>("idle");
   const [savingSwap, setSavingSwap] = useState(false);
   const [pendingSwaps, setPendingSwaps] = useState<PendingLiveSwap[]>([]);
+  const [swapSelectionTimes, setSwapSelectionTimes] = useState<Record<string, number>>({});
   const [openSwapStem, setOpenSwapStem] = useState<string | null>(null);
   const [mixes, setMixes] = useState<Record<string, Record<string, number>>>({});
   const [transitions, setTransitions] = useState<Record<string, TransitionConfig>>({});
@@ -2032,26 +2037,22 @@ export default function SessionExperience({
     [session, mutate, jumpTo, persistState, clearRemoteTransport, publishTransport],
   );
 
-  // ------------------------------------------------------------------ swaps
-  const requestSwap = useCallback(
-    async (stemType: string, donor: { id: string; title: string; stems?: SessionTrackItem["stems"]; bpm?: number | null }) => {
-      if (session === null || currentItem === null) return;
-      const selectedAt = performance.now();
-      const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
-      if (validation && !validation.ok) {
-        setStatus(validation.reason);
-        return;
-      }
+  const warmLiveSwap = useCallback(
+    (stemType: string, donor: { id: string; stems?: SessionTrackItem["stems"]; bpm?: number | null }) => {
+      if (session === null || currentItem === null) return Promise.resolve();
       const recipientStemId = currentItem.stems.find((stem) => stem.stemType === stemType)?.id;
+      if (!recipientStemId) return Promise.resolve();
+      const key = `${activeDeck}:${currentItem.id}:${stemType}:${donor.id}`;
+      const existing = liveSwapWarmupsRef.current.get(key);
+      if (existing) return existing;
+
+      const selectedAt = performance.now();
       const tempoStretchRatio = liveStemTempoStretchRatio(
         currentItem.analysis?.bpm ?? null,
         donor.bpm ?? null,
       ) ?? 1;
-      // Resolve a library donor's real stem asset and warm the audio while the
-      // save request is in flight. This does no playback work; replaceStem
-      // still owns validation, cancellation, and the audible crossfade.
-      void (async () => {
-        if (!recipientStemId) return;
+      let warming!: Promise<void>;
+      warming = (async () => {
         let donorStem = donor.stems?.find((stem) => stem.stemType === stemType);
         if (!donorStem) {
           const response = await fetch(`/api/library/tracks/${donor.id}`, { cache: "no-store" });
@@ -2062,9 +2063,33 @@ export default function SessionExperience({
         if (!donorStem) return;
         await decksRef.current[activeDeck]?.preloadStem(recipientStemId, donorStem.id, tempoStretchRatio, selectedAt);
       })().catch(() => {
-        // Warming is best-effort. The normal swap path retries the download
-        // and reports its real error without interrupting the current layer.
+        // Warming is optional; the normal selection path still fetches and reports failures.
+      }).finally(() => {
+        if (liveSwapWarmupsRef.current.get(key) === warming) liveSwapWarmupsRef.current.delete(key);
       });
+      liveSwapWarmupsRef.current.set(key, warming);
+      return warming;
+    },
+    [activeDeck, currentItem, session],
+  );
+
+  // ------------------------------------------------------------------ swaps
+  const requestSwap = useCallback(
+    async (stemType: string, donor: { id: string; title: string; stems?: SessionTrackItem["stems"]; bpm?: number | null }) => {
+      if (session === null || currentItem === null) return;
+      const selectedAt = performance.now();
+      const validation = donor.stems ? validateStemSwap(currentItem.stems, donor.stems, stemType) : null;
+      if (validation && !validation.ok) {
+        setStatus(validation.reason);
+        return;
+      }
+      // Reuse any source warmed while the picker was open; swaps stay silent
+      // until the persisted choice is committed and the audio graph replaces it.
+      void warmLiveSwap(stemType, donor);
+      setSwapSelectionTimes((previous) => ({
+        ...previous,
+        [`${currentItem.id}:${stemType}`]: selectedAt,
+      }));
       setSavingSwap(true);
       setStatus(`Saving ${stemType} source from “${donor.title}”… current playback continues.`);
       try {
@@ -2096,7 +2121,7 @@ export default function SessionExperience({
         setSavingSwap(false);
       }
     },
-    [session, currentItem, mutate, activeDeck],
+    [session, currentItem, mutate, activeDeck, warmLiveSwap],
   );
 
   const revertSwap = useCallback(
@@ -2120,6 +2145,13 @@ export default function SessionExperience({
     setPendingSwaps((previous) => previous.filter(
       (pending) => pending.sessionTrackId !== sessionTrackId || pending.stemType !== stemType,
     ));
+    setSwapSelectionTimes((previous) => {
+      const key = `${sessionTrackId}:${stemType}`;
+      if (previous[key] === undefined) return previous;
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -2734,6 +2766,19 @@ export default function SessionExperience({
         busy={savingSwap}
         onToggle={() => setOpenSwapStem((current) => current === stemType ? null : stemType)}
         onClose={() => setOpenSwapStem(null)}
+        onWarm={(donorId) => {
+          const donor = donors.find((item) => item.track.id === donorId);
+          if (donor) {
+            void warmLiveSwap(stemType, {
+              id: donor.track.id,
+              stems: donor.stems,
+              bpm: donor.analysis?.bpm ?? null,
+            });
+            return;
+          }
+          const source = libraryDonors.find((item) => item.id === donorId);
+          if (source) void warmLiveSwap(stemType, { id: source.id, bpm: source.analysis?.bpm ?? null });
+        }}
         onChoose={(donorId) => {
           const donor = donors.find((item) => item.track.id === donorId);
           if (donor) {
@@ -2765,6 +2810,12 @@ export default function SessionExperience({
       active: isActive,
       startAt: startAtFor(deckIndex),
       swaps: isActive ? activeSwaps : {},
+      swapSelectionTimes: isActive && item !== null
+        ? Object.fromEntries(item.stems.flatMap((stem) => {
+          const selectedAt = swapSelectionTimes[`${item.id}:${stem.stemType}`];
+          return selectedAt === undefined ? [] : [[stem.stemType, selectedAt]];
+        }))
+        : {},
       tempoStretchRatios: isActive ? activeSwapTempoStretchRatios : {},
       masterLevel,
       autoPlay: item !== null && autoPlayId === item.id && (isActive || resumeAt?.itemId === item.id),

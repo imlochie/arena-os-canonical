@@ -196,7 +196,7 @@ export function demixMdxInWorker(
       }
     });
     worker.once("error", (error) => {
-      workerError = error;
+      workerError = error instanceof Error ? error : new Error(String(error));
     });
     worker.once("exit", (code) => {
       if (code !== 0) {

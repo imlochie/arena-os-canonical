@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "@/routing/Link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keyCompatibility, tempoCompatibility } from "@workspace/arena/lib/waveyard/library/session-logic";
 
 export interface LiveStemDonorOption {
@@ -37,6 +37,7 @@ interface LiveStemSwapPickerProps {
   onToggle: () => void;
   onClose: () => void;
   onChoose: (donorId: string) => void;
+  onWarm: (donorId: string) => void;
   onPrepare: (trackId: string) => void;
   onRestore: () => void;
 }
@@ -62,6 +63,7 @@ export default function LiveStemSwapPicker({
   onToggle,
   onClose,
   onChoose,
+  onWarm,
   onPrepare,
   onRestore,
 }: LiveStemSwapPickerProps) {
@@ -70,6 +72,7 @@ export default function LiveStemSwapPicker({
   const searchRef = useRef<HTMLInputElement>(null);
   const firstCandidateRef = useRef<HTMLButtonElement>(null);
   const firstPreparationRef = useRef<HTMLButtonElement>(null);
+  const hoverWarmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pickerId = `live-swap-picker-${stemType}`;
 
   const filteredCandidates = useMemo(() => {
@@ -87,6 +90,17 @@ export default function LiveStemSwapPicker({
     );
   }, [preparationCandidates, query]);
   const sourceCount = candidates.length + preparationCandidates.length;
+  const clearHoverWarm = useCallback(() => {
+    if (hoverWarmTimerRef.current !== null) clearTimeout(hoverWarmTimerRef.current);
+    hoverWarmTimerRef.current = null;
+  }, []);
+  const scheduleHoverWarm = useCallback((donorId: string) => {
+    clearHoverWarm();
+    hoverWarmTimerRef.current = setTimeout(() => {
+      hoverWarmTimerRef.current = null;
+      onWarm(donorId);
+    }, 140);
+  }, [clearHoverWarm, onWarm]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -110,6 +124,12 @@ export default function LiveStemSwapPicker({
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen) clearHoverWarm();
+  }, [clearHoverWarm, isOpen]);
+
+  useEffect(() => () => clearHoverWarm(), [clearHoverWarm]);
 
   const closeAndReturnFocus = () => {
     onClose();
@@ -137,6 +157,10 @@ export default function LiveStemSwapPicker({
         aria-label={`Use ${candidate.title} for ${stemType}; ${tempoLabel}; ${keyLabel}`}
         data-testid={`live-swap-candidate-${stemType}-${candidate.id}`}
         disabled={busy}
+        onFocus={() => { clearHoverWarm(); onWarm(candidate.id); }}
+        onPointerEnter={() => scheduleHoverWarm(candidate.id)}
+        onPointerLeave={clearHoverWarm}
+        onPointerDown={() => { clearHoverWarm(); onWarm(candidate.id); }}
         onClick={() => {
           onChoose(candidate.id);
           closeAndReturnFocus();

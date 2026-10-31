@@ -358,14 +358,13 @@ export class LiveStemLayers {
     signal.addEventListener("abort", abortPrepared, { once: true });
     if (signal.aborted) abortPrepared();
     try {
-      return await prepared.promise;
+      return { ...await prepared.promise, selectedAt };
     } finally {
       signal.removeEventListener("abort", abortPrepared);
     }
   }
 
-  async replace(id: string, url: string | null, tempoStretchRatio = 1) {
-    const selectedAt = performance.now();
+  async replace(id: string, url: string | null, tempoStretchRatio = 1, selectedAt = performance.now()) {
     if (url && (!Number.isFinite(tempoStretchRatio) || tempoStretchRatio < 0.5 || tempoStretchRatio > 2)) {
       throw new Error("The live stem tempo ratio must be between 0.5× and 2×.");
     }
