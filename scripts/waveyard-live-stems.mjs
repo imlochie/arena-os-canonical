@@ -144,6 +144,7 @@ try {
       window.liveStemTimings.push(event.detail);
     });
     window.modelStatusFetchModes = [];
+    window.liveStemAssetFetchTrace = [];
     let leavingDocument = false;
     window.addEventListener("pagehide", () => { leavingDocument = true; }, { once: true });
     document.addEventListener("visibilitychange", () => {
@@ -156,6 +157,9 @@ try {
       const keepalive = init?.keepalive ?? (input instanceof Request && input.keepalive);
       if (url.pathname === "/api/waveyard/separation/models") {
         window.modelStatusFetchModes.push(init?.cache ?? "default");
+      }
+      if (url.pathname.startsWith("/api/assets/")) {
+        window.liveStemAssetFetchTrace.push(url.pathname);
       }
       if (url.pathname === "/api/assets/d-vocals") {
         window.liveAssetFetchTrace.push(performance.now());
@@ -998,7 +1002,7 @@ try {
   const desktopNativeTiming = await measureLiveStemSwap("c", 1, 0, "desktop");
   const desktopTempoTiming = await measureLiveStemSwap("b", 124 / 120, 0, "desktop");
   const slowNetworkInjectedDelayMs = 450;
-  const desktopSlowNetworkTiming = await measureLiveStemSwap("c", 1, slowNetworkInjectedDelayMs, "desktop");
+  const desktopSlowNetworkTiming = await measureLiveStemSwap("d", 1, slowNetworkInjectedDelayMs, "desktop");
   assert.ok(desktopSlowNetworkTiming.downloadMs >= slowNetworkInjectedDelayMs,
     `the download measurement must include the deliberately delayed response: ${JSON.stringify({
       injectedDelayMs: slowNetworkInjectedDelayMs,
@@ -1059,6 +1063,31 @@ try {
     window.audioProbe.sources.find(s => s.mediaElement.src.endsWith(`/${trackId}-vocals`)).inputNode.gain.value,
   tempoCurrentTrack.id);
   assert.equal(originalGain, 1);
+  const beforeDonorRoundTrip = await page.evaluate(() => {
+    window.liveStemAssetFetchTrace.length = 0;
+    return window.audioProbe.buffers.length;
+  });
+  await chooseLiveSource("vocals", "c");
+  await page.waitForFunction(before => window.audioProbe.buffers.length > before, beforeDonorRoundTrip);
+  await page.evaluate(() => {
+    window.firstRecentDonorBuffer = window.audioProbe.buffers.at(-1).buffer;
+    window.firstRecentDonorFetchCount = window.liveStemAssetFetchTrace
+      .filter(path => path === "/api/assets/c-vocals").length;
+  });
+  const beforeIntermediateDonor = await page.evaluate(() => window.audioProbe.buffers.length);
+  await chooseLiveSource("vocals", "b");
+  await page.waitForFunction(before => window.audioProbe.buffers.length > before, beforeIntermediateDonor);
+  const beforeReturnToDonor = await page.evaluate(() => window.audioProbe.buffers.length);
+  await chooseLiveSource("vocals", "c");
+  await page.waitForFunction(before => window.audioProbe.buffers.length > before, beforeReturnToDonor);
+  const donorRoundTrip = await page.evaluate(() => ({
+    reusedBuffer: window.audioProbe.buffers.at(-1).buffer === window.firstRecentDonorBuffer,
+    donorFetchCount: window.liveStemAssetFetchTrace.filter(path => path === "/api/assets/c-vocals").length,
+    firstSelectionFetchCount: window.firstRecentDonorFetchCount,
+  }));
+  assert.equal(donorRoundTrip.reusedBuffer, true, "returning to donor C reuses the prepared AudioBuffer");
+  assert.equal(donorRoundTrip.donorFetchCount, donorRoundTrip.firstSelectionFetchCount,
+    "returning to donor C does not download it again");
   const wasPlayingBeforeFourSwaps = await current.locator("audio").first().evaluate(audio => !audio.paused);
   if (wasPlayingBeforeFourSwaps) await toggle();
   for (const type of types) {
@@ -1093,6 +1122,7 @@ try {
   assert.match(await unknownAnalysisDonor.getAttribute("aria-label"), /BPM unknown; Key unknown/,
     "the picker labels absent donor analysis instead of implying compatibility");
   liveSwapRequestOrder.length = 0;
+  await page.evaluate(() => { window.liveAssetFetchTrace.length = 0; });
   let releaseExternalDonorSave;
   externalDonorSaveGate = new Promise(resolve => { releaseExternalDonorSave = resolve; });
   const externalSaveStarted = new Promise(resolve => { signalExternalDonorSave = resolve; });

@@ -301,6 +301,50 @@ test("a rapid donor change holds the in-progress crossfade before starting the n
   } finally { f.layers.dispose(); }
 });
 
+test("switching A to B and back reuses A's prepared audio", async () => {
+  const f = fixture();
+  const fetches: string[] = [];
+  globalThis.fetch = async (url) => {
+    fetches.push(String(url));
+    return response();
+  };
+  try {
+    await f.layers.replace("vocals", "/donor-a");
+    const firstDonorBuffer = f.sources[0].buffer;
+    await f.layers.replace("vocals", "/donor-b");
+    await f.layers.replace("vocals", "/donor-a");
+
+    assert.deepEqual(fetches, ["/donor-a", "/donor-b"], "returning to A does not download it again");
+    assert.equal(f.decodeCount, 2, "returning to A does not decode it again");
+    assert.equal(f.sources[2].buffer, firstDonorBuffer, "the new playback source uses A's retained buffer");
+    assert.equal(f.sources[2].stopped, false);
+  } finally { f.layers.dispose(); }
+});
+
+test("recent donor eviction leaves playback running and evicted donors prepare again", async () => {
+  const f = fixture();
+  const fetches: string[] = [];
+  globalThis.fetch = async (url) => {
+    fetches.push(String(url));
+    return response();
+  };
+  try {
+    await f.layers.replace("vocals", "/donor-a");
+    await f.layers.replace("vocals", "/donor-b");
+    await f.layers.replace("vocals", "/donor-c");
+    await f.layers.replace("vocals", "/donor-d");
+
+    const activeDonor = f.sources[3];
+    assert.equal(activeDonor.stopped, false, "evicting A does not stop the currently audible donor");
+    assert.deepEqual(fetches, ["/donor-a", "/donor-b", "/donor-c", "/donor-d"]);
+
+    await f.layers.replace("vocals", "/donor-a");
+    assert.equal(fetches.at(-1), "/donor-a", "an evicted donor is downloaded again");
+    assert.equal(f.sources.length, 5);
+    assert.equal(activeDonor.stopped, false, "the active donor continues through preparation and crossfade start");
+  } finally { f.layers.dispose(); }
+});
+
 test("Original crossfades back and releases donor playback", async () => {
   const f = fixture();
   globalThis.fetch = async () => response();

@@ -36,6 +36,12 @@ type PreparedStem = {
   promise: Promise<PreparedAudio>;
 };
 
+type RecentStem = {
+  buffer: AudioBuffer;
+  expiresAt: number;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 type PendingSwap = {
   controller: AbortController;
   key: string;
@@ -51,6 +57,8 @@ type BufferStretcher = (
 
 const PREPARED_STEM_TTL_MS = 30_000;
 const MAX_PREPARED_STEMS = 2;
+const RECENT_STEM_TTL_MS = 30_000;
+const MAX_RECENT_STEMS = 2;
 
 const stretchBufferInWorker: BufferStretcher = (context, buffer, ratio, signal) => {
   if (typeof Worker === "undefined") {
@@ -116,6 +124,7 @@ export class LiveStemLayers {
   private layers = new Map<string, Layer>();
   private pending = new Map<string, PendingSwap>();
   private prepared = new Map<string, PreparedStem>();
+  private recent = new Map<string, RecentStem>();
   private retired = new Set<Layer>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -146,6 +155,7 @@ export class LiveStemLayers {
   }
 
   private retire(layer: Layer) {
+    this.rememberRecent(layer);
     this.ramp(layer.input, 0);
     this.retired.add(layer);
     const timer = setTimeout(() => {
@@ -186,6 +196,52 @@ export class LiveStemLayers {
 
   private preparedKey(url: string, tempoStretchRatio: number) {
     return `${url}\u0000${tempoStretchRatio.toFixed(4)}`;
+  }
+
+  private discardRecent(key: string) {
+    const recent = this.recent.get(key);
+    if (!recent) return;
+    clearTimeout(recent.timer);
+    this.recent.delete(key);
+  }
+
+  private rememberRecent(layer: Layer) {
+    const key = this.preparedKey(layer.url, layer.tempoStretchRatio);
+    this.discardRecent(key);
+    while (this.recent.size >= MAX_RECENT_STEMS) {
+      const oldestKey = this.recent.keys().next().value as string | undefined;
+      if (oldestKey === undefined) break;
+      this.discardRecent(oldestKey);
+    }
+
+    const entry: RecentStem = {
+      buffer: layer.buffer,
+      expiresAt: performance.now() + RECENT_STEM_TTL_MS,
+      timer: setTimeout(() => {
+        if (this.recent.get(key) === entry) this.recent.delete(key);
+      }, RECENT_STEM_TTL_MS),
+    };
+    this.recent.set(key, entry);
+  }
+
+  private getRecentBuffer(key: string, selectedAt: number): PreparedAudio | null {
+    const recent = this.recent.get(key);
+    if (!recent) return null;
+    if (recent.expiresAt <= performance.now()) {
+      this.discardRecent(key);
+      return null;
+    }
+    // A read makes the buffer recently used, but does not extend its fixed TTL.
+    this.recent.delete(key);
+    this.recent.set(key, recent);
+    return {
+      buffer: recent.buffer,
+      selectedAt,
+      downloadMs: 0,
+      decodeMs: 0,
+      tempoMatchMs: 0,
+      transferBytes: 0,
+    };
   }
 
   private discardPrepared(key: string, abort: boolean) {
@@ -245,6 +301,7 @@ export class LiveStemLayers {
       return Promise.reject(new Error("The live stem tempo ratio must be between 0.5× and 2×."));
     }
     const key = this.preparedKey(url, tempoStretchRatio);
+    if (this.getRecentBuffer(key, selectedAt)) return Promise.resolve();
     const existing = this.prepared.get(key);
     if (existing) return existing.promise.then(() => undefined);
 
@@ -276,7 +333,10 @@ export class LiveStemLayers {
   ) {
     const key = this.preparedKey(url, tempoStretchRatio);
     const prepared = this.prepared.get(key);
-    if (!prepared) return this.prepareBuffer(url, tempoStretchRatio, signal, selectedAt);
+    if (!prepared) {
+      return this.getRecentBuffer(key, selectedAt) ??
+        this.prepareBuffer(url, tempoStretchRatio, signal, selectedAt);
+    }
 
     // A live replacement now owns the warm operation. Cancelling that swap
     // also stops its download or tempo worker, rather than leaving work behind.
@@ -382,6 +442,7 @@ export class LiveStemLayers {
     this.pause();
     for (const id of new Set([...this.layers.keys(), ...this.pending.keys()])) this.remove(id);
     for (const key of this.prepared.keys()) this.discardPrepared(key, true);
+    for (const key of this.recent.keys()) this.discardRecent(key);
     for (const layer of this.retired) layer.input.disconnect();
     this.retired.clear();
     for (const timer of this.timers) clearTimeout(timer);
