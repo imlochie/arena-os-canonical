@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Copy, FileCode2, Gamepad2, HardDrive, ShieldCheck, Trash2, Upload } from "lucide-react";
 import { createGameSandboxDocument, useArcadeGameSave } from "../lib/arcadeGameSave";
-import { loadImportedGames, saveImportedGames } from "../lib/importedGameStorage";
+import { loadImportedGames, saveImportedGameChanges, saveImportedGames } from "../lib/importedGameStorage";
 import { deleteNesSaveState, readNesSaveState, writeNesSaveState } from "../lib/nesSaveStates";
 import {
   arcadeEmulatorSystemLabel,
@@ -470,13 +470,13 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
   const saveGames = useCallback(async (next: ImportedGame[]) => {
     setGames(next);
     try {
-      await saveImportedGames(next);
+      await saveImportedGameChanges(games, next);
       return true;
     } catch {
       setError("The game is available for this session, but this browser could not save the local shelf.");
       return false;
     }
-  }, []);
+  }, [games]);
 
   useEffect(() => {
     if (!selected || selected.kind !== "nes" || !canvasRef.current) {
