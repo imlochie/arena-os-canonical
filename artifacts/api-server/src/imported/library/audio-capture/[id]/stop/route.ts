@@ -35,6 +35,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         title: capture.metadata.title,
         artist: capture.metadata.artist,
         album: capture.metadata.album,
+        prepareSeparation: capture.signal && capture.signal.state !== "unsupported" && !capture.signal.signalSeen ? false : undefined,
       });
       const response = StopLibraryAudioCaptureResponse.parse({
         track: result.track,
@@ -44,6 +45,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         durationSeconds: capture.result.sampleFrames / capture.format.sampleRate,
         format: capture.format,
         discontinuityCount: capture.discontinuityCount,
+        signal: capture.signal,
       });
       setAudioCaptureImportResult(user.id, id, response);
       await removeAudioCaptureFiles(capture.sessionDirectory);

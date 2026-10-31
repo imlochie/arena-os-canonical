@@ -138,10 +138,10 @@ test("an interrupted RF64 recording is recovered only for its owning user", asyn
 
   const recovery = await getRecoverableAudioCapture(ownerId, id);
   assert.ok(recovery);
+  assert.equal(recovery.signal, undefined, "older interrupted files do not invent signal evidence");
   assert.match(recovery.path, /recording\.recovered\.wav$/);
   assert.equal((await stat(recovery.path)).size > 48, true);
   assert.equal((await readFile(recovery.path)).toString("ascii", 0, 4), "RF64");
-
   const options = await getAudioCaptureOptions(ownerId);
   assert.equal(options.available, false);
   assert.equal(options.recoveries?.length, 1);
@@ -202,10 +202,13 @@ printf '%s\\n' '{"type":"stopped"}' >&2
   assert.equal(recoveries.length, 1);
   assert.equal(recoveries[0].sessionId, started.sessionId);
   assert.equal(recoveries[0].title, "Shutdown recovery test");
+  assert.equal(recoveries[0].signal?.signalSeen, true, "signal evidence is read from the preserved manifest");
   const recovery = await getRecoverableAudioCapture(ownerId, started.sessionId);
   assert.ok(recovery);
   assert.equal((await readFile(recovery.path)).toString("ascii", 0, 4), "RF64");
   clearRecoveredAudioCapture(ownerId, started.sessionId);
+  assert.equal((await getRecoverableAudioCapture(ownerId, started.sessionId))?.signal?.signalSeen, true,
+    "recovery signal evidence survives release of the in-memory session");
 
   const second = await startAudioCapture(ownerId, { title: "Concurrent stop test" });
   const [firstStop, repeatedStop] = await Promise.all([
@@ -215,6 +218,8 @@ printf '%s\\n' '{"type":"stopped"}' >&2
   assert.ok(firstStop);
   assert.equal(repeatedStop, firstStop);
   assert.equal(firstStop.result.sampleFrames, 12);
+  assert.equal(firstStop.signal?.signalSeen, true, "the host's PCM bytes reach the signal monitor");
+  assert.equal(firstStop.signal?.capturedSeconds, 12 / 48_000);
   const importedResponse = { trackId: "deduplicated-result", created: true };
   const captureDirectory = firstStop.sessionDirectory;
   await assert.rejects(

@@ -530,6 +530,8 @@ components:
         createdAt:
           type: string
           format: date-time
+        signal:
+          $ref: "#/components/schemas/LibraryAudioCaptureSignal"
       required: [sessionId, title, createdAt]
     LibraryAudioCaptureRecoveriesResponse:
       type: object
@@ -548,6 +550,8 @@ components:
           type: boolean
         separationQueued:
           type: boolean
+        signal:
+          $ref: "#/components/schemas/LibraryAudioCaptureSignal"
       required: [track, created, separationQueued]
     LibraryAudioCaptureFormat:
       type: object
@@ -601,6 +605,28 @@ components:
         format:
           $ref: "#/components/schemas/LibraryAudioCaptureFormat"
       required: [sessionId, status, startedAt, format]
+    LibraryAudioCaptureSignal:
+      type: object
+      required: [state, peak, capturedSeconds, signalSeen, clippedSamples, invalidSamples]
+      properties:
+        state:
+          type: string
+          enum: [waiting, silent, active, unsupported]
+        peak:
+          type: number
+          minimum: 0
+          maximum: 1
+        capturedSeconds:
+          type: number
+          minimum: 0
+        signalSeen:
+          type: boolean
+        clippedSamples:
+          type: integer
+          minimum: 0
+        invalidSamples:
+          type: integer
+          minimum: 0
     LibraryAudioCaptureStatusResponse:
       type: object
       properties:
@@ -634,6 +660,8 @@ components:
           $ref: "#/components/schemas/LibraryAudioCaptureFormat"
         message:
           type: string
+        signal:
+          $ref: "#/components/schemas/LibraryAudioCaptureSignal"
       required: [sessionId, status, title, elapsedSeconds, discontinuityCount]
     LibraryAudioCaptureStopResponse:
       type: object
@@ -655,6 +683,8 @@ components:
         discontinuityCount:
           type: integer
           minimum: 0
+        signal:
+          $ref: "#/components/schemas/LibraryAudioCaptureSignal"
       required: [track, created, separationQueued, sampleFrames, durationSeconds, format, discontinuityCount]
     ApiError:
       type: object

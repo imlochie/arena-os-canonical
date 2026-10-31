@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { LibraryAudioCaptureSignal } from './libraryAudioCaptureSignal';
 
 export interface LibraryAudioCaptureRecovery {
   sessionId: string;
@@ -12,4 +13,5 @@ export interface LibraryAudioCaptureRecovery {
   artist?: string;
   album?: string;
   createdAt: Date;
+  signal?: LibraryAudioCaptureSignal;
 }

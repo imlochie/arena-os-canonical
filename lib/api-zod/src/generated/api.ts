@@ -183,6 +183,15 @@ export const getLibraryAudioCaptureOptionsResponseActiveSessionEstimatedSecondsR
 
 
 
+export const getLibraryAudioCaptureOptionsResponseActiveSessionSignalPeakMin = 0;
+export const getLibraryAudioCaptureOptionsResponseActiveSessionSignalPeakMax = 1;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionSignalCapturedSecondsMin = 0;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionSignalClippedSamplesMin = 0;
+
+export const getLibraryAudioCaptureOptionsResponseActiveSessionSignalInvalidSamplesMin = 0;
+
 
 
 export const GetLibraryAudioCaptureOptionsResponse = zod.object({
@@ -215,7 +224,15 @@ export const GetLibraryAudioCaptureOptionsResponse = zod.object({
   "bitsPerSample": zod.number().int().min(1),
   "blockAlign": zod.number().int().min(1)
 }).optional(),
-  "message": zod.string().optional()
+  "message": zod.string().optional(),
+  "signal": zod.object({
+  "state": zod.enum(['waiting', 'silent', 'active', 'unsupported']),
+  "peak": zod.number().min(getLibraryAudioCaptureOptionsResponseActiveSessionSignalPeakMin).max(getLibraryAudioCaptureOptionsResponseActiveSessionSignalPeakMax),
+  "capturedSeconds": zod.number().min(getLibraryAudioCaptureOptionsResponseActiveSessionSignalCapturedSecondsMin),
+  "signalSeen": zod.boolean(),
+  "clippedSamples": zod.number().int().min(getLibraryAudioCaptureOptionsResponseActiveSessionSignalClippedSamplesMin),
+  "invalidSamples": zod.number().int().min(getLibraryAudioCaptureOptionsResponseActiveSessionSignalInvalidSamplesMin)
+}).optional()
 }).optional(),
   "recoveryError": zod.string().optional()
 })
@@ -265,13 +282,32 @@ export const StartLibraryAudioCaptureResponse = zod.object({
 /**
  * @summary List recordings preserved after interruption
  */
+export const getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalPeakMin = 0;
+export const getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalPeakMax = 1;
+
+export const getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalCapturedSecondsMin = 0;
+
+export const getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalClippedSamplesMin = 0;
+
+export const getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalInvalidSamplesMin = 0;
+
+
+
 export const GetLibraryAudioCaptureRecoveriesResponse = zod.object({
   "recoveries": zod.array(zod.object({
   "sessionId": zod.string().uuid(),
   "title": zod.string(),
   "artist": zod.string().optional(),
   "album": zod.string().optional(),
-  "createdAt": zod.coerce.date()
+  "createdAt": zod.coerce.date(),
+  "signal": zod.object({
+  "state": zod.enum(['waiting', 'silent', 'active', 'unsupported']),
+  "peak": zod.number().min(getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalPeakMin).max(getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalPeakMax),
+  "capturedSeconds": zod.number().min(getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalCapturedSecondsMin),
+  "signalSeen": zod.boolean(),
+  "clippedSamples": zod.number().int().min(getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalClippedSamplesMin),
+  "invalidSamples": zod.number().int().min(getLibraryAudioCaptureRecoveriesResponseRecoveriesItemSignalInvalidSamplesMin)
+}).optional()
 }))
 })
 
@@ -288,6 +324,15 @@ export const importLibraryAudioCaptureRecoveryResponseTrackRatingMax = 5;
 
 export const importLibraryAudioCaptureRecoveryResponseTrackStemAvailabilityThreeProgressPercentMin = 0;
 export const importLibraryAudioCaptureRecoveryResponseTrackStemAvailabilityThreeProgressPercentMax = 100;
+
+export const importLibraryAudioCaptureRecoveryResponseSignalPeakMin = 0;
+export const importLibraryAudioCaptureRecoveryResponseSignalPeakMax = 1;
+
+export const importLibraryAudioCaptureRecoveryResponseSignalCapturedSecondsMin = 0;
+
+export const importLibraryAudioCaptureRecoveryResponseSignalClippedSamplesMin = 0;
+
+export const importLibraryAudioCaptureRecoveryResponseSignalInvalidSamplesMin = 0;
 
 
 
@@ -331,7 +376,15 @@ export const ImportLibraryAudioCaptureRecoveryResponse = zod.object({
   "studioProjectId": zod.string().uuid()
 }),
   "created": zod.boolean(),
-  "separationQueued": zod.boolean()
+  "separationQueued": zod.boolean(),
+  "signal": zod.object({
+  "state": zod.enum(['waiting', 'silent', 'active', 'unsupported']),
+  "peak": zod.number().min(importLibraryAudioCaptureRecoveryResponseSignalPeakMin).max(importLibraryAudioCaptureRecoveryResponseSignalPeakMax),
+  "capturedSeconds": zod.number().min(importLibraryAudioCaptureRecoveryResponseSignalCapturedSecondsMin),
+  "signalSeen": zod.boolean(),
+  "clippedSamples": zod.number().int().min(importLibraryAudioCaptureRecoveryResponseSignalClippedSamplesMin),
+  "invalidSamples": zod.number().int().min(importLibraryAudioCaptureRecoveryResponseSignalInvalidSamplesMin)
+}).optional()
 })
 
 
@@ -356,6 +409,15 @@ export const getLibraryAudioCaptureStatusResponseEstimatedSecondsRemainingMin = 
 
 
 
+export const getLibraryAudioCaptureStatusResponseSignalPeakMin = 0;
+export const getLibraryAudioCaptureStatusResponseSignalPeakMax = 1;
+
+export const getLibraryAudioCaptureStatusResponseSignalCapturedSecondsMin = 0;
+
+export const getLibraryAudioCaptureStatusResponseSignalClippedSamplesMin = 0;
+
+export const getLibraryAudioCaptureStatusResponseSignalInvalidSamplesMin = 0;
+
 
 
 export const GetLibraryAudioCaptureStatusResponse = zod.object({
@@ -374,7 +436,15 @@ export const GetLibraryAudioCaptureStatusResponse = zod.object({
   "bitsPerSample": zod.number().int().min(1),
   "blockAlign": zod.number().int().min(1)
 }).optional(),
-  "message": zod.string().optional()
+  "message": zod.string().optional(),
+  "signal": zod.object({
+  "state": zod.enum(['waiting', 'silent', 'active', 'unsupported']),
+  "peak": zod.number().min(getLibraryAudioCaptureStatusResponseSignalPeakMin).max(getLibraryAudioCaptureStatusResponseSignalPeakMax),
+  "capturedSeconds": zod.number().min(getLibraryAudioCaptureStatusResponseSignalCapturedSecondsMin),
+  "signalSeen": zod.boolean(),
+  "clippedSamples": zod.number().int().min(getLibraryAudioCaptureStatusResponseSignalClippedSamplesMin),
+  "invalidSamples": zod.number().int().min(getLibraryAudioCaptureStatusResponseSignalInvalidSamplesMin)
+}).optional()
 })
 
 
@@ -400,6 +470,15 @@ export const stopLibraryAudioCaptureResponseDurationSecondsMin = 0;
 
 
 export const stopLibraryAudioCaptureResponseDiscontinuityCountMin = 0;
+
+export const stopLibraryAudioCaptureResponseSignalPeakMin = 0;
+export const stopLibraryAudioCaptureResponseSignalPeakMax = 1;
+
+export const stopLibraryAudioCaptureResponseSignalCapturedSecondsMin = 0;
+
+export const stopLibraryAudioCaptureResponseSignalClippedSamplesMin = 0;
+
+export const stopLibraryAudioCaptureResponseSignalInvalidSamplesMin = 0;
 
 
 
@@ -452,7 +531,15 @@ export const StopLibraryAudioCaptureResponse = zod.object({
   "bitsPerSample": zod.number().int().min(1),
   "blockAlign": zod.number().int().min(1)
 }),
-  "discontinuityCount": zod.number().int().min(stopLibraryAudioCaptureResponseDiscontinuityCountMin)
+  "discontinuityCount": zod.number().int().min(stopLibraryAudioCaptureResponseDiscontinuityCountMin),
+  "signal": zod.object({
+  "state": zod.enum(['waiting', 'silent', 'active', 'unsupported']),
+  "peak": zod.number().min(stopLibraryAudioCaptureResponseSignalPeakMin).max(stopLibraryAudioCaptureResponseSignalPeakMax),
+  "capturedSeconds": zod.number().min(stopLibraryAudioCaptureResponseSignalCapturedSecondsMin),
+  "signalSeen": zod.boolean(),
+  "clippedSamples": zod.number().int().min(stopLibraryAudioCaptureResponseSignalClippedSamplesMin),
+  "invalidSamples": zod.number().int().min(stopLibraryAudioCaptureResponseSignalInvalidSamplesMin)
+}).optional()
 })
 
 

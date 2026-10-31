@@ -24,6 +24,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       title: capture.title,
       artist: capture.artist,
       album: capture.album,
+      prepareSeparation: capture.signal && capture.signal.state !== "unsupported" && !capture.signal.signalSeen ? false : undefined,
     });
     const response: LibraryAudioCaptureRecoveryImportResponse = {
       track: {
@@ -33,6 +34,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       },
       created: result.created,
       separationQueued: result.separationQueued,
+      signal: capture.signal,
     };
     await removeAudioCaptureFiles(capture.sessionDirectory);
     clearRecoveredAudioCapture(user.id, id);

@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { LibraryAudioCaptureFormat } from './libraryAudioCaptureFormat';
+import type { LibraryAudioCaptureSignal } from './libraryAudioCaptureSignal';
 import type { LibraryTrackSummary } from './libraryTrackSummary';
 
 export interface LibraryAudioCaptureStopResponse {
@@ -19,4 +20,5 @@ export interface LibraryAudioCaptureStopResponse {
   format: LibraryAudioCaptureFormat;
   /** @minimum 0 */
   discontinuityCount: number;
+  signal?: LibraryAudioCaptureSignal;
 }

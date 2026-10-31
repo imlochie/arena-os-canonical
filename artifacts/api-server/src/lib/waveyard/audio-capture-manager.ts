@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 
 import { Rf64Recorder, recoverRf64Partial } from "@workspace/arena/lib/waveyard/capture/rf64";
 import type { Rf64Format, Rf64RecordingResult } from "@workspace/arena/lib/waveyard/capture/rf64";
+import { PcmSignalMonitor, isCaptureSignal, type CaptureSignal } from "@workspace/arena/lib/waveyard/capture/pcm-signal";
 
 const execFileAsync = promisify(execFile);
 const sessions = new Map<string, CaptureSession>();
@@ -57,6 +58,7 @@ export interface AudioCaptureSnapshot {
   estimatedSecondsRemaining?: number;
   format?: AudioCaptureFormat;
   message?: string;
+  signal?: CaptureSignal;
 }
 
 export interface AudioCaptureStartInput {
@@ -73,6 +75,7 @@ export interface AudioCaptureFinalized {
   discontinuityCount: number;
   metadata: AudioCaptureStartInput;
   sessionDirectory: string;
+  signal?: CaptureSignal;
 }
 
 export interface AudioCaptureRecovery {
@@ -81,6 +84,7 @@ export interface AudioCaptureRecovery {
   artist?: string;
   album?: string;
   createdAt: string;
+  signal?: CaptureSignal;
 }
 
 export interface AudioCaptureRecoveryFile extends AudioCaptureRecovery {
@@ -101,6 +105,7 @@ interface PersistedCaptureManifest {
   metadata: AudioCaptureStartInput;
   createdAt: string;
   recordingFile?: string;
+  signal?: CaptureSignal;
 }
 
 interface NativeEvent {
@@ -130,6 +135,7 @@ interface CaptureSession {
   finalPath: string;
   child: ChildProcessWithoutNullStreams;
   recorder?: Rf64Recorder;
+  signalMonitor?: PcmSignalMonitor;
   format?: AudioCaptureFormat;
   startedAt?: string;
   endedAt?: string;
@@ -345,8 +351,17 @@ function snapshot(session: CaptureSession): AudioCaptureSnapshot {
       ? { estimatedSecondsRemaining: session.estimatedSecondsRemaining }
       : {}),
     ...(session.format ? { format: session.format } : {}),
+    ...(session.signalMonitor ? { signal: session.signalMonitor.snapshot() } : {}),
     ...(session.failure || session.notice ? { message: session.failure ?? session.notice } : {}),
   };
+}
+
+async function persistCaptureSignal(session: CaptureSession): Promise<void> {
+  if (!session.signalMonitor) return;
+  const manifestPath = join(session.sessionDirectory, "session.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as PersistedCaptureManifest;
+  manifest.signal = session.signalMonitor.snapshot();
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
 function sendStop(session: CaptureSession): void {
@@ -387,6 +402,7 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
     const partialPath = session.partialPath;
     const finalPath = session.finalPath;
     session.recorder = await Rf64Recorder.create({ partialPath, finalPath, format });
+    session.signalMonitor = new PcmSignalMonitor(formatChunk);
     session.format = {
       sampleRate: session.recorder.format.sampleRate,
       channels: session.recorder.format.channels,
@@ -574,6 +590,7 @@ export async function startAudioCapture(
     session.pcmChain = session.pcmChain.then(async () => {
       if (!session.recorder) throw new Error("Capture host sent PCM before the recording file was ready.");
       await session.recorder.writePcm(chunk);
+      session.signalMonitor?.write(chunk);
     }).catch((error) => {
       failSession(session, error);
     }).finally(() => {
@@ -697,6 +714,7 @@ async function scanRecoverableAudioCaptures(ownerId: string): Promise<AudioCaptu
       ...(manifest.metadata.artist ? { artist: manifest.metadata.artist } : {}),
       ...(manifest.metadata.album ? { album: manifest.metadata.album } : {}),
       createdAt: manifest.createdAt,
+      ...(isCaptureSignal(manifest.signal) ? { signal: manifest.signal } : {}),
       path: join(sessionDirectory, recordingFile),
       sessionDirectory,
     });
@@ -798,6 +816,7 @@ async function stopAudioCaptureSession(session: CaptureSession): Promise<AudioCa
     await session.eventChain;
     await session.pcmChain;
     if (session.recorder) await session.recorder.leaveRecoverable().catch(() => {});
+    await persistCaptureSignal(session).catch(() => {});
     throw new Error(session.failure || "The recording failed and was preserved for recovery.");
   }
   if (session.status !== "recording" && session.status !== "stopping") {
@@ -813,6 +832,7 @@ async function stopAudioCaptureSession(session: CaptureSession): Promise<AudioCa
     await session.pcmChain;
     if (close.code !== 0 || !session.nativeStopped || session.failure) {
       if (session.recorder) await session.recorder.leaveRecoverable().catch(() => {});
+      await persistCaptureSignal(session).catch(() => {});
       session.status = "failed";
       throw new Error(session.failure || "The Windows capture host did not stop cleanly; the partial recording was preserved.");
     }
@@ -833,10 +853,12 @@ async function stopAudioCaptureSession(session: CaptureSession): Promise<AudioCa
       discontinuityCount: session.discontinuityCount,
       metadata: session.metadata,
       sessionDirectory: session.sessionDirectory,
+      signal: session.signalMonitor?.snapshot(),
     };
     const manifestPath = join(session.sessionDirectory, "session.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as PersistedCaptureManifest;
     manifest.recordingFile = basename(result.path);
+    manifest.signal = session.final.signal;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
       encoding: "utf8",
       mode: 0o600,

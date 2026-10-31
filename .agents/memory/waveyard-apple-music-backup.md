@@ -14,3 +14,9 @@ The user supplied a Waveyard engineering mission for a general-purpose, applicat
 **Why:** The user wants to investigate a first-party backup path rather than rely on TunePat, while preserving audio fidelity where the operating system and rights permit it. They explicitly require compatibility claims to be backed by actual test evidence and prohibit bypassing DRM or protected media paths.
 
 **How to apply:** Prototype against generated test tones and user-owned or otherwise authorized audio. Reuse Waveyard's library intake and conversion rather than duplicating storage or encoders. Keep metadata separate from audio bytes; use documented APIs for metadata and media-session details. Do not bypass DRM or protected-output restrictions, and report the actual captured format and source rather than claiming bit-perfect source audio. Never claim app compatibility without a recorded run.
+
+Treat signal detection as a diagnostic, not proof of fidelity, app compatibility, or protected-output behavior. Preserve low-signal recordings for inspection rather than deleting them or declaring them unusable.
+
+**Why:** Legitimate recordings can be very quiet, while an idle loopback endpoint may deliver no packets at all. A level threshold cannot establish why audio is missing.
+
+**How to apply:** Distinguish missing packets, received silence, and detected signal. Keep compatibility claims tied to a real recording/playback test, and label unavailable historical signal evidence as unverified.

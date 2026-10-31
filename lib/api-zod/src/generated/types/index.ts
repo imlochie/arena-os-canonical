@@ -18,6 +18,8 @@ export * from './libraryAudioCaptureOptionsResponse';
 export * from './libraryAudioCaptureRecoveriesResponse';
 export * from './libraryAudioCaptureRecovery';
 export * from './libraryAudioCaptureRecoveryImportResponse';
+export * from './libraryAudioCaptureSignal';
+export * from './libraryAudioCaptureSignalState';
 export * from './libraryAudioCaptureStartInput';
 export * from './libraryAudioCaptureStartResponse';
 export * from './libraryAudioCaptureStartResponseStatus';

@@ -22,6 +22,7 @@ try {
   });
 
   let optionsRequests = 0;
+  let signalPhase = "silent";
   let startPayload;
   const page = await context.newPage();
   const pageErrors = [];
@@ -70,10 +71,36 @@ try {
   });
 
   await context.route("**/api/library/audio-capture/capture-ui-test", async (route) => {
+    if (signalPhase !== "missing") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessionId: "capture-ui-test", title: "Authorized capture test", status: "recording",
+          elapsedSeconds: 6, discontinuityCount: 0,
+          format: { sampleRate: 48_000, channels: 2, bitsPerSample: 16, blockAlign: 4 },
+          signal: {
+            state: signalPhase, peak: signalPhase === "active" ? 0.5 : 0,
+            capturedSeconds: 4, signalSeen: signalPhase !== "silent",
+            clippedSamples: 0, invalidSamples: 0,
+          },
+        }),
+      });
+      return;
+    }
     await route.fulfill({
       status: 404,
       contentType: "application/json",
       body: JSON.stringify({ error: "Capture session not found." }),
+    });
+  });
+  await context.route("**/api/library/audio-capture/capture-ui-test/stop", async (route) => {
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        track: { title: "Silent recording" }, separationQueued: false,
+        signal: { state: "silent", peak: 0, capturedSeconds: 4, signalSeen: false, clippedSamples: 0, invalidSamples: 0 },
+      }),
     });
   });
 
@@ -88,15 +115,33 @@ try {
   await page.getByRole("checkbox", { name: /authorized to record this audio/i }).check();
   await page.getByRole("button", { name: "Start recording" }).click();
   await page.getByText("Recording ·", { exact: false }).waitFor({ timeout: 10000 });
+  await page.getByText("PCM received, but no signal above -80 dBFS", { exact: false }).waitFor();
+  await page.getByText(/Check that audio is playing through the selected output/).waitFor();
+  signalPhase = "active";
+  await page.getByText("Audio signal detected", { exact: false }).waitFor();
+  assert.equal(await page.getByRole("meter", { name: "Captured audio peak" }).getAttribute("value"), "0.5");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const meterBounds = await page.getByRole("meter", { name: "Captured audio peak" }).boundingBox();
+  assert(meterBounds && meterBounds.x >= 0 && meterBounds.x + meterBounds.width <= 390,
+    "the signal meter stays inside the mobile viewport");
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  signalPhase = "waiting";
+  await page.getByText("No PCM arriving from the playback device", { exact: false }).waitFor();
+  signalPhase = "missing";
   await page.getByRole("button", { name: "Recover to library" }).waitFor({ timeout: 10000 });
 
   assert.equal(optionsRequests, 3, "the UI refreshed device state and reloaded preserved recordings after a missing session");
   assert.equal(startPayload?.deviceId, "speakers-b", "start uses the refreshed, still-valid endpoint");
   await page.getByText(/preserved audio is ready to recover below/i).waitFor();
   assert.equal(await page.getByText("Preserved recordings").isVisible(), true);
+  signalPhase = "silent";
+  await page.getByRole("button", { name: "Start recording" }).click();
+  await page.getByRole("button", { name: "Stop and add to library" }).click();
+  await page.getByText(/Warning: no signal above -80 dBFS was detected/).waitFor();
+  await page.getByText(/Automatic stem separation was not requested/).waitFor();
   assert.deepEqual(pageErrors, []);
   await context.close();
-  console.log("PASS: capture device refresh selects a valid endpoint; a missing session refreshes and exposes preserved audio without reloading.");
+  console.log("PASS: valid device selection; real signal states and peak display; a missing session exposes preserved audio without reloading.");
 } finally {
   await browser.close();
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { LibraryAudioCaptureSignal } from "@workspace/api-client-react";
 
 type CaptureDevice = {
   id: string;
@@ -34,6 +35,7 @@ type CaptureSession = {
   estimatedSecondsRemaining?: number;
   format?: CaptureFormat;
   message?: string;
+  signal?: LibraryAudioCaptureSignal;
 };
 
 type Recovery = {
@@ -42,7 +44,14 @@ type Recovery = {
   artist?: string;
   album?: string;
   createdAt: string;
+  signal?: LibraryAudioCaptureSignal;
 };
+
+function signalWarning(signal?: LibraryAudioCaptureSignal): string {
+  return signal && signal.state !== "unsupported" && !signal.signalSeen
+    ? " Warning: no signal above -80 dBFS was detected. Automatic stem separation was not requested for this capture. Listen to the file before relying on it; check playback and the selected device before recording again."
+    : "";
+}
 
 type CaptureOptions = {
   available: boolean;
@@ -181,7 +190,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       });
       const data = await readJson(response);
       if (!response.ok) throw new Error(data.error ?? `Could not start recording (${response.status}).`);
-      setSession(data as CaptureSession);
+      setSession({ title: title.trim(), elapsedSeconds: 0, discontinuityCount: 0, ...data } as CaptureSession);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not start Windows audio capture.");
       void refreshOptions().catch(() => {});
@@ -200,7 +209,8 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       });
       const data = await readJson(response);
       if (!response.ok) throw new Error(data.error ?? `Could not finalize recording (${response.status}).`);
-      setMessage(`${data.track?.title ?? title} was added to Waveyard${data.separationQueued ? " and queued for stem separation" : ""}.`);
+      const warning = signalWarning(data.signal);
+      setMessage(`${data.track?.title ?? title} was added to Waveyard${data.separationQueued ? " and queued for stem separation" : ""}.${warning}`);
       setSession(null);
       setTitle("");
       setArtist("");
@@ -227,7 +237,7 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
       );
       const data = await readJson(response);
       if (!response.ok) throw new Error(data.error ?? "Could not import the preserved recording.");
-      setMessage(`${data.track?.title ?? recovery.title} was recovered into your Waveyard library.`);
+      setMessage(`${data.track?.title ?? recovery.title} was recovered into your Waveyard library.${signalWarning(data.signal)}`);
       await refreshOptions();
       onCaptured();
     } catch (error) {
@@ -285,6 +295,32 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
           <div>
             <strong>{session.title}</strong>
             <span>{formatPcm(session.format)}</span>
+            {session.signal && (
+              <span data-testid="capture-signal">
+                <meter aria-label="Captured audio peak" min={0} max={1} value={session.signal.peak} />
+                {" "}
+                {session.signal.state === "active" ? "Audio signal detected"
+                  : session.signal.state === "silent" ? "PCM received, but no signal above -80 dBFS"
+                  : session.signal.state === "unsupported" ? "Signal monitoring unavailable for this PCM format"
+                  : "No PCM arriving from the playback device"}
+                {" · "}{formatElapsed(session.signal.capturedSeconds)} of audio received
+                {session.signal.state !== "unsupported" && !session.signal.signalSeen && session.elapsedSeconds >= 5 && (
+                  <span className="library-audio-capture-warning">
+                    Check that audio is playing through the selected output. Protected output may be unavailable; this recorder does not bypass it.
+                  </span>
+                )}
+                {session.signal.clippedSamples > 0 && (
+                  <span className="library-audio-capture-warning">
+                    {session.signal.clippedSamples.toLocaleString()} samples reached full scale; check the playback level for distortion.
+                  </span>
+                )}
+                {session.signal.invalidSamples > 0 && (
+                  <span className="library-audio-capture-warning">
+                    Invalid audio samples detected. Listen to this recording before relying on it.
+                  </span>
+                )}
+              </span>
+            )}
             {session.discontinuityCount > 0 && (
               <span className="library-audio-capture-warning">
                 {session.discontinuityCount} audio interruption{session.discontinuityCount === 1 ? "" : "s"} detected.
@@ -402,6 +438,11 @@ export function AudioCaptureWorkbench({ onCaptured }: { onCaptured: () => void }
               <div>
                 <strong>{recovery.title}</strong>
                 <span>{[recovery.artist, recovery.album].filter(Boolean).join(" · ") || "Metadata not provided"}</span>
+                <span>
+                  {!recovery.signal || recovery.signal.state === "unsupported" ? "Signal not verified; listen after recovery."
+                    : recovery.signal.signalSeen ? "Audio signal was detected before this recording stopped."
+                    : "No signal above -80 dBFS was detected; check playback before relying on this recording."}
+                </span>
                 <span>{new Date(recovery.createdAt).toLocaleString()}</span>
               </div>
               <button type="button" onClick={() => void importRecovery(recovery)} disabled={busy}>

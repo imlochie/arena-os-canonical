@@ -207,6 +207,32 @@ export interface LibraryAudioCaptureFormat {
   blockAlign: number;
 }
 
+export type LibraryAudioCaptureSignalState = typeof LibraryAudioCaptureSignalState[keyof typeof LibraryAudioCaptureSignalState];
+
+
+export const LibraryAudioCaptureSignalState = {
+  waiting: 'waiting',
+  silent: 'silent',
+  active: 'active',
+  unsupported: 'unsupported',
+} as const;
+
+export interface LibraryAudioCaptureSignal {
+  state: LibraryAudioCaptureSignalState;
+  /**
+     * @minimum 0
+     * @maximum 1
+     */
+  peak: number;
+  /** @minimum 0 */
+  capturedSeconds: number;
+  signalSeen: boolean;
+  /** @minimum 0 */
+  clippedSamples: number;
+  /** @minimum 0 */
+  invalidSamples: number;
+}
+
 export interface LibraryAudioCaptureStatusResponse {
   sessionId: string;
   status: LibraryAudioCaptureStatusResponseStatus;
@@ -224,6 +250,7 @@ export interface LibraryAudioCaptureStatusResponse {
   estimatedSecondsRemaining?: number;
   format?: LibraryAudioCaptureFormat;
   message?: string;
+  signal?: LibraryAudioCaptureSignal;
 }
 
 export interface LibraryAudioCaptureOptionsResponse {
@@ -241,6 +268,7 @@ export interface LibraryAudioCaptureRecovery {
   artist?: string;
   album?: string;
   createdAt: string;
+  signal?: LibraryAudioCaptureSignal;
 }
 
 export interface LibraryAudioCaptureRecoveriesResponse {
@@ -251,6 +279,7 @@ export interface LibraryAudioCaptureRecoveryImportResponse {
   track: LibraryTrackSummary;
   created: boolean;
   separationQueued: boolean;
+  signal?: LibraryAudioCaptureSignal;
 }
 
 export interface LibraryAudioCaptureStartInput {
@@ -293,6 +322,7 @@ export interface LibraryAudioCaptureStopResponse {
   format: LibraryAudioCaptureFormat;
   /** @minimum 0 */
   discontinuityCount: number;
+  signal?: LibraryAudioCaptureSignal;
 }
 
 export interface ApiError {

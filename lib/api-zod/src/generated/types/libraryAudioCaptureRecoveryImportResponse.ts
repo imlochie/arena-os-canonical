@@ -5,10 +5,12 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { LibraryAudioCaptureSignal } from './libraryAudioCaptureSignal';
 import type { LibraryTrackSummary } from './libraryTrackSummary';
 
 export interface LibraryAudioCaptureRecoveryImportResponse {
   track: LibraryTrackSummary;
   created: boolean;
   separationQueued: boolean;
+  signal?: LibraryAudioCaptureSignal;
 }

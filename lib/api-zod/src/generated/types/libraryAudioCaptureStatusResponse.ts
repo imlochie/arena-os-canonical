@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { LibraryAudioCaptureFormat } from './libraryAudioCaptureFormat';
+import type { LibraryAudioCaptureSignal } from './libraryAudioCaptureSignal';
 import type { LibraryAudioCaptureStatusResponseStatus } from './libraryAudioCaptureStatusResponseStatus';
 
 export interface LibraryAudioCaptureStatusResponse {
@@ -25,4 +26,5 @@ export interface LibraryAudioCaptureStatusResponse {
   estimatedSecondsRemaining?: number;
   format?: LibraryAudioCaptureFormat;
   message?: string;
+  signal?: LibraryAudioCaptureSignal;
 }
