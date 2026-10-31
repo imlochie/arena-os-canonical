@@ -22,7 +22,7 @@ type Connection = {
 };
 type Discovered = { kind: string; baseUrl: string; online: boolean; models: string[]; detail: string };
 type CatalogEntry = { tag: string; name: string; sizeGb: number; minRamGb: number; description: string };
-type RegisteredModel = { id: string; name: string; provider: string; description: string };
+type RegisteredModel = { id: string; name: string; provider: string; description: string; kind?: string };
 type HubStatus = {
   connections: Connection[];
   discovered: Discovered[];
@@ -85,6 +85,7 @@ export default function ModelHubPage() {
     ...(status?.discovered.flatMap((connection) => connection.models) ?? []),
   ])];
   const localRegistered = status?.registered.filter((model) => model.provider.toLowerCase().startsWith("local")) ?? [];
+  const localGameModels = localRegistered.filter((model) => model.kind === "text");
 
   let setupStatus = "Checking for a runtime on the Arena host…";
   if (status) {
@@ -230,11 +231,24 @@ export default function ModelHubPage() {
           </li>
           <li className="rounded-xl border border-white/10 bg-black/15 p-3">
             <b className="text-white">4. Select and try it</b>
-            <p className="mt-1">Choose the model in Arcade or Spaces. Registration only makes it selectable; a real prompt in that room is still needed to prove it works.</p>
+            <p className="mt-1">For a real local-model check, open Arcade and run its temporary game test. It generates code and starts it in an isolated preview; the test is not saved.</p>
             <div className="mt-2 flex gap-3 font-bold text-cyan-200 underline underline-offset-2">
               <a href="/arcade">Open Arcade</a>
               <a href="/spaces">Open Spaces</a>
             </div>
+            {localGameModels.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                {localGameModels.map((model) => (
+                  <a
+                    key={model.id}
+                    href={`/arcade?testModel=${encodeURIComponent(model.id)}`}
+                    className="font-bold text-emerald-200 underline underline-offset-2"
+                  >
+                    Test {model.name} in Arcade
+                  </a>
+                ))}
+              </div>
+            )}
           </li>
         </ol>
       </section>

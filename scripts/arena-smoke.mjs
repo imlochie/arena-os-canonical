@@ -1774,6 +1774,34 @@ try {
     }
     await route.fulfill({ response, body: JSON.stringify({ ...payload, models }) });
   });
+  await page.route("**/api/model-hub", async route => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        connections: [{
+          id: "smoke-runtime",
+          kind: "ollama",
+          baseUrl: "http://127.0.0.1:11434",
+          label: "Smoke Ollama",
+          online: true,
+          models: ["qwen2.5:3b"],
+          detail: "Connected",
+        }],
+        discovered: [],
+        catalog: [],
+        registered: [{
+          id: localHubModelId,
+          name: "qwen2.5:3b (TurboAgent)",
+          provider: "local · smoke fixture",
+          description: "Smoke-test local model",
+          kind: "text",
+        }],
+        agentBridge: { connected: false, name: null, lastPolledAt: null },
+      }),
+    });
+  });
   const historyFixture = {
     id: "arena-smoke-history",
     prompt: "History action recovery",
@@ -1792,6 +1820,15 @@ try {
       body: JSON.stringify({ games: historyFixtureAvailable ? [historyFixture] : [] }),
     });
   });
+  await page.goto(`${base}/model-hub`, { waitUntil: "networkidle" });
+  await page.getByRole("link", { name: "Test qwen2.5:3b (TurboAgent) in Arcade" }).click();
+  await page.getByTestId("model-test-handoff").waitFor();
+  assert.equal(await page.getByTestId("arcade-model-setup").getAttribute("open"), "");
+  assert.equal(await page.getByLabel("Connected model source").inputValue(), localHubModelId);
+  assert.equal(await page.getByTestId("button-local-server-generation-check").isEnabled(), true);
+  assert.equal(await page.evaluate(() => new URLSearchParams(window.location.search).has("testModel")), false);
+  report.push("Model Hub's per-model test link opens Arcade with the local model selected and its real generation test ready, without auto-running or saving a game.");
+  await page.goto(`${base}/arcade`, { waitUntil: "networkidle" });
   await page.route("**/api/arcade/arena-smoke-history", async route => {
     if (route.request().method() === "GET") {
       if (historyOpenFailure) {

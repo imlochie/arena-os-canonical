@@ -195,6 +195,7 @@ export default function ArcadeForge() {
   const [copyError, setCopyError] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<ArcadeWorkspace>("create");
   const [modelSetupOpen, setModelSetupOpen] = useState(false);
+  const [modelHandoffMessage, setModelHandoffMessage] = useState<string | null>(null);
 
   // On-device AI state
   const [gpu, setGpu] = useState<{ ok: boolean; reason?: string } | null>(null);
@@ -249,6 +250,28 @@ export default function ArcadeForge() {
       .then((body) => {
         const choices = Array.isArray(body.models) ? body.models as ArcadeServerModel[] : [];
         setServerModels(choices);
+        const url = new URL(window.location.href);
+        const requestedTestModelId = url.searchParams.get("testModel");
+        if (requestedTestModelId) {
+          const requestedTestModel = choices.find(
+            (choice) => choice.id === requestedTestModelId && isServerRoutedLocalModel(choice),
+          );
+          setModelSetupOpen(true);
+          if (requestedTestModel) {
+            chooseServerModel(requestedTestModel.id);
+            setModelHandoffMessage(
+              `${requestedTestModel.name} is selected. Run “Test selected local model” below; it creates a temporary game and does not save it.`,
+            );
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              document.getElementById("arcade-local-model-test")?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }));
+          } else {
+            setLocalCheckError("That local model is no longer registered. Add it again in Model Hub, then retry the test.");
+          }
+          url.searchParams.delete("testModel");
+          window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+          return;
+        }
         const saved = localStorage.getItem(SERVER_MODEL_PREFERENCE);
         if (saved && choices.some((choice) => choice.id === saved)) setServerModelId(saved);
       })
@@ -360,6 +383,7 @@ export default function ArcadeForge() {
 
   function chooseServerModel(id: string) {
     setServerModelId(id);
+    setModelHandoffMessage(null);
     try {
       if (id) localStorage.setItem(SERVER_MODEL_PREFERENCE, id);
       else localStorage.removeItem(SERVER_MODEL_PREFERENCE);
@@ -1308,6 +1332,7 @@ export default function ArcadeForge() {
                 <button
                   type="button"
                   data-testid="button-local-server-generation-check"
+                  id="arcade-local-model-test"
                   onClick={runConnectedModelGenerationCheck}
                   disabled={!selectedLocalModel || localCheckRunning || busy || iterating || loadingModel}
                   title={selectedLocalModel ? "Generate a temporary game through the selected local model without WebGPU" : "Select a local model above"}
@@ -1316,6 +1341,11 @@ export default function ArcadeForge() {
                   {activeCheckSource === "model-hub" ? "Testing local model…" : "Test selected local model"}
                 </button>
               </div>
+              {modelHandoffMessage && (
+                <p data-testid="model-test-handoff" role="status" className="mt-2 text-[11px] text-emerald-200">
+                  {modelHandoffMessage}
+                </p>
+              )}
             </div>
             <p data-testid="local-generation-status" role="status" className="mt-2 text-[11px] text-slate-400">
               {selectedLocalModel
