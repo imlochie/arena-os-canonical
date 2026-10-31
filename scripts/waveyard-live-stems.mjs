@@ -707,6 +707,19 @@ try {
     await candidate.click();
   };
   const measureLiveStemSwap = async (donorId, expectedRatio, delayMs = 0, viewport = "desktop") => {
+    // Earlier scenarios can outlast the 20-second synthetic recipient and
+    // correctly auto-advance the session. Reload the same recipient for each
+    // timing sample so the measurement never silently targets the next song.
+    session.currentSessionTrackId = "a";
+    session.positionSeconds = 0;
+    session.swaps = [];
+    await page.goto(`http://localhost:80/waveyard/session/${sessionId}`);
+    await page.waitForFunction(() => {
+      const audio = [...document.querySelectorAll('[data-role="current"] audio')];
+      return audio.length === 4 && audio.every(element =>
+        element.readyState === 4 && new URL(element.src).pathname.includes("/a-"),
+      );
+    }, { timeout: 10_000 });
     if (await current.locator("audio").first().evaluate(audio => audio.paused)) await toggle();
     const pickerTrigger = viewport === "mobile" ? "quick-open-live-swap-vocals" : "open-live-swap-vocals";
     await current.getByTestId(pickerTrigger).click();
@@ -736,6 +749,28 @@ try {
       }, { bufferCount: before.buffers }, { timeout: 15000 });
       await page.waitForFunction(timingCount => window.liveStemTimings.length > timingCount,
         before.timings, { timeout: 15000 });
+    } catch (error) {
+      const diagnostic = await page.evaluate(({ bufferCount, timingCount }) => ({
+        newBufferSources: window.audioProbe.buffers.slice(bufferCount).map(source => ({
+          started: source.startedOffset !== undefined,
+          offset: source.startedOffset ?? null,
+          gain: source.inputNode?.gain?.value ?? null,
+          duration: source.buffer?.duration ?? null,
+        })),
+        mediaSources: window.audioProbe.sources.map(source => ({
+          url: source.mediaElement.currentSrc,
+          paused: source.mediaElement.paused,
+          currentTime: source.mediaElement.currentTime,
+          gain: source.inputNode?.gain?.value ?? null,
+        })),
+        audioContextState: window.audioProbe.buffers.at(-1)?.context?.state ?? null,
+        liveStemAssetFetchTrace: window.liveStemAssetFetchTrace,
+        liveStemTimingsAdded: window.liveStemTimings.length - timingCount,
+        selectionStart: window.liveStemSelectionStart,
+        sessionStatus: document.querySelector('[data-testid="session-status"]')?.textContent ?? null,
+      }), { bufferCount: before.buffers, timingCount: before.timings });
+      console.log("LIVE_STEM_SWAP_AUDIBILITY_DIAGNOSTIC", JSON.stringify(diagnostic));
+      throw error;
     } finally {
       timedAssetId = null;
       timedAssetDelayMs = 0;
@@ -765,7 +800,9 @@ try {
       decode: measurement.decodeMs,
       tempoMatch: measurement.tempoMatchMs,
     }).sort((left, right) => right[1] - left[1])[0][0];
-    await current.getByTestId("restore-live-swap-vocals").click();
+    const restore = current.getByTestId("restore-live-swap-vocals");
+    await restore.waitFor();
+    await restore.click();
     await page.waitForFunction(trackId => {
       const source = window.audioProbe.sources.find(item => item.mediaElement.src.endsWith(`/${trackId}-vocals`));
       return source?.inputNode?.gain?.value > 0.9;
