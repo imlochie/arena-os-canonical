@@ -576,7 +576,8 @@ export default function ImportedGameWorkspace({ onReviseSource, onUseRemakePromp
           animation = window.setTimeout(tick, 1000 / 60);
         };
         tick();
-        setError("");
+        // Import/selection actions already clear errors. Async startup must not
+        // erase a newer import failure or an error reported by the first frame.
       } catch (cause) {
         if (active) setError(`This ROM could not be started: ${errorMessage(cause)}`);
       }

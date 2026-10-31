@@ -74,6 +74,25 @@ async function tapCenter(locator) {
   assert(bounds, "Touch target must have visible bounds");
   await touchAt(locator, bounds.width / 2, bounds.height / 2);
 }
+async function beginTouchAt(locator) {
+  await locator.scrollIntoViewIfNeeded();
+  const bounds = await locator.boundingBox();
+  assert(bounds, "Touch target must have visible bounds");
+  if (!touchSession) {
+    touchSession = await context.newCDPSession(page);
+    await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  }
+  const x = Math.round(bounds.x + bounds.width / 2);
+  const y = Math.round(bounds.y + bounds.height / 2);
+  assert(await locator.evaluate((element, point) =>
+    element === document.elementFromPoint(point.x, point.y), { x, y }
+  ), "The touch coordinate must hit the intended control");
+  await touchSession.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x, y, id: 1, radiusX: 1, radiusY: 1, force: 1 }],
+  });
+  return () => touchSession.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+}
 async function dragTouch(locator, deltaX, deltaY, cancel = false, xFraction = 0.5, yFraction = 0.5) {
   const bounds = await locator.boundingBox();
   assert(bounds, "Touch drag target must have visible bounds");
@@ -153,7 +172,7 @@ function assertBlind(payload) {
   }
 }
 function makeHomebrewNesRom() {
-  // Original test-only NROM: paints the NES background palette, then loops.
+  // Original test-only NROM: changes its background color while A is pressed.
   // This is generated from hand-authored 6502 opcodes; it contains no game
   // assets or copyrighted code.
   const header = Buffer.alloc(16);
@@ -163,12 +182,28 @@ function makeHomebrewNesRom() {
     0x78, 0xd8, 0xa2, 0x40, 0x8e, 0x17, 0x40, 0xa2, 0xff, 0x9a, 0xe8,
     0x8e, 0x00, 0x20, 0x8e, 0x01, 0x20, 0x2c, 0x02, 0x20, 0x10, 0xfb,
     0xa9, 0x3f, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20, 0xa9,
-    0x21, 0x8d, 0x07, 0x20, 0xa9, 0x08, 0x8d, 0x01, 0x20, 0x4c, 0x16,
-    0x80,
+    0x21, 0x8d, 0x07, 0x20, 0xa9, 0x08, 0x8d, 0x01, 0x20,
+    // Poll controller A, show a different background while pressed, then loop.
+    0xa9, 0x01, 0x8d, 0x16, 0x40, 0xa9, 0x00, 0x8d, 0x16, 0x40,
+    0xad, 0x16, 0x40, 0x29, 0x01, 0xf0, 0x12,
+    0xa9, 0x3f, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20,
+    0xa9, 0x30, 0x8d, 0x07, 0x20, 0x4c, 0x2a, 0x80,
+    0xa9, 0x3f, 0x8d, 0x06, 0x20, 0xa9, 0x00, 0x8d, 0x06, 0x20,
+    0xa9, 0x21, 0x8d, 0x07, 0x20, 0x4c, 0x2a, 0x80,
   ]).copy(prg);
   Buffer.from([0x00, 0x80, 0x00, 0x80, 0x00, 0x80]).copy(prg, 0x3ffa);
   const chr = Buffer.alloc(0x2000);
   return Buffer.concat([header, prg, chr]);
+}
+function makeUnsupportedMapperRom(mapper) {
+  const header = Buffer.alloc(16);
+  Buffer.from([0x4e, 0x45, 0x53, 0x1a, 1, 1, (mapper & 0x0f) << 4, mapper & 0xf0]).copy(header);
+  return Buffer.concat([header, Buffer.alloc(0x6000)]);
+}
+function makeMalformedNesRom() {
+  const header = Buffer.alloc(16);
+  Buffer.from([0x4e, 0x45, 0x53, 0x00]).copy(header);
+  return header;
 }
 function makeHomebrewGameBoyRom() {
   // Original 32 KiB Game Boy cartridge smoke fixture. It contains no
@@ -2879,12 +2914,19 @@ try {
   await page.getByText(/draft-preserved-marker/).waitFor({ timeout: 10000 });
   report.push("A runtime-rejected game is retained as an unverified local draft, while the previously playable game remains untouched.");
   let reaAnalysisRequests = 0;
+  let importedExternalRequestCount = 0;
+  const importedPopupUrls = [];
   page.on("request", request => {
     if (request.url().includes("/api/arcade/import/analyze")) reaAnalysisRequests += 1;
+    if (request.url().includes("example.invalid")) importedExternalRequestCount += 1;
   });
+  page.on("popup", popup => importedPopupUrls.push(popup.url()));
   await page.getByRole("tab", { name: "Import and emulate" }).click();
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
-  const browserGame = `<!doctype html><html><head><title>Open homebrew fixture</title></head><body><p id="hud">Score 0</p><canvas id="game" width="240" height="160"></canvas><script>const c=document.getElementById("game"),x=c.getContext("2d");let n=0,score=Number(localStorage.getItem("fixture-score")||0);document.getElementById("hud").textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score++;localStorage.setItem("fixture-score",String(score));document.getElementById("hud").textContent="Score "+score}});function step(){x.fillStyle=n++%2?"#13b981":"#121826";x.fillRect(0,0,c.width,c.height);requestAnimationFrame(step)}step();</script></body></html>`;
+  // Construct navigation APIs dynamically so this exercises the runtime sandbox,
+  // not only the import-time source filter.
+  const browserGame = `<!doctype html><html><head><title>Open homebrew fixture</title></head><body><p id="hud">Score 0</p><canvas id="game" width="240" height="160"></canvas><script>try{window["to"+"p"]["loc"+"ation"]["assign"]("https://example.invalid/host-escape")}catch(e){};try{window["op"+"en"]("https://example.invalid/popup")}catch(e){};document.body.dataset.navigationAttempted="true";const c=document.getElementById("game"),x=c.getContext("2d");let n=0,score=Number(localStorage.getItem("fixture-score")||0);document.getElementById("hud").textContent="Score "+score;addEventListener("keydown",e=>{if(e.key==="ArrowRight"){score++;localStorage.setItem("fixture-score",String(score));document.getElementById("hud").textContent="Score "+score}});function step(){x.fillStyle=n++%2?"#13b981":"#121826";x.fillRect(0,0,c.width,c.height);requestAnimationFrame(step)}step();</script></body></html>`;
+  const hostUrlBeforeNavigationAttempt = page.url();
   await page.locator('input[accept=".html,.htm,.zip,text/html,application/zip"]').setInputFiles({
     name: "open-homebrew-fixture.html",
     mimeType: "text/html",
@@ -2892,6 +2934,13 @@ try {
   });
   const browserFrame = page.frameLocator('iframe[title="Playable game: open-homebrew-fixture.html"]');
   await browserFrame.locator("#game").waitFor({ timeout: 10000 });
+  await browserFrame.locator('body[data-navigation-attempted="true"]').waitFor();
+  await page.waitForTimeout(200);
+  assert.equal(page.url(), hostUrlBeforeNavigationAttempt, "An imported game's parent-navigation attempt must not navigate the host page");
+  assert.deepEqual(importedPopupUrls, [], "An imported game must not open an external popup");
+  assert.equal(importedExternalRequestCount, 0, "An imported game must not contact an external site");
+  assert.equal(await browserFrame.locator("#game").count(), 1, "A blocked navigation attempt must leave the imported game running");
+  report.push("Imported browser-game parent navigation and external popup attempts stay inside the sandbox without contacting external sites.");
   const reaAuthorization = page.getByTestId("checkbox-rea-authorized");
   const reaAnalyzeButton = page.getByTestId("button-rea-analyze");
   await reaAnalyzeButton.waitFor();
@@ -3170,18 +3219,41 @@ try {
   });
   const nesCanvas = page.locator('canvas[aria-label="NES game screen"]');
   await nesCanvas.waitFor({ timeout: 10000 });
-  await page.waitForFunction(() => {
-    const canvas = document.querySelector('canvas[aria-label="NES game screen"]');
-    const pixels = canvas?.getContext("2d")?.getImageData(0, 0, 256, 240).data;
-    if (!pixels) return false;
-    for (let i = 0; i < pixels.length; i += 4) {
-      if (pixels[i] || pixels[i + 1] || pixels[i + 2]) return true;
-    }
-    return false;
-  }, { timeout: 10000 });
+  // JSNES frame entries are packed 0xBBGGRR, copied to a Uint32Array by
+  // ImportedGameWorkspace. Decode the little-endian canvas RGB bytes, not
+  // the usual 0xRRGGBB notation. Palette $21 is 0xFFAB3C; $30 is 0xFFFFFF
+  // (0xFFF2BE belongs to $31, not $30).
+  // Wait for the actual idle frame, not an intermediate non-black boot frame.
+  const nesPaletteRgb = (packed) => [packed & 0xff, (packed >>> 8) & 0xff, (packed >>> 16) & 0xff];
+  const idleNesBackground = nesPaletteRgb(0xffab3c);
+  const pressedNesBackground = nesPaletteRgb(0xffffff);
+  const waitForNesBackground = async (expected, message) => {
+    await page.waitForFunction((color) => {
+      const canvas = document.querySelector('canvas[aria-label="NES game screen"]');
+      const pixel = canvas?.getContext("2d")?.getImageData(128, 120, 1, 1).data;
+      return pixel && pixel[0] === color[0] && pixel[1] === color[1] && pixel[2] === color[2];
+    }, expected, { timeout: 5000 }).catch(() => assert.fail(message));
+  };
+  await waitForNesBackground(idleNesBackground, "The homebrew ROM must finish booting to its idle color");
   await nesCanvas.click();
-  await page.keyboard.press("ArrowRight");
-  await page.getByRole("button", { name: "A", exact: true }).click();
+  await page.keyboard.down("z");
+  try {
+    await waitForNesBackground(pressedNesBackground, "Keyboard A input must visibly change the homebrew game's screen");
+  } finally {
+    await page.keyboard.up("z");
+  }
+  await waitForNesBackground(idleNesBackground, "Releasing keyboard A must restore the idle screen");
+  const touchButton = page.getByRole("button", { name: "A", exact: true });
+  const releaseTouch = await beginTouchAt(touchButton);
+  try {
+    await waitForNesBackground(pressedNesBackground, "Touch A input must visibly change the homebrew game's screen");
+  } finally {
+    await releaseTouch();
+    await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await touchSession.detach();
+    touchSession = null;
+  }
+  await waitForNesBackground(idleNesBackground, "Releasing touch A must restore the idle screen");
   await page.getByRole("button", { name: "Save progress" }).click();
   await page.getByText("Progress saved on this browser.").waitFor({ timeout: 10000 });
   assert((await page.locator("body").innerText()).includes("mapper IDs 0–5"));
@@ -3189,7 +3261,26 @@ try {
   await page.getByRole("tab", { name: "Import and emulate" }).click();
   await page.getByRole("button", { name: /open-homebrew-fixture\.nes NES homebrew/ }).waitFor({ timeout: 10000 });
   await page.getByRole("button", { name: "Restore save" }).waitFor({ timeout: 10000 });
-  report.push("Generated homebrew iNES ROM boots, renders a frame, accepts keyboard/touch controls, and restores a local save state after reload.");
+  report.push("Original homebrew iNES visibly responds to keyboard and touch input, renders a frame, and restores its local save after reload.");
+  await page.getByLabel(/I own this game or have permission to use and play it/).check();
+  for (const mapper of [6, 8]) {
+    await page.locator('input[accept=".nes,application/octet-stream"]').setInputFiles({
+      name: `unsupported-mapper-${mapper}.nes`,
+      mimeType: "application/octet-stream",
+      buffer: makeUnsupportedMapperRom(mapper),
+    });
+    await page.getByRole("alert").getByText(`This ROM could not be started: Unsupported mapper: ${mapper}`, { exact: true }).waitFor({ timeout: 10000 });
+    assert.equal(await page.getByRole("tab", { name: "Import and emulate" }).count(), 1, `Mapper ${mapper} failure must not stop the page`);
+    await page.getByRole("button", { name: `Remove unsupported-mapper-${mapper}.nes` }).click();
+  }
+  await page.locator('input[accept=".nes,application/octet-stream"]').setInputFiles({
+    name: "malformed-homebrew.nes",
+    mimeType: "application/octet-stream",
+    buffer: makeMalformedNesRom(),
+  });
+  await page.getByRole("alert").getByText("This does not look like an iNES-format homebrew ROM.", { exact: true }).waitFor({ timeout: 10000 });
+  assert.equal(await page.getByRole("tab", { name: "Import and emulate" }).count(), 1, "Malformed ROM failure must not stop the page");
+  report.push("Unsupported NES mappers and a malformed ROM show readable errors while Arcade remains usable.");
   await page.getByLabel(/I own this game or have permission to use and play it/).check();
   await page.getByTestId("input-chip8-rom").setInputFiles({
     name: "open-homebrew.ch8",
