@@ -1,7 +1,8 @@
 param(
   [ValidateSet("Build", "Check")][string]$Action = "Build",
   [string]$Executable,
-  [string]$Model
+  [string]$Model,
+  [switch]$FullWorkspace
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -21,7 +22,16 @@ function Invoke-Pnpm {
 if ($Action -eq "Build") {
   Write-Host "This downloads build dependencies, Electron, PostgreSQL and Chromium."
   Write-Host "It does not upload your workspace data, install an AI model, or change an existing Arena database."
-  Invoke-Pnpm install --frozen-lockfile
+  if ($FullWorkspace) {
+    Write-Host "Installing every workspace package as requested."
+    Invoke-Pnpm install --frozen-lockfile
+  } else {
+    Write-Host "Installing only the desktop app, API, web app and their workspace dependencies."
+    Invoke-Pnpm install --frozen-lockfile `
+      --filter "@workspace/arenaforge..." `
+      --filter "@workspace/api-server..." `
+      --filter "@workspace/desktop..."
+  }
   Invoke-Pnpm --filter @workspace/desktop run dist:win
   Write-Host "Installer: $root\generated-artifacts\windows"
   Write-Host "Install it, close ArenaForge, then run this script with -Action Check -Executable 'full path to ArenaForge.exe'."

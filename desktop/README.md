@@ -14,6 +14,10 @@ Windows build, not a Windows-verified installer.
 The build downloads dependencies, Electron, Chromium, and embedded PostgreSQL.
 No user credentials are required. A packaged app needs no system Node.js.
 Do not build from `.migration-backup`; the new path does not depend on it.
+The build script installs only the desktop app, API, web app and their workspace
+dependencies. This changes which packages are linked in `node_modules` for that
+checkout; run `pnpm install --frozen-lockfile` to restore every workspace, or
+pass `-FullWorkspace` when invoking the build script if you need them all now.
 The Windows x64 package keeps only its matching ONNX Runtime binaries. After a
 successful installer build, temporary `desktop/stage` and `desktop/dist` files
 are removed; the installer and reusable download caches remain.
