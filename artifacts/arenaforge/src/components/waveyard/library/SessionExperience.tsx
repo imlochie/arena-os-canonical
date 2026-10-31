@@ -3022,7 +3022,12 @@ export default function SessionExperience({
             {handoff.refused && handoff.refused.length > 0
               ? ` — not included: ${handoff.refused.map((item) => `${item.title} (${item.reason})`).join("; ")}.`
               : "."}{" "}
-            <Link href={`/waveyard/projects/${handoff.projectId}?view=studio`}>Open in Studio</Link>
+            <Link
+              href={`/waveyard/projects/${handoff.projectId}?view=studio`}
+              data-testid="link-open-studio"
+            >
+              Open in Studio
+            </Link>
           </p>
         )}
         <fieldset className="sess-studio-picker" disabled={sendingToStudio}>

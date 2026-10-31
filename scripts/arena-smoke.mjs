@@ -1611,11 +1611,25 @@ try {
       && (await page.locator(".sess-handoff").innerText()).includes("1 session crossfade carried over"),
     "the session result must report both carried live swaps and the supported crossfade",
   );
-  const openStudioAfterHandoff = page.getByRole("link", { name: "Open in Studio" });
+  const openStudioAfterHandoff = page.getByTestId("link-open-studio");
   assert.equal(
     await openStudioAfterHandoff.getAttribute("href"),
     `/waveyard/projects/${studioProjectId}?view=studio`,
     "a successful session handoff must expose the Studio destination directly",
+  );
+  await openStudioAfterHandoff.evaluate((link) => {
+    const tabbable = Array.from(document.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )).filter((element) => element.getClientRects().length > 0 && !element.closest("[inert]"));
+    const linkIndex = tabbable.indexOf(link);
+    if (linkIndex < 1) throw new Error("The Studio handoff link is missing from keyboard navigation.");
+    tabbable[linkIndex - 1].focus();
+  });
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await openStudioAfterHandoff.evaluate((link) => document.activeElement === link),
+    true,
+    "the Studio handoff link must be reachable in the normal keyboard tab order",
   );
   assert.equal(studioHandoffRequestCount, 1, "the UI must create one Studio arrangement from the selected session mix");
   assert.equal(errors.length, errorsBeforeLiveSwap, "live swapping and isolation must not throw browser errors");
@@ -1786,9 +1800,14 @@ try {
       body: makePcmWav(220 + index * 55, 0.2),
     }));
   }
-  await openStudioAfterHandoff.click();
+  await page.keyboard.press("Enter");
   await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
   await page.locator(".timeline-track").nth(7).waitFor({ state: "visible", timeout: 15_000 });
+  await page.waitForFunction(() => document.activeElement?.id === "studio-editor", null, { timeout: 15_000 });
+  assert(
+    await page.locator("#studio-editor").evaluate((editor) => Number.parseFloat(getComputedStyle(editor).outlineWidth) >= 3),
+    "opening Studio from the keyboard must leave a visible focus indicator on the editor",
+  );
   assert(studioProjectRequestCount >= 1, "Open in Studio must load the linked project through its project API");
   assert.equal(await page.locator('[data-testid^="source-stems-"]').count(), 4,
     "the project API result must expose current, both donor, and following linked audio sources");
@@ -1848,6 +1867,11 @@ try {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("heading", { name: "Mixer console" }).waitFor({ timeout: 15_000 });
   await page.locator(".timeline-track").nth(7).waitFor({ state: "visible", timeout: 15_000 });
+  await page.waitForFunction(() => document.activeElement?.id === "studio-editor", null, { timeout: 15_000 });
+  assert(
+    await page.locator("#studio-editor").evaluate((editor) => Number.parseFloat(getComputedStyle(editor).outlineWidth) >= 3),
+    "reloading Studio must restore useful keyboard focus with a visible editor indicator",
+  );
   assert(studioProjectRequestCount >= 2, "reloading Studio must refetch linked source stems from the project API");
   assert(studioRemixRequestCount >= 2, "reloading Studio must refetch the saved remix arrangement");
   assert.equal(await page.locator(".timeline-track").count(), 8, "all linked remix tracks must return after reload");
