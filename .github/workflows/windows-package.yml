@@ -1,0 +1,67 @@
+name: Windows x64 package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed-package:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install current app and desktop dependencies
+        run: >-
+          pnpm install --frozen-lockfile
+          --filter "@workspace/arenaforge..."
+          --filter "@workspace/api-server..."
+          --filter "@workspace/desktop..."
+
+      - name: Run desktop packaging unit tests
+        run: pnpm --filter @workspace/desktop test
+
+      - name: Build Windows x64 installer
+        run: pnpm --filter @workspace/desktop run dist:win
+
+      - name: Install and check packaged app
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "generated-artifacts/windows" -Filter "*.exe" |
+            Where-Object { $_.Name -notmatch "uninstall" } |
+            Select-Object -First 1
+          if (-not $installer) { throw "The Windows installer was not created." }
+
+          $installDir = Join-Path $env:RUNNER_TEMP "ArenaForge-package-smoke"
+          $install = Start-Process -FilePath $installer.FullName `
+            -ArgumentList @("/S", "/D=$installDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "The silent installer failed." }
+
+          $executable = Join-Path $installDir "ArenaForge.exe"
+          if (-not (Test-Path $executable)) { throw "The installed ArenaForge executable was not found." }
+          node desktop/windows-package-smoke.mjs $executable
+          if ($LASTEXITCODE -ne 0) { throw "The installed-package smoke check failed." }
+
+      - name: Upload test-status report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-smoke-result
+          path: generated-artifacts/windows-package-smoke/result.json
+          if-no-files-found: ignore
+          retention-days: 14

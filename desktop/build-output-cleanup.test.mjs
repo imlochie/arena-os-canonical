@@ -50,7 +50,7 @@ test("failed packaging preserves staging files when no installer exists", async 
       mkdir(stageDir),
       mkdir(distDir),
       mkdir(installerDir),
-      mkdir(unpackedDir),
+      mkdir(unpackedDir, { recursive: true }),
     ]);
     await Promise.all([
       writeFile(path.join(stageDir, "diagnostic.txt"), "keep for diagnosis"),

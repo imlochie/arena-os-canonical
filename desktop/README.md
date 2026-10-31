@@ -11,6 +11,15 @@ Windows build, not a Windows-verified installer.
 3. Run `powershell -ExecutionPolicy Bypass -File desktop/Start-Windows.ps1`.
 4. Run the installer created in `generated-artifacts/windows/`.
 
+The `Windows x64 package` CI workflow builds and installs the current app tree
+on a Windows x64 runner. Its isolated smoke check verifies that the installed
+app starts, embedded PostgreSQL is ready, every packaged desktop migration has
+run, and bundled FFmpeg and FFprobe execute from the installed
+`resources\bin` directory. Model-dependent work and real-audio processing are
+recorded as `not_run`; this workflow does not claim those checks passed. The
+uploaded `result.json` contains test statuses only and excludes profile,
+library, and database contents.
+
 The build downloads dependencies, Electron, Chromium, and embedded PostgreSQL.
 No user credentials are required. A packaged app needs no system Node.js.
 Before installing dependencies, the Windows script reports free space for the
