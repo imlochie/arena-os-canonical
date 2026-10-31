@@ -16,6 +16,17 @@ export type ComplexArray = { re: Float64Array; im: Float64Array };
 
 type TwiddleTable = { cos: Float64Array; sin: Float64Array };
 const twiddleTables = new Map<number, TwiddleTable>();
+type FftScratch = { re: Float64Array; im: Float64Array };
+const fftScratchByLength = new Map<number, FftScratch>();
+
+function fftScratch(length: number): FftScratch {
+  let scratch = fftScratchByLength.get(length);
+  if (!scratch) {
+    scratch = { re: new Float64Array(length), im: new Float64Array(length) };
+    fftScratchByLength.set(length, scratch);
+  }
+  return scratch;
+}
 
 /** Naive O(n²) DFT — the reference the fast path is tested against. */
 export function naiveDft(input: ComplexArray): ComplexArray {
@@ -68,7 +79,14 @@ function twiddleTable(n: number, radix: number, subLength: number): TwiddleTable
 /** In-place recursive mixed-radix Cooley–Tukey FFT on strided data.
  *  Transform length n, first element at `off`, consecutive elements
  *  `stride` apart. */
-function fftStrided(re: Float64Array, im: Float64Array, n: number, off: number, stride: number): void {
+function fftStrided(
+  re: Float64Array,
+  im: Float64Array,
+  n: number,
+  off: number,
+  stride: number,
+  scratch: FftScratch,
+): void {
   if (n <= 1) return;
   const f = smallestPrimeFactor(n);
   const m = n / f;
@@ -98,18 +116,16 @@ function fftStrided(re: Float64Array, im: Float64Array, n: number, off: number, 
   // Decimation in time: the f subsequences x_r[k] = x[r·stride + k·(f·stride)]
   // each of length m. Recurse first.
   for (let r = 0; r < f; r += 1) {
-    fftStrided(re, im, m, off + r * stride, stride * f);
+    fftStrided(re, im, m, off + r * stride, stride * f, scratch);
   }
 
   // Combine: X[q·m + k] = Σ_{r=0}^{f-1} W_n^{r·k} · W_f^{q·r} · Y_r[k]
   // where Y_r is the DFT of subsequence r, already in place at
   // (off + r·stride, stride·f).
-  const subRe = new Float64Array(f * m);
-  const subIm = new Float64Array(f * m);
   for (let r = 0; r < f; r += 1) {
     for (let k = 0; k < m; k += 1) {
-      subRe[r * m + k] = re[off + r * stride + k * f * stride];
-      subIm[r * m + k] = im[off + r * stride + k * f * stride];
+      scratch.re[r * m + k] = re[off + r * stride + k * f * stride];
+      scratch.im[r * m + k] = im[off + r * stride + k * f * stride];
     }
   }
   const twiddles = twiddleTable(n, f, m);
@@ -123,8 +139,8 @@ function fftStrided(re: Float64Array, im: Float64Array, n: number, off: number, 
         const twiddleIndex = (q * m + k) * f + r;
         const cos = twiddles.cos[twiddleIndex]!;
         const sin = twiddles.sin[twiddleIndex]!;
-        const yrRe = subRe[r * m + k];
-        const yrIm = subIm[r * m + k];
+        const yrRe = scratch.re[r * m + k];
+        const yrIm = scratch.im[r * m + k];
         accRe += yrRe * cos - yrIm * sin;
         accIm += yrRe * sin + yrIm * cos;
       }
@@ -136,7 +152,7 @@ function fftStrided(re: Float64Array, im: Float64Array, n: number, off: number, 
 
 /** Forward FFT of a contiguous complex array (in place). */
 export function fftInPlace(re: Float64Array, im: Float64Array): void {
-  fftStrided(re, im, re.length, 0, 1);
+  fftStrided(re, im, re.length, 0, 1, fftScratch(re.length));
 }
 
 /** Inverse FFT via the conjugate identity: ifft(x) = conj(fft(conj(x)))/n
@@ -144,7 +160,7 @@ export function fftInPlace(re: Float64Array, im: Float64Array): void {
 export function ifftInPlace(re: Float64Array, im: Float64Array): void {
   const n = re.length;
   for (let i = 0; i < n; i += 1) im[i] = -im[i];
-  fftStrided(re, im, n, 0, 1);
+  fftStrided(re, im, n, 0, 1, fftScratch(n));
   const inv = 1 / n;
   for (let i = 0; i < n; i += 1) {
     re[i] *= inv;

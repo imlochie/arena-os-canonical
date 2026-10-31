@@ -71,9 +71,12 @@ export function mdxStft(
 
   for (let c = 0; c < channels.length; c += 1) {
     const x = channels[c];
+    const re = new Float64Array(cfg.nFft);
+    const im = new Float64Array(cfg.nFft);
     for (let t = 0; t < frames; t += 1) {
-      const re = new Float64Array(cfg.nFft);
-      const im = new Float64Array(cfg.nFft);
+      // Reuse scratch storage across frames; the transform overwrites re, while
+      // im must be reset because FFT input imaginary values are initially zero.
+      im.fill(0);
       const start = t * cfg.hop - half; // center=True: frame t centers on t·hop
       for (let i = 0; i < cfg.nFft; i += 1) {
         const idx = start + i;
@@ -112,9 +115,9 @@ export function mdxIfft(
 
   for (let c = 0; c < channelsOut; c += 1) {
     const acc = new Float64Array(outLen + cfg.nFft);
+    const re = new Float64Array(cfg.nFft);
+    const im = new Float64Array(cfg.nFft);
     for (let t = 0; t < frames; t += 1) {
-      const re = new Float64Array(cfg.nFft);
-      const im = new Float64Array(cfg.nFft);
       const reRow = (c * 2) * cfg.dimF * frames;
       const imRow = (c * 2 + 1) * cfg.dimF * frames;
       for (let f = 0; f < nBins; f += 1) {

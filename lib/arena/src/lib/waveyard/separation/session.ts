@@ -31,9 +31,19 @@ export class SeparationUnavailableError extends Error {
 }
 
 /** Scale inference without taking every CPU from playback and ordinary app work. */
-export function separationInferenceThreads(availableCpus = availableParallelism()): number {
+export function separationInferenceThreads(
+  availableCpus = availableParallelism(),
+  configuredThreads?: string | null,
+): number {
   const cores = Number.isFinite(availableCpus) ? Math.max(1, Math.floor(availableCpus)) : 1;
-  return cores <= 2 ? cores : Math.min(4, cores - 1);
+  // Leave one CPU for playback/API work and one for the worker's JS transforms.
+  const recommended = cores <= 2 ? 1 : Math.min(4, cores - 2);
+  const configured = configuredThreads === undefined
+    ? process.env.WAVEYARD_ORT_INTRA_OP_THREADS
+    : configuredThreads;
+  const parsed = configured === undefined || configured === null ? Number.NaN : Number(configured);
+  if (!Number.isInteger(parsed) || parsed < 1) return recommended;
+  return Math.min(parsed, recommended);
 }
 
 export const WAVEYARD_ORT_INTRA_OP_THREADS = separationInferenceThreads();

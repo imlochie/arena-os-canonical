@@ -123,10 +123,13 @@ test("automatic separation prefers the platform GPU provider and falls back to C
   assert.deepEqual(executionProviderAttempts("cuda", "win32"), [["cuda"], ["cpu"]]);
   assert.deepEqual(executionProviderAttempts("cpu"), [["cpu"]]);
   assert.deepEqual(executionProviderAttempts("cpu", "win32"), [["cpu"]]);
-  assert.equal(separationInferenceThreads(1), 1);
-  assert.equal(separationInferenceThreads(2), 2);
-  assert.equal(separationInferenceThreads(4), 3, "reserve one CPU on larger machines");
-  assert.equal(separationInferenceThreads(8), 4, "cap the model at four inference threads");
+  assert.equal(separationInferenceThreads(1, null), 1);
+  assert.equal(separationInferenceThreads(2, null), 1, "leave one CPU for ordinary app work");
+  assert.equal(separationInferenceThreads(4, null), 2, "leave CPU for playback and JS transforms");
+  assert.equal(separationInferenceThreads(8, null), 4, "cap the model at four inference threads");
+  assert.equal(separationInferenceThreads(4, "2"), 2, "allow a smaller inference budget on shared CPUs");
+  assert.equal(separationInferenceThreads(4, "999"), 2, "never let configuration exceed the safe recommendation");
+  assert.equal(separationInferenceThreads(4, "invalid"), 2, "ignore invalid thread counts");
   assert.ok(WAVEYARD_ORT_INTRA_OP_THREADS >= 1 && WAVEYARD_ORT_INTRA_OP_THREADS <= 4);
 });
 
