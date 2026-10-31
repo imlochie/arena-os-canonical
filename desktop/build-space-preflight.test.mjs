@@ -11,6 +11,7 @@ import {
   minimumFreeGiBForPreviousBuild,
   parseMinimumFreeGiB,
 } from "./build-space-preflight.mjs";
+import { summarizeBuildSpaceMeasurement } from "./build-space-measurement.mjs";
 
 const GiB = 1024 ** 3;
 
@@ -162,4 +163,127 @@ test("minimum free space is configurable and uses previous measured peak with he
   assert.equal(minimumFreeGiBForPreviousBuild(24, 20), 30);
   assert.equal(minimumFreeGiBForPreviousBuild(12, 20), 20);
   assert.equal(minimumFreeGiBForPreviousBuild(null, 20), 20);
+});
+
+test("measurement reports phase and peak data without private machine paths", () => {
+  const privatePath = "C:\\Users\\Private Name\\Arena";
+  const report = summarizeBuildSpaceMeasurement({
+    initialLocations: [{
+      label: "workspace",
+      path: privatePath,
+      checkedPath: privatePath,
+      availableBytes: 40 * GiB,
+      inspectionError: `Could not inspect ${privatePath}`,
+    }],
+    samples: [
+      {
+        phase: "chromium-ready",
+        checkpoint: true,
+        atUtc: "2026-10-31T12:00:00.000Z",
+        locations: [{ label: "workspace", freeBytes: 35 * GiB }],
+      },
+      {
+        phase: "staging-ready",
+        checkpoint: false,
+        locations: [{ label: "workspace", freeBytes: 29 * GiB }],
+      },
+    ],
+    minimumFreeGiB: 20,
+    configuredMinimumGiB: 20,
+  });
+  const serialized = JSON.stringify(report);
+  assert.equal(report.measuredPeakConsumptionGiB, 11);
+  assert.equal(report.locations[0].peakPhase, "staging-ready");
+  assert.equal(report.phases[0].name, "chromium-ready");
+  assert.doesNotMatch(serialized, /Private Name|C:\\\\Users|inspectionError|checkedPath/);
+});
+
+test("a retry report compares post-cleanup free space with the next build baseline", () => {
+  const report = summarizeBuildSpaceMeasurement({
+    initialLocations: [{
+      label: "workspace",
+      availableBytes: 15 * GiB,
+    }],
+    samples: [{
+      phase: "installer-ready",
+      checkpoint: false,
+      locations: [{ label: "workspace", freeBytes: 7 * GiB }],
+    }],
+    previousReport: {
+      measuredPeakConsumptionGiB: 12,
+      phases: [{
+        name: "interrupted-build-cleanup-complete",
+        freeGiB: [{ label: "workspace", freeGiB: 10 }],
+      }],
+    },
+  });
+  assert.equal(report.retryComparison.previousRunPeakConsumptionGiB, 12);
+  assert.equal(report.retryComparison.currentRunPeakConsumptionGiB, 8);
+  assert.equal(report.retryComparison.peakChangeGiB, -4);
+  assert.deepEqual(report.retryComparison.freeSpace, [{
+    label: "workspace",
+    afterCleanupGiB: 10,
+    beforeRetryGiB: 15,
+    changeGiB: 5,
+  }]);
+  assert.equal(report.measuredPeakConsumptionGiB, 8);
+});
+
+test("Windows build emits the required disk-space phase checkpoints", async () => {
+  const [starter, build, packager] = await Promise.all([
+    readFile(new URL("./Start-Windows.ps1", import.meta.url), "utf8"),
+    readFile(new URL("./build.mjs", import.meta.url), "utf8"),
+    readFile(new URL("./electron-builder.cjs", import.meta.url), "utf8"),
+  ]);
+  for (const phase of [
+    "dependency-installation-start",
+    "dependencies-installed",
+    "interrupted-build-cleanup-complete",
+    "installer-ready",
+  ]) assert.ok(starter.includes(phase), `PowerShell runner must record ${phase}`);
+  for (const phase of [
+    "chromium-ready",
+    "postgresql-ready",
+    "staging-ready",
+    "retry-stage-cleanup-complete",
+  ]) assert.ok(build.includes(phase), `build script must record ${phase}`);
+  assert.ok(packager.includes("unpacked-output-ready"), "packaging must record unpacked output");
+});
+
+test("measurement CLI accepts PowerShell UTF-8 input and writes a sanitized report", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arena-space-report-"));
+  const privatePath = path.join(root, "Private Name", "workspace");
+  const initialPath = path.join(root, "initial.json");
+  const samplesPath = path.join(root, "samples.jsonl");
+  const reportPath = path.join(root, "report.json");
+  const scriptPath = fileURLToPath(new URL("./build-space-measurement.mjs", import.meta.url));
+  try {
+    await writeFile(initialPath, `\uFEFF${JSON.stringify([{
+      label: "workspace",
+      path: privatePath,
+      checkedPath: privatePath,
+      availableBytes: 4 * GiB,
+      inspectionError: `Cannot inspect ${privatePath}`,
+    }])}`);
+    await writeFile(samplesPath, `${JSON.stringify({
+      phase: "postgresql-ready",
+      checkpoint: true,
+      locations: [{ label: "workspace", freeBytes: 3 * GiB }],
+    })}\n`);
+    const result = spawnSync(process.execPath, [
+      scriptPath,
+      initialPath,
+      samplesPath,
+      reportPath,
+      "20",
+      "20",
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    assert.equal(report.measuredPeakConsumptionGiB, 1);
+    assert.equal(report.phases[0].name, "postgresql-ready");
+    assert.doesNotMatch(JSON.stringify(report), /Private Name|inspectionError|checkedPath/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

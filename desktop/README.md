@@ -32,14 +32,23 @@ No user credentials are required. A packaged app needs no system Node.js.
 Before installing dependencies, the Windows script reports free space for the
 workspace, temporary directory, installer output, FFmpeg cache, and user build
 caches. It stops before installs or downloads if any checked location has less
-than the required free space, or if a location cannot be checked. The initial
-minimum floor is 20 GiB; set `$env:ARENA_BUILD_MIN_FREE_GIB = '24'` in PowerShell
-before running the script to raise it. During each build the script samples free
-space every two seconds and saves the largest observed consumption to
-`generated-artifacts/windows-build-space.json`. Later runs use 125% of that
-measured consumption, or the configured minimum if larger. This is sampled
-usage, so a brief peak between samples may be missed. The report is local and
-ignored by version control. No disk cleanup is performed automatically.
+than the required free-space threshold, or if a location cannot be checked. The
+20 GiB default is an early-warning floor, not a measured minimum requirement;
+it remains uncalibrated until real Windows runs have recorded the build phases.
+Set `$env:ARENA_BUILD_MIN_FREE_GIB = '24'` in PowerShell before running the
+script to raise the floor. During each build, free space is sampled every two
+seconds and at dependency, Chromium, PostgreSQL, staging, unpacked-output,
+installer, and interrupted-cleanup checkpoints. The local
+`generated-artifacts/windows-build-space.json` report contains only generic
+location labels and GiB measurements; it excludes filesystem paths and
+inspection errors. It records the overall and per-location peaks. After a
+failed package is cleaned and a later build runs, the report compares the
+post-cleanup free space and peak usage with that retry. These figures show
+observed changes, not proof that cleanup alone caused them. Later runs use 125%
+of the measured peak, or the configured minimum if larger. Two-second sampling
+can miss brief peaks. This report is local and ignored by version control. No
+disk cleanup is performed automatically beyond generated build files after a
+failed or successful package.
 Do not build from `.migration-backup`; the new path does not depend on it.
 The build script installs only the desktop app, API, web app and their workspace
 dependencies. This changes which packages are linked in `node_modules` for that

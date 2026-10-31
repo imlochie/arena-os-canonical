@@ -1,6 +1,6 @@
 import { build } from "esbuild";
 import { createRequire } from "node:module";
-import { cp, mkdir, rm, access, readFile, readdir } from "node:fs/promises";
+import { appendFile, cp, mkdir, rm, access, readFile, readdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -11,6 +11,12 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
 const require = createRequire(import.meta.url);
 const apiRequire = createRequire(path.join(root, "artifacts/api-server/package.json"));
+
+async function recordBuildSpacePhase(phase) {
+  const logPath = process.env.ARENA_BUILD_SPACE_PHASE_LOG;
+  if (!logPath) return;
+  await appendFile(logPath, `${JSON.stringify({ phase, atUtc: new Date().toISOString() })}\n`);
+}
 
 async function findPackageRoot(entry, expectedName) {
   let directory = path.dirname(entry);
@@ -153,6 +159,7 @@ async function main() {
   // Clear only this regenerable tree before compilation needs additional disk.
   const stage = path.join(here, "stage");
   await rm(stage, { recursive: true, force: true });
+  await recordBuildSpacePhase("retry-stage-cleanup-complete");
   await buildWaveyardCaptureHost(path.join(stage, "native"));
   runPnpm(["--filter", "@workspace/arenaforge", "run", "build"], {
     NODE_ENV: "production", BASE_PATH: "/", PORT: "5173",
@@ -187,17 +194,20 @@ async function main() {
   const chrome = chromium.executablePath();
   await access(chrome);
   await cp(path.dirname(chrome), path.join(stage, "chromium"), { recursive: true });
+  await recordBuildSpacePhase("chromium-ready");
   const postgresRoot = path.dirname(require.resolve("@embedded-postgres/windows-x64/package.json"));
   await cp(path.join(postgresRoot, "native"), path.join(stage, "embedded-postgres"), { recursive: true });
   for (const binary of ["postgres.exe", "initdb.exe", "pg_ctl.exe"]) {
     await access(path.join(stage, "embedded-postgres", "bin", binary));
   }
   await access(path.join(stage, "chromium", "chrome.exe"));
+  await recordBuildSpacePhase("postgresql-ready");
   await build({
     entryPoints: [path.join(here, "main.mjs")], outfile: path.join(here, "dist/main.cjs"),
     bundle: true, platform: "node", format: "cjs",
     external: ["electron", "pg-native"], target: "node22",
   });
+  await recordBuildSpacePhase("staging-ready");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

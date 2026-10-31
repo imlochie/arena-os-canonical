@@ -1,3 +1,5 @@
+const fs = require("node:fs");
+
 module.exports = {
   appId: "ai.arena.os",
   productName: "ArenaForge",
@@ -16,6 +18,15 @@ module.exports = {
   asar: true,
   npmRebuild: false,
   win: { target: [{ target: "nsis", arch: ["x64"] }] },
+  afterPack: async () => {
+    const phaseLog = process.env.ARENA_BUILD_SPACE_PHASE_LOG;
+    if (phaseLog) {
+      fs.appendFileSync(phaseLog, `${JSON.stringify({
+        phase: "unpacked-output-ready",
+        atUtc: new Date().toISOString(),
+      })}\n`);
+    }
+  },
   nsis: {
     oneClick: false,
     perMachine: false,

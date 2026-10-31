@@ -45,9 +45,9 @@ if ($Action -eq "Build") {
   $spaceReport = $spaceOutput | ConvertFrom-Json
   foreach ($location in $spaceReport.locations) {
     if ($null -eq $location.availableGiB) {
-      Write-Host ("{0}: could not inspect {1}: {2}" -f $location.label, $location.path, $location.inspectionError)
+      Write-Host ("{0}: could not inspect this volume; the build will stop safely." -f $location.label)
     } else {
-      Write-Host ("{0}: {1} GiB free (checking {2})" -f $location.label, $location.availableGiB, $location.checkedPath)
+      Write-Host ("{0}: {1} GiB free" -f $location.label, $location.availableGiB)
     }
   }
   Write-Host ("Required free space on every listed volume: {0} GiB (set ARENA_BUILD_MIN_FREE_GIB to configure)" -f $spaceReport.minimumFreeGiB)
@@ -55,13 +55,20 @@ if ($Action -eq "Build") {
     throw "Build stopped before dependency installation or downloads because one or more volumes are below the required free-space threshold or could not be checked. Free space or set ARENA_BUILD_MIN_FREE_GIB to a threshold chosen from a measured build; no app data or generated files were deleted."
   }
   $sampleFile = Join-Path $tempPath "arena-build-space-$PID.jsonl"
+  $phaseLog = Join-Path $tempPath "arena-build-phases-$PID.jsonl"
+  $initialFile = Join-Path $tempPath "arena-build-initial-$PID.json"
+  $reportPath = Join-Path $root "generated-artifacts\windows-build-space.json"
   Remove-Item $sampleFile -Force -ErrorAction SilentlyContinue
+  Remove-Item $phaseLog -Force -ErrorAction SilentlyContinue
+  ConvertTo-Json -InputObject @($spaceReport.locations) -Depth 5 |
+    Set-Content -LiteralPath $initialFile -Encoding UTF8
+  [IO.File]::WriteAllText($phaseLog, "", [Text.UTF8Encoding]::new($false))
   $monitorLocationsJson = ConvertTo-Json -InputObject @($spaceLocations) -Compress
-  $monitor = Start-Job -ArgumentList @($monitorLocationsJson, $sampleFile) -ScriptBlock {
-    param($locationsJson, $samplePath)
+  $monitor = Start-Job -ArgumentList @($monitorLocationsJson, $sampleFile, $phaseLog) -ScriptBlock {
+    param($locationsJson, $samplePath, $phasePath)
     $locations = ConvertFrom-Json $locationsJson
-    while ($true) {
-      $samples = foreach ($entry in $locations) {
+    function Save-Snapshot($samplePath, $locations, $phase, $checkpoint) {
+      $measurements = foreach ($entry in $locations) {
         $separator = $entry.IndexOf("=")
         $label = $entry.Substring(0, $separator)
         $target = $entry.Substring($separator + 1)
@@ -73,11 +80,40 @@ if ($Action -eq "Build") {
           }
         } catch {}
       }
-      $line = ConvertTo-Json -InputObject ([pscustomobject]@{ locations = @($samples) }) -Compress
-      [IO.File]::AppendAllText($samplePath, $line + [Environment]::NewLine)
+      $record = [pscustomobject]@{
+        atUtc = [DateTime]::UtcNow.ToString("o")
+        phase = $phase
+        checkpoint = $checkpoint
+        locations = @($measurements)
+      }
+      [IO.File]::AppendAllText($samplePath, (ConvertTo-Json -InputObject $record -Compress) + [Environment]::NewLine)
+    }
+    $phaseLineCount = 0
+    $activePhase = "before-build"
+    while ($true) {
+      $phaseLines = @()
+      try { $phaseLines = @(Get-Content -LiteralPath $phasePath -ErrorAction Stop) } catch {}
+      if ($phaseLines.Count -gt $phaseLineCount) {
+        for ($i = $phaseLineCount; $i -lt $phaseLines.Count; $i++) {
+          try {
+            $event = $phaseLines[$i] | ConvertFrom-Json
+            $activePhase = [string]$event.phase
+            Save-Snapshot $samplePath $locations $activePhase $true
+          } catch {}
+        }
+        $phaseLineCount = $phaseLines.Count
+      }
+      Save-Snapshot $samplePath $locations $activePhase $false
       Start-Sleep -Seconds 2
     }
   }
+  function Write-BuildSpacePhase([string]$Name) {
+    $event = [pscustomobject]@{ phase = $Name; atUtc = [DateTime]::UtcNow.ToString("o") }
+    [IO.File]::AppendAllText($phaseLog, (ConvertTo-Json -InputObject $event -Compress) + [Environment]::NewLine)
+  }
+  $previousPhaseLog = $env:ARENA_BUILD_SPACE_PHASE_LOG
+  $env:ARENA_BUILD_SPACE_PHASE_LOG = $phaseLog
+  Write-BuildSpacePhase "dependency-installation-start"
   $spaceSamples = @()
   try {
     if ($FullWorkspace) {
@@ -90,16 +126,22 @@ if ($Action -eq "Build") {
         --filter "@workspace/api-server..." `
         --filter "@workspace/desktop..."
     }
+    Write-BuildSpacePhase "dependencies-installed"
     Invoke-Pnpm --filter @workspace/desktop run dist:win
+    Write-BuildSpacePhase "installer-ready"
+    Start-Sleep -Milliseconds 2300
   } catch {
     Write-Warning "Build failed. Removing only generated stage, desktop bundle, and unpacked installer files; keeping installer files, download caches, app data, and source media."
     try {
       & node (Join-Path $PSScriptRoot "cleanup-build.mjs") "--failed-build"
       if ($LASTEXITCODE -ne 0) {
         Write-Warning "Generated build cleanup did not finish. Use desktop\cleanup-build.mjs --failed-build after reviewing the error."
+      } else {
+        Write-BuildSpacePhase "interrupted-build-cleanup-complete"
+        Start-Sleep -Milliseconds 2300
       }
     } catch {
-      Write-Warning "Generated build cleanup failed: $($_.Exception.Message)"
+      Write-Warning "Generated build cleanup failed."
     }
     throw
   } finally {
@@ -108,54 +150,32 @@ if ($Action -eq "Build") {
       Receive-Job $monitor -ErrorAction SilentlyContinue | Out-Null
       Remove-Job $monitor -Force -ErrorAction SilentlyContinue
     }
+    if ($previousPhaseLog) { $env:ARENA_BUILD_SPACE_PHASE_LOG = $previousPhaseLog }
+    else { Remove-Item Env:ARENA_BUILD_SPACE_PHASE_LOG -ErrorAction SilentlyContinue }
     if (Test-Path $sampleFile) {
-      foreach ($line in Get-Content $sampleFile) {
-        try { $spaceSamples += ($line | ConvertFrom-Json) } catch {}
-      }
-      Remove-Item $sampleFile -Force -ErrorAction SilentlyContinue
-    }
-    $peakConsumptionBytes = [double]0
-    $sampleCount = 0
-    foreach ($initial in $spaceReport.locations) {
-      if ($null -eq $initial.availableBytes) { continue }
-      foreach ($sampleSet in $spaceSamples) {
-        foreach ($sample in $sampleSet.locations) {
-          if ($sample.label -eq $initial.label) {
-            $sampleCount++
-            $consumed = [double]$initial.availableBytes - [double]$sample.freeBytes
-            if ($consumed -gt $peakConsumptionBytes) { $peakConsumptionBytes = $consumed }
-          }
-        }
-      }
-    }
-    $measuredPeakGiB = $null
-    if ($sampleCount -gt 0) {
-      $measuredPeakGiB = [math]::Round($peakConsumptionBytes / [math]::Pow(1024, 3), 2)
-    }
-    $measurement = [pscustomobject]@{
-      measuredAtUtc = [DateTime]::UtcNow.ToString("o")
-      measuredPeakConsumptionGiB = $measuredPeakGiB
-      minimumFreeGiB = $spaceReport.minimumFreeGiB
-      sampleIntervalSeconds = 2
-      locations = $spaceReport.locations
-    }
-    try {
       $measurementDir = Join-Path $root "generated-artifacts"
       New-Item -ItemType Directory -Path $measurementDir -Force | Out-Null
-      $reportJson = $measurement | ConvertTo-Json -Depth 6
-      [IO.File]::WriteAllText(
-        (Join-Path $measurementDir "windows-build-space.json"),
-        $reportJson,
-        [Text.UTF8Encoding]::new($false)
-      )
-      if ($null -ne $measuredPeakGiB) {
-        Write-Host ("Measured peak disk consumption in this build: {0} GiB; next run adds 25% headroom, with a {1} GiB minimum." -f $measuredPeakGiB, $spaceReport.configuredMinimumGiB)
+      & node (Join-Path $PSScriptRoot "build-space-measurement.mjs") `
+        $initialFile $sampleFile $reportPath `
+        ([string]$spaceReport.minimumFreeGiB) ([string]$spaceReport.configuredMinimumGiB)
+      if ($LASTEXITCODE -eq 0 -and (Test-Path $reportPath)) {
+        $summary = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+        if ($null -ne $summary.measuredPeakConsumptionGiB) {
+          Write-Host ("Measured peak disk consumption: {0} GiB across {1} samples and {2} phase checkpoints." -f $summary.measuredPeakConsumptionGiB, $summary.sampleCount, $summary.phases.Count)
+          if ($null -ne $summary.retryComparison) {
+            Write-Host ("Compared with the preceding interrupted build, measured peak changed by {0} GiB." -f $summary.retryComparison.peakChangeGiB)
+            foreach ($location in $summary.retryComparison.freeSpace) {
+              Write-Host ("{0}: free space changed by {1} GiB between post-cleanup and retry start." -f $location.label, $location.changeGiB)
+            }
+          }
+        } else {
+          Write-Warning "No disk-space samples were recorded. The next build will use the configured minimum."
+        }
       } else {
-        Write-Warning "No disk-space samples were recorded. The next build will use the configured minimum."
+        Write-Warning "Could not save the privacy-safe Windows build-space measurement."
       }
-    } catch {
-      Write-Warning "Could not save the Windows build-space measurement. The next build will use the configured minimum."
     }
+    Remove-Item $sampleFile, $phaseLog, $initialFile -Force -ErrorAction SilentlyContinue
   }
   Write-Host "Installer: $root\generated-artifacts\windows"
   Write-Host "Install it, close ArenaForge, then run this script with -Action Check -Executable 'full path to ArenaForge.exe'."
