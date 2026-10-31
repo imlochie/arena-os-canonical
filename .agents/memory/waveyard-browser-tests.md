@@ -32,3 +32,9 @@ For live-stem performance browser tests, report download, decode, tempo-match, a
 **Why:** Headless Chromium varied by hundreds of milliseconds between download and decode stages on the same fixture, so a smaller injected delay could be obscured by normal scheduling noise.
 
 **How to apply:** Compare the phase breakdowns and verify the measured download includes the injected delay. A mobile-sized Chromium viewport is useful layout and flow coverage, but it is not real-device or mobile-engine performance evidence.
+
+For session-to-Studio reload checks, wait for a target timeline track before counting clips or mix controls; the project shell and mixer can mount before the remix request finishes. Use UUID-shaped project and remix fixture IDs so unmocked API routes do not stop at ID validation.
+
+**Why:** The Studio view appeared while remix hydration was still pending, and synthetic non-UUID route IDs produced misleading API validation errors during page composition.
+
+**How to apply:** In browser tests, synchronize on the expected track/clip elements, then assert linked audio IDs, mix values, and fades; keep project and remix fixture IDs UUID-shaped.
