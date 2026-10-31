@@ -194,7 +194,9 @@ export default function ArcadeForge() {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<ArcadeWorkspace>("create");
-  const [modelSetupOpen, setModelSetupOpen] = useState(false);
+  const [modelSetupOpen, setModelSetupOpen] = useState(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("testModel"),
+  );
   const [modelHandoffMessage, setModelHandoffMessage] = useState<string | null>(null);
 
   // On-device AI state

@@ -38,3 +38,9 @@ For session-to-Studio reload checks, wait for a target timeline track before cou
 **Why:** The Studio view appeared while remix hydration was still pending, and synthetic non-UUID route IDs produced misleading API validation errors during page composition.
 
 **How to apply:** In browser tests, synchronize on the expected track/clip elements, then assert linked audio IDs, mix values, and fades; keep project and remix fixture IDs UUID-shaped.
+
+Long browser runs with short synthetic tracks must re-establish playback state before later cross-tab assertions. A transition may leave the primary paused, and the mirror must receive a fresh play event before testing that its pause control pauses the primary.
+
+**Why:** The suite spends real time waiting on synthetic audio and transitions, so a previous state assumption can expire or become stale without a product failure.
+
+**How to apply:** Before a mirror-tab control assertion, verify the primary's visible play state, ensure the mirror is still silent, then send and await explicit play and pause changes in both tabs.

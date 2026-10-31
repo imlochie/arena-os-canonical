@@ -15,17 +15,17 @@ Waveyard has distinct music paths: Apple/iTunes XML or CSV snapshots back up cat
 
 **How to apply:** When reviewing Apple Music backup, distinguish metadata export, exact-original backup, conversion of files the user supplies, and protected-stream acquisition. Do not claim that TunePat conversion or Windows-local processing works without an end-to-end test on that target.
 
-The user does not want TunePat as a dependency or paid requirement when a legitimate built-in path is feasible. Current main has general per-file/batch Toolbox conversion and an audio ZIP of exact originals stored in Waveyard. A historical conversion branch has a dedicated durable music workbench with metadata review and verified converted-batch archives; that behavior is not equivalent to the current Toolbox and should be ported selectively, not restored by merging its different app architecture wholesale.
+The user does not want TunePat as a dependency or paid requirement when a legitimate built-in path is feasible. Current Waveyard converts an accessible local track into a verified copy stored as a normal library track; its audio-backup route selects source-backed tracks and emits exact audio plus a CSV manifest. A historical conversion branch adds dedicated batch archive/review conveniences; do not merge its different app architecture wholesale. Current tests do not prove the converted-track-to-ZIP path end to end.
 
 **Why:** The user wants a usable Apple Music library backup without paying for TunePat, while expecting truthful capability rather than a launcher or promise.
 
 **How to apply:** Prefer first-party metadata import/export, exact-file backup, and conversion of accessible local files. Treat historical branch behavior as a source of acceptance criteria, preserve the current app structure, and do not add TunePat dependency or DRM-bypass logic.
 
-Treat branch-only capability notes as leads, not current-state facts. A feature may have been ported to main since the note was written, while related export or conversion flows remain branch-only. The 2048 source patch is a specific example, not a general reverse-engineering capability.
+Treat branch-only capability notes as leads, not current-state facts. A feature may have been ported to main since the note was written, while related export or conversion flows remain branch-only. The current generic audio ZIP can accept source-backed converted tracks, but the dedicated converted-batch archive remains a separate convenience. The 2048 source patch is a specific example, not a general reverse-engineering capability.
 
-**Why:** Branch audits showed that prior notes can become stale: some historical Arcade validation and audio-backup work now exists in main, while the broader local-conversion archive flow is still absent.
+**Why:** Branch audits showed that prior notes can become stale: current Waveyard has generic audio backup and conversion routes, but a converted track has not yet been proven through the full backup flow.
 
-**How to apply:** Recheck the current server route, UI entry point, and end-to-end acceptance coverage before calling work lost or complete. Compare capability semantics, not only ancestry or filenames, and port targeted behavior rather than old framework scaffolding.
+**How to apply:** Recheck the current server route, UI entry point, and end-to-end acceptance coverage before calling work lost or complete. Test conversion → library selection → ZIP audio and manifest before claiming this path is proven. Compare capability semantics, not only ancestry or filenames, and port targeted behavior rather than old framework scaffolding.
 
 The historical `scripts/pg-backup.mjs` is not a safe drop-in for the current desktop layout: it copies `data/postgres`, while the current install stores its generated database password separately at `runtime/db-password.json`. It also treats an unreadable or missing postmaster PID as evidence that PostgreSQL is not running.
 

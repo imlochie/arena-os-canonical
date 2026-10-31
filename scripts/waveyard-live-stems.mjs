@@ -1276,10 +1276,14 @@ try {
   assert.ok(await secondPage.evaluate(() => [...document.querySelectorAll('[data-role="current"] audio')].every(a => a.paused)),
     "a track change mirrors to the other tab without starting duplicate audio");
   const primaryPlayControl = page.getByTestId("session-play");
-  if (await primaryPlayControl.getAttribute("aria-pressed") !== "true") await primaryPlayControl.click();
-  await secondPage.waitForFunction(() =>
-    document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true",
-  );
+  if (await primaryPlayControl.getAttribute("aria-pressed") !== "false") {
+    await primaryPlayControl.click();
+  }
+  await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");
+  await secondPage.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");
+  await primaryPlayControl.click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
+  await secondPage.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "true");
   await secondPage.getByTestId("session-play").click();
   await page.waitForFunction(() => document.querySelector('[data-testid="session-play"]')?.getAttribute("aria-pressed") === "false");
   await page.waitForFunction(() => [...document.querySelectorAll('[data-role="current"] audio')].every(element => element.paused));
