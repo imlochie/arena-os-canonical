@@ -134,6 +134,7 @@ interface CaptureSession {
   reserveBytes?: number;
   estimatedSecondsRemaining?: number;
   failure?: string;
+  notice?: string;
   final?: AudioCaptureFinalized;
   nativeStopped: boolean;
   stopSent: boolean;
@@ -320,7 +321,7 @@ function snapshot(session: CaptureSession): AudioCaptureSnapshot {
       ? { estimatedSecondsRemaining: session.estimatedSecondsRemaining }
       : {}),
     ...(session.format ? { format: session.format } : {}),
-    ...(session.failure ? { message: session.failure } : {}),
+    ...(session.failure || session.notice ? { message: session.failure ?? session.notice } : {}),
   };
 }
 
@@ -409,7 +410,7 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
           );
         }
         if (!budget.canRecord && session.status === "recording") {
-          session.failure = "Stopped before the data drive’s 1 GiB safety reserve was used; the recording is preserved below.";
+          session.notice = "Stopped before the data drive’s 1 GiB safety reserve was used; the recording is preserved below.";
           void stopAudioCapture(session.ownerId, session.id).catch((error: unknown) => {
             session.failure = error instanceof Error ? error.message : session.failure;
             session.status = "failed";
@@ -417,7 +418,7 @@ async function handleNativeEvent(session: CaptureSession, event: NativeEvent): P
         }
       }).catch(() => {
         if (session.status === "recording") {
-          session.failure = "Free disk space could not be checked; Waveyard stopped and preserved the recording.";
+          session.notice = "Free disk space could not be checked; Waveyard stopped and preserved the recording.";
           void stopAudioCapture(session.ownerId, session.id).catch((error: unknown) => {
             session.failure = error instanceof Error ? error.message : session.failure;
             session.status = "failed";
