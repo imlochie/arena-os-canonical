@@ -29,8 +29,14 @@ const spotifyTrack = {
   id: "track-1",
   name: "Back in Black",
   artists: [{ name: "AC/DC" }],
-  album: { name: "Back in Black" },
+  album: {
+    name: "Back in Black",
+    release_date: "1980-07-25",
+    images: [{ url: "https://images.example.test/album.jpg", width: 640, height: 640 }],
+  },
   duration_ms: 255_300,
+  track_number: 3,
+  disc_number: 1,
   external_ids: { isrc: "AUSBM00000001" },
   // The field Spotify removed for third-party apps — must be IGNORED.
   preview_url: "https://example.com/preview.mp3",
@@ -45,6 +51,10 @@ test("spotify payloads map to the canonical model, preview_url ignored", () => {
   assert.equal(mapped.album, "Back in Black");
   assert.equal(mapped.isrc, "AUSBM00000001");
   assert.equal(mapped.durationMs, 255_300);
+  assert.equal(mapped.trackNumber, 3);
+  assert.equal(mapped.discNumber, 1);
+  assert.equal(mapped.year, 1980);
+  assert.equal(mapped.artworkUrl, "https://images.example.test/album.jpg");
   assert.equal("previewUrl" in (mapped as Record<string, unknown>), false, "preview_url is deliberately not mapped");
 
   const playlist = mapSpotifyPlaylist({ id: "pl-1", name: "Road trip", description: "" });
@@ -91,12 +101,30 @@ test("the spotify snapshot assembles from pages", () => {
 test("apple MusicKit resources map honestly (no isrc in library songs)", () => {
   const song = mapAppleSong({
     id: "song-1",
-    attributes: { name: "Back in Black", artistName: "AC/DC", albumName: "Back in Black", durationInMillis: 255_300, playCount: 12 },
+    attributes: {
+      name: "Back in Black",
+      artistName: "AC/DC",
+      albumName: "Back in Black",
+      durationInMillis: 255_300,
+      trackNumber: 3,
+      discNumber: 1,
+      releaseDate: "1980-07-25",
+      genreNames: ["Hard rock"],
+      composerName: "Angus Young",
+      artwork: { url: "https://images.example.test/{w}x{h}bb.jpg" },
+      playCount: 12,
+    },
   });
   assert.ok(song !== null);
   assert.equal(song.service, "apple");
   assert.deepEqual(song.artists, ["AC/DC"]);
   assert.equal(song.durationMs, 255_300);
+  assert.equal(song.trackNumber, 3);
+  assert.equal(song.discNumber, 1);
+  assert.equal(song.year, 1980);
+  assert.equal(song.genre, "Hard rock");
+  assert.equal(song.composer, "Angus Young");
+  assert.equal(song.artworkUrl, "https://images.example.test/{w}x{h}bb.jpg");
   assert.equal(song.isrc, null, "library songs carry no isrc — the adapter says so instead of guessing");
 
   assert.equal(mapAppleSong({ attributes: { name: "no id" } }), null);

@@ -43,6 +43,13 @@ export type ExternalTrack = {
   album: string | null;
   isrc: string | null;
   durationMs: number | null;
+  trackNumber?: number | null;
+  discNumber?: number | null;
+  year?: number | null;
+  genre?: string | null;
+  composer?: string | null;
+  /** A provider URL reference; this does not mean the artwork file is archived. */
+  artworkUrl?: string | null;
 };
 
 /** One playlist (canonical form). */
@@ -75,6 +82,28 @@ function cleanString(value: unknown, maxLength: number): string | null {
   return trimmed.slice(0, maxLength);
 }
 
+function boundedMetadataInteger(value: unknown, minimum: number, maximum: number): number | null {
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string" && /^\d{1,5}$/.test(value.trim())
+      ? Number(value.trim())
+      : Number.NaN;
+  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : null;
+}
+
+function cleanArtworkUrl(value: unknown): string | null {
+  const candidate = cleanString(value, 2048);
+  if (candidate === null) return null;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "https:" && !url.username && !url.password
+      ? url.href.replace(/%7B/gi, "{").replace(/%7D/gi, "}")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseTrack(raw: unknown, service: StreamingService): ExternalTrack | null {
   if (typeof raw !== "object" || raw === null) return null;
   const input = raw as Record<string, unknown>;
@@ -84,6 +113,7 @@ function parseTrack(raw: unknown, service: StreamingService): ExternalTrack | nu
   const artists = Array.isArray(input.artists)
     ? input.artists.filter((artist): artist is string => typeof artist === "string" && artist.trim().length > 0).slice(0, 12).map((artist) => artist.trim().slice(0, 200))
     : [];
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(input, key);
   return {
     service,
     externalId,
@@ -92,6 +122,12 @@ function parseTrack(raw: unknown, service: StreamingService): ExternalTrack | nu
     album: cleanString(input.album, MAX_TITLE_LENGTH),
     isrc: parseIsrc(input.isrc),
     durationMs: typeof input.durationMs === "number" && Number.isFinite(input.durationMs) && input.durationMs >= 0 ? Math.round(input.durationMs) : null,
+    ...(has("trackNumber") ? { trackNumber: boundedMetadataInteger(input.trackNumber, 1, 65535) } : {}),
+    ...(has("discNumber") ? { discNumber: boundedMetadataInteger(input.discNumber, 1, 65535) } : {}),
+    ...(has("year") ? { year: boundedMetadataInteger(input.year, 1000, 9999) } : {}),
+    ...(has("genre") ? { genre: cleanString(input.genre, 200) } : {}),
+    ...(has("composer") ? { composer: cleanString(input.composer, 200) } : {}),
+    ...(has("artworkUrl") ? { artworkUrl: cleanArtworkUrl(input.artworkUrl) } : {}),
   };
 }
 
@@ -393,7 +429,7 @@ function csvCell(value: string): string {
 
 /** CSV export (TuneMyMusic parity): one row per playlist track + liked. */
 export function snapshotToCsv(snapshot: LibrarySnapshot): string {
-  const header = "playlist,position,title,artists,album,isrc,duration_ms,service,external_id";
+  const header = "playlist,position,title,artists,album,isrc,duration_ms,service,external_id,track_number,disc_number,year,genre,composer,artwork_url";
   const rows: string[] = [];
   const trackRow = (playlist: string, position: number, track: ExternalTrack) =>
     [
@@ -406,6 +442,12 @@ export function snapshotToCsv(snapshot: LibrarySnapshot): string {
       track.durationMs !== null ? String(track.durationMs) : "",
       track.service,
       csvCell(track.externalId),
+      track.trackNumber ?? "",
+      track.discNumber ?? "",
+      track.year ?? "",
+      csvCell(track.genre ?? ""),
+      csvCell(track.composer ?? ""),
+      csvCell(track.artworkUrl ?? ""),
     ].join(",");
   for (const playlist of snapshot.playlists) {
     playlist.tracks.forEach((track, index) => rows.push(trackRow(playlist.name, index, track)));
@@ -448,7 +490,11 @@ function splitCsvRows(text: string): string[][] | null {
 
 const normaliseHeader = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, " ");
 
-const CSV_COLUMN_ALIASES: Record<"playlist" | "title" | "artists" | "album" | "isrc" | "durationMs" | "externalId", readonly string[]> = {
+const CSV_COLUMN_ALIASES: Record<
+  "playlist" | "title" | "artists" | "album" | "isrc" | "durationMs" | "externalId" |
+  "trackNumber" | "discNumber" | "year" | "genre" | "composer" | "artworkUrl",
+  readonly string[]
+> = {
   // Ours first (round-trip guarantee), then Exportify, then TuneMyMusic.
   playlist: ["playlist", "playlist name"],
   title: ["title", "track name", "track", "name", "song"],
@@ -457,6 +503,12 @@ const CSV_COLUMN_ALIASES: Record<"playlist" | "title" | "artists" | "album" | "i
   isrc: ["isrc"],
   durationMs: ["duration_ms", "duration (ms)", "duration", "length"],
   externalId: ["external_id", "track id", "id"],
+  trackNumber: ["track_number", "track number", "track no"],
+  discNumber: ["disc_number", "disc number", "disc no"],
+  year: ["year", "release year"],
+  genre: ["genre"],
+  composer: ["composer", "composers"],
+  artworkUrl: ["artwork_url", "artwork url", "cover art url"],
 };
 
 function parseDurationMs(value: string): number | null {
@@ -495,6 +547,12 @@ export function parseCsvSnapshot(text: string, service: StreamingService, playli
   const durationColumn = columnIndex("durationMs");
   const idColumn = columnIndex("externalId");
   const playlistColumn = columnIndex("playlist");
+  const trackNumberColumn = columnIndex("trackNumber");
+  const discNumberColumn = columnIndex("discNumber");
+  const yearColumn = columnIndex("year");
+  const genreColumn = columnIndex("genre");
+  const composerColumn = columnIndex("composer");
+  const artworkUrlColumn = columnIndex("artworkUrl");
 
   // Rows in file order, each tagged with its playlist cell (when the export
   // carries one — ours does; Exportify is one file per playlist).
@@ -518,6 +576,12 @@ export function parseCsvSnapshot(text: string, service: StreamingService, playli
         album: albumColumn !== -1 ? cleanString(cells[albumColumn], MAX_TITLE_LENGTH) : null,
         isrc: isrcColumn !== -1 ? parseIsrc(cells[isrcColumn]) : null,
         durationMs: durationColumn !== -1 ? parseDurationMs(cells[durationColumn] ?? "") : null,
+        trackNumber: trackNumberColumn !== -1 ? boundedMetadataInteger(cells[trackNumberColumn], 1, 65535) : null,
+        discNumber: discNumberColumn !== -1 ? boundedMetadataInteger(cells[discNumberColumn], 1, 65535) : null,
+        year: yearColumn !== -1 ? boundedMetadataInteger(cells[yearColumn], 1000, 9999) : null,
+        genre: genreColumn !== -1 ? cleanString(cells[genreColumn], 200) : null,
+        composer: composerColumn !== -1 ? cleanString(cells[composerColumn], 200) : null,
+        artworkUrl: artworkUrlColumn !== -1 ? cleanArtworkUrl(cells[artworkUrlColumn]) : null,
       },
     });
   }
@@ -724,6 +788,9 @@ export function parseAppleMusicLibraryXml(xml: string, libraryName = "Apple Musi
     const isrcRaw = plistString(record.ISRC, 32);
     const durationValue = record["Total Time"];
     const durationMs = typeof durationValue === "number" && durationValue > 0 ? durationValue : null;
+    const trackNumber = boundedMetadataInteger(record["Track Number"], 1, 65535);
+    const discNumber = boundedMetadataInteger(record["Disc Number"], 1, 65535);
+    const year = boundedMetadataInteger(record.Year, 1000, 9999);
     const track: ExternalTrack = {
       service: "apple",
       externalId,
@@ -732,6 +799,13 @@ export function parseAppleMusicLibraryXml(xml: string, libraryName = "Apple Musi
       album: plistString(record.Album),
       isrc: isrcRaw === null ? null : parseIsrc(isrcRaw),
       durationMs,
+      trackNumber,
+      discNumber,
+      year,
+      genre: plistString(record.Genre, 200),
+      composer: plistString(record.Composer, 200),
+      // iTunes Library.xml does not provide a portable artwork URL or bytes.
+      artworkUrl: null,
     };
     allTracks.push(track);
     byReference.set(dictionaryId, track);

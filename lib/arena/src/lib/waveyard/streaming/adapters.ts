@@ -19,6 +19,30 @@
 
 import type { ExternalPlaylist, ExternalTrack, LibrarySnapshot, StreamingService } from "./library-sync";
 
+function safeArtworkUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 2048) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password
+      ? url.href.replace(/%7B/gi, "{").replace(/%7D/gi, "}")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function positiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 65535 ? value : null;
+}
+
+function releaseYear(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const match = /^(\d{4})(?:-|$)/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  return year >= 1000 ? year : null;
+}
+
 // ----------------------------------------------------------------- spotify
 
 /** The scopes a library backup genuinely needs (read-only). */
@@ -32,11 +56,28 @@ export function mapSpotifyTrack(payload: unknown): ExternalTrack | null {
   const artists = Array.isArray(input.artists)
     ? input.artists.map((artist) => (typeof artist === "object" && artist !== null && "name" in artist && typeof (artist as Record<string, unknown>).name === "string" ? (artist as Record<string, unknown>).name as string : null)).filter((name): name is string => name !== null)
     : [];
-  const album = typeof input.album === "object" && input.album !== null && typeof (input.album as Record<string, unknown>).name === "string" ? (input.album as Record<string, unknown>).name as string : null;
+  const albumData = typeof input.album === "object" && input.album !== null ? input.album as Record<string, unknown> : {};
+  const album = typeof albumData.name === "string" ? albumData.name : null;
+  const albumImages = Array.isArray(albumData.images) ? albumData.images : [];
+  const artworkUrl = albumImages
+    .map((image) => typeof image === "object" && image !== null ? safeArtworkUrl((image as Record<string, unknown>).url) : null)
+    .find((url): url is string => url !== null) ?? null;
   const externalIds = typeof input.external_ids === "object" && input.external_ids !== null ? (input.external_ids as Record<string, unknown>) : {};
   const isrc = typeof externalIds.isrc === "string" ? externalIds.isrc : null;
   const durationMs = typeof input.duration_ms === "number" && Number.isFinite(input.duration_ms) ? input.duration_ms : null;
-  return { service: "spotify", externalId: input.id, title: input.name, artists, album, isrc, durationMs };
+  return {
+    service: "spotify",
+    externalId: input.id,
+    title: input.name,
+    artists,
+    album,
+    isrc,
+    durationMs,
+    trackNumber: positiveInteger(input.track_number),
+    discNumber: positiveInteger(input.disc_number),
+    year: releaseYear(albumData.release_date),
+    artworkUrl,
+  };
 }
 
 /** A Spotify playlist object → canonical (tracks filled by the assembler). */
@@ -84,6 +125,12 @@ export function mapAppleSong(payload: unknown): ExternalTrack | null {
   if (typeof resource.id !== "string") return null;
   const attributes = typeof resource.attributes === "object" && resource.attributes !== null ? (resource.attributes as Record<string, unknown>) : {};
   if (typeof attributes.name !== "string") return null;
+  const artwork = typeof attributes.artwork === "object" && attributes.artwork !== null
+    ? attributes.artwork as Record<string, unknown>
+    : {};
+  const genreNames = Array.isArray(attributes.genreNames)
+    ? attributes.genreNames.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
   return {
     service: "apple",
     externalId: resource.id,
@@ -93,6 +140,12 @@ export function mapAppleSong(payload: unknown): ExternalTrack | null {
     // Library songs expose no isrc (catalog-only field) — honest null.
     isrc: null,
     durationMs: typeof attributes.durationInMillis === "number" && Number.isFinite(attributes.durationInMillis) ? attributes.durationInMillis : null,
+    trackNumber: positiveInteger(attributes.trackNumber),
+    discNumber: positiveInteger(attributes.discNumber),
+    year: releaseYear(attributes.releaseDate),
+    genre: genreNames[0]?.slice(0, 200) ?? null,
+    composer: typeof attributes.composerName === "string" ? attributes.composerName.slice(0, 200) : null,
+    artworkUrl: safeArtworkUrl(artwork.url),
   };
 }
 
@@ -146,6 +199,13 @@ export function mapYouTubePlaylistItem(payload: unknown): ExternalTrack | null {
   const contentDetails = typeof input.contentDetails === "object" && input.contentDetails !== null ? (input.contentDetails as Record<string, unknown>) : {};
   const videoId = typeof contentDetails.videoId === "string" ? contentDetails.videoId : typeof snippet.resourceId === "object" && snippet.resourceId !== null && typeof (snippet.resourceId as Record<string, unknown>).videoId === "string" ? (snippet.resourceId as Record<string, unknown>).videoId as string : null;
   if (videoId === null || typeof snippet.title !== "string") return null;
+  const thumbnails = typeof snippet.thumbnails === "object" && snippet.thumbnails !== null ? snippet.thumbnails as Record<string, unknown> : {};
+  const artworkUrl = ["maxres", "high", "medium", "default"]
+    .map((size) => {
+      const image = typeof thumbnails[size] === "object" && thumbnails[size] !== null ? thumbnails[size] as Record<string, unknown> : {};
+      return safeArtworkUrl(image.url);
+    })
+    .find((url): url is string => url !== null) ?? null;
   return {
     service: "youtube",
     externalId: videoId,
@@ -154,6 +214,7 @@ export function mapYouTubePlaylistItem(payload: unknown): ExternalTrack | null {
     album: null,
     isrc: null,
     durationMs: null,
+    artworkUrl,
   };
 }
 

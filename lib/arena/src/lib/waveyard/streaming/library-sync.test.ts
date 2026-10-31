@@ -217,7 +217,7 @@ test("CSV export escapes honestly (TuneMyMusic parity)", () => {
     likedTracks: [],
   }));
   const lines = csv.split("\n");
-  assert.equal(lines[0], "playlist,position,title,artists,album,isrc,duration_ms,service,external_id");
+  assert.equal(lines[0], "playlist,position,title,artists,album,isrc,duration_ms,service,external_id,track_number,disc_number,year,genre,composer,artwork_url");
   assert.ok(lines[1].includes('"My ""best"" list"'), "playlist quotes doubled");
   assert.ok(lines[1].includes('"Song, with comma"'), "title comma quoted");
   assert.ok(lines[1].includes("AUSBM0000001"));
@@ -229,7 +229,24 @@ test("CSV export escapes honestly (TuneMyMusic parity)", () => {
 // ------------------------------------------------------- CSV import (V6.1)
 
 test("CSV import round-trips our own export", () => {
-  const original = snapshot();
+  const original = snapshot({
+    playlists: [{
+      externalId: "p1",
+      name: "Road trip",
+      description: null,
+      tracks: [
+        track({
+          trackNumber: 7,
+          discNumber: 2,
+          year: 1980,
+          genre: "Hard rock",
+          composer: "Angus Young",
+          artworkUrl: "https://images.example.test/cover.jpg",
+        }),
+        track({ externalId: "t2", title: "Thunderstruck" }),
+      ],
+    }],
+  });
   const reparsed = parseCsvSnapshot(snapshotToCsv(original), "spotify", "reimport");
   assert.notEqual(reparsed, null);
   assert.equal(reparsed!.service, "spotify");
@@ -243,6 +260,12 @@ test("CSV import round-trips our own export", () => {
   assert.equal(roadTrip.tracks[0].artists[0], "AC/DC");
   assert.equal(roadTrip.tracks[0].isrc, "AUSBM0000001");
   assert.equal(roadTrip.tracks[0].durationMs, 255_000);
+  assert.equal(roadTrip.tracks[0].trackNumber, 7);
+  assert.equal(roadTrip.tracks[0].discNumber, 2);
+  assert.equal(roadTrip.tracks[0].year, 1980);
+  assert.equal(roadTrip.tracks[0].genre, "Hard rock");
+  assert.equal(roadTrip.tracks[0].composer, "Angus Young");
+  assert.equal(roadTrip.tracks[0].artworkUrl, "https://images.example.test/cover.jpg");
 });
 
 test("CSV import accepts Exportify headers, quoting, and multi-artist cells", () => {
@@ -305,6 +328,11 @@ test("Apple Library XML imports playlists and metadata without reading local aud
       <key>Artist</key><string>Artist One</string>
       <key>Album</key><string>Album A</string>
       <key>Total Time</key><integer>210000</integer>
+      <key>Track Number</key><integer>4</integer>
+      <key>Disc Number</key><integer>2</integer>
+      <key>Year</key><integer>1980</integer>
+      <key>Genre</key><string>Hard rock</string>
+      <key>Composer</key><string>Angus Young</string>
       <key>Loved</key><true/>
       <key>Location</key><string>file:///private/Apple%20Music/Protected.m4p</string>
     </dict>
@@ -347,7 +375,29 @@ test("Apple Library XML imports playlists and metadata without reading local aud
   assert.deepEqual(playlist!.tracks.map((item) => item.externalId), ["AA002", "AA001"]);
   assert.equal(playlist!.description, "Imported playlist");
   assert.equal(playlist!.tracks[0].durationMs, 180_000);
+  const song = playlist!.tracks[1];
+  assert.equal(song.trackNumber, 4);
+  assert.equal(song.discNumber, 2);
+  assert.equal(song.year, 1980);
+  assert.equal(song.genre, "Hard rock");
+  assert.equal(song.composer, "Angus Young");
+  assert.equal(song.artworkUrl, null, "the XML exposes no portable artwork URL");
   assert.equal(JSON.stringify(parsed).includes("Protected.m4p"), false, "the XML's file paths are never copied into a backup");
+});
+
+test("snapshot validation rejects unsafe artwork URLs and impossible metadata numbers", () => {
+  const parsed = parseLibrarySnapshot(snapshot({
+    likedTracks: [track({
+      trackNumber: 0,
+      discNumber: 70_000,
+      year: 30_000,
+      artworkUrl: "javascript:alert(1)",
+    })],
+  }));
+  assert.equal(parsed?.likedTracks[0].trackNumber, null);
+  assert.equal(parsed?.likedTracks[0].discNumber, null);
+  assert.equal(parsed?.likedTracks[0].year, null);
+  assert.equal(parsed?.likedTracks[0].artworkUrl, null);
 });
 
 test("Apple Library XML rejects malformed or non-library documents", () => {
