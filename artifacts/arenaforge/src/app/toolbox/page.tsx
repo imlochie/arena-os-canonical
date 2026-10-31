@@ -80,7 +80,9 @@ export default function ToolboxPage() {
   // upload state
   const [uploading, setUploading] = useState(false);
   const [uploaded, setUploaded] = useState<UploadedFile[]>([]);
+  const uploadingRef = useRef(false);
   const [converting, setConverting] = useState(false);
+  const convertingRef = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
   // custom
   const [width, setWidth] = useState(1280);
@@ -109,7 +111,7 @@ export default function ToolboxPage() {
 
   const uploadFiles = useCallback(
     async (files: File[]) => {
-      if (files.length === 0) return;
+      if (files.length === 0 || uploadingRef.current) return;
       const remaining = Math.max(0, maxJobs - jobs.length - uploaded.length);
       if (files.length > remaining) {
         setMessage(`The conversion queue has room for ${remaining} more file${remaining === 1 ? "" : "s"}. Clear finished jobs or choose fewer files.`);
@@ -118,31 +120,36 @@ export default function ToolboxPage() {
       if (toUpload.length === 0) return;
       const overflowCount = files.length - toUpload.length;
 
+      uploadingRef.current = true;
       setUploading(true);
       const ready: UploadedFile[] = [];
       const failures: string[] = [];
-      for (const file of toUpload) {
-        try {
-          const form = new FormData();
-          form.append("file", file);
-          const response = await fetch("/api/toolbox", { method: "POST", body: form });
-          const data = await response.json();
-          if (!response.ok) throw new Error(data.message ?? `Upload failed (${response.status})`);
-          const probe = data.probe as Probe;
-          const preferred =
-            probe.kind === "image" ? "image-webp" : probe.kind === "audio" ? "extract-mp3" : "fast-1080p";
-          ready.push({ path: data.path, name: data.name ?? file.name, size: data.size ?? file.size, probe, presetId: preferred });
-        } catch (error) {
-          failures.push(`${file.name}: ${error instanceof Error ? error.message : "upload failed"}`);
+      try {
+        for (const file of toUpload) {
+          try {
+            const form = new FormData();
+            form.append("file", file);
+            const response = await fetch("/api/toolbox", { method: "POST", body: form });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message ?? `Upload failed (${response.status})`);
+            const probe = data.probe as Probe;
+            const preferred =
+              probe.kind === "image" ? "image-webp" : probe.kind === "audio" ? "extract-mp3" : "fast-1080p";
+            ready.push({ path: data.path, name: data.name ?? file.name, size: data.size ?? file.size, probe, presetId: preferred });
+          } catch (error) {
+            failures.push(`${file.name}: ${error instanceof Error ? error.message : "upload failed"}`);
+          }
         }
+        setUploaded((current) => [...current, ...ready]);
+        if (failures.length) {
+          setMessage(`${ready.length} ready; ${failures.length} file${failures.length === 1 ? "" : "s"} could not be read${overflowCount ? `; ${overflowCount} skipped because the queue is full` : ""}. ${failures.join("; ")}`);
+        } else {
+          setMessage(`${ready.length} file${ready.length === 1 ? "" : "s"} ready${overflowCount ? `; ${overflowCount} skipped because the queue is full` : ""}. Choose an output for each, then queue them together.`);
+        }
+      } finally {
+        uploadingRef.current = false;
+        setUploading(false);
       }
-      setUploaded((current) => [...current, ...ready]);
-      if (failures.length) {
-        setMessage(`${ready.length} ready; ${failures.length} file${failures.length === 1 ? "" : "s"} could not be read${overflowCount ? `; ${overflowCount} skipped because the queue is full` : ""}. ${failures.join("; ")}`);
-      } else {
-        setMessage(`${ready.length} file${ready.length === 1 ? "" : "s"} ready${overflowCount ? `; ${overflowCount} skipped because the queue is full` : ""}. Choose an output for each, then queue them together.`);
-      }
-      setUploading(false);
     },
     [maxJobs, jobs.length, uploaded.length],
   );
@@ -168,7 +175,8 @@ export default function ToolboxPage() {
   }, []);
 
   const convert = useCallback(async () => {
-    if (uploaded.length === 0 || converting) return;
+    if (uploaded.length === 0 || convertingRef.current) return;
+    convertingRef.current = true;
     setConverting(true);
     setMessage(null);
     const availableSlots = Math.max(0, maxJobs - jobs.length);
@@ -218,6 +226,7 @@ export default function ToolboxPage() {
     } catch (e) {
       setMessage(`✗ ${String(e)}`);
     } finally {
+      convertingRef.current = false;
       setConverting(false);
     }
   }, [uploaded, converting, maxJobs, jobs.length, width, fps, quality, refresh]);
