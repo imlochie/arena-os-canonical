@@ -18,7 +18,7 @@ export interface LiveStemPreparationOption {
   title: string;
   artist: string;
   status: "source-only" | "not-started" | "processing" | "failed" | "rejected";
-  progressPercent?: number;
+  progressLabel?: string;
 }
 
 interface LiveStemSwapPickerProps {
@@ -265,7 +265,7 @@ export default function LiveStemSwapPicker({
                         <small>
                           {candidate.artist || "Unknown artist"}
                           {isProcessing
-                            ? ` · Separating${candidate.progressPercent === undefined ? "…" : ` · ${candidate.progressPercent}%`}`
+                            ? ` · Separating${candidate.progressLabel === undefined ? "…" : ` · ${candidate.progressLabel}`}`
                             : needsRetry ? " · Previous separation failed" : " · Stems not ready"}
                         </small>
                       </span>
@@ -275,7 +275,7 @@ export default function LiveStemSwapPicker({
                           role="status"
                           data-testid={`live-swap-preparing-${stemType}-${candidate.id}`}
                         >
-                          {candidate.progressPercent === undefined ? "Separating…" : `${candidate.progressPercent}%`}
+                          {candidate.progressLabel ?? "Separating…"}
                         </span>
                       ) : (
                         <button

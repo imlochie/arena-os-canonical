@@ -306,6 +306,7 @@ try {
   const liveDonorTrackId = "arena-smoke-live-donor-track";
   const liveDrumsOnlyTrackId = "arena-smoke-live-drums-only-track";
   const liveCamelotTrackId = "arena-smoke-live-camelot-track";
+  const liveProcessingTrackId = "arena-smoke-live-processing-track";
   const liveVocalsAssetId = "arena-smoke-live-vocals";
   const liveDrumsAssetId = "arena-smoke-live-drums";
   const liveBassAssetId = "arena-smoke-live-bass";
@@ -334,6 +335,7 @@ try {
   let liveSwapRequestCount = 0;
   let liveSwapDeleteRequestCount = 0;
   let liveTrackAddRequestCount = 0;
+  let studioHandoffRequestCount = 0;
   let liveTrackPatchRequestCount = 0;
   let liveDonorFetchCount = 0;
   let signalFirstDonorFetchStarted;
@@ -369,6 +371,7 @@ try {
       { ...recoveryTrack, id: liveDonorTrackId, title: "Donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["vocals"] } },
       { ...recoveryTrack, id: liveDrumsOnlyTrackId, title: "Drums-only separated track", durationSeconds: 8, analysis: null, stemAvailability: { status: "separated", stemCount: 1, stemTypes: ["drums"] } },
       { ...recoveryTrack, id: liveCamelotTrackId, title: "Camelot library match", artist: "Smoke test", durationSeconds: 8, analysis: { status: "complete", bpm: 120, musicalKey: "A minor" }, stemAvailability: { status: "source-only", reason: "Separation has not started." } },
+      { ...recoveryTrack, id: liveProcessingTrackId, title: "Processing donor track", durationSeconds: 8, analysis: null, stemAvailability: { status: "processing", reason: "Stem separation is running.", stage: "separating", progress: { percent: 36, phase: "pass 2/4 · Drums · chunk 2 of 3" } } },
     ],
   });
   const quietStemWav = makePcmWav(440, 0.08);
@@ -501,6 +504,22 @@ try {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session: liveSessionPayload() }) });
     } else if (url.pathname === `/api/library/sessions/${liveSessionId}/state` && route.request().method() === "PUT") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ saved: true }) });
+    } else if (url.pathname === `/api/library/sessions/${liveSessionId}/studio-handoff` && route.request().method() === "POST") {
+      const request = route.request().postDataJSON();
+      assert(request.sessionTrackIds.includes(liveSessionTrackId), "the session handoff must include its selected playable track");
+      assert(Array.isArray(request.trackEdits), "the session handoff must send the current mix edits");
+      studioHandoffRequestCount += 1;
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          handoff: {
+            projectId: "arena-smoke-session-studio-project",
+            remixTrackCount: 4,
+            preservedSwapCount: 1,
+          },
+        }),
+      });
     } else if (url.pathname.startsWith(`/api/library/sessions/${liveSessionId}/tracks/`) && route.request().method() === "PATCH") {
       const itemId = url.pathname.split("/").at(-1);
       const item = liveSessionTracks.find(candidate => candidate.id === itemId);
@@ -1213,6 +1232,13 @@ try {
   await page.getByTestId("open-live-swap-vocals").click();
   assert.equal(await page.getByTestId(`live-swap-candidate-vocals-${liveDrumsOnlyTrackId}`).count(), 0,
     "the vocal picker must hide separated tracks with no vocal stem");
+  const preparationProgress = page.getByTestId(`live-swap-preparing-vocals-${liveProcessingTrackId}`);
+  await preparationProgress.waitFor();
+  assert.equal(
+    (await preparationProgress.innerText()).trim(),
+    "pass 2/4 · Drums · chunk 2 of 3",
+    "the live-swap picker must show the active stem pass rather than a misleading whole-job percentage",
+  );
   await page.getByTestId(`live-swap-candidate-vocals-${liveDonorTrackId}`).click();
   await page.getByTestId("session-status").filter({ hasText: "vocals source saved" }).waitFor({ timeout: 8_000 });
   await page.getByTestId("live-swap-pending-vocals").waitFor({ timeout: 8_000 });
@@ -1290,6 +1316,15 @@ try {
   await page.getByTestId("session-status").filter({ hasText: "Up next: Camelot library match." }).waitFor({ timeout: 8_000 });
   assert.equal(liveTrackAddRequestCount, 1, "the Camelot wheel must add a compatible library track directly to the next slot");
   assert.equal(liveSessionTracks[1].track.id, liveCamelotTrackId);
+  await page.getByTestId("session-handoff").click();
+  await page.getByRole("status").filter({ hasText: "Studio arrangement created with 4 remix tracks" }).waitFor({ timeout: 8_000 });
+  const openStudioAfterHandoff = page.getByRole("link", { name: "Open in Studio" });
+  assert.equal(
+    await openStudioAfterHandoff.getAttribute("href"),
+    "/waveyard/projects/arena-smoke-session-studio-project?view=studio",
+    "a successful session handoff must expose the Studio destination directly",
+  );
+  assert.equal(studioHandoffRequestCount, 1, "the UI must create one Studio arrangement from the selected session mix");
   assert.equal(errors.length, errorsBeforeLiveSwap, "live swapping and isolation must not throw browser errors");
   const desktopViewport = page.viewportSize();
   await page.setViewportSize({ width: 402, height: 874 });

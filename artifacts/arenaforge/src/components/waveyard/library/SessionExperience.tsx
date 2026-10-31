@@ -2672,14 +2672,18 @@ export default function SessionExperience({
       if (item.id === currentItem.track.id) return [];
       const availability = item.stemAvailability;
       if (availability.status === "separated" || availability.status === "unavailable") return [];
+      const progress = availability.status === "processing" ? availability.progress : undefined;
+      const progressLabel = progress
+        ? progress.phase && isMultiPassSeparationPhase(progress.phase)
+          ? progress.phase
+          : `${progress.percent}%`
+        : undefined;
       return [{
         id: item.id,
         title: item.title,
         artist: item.artist,
         status: availability.status,
-        ...(availability.status === "processing" && availability.progress !== undefined
-          ? { progressPercent: availability.progress.percent }
-          : {}),
+        ...(progressLabel !== undefined ? { progressLabel } : {}),
       }];
     });
     const candidates: LiveStemDonorOption[] = [
