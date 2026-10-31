@@ -59,30 +59,59 @@ retained locally for diagnosis; do not upload its browser profiles or database.
 Linux builds, fake-model tests, hosted previews and screenshots do not establish
 that this check passed.
 
-## Focused Arcade local-model check
+## Arcade local-model prompt comparison
 
-To verify only Arcade prompt generation, without making success depend on a
-separate browser-task capability, close ArenaForge and run this from PowerShell
-in the workspace. Build and install the current checkout first with
-`desktop/Start-Windows.ps1` unless the executable already contains this checkout:
+To compare a focused game prompt with a richer Pong prompt, close ArenaForge and
+run this from PowerShell in the workspace. Build and install the current
+checkout first with `desktop/Start-Windows.ps1` unless the executable already
+contains this checkout:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File desktop/Check-Arcade-Windows.ps1 `
   -Executable "C:\full\path\to\ArenaForge.exe" `
-  -Model "qwen2.5:3b"
+  -Model "qwen2.5-coder:1.5b"
 ```
+
+The same run tests both prompts, in order:
+
+1. A small canvas game with arrow-key movement, one collectible, and a score.
+2. A single-screen Pong game with two paddles, a bouncing ball, score, keyboard
+   controls, and an immediate start.
+
+Run it again with `-Model "qwen2.5:3b"` to compare the larger documented Qwen
+candidate. Each invocation uses only the named, already-installed model; model
+results are not substituted or combined. The JSON records both prompt outcomes
+even when one fails, and a run exits unsuccessfully unless both prompts pass.
+The test only establishes local routing, Arcade validation, and isolated
+startup. It does not prove the game mechanics match the prompt; play-test those
+mechanics separately. Each run updates `arcade-result.json` and also writes a
+model-specific report (for example, `arcade-result-qwen2.5-coder_1.5b.json`) so
+running the next model does not erase the previous model's results.
 
 This requires Windows x64, Node.js 22+ and installed workspace dependencies for
 the Playwright runner, plus Ollama running on `127.0.0.1:11434` with the named
 model already installed. The app itself does not require system Node.js after
 packaging. For a starting model, use Qwen 2.5 3B with at least 12 GB RAM, or
-Qwen 2.5 1.5B with 8–11 GB RAM. These are hardware starting points, not speed
-or quality guarantees. No provider credentials or WebGPU are used.
+Qwen 2.5 Coder 1.5B with 8–11 GB RAM. These are total-system starting points,
+not measured minimums, speed estimates, or quality guarantees. Model downloads
+also need disk space (about 1 GB for 1.5B and 1.9 GB for Qwen 2.5 3B). No
+provider credentials or WebGPU are used.
 
-The generated `arcade-result.json` records prompt generation, import and
+The generated reports record prompt generation, import and
 gameplay-edit as separate flows. Only prompt generation runs in this check;
 import and gameplay-edit are explicitly marked `not_run`, not inferred from
-the generation result.
+the generation result. Each prompt records whether the selected local model was
+used, provider credentials were omitted, Arcade validation passed, the isolated
+startup check passed, and a canvas loaded in the packaged app.
+
+### Evidence status
+
+The task's prior observation was that `qwen2.5-coder:1.5b` passed the focused
+local-generation prompt but failed Arcade validation on a more demanding Pong
+prompt. This is prior evidence, not a result reproduced on the current machine:
+this Linux workspace has no Ollama service, and only a real Windows run counts.
+The new comparison runner records fresh results per model and prompt so a
+quality failure can be distinguished from model-routing or runtime failures.
 
 ## Data and shutdown
 
