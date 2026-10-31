@@ -71,6 +71,98 @@ export const GetLibraryTracksResponse = zod.object({
 
 
 /**
+ * @summary List formats supported for local audio conversion
+ */
+export const GetLibraryConversionOptionsResponse = zod.object({
+  "formats": zod.array(zod.object({
+  "id": zod.enum(['mp3', 'aac', 'wav', 'flac']),
+  "extension": zod.string(),
+  "mimeType": zod.string(),
+  "lossy": zod.boolean(),
+  "available": zod.boolean()
+})),
+  "sourcePolicy": zod.string().optional(),
+  "error": zod.string().optional()
+})
+
+
+/**
+ * Converts only a device-uploaded local file after an explicit rights review. Protected subscription audio is not accessed.
+ * @summary Convert an owner-uploaded local audio track
+ */
+export const createLibraryConversionBodyBitrateDefault = 192;
+
+export const CreateLibraryConversionBody = zod.object({
+  "trackId": zod.string().uuid(),
+  "format": zod.enum(['mp3', 'aac', 'wav', 'flac']),
+  "bitrate": zod.union([zod.literal(128),zod.literal(192),zod.literal(256),zod.literal(320)]).default(createLibraryConversionBodyBitrateDefault),
+  "rightsReviewed": zod.literal(true)
+})
+
+export const createLibraryConversionResponseTrackRatingMin = 0;
+export const createLibraryConversionResponseTrackRatingMax = 5;
+
+export const createLibraryConversionResponseTrackStemAvailabilityThreeProgressPercentMin = 0;
+export const createLibraryConversionResponseTrackStemAvailabilityThreeProgressPercentMax = 100;
+
+
+
+export const CreateLibraryConversionResponse = zod.object({
+  "track": zod.object({
+  "id": zod.string().uuid(),
+  "title": zod.string(),
+  "artist": zod.string(),
+  "album": zod.string(),
+  "durationSeconds": zod.number(),
+  "playCount": zod.number().int(),
+  "rating": zod.number().int().min(createLibraryConversionResponseTrackRatingMin).max(createLibraryConversionResponseTrackRatingMax),
+  "labels": zod.array(zod.string()),
+  "lastPlayedAt": zod.coerce.date().nullable(),
+  "addedAt": zod.coerce.date(),
+  "stemAvailability": zod.union([zod.object({
+  "status": zod.enum(['separated']),
+  "stemCount": zod.number().int(),
+  "stemTypes": zod.array(zod.string())
+}),zod.object({
+  "status": zod.enum(['source-only', 'not-started', 'unavailable']),
+  "reason": zod.string()
+}),zod.object({
+  "status": zod.enum(['processing']),
+  "reason": zod.string(),
+  "stage": zod.string().optional(),
+  "progress": zod.object({
+  "percent": zod.number().int().min(createLibraryConversionResponseTrackStemAvailabilityThreeProgressPercentMin).max(createLibraryConversionResponseTrackStemAvailabilityThreeProgressPercentMax),
+  "phase": zod.string().optional()
+}).optional()
+}),zod.object({
+  "status": zod.enum(['rejected', 'failed']),
+  "reason": zod.string(),
+  "retryJobId": zod.string().uuid()
+})]),
+  "analysis": zod.object({
+  "status": zod.string(),
+  "bpm": zod.number().nullable(),
+  "musicalKey": zod.string().nullable()
+}).nullish(),
+  "studioProjectId": zod.string().uuid()
+}),
+  "created": zod.boolean(),
+  "originalTrackId": zod.string().uuid(),
+  "format": zod.enum(['mp3', 'aac', 'wav', 'flac']),
+  "verification": zod.object({
+  "checksumSha256": zod.string(),
+  "fileSizeBytes": zod.number().int(),
+  "durationSeconds": zod.number(),
+  "codec": zod.string(),
+  "sampleRate": zod.number().int(),
+  "channels": zod.number().int(),
+  "warnings": zod.array(zod.string())
+}),
+  "notice": zod.string()
+})
+
+
+/**
  * Returns a ZIP archive when preflight is omitted. With preflight=1, returns the selected file count and total bytes. This does not retrieve Apple Music subscription audio.
  * @summary Download exact stored library originals as a ZIP with a CSV manifest
  */

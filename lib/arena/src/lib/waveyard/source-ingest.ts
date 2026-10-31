@@ -22,10 +22,10 @@ export type SourceAcquisitionProvenance = {
 
 /**
  * The one ingestion path for local and authorized-remote audio. Once this
- * succeeds, downstream code sees only a normal SourceAsset and its existing
- * separation/waveform jobs.
+ * succeeds, downstream code sees a normal SourceAsset; callers can omit
+ * processing for derived local copies that do not need another stem run.
  */
-export async function ingestSourceFile(input: {
+type IngestSourceFileInput = {
   projectId: string;
   filePath: string;
   filename: string;
@@ -33,7 +33,34 @@ export async function ingestSourceFile(input: {
   model: string;
   device: "auto" | "cpu" | "cuda";
   provenance: SourceAcquisitionProvenance;
-}) {
+  prepareProcessing?: boolean;
+};
+
+type QueuedIngestResult = {
+  source: typeof sourceAssets.$inferSelect;
+  job: typeof processingJobs.$inferSelect;
+  waveformJob: typeof waveformJobs.$inferSelect;
+  separationQueued: boolean;
+  waveformQueued: boolean;
+};
+
+type UnqueuedIngestResult = {
+  source: typeof sourceAssets.$inferSelect;
+  job: null;
+  waveformJob: null;
+  separationQueued: false;
+  waveformQueued: false;
+};
+
+export function ingestSourceFile(
+  input: IngestSourceFileInput & { prepareProcessing?: true },
+): Promise<QueuedIngestResult>;
+export function ingestSourceFile(
+  input: IngestSourceFileInput & { prepareProcessing: false },
+): Promise<UnqueuedIngestResult>;
+export async function ingestSourceFile(
+  input: IngestSourceFileInput,
+): Promise<QueuedIngestResult | UnqueuedIngestResult> {
   const cleanName = sanitizedFilename(input.filename);
   const metadata = await probeAudio(input.filePath);
   const checksum = await checksumFile(input.filePath);
@@ -54,6 +81,9 @@ export async function ingestSourceFile(input: {
         title: input.provenance.title ?? null, artist: input.provenance.artist ?? null, resolver: input.provenance.resolver ?? null,
         metadata: JSON.stringify(input.provenance.metadata ?? {}),
       });
+      if (input.prepareProcessing === false) {
+        return { source: createdSource, job: null, waveformJob: null };
+      }
       const [createdJob] = await tx.insert(processingJobs).values({
         projectId: input.projectId, sourceAssetId: createdSource.id, type: "separation", status: "queued", stage: "queued", idempotencyKey: `separation:${createdSource.id}:${input.model}`,
         model: input.model, requestedDevice: input.device,
@@ -61,6 +91,9 @@ export async function ingestSourceFile(input: {
       const [createdWaveformJob] = await tx.insert(waveformJobs).values({ projectId: input.projectId, sourceAssetId: createdSource.id, status: "queued", stage: "queued", idempotencyKey: `waveform:source:${createdSource.id}` }).returning();
       return { source: createdSource, job: createdJob, waveformJob: createdWaveformJob };
     });
+    if (job === null || waveformJob === null) {
+      return { source, job: null, waveformJob: null, separationQueued: false, waveformQueued: false };
+    }
     let separationQueued = true;
     try { await enqueueSeparation({ processingJobId: job.id, projectId: input.projectId, sourceAssetId: source.id, model: input.model, requestedDevice: input.device }); }
     catch (error) {

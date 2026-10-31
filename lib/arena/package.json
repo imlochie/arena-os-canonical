@@ -282,6 +282,7 @@
     "./lib/waveyard/arrangement/prompt": "./src/lib/waveyard/arrangement/prompt.ts",
     "./lib/waveyard/arrangement": "./src/lib/waveyard/arrangement.ts",
     "./lib/waveyard/audio": "./src/lib/waveyard/audio.ts",
+    "./lib/waveyard/conversion/engine": "./src/lib/waveyard/conversion/engine.ts",
     "./lib/waveyard/authorized-source-resolver": "./src/lib/waveyard/authorized-source-resolver.ts",
     "./lib/waveyard/automatic-build-finalization": "./src/lib/waveyard/automatic-build-finalization.ts",
     "./lib/waveyard/browser-waveform": "./src/lib/waveyard/browser-waveform.ts",

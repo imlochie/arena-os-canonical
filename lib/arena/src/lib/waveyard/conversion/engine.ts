@@ -1,0 +1,143 @@
+import { extname } from "node:path";
+
+import { checksumFile, probeAudio } from "../audio";
+import { execTool, type FfmpegTool } from "../ffmpeg";
+
+export const CONVERSION_FORMATS = {
+  mp3: {
+    encoder: "libmp3lame",
+    codec: "mp3",
+    extension: "mp3",
+    mimeType: "audio/mpeg",
+    lossy: true,
+  },
+  aac: {
+    encoder: "aac",
+    codec: "aac",
+    extension: "m4a",
+    mimeType: "audio/mp4",
+    lossy: true,
+  },
+  wav: {
+    encoder: "pcm_s16le",
+    codec: "pcm_s16le",
+    extension: "wav",
+    mimeType: "audio/wav",
+    lossy: false,
+  },
+  flac: {
+    encoder: "flac",
+    codec: "flac",
+    extension: "flac",
+    mimeType: "audio/flac",
+    lossy: false,
+  },
+} as const;
+
+export type ConversionFormat = keyof typeof CONVERSION_FORMATS;
+export type ConversionOptions = {
+  format: ConversionFormat;
+  bitrate: 128 | 192 | 256 | 320;
+};
+
+export const MAX_CONVERSION_OUTPUT_BYTES = 1024 ** 3;
+
+function formatIsAvailable(encoderText: string, encoder: string) {
+  return new RegExp(`\\b${encoder}\\b`).test(encoderText);
+}
+
+export async function conversionCapabilities() {
+  const { stdout } = await execTool("ffmpeg", ["-hide_banner", "-encoders"], {
+    timeoutMs: 15_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+  });
+  return Object.entries(CONVERSION_FORMATS).map(([id, format]) => ({
+    id,
+    extension: format.extension,
+    mimeType: format.mimeType,
+    lossy: format.lossy,
+    available: formatIsAvailable(stdout, format.encoder),
+  }));
+}
+
+export async function convertLocalAudio(
+  inputPath: string,
+  outputPath: string,
+  options: ConversionOptions,
+  signal?: AbortSignal,
+) {
+  const source = await probeAudio(inputPath);
+  const format = CONVERSION_FORMATS[options.format];
+  const available = (await conversionCapabilities()).find(
+    (item) => item.id === options.format,
+  )?.available;
+  if (!available) {
+    throw new Error(`The ${options.format.toUpperCase()} encoder is not available on this device.`);
+  }
+
+  const inputExtension = extname(inputPath).toLowerCase();
+  if (!inputExtension) throw new Error("The selected local audio file has no format extension.");
+
+  const args = [
+    "-v", "error",
+    "-nostdin",
+    "-n",
+    "-i", inputPath,
+    "-map", "0:a:0",
+    "-map_metadata", "0",
+    "-map_chapters", "-1",
+    "-c:a", format.encoder,
+  ];
+  if (format.lossy) args.push("-b:a", `${options.bitrate}k`);
+  if (options.format === "flac") args.push("-compression_level", "5");
+  if (options.format === "aac") args.push("-movflags", "+faststart");
+  args.push("-fs", String(MAX_CONVERSION_OUTPUT_BYTES), outputPath);
+
+  await execTool("ffmpeg", args, {
+    timeoutMs: 10 * 60_000,
+    signal,
+    maxOutputBytes: 2 * 1024 * 1024,
+  });
+
+  const converted = await probeAudio(outputPath);
+  if (
+    converted.codec !== format.codec ||
+    converted.sampleRate !== source.sampleRate ||
+    converted.channels !== source.channels ||
+    Math.abs(converted.durationSeconds - source.durationSeconds) > 0.2 ||
+    converted.sizeBytes > MAX_CONVERSION_OUTPUT_BYTES
+  ) {
+    throw new Error("The converted file failed format, duration, or size verification. No result was added to the library.");
+  }
+
+  await execTool("ffmpeg", [
+    "-v", "error",
+    "-xerror",
+    "-nostdin",
+    "-i", outputPath,
+    "-map", "0:a:0",
+    "-f", "null",
+    "-",
+  ], {
+    timeoutMs: 10 * 60_000,
+    signal,
+    maxOutputBytes: 2 * 1024 * 1024,
+  });
+
+  const warnings: string[] = [];
+  if (format.lossy) {
+    warnings.push("This lossy format changes audio quality. Keep the original if you may need it later.");
+  } else if (["mp3", "aac", "opus", "vorbis", "ac3", "eac3"].includes(source.codec)) {
+    warnings.push(`The source codec (${source.codec}) is lossy; a lossless output cannot restore quality already discarded.`);
+  }
+
+  return {
+    checksumSha256: await checksumFile(outputPath),
+    fileSizeBytes: converted.sizeBytes,
+    durationSeconds: converted.durationSeconds,
+    codec: converted.codec,
+    sampleRate: converted.sampleRate,
+    channels: converted.channels,
+    warnings,
+  };
+}

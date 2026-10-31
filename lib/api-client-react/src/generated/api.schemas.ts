@@ -87,6 +87,86 @@ export interface LibraryAudioBackupPreflightResponse {
   maximumBytes: number;
 }
 
+export type LibraryConversionFormatId = typeof LibraryConversionFormatId[keyof typeof LibraryConversionFormatId];
+
+
+export const LibraryConversionFormatId = {
+  mp3: 'mp3',
+  aac: 'aac',
+  wav: 'wav',
+  flac: 'flac',
+} as const;
+
+export interface LibraryConversionFormat {
+  id: LibraryConversionFormatId;
+  extension: string;
+  mimeType: string;
+  lossy: boolean;
+  available: boolean;
+}
+
+export interface LibraryConversionOptionsResponse {
+  formats: LibraryConversionFormat[];
+  sourcePolicy?: string;
+  error?: string;
+}
+
+export type LibraryConversionInputFormat = typeof LibraryConversionInputFormat[keyof typeof LibraryConversionInputFormat];
+
+
+export const LibraryConversionInputFormat = {
+  mp3: 'mp3',
+  aac: 'aac',
+  wav: 'wav',
+  flac: 'flac',
+} as const;
+
+export type LibraryConversionInputBitrate = typeof LibraryConversionInputBitrate[keyof typeof LibraryConversionInputBitrate];
+
+
+export const LibraryConversionInputBitrate = {
+  NUMBER_128: 128,
+  NUMBER_192: 192,
+  NUMBER_256: 256,
+  NUMBER_320: 320,
+} as const;
+
+export interface LibraryConversionInput {
+  trackId: string;
+  format: LibraryConversionInputFormat;
+  bitrate?: LibraryConversionInputBitrate;
+  rightsReviewed: true;
+}
+
+export interface LibraryConversionVerification {
+  checksumSha256: string;
+  fileSizeBytes: number;
+  durationSeconds: number;
+  codec: string;
+  sampleRate: number;
+  channels: number;
+  warnings: string[];
+}
+
+export type LibraryConversionResponseFormat = typeof LibraryConversionResponseFormat[keyof typeof LibraryConversionResponseFormat];
+
+
+export const LibraryConversionResponseFormat = {
+  mp3: 'mp3',
+  aac: 'aac',
+  wav: 'wav',
+  flac: 'flac',
+} as const;
+
+export interface LibraryConversionResponse {
+  track: LibraryTrackSummary;
+  created: boolean;
+  originalTrackId: string;
+  format: LibraryConversionResponseFormat;
+  verification: LibraryConversionVerification;
+  notice: string;
+}
+
 export interface ApiError {
   error: string;
 }

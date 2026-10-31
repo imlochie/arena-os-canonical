@@ -317,6 +317,8 @@ export async function addTrackFromAudioFile(input: {
   device?: "auto" | "cpu" | "cuda";
   title?: string;
   artist?: string;
+  album?: string;
+  prepareSeparation?: boolean;
 }): Promise<AddTrackResult> {
   const checksum = await checksumFile(input.filePath);
 
@@ -360,7 +362,7 @@ export async function addTrackFromAudioFile(input: {
           sourceChecksumSha256: checksum,
           title,
           artist,
-          album: "",
+          album: input.album ?? "",
           sourceAssetId: orphanedIntake.source.id,
           projectId: orphanedIntake.projectId,
           durationSeconds: orphanedIntake.source.durationSeconds,
@@ -390,15 +392,18 @@ export async function addTrackFromAudioFile(input: {
       })
       .returning({ id: projects.id });
 
-    const ingest = await ingestSourceFile({
+    const ingestInput = {
       projectId: container.id,
       filePath: input.filePath,
       filename: input.filename,
       mimeType: input.mimeType,
       model: input.model ?? defaultSeparationModel(),
       device: input.device ?? "auto",
-      provenance: { method: "local-upload", title, artist, metadata: { intake: "waveyard-library" } },
-    });
+      provenance: { method: "local-upload" as const, title, artist, metadata: { intake: "waveyard-library" } },
+    };
+    const ingest = input.prepareSeparation === false
+      ? await ingestSourceFile({ ...ingestInput, prepareProcessing: false })
+      : await ingestSourceFile({ ...ingestInput, prepareProcessing: true });
 
     const [row] = await db
       .insert(tracks)
@@ -407,7 +412,7 @@ export async function addTrackFromAudioFile(input: {
         sourceChecksumSha256: checksum,
         title,
         artist,
-        album: "",
+        album: input.album ?? "",
         sourceAssetId: ingest.source.id,
         projectId: container.id,
         durationSeconds: ingest.source.durationSeconds,

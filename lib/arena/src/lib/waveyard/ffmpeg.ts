@@ -131,9 +131,17 @@ export async function requireTool(tool: FfmpegTool): Promise<ResolvedBinary> {
 export type ExecResult = { stdout: string; stderr: string };
 
 /** Run a tool with an argument array. No shell, ever. */
-export async function execTool(tool: FfmpegTool, args: string[], options: { timeoutMs?: number } = {}): Promise<ExecResult> {
+export async function execTool(
+  tool: FfmpegTool,
+  args: string[],
+  options: { timeoutMs?: number; signal?: AbortSignal; maxOutputBytes?: number } = {},
+): Promise<ExecResult> {
   const binary = await requireTool(tool);
   return new Promise<ExecResult>((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(options.signal.reason ?? new Error(`${tool} was cancelled.`));
+      return;
+    }
     const child = spawn(binary.path, args, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -141,14 +149,44 @@ export async function execTool(tool: FfmpegTool, args: string[], options: { time
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += String(chunk);
+    let outputBytes = 0;
+    let settled = false;
+    const maxOutputBytes = options.maxOutputBytes ?? 2 * 1024 * 1024;
+    const cleanup = () => options.signal?.removeEventListener("abort", abort);
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      child.kill("SIGKILL");
+      reject(error);
+    };
+    const collect = (destination: "stdout" | "stderr", chunk: Buffer) => {
+      outputBytes += chunk.length;
+      if (outputBytes > maxOutputBytes) {
+        fail(new Error(`${tool} exceeded its diagnostic output limit.`));
+        return;
+      }
+      if (destination === "stdout") stdout += String(chunk);
+      else stderr += String(chunk);
+    };
+    const abort = () => fail(
+      options.signal?.reason instanceof Error
+        ? options.signal.reason
+        : new Error(`${tool} was cancelled.`),
+    );
+    child.stdout.on("data", (chunk: Buffer) => collect("stdout", chunk));
+    child.stderr.on("data", (chunk: Buffer) => collect("stderr", chunk));
+    options.signal?.addEventListener("abort", abort, { once: true });
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
     });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += String(chunk);
-    });
-    child.once("error", (error) => reject(error));
     child.once("close", (code) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       if (code === 0) resolve({ stdout, stderr });
       else reject(new Error(`${tool} exited ${code}: ${stderr.slice(-1200)}`));
     });

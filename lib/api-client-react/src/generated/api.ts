@@ -25,12 +25,15 @@ import type {
   GetLibraryTracksParams,
   HealthStatus,
   LibraryAudioBackupPreflightResponse,
+  LibraryConversionInput,
+  LibraryConversionOptionsResponse,
+  LibraryConversionResponse,
   LibraryTrackListResponse,
   LibraryTrackSeparationStartResponse
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
-import type { ErrorType } from '../custom-fetch';
+import type { ErrorType , BodyType } from '../custom-fetch';
 
 type AwaitedInput<T> = PromiseLike<T> | T;
 
@@ -139,6 +142,172 @@ export function useGetLibraryTracks<TData = Awaited<ReturnType<typeof getLibrary
 
 
 
+
+export const getGetLibraryConversionOptionsUrl = () => {
+
+
+
+
+  return `/api/library/conversions`
+}
+
+/**
+ * @summary List formats supported for local audio conversion
+ */
+export const getLibraryConversionOptions = async ( options?: Parameters<typeof customFetch>[1]): Promise<LibraryConversionOptionsResponse> => {
+
+  return customFetch<LibraryConversionOptionsResponse>(getGetLibraryConversionOptionsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetLibraryConversionOptionsQueryKey = () => {
+    return [
+    `/api/library/conversions`
+    ] as const;
+    }
+
+
+export const getGetLibraryConversionOptionsQueryOptions = <TData = Awaited<ReturnType<typeof getLibraryConversionOptions>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryConversionOptions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetLibraryConversionOptionsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getLibraryConversionOptions>>> = ({ signal }) => getLibraryConversionOptions({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getLibraryConversionOptions>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetLibraryConversionOptionsQueryResult = NonNullable<Awaited<ReturnType<typeof getLibraryConversionOptions>>>
+export type GetLibraryConversionOptionsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List formats supported for local audio conversion
+ */
+
+export function useGetLibraryConversionOptions<TData = Awaited<ReturnType<typeof getLibraryConversionOptions>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getLibraryConversionOptions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetLibraryConversionOptionsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getCreateLibraryConversionUrl = () => {
+
+
+
+
+  return `/api/library/conversions`
+}
+
+/**
+ * Converts only a device-uploaded local file after an explicit rights review. Protected subscription audio is not accessed.
+ * @summary Convert an owner-uploaded local audio track
+ */
+export const createLibraryConversion = async (libraryConversionInput: LibraryConversionInput, options?: Parameters<typeof customFetch>[1]): Promise<LibraryConversionResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<LibraryConversionResponse>(getCreateLibraryConversionUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(libraryConversionInput)
+  }
+);}
+
+
+
+
+
+export const getCreateLibraryConversionMutationKey = () => ['createLibraryConversion'] as const;
+
+export const getCreateLibraryConversionMutationOptions = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createLibraryConversion>>, TError,CreateLibraryConversionMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createLibraryConversion>>, TError,CreateLibraryConversionMutationVariables, TContext> => {
+
+const mutationKey = getCreateLibraryConversionMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createLibraryConversion>>, CreateLibraryConversionMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  createLibraryConversion(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateLibraryConversionMutationResult = NonNullable<Awaited<ReturnType<typeof createLibraryConversion>>>
+    export type CreateLibraryConversionMutationBody = BodyType<LibraryConversionInput>
+    export type CreateLibraryConversionMutationError = ErrorType<ApiError>
+    export type CreateLibraryConversionMutationVariables = {data: BodyType<LibraryConversionInput>}
+
+    /**
+ * @summary Convert an owner-uploaded local audio track
+ */
+export const useCreateLibraryConversion = <TError = ErrorType<ApiError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createLibraryConversion>>, TError,CreateLibraryConversionMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createLibraryConversion>>,
+        TError,
+        CreateLibraryConversionMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreateLibraryConversionMutationOptions(options));
+    }
 
 export const getGetLibraryAudioBackupUrl = (params: GetLibraryAudioBackupParams,) => {
   const normalizedParams = new URLSearchParams();

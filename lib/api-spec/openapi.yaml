@@ -38,6 +38,66 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LibraryTrackListResponse"
+  /library/conversions:
+    get:
+      operationId: getLibraryConversionOptions
+      tags: [waveyard]
+      summary: List formats supported for local audio conversion
+      responses:
+        "200":
+          description: Local conversion options and source restrictions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryConversionOptionsResponse"
+    post:
+      operationId: createLibraryConversion
+      tags: [waveyard]
+      summary: Convert an owner-uploaded local audio track
+      description: Converts only a device-uploaded local file after an explicit rights review. Protected subscription audio is not accessed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LibraryConversionInput"
+      responses:
+        "200":
+          description: Existing matching converted track returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryConversionResponse"
+        "201":
+          description: Converted and verified copy added to the library
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LibraryConversionResponse"
+        "403":
+          description: Source is not a device-uploaded local audio file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: Track not found for the current owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: Source checksum did not match its stored identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "415":
+          description: Unsupported or unverified source audio
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /library/audio-backup:
     get:
       operationId: getLibraryAudioBackup
@@ -195,6 +255,89 @@ components:
           type: integer
           example: 2147483648
       required: [audioFiles, totalBytes, maximumFiles, maximumBytes]
+    LibraryConversionFormat:
+      type: object
+      properties:
+        id:
+          type: string
+          enum: [mp3, aac, wav, flac]
+        extension:
+          type: string
+        mimeType:
+          type: string
+        lossy:
+          type: boolean
+        available:
+          type: boolean
+      required: [id, extension, mimeType, lossy, available]
+    LibraryConversionOptionsResponse:
+      type: object
+      properties:
+        formats:
+          type: array
+          items:
+            $ref: "#/components/schemas/LibraryConversionFormat"
+        sourcePolicy:
+          type: string
+        error:
+          type: string
+      required: [formats]
+    LibraryConversionInput:
+      type: object
+      properties:
+        trackId:
+          type: string
+          format: uuid
+        format:
+          type: string
+          enum: [mp3, aac, wav, flac]
+        bitrate:
+          type: integer
+          enum: [128, 192, 256, 320]
+          default: 192
+        rightsReviewed:
+          type: boolean
+          enum: [true]
+      required: [trackId, format, rightsReviewed]
+      additionalProperties: false
+    LibraryConversionVerification:
+      type: object
+      properties:
+        checksumSha256:
+          type: string
+        fileSizeBytes:
+          type: integer
+        durationSeconds:
+          type: number
+        codec:
+          type: string
+        sampleRate:
+          type: integer
+        channels:
+          type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+      required: [checksumSha256, fileSizeBytes, durationSeconds, codec, sampleRate, channels, warnings]
+    LibraryConversionResponse:
+      type: object
+      properties:
+        track:
+          $ref: "#/components/schemas/LibraryTrackSummary"
+        created:
+          type: boolean
+        originalTrackId:
+          type: string
+          format: uuid
+        format:
+          type: string
+          enum: [mp3, aac, wav, flac]
+        verification:
+          $ref: "#/components/schemas/LibraryConversionVerification"
+        notice:
+          type: string
+      required: [track, created, originalTrackId, format, verification, notice]
     ApiError:
       type: object
       properties:

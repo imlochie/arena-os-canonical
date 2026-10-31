@@ -14,6 +14,7 @@ export const importedRoutes = [
   { path: "/library/sessions/:id/tracks/:itemId", methods: ["PATCH"], load: () => import("./imported/library/sessions/[id]/tracks/[itemId]/route.ts") },
   { path: "/library/sessions/:id/tracks", methods: ["POST","PATCH","DELETE"], load: () => import("./imported/library/sessions/[id]/tracks/route.ts") },
   { path: "/library/tracks/:id/played", methods: ["POST"], load: () => import("./imported/library/tracks/[id]/played/route.ts") },
+  { path: "/library/conversions", methods: ["GET","POST"], load: () => import("./imported/library/conversions/route.ts") },
   { path: "/moderation/projects/:id/actions", methods: ["POST"], load: () => import("./imported/moderation/projects/[id]/actions/route.ts") },
   { path: "/public/projects/:id/release", methods: ["GET"], load: () => import("./imported/public/projects/[id]/release/route.ts") },
   { path: "/public/projects/:id/reports", methods: ["POST"], load: () => import("./imported/public/projects/[id]/reports/route.ts") },
