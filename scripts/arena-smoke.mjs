@@ -1609,6 +1609,34 @@ try {
   assert.equal(liveCurrentItem.playbackPreference, "stems", "the reopened full-track session must still allow a return to stems");
   report.push("A full-track choice survives a session reload, remains gaplessly switchable, and can be changed back to stems.");
 
+  liveCurrentItem.sourceAssetId = null;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
+  await page.getByTestId(`full-track-unavailable-${liveSessionTrackId}`)
+    .filter({ hasText: "Original audio unavailable" })
+    .waitFor({ timeout: 8_000 });
+  assert.equal(
+    await page.getByTestId(`button-return-full-track-${liveSessionTrackId}`).count(),
+    0,
+    "a session track without an original asset must not show a return action",
+  );
+  assert.equal(
+    await page.getByTestId(`button-retry-full-track-${liveSessionTrackId}`).count(),
+    0,
+    "a missing original asset must not offer a load retry",
+  );
+  assert.equal(await page.getByTestId("quick-isolate-vocals").isEnabled(), true,
+    "stem controls remain usable when the original asset is missing");
+  await page.getByTestId("session-play").click();
+  await page.waitForFunction((assetId) => {
+    const audio = document.querySelector(`audio[src$="/${assetId}"]`);
+    return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.25;
+  }, liveVocalsAssetId, { timeout: 12_000 });
+  await page.getByTestId("session-play").click();
+  liveCurrentItem.sourceAssetId = liveCurrentSourceAssetId;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByTestId("listening-workspace").waitFor({ timeout: 20_000 });
+
   await page.getByTestId("session-play").click();
   await page.waitForFunction((assetId) => {
     const audio = document.querySelector(`audio[src$="/${assetId}"]`);

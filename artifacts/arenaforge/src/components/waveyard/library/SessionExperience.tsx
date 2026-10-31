@@ -664,6 +664,15 @@ function SessionDeck({
             <p className="wy-deck-note">Full source — stem controls unlock once separation finishes.</p>
           ) : (
             <div className="wy-stems" role="group" aria-label={`${active ? "Current" : "Next"} deck stems`}>
+              {active && item.playback?.kind === "stems" && item.sourceAssetId === null && (
+                <p
+                  className="wy-stem-toolbar"
+                  role="status"
+                  data-testid={`full-track-unavailable-${item.id}`}
+                >
+                  Original audio unavailable · stem playback and controls remain available
+                </p>
+              )}
               {active && item.sourceAssetId && onReturnToSource && (
                 <div className="wy-stem-toolbar">
                   <span>Separated mix playing</span>
