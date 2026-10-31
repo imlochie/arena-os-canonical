@@ -456,6 +456,40 @@ test("a donor larger than the recent-cache budget is not retained or interrupted
   } finally { f.layers.dispose(); }
 });
 
+test("an expanded tempo-matched output is sized by its samples and does not stop the active replacement", async () => {
+  const outputSamples = 8_500_000;
+  const f = fixture(async (_context, input) => {
+    assert.equal(input.length, 144_000, "the decoded input is much smaller than the tempo output");
+    return {
+      duration: outputSamples / 48_000,
+      length: outputSamples,
+      numberOfChannels: 2,
+    } as AudioBuffer;
+  }, undefined, {
+    duration: 3,
+    length: 144_000,
+    numberOfChannels: 2,
+  });
+  const fetches: string[] = [];
+  globalThis.fetch = async url => {
+    fetches.push(String(url));
+    return response();
+  };
+  try {
+    await f.layers.replace("vocals", "/expanded", 0.8);
+    await f.layers.replace("vocals", "/replacement");
+    const activeReplacement = f.sources[1];
+
+    await f.layers.replace("vocals", "/expanded", 0.8);
+
+    assert.deepEqual(fetches, ["/expanded", "/replacement", "/expanded"],
+      "the 8.5-million-sample stereo output exceeds the 64 MiB cache and must be prepared again");
+    assert.equal(activeReplacement.stopped, false,
+      "skipping the oversized tempo-matched cache entry does not stop active playback");
+    assert.equal(f.sources[2].stopped, false, "the new tempo-matched replacement starts playing");
+  } finally { f.layers.dispose(); }
+});
+
 test("the aggregate recent-cache budget counts samples across every channel", async () => {
   const decodedBuffers = [
     { duration: 9_000_000 / 48_000, length: 9_000_000, numberOfChannels: 1 },
