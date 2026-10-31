@@ -75,7 +75,7 @@ export const GetLibraryTracksResponse = zod.object({
  */
 export const GetLibraryConversionOptionsResponse = zod.object({
   "formats": zod.array(zod.object({
-  "id": zod.enum(['mp3', 'aac', 'wav', 'flac']),
+  "id": zod.enum(['mp3', 'aac', 'wav', 'flac', 'alac']),
   "extension": zod.string(),
   "mimeType": zod.string(),
   "lossy": zod.boolean(),
@@ -94,7 +94,7 @@ export const createLibraryConversionBodyBitrateDefault = 192;
 
 export const CreateLibraryConversionBody = zod.object({
   "trackId": zod.string().uuid(),
-  "format": zod.enum(['mp3', 'aac', 'wav', 'flac']),
+  "format": zod.enum(['mp3', 'aac', 'wav', 'flac', 'alac']),
   "bitrate": zod.union([zod.literal(128),zod.literal(192),zod.literal(256),zod.literal(320)]).default(createLibraryConversionBodyBitrateDefault),
   "rightsReviewed": zod.literal(true)
 })
@@ -148,7 +148,7 @@ export const CreateLibraryConversionResponse = zod.object({
 }),
   "created": zod.boolean(),
   "originalTrackId": zod.string().uuid(),
-  "format": zod.enum(['mp3', 'aac', 'wav', 'flac']),
+  "format": zod.enum(['mp3', 'aac', 'wav', 'flac', 'alac']),
   "verification": zod.object({
   "checksumSha256": zod.string(),
   "fileSizeBytes": zod.number().int(),

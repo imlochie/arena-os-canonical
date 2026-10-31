@@ -260,7 +260,7 @@ components:
       properties:
         id:
           type: string
-          enum: [mp3, aac, wav, flac]
+          enum: [mp3, aac, wav, flac, alac]
         extension:
           type: string
         mimeType:
@@ -290,7 +290,7 @@ components:
           format: uuid
         format:
           type: string
-          enum: [mp3, aac, wav, flac]
+          enum: [mp3, aac, wav, flac, alac]
         bitrate:
           type: integer
           enum: [128, 192, 256, 320]
@@ -332,7 +332,7 @@ components:
           format: uuid
         format:
           type: string
-          enum: [mp3, aac, wav, flac]
+          enum: [mp3, aac, wav, flac, alac]
         verification:
           $ref: "#/components/schemas/LibraryConversionVerification"
         notice:

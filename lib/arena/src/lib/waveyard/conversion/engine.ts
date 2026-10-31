@@ -32,6 +32,13 @@ export const CONVERSION_FORMATS = {
     mimeType: "audio/flac",
     lossy: false,
   },
+  alac: {
+    encoder: "alac",
+    codec: "alac",
+    extension: "m4a",
+    mimeType: "audio/mp4",
+    lossy: false,
+  },
 } as const;
 
 export type ConversionFormat = keyof typeof CONVERSION_FORMATS;
@@ -90,7 +97,7 @@ export async function convertLocalAudio(
   ];
   if (format.lossy) args.push("-b:a", `${options.bitrate}k`);
   if (options.format === "flac") args.push("-compression_level", "5");
-  if (options.format === "aac") args.push("-movflags", "+faststart");
+  if (options.format === "aac" || options.format === "alac") args.push("-movflags", "+faststart");
   args.push("-fs", String(MAX_CONVERSION_OUTPUT_BYTES), outputPath);
 
   await execTool("ffmpeg", args, {

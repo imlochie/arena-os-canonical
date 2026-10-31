@@ -14,4 +14,5 @@ export const LibraryConversionFormatId = {
   aac: 'aac',
   wav: 'wav',
   flac: 'flac',
+  alac: 'alac',
 } as const;

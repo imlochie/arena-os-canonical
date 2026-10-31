@@ -95,6 +95,7 @@ export const LibraryConversionFormatId = {
   aac: 'aac',
   wav: 'wav',
   flac: 'flac',
+  alac: 'alac',
 } as const;
 
 export interface LibraryConversionFormat {
@@ -119,6 +120,7 @@ export const LibraryConversionInputFormat = {
   aac: 'aac',
   wav: 'wav',
   flac: 'flac',
+  alac: 'alac',
 } as const;
 
 export type LibraryConversionInputBitrate = typeof LibraryConversionInputBitrate[keyof typeof LibraryConversionInputBitrate];
@@ -156,6 +158,7 @@ export const LibraryConversionResponseFormat = {
   aac: 'aac',
   wav: 'wav',
   flac: 'flac',
+  alac: 'alac',
 } as const;
 
 export interface LibraryConversionResponse {

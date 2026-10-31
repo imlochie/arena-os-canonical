@@ -48,3 +48,47 @@ test("converts and fully verifies a local audio file without changing its origin
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("ALAC is advertised and verified as a lossless M4A conversion when FFmpeg provides it", async (context) => {
+  let capabilities;
+  try {
+    capabilities = await conversionCapabilities();
+  } catch {
+    context.skip("FFmpeg is not installed in this test environment.");
+    return;
+  }
+  if (!capabilities.some((format) => format.id === "alac" && format.available)) {
+    context.skip("The ALAC encoder is not available in this test environment.");
+    return;
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), "waveyard-alac-test-"));
+  try {
+    const source = join(directory, "original.wav");
+    const output = join(directory, "converted.m4a");
+    await execTool("ffmpeg", [
+      "-v", "error",
+      "-nostdin",
+      "-f", "lavfi",
+      "-i", "sine=frequency=440:duration=1",
+      "-c:a", "pcm_s16le",
+      "-metadata", "title=Local ALAC conversion test",
+      source,
+    ]);
+
+    const originalChecksum = await checksumFile(source);
+    const converted = await convertLocalAudio(source, output, { format: "alac", bitrate: 192 });
+    const encodedMetadata = await probeAudio(output);
+
+    assert.equal(await checksumFile(source), originalChecksum, "the user's original must remain byte-identical");
+    assert.equal(converted.codec, "alac");
+    assert.equal(encodedMetadata.codec, "alac");
+    assert.equal(encodedMetadata.container, "mov,mp4,m4a,3gp,3g2,mj2");
+    assert.equal(converted.sampleRate, encodedMetadata.sampleRate);
+    assert.equal(converted.channels, encodedMetadata.channels);
+    assert.equal(converted.checksumSha256, await checksumFile(output));
+    assert.deepEqual(converted.warnings, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

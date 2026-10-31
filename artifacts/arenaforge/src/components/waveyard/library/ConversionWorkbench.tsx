@@ -40,6 +40,9 @@ export function ConversionWorkbench({
         if (!Array.isArray(data.formats)) throw new Error("The local conversion service returned an invalid format list.");
         setFormats(data.formats);
         const preferredFormat =
+          ["flac", "alac", "wav"]
+            .map((id) => data.formats.find((item: FormatOption) => item.id === id && item.available))
+            .find(Boolean) ??
           data.formats.find((item: FormatOption) => item.available && !item.lossy) ??
           data.formats.find((item: FormatOption) => item.available);
         if (preferredFormat) setFormat(preferredFormat.id);
