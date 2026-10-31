@@ -66,6 +66,8 @@ test("ALAC is advertised and verified as a lossless M4A conversion when FFmpeg p
   try {
     const source = join(directory, "original.wav");
     const output = join(directory, "converted.m4a");
+    const sourcePcm = join(directory, "source.pcm");
+    const convertedPcm = join(directory, "converted.pcm");
     await execTool("ffmpeg", [
       "-v", "error",
       "-nostdin",
@@ -88,6 +90,23 @@ test("ALAC is advertised and verified as a lossless M4A conversion when FFmpeg p
     assert.equal(converted.channels, encodedMetadata.channels);
     assert.equal(converted.checksumSha256, await checksumFile(output));
     assert.deepEqual(converted.warnings, []);
+
+    for (const [input, rawOutput] of [[source, sourcePcm], [output, convertedPcm]]) {
+      await execTool("ffmpeg", [
+        "-v", "error",
+        "-nostdin",
+        "-i", input,
+        "-map", "0:a:0",
+        "-c:a", "pcm_s16le",
+        "-f", "s16le",
+        rawOutput,
+      ]);
+    }
+    assert.equal(
+      await checksumFile(convertedPcm),
+      await checksumFile(sourcePcm),
+      "decoding ALAC must reproduce every source PCM sample",
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
