@@ -1820,6 +1820,19 @@ try {
       body: JSON.stringify({ games: historyFixtureAvailable ? [historyFixture] : [] }),
     });
   });
+  await page.goto(`${base}/spaces`, { waitUntil: "networkidle" });
+  const spacesTaskModel = createdSpaceCard.getByLabel("Task model");
+  await spacesTaskModel.waitFor();
+  const spacesTaskModelOptions = await spacesTaskModel.locator("option").allTextContents();
+  assert(
+    spacesTaskModelOptions.some(option => /qwen2\.5:3b \(TurboAgent\).*local runtime/.test(option)),
+    "Spaces must identify TurboAgent as a local runtime in its task model selector",
+  );
+  assert.match(
+    await createdSpaceCard.getByText(/It runs on the Arena host/).innerText(),
+    /your PC in the installed app, Replit in a hosted preview/,
+  );
+  report.push("Spaces labels every supported local model as a local runtime and clarifies which host runs it.");
   await page.goto(`${base}/model-hub`, { waitUntil: "networkidle" });
   await page.getByRole("link", { name: "Test qwen2.5:3b (TurboAgent) in Arcade" }).click();
   await page.getByTestId("model-test-handoff").waitFor();

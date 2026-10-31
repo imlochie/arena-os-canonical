@@ -41,6 +41,10 @@ interface ModelInfo {
   level?: string;
 }
 
+function isLocalRuntimeModel(model: ModelInfo | undefined): boolean {
+  return model?.backend === "local-server" || model?.backend === "turboagent";
+}
+
 function missionModelBlockReason(
   selected: ModelInfo | undefined,
   brainProvider: ReturnType<typeof readBrain>["provider"],
@@ -1084,11 +1088,11 @@ function MissionPanel({ spaceId, models, focusGoal }: { spaceId: string; models:
           className="mt-1 w-full rounded-lg border border-white/10 bg-[#0c1428] px-2 py-1.5 text-xs text-white"
         >
           <option value="">Use connected brain</option>
-          {taskModels.map(model => <option key={model.id} value={model.id}>{model.name}{model.backend === "local-server" ? " · on this computer" : ""}</option>)}
+          {taskModels.map(model => <option key={model.id} value={model.id}>{model.name}{isLocalRuntimeModel(model) ? " · local runtime" : ""}</option>)}
         </select>
       </label>
       <p className="mt-1 text-[11px] text-slate-400">
-        For free local inference, connect Ollama in <a className="text-cyan-200 underline" href="/model-hub">Model Hub</a>, register an installed model, then choose it here. No API key is needed. Resuming keeps the mission’s original model.
+        For free local inference, connect Ollama in <a className="text-cyan-200 underline" href="/model-hub">Model Hub</a>, register an installed model, then choose it here. It runs on the Arena host: your PC in the installed app, Replit in a hosted preview. No API key is needed. Resuming keeps the mission’s original model.
       </p>
 
       {showGit && taskMode === "build" && (

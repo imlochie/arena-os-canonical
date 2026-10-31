@@ -1341,12 +1341,12 @@ export default function ArcadeForge() {
                   {activeCheckSource === "model-hub" ? "Testing local model…" : "Test selected local model"}
                 </button>
               </div>
+            </div>
               {modelHandoffMessage && (
                 <p data-testid="model-test-handoff" role="status" className="mt-2 text-[11px] text-emerald-200">
                   {modelHandoffMessage}
                 </p>
               )}
-            </div>
             <p data-testid="local-generation-status" role="status" className="mt-2 text-[11px] text-slate-400">
               {selectedLocalModel
                 ? "A local model is selected. Its test uses no WebGPU, cloud key, or public fallback."
