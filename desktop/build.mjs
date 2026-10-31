@@ -102,14 +102,58 @@ export function runPnpm(args, env = {}) {
   if (result.status !== 0) throw new Error(`pnpm ${args.join(" ")} failed (${result.status})`);
 }
 
+export async function buildWaveyardCaptureHost(outputDirectory) {
+  const sourceDirectory = path.join(here, "native");
+  const source = path.join(sourceDirectory, "waveyard-capture-host.cpp");
+  const output = path.join(outputDirectory, "waveyard-capture-host.exe");
+  const compiler = spawnSync("where.exe", ["cl.exe"], { stdio: "ignore" });
+  if (compiler.error || compiler.status !== 0) {
+    throw new Error(
+      "Waveyard's Windows audio capture host needs the MSVC C++ compiler. " +
+      "Build it in the Windows package workflow to avoid installing Visual Studio Build Tools on this laptop.",
+    );
+  }
+  await mkdir(outputDirectory, { recursive: true });
+  const result = spawnSync("cl.exe", [
+    "/nologo",
+    "/std:c++20",
+    "/EHsc",
+    "/O2",
+    "/MT",
+    "/W4",
+    "/utf-8",
+    `/Fo${path.join(outputDirectory, "waveyard-capture-host.obj")}`,
+    `/Fe${output}`,
+    source,
+    "/link",
+    "ole32.lib",
+    "uuid.lib",
+    "mmdevapi.lib",
+    "propsys.lib",
+  ], { cwd: sourceDirectory, stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`MSVC could not build the Waveyard capture host (${result.status}).`);
+  await access(output);
+  return output;
+}
+
 async function main() {
   if (process.platform !== "win32" || process.arch !== "x64") {
     throw new Error("Build the Windows package on Windows x64. Linux builds cannot verify the shipped native dependencies.");
+  }
+  // Fail before cleaning or downloading the large application stage.
+  const compiler = spawnSync("where.exe", ["cl.exe"], { stdio: "ignore" });
+  if (compiler.error || compiler.status !== 0) {
+    throw new Error(
+      "The Windows build now includes Waveyard's WASAPI capture host and requires MSVC C++. " +
+      "Use the Windows package workflow to build without adding Visual Studio Build Tools to your laptop.",
+    );
   }
   // A retry may start with a large stage left by an earlier failed package.
   // Clear only this regenerable tree before compilation needs additional disk.
   const stage = path.join(here, "stage");
   await rm(stage, { recursive: true, force: true });
+  await buildWaveyardCaptureHost(path.join(stage, "native"));
   runPnpm(["--filter", "@workspace/arenaforge", "run", "build"], {
     NODE_ENV: "production", BASE_PATH: "/", PORT: "5173",
   });

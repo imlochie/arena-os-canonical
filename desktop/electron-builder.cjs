@@ -6,6 +6,7 @@ module.exports = {
   extraResources: [
     { from: "stage/server", to: "server" },
     { from: "stage/web", to: "web" },
+    { from: "stage/native", to: "native" },
     { from: "stage/chromium", to: "chromium" },
     { from: "stage/embedded-postgres", to: "embedded-postgres" },
     { from: "stage/bin", to: "bin" },

@@ -20,6 +20,9 @@ function Invoke-Pnpm {
   if ($LASTEXITCODE -ne 0) { throw "pnpm command failed. See the error above." }
 }
 if ($Action -eq "Build") {
+  if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+    throw "Waveyard's native WASAPI capture host requires MSVC C++. To avoid installing the large Visual Studio C++ toolchain on this laptop, use the arenaforge-windows-x64 artifact from the Windows package workflow."
+  }
   Write-Host "This downloads build dependencies, Electron, PostgreSQL and Chromium."
   Write-Host "It does not upload your workspace data, install an AI model, or change an existing Arena database."
   $tempPath = [IO.Path]::GetTempPath()
